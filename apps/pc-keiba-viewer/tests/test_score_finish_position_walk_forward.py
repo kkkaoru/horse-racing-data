@@ -450,6 +450,7 @@ def test_default_write_parquet_partitions_by_category_and_year(tmp_path: Path):
         output_dir.as_posix(),
         partition_cols=["category", "race_year"],
         index=False,
+        existing_data_behavior="delete_matching",
     )
 
 

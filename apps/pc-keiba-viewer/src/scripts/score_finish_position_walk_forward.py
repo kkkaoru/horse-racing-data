@@ -429,6 +429,7 @@ def default_write_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
         output_dir.as_posix(),
         partition_cols=["category", "race_year"],
         index=False,
+        existing_data_behavior="delete_matching",
     )
 
 

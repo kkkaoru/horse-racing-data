@@ -725,6 +725,51 @@ def test_run_study_raises_when_sample_year_missing(tmp_path: Path) -> None:
         mod.run_study(args)
 
 
+def test_run_study_unions_feature_columns_across_all_cv_years(tmp_path: Path) -> None:
+    features_root = tmp_path / "feats"
+    bucket_root = tmp_path / "bucket"
+    for year, race_prefix, has_feature_c in ((2022, "r22", False), (2023, "r23", True), (2024, "r24", True)):
+        year_dir = features_root / f"race_year={year}"
+        year_dir.mkdir(parents=True)
+        row: dict[str, object] = {
+            "race_id": [f"{race_prefix}a", f"{race_prefix}b"],
+            "ketto_toroku_bango": ["h1", "h2"],
+            "umaban": [1, 2],
+            "finish_position": [1.0, 2.0],
+            "feature_a": [0.1, 0.2],
+            "feature_b": [0.3, 0.4],
+        }
+        if has_feature_c:
+            row["feature_c"] = [0.9, 1.0]
+        pd.DataFrame(row).to_parquet(year_dir / "data_0.parquet", index=False)
+
+    discovered_cols: list[list[str]] = []
+
+    def fake_train(
+        train: pd.DataFrame,
+        valid: pd.DataFrame,
+        feats: list[str],
+        p: Mapping[str, object],
+        seed: int,
+    ) -> np.ndarray:
+        discovered_cols.append(feats)
+        return np.array([float(i) for i in range(len(valid), 0, -1)])
+
+    args = mod.TuneArgs(
+        features_parquet_root=features_root,
+        bucket_membership_parquet_root=bucket_root,
+        output_dir=tmp_path / "out",
+        n_trials=1,
+        timeout_seconds=60,
+        random_seed=42,
+        cv_years=(2022, 2023, 2024),
+    )
+    with patch.object(mod, "train_xgb_fold", side_effect=fake_train):
+        mod.run_study(args)
+    all_discovered = {col for cols in discovered_cols for col in cols}
+    assert "feature_c" in all_discovered
+
+
 def test_main_returns_zero(tmp_path: Path) -> None:
     features_root = tmp_path / "feats"
     bucket_root = tmp_path / "bucket"

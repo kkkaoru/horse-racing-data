@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -119,6 +120,12 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
     return _to
 
 
+def subtract_one_day(date_str: str) -> str:
+    """Return the date string for the day before date_str (YYYYMMDD format)."""
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    return (dt - timedelta(days=1)).strftime("%Y%m%d")
+
+
 def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     mask = (df["race_date"] >= start) & (df["race_date"] <= end) & df["finish_position"].notna()
     return df[mask].copy()
@@ -164,11 +171,13 @@ def train_catboost_ranker(
     cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
     train_features = _prepare_feature_matrix(train_df, feature_cols, cat_indices)
     valid_features = _prepare_feature_matrix(valid_df, feature_cols, cat_indices)
+    train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
     train_pool = Pool(
         data=train_features,
         label=train_labels,
         group_id=race_group_ids(train_df),
         cat_features=cat_indices if cat_indices else None,
+        weight=train_weights,
     )
     valid_pool = Pool(
         data=valid_features,
@@ -246,7 +255,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     feature_cols = resolve_feature_columns(df, use_cat_features=use_cat)
     folds: list[dict[str, object]] = []
     if args.validation_from_date and args.validation_to_date:
-        train_end = args.train_end_date or args.validation_from_date
+        train_end = args.train_end_date or subtract_one_day(args.validation_from_date)
         train_df = filter_range(df, args.train_start_date, train_end)
         valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
         if len(train_df) > 0 and len(valid_df) > 0:

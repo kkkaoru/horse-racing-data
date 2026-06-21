@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -93,6 +94,11 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
     return _to
 
 
+def subtract_one_day(date_str: str) -> str:
+    dt = datetime.strptime(date_str, "%Y%m%d") - timedelta(days=1)
+    return dt.strftime("%Y%m%d")
+
+
 def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     mask = (df["race_date"] >= start) & (df["race_date"] <= end) & df["finish_position"].notna()
     return df[mask].copy()
@@ -121,7 +127,8 @@ def train_xgboost_ranker(
     )
     train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
-    dtrain = xgb.DMatrix(train_df[feature_cols], label=train_labels)
+    train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
+    dtrain = xgb.DMatrix(train_df[feature_cols], label=train_labels, weight=train_weights)
     dtrain.set_group(build_group_sizes(train_df))
     dvalid = xgb.DMatrix(valid_df[feature_cols], label=valid_labels)
     dvalid.set_group(build_group_sizes(valid_df))
@@ -215,7 +222,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     feature_cols = resolve_feature_columns(df)
     folds: list[dict[str, object]] = []
     if args.validation_from_date and args.validation_to_date:
-        train_end = args.train_end_date or args.validation_from_date
+        train_end = args.train_end_date or subtract_one_day(args.validation_from_date)
         train_df = filter_range(df, args.train_start_date, train_end)
         valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
         if len(train_df) > 0 and len(valid_df) > 0:

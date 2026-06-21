@@ -517,6 +517,28 @@ def test_score_dataset_returns_predictions_per_row():
     assert predictions["predicted_rank"].min() == 1
 
 
+def test_score_dataset_uses_booster_feature_names_not_df_columns():
+    df = make_synthetic_dataset()
+    bundle = subject.prepare_lgb_dataset(df)
+    booster, _ = subject.train_lambdarank(
+        bundle,
+        None,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 5,
+            "num_iterations": 20,
+            "num_leaves": 7,
+            "objective": "lambdarank",
+        },
+    )
+    df_with_extra = df.copy()
+    df_with_extra["should_not_be_used"] = 99.0
+    predictions = subject.score_dataset(booster, df_with_extra)
+    assert len(predictions) == len(df)
+    assert predictions["predicted_rank"].min() == 1
+
+
 def test_write_predictions_jsonl_writes_one_record_per_line(tmp_path: Path):
     predictions = pd.DataFrame(
         {

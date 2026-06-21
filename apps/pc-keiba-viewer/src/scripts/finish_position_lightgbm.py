@@ -423,7 +423,7 @@ class PredictionRow(TypedDict):
 
 def score_dataset(booster: "lgb.Booster", df: pd.DataFrame) -> pd.DataFrame:
     sorted_df = sort_for_grouping(df)
-    feature_columns = resolve_feature_columns(list(sorted_df.columns))
+    feature_columns = booster.feature_name()
     frame = encode_categoricals(
         select_feature_frame(sorted_df, feature_columns),
         detect_categorical_features(feature_columns),

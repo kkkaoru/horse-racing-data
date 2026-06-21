@@ -397,7 +397,7 @@ def test_split_train_val_caps_holdout_to_n_minus_one() -> None:
 def test_resolve_fold_years_returns_all_by_default() -> None:
     dataset = _build_dataset_frame((0, 1, 2))
     years = subject.resolve_fold_years(dataset, requested=None)
-    assert years == (2010, 2011, 2012)
+    assert years == (2011, 2012)
 
 
 def test_resolve_fold_years_filters_requested() -> None:

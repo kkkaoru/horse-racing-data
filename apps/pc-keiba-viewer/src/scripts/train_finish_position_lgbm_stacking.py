@@ -676,7 +676,7 @@ def resolve_fold_years(
 ) -> tuple[int, ...]:
     available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
     if requested is None:
-        return tuple(available)
+        return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
     if not keep:
         raise ValueError(f"none of the requested fold years {requested!r} exist in the dataset")

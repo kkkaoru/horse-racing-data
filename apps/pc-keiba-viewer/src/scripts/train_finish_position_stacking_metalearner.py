@@ -602,7 +602,7 @@ def train_one_fold(
         random_state=random_state,
         ridge_factory=ridge_factory,
     )
-    feature_cols = stacking_feature_columns(dataset)
+    feature_cols = stacking_feature_columns(train_frame)
     model = ridge_factory(alpha=alpha_picked, random_state=random_state)
     x_train = train_frame[feature_cols].to_numpy(dtype=float)
     y_train = train_frame[ACTUAL_FINISH_POSITION_COLUMN].to_numpy(dtype=float)

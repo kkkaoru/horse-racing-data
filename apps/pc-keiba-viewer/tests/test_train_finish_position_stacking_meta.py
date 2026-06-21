@@ -348,10 +348,20 @@ def test_split_train_val_caps_holdout_to_n_minus_one() -> None:
     assert len(val) == 1
 
 
-def test_resolve_fold_years_returns_all_by_default() -> None:
+def test_resolve_fold_years_excludes_minimum_year_when_requested_is_none() -> None:
+    # The earliest year can never have training data (train_frame uses year < fold_year),
+    # so it must be excluded when requested=None to avoid silent skips.
     dataset = _build_dataset_frame((0, 1, 2))
     years = subject.resolve_fold_years(dataset, requested=None)
-    assert years == (2010, 2011, 2012)
+    assert years == (2011, 2012)
+
+
+def test_resolve_fold_years_keeps_single_year_when_only_one_available() -> None:
+    # When there is only one year in the dataset, skip-nothing policy applies:
+    # returning an empty tuple would be worse than the guaranteed skip.
+    dataset = _build_dataset_frame((0,))
+    years = subject.resolve_fold_years(dataset, requested=None)
+    assert years == (2010,)
 
 
 def test_resolve_fold_years_filters_requested() -> None:
