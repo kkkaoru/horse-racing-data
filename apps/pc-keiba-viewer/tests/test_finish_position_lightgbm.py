@@ -628,6 +628,26 @@ def test_evaluate_predictions_computes_box_and_exact_hits():
     assert metrics["top1_accuracy"] == 0.5
     assert metrics["top3_box_accuracy"] == 1.0
     assert metrics["top3_exact_accuracy"] == 0.5
+    # ndcg_at_3 must now be present and between 0 and 1
+    assert 0.0 <= float(metrics["ndcg_at_3"]) <= 1.0
+
+
+def test_evaluate_predictions_ndcg_penalizes_missing_winner():
+    # ground_truth has 3 horses; predictions omits the winner (horse "a").
+    # After left join, "a" has NaN predicted_rank → NDCG < 1.0.
+    truth = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "finish_position": [1, 2, 3],
+    })
+    predictions = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["b", "c"],
+        "predicted_rank": [1, 2],
+    })
+    metrics = subject.evaluate_predictions(predictions, truth)
+    assert metrics["race_count"] == 1
+    assert float(metrics["ndcg_at_3"]) < 1.0
 
 
 def test_aggregate_fold_metrics_averages():

@@ -24,6 +24,8 @@ import optuna
 import pandas as pd
 from numpy.typing import NDArray
 
+from subgroup_diagnostics import compute_race_ndcg
+
 LightgbmCallback = Callable[..., object]
 
 FloatArray = NDArray[np.float64]
@@ -607,19 +609,21 @@ def race_top1_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
 
 
 def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) -> dict[str, float | int]:
-    joined = predictions.merge(
-        ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]],
+    joined = ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+        predictions,
         on=["race_id", "ketto_toroku_bango"],
-        how="inner",
+        how="left",
     )
     box_hits = 0
     exact_hits = 0
     top1_hits = 0
     race_count = 0
+    ndcg_scores: list[float] = []
     for _race_id, group in joined.groupby("race_id"):
         actual = compute_top_k_actuals(group, TOP3_K)
         predicted = compute_top_k_predicted(group, TOP3_K)
         race_count += 1
+        ndcg_scores.append(compute_race_ndcg(group))
         if race_top3_box_hit(actual, predicted):
             box_hits += 1
         if race_top3_exact_hit(actual, predicted):
@@ -629,6 +633,7 @@ def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) 
     safe_total = max(race_count, 1)
     return {
         "race_count": race_count,
+        "ndcg_at_3": float(np.mean(ndcg_scores)) if ndcg_scores else 0.0,
         "top1_accuracy": top1_hits / safe_total,
         "top3_box_accuracy": box_hits / safe_total,
         "top3_exact_accuracy": exact_hits / safe_total,
@@ -650,9 +655,8 @@ def run_walk_forward_fold(
     booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
-    ndcg_value = eval_metrics.get("ndcg_at_3", training_result["best_ndcg_at_3"])
     metrics: FoldMetrics = {
-        "ndcg_at_3": float(ndcg_value) if ndcg_value is not None else 0.0,
+        "ndcg_at_3": float(eval_metrics["ndcg_at_3"]),
         "race_count": int(eval_metrics["race_count"]),
         "top1_accuracy": float(eval_metrics["top1_accuracy"]),
         "top3_box_accuracy": float(eval_metrics["top3_box_accuracy"]),

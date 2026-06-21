@@ -245,6 +245,23 @@ def test_sync_sequence_skips_past_manually_inserted_ids() -> None:
         assert next_id == 101
 
 
+def test_maybe_promote_compares_against_active_not_global_max() -> None:
+    # A previously recorded but NEVER activated trial with high NDCG must not
+    # block future promotions that beat the current active entry.
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        # Record a high-NDCG trial and leave it inactive.
+        reg.record_trial("trial-high", 0.9, ["feat_h"])
+        # Activate a lower-NDCG trial as the current production model.
+        id_low = reg.record_trial("trial-low", 0.5, ["feat_l"])
+        reg.activate(id_low)
+        # Now promote with 0.62, which beats active (0.5+0.01) but not global max (0.9+0.01).
+        promoted = reg.maybe_promote("trial-new", 0.62, ["feat_n"], threshold=0.01)
+        assert promoted is True
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "trial-new"
+
+
 def test_maybe_promote_rolls_back_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         def broken_record_trial(*args: object, **kwargs: object) -> int:

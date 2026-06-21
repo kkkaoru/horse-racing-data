@@ -151,9 +151,10 @@ class FeatureRegistry:
         assert self._con is not None
         self._con.begin()
         try:
-            current_best = self.get_best_ndcg()
+            active_entry = self.get_active_entry()
+            active_ndcg = active_entry["ndcg_at_3"] if active_entry is not None else 0.0
             entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
-            promoted = ndcg_at_3 > current_best + threshold
+            promoted = ndcg_at_3 > active_ndcg + threshold
             if promoted:
                 self.activate(entry_id)
             self._con.commit()
