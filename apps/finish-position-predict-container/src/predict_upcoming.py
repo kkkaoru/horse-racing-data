@@ -22,11 +22,26 @@ Flow per category (jra / nar / ban-ei):
      deduped, chunked batches.
   5. Record one audit row in ``finish_position_cron_executions``.
 
+Startup gate
+------------
+Set ``PREDICT_SERVE_MODE=http`` (env var) OR pass ``--serve`` (CLI argument) to
+start the HTTP ``/predict`` server mode instead of the one-shot CLI batch run.
+In server mode:
+  - ``GET /ping``    → 200 ``ok``  (Container health-check probe)
+  - ``GET /predict?category=...&runDate=...&daysAhead=0``
+                     → 200 Transfer-Encoding: chunked, application/x-ndjson
+                       NDJSON progress lines + final result line per request
+
 Run with: ``uv run python src/predict_upcoming.py`` (envvars set by the Worker).
+Server:   ``PREDICT_SERVE_MODE=http uv run python src/predict_upcoming.py``
+       or ``uv run python src/predict_upcoming.py --serve``
 """
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import http.server
 import json
 import os
 import socket
@@ -34,11 +49,12 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import final, override
 
-from db_driver import ConnectionLike, connect_postgres
+from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
     AuditStatus,
     audit_params,
@@ -54,18 +70,49 @@ from predict_lib.ensemble_routing import (
     init_member_pool,
     score_race_with_resolution,
 )
+from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
+from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
     CATEGORIES,
+    JRA_ETOP2_ENABLED,
+    JRA_ETOP2_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
+    NAR_ETOP2_ENABLED,
+    NAR_ETOP2_MODEL_VERSION,
     Category,
     architecture_for,
+    build_r2_nar_etop2_key,
     build_r2_object_key,
+    build_r2_xgb_etop2_key,
     feature_count_for,
     model_version_for,
 )
+from predict_lib.nar_etop2_override import (
+    apply_nar_etop2_scores,
+    is_nar_etop2_override_active,
+)
 from predict_lib.per_class import resolve_per_class_resolution
-from predict_lib.scorer import BoosterLike, assert_feature_count
+from predict_lib.rescore import (
+    RaceFreshSnapshot,
+    RaceScope,
+    apply_fresh_snapshots,
+    filter_races_by_scope,
+)
+from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
+from predict_lib.serve import (
+    CacheMissError,
+    ParquetPayloadFn,
+    PerRaceParquetPayloadFn,
+    PredictCategoryFn,
+    PredictParams,
+    R2Config,
+    build_r2_feat_cache_key,
+    build_r2_per_race_feat_cache_key,
+    iter_predict_chunks,
+    parse_predict_params,
+    parse_request_path,
+)
 from predict_lib.upcoming import build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
@@ -74,6 +121,14 @@ from predict_lib.upsert_sql import (
     flatten_params,
 )
 
+PREDICT_SERVE_MODE_ENV: str = "PREDICT_SERVE_MODE"
+"""When set to ``http``, the container starts an HTTP server instead of CLI batch."""
+# R2 feature-cache environment variables (optional — all must be present to
+# enable R2 caching; any missing var silently disables R2 put/get).
+R2_ACCOUNT_ID_ENV: str = "R2_ACCOUNT_ID"
+R2_ACCESS_KEY_ID_ENV: str = "R2_ACCESS_KEY_ID"
+R2_SECRET_ACCESS_KEY_ENV: str = "R2_SECRET_ACCESS_KEY"
+R2_BUCKET_ENV: str = "R2_BUCKET"
 NEON_DATABASE_URL_ENV: str = "NEON_DATABASE_URL"
 # Optional override: source URL for the DuckDB feature-build subprocess. When
 # set, feature building (which sustains a long-running ATTACH against Postgres
@@ -110,13 +165,15 @@ CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
     "jra": "kyoso_joken_code",
     "nar": "nar_subclass",
 }
+HTTP_PORT: int = 8080
+"""Port the HTTP server listens on in both CLI batch mode (liveness) and server mode."""
 # Cloudflare Containers reaps batch instances that receive no HTTP traffic
 # (independent of @cloudflare/containers' JS-side sleepAfter). The predictor
 # is a long-running batch job, so we both (a) listen on a port so the start
 # probe + DO containerFetch resolve, AND (b) honour repeated HTTP keepalive
 # pings from the Worker DO's scheduled loop. The server is tiny on purpose —
 # the only HTTP requirement is "200 OK on every request".
-LIVENESS_PORT: int = 8080
+LIVENESS_PORT: int = HTTP_PORT
 LIVENESS_BACKLOG: int = 8
 LIVENESS_RESPONSE: bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
 LIVENESS_RECV_BYTES: int = 4096
@@ -168,11 +225,17 @@ class PredictWindow:
     ``RUN_DATE``); ``days_ahead`` widens the window past that day; the build emits
     feature rows for every race in [target_date, target_date + days_ahead],
     including UPCOMING ones whose ``finish_position`` is still NULL.
+
+    ``scope`` is the optional Stage-2 race-scope filter (both sides ``None`` =
+    every race, the full-path default).  Only the rescore path narrows it; the
+    full build path always uses the all-races scope so its behaviour is
+    unchanged.
     """
 
     target_date: str
     days_ahead: int
     database_url: str
+    scope: RaceScope = field(default_factory=RaceScope)
 
 
 def _require_env(name: str) -> str:
@@ -233,6 +296,21 @@ def extract_race_class_code(
     return text
 
 
+def _representative_entry(
+    entries: Sequence[Mapping[str, object]],
+) -> Mapping[str, object] | None:
+    """Return one entry standing in for the race's row-level subgroup metadata.
+
+    Every horse in a race shares the same race-level metadata (distance, field
+    size, surface, class, venue), so the first entry is representative. An empty
+    race yields ``None`` and the subgroup classifier falls back to ``None`` for
+    every dimension.
+    """
+    if not entries:
+        return None
+    return entries[0]
+
+
 def _score_one_race(
     fallback_booster: BoosterLike,
     pool: BoosterPool,
@@ -262,7 +340,89 @@ def _score_one_race(
             file=sys.stderr,
         )
     ranked = rank_race_entries(entries, outcome.scores)
-    return build_prediction_rows(race_id, category, ranked, outcome.model_version)
+    return build_prediction_rows(
+        race_id, category, ranked, outcome.model_version, _representative_entry(entries)
+    )
+
+
+def _score_one_race_etop2(
+    cb_booster: BoosterLike,
+    xgb_booster: BoosterLike,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Score one JRA race with E-top2 place-preserving override.
+
+    Both CB iter20 and XGB xgb-jra-2013-v8 score the same feature matrix
+    (identical 244-feature order). The override is applied per-race:
+    when XGB#1 == CB#2 and race class != 701, CB#2 is promoted to rank-1.
+
+    The class code is read from the ``kyoso_joken_code`` column of the first
+    entry (same field used by :func:`extract_race_class_code` for JRA). If the
+    column is absent, the class is treated as None (override eligible).
+    """
+    # Both models use the same 244-feature order
+    cb_matrix = build_feature_matrix(entries, feature_names, "catboost")
+    xgb_matrix = build_feature_matrix(entries, feature_names, "xgboost")
+    cb_scores = score_matrix(cb_booster, cb_matrix)
+    xgb_scores = score_matrix(xgb_booster, xgb_matrix)
+
+    class_code = extract_race_class_code("jra", entries)
+    override_scores = apply_etop2_scores(cb_scores, xgb_scores, class_code)
+
+    fired = is_etop2_override_active(cb_scores, xgb_scores, class_code)
+    if fired:
+        print(
+            f"[etop2] override fired race_id={race_id} class={class_code}",
+            file=sys.stderr,
+        )
+
+    ranked = rank_race_entries(entries, override_scores)
+    return build_prediction_rows(
+        race_id, "jra", ranked, JRA_ETOP2_MODEL_VERSION, _representative_entry(entries)
+    )
+
+
+def score_one_race_nar_etop2(
+    xgb_booster: BoosterLike,
+    cb_booster: BoosterLike,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Score one NAR race with the E-top2 per-class place-preserving override.
+
+    Mirror image of :func:`_score_one_race_etop2`: NAR production scores with
+    XGBoost (``iter12-nar-xgb-hpo-v8``) as the BASE, and the CatBoost CB-2013
+    model (``cb-nar-2013-v8``) supplies the override signal. Both score the same
+    192-feature matrix. The override fires per race only for ADOPT classes when
+    CB#1 == XGB#2 (CB#3 stays at rank-3, preserving place3).
+
+    The class code is read from the ``nar_subclass`` column of the first entry
+    (same field used by :func:`extract_race_class_code` for NAR). When the column
+    is absent / class is not in the ADOPT set, the pure XGB ranking is emitted.
+    """
+    xgb_matrix = build_feature_matrix(entries, feature_names, "xgboost")
+    cb_matrix = build_feature_matrix(entries, feature_names, "catboost")
+    xgb_scores = score_matrix(xgb_booster, xgb_matrix)
+    cb_scores = score_matrix(cb_booster, cb_matrix)
+
+    nar_class = extract_race_class_code("nar", entries)
+    override_scores = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class)
+
+    fired = is_nar_etop2_override_active(xgb_scores, cb_scores, nar_class)
+    if fired:
+        print(
+            f"[nar-etop2] override fired race_id={race_id} class={nar_class}",
+            file=sys.stderr,
+        )
+
+    ranked = rank_race_entries(entries, override_scores)
+    return build_prediction_rows(
+        race_id, "nar", ranked, NAR_ETOP2_MODEL_VERSION, _representative_entry(entries)
+    )
 
 
 def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
@@ -270,22 +430,68 @@ def _row_to_pk_map(row: Sequence[object]) -> Mapping[str, object]:
     return {"race_id": race_id, "ketto_toroku_bango": row[RACE_ID_KETTO_INDEX]}
 
 
-def _execute(connection: ConnectionLike, sql: str, params: Sequence[object]) -> None:
-    cursor = connection.cursor()
-    cursor.execute(sql, params)
-    connection.commit()
+def execute(
+    connection: ConnectionLike,
+    sql: str,
+    params: Sequence[object],
+    database_url: str,
+) -> ConnectionLike:
+    """Execute ``sql`` against ``connection``, reconnecting once on transient loss.
+
+    Returns the (possibly new) connection so callers can rebind after a
+    reconnect. On AdminShutdown or "connection is lost/closed" mid-write,
+    opens a fresh Neon connection via :func:`_connect` and retries the
+    statement once. Any second failure propagates to the caller.
+    """
+    try:
+        cursor = connection.cursor()
+        cursor.execute(sql, params)
+        connection.commit()
+        return connection
+    except BaseException as exc:
+        if not is_transient_error(exc):
+            raise
+        # Transient mid-write failure: attempt a single reconnect then retry.
+        print(
+            f"[predict-upcoming] mid-write transient error ({type(exc).__name__}): {exc} "
+            "— reconnecting and retrying once",
+            file=sys.stderr,
+        )
+        try:
+            connection.rollback()
+        except BaseException as rb_exc:
+            print(
+                f"[predict-upcoming] rollback failed: {rb_exc}",
+                file=sys.stderr,
+            )
+        with contextlib.suppress(BaseException):
+            connection.close()
+        fresh = _connect(database_url)
+        cursor = fresh.cursor()
+        cursor.execute(sql, params)
+        fresh.commit()
+        return fresh
 
 
-def _flush_predictions(connection: ConnectionLike, rows: Sequence[Sequence[object]]) -> int:
+def flush_predictions(
+    connection: ConnectionLike,
+    rows: Sequence[Sequence[object]],
+    database_url: str,
+) -> tuple[int, ConnectionLike]:
+    """Flush ``rows`` to Neon in chunks; reconnects on transient mid-write errors.
+
+    Returns ``(written, connection)`` where ``connection`` may be a fresh object
+    after a reconnect so the caller can update its reference.
+    """
     deduped = dedupe_batch([_row_to_pk_map(row) for row in rows])
     if not deduped:
-        return 0
+        return 0, connection
     written = 0
     for chunk in chunk_rows(rows, DEFAULT_CHUNK_SIZE):
         sql = build_upsert_sql(len(chunk))
-        _execute(connection, sql, flatten_params(chunk))
+        connection = execute(connection, sql, flatten_params(chunk), database_url)
         written += len(chunk)
-    return written
+    return written, connection
 
 
 def _record_audit(
@@ -295,33 +501,120 @@ def _record_audit(
     races_predicted: int,
     duration_ms: int,
     error: str | None,
+    database_url: str,
 ) -> None:
-    _execute(connection, build_audit_table_ddl(), [])
+    execute(connection, build_audit_table_ddl(), [], database_url)
     record = build_audit_record(run_date, status, races_predicted, duration_ms, error)
-    _execute(connection, build_audit_insert_sql(), audit_params(record))
+    execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
+
+
+def score_races(
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+    category: Category,
+    models_dir: Path,
+    feature_names: Sequence[str],
+) -> list[list[list[object]]]:
+    """Score every race in ``races`` into per-race prediction rows.
+
+    Builds the (per-category) booster pool + E-top2 companion once, then routes
+    each race through the JRA E-top2 override, the NAR E-top2 per-class override,
+    or the ensemble/per-class path.
+    Connection-free and CPU-bound so the caller can defer the Neon connect until
+    the first write (avoiding Neon autosuspend during the long score phase).
+    """
+    fallback_booster = _load_booster(models_dir, category)
+    pool = init_member_pool(models_dir, category)
+    xgb_etop2_booster: BoosterLike | None = None
+    if JRA_ETOP2_ENABLED and category == "jra":
+        xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
+    cb_nar_etop2_booster: BoosterLike | None = None
+    if NAR_ETOP2_ENABLED and category == "nar":
+        cb_nar_etop2_booster = _load_cb_nar_etop2_booster(models_dir)
+    scored: list[list[list[object]]] = []
+    for race_id, entries in races.items():
+        if xgb_etop2_booster is not None:
+            rows = _score_one_race_etop2(
+                fallback_booster,
+                xgb_etop2_booster,
+                race_id,
+                entries,
+                feature_names,
+            )
+        elif cb_nar_etop2_booster is not None:
+            rows = score_one_race_nar_etop2(
+                fallback_booster,
+                cb_nar_etop2_booster,
+                race_id,
+                category,
+                entries,
+                feature_names,
+            )
+        else:
+            rows = _score_one_race(
+                fallback_booster, pool, models_dir, race_id, category, entries, feature_names
+            )
+        scored.append(rows)
+    return scored
+
+
+def _flush_scored(
+    database_url: str,
+    category: Category,
+    scored: Sequence[Sequence[Sequence[object]]],
+) -> int:
+    """Open a fresh Neon connection, UPSERT every scored race, return rows written.
+
+    ``flush_predictions`` may internally reconnect on AdminShutdown / "connection
+    is lost" mid-write and returns the (possibly new) connection so the right
+    object is closed at the end.
+    """
+    connection = _connect(database_url)
+    try:
+        written = 0
+        for rows in scored:
+            rows_written, connection = flush_predictions(connection, rows, database_url)
+            written += rows_written
+    finally:
+        try:
+            connection.close()
+        except BaseException as close_error:
+            print(
+                f"[predict-upcoming] connection close failed category={category}: {close_error}",
+                file=sys.stderr,
+            )
+    return written
+
+
+def _score_and_flush_races(
+    database_url: str,
+    category: Category,
+    models_dir: Path,
+    races: Mapping[str, Sequence[Mapping[str, object]]],
+) -> int:
+    """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
+
+    The races map is supplied by the caller — built from the 21y Neon scan on
+    the full path, or read from the R2 / local feature cache (with the 5
+    late-binding columns refreshed) on the rescore path.
+    """
+    feature_names = _load_model_metadata(models_dir, category)
+    scored = score_races(races, category, models_dir, feature_names)
+    return _flush_scored(database_url, category, scored)
 
 
 def _predict_category(
-    connection: ConnectionLike,
+    database_url: str,
     category: Category,
     models_dir: Path,
     window: PredictWindow,
 ) -> int:
-    feature_names = _load_model_metadata(models_dir, category)
-    fallback_booster = _load_booster(models_dir, category)
-    # Pool is built per-category at the top of the prediction loop so cold-start
-    # cost is paid once and every race in the loop is a dict lookup. Categories
-    # with no registered ensembles (NAR / Ban-ei today) get an empty pool and
-    # always take the single-model fast path inside score_race_with_resolution.
-    pool = init_member_pool(models_dir, category)
+    # Score all races before opening the Neon write connection. The feature
+    # build is the longest step (DuckDB base build + 14 layer scripts, typically
+    # 2-5 min) and Neon autosuspends after ~60s of idle — connecting before the
+    # build would cause AdminShutdown on the first UPSERT. Scoring is CPU-bound
+    # and connection-free, so we defer the Neon connect until the first write.
     races = _build_feature_rows(category, window)
-    written = 0
-    for race_id, entries in races.items():
-        rows = _score_one_race(
-            fallback_booster, pool, models_dir, race_id, category, entries, feature_names
-        )
-        written += _flush_predictions(connection, rows)
-    return written
+    return _score_and_flush_races(database_url, category, models_dir, races)
 
 
 def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
@@ -330,6 +623,32 @@ def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
         from xgboost_adapter import load_xgboost_booster  # bundled in image
 
         return load_xgboost_booster(str(model_path))
+    from catboost_adapter import load_catboost_booster  # bundled in image
+
+    return load_catboost_booster(str(model_path))
+
+
+def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
+    """Load the XGBoost companion model for E-top2 JRA override.
+
+    Resolves the artifact at ``models/finish-position/jra/xgb-jra-2013-v8/
+    model.json`` (same path as baked into the image alongside CB iter20).
+    Called once at category startup when JRA_ETOP2_ENABLED is True.
+    """
+    model_path = models_dir / build_r2_xgb_etop2_key(MODEL_FILE_NAME)
+    from xgboost_adapter import load_xgboost_booster  # bundled in image
+
+    return load_xgboost_booster(str(model_path))
+
+
+def _load_cb_nar_etop2_booster(models_dir: Path) -> BoosterLike:
+    """Load the CatBoost CB-2013 override model for E-top2 NAR override.
+
+    Resolves the artifact at ``models/finish-position/nar/cb-nar-2013-v8/
+    model.json`` (same path as baked into the image alongside XGB iter12).
+    Called once at category startup when NAR_ETOP2_ENABLED is True.
+    """
+    model_path = models_dir / build_r2_nar_etop2_key(MODEL_FILE_NAME)
     from catboost_adapter import load_catboost_booster  # bundled in image
 
     return load_catboost_booster(str(model_path))
@@ -354,7 +673,8 @@ def _build_feature_rows(
 
 
 def _connect(database_url: str) -> ConnectionLike:
-    return connect_postgres(database_url)
+    """Open a Neon connection with retry on transient errors (DNS blips, AdminShutdown)."""
+    return connect_postgres_with_retry(database_url)
 
 
 def _try_record_audit(
@@ -362,15 +682,19 @@ def _try_record_audit(
     run_date: str,
     races_predicted: int,
     duration_ms: int,
-    error_text: str,
+    error_text: str | None,
 ) -> None:
     """Try to record an audit row; never raise so the real traceback survives.
 
-    Audit recording opens a fresh connection because the original connection may
-    be in a poisoned state (e.g. the original error came from psycopg itself).
-    Any failure here is swallowed and logged to stderr so the caller's traceback
-    still reaches the container logs.
+    Opens a fresh Neon connection for each audit write. Used for both success
+    and failure paths so the audit connection is always opened lazily — after
+    the feature build and UPSERT are complete — avoiding Neon autosuspend on
+    long-running feature pipelines. ``error_text=None`` records a "success"
+    row; a non-empty string records "error" or "partial" as appropriate.
+    Any failure here is swallowed and logged to stderr so the caller's
+    traceback still reaches the container logs.
     """
+    status: AuditStatus = "success" if error_text is None else "error"
     try:
         audit_connection = _connect(database_url)
     except BaseException as audit_connect_error:
@@ -380,7 +704,15 @@ def _try_record_audit(
         )
         return
     try:
-        _record_audit(audit_connection, run_date, "error", races_predicted, duration_ms, error_text)
+        _record_audit(
+            audit_connection,
+            run_date,
+            status,
+            races_predicted,
+            duration_ms,
+            error_text,
+            database_url,
+        )
     except BaseException as audit_write_error:
         print(
             f"[predict-upcoming] audit write failed: {audit_write_error}",
@@ -396,7 +728,686 @@ def _try_record_audit(
             )
 
 
+# ---------------------------------------------------------------------------
+# HTTP server mode (PREDICT_SERVE_MODE=http or --serve)
+# ---------------------------------------------------------------------------
+
+
+def _load_r2_config() -> R2Config | None:
+    """Build an :class:`R2Config` from environment variables, or ``None``.
+
+    Returns ``None`` when any of the four required env vars is absent or empty
+    so the caller can silently skip R2 operations on a non-containerised run
+    (e.g. local ``docker run`` without R2 secrets, or Mac launchd cron).
+    """
+    account_id = os.environ.get(R2_ACCOUNT_ID_ENV, "").strip()
+    access_key_id = os.environ.get(R2_ACCESS_KEY_ID_ENV, "").strip()
+    secret_access_key = os.environ.get(R2_SECRET_ACCESS_KEY_ENV, "").strip()
+    bucket = os.environ.get(R2_BUCKET_ENV, "").strip()
+    if not account_id or not access_key_id or not secret_access_key or not bucket:
+        return None
+    return R2Config(
+        account_id=account_id,
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+        bucket=bucket,
+    )
+
+
+
+
+def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
+    """Download an R2 object to ``dest_path``.
+
+    Returns ``True`` on success, ``False`` when the object does not exist (HTTP
+    404).  Any other error (network, auth) propagates to the caller.
+
+    Args:
+        r2:          R2 credentials and bucket name.
+        object_key:  R2 object key to download.
+        dest_path:   Local destination path (will be created / overwritten).
+    """
+    import hashlib
+    import hmac
+    import urllib.error
+    import urllib.request
+    from datetime import UTC, datetime
+
+    payload_hash = hashlib.sha256(b"").hexdigest()
+    now = datetime.now(UTC)
+    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    host = f"{r2.account_id}.r2.cloudflarestorage.com"
+    url = f"https://{host}/{r2.bucket}/{object_key}"
+
+    canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amzdate}\n"
+    signed_headers = "host;x-amz-content-sha256;x-amz-date"
+    canonical_request = (
+        f"GET\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+    )
+
+    credential_scope = f"{datestamp}/auto/s3/aws4_request"
+    string_to_sign = (
+        f"AWS4-HMAC-SHA256\n{amzdate}\n{credential_scope}\n"
+        + hashlib.sha256(canonical_request.encode()).hexdigest()
+    )
+
+    def _sign(key: bytes, msg: str) -> bytes:
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+    signing_key = _sign(
+        _sign(
+            _sign(
+                _sign(
+                    f"AWS4{r2.secret_access_key}".encode(),
+                    datestamp,
+                ),
+                "auto",
+            ),
+            "s3",
+        ),
+        "aws4_request",
+    )
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    auth_header = (
+        f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
+        f" SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "Authorization": auth_header,
+            "x-amz-date": amzdate,
+            "x-amz-content-sha256": payload_hash,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_bytes(data)
+    print(
+        f"[predict-serve] R2 get ok key={object_key} bytes={len(data)}",
+        file=sys.stderr,
+    )
+    return True
+
+
+RACE_ID_KEIBAJO_INDEX: int = 3
+RACE_ID_BANGO_INDEX: int = 4
+RACE_ID_MIN_PARTS: int = 5
+
+
+def _split_parquet_by_race(
+    final_dir: Path,
+    category_str: str,
+    run_date: str,
+) -> list[dict[str, str]]:
+    """Split the whole-day feature parquet under ``final_dir`` into per-race payloads.
+
+    Uses DuckDB (bundled in the image) to read every parquet under ``final_dir``,
+    enumerate the distinct ``race_id`` values, and COPY each race's rows to a
+    temp parquet. ``race_id`` has the form
+    ``source:nen:tsukihi:keibajo_code:race_bango``; the keibajo / bango parts are
+    extracted by a plain ``:`` split. Each per-race parquet is base64-encoded and
+    paired with its per-race R2 key from :func:`build_r2_per_race_feat_cache_key`.
+    Races whose ``race_id`` does not split into at least 5 parts are skipped.
+    """
+    import tempfile
+
+    import duckdb  # bundled in image
+
+    payloads: list[dict[str, str]] = []
+    glob_path = str(final_dir / "**" / "*.parquet")
+    con = duckdb.connect(":memory:")
+    try:
+        race_ids = [
+            str(row[0])
+            for row in con.execute(
+                "SELECT DISTINCT race_id FROM read_parquet(?, hive_partitioning = false)",
+                [glob_path],
+            ).fetchall()
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for race_id in race_ids:
+                parts = race_id.split(":")
+                if len(parts) < RACE_ID_MIN_PARTS:
+                    print(
+                        f"[predict-serve] per_race_parquet skip malformed race_id={race_id}",
+                        file=sys.stderr,
+                    )
+                    continue
+                keibajo_code = parts[RACE_ID_KEIBAJO_INDEX]
+                race_bango = parts[RACE_ID_BANGO_INDEX]
+                out_path = Path(tmp_dir) / f"{keibajo_code}_{race_bango}.parquet"
+                con.execute(
+                    "COPY (SELECT * FROM read_parquet(?, hive_partitioning = false) "
+                    "WHERE race_id = ?) TO ? (FORMAT PARQUET)",
+                    [glob_path, race_id, str(out_path)],
+                )
+                data = out_path.read_bytes()
+                encoded = base64.b64encode(data).decode("ascii")
+                parquet_key = build_r2_per_race_feat_cache_key(
+                    category_str, run_date, keibajo_code, race_bango
+                )
+                payloads.append({"parquetBase64": encoded, "parquetKey": parquet_key})
+    finally:
+        con.close()
+    print(
+        f"[predict-serve] per_race_parquet ready races={len(payloads)} "
+        f"category={category_str} run_date={run_date}",
+        file=sys.stderr,
+    )
+    return payloads
+
+
+def _write_refreshed_to_parquet(
+    final_dir: Path,
+    refreshed: dict[str, list[dict[str, object]]],
+) -> None:
+    """Overwrite the cached parquet in ``final_dir`` with the refreshed entries.
+
+    Flattens the race_id->entries map into a single DataFrame and writes it as
+    ``features.parquet`` so the per-race split reads updated features.
+    """
+    import pandas as pd
+
+    all_entries = [entry for entries in refreshed.values() for entry in entries]
+    if not all_entries:
+        return
+    target = final_dir / "features.parquet"
+    pd.DataFrame(all_entries).to_parquet(target, index=False)
+
+
+def _make_predict_fn(
+    database_url: str,
+    models_dir: Path,
+    source_url: str,
+    r2: R2Config | None,
+) -> tuple[PredictCategoryFn, ParquetPayloadFn, PerRaceParquetPayloadFn]:
+    """Build the full-pipeline ``predict_fn`` + the two parquet payload adapters.
+
+    Returns a tuple of:
+    - ``predict_fn``: the prediction callable passed to ``iter_predict_chunks``.
+    - ``parquet_payload_fn``: reads the built feature parquet from the local
+      tmp directory and returns ``(parquet_base64, parquet_key)`` so the Worker
+      DO can proxy the bytes to R2 via its FEATURES_CACHE binding — bypassing the
+      read-only S3 token limitation in the Container env.  Falls back silently to
+      the legacy ``_try_r2_put`` (SigV4 PUT) when both R2 credentials AND the
+      parquet file exist.
+    - ``per_race_parquet_payload_fn``: splits that same whole-day parquet by
+      ``race_id`` (via DuckDB) into one parquet per race and returns a list of
+      ``{"parquetBase64", "parquetKey"}`` dicts so the Worker DO can also seed a
+      per-race R2 object, letting a Stage-2 rescore hit a single race even when
+      the whole-day parquet upload was skipped.
+
+    All three functions share a thread-safe ``_last_run`` state box so the payload
+    fns can retrieve category/run_date after the predict thread completes.
+    """
+    _last_run: list[tuple[str, str]] = []
+
+    def _predict(category_str: str, run_date: str, days_ahead: int) -> int:
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
+        written = _predict_category(database_url, category, models_dir, window)
+        # Record the last successful run so parquet_payload_fn can retrieve it.
+        if _last_run:
+            _last_run.clear()
+        _last_run.append((category_str, run_date))
+        return written
+
+    def _parquet_payload() -> tuple[str, str] | None:
+        """Return ``(parquet_base64, parquet_key)`` for the last successful run."""
+        from pipeline_runner import WORK_DIR  # bundled in image
+
+        if not _last_run:
+            return None
+        category_str, run_date = _last_run[-1]
+        final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
+        parquet_files = list(final_dir.rglob("*.parquet"))
+        if not parquet_files:
+            print(
+                f"[predict-serve] parquet_payload skip: no parquet in {final_dir}",
+                file=sys.stderr,
+            )
+            return None
+        local_path = parquet_files[0]
+        parquet_key = build_r2_feat_cache_key(category_str, run_date)
+        data = local_path.read_bytes()
+        encoded = base64.b64encode(data).decode("ascii")
+        print(
+            f"[predict-serve] parquet_payload ready key={parquet_key} bytes={len(data)}",
+            file=sys.stderr,
+        )
+        return encoded, parquet_key
+
+    def _per_race_parquet_payloads() -> list[dict[str, str]] | None:
+        """Split the whole-day parquet by ``race_id`` into per-race payloads.
+
+        Reads the same parquet directory as :func:`_parquet_payload`, groups its
+        rows by ``race_id`` with DuckDB, writes each group to a temp parquet,
+        base64-encodes it, and pairs it with the per-race R2 key. Returns ``None``
+        (non-blocking) when there is no last run, no parquet on disk, or the split
+        fails for any reason — a missing per-race cache must never fail predictions.
+        """
+        from pipeline_runner import WORK_DIR  # bundled in image
+
+        if not _last_run:
+            return None
+        category_str, run_date = _last_run[-1]
+        final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
+        parquet_files = list(final_dir.rglob("*.parquet"))
+        if not parquet_files:
+            print(
+                f"[predict-serve] per_race_parquet skip: no parquet in {final_dir}",
+                file=sys.stderr,
+            )
+            return None
+        try:
+            return _split_parquet_by_race(final_dir, category_str, run_date)
+        except BaseException as split_error:
+            print(
+                f"[predict-serve] per_race_parquet split failed: {split_error}",
+                file=sys.stderr,
+            )
+            return None
+
+    return _predict, _parquet_payload, _per_race_parquet_payloads
+
+
+def _ensure_cached_parquet(
+    final_dir: Path,
+    category_str: str,
+    run_date: str,
+    r2: R2Config | None,
+) -> None:
+    """Ensure ``final_dir`` holds a cached feature parquet, fetching from R2 if needed.
+
+    Raises :class:`CacheMissError` when no local parquet exists and either R2 is
+    not configured or the R2 object is absent, so ``iter_predict_chunks`` falls
+    back to the full pipeline automatically.
+    """
+    if any(final_dir.rglob("*.parquet")):
+        return
+    if r2 is None:
+        raise CacheMissError(
+            f"no local feature cache for category={category_str} run_date={run_date}"
+        )
+    object_key = build_r2_feat_cache_key(category_str, run_date)
+    dest_path = final_dir / "features.parquet"
+    if not _r2_get_parquet(r2, object_key, dest_path):
+        raise CacheMissError(f"R2 cache miss: {object_key} not found in bucket {r2.bucket}")
+
+
+def _load_cached_races(final_dir: Path) -> dict[str, list[Mapping[str, object]]]:
+    """Read the cached feature parquet into a ``race_id`` -> entries map directly.
+
+    This bypasses ``pipeline_runner.build_upcoming_feature_rows`` (which always
+    runs the DuckDB base build + layer chain) so the rescore path never triggers
+    the 21y Neon scan — it only reads the already-built parquet from the cache.
+    """
+    import pandas as pd
+
+    from pipeline_runner import RACE_ID_FIELD  # bundled in image
+
+    frame = pd.read_parquet(final_dir)
+    grouped: dict[str, list[Mapping[str, object]]] = {}
+    for race_id, race_frame in frame.groupby(RACE_ID_FIELD):
+        grouped[str(race_id)] = list(race_frame.to_dict(orient="records"))
+    return grouped
+
+
+def _scope_race_keys(
+    races: dict[str, list[dict[str, object]]],
+    scope: RaceScope,
+) -> list[tuple[str, str]]:
+    """Return the distinct (keibajo_code, race_bango) pairs to fetch fresh odds for.
+
+    Filters the cache to the requested scope first so the realtime fetch only
+    hits the races that will actually be rescored.
+    """
+    from predict_lib.race_id import parse_race_id
+
+    scoped = filter_races_by_scope(races, scope)
+    keys: dict[tuple[str, str], None] = {}
+    for race_id in scoped:
+        parts = parse_race_id(race_id)
+        keys[(parts.keibajo_code, parts.race_bango)] = None
+    return list(keys)
+
+
+def _as_entry_map(
+    races: Mapping[str, list[Mapping[str, object]]],
+) -> dict[str, list[dict[str, object]]]:
+    """Narrow the read-only cache map to the mutable dict-entry shape the pure
+    rescore helpers expect (pandas ``to_dict`` already yields plain dicts)."""
+    return {race_id: [dict(entry) for entry in entries] for race_id, entries in races.items()}
+
+
+def _fetch_fresh_snapshots(
+    category_str: str,
+    run_date: str,
+    race_keys: list[tuple[str, str]],
+) -> dict[tuple[str, str], RaceFreshSnapshot]:
+    """Fetch the latest odds + bataiju per race and build per-race snapshots.
+
+    All HTTP I/O happens here (the only side effect on the rescore path); the
+    returned snapshots feed the pure :func:`apply_fresh_snapshots`.  Failures for
+    an individual race are swallowed by the fetcher (returns empty), leaving that
+    race on the builder's median / NULL fallback.
+    """
+    from realtime_odds_fetcher import (  # bundled in image
+        HttpRealtimeOddsFetcher,
+        fetch_odds_for_race,
+        fetch_weight_for_race,
+        source_for_category,
+    )
+
+    fetcher = HttpRealtimeOddsFetcher()
+    source = source_for_category(category_str)
+    snapshots: dict[tuple[str, str], RaceFreshSnapshot] = {}
+    for keibajo_code, race_bango in race_keys:
+        odds_rows = fetch_odds_for_race(fetcher, source, run_date, keibajo_code, race_bango)
+        weight_map = fetch_weight_for_race(fetcher, source, run_date, keibajo_code, race_bango)
+        odds_by_umaban = {
+            row[2]: OddsSnapshot(tansho_odds=row[3], tansho_ninkijun=row[4]) for row in odds_rows
+        }
+        bataiju_by_umaban = {umaban: float(kg) for umaban, kg in weight_map.items()}
+        snapshots[(keibajo_code, race_bango)] = RaceFreshSnapshot(
+            odds_by_umaban=odds_by_umaban,
+            bataiju_by_umaban=bataiju_by_umaban,
+        )
+    return snapshots
+
+
+RescoreFactory = Callable[[RaceScope], tuple[PredictCategoryFn, PerRaceParquetPayloadFn]]
+"""Builds a scope-bound rescore ``PredictCategoryFn`` + per-race payload fn for a request."""
+
+
+def _make_rescore_fn(
+    database_url: str,
+    models_dir: Path,
+    source_url: str,
+    r2: R2Config | None,
+    scope: RaceScope,
+) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
+    """Build the rescore-path ``rescore_fn`` + per-race parquet payload fn.
+
+    The rescore path (Stage 2 of the per-race rebuild):
+    1. Ensures the pre-built feature parquet from a prior ``mode=full`` run is
+       available locally (downloads from R2 when configured, else raises
+       :class:`CacheMissError` so the full pipeline runs).
+    2. Reads the cached parquet directly into a ``race_id`` -> entries map — NO
+       DuckDB build, NO 21y Neon scan.
+    3. Fetches the latest tansho odds + bataiju for the in-scope races and
+       recomputes the 5 late-binding columns (odds_score / popularity_score /
+       tansho_odds / tansho_ninkijun / weight_diff_from_avg) per horse.
+    4. Writes the weight/odds-refreshed entries back to ``features.parquet`` so the
+       per-race split seeds R2 with the rebuilt features.
+    5. Filters to the requested race scope (a single race or whole keibajo when
+       ``keibajoCode`` / ``raceBango`` are set; all races otherwise).
+    6. Scores (NAR ensemble routing / JRA E-top2) and UPSERTs the predictions.
+
+    Returns ``(rescore_fn, per_race_payloads_fn)``; the second fn re-splits the
+    refreshed parquet by ``race_id`` so :func:`iter_predict_chunks` can embed the
+    per-race payloads in the result line for both full and rescore modes.
+
+    ``source_url`` is unused on this path (no Neon feature scan) but kept in the
+    signature for parity with :func:`_make_predict_fn`.
+    """
+    del source_url  # no Neon feature scan on the rescore path
+    _last: list[tuple[str, str]] = []
+
+    def _rescore(category_str: str, run_date: str, days_ahead: int) -> int:
+        del days_ahead  # the cache already spans the morning build window
+        from pipeline_runner import WORK_DIR  # bundled in image
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        final_dir = WORK_DIR / f"feat-{category}-v7-final"
+        _ensure_cached_parquet(final_dir, category_str, run_date, r2)
+
+        races = _as_entry_map(_load_cached_races(final_dir))
+        race_keys = _scope_race_keys(races, scope)
+        snapshots = _fetch_fresh_snapshots(category_str, run_date, race_keys)
+        refreshed = apply_fresh_snapshots(races, snapshots, category)
+
+        _write_refreshed_to_parquet(final_dir, refreshed)
+        _last.clear()
+        _last.append((category_str, run_date))
+
+        scoped = filter_races_by_scope(refreshed, scope)
+        return _score_and_flush_races(database_url, category, models_dir, scoped)
+
+    def _per_race_payloads() -> list[dict[str, str]] | None:
+        if not _last:
+            return None
+        from pipeline_runner import WORK_DIR  # bundled in image
+
+        cat_str, rd = _last[-1]
+        final_dir = WORK_DIR / f"feat-{cat_str}-v7-final"
+        try:
+            return _split_parquet_by_race(final_dir, cat_str, rd)
+        except BaseException as err:
+            print(
+                f"[predict-serve] rescore per_race_parquet split failed: {err}",
+                file=sys.stderr,
+            )
+            return None
+
+    return _rescore, _per_race_payloads
+
+
+def _make_rescore_factory(
+    database_url: str,
+    models_dir: Path,
+    source_url: str,
+    r2: R2Config | None,
+) -> RescoreFactory:
+    """Return a factory that binds the request's race scope to a rescore fn.
+
+    The HTTP handler calls this per request with the ``keibajoCode`` /
+    ``raceBango`` scope parsed from the query string, so a single startup-time
+    binding serves every per-race rescore request.
+    """
+
+    def _factory(scope: RaceScope) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
+        return _make_rescore_fn(database_url, models_dir, source_url, r2, scope)
+
+    return _factory
+
+
+def _scope_from_params(params: PredictParams) -> RaceScope:
+    """Build the race scope from the parsed ``keibajoCode`` / ``raceBango`` params."""
+    return RaceScope(keibajo_code=params.keibajo_code, race_bango=params.race_bango)
+
+
+class _PredictHandler(http.server.BaseHTTPRequestHandler):
+    """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
+
+    predict_fn: PredictCategoryFn  # injected by make_handler_class
+    parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn  # injected by make_handler_class
+    rescore_factory: RescoreFactory | None  # injected by make_handler_class
+
+    @override
+    def log_message(self, format: str, *args: object) -> None:
+        # Redirect access log to stderr to avoid polluting stdout.
+        print(f"[predict-serve] {format % args}", file=sys.stderr)
+
+    def do_GET(self) -> None:  # N802: stdlib BaseHTTPRequestHandler requires this name
+        path, query = parse_request_path(self.path)
+
+        if path == "/ping":
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/predict":
+            result = parse_predict_params(query)
+            if isinstance(result, str):
+                # Validation error — return 400 before writing any body.
+                error_body = result.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+
+            # Start 200 chunked response immediately so the DO renews its timeout.
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+
+            # Bind the request's race scope (keibajoCode / raceBango) to a fresh
+            # rescore fn so each per-race rescore request only touches its races.
+            rescore_fn: PredictCategoryFn | None = None
+            rescore_per_race_fn: PerRaceParquetPayloadFn | None = None
+            if self.rescore_factory is not None:
+                rescore_fn, rescore_per_race_fn = self.rescore_factory(
+                    _scope_from_params(result)
+                )
+            effective_per_race_fn: PerRaceParquetPayloadFn | None = (
+                rescore_per_race_fn
+                if result.mode == "rescore" and rescore_per_race_fn is not None
+                else self.per_race_parquet_payload_fn
+            )
+            for chunk in iter_predict_chunks(
+                result,
+                self.predict_fn,
+                rescore_fn=rescore_fn,
+                parquet_payload_fn=self.parquet_payload_fn,
+                per_race_parquet_payload_fn=effective_per_race_fn,
+            ):
+                # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
+                size_line = f"{len(chunk):X}\r\n".encode()
+                try:
+                    self.wfile.write(size_line + chunk + b"\r\n")
+                    self.wfile.flush()
+                except OSError as write_err:
+                    print(
+                        f"[predict-serve] write error: {write_err}",
+                        file=sys.stderr,
+                    )
+                    return
+
+            # Terminating chunk
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
+            return
+
+        # Unknown path
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def make_handler_class(
+    predict_fn: PredictCategoryFn,
+    parquet_payload_fn: ParquetPayloadFn,
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
+    rescore_factory: RescoreFactory | None,
+) -> type[_PredictHandler]:
+    """Return a ``_PredictHandler`` subclass with bound callables.
+
+    ``predict_fn`` / ``parquet_payload_fn`` / ``per_race_parquet_payload_fn`` are
+    stored as ``staticmethod`` objects so Python's descriptor protocol does NOT
+    inject ``self`` when accessed on an instance.  ``rescore_factory`` is invoked
+    per request inside ``do_GET`` with the request's race scope, so it is also
+    stored as a ``staticmethod`` to avoid the same ``self`` injection.
+    """
+    _predict: PredictCategoryFn = predict_fn
+    _parquet_payload: ParquetPayloadFn = parquet_payload_fn
+    _per_race_parquet_payload: PerRaceParquetPayloadFn = per_race_parquet_payload_fn
+    _rescore_factory: RescoreFactory | None = rescore_factory
+
+    @final
+    class _BoundHandler(_PredictHandler):
+        predict_fn = staticmethod(_predict)
+        parquet_payload_fn = staticmethod(_parquet_payload)
+        per_race_parquet_payload_fn = staticmethod(_per_race_parquet_payload)
+        rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
+
+    return _BoundHandler
+
+
+def serve_http(
+    port: int,
+    predict_fn: PredictCategoryFn,
+    parquet_payload_fn: ParquetPayloadFn,
+    per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
+    rescore_factory: RescoreFactory | None = None,
+) -> None:
+    """Start the blocking HTTP server on *port*.
+
+    This function never returns (the server runs until the process is killed).
+    It is intentionally NOT covered by unit tests — it is the I/O-boundary glue
+    that creates the real socket and blocks forever.  The pure logic it delegates
+    to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
+    in ``tests/test_serve.py``.
+    """
+    handler_cls = make_handler_class(
+        predict_fn, parquet_payload_fn, per_race_parquet_payload_fn, rescore_factory
+    )
+    with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
+        print(f"[predict-serve] listening on :{port}", file=sys.stderr)
+        httpd.serve_forever()
+
+
+def _is_serve_mode(argv: list[str]) -> bool:
+    """Return True when the process should start HTTP server mode.
+
+    Activated by ``PREDICT_SERVE_MODE=http`` environment variable OR by passing
+    ``--serve`` as a CLI argument.  Case-insensitive env-var check to tolerate
+    ``HTTP`` / ``Http`` typos.
+    """
+    if os.environ.get(PREDICT_SERVE_MODE_ENV, "").strip().lower() == "http":
+        return True
+    return "--serve" in argv
+
+
 def main() -> int:
+    """Entry point for both CLI batch mode and HTTP server mode.
+
+    Server mode is activated when ``PREDICT_SERVE_MODE=http`` is set or ``--serve``
+    is passed.  Otherwise, the one-shot CLI batch run is executed (Mac launchd
+    cron path — unchanged).
+    """
+    if _is_serve_mode(sys.argv):
+        try:
+            database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
+            source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV), database_url)
+            models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
+        except BaseException as bootstrap_error:
+            traceback.print_exc()
+            print(f"[predict-serve] bootstrap failed: {bootstrap_error}", file=sys.stderr)
+            return 1
+        r2 = _load_r2_config()
+        predict_fn, parquet_payload_fn, per_race_payload_fn = _make_predict_fn(
+            database_url, models_dir, source_url, r2
+        )
+        rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
+        serve_http(
+            HTTP_PORT, predict_fn, parquet_payload_fn, per_race_payload_fn, rescore_factory
+        )
+        return 0  # unreachable but satisfies the return type
+
     started = time.monotonic()
     _start_liveness_thread(LIVENESS_PORT)
     try:
@@ -405,10 +1416,14 @@ def main() -> int:
         run_date = _require_env(RUN_DATE_ENV)
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
-        window = PredictWindow(
-            target_date=run_date, days_ahead=days_ahead, database_url=source_url
-        )
-        connection = _connect(database_url)
+        window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
+        # Validate the Neon URL at startup (fail fast on bad credentials /
+        # unreachable host) but immediately close the probe connection. The
+        # write connection is opened lazily inside _predict_category, after the
+        # feature build, so Neon autosuspend during the long feature-build phase
+        # cannot kill the write connection before the first UPSERT.
+        probe = _connect(database_url)
+        probe.close()
     except BaseException as bootstrap_error:
         # Pre-connect failure (missing env var, bad URL, Neon down, etc). Nothing
         # to audit-write into yet — emit the full traceback so a future silent
@@ -421,7 +1436,7 @@ def main() -> int:
     failures: list[str] = []
     for category in categories:
         try:
-            races_predicted += _predict_category(connection, category, models_dir, window)
+            races_predicted += _predict_category(database_url, category, models_dir, window)
         except BaseException as category_error:
             # Per-category isolation: one category's failure (e.g. Neon SSL
             # idle-timeout during the long-running DuckDB postgres_scanner) must
@@ -432,38 +1447,10 @@ def main() -> int:
             text = f"{category}: {type(category_error).__name__}: {category_error}"
             print(f"[predict-upcoming] category failed: {text}", file=sys.stderr)
             failures.append(text)
-            # Postgres aborts the in-flight transaction on any error; force a
-            # rollback so the next category's audit / upsert work uses a clean
-            # transaction state.
-            try:
-                connection.rollback()
-            except BaseException as rollback_error:
-                print(
-                    f"[predict-upcoming] rollback failed: {rollback_error}",
-                    file=sys.stderr,
-                )
     duration_ms = int((time.monotonic() - started) * 1000)
     if failures:
-        status: AuditStatus = "error" if races_predicted == 0 else "partial"
         error_text = "; ".join(failures)
-        try:
-            _record_audit(connection, run_date, status, races_predicted, duration_ms, error_text)
-        except BaseException as audit_error:
-            print(
-                f"[predict-upcoming] audit write failed (inline): {audit_error}",
-                file=sys.stderr,
-            )
-            try:
-                connection.close()
-            except BaseException as close_error:
-                print(
-                    f"[predict-upcoming] post-error close failed: {close_error}",
-                    file=sys.stderr,
-                )
-            _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
-            print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
-            return 1
-        connection.close()
+        _try_record_audit(database_url, run_date, races_predicted, duration_ms, error_text)
         if races_predicted == 0:
             print(f"[predict-upcoming] failed: {error_text}", file=sys.stderr)
             return 1
@@ -472,8 +1459,7 @@ def main() -> int:
             f" failures={error_text}"
         )
         return 0
-    _record_audit(connection, run_date, "success", races_predicted, duration_ms, None)
-    connection.close()
+    _try_record_audit(database_url, run_date, races_predicted, duration_ms, None)
     print(f"[predict-upcoming] ok run_date={run_date} races_predicted={races_predicted}")
     return 0
 

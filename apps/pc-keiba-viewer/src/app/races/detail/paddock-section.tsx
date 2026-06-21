@@ -12,6 +12,12 @@ import {
   useState,
 } from "react";
 
+import {
+  BLINKER_PATTERN_LABELS,
+  classifyBlinkerPattern,
+  isWearingBlinker,
+  type BlinkerPattern,
+} from "../../../lib/blinker-pattern";
 import type { RaceSource } from "../../../lib/codes";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import {
@@ -87,6 +93,9 @@ interface PaddockSectionProps {
 }
 
 interface PaddockHorseRowProps {
+  // This-race blinker flag for the horse (Runner.blinkerShiyoKubun); combined with
+  // recentResults to classify the A-F blinker pattern. Null/absent for NAR.
+  currentBlinker: string | null;
   damSireName: string;
   editable: boolean;
   horseName: string;
@@ -121,6 +130,7 @@ interface PaddockHorseRowProps {
 }
 
 interface PaddockRunnerRow {
+  currentBlinker: string | null;
   damSireName: string;
   horseName: string;
   horseNumber: string;
@@ -479,6 +489,19 @@ const formatPastResultMeta = (result: HorseRaceResult): string =>
   ].join(" / ");
 
 const PADDOCK_RECENT_JOCKEY_FALLBACK = "-";
+// Blinker token for the per-race stats list. Only JRA populates
+// blinkerShiyoKubun, so NAR/Ban-ei rows never wear one; non-wearing races render
+// nothing so the worn races stand out clearly among 人気/オッズ/馬体重.
+const BLINKER_WORN_LABEL = "ブリンカー";
+// Small tinted pill so the indicator is obviously the blinker marker rather than
+// a bare ○ lost among the other per-race stat values.
+const BLINKER_WORN_PILL_STYLE: CSSProperties = {
+  backgroundColor: "#fdecef",
+  borderRadius: 4,
+  color: "#c2185b",
+  fontSize: "0.7rem",
+  padding: "0 6px",
+};
 
 const formatPastJockeyName = (value: string | null | undefined): string => {
   const cleaned = normalizeJockeyNameForDisplay(value);
@@ -488,6 +511,7 @@ const formatPastJockeyName = (value: string | null | undefined): string => {
 interface PaddockRecentResultsProps {
   loading?: boolean;
   results: HorseRaceResult[] | null;
+  upcomingBlinker: string | null;
   upcomingPopularity: number | null;
   upcomingRaceDate: string;
   upcomingWeight: number | null;
@@ -496,13 +520,14 @@ interface PaddockRecentResultsProps {
 
 const PADDOCK_RECENT_RESULTS_SKELETON_COUNT = 3;
 const PADDOCK_RECENT_RESULTS_TEXT_LIMIT = 3;
-const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "text";
+const PADDOCK_RECENT_RESULTS_DEFAULT_VIEW_MODE: PaddockRecentResultsViewMode = "graph";
 // Comfortable inline gap so the テキスト / グラフ toggles are not cramped.
 const PADDOCK_RECENT_VIEW_CONTROLS_STYLE: CSSProperties = { display: "flex", gap: 8 };
 
 function PaddockRecentResults({
   loading = false,
   results,
+  upcomingBlinker,
   upcomingPopularity,
   upcomingRaceDate,
   upcomingWeight,
@@ -593,6 +618,7 @@ function PaddockRecentResults({
       {isGraphMode ? (
         <PaddockRecentResultsChart
           results={results}
+          upcomingBlinker={upcomingBlinker}
           upcomingPopularity={upcomingPopularity}
           upcomingRaceDate={upcomingRaceDate}
           upcomingWeight={upcomingWeight}
@@ -631,6 +657,11 @@ function PaddockRecentResults({
                     result.zogenSa,
                     isBanEiKeibajoCode(result.keibajoCode),
                   )}
+                </span>
+                <span aria-label="ブリンカー" className="paddock-recent-blinker">
+                  {isWearingBlinker(result.blinkerShiyoKubun) ? (
+                    <span style={BLINKER_WORN_PILL_STYLE}>{BLINKER_WORN_LABEL}</span>
+                  ) : null}
                 </span>
               </span>
             </li>
@@ -960,7 +991,20 @@ function PremiumPaddockBulletinTable({
 
 const PADDOCK_FACT_PLACEHOLDER = "-";
 
+// Resolve the A-F blinker pattern for a horse from its this-race flag plus its
+// past races (most-recent-first via blinkerShiyoKubun). Returns null when no
+// pattern applies (the common case for NAR rows where the column is all '0').
+const resolveBlinkerPattern = (
+  currentBlinker: string | null,
+  recentResults: HorseRaceResult[] | null,
+): BlinkerPattern | null =>
+  classifyBlinkerPattern(
+    currentBlinker,
+    (recentResults ?? []).map((result) => result.blinkerShiyoKubun),
+  );
+
 const PaddockHorseRow = memo(function PaddockHorseRow({
+  currentBlinker,
   damSireName,
   editable,
   frameNumber,
@@ -990,6 +1034,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
     onScore({ category, delta, horseName, horseNumber });
   };
   const upcomingWeightValues = parseUpcomingWeightValues(weight);
+  const blinkerPattern = resolveBlinkerPattern(currentBlinker, recentResults);
   const displayJockeyName = getPreferredJockeyName(jockeyName, realtimeJockeyName);
   const isScratched = Boolean(status);
   const startsLabel =
@@ -1044,6 +1089,14 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
             >
               <span>脚質</span>
               <strong>{PADDOCK_RUNNING_STYLE_LABELS[runningStyleLabel]}</strong>
+            </span>
+          ) : null}
+          {blinkerPattern ? (
+            <span
+              aria-label={`ブリンカー ${BLINKER_PATTERN_LABELS[blinkerPattern]}`}
+              className={`paddock-blinker-pattern-badge pattern-${blinkerPattern}`}
+            >
+              <strong>{BLINKER_PATTERN_LABELS[blinkerPattern]}</strong>
             </span>
           ) : null}
           {status ? <span className="paddock-status-badge">{status}</span> : null}
@@ -1131,6 +1184,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
       <PaddockRecentResults
         loading={recentResultsLoading}
         results={recentResults}
+        upcomingBlinker={currentBlinker}
         upcomingPopularity={realtimePopularity}
         upcomingRaceDate={upcomingRaceDate}
         upcomingWeight={upcomingWeightValues.weight}
@@ -1697,6 +1751,7 @@ export function PaddockSection({
         .map((runner, index) => {
           const horseNumber = formatRunnerNumber(runner.umaban);
           return {
+            currentBlinker: runner.blinkerShiyoKubun ?? null,
             damSireName: cleanText(runner.damSireName, ""),
             horseName: cleanText(runner.bamei),
             horseNumber,
@@ -2181,6 +2236,7 @@ export function PaddockSection({
             const status = realtimeEntry?.status || runner.status || null;
             return (
               <PaddockHorseRow
+                currentBlinker={runner.currentBlinker}
                 damSireName={runner.damSireName}
                 editable
                 frameNumber={runner.frameNumber}

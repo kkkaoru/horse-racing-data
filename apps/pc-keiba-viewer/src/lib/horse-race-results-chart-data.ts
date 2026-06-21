@@ -8,6 +8,10 @@ import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
 export type HorseRaceChartMetric = "finish" | "popularity" | "weight" | "weightDelta" | "futan";
 
 export interface HorseRaceChartPoint {
+  // Raw blinker wearing flag ("blinkerShiyoKubun") for the race this point came
+  // from: "1" when the horse wore a blinker, "0"/null otherwise. The synthetic
+  // upcoming point reads it from the matched runner's target-race blinker flag.
+  blinker?: string | null;
   dateValue: number; // Date.UTC(yyyy, mm - 1, dd) milliseconds
   // Race distance ("kyori"); populated only for finish & popularity metrics so
   // their tooltips can show distance. Weight/delta points leave it null.
@@ -24,8 +28,11 @@ export interface HorseRaceChartPoint {
 
 // One entered runner of the upcoming (target) race; supplies its frame and the
 // to-be-weighed values that seed the upcoming chart point / correlation row.
+// `blinkerShiyoKubun` is the target-race blinker flag ("1" = wearing) so the
+// synthetic upcoming point can render the blinker ring just like a past race.
 export interface HorseRaceChartRunner {
   bataiju: string | null;
+  blinkerShiyoKubun?: string | null;
   kettoTorokuBango: string | null;
   umaban: string | null;
   wakuban: string | null;
@@ -408,6 +415,7 @@ const toChartPointSource = (
   return {
     dateValue,
     point: {
+      blinker: cleanText(result.blinkerShiyoKubun, "") || null,
       dateValue,
       jockey: carriesMetadata ? cleanText(result.kishumeiRyakusho, "") || null : null,
       kyori: carriesMetadata ? cleanText(result.kyori, "") || null : null,
@@ -498,6 +506,7 @@ const buildUpcomingPointSource = (
   return {
     dateValue: context.dateValue,
     point: {
+      blinker: cleanText(context.runner.blinkerShiyoKubun, "") || null,
       dateValue: context.dateValue,
       isUpcoming: true,
       jockey: null,

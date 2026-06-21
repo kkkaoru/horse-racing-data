@@ -11,6 +11,7 @@
     "dev:production-live-relay": "bun run src/scripts/dev-production-live-relay.ts",
     "dev:https": "PC_KEIBA_ALLOWED_DEV_ORIGINS=localhost:3000,127.0.0.1:3000,192.168.1.219 next dev --experimental-https --experimental-https-key ./certificates/local-key.pem --experimental-https-cert ./certificates/local.pem -H 0.0.0.0 -p 443",
     "dev:https-with-proxy": "sh -c 'bun run dev:http-proxy & proxy_pid=$!; trap \"kill $proxy_pid\" EXIT INT TERM; bun run dev:https'",
+    "dev:https:remote": "PC_KEIBA_CLOUDFLARE_REMOTE_BINDINGS=1 bun run dev:https",
     "dev:build-corner-features": "bun run src/scripts/build-corner-feature-table.ts",
     "dev:compare-corners": "bun run src/scripts/compare-corner-predictions.ts",
     "dev:compare-finish": "bun run src/scripts/compare-finish-position-predictions.ts",

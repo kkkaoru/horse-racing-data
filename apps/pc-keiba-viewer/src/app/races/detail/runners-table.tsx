@@ -4,6 +4,11 @@ import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import {
+  BLINKER_PATTERN_LABELS,
+  BLINKER_PATTERN_SHORT_LABELS,
+  type BlinkerPattern,
+} from "../../../lib/blinker-pattern";
 import { cleanText } from "../../../lib/format";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import {
@@ -11,6 +16,7 @@ import {
   isSameJockeyName,
   normalizeJockeyNameForComparison,
 } from "../../../lib/jockey-name";
+import { buildD1FinishMap } from "../../../lib/race-finish-position";
 import type { Runner } from "../../../lib/race-types";
 import {
   formatCarriedWeight,
@@ -26,11 +32,31 @@ import { useRealtimeRacePayload } from "./realtime-client";
 type SortKey = "umaban" | "tanshoOdds" | "kakuteiChakujun";
 type SortDirection = "asc" | "desc";
 
+interface D1FinishPositionEntry {
+  finishPosition: string;
+  horseNumber: string;
+}
+
+interface BlinkerPatternEntry {
+  kettoTorokuBango: string;
+  pattern: BlinkerPattern;
+}
+
 interface RunnersTableProps {
+  blinkerPatterns?: ReadonlyArray<BlinkerPatternEntry>;
+  d1FinishPositions?: ReadonlyArray<D1FinishPositionEntry>;
   decodeHexHorseWeight?: boolean;
   initialRealtimePayload?: RealtimeRacePayload | null;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
+}
+
+interface GetSortValueParams {
+  d1FinishByHorse: Map<string, string>;
+  key: SortKey;
+  realtimeOddsByHorse: Map<string, number>;
+  realtimeResultByHorse: Map<string, string>;
+  runner: Runner;
 }
 
 interface SortState {
@@ -70,12 +96,13 @@ const compareNullableNumber = (
   return direction === "asc" ? left - right : right - left;
 };
 
-const getSortValue = (
-  runner: Runner,
-  key: SortKey,
-  realtimeOddsByHorse: Map<string, number>,
-  realtimeResultByHorse: Map<string, string>,
-): number | null => {
+const getSortValue = ({
+  d1FinishByHorse,
+  key,
+  realtimeOddsByHorse,
+  realtimeResultByHorse,
+  runner,
+}: GetSortValueParams): number | null => {
   const horseNumber = formatRunnerNumber(runner.umaban);
   if (key === "tanshoOdds") {
     const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
@@ -89,7 +116,7 @@ const getSortValue = (
     if (realtimeResult !== undefined) {
       return parseSortValue(realtimeResult, "00");
     }
-    return parseSortValue(runner.kakuteiChakujun, "00");
+    return parseSortValue(d1FinishByHorse.get(horseNumber) ?? runner.kakuteiChakujun, "00");
   }
   return parseSortValue(runner.umaban);
 };
@@ -140,12 +167,18 @@ const isChangedJockey = (
 };
 
 export function RunnersTable({
+  blinkerPatterns,
+  d1FinishPositions,
   decodeHexHorseWeight = false,
   initialRealtimePayload = null,
   realtimeRequest,
   runners,
 }: RunnersTableProps) {
   const [sort, setSort] = useState<SortState | null>(null);
+  const blinkerPatternByHorse = useMemo(
+    () => new Map((blinkerPatterns ?? []).map((entry) => [entry.kettoTorokuBango, entry.pattern])),
+    [blinkerPatterns],
+  );
   const { payload } = useRealtimeRacePayload(
     realtimeRequest ?? {
       apiBaseUrl: "",
@@ -200,6 +233,10 @@ export function RunnersTable({
       ),
     [payload],
   );
+  const d1FinishByHorse = useMemo(
+    () => buildD1FinishMap(d1FinishPositions ?? []),
+    [d1FinishPositions],
+  );
   const realtimeEntryByHorse = useMemo(
     () =>
       new Map(
@@ -217,8 +254,13 @@ export function RunnersTable({
     if (
       runners.some(
         (runner) =>
-          getSortValue(runner, "kakuteiChakujun", realtimeOddsByHorse, realtimeResultByHorse) !==
-          null,
+          getSortValue({
+            d1FinishByHorse,
+            key: "kakuteiChakujun",
+            realtimeOddsByHorse,
+            realtimeResultByHorse,
+            runner,
+          }) !== null,
       )
     ) {
       return { direction: "asc", key: "kakuteiChakujun" };
@@ -226,13 +268,19 @@ export function RunnersTable({
     if (
       runners.some(
         (runner) =>
-          getSortValue(runner, "tanshoOdds", realtimeOddsByHorse, realtimeResultByHorse) !== null,
+          getSortValue({
+            d1FinishByHorse,
+            key: "tanshoOdds",
+            realtimeOddsByHorse,
+            realtimeResultByHorse,
+            runner,
+          }) !== null,
       )
     ) {
       return { direction: "asc", key: "tanshoOdds" };
     }
     return { direction: "asc", key: "umaban" };
-  }, [realtimeOddsByHorse, realtimeResultByHorse, runners]);
+  }, [d1FinishByHorse, realtimeOddsByHorse, realtimeResultByHorse, runners]);
   const activeSort = sort ?? defaultSort;
   const showCornerRanks = runners.some(
     (runner) => parseSortValue(runner.kakuteiChakujun, "00") !== null,
@@ -244,14 +292,26 @@ export function RunnersTable({
         .map((runner, index) => ({ index, runner }))
         .toSorted((left, right) => {
           const compared = compareNullableNumber(
-            getSortValue(left.runner, activeSort.key, realtimeOddsByHorse, realtimeResultByHorse),
-            getSortValue(right.runner, activeSort.key, realtimeOddsByHorse, realtimeResultByHorse),
+            getSortValue({
+              d1FinishByHorse,
+              key: activeSort.key,
+              realtimeOddsByHorse,
+              realtimeResultByHorse,
+              runner: left.runner,
+            }),
+            getSortValue({
+              d1FinishByHorse,
+              key: activeSort.key,
+              realtimeOddsByHorse,
+              realtimeResultByHorse,
+              runner: right.runner,
+            }),
             activeSort.direction,
           );
           return compared === 0 ? left.index - right.index : compared;
         })
         .map(({ runner }) => runner),
-    [activeSort, realtimeOddsByHorse, realtimeResultByHorse, runners],
+    [activeSort, d1FinishByHorse, realtimeOddsByHorse, realtimeResultByHorse, runners],
   );
 
   const changeSort = (key: SortKey) => {
@@ -297,6 +357,7 @@ export function RunnersTable({
     const trainerName = cleanText(runner.chokyoshimeiRyakusho);
     const ownerName = cleanText(runner.banushimei);
     const entryStatus = realtimeEntry?.status || "";
+    const blinkerPattern = blinkerPatternByHorse.get(cleanText(runner.kettoTorokuBango, ""));
 
     return (
       <tr
@@ -319,6 +380,18 @@ export function RunnersTable({
             <HorseNameBadge coatCode={runner.moshokuCode} name={horseName} />
           )}
           {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
+        </td>
+        <td className="runner-blinker-cell">
+          {blinkerPattern ? (
+            <span
+              className={`runner-blinker-pattern-badge pattern-${blinkerPattern}`}
+              title={BLINKER_PATTERN_LABELS[blinkerPattern]}
+            >
+              {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
+            </span>
+          ) : (
+            "-"
+          )}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
@@ -372,7 +445,12 @@ export function RunnersTable({
             ? formatStoredOdds(runner.tanshoOdds)
             : formatRealtimeOdds(realtimeOdds)}
         </td>
-        <td>{formatRunnerValue(realtimeFinishPosition ?? runner.kakuteiChakujun, "00")}</td>
+        <td>
+          {formatRunnerValue(
+            realtimeFinishPosition ?? d1FinishByHorse.get(horseNumber) ?? runner.kakuteiChakujun,
+            "00",
+          )}
+        </td>
         {showCornerRanks ? <td>{formatCornerRanks(runner)}</td> : null}
       </tr>
     );
@@ -385,6 +463,7 @@ export function RunnersTable({
           <col className="runner-col-frame" />
           <col className="runner-col-number" />
           <col className="runner-col-horse" />
+          <col className="runner-col-blinker" />
           <col className="runner-col-sex-age" />
           <col className="runner-col-weight" />
           <col className="runner-col-person" />
@@ -400,6 +479,7 @@ export function RunnersTable({
             <th className="runner-frame-header">枠</th>
             <th>{renderSortButton("umaban")}</th>
             <th>馬名</th>
+            <th>ブリンカー</th>
             <th>性齢</th>
             <th>負担</th>
             <th>騎手</th>

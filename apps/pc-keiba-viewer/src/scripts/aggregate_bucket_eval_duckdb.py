@@ -30,6 +30,7 @@ from typing import Callable, Protocol, TypedDict
 
 BUCKET_TABLE = "model_prediction_bucket_evaluations"
 EVALUATIONS_TABLE = "model_prediction_evaluations"
+SUBGROUP_TABLE = "model_prediction_subgroup_evaluations"
 
 CATEGORY_JRA = "jra"
 CATEGORY_NAR = "nar"
@@ -91,6 +92,14 @@ BUCKET_INSERT_COLUMNS: tuple[str, ...] = (
     "pair_score_pair_count",
     "ndcg_at_3_sum",
     "ndcg_at_3_race_count",
+    # Appended subgroup columns (PART A). Treated as UPDATABLE (NOT in
+    # BUCKET_DIMENSION_INSERT_COLUMNS) so re-runs refresh them. distance_band / class_code
+    # are real (any_value of single-valued bucket dims); field_size_band / season_band are
+    # always NULL on bucket rows (multi-valued per bucket — measured in the subgroup table).
+    "distance_band",
+    "field_size_band",
+    "season_band",
+    "class_code",
 )
 
 BUCKET_CONFLICT_COLUMNS: tuple[str, ...] = (
@@ -137,6 +146,45 @@ GLOBAL_CONFLICT_COLUMNS: tuple[str, ...] = (
     "category",
     "evaluation_window_from",
     "evaluation_window_to",
+)
+
+# Insert/upsert column order for the per-subgroup REPLACE upsert into Neon. Matches the
+# model_prediction_subgroup_evaluations column order exactly (evaluated_at handled inline
+# via now() in the upsert SQL). NOTE: NO running_style_feature_version / finish_position_version
+# columns on this table (intentional — see the implementation plan).
+SUBGROUP_INSERT_COLUMNS: tuple[str, ...] = (
+    "model_version",
+    "category",
+    "evaluation_window_from",
+    "evaluation_window_to",
+    "source",
+    "subgroup_dimension",
+    "subgroup_value",
+    "race_count",
+    "prediction_count",
+    "top1_hit_sum",
+    "place1_hit_sum",
+    "place2_hit_sum",
+    "place3_hit_sum",
+    "top3_box_hit_sum",
+    "top3_exact_hit_sum",
+    "top3_winner_capture_sum",
+    "top5_winner_capture_sum",
+    "top3_place_relation_sum",
+    "pair_score_sum",
+    "pair_score_pair_count",
+    "ndcg_at_3_sum",
+    "ndcg_at_3_race_count",
+)
+
+SUBGROUP_CONFLICT_COLUMNS: tuple[str, ...] = (
+    "model_version",
+    "category",
+    "evaluation_window_from",
+    "evaluation_window_to",
+    "source",
+    "subgroup_dimension",
+    "subgroup_value",
 )
 
 # Default v7-lineage model versions per category (mirrors
@@ -241,6 +289,116 @@ def build_race_name_sql(grade_column: str, hondai_column: str) -> str:
     )
 
 
+# Subgroup band labels — mirror predict_lib/subgroup.py exactly (cannot import: cross-app,
+# not on pythonpath). These are emitted as DuckDB CASE expressions so the aggregate runs
+# columnar, but the mapping (thresholds + labels) is byte-identical to the Python classifier.
+DISTANCE_BAND_SPRINT = "sprint"
+DISTANCE_BAND_MILE = "mile"
+DISTANCE_BAND_INTERMEDIATE = "intermediate"
+DISTANCE_BAND_LONG = "long"
+DISTANCE_BAND_EXTENDED = "extended"
+
+FIELD_SIZE_SMALL = "small"
+FIELD_SIZE_MEDIUM = "medium"
+FIELD_SIZE_LARGE = "large"
+
+SEASON_SPRING = "spring"
+SEASON_SUMMER = "summer"
+SEASON_AUTUMN = "autumn"
+SEASON_WINTER = "winter"
+
+SURFACE_TURF = "turf"
+SURFACE_DIRT = "dirt"
+SURFACE_OBSTACLE = "obstacle"
+
+# JRA track_code grouping, matching predict_lib/subgroup.py: 10-22 turf, 23-29 dirt,
+# 51-59 obstacle. Built into the surface CASE as quoted-literal IN lists.
+TURF_TRACK_CODES: tuple[str, ...] = (
+    "10",
+    "11",
+    "12",
+    "13",
+    "14",
+    "15",
+    "16",
+    "17",
+    "18",
+    "19",
+    "20",
+    "21",
+    "22",
+)
+DIRT_TRACK_CODES: tuple[str, ...] = ("23", "24", "25", "26", "27", "28", "29")
+OBSTACLE_TRACK_CODES: tuple[str, ...] = ("51", "52", "53", "54", "55", "56", "57", "58", "59")
+
+# Subgroup dimension names — mirror SUBGROUP_DIMENSIONS in predict_lib/subgroup.py.
+SUBGROUP_DIMENSION_NAMES: tuple[str, ...] = (
+    "distance_band",
+    "field_size_band",
+    "season_band",
+    "surface",
+    "class_code",
+    "venue",
+)
+
+
+def build_distance_band_case_sql(kyori_column: str) -> str:
+    """distance_band CASE, mirroring classify_distance_band: NULL→NULL, <=1400 sprint,
+    <=1800 mile, <=2200 intermediate, <=2800 long, else extended."""
+    return (
+        f"case when {kyori_column} is null then null::text "
+        f"when {kyori_column} <= 1400 then '{DISTANCE_BAND_SPRINT}' "
+        f"when {kyori_column} <= 1800 then '{DISTANCE_BAND_MILE}' "
+        f"when {kyori_column} <= 2200 then '{DISTANCE_BAND_INTERMEDIATE}' "
+        f"when {kyori_column} <= 2800 then '{DISTANCE_BAND_LONG}' "
+        f"else '{DISTANCE_BAND_EXTENDED}' end"
+    )
+
+
+def build_field_size_band_case_sql(shusso_column: str) -> str:
+    """field_size_band CASE, mirroring classify_field_size_band: NULL→NULL, <=8 small,
+    <=14 medium, else large."""
+    return (
+        f"case when {shusso_column} is null then null::text "
+        f"when {shusso_column} <= 8 then '{FIELD_SIZE_SMALL}' "
+        f"when {shusso_column} <= 14 then '{FIELD_SIZE_MEDIUM}' "
+        f"else '{FIELD_SIZE_LARGE}' end"
+    )
+
+
+def build_season_band_case_sql(tsukihi_column: str) -> str:
+    """season_band CASE, mirroring classify_season_band: month = first 2 chars of
+    kaisai_tsukihi; (3,4,5) spring; (6,7,8) summer; (9,10,11) autumn; else winter.
+
+    DuckDB ``try_cast`` yields NULL on non-numeric heads (mirrors the Python ``isdigit``
+    guard), so the outer coalesce-style nesting keeps non-numeric / short values out of a
+    season bucket by leaving the cast NULL — which then falls through to winter only when
+    the head IS numeric. A NULL/short kaisai_tsukihi produces a NULL month → NULL band."""
+    month_expr = f"try_cast(substr({tsukihi_column}, 1, 2) as integer)"
+    return (
+        f"case when {month_expr} is null then null::text "
+        f"when {month_expr} in (3, 4, 5) then '{SEASON_SPRING}' "
+        f"when {month_expr} in (6, 7, 8) then '{SEASON_SUMMER}' "
+        f"when {month_expr} in (9, 10, 11) then '{SEASON_AUTUMN}' "
+        f"else '{SEASON_WINTER}' end"
+    )
+
+
+def build_surface_case_sql(track_column: str) -> str:
+    """surface CASE, mirroring classify_surface: {10..22} turf, {51..59} obstacle,
+    {23..29} dirt, else NULL. Ban-ei forces track_code NULL upstream → NULL here."""
+    turf_in = ", ".join(f"'{code}'" for code in TURF_TRACK_CODES)
+    obstacle_in = ", ".join(f"'{code}'" for code in OBSTACLE_TRACK_CODES)
+    dirt_in = ", ".join(f"'{code}'" for code in DIRT_TRACK_CODES)
+    trimmed = f"nullif(trim({track_column}, {ASCII_SPACE_TRIM_CHARS}), '')"
+    return (
+        f"case when {trimmed} in ({turf_in}) then '{SURFACE_TURF}' "
+        f"when {trimmed} in ({obstacle_in}) then '{SURFACE_OBSTACLE}' "
+        f"when {trimmed} in ({dirt_in}) then '{SURFACE_DIRT}' "
+        f"else null::text end"
+    )
+
+
 def resolve_category_meta(category: str) -> CategoryMeta:
     if category == CATEGORY_JRA:
         return {
@@ -276,13 +434,16 @@ def build_plan_window(years: tuple[int, ...]) -> tuple[str, str]:
     return f"{first}{JANUARY_FIRST_SUFFIX}", f"{last}{DECEMBER_LAST_SUFFIX}"
 
 
-def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
-    """DuckDB bucket aggregate, byte-equivalent in semantics to buildBucketAggregateSql.
+def build_shared_cte_prefix(args: AggregateArgs) -> str:
+    """Shared CTE body for the bucket AND subgroup aggregates.
 
-    ``ra`` columns live in the ATTACHed PostgreSQL replica (alias ``pg``); predictions
-    come from the parquet glob via read_parquet hive_partitioning. ``kyori`` is cast to
-    integer because PG stores it zero-padded text but the bucket table column is integer
-    (PG casts implicitly on insert; DuckDB needs the explicit cast to match).
+    Emits everything from ``with predictions as (...)`` through ``ndcg_per_race as (...)``
+    (no trailing comma) so callers append ``,`` plus their own CTEs / final SELECT. Both
+    aggregates reuse this verbatim so the per-race metric math stays byte-identical and the
+    two tables can never drift. ``ra`` columns live in the ATTACHed PostgreSQL replica
+    (alias ``pg``); predictions come from the parquet glob via read_parquet hive_partitioning.
+    ``kyori`` is cast to integer because PG stores it zero-padded text but the bucket table
+    column is integer (PG casts implicitly on insert; DuckDB needs the explicit cast).
     """
     meta = resolve_category_meta(args["category"])
     is_banei = args["category"] == CATEGORY_BAN_EI
@@ -327,7 +488,8 @@ def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
              {condition_expr} as condition_key,
              {track_expr} as track_code,
              nullif(trim(ra.grade_code, {ASCII_SPACE_TRIM_CHARS}), '') as grade_code,
-             {race_name_expr} as race_name
+             {race_name_expr} as race_name,
+             cast(ra.shusso_tosu as integer) as shusso_tosu
       from races r
       join pg.{meta["ra_table"]} ra
         on ra.kaisai_nen = r.kaisai_nen
@@ -386,18 +548,13 @@ def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
              (3 / ln(2 + 1) + 2 / ln(2 + 2) + 1 / ln(2 + 3)) ideal_dcg
       from joined
       group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-    )
-    select
-      d.source,
-      d.keibajo_code,
-      d.kyori,
-      d.kyoso_shubetsu_code,
-      d.kyoso_joken_code,
-      d.condition_key,
-      d.track_code,
-      d.grade_code,
-      d.race_name,
-      count(*) race_count,
+    )"""
+
+
+# The 15 metric SELECT fields (race_count + 14 sums), reused VERBATIM by both the bucket
+# and subgroup aggregates so the math can never drift. Aliases pr/pp/nd are bound by the
+# shared per_race / pair_per_race / ndcg_per_race CTEs in build_shared_cte_prefix.
+SHARED_METRIC_SELECT_FIELDS = """count(*) race_count,
       coalesce(sum(pr.prediction_rows), 0) prediction_count,
       coalesce(sum(cast(pr.top1_hit as double)), 0) top1_hit_sum,
       coalesce(sum(cast(pr.place1_hit as double)), 0) place1_hit_sum,
@@ -411,13 +568,108 @@ def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
       coalesce(sum(pp.pair_correct_sum), 0) pair_score_sum,
       coalesce(sum(pp.pair_count), 0) pair_score_pair_count,
       coalesce(sum(case when nd.ideal_dcg > 0 then nd.dcg / nd.ideal_dcg else 0 end), 0) ndcg_at_3_sum,
-      coalesce(sum(case when nd.ideal_dcg > 0 then 1 else 0 end), 0) ndcg_at_3_race_count
-    from race_dims d
-    join per_race pr using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+      coalesce(sum(case when nd.ideal_dcg > 0 then 1 else 0 end), 0) ndcg_at_3_race_count"""
+
+# Shared join tail (per_race / pair_per_race / ndcg_per_race) for both aggregates.
+SHARED_METRIC_JOIN_TAIL = """join per_race pr using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join pair_per_race pp using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
-    left join ndcg_per_race nd using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+    left join ndcg_per_race nd using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)"""
+
+
+def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
+    """DuckDB bucket aggregate, byte-equivalent in semantics to buildBucketAggregateSql.
+
+    The first 24 SELECT fields (9 bucket dims + the 15 shared metrics) are unchanged; the
+    4 subgroup columns (distance_band, field_size_band, season_band, class_code) are APPENDED
+    after the 15th metric so compute_global_rollup's positional indices 0-23 are untouched.
+
+    Only distance_band and class_code are single-valued at the existing bucket grain (kyori
+    and kyoso_joken_code are already in the GROUP BY), so they are emitted via ``any_value``
+    to guarantee zero grain change. field_size_band and season_band vary within a bucket, so
+    they are emitted as ``null::text`` here (their real measurement happens in the subgroup
+    aggregate); populating them would split the grain and break race_count equivalence.
+    """
+    is_banei = args["category"] == CATEGORY_BAN_EI
+    class_code_band_expr = (
+        "null::text"
+        if is_banei
+        else f"any_value(nullif(trim(d.kyoso_joken_code, {ASCII_SPACE_TRIM_CHARS}), ''))"
+    )
+    distance_band_expr = f"any_value({build_distance_band_case_sql('d.kyori')})"
+    return f"""{build_shared_cte_prefix(args)}
+    select
+      d.source,
+      d.keibajo_code,
+      d.kyori,
+      d.kyoso_shubetsu_code,
+      d.kyoso_joken_code,
+      d.condition_key,
+      d.track_code,
+      d.grade_code,
+      d.race_name,
+      {SHARED_METRIC_SELECT_FIELDS},
+      {distance_band_expr} distance_band,
+      null::text field_size_band,
+      null::text season_band,
+      {class_code_band_expr} class_code
+    from race_dims d
+    {SHARED_METRIC_JOIN_TAIL}
     group by d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
              d.kyoso_joken_code, d.condition_key, d.track_code, d.grade_code, d.race_name
+  """
+
+
+def build_subgroup_aggregate_sql(args: AggregateArgs) -> str:
+    """DuckDB subgroup aggregate writing (subgroup_dimension, subgroup_value) rollups.
+
+    Reuses the IDENTICAL predictions/actuals/joined/per_race/pair_per_race/ndcg_per_race
+    CTEs and the IDENTICAL 15 metric expressions as build_bucket_aggregate_sql (both pull
+    from build_shared_cte_prefix / SHARED_METRIC_SELECT_FIELDS), so the metric math is
+    byte-identical. The only difference is the grain: each race is unpivoted into one
+    (dimension, value) pair per dimension via a lateral VALUES list across the 6 subgroup
+    dimensions, and NULL-valued bands are dropped (they cannot be attributed to a value).
+    """
+    is_banei = args["category"] == CATEGORY_BAN_EI
+    class_code_expr = (
+        "null::text" if is_banei else f"nullif(trim(d.kyoso_joken_code, {ASCII_SPACE_TRIM_CHARS}), '')"
+    )
+    distance_band_expr = build_distance_band_case_sql("d.kyori")
+    field_size_band_expr = build_field_size_band_case_sql("d.shusso_tosu")
+    season_band_expr = build_season_band_case_sql("d.kaisai_tsukihi")
+    surface_expr = build_surface_case_sql("d.track_code")
+    return f"""{build_shared_cte_prefix(args)},
+    race_subgroups as (
+      select d.source, d.kaisai_nen, d.kaisai_tsukihi, d.keibajo_code, d.race_bango,
+             {distance_band_expr} as distance_band,
+             {field_size_band_expr} as field_size_band,
+             {season_band_expr} as season_band,
+             {surface_expr} as surface,
+             {class_code_expr} as class_code,
+             d.keibajo_code as venue
+      from race_dims d
+    ),
+    race_subgroup_pairs as (
+      select rs.source, rs.kaisai_nen, rs.kaisai_tsukihi, rs.keibajo_code, rs.race_bango,
+             t.dim as subgroup_dimension, t.val as subgroup_value
+      from race_subgroups rs,
+        lateral (values
+          ('distance_band', rs.distance_band),
+          ('field_size_band', rs.field_size_band),
+          ('season_band', rs.season_band),
+          ('surface', rs.surface),
+          ('class_code', rs.class_code),
+          ('venue', rs.venue)
+        ) t(dim, val)
+      where t.val is not null
+    )
+    select
+      d.source,
+      d.subgroup_dimension,
+      d.subgroup_value,
+      {SHARED_METRIC_SELECT_FIELDS}
+    from race_subgroup_pairs d
+    {SHARED_METRIC_JOIN_TAIL}
+    group by d.source, d.subgroup_dimension, d.subgroup_value
   """
 
 
@@ -461,6 +713,10 @@ def build_bucket_evaluations_ddl() -> str:
       pair_score_pair_count         integer not null,
       ndcg_at_3_sum                 numeric not null,
       ndcg_at_3_race_count          integer not null,
+      distance_band                 text,
+      field_size_band               text,
+      season_band                   text,
+      class_code                    text,
       evaluated_at                  timestamptz not null default now()
     );
     create unique index if not exists {BUCKET_TABLE}_uq
@@ -470,6 +726,10 @@ def build_bucket_evaluations_ddl() -> str:
     create index if not exists {BUCKET_TABLE}_race_name
       on {BUCKET_TABLE} (category, source, race_name, keibajo_code, kyori)
       where race_name is not null;
+    alter table {BUCKET_TABLE} add column if not exists distance_band text;
+    alter table {BUCKET_TABLE} add column if not exists field_size_band text;
+    alter table {BUCKET_TABLE} add column if not exists season_band text;
+    alter table {BUCKET_TABLE} add column if not exists class_code text;
   """
 
 
@@ -557,6 +817,65 @@ def build_global_upsert_sql() -> str:
     )
 
 
+def build_subgroup_evaluations_ddl() -> str:
+    """CREATE TABLE/INDEX IF NOT EXISTS for the per-subgroup table (DDL only)."""
+    unique_cols = ", ".join(SUBGROUP_CONFLICT_COLUMNS)
+    lookup_cols = "model_version, category, source, subgroup_dimension"
+    return f"""
+    create table if not exists {SUBGROUP_TABLE} (
+      model_version           text not null,
+      category                text not null,
+      evaluation_window_from  text not null,
+      evaluation_window_to    text not null,
+      source                  text not null,
+      subgroup_dimension      text not null,
+      subgroup_value          text not null,
+      race_count              integer not null,
+      prediction_count        integer not null,
+      top1_hit_sum            numeric not null,
+      place1_hit_sum          numeric not null,
+      place2_hit_sum          numeric not null,
+      place3_hit_sum          numeric not null,
+      top3_box_hit_sum        numeric not null,
+      top3_exact_hit_sum      numeric not null,
+      top3_winner_capture_sum numeric not null,
+      top5_winner_capture_sum numeric not null,
+      top3_place_relation_sum numeric not null,
+      pair_score_sum          numeric not null,
+      pair_score_pair_count   integer not null,
+      ndcg_at_3_sum           numeric not null,
+      ndcg_at_3_race_count    integer not null,
+      evaluated_at            timestamptz not null default now()
+    );
+    create unique index if not exists {SUBGROUP_TABLE}_uq
+      on {SUBGROUP_TABLE} ({unique_cols});
+    create index if not exists {SUBGROUP_TABLE}_lookup
+      on {SUBGROUP_TABLE} ({lookup_cols});
+  """
+
+
+def build_subgroup_upsert_sql() -> str:
+    """Single-row REPLACE upsert for the per-subgroup table (psycopg3 %s placeholders).
+
+    subgroup_dimension / subgroup_value are part of the conflict key, so they are NOT in
+    the SET clause; all metric columns refresh on conflict.
+    """
+    column_list = ", ".join(SUBGROUP_INSERT_COLUMNS)
+    conflict_keys = ", ".join(SUBGROUP_CONFLICT_COLUMNS)
+    placeholders = ", ".join(["%s"] * len(SUBGROUP_INSERT_COLUMNS))
+    set_fragments = ",\n      ".join(
+        f"{col} = excluded.{col}"
+        for col in SUBGROUP_INSERT_COLUMNS
+        if col not in SUBGROUP_CONFLICT_COLUMNS
+    )
+    return (
+        f"insert into {SUBGROUP_TABLE} ({column_list}, evaluated_at)\n"
+        f"values ({placeholders}, now())\n"
+        f"on conflict ({conflict_keys}) do update set\n      {set_fragments},\n"
+        f"      evaluated_at = now()"
+    )
+
+
 def to_aggregate_args(
     *,
     predictions_glob: str,
@@ -591,12 +910,37 @@ def build_bucket_upsert_row(
     """Prepend the version / window dimensions to a DuckDB aggregate row.
 
     ``aggregate_row`` is exactly the column order of build_bucket_aggregate_sql:
-    9 bucket dims + 15 metrics = 24 fields. The upsert tuple is 30 fields.
+    9 bucket dims + 15 metrics + 4 appended subgroup columns = 28 fields. The upsert tuple
+    is 34 fields (6 prepended version/window dims + 28).
     """
     return (
         model_version,
         running_style_feature_version,
         finish_position_version,
+        category,
+        window_from,
+        window_to,
+        *aggregate_row,
+    )
+
+
+def build_subgroup_upsert_row(
+    *,
+    aggregate_row: tuple[object, ...],
+    model_version: str,
+    category: str,
+    window_from: str,
+    window_to: str,
+) -> tuple[object, ...]:
+    """Prepend the model-version / window dimensions to a DuckDB subgroup aggregate row.
+
+    ``aggregate_row`` is exactly the column order of build_subgroup_aggregate_sql:
+    (source, subgroup_dimension, subgroup_value, 15 metrics) = 18 fields. The upsert tuple
+    is 22 fields (4 prepended dims + 18), matching SUBGROUP_INSERT_COLUMNS; evaluated_at is
+    supplied inline via now() in build_subgroup_upsert_sql.
+    """
+    return (
+        model_version,
         category,
         window_from,
         window_to,
@@ -733,6 +1077,7 @@ ConnectPgFn = Callable[[str], PgConnection]
 
 class AggregateResult(TypedDict):
     bucket_rows: int
+    subgroup_rows: int
     rollups: int
     categories: int
 
@@ -749,6 +1094,31 @@ def aggregate_category_year(
 ) -> list[tuple[object, ...]]:
     from_date, to_date = build_year_window(year)
     sql = build_bucket_aggregate_sql(
+        to_aggregate_args(
+            predictions_glob=predictions_glob,
+            model_version=model_version,
+            category=category,
+            from_date=from_date,
+            to_date=to_date,
+            running_style_feature_version=running_style_feature_version,
+            finish_position_version=finish_position_version,
+        )
+    )
+    return list(duck.execute(sql).fetchall())
+
+
+def aggregate_subgroup_category_year(
+    duck: DuckdbConnection,
+    *,
+    predictions_glob: str,
+    model_version: str,
+    category: str,
+    year: int,
+    running_style_feature_version: str,
+    finish_position_version: str,
+) -> list[tuple[object, ...]]:
+    from_date, to_date = build_year_window(year)
+    sql = build_subgroup_aggregate_sql(
         to_aggregate_args(
             predictions_glob=predictions_glob,
             model_version=model_version,
@@ -792,6 +1162,8 @@ def ensure_neon_tables(pg: PgConnection) -> None:
         cursor.execute(build_bucket_evaluations_ddl())
     with pg.cursor() as cursor:
         cursor.execute(build_global_evaluations_ddl())
+    with pg.cursor() as cursor:
+        cursor.execute(build_subgroup_evaluations_ddl())
     pg.commit()
 
 
@@ -801,6 +1173,18 @@ def upsert_bucket_rows(
 ) -> None:
     """REPLACE upsert the per-bucket rows in <=500-row batches via executemany."""
     sql = build_bucket_upsert_sql()
+    for batch in chunk_rows(rows, UPSERT_BATCH_SIZE):
+        with pg.cursor() as cursor:
+            cursor.executemany(sql, batch)
+    pg.commit()
+
+
+def upsert_subgroup_rows(
+    pg: PgConnection,
+    rows: list[tuple[object, ...]],
+) -> None:
+    """REPLACE upsert the per-subgroup rows in <=500-row batches via executemany."""
+    sql = build_subgroup_upsert_sql()
     for batch in chunk_rows(rows, UPSERT_BATCH_SIZE):
         with pg.cursor() as cursor:
             cursor.executemany(sql, batch)
@@ -817,15 +1201,22 @@ def upsert_global_rows(
     pg.commit()
 
 
+class CategoryCollection(TypedDict):
+    bucket_rows: list[tuple[object, ...]]
+    subgroup_rows: list[tuple[object, ...]]
+    global_row: tuple[object, ...]
+
+
 def collect_category(
     duck: DuckdbConnection,
     args: argparse.Namespace,
     category: str,
-) -> tuple[list[tuple[object, ...]], tuple[object, ...]]:
+) -> CategoryCollection:
     meta = resolve_category_meta(category)
     model_version = resolve_model_version(args, category)
     all_aggregate_rows: list[tuple[object, ...]] = []
     bucket_upsert_rows: list[tuple[object, ...]] = []
+    subgroup_upsert_rows: list[tuple[object, ...]] = []
     for year in meta["years"]:
         from_date, to_date = build_year_window(year)
         aggregate_rows = aggregate_category_year(
@@ -850,6 +1241,25 @@ def collect_category(
             )
             for row in aggregate_rows
         )
+        subgroup_rows = aggregate_subgroup_category_year(
+            duck,
+            predictions_glob=str(args.predictions_glob),
+            model_version=model_version,
+            category=category,
+            year=year,
+            running_style_feature_version=str(args.running_style_feature_version),
+            finish_position_version=str(args.finish_position_version),
+        )
+        subgroup_upsert_rows.extend(
+            build_subgroup_upsert_row(
+                aggregate_row=row,
+                model_version=model_version,
+                category=category,
+                window_from=from_date,
+                window_to=to_date,
+            )
+            for row in subgroup_rows
+        )
     plan_from, plan_to = build_plan_window(meta["years"])
     rollup = compute_global_rollup(all_aggregate_rows)
     global_row = build_global_upsert_row(
@@ -859,7 +1269,11 @@ def collect_category(
         window_from=plan_from,
         window_to=plan_to,
     )
-    return bucket_upsert_rows, global_row
+    return {
+        "bucket_rows": bucket_upsert_rows,
+        "subgroup_rows": subgroup_upsert_rows,
+        "global_row": global_row,
+    }
 
 
 def run_aggregation(
@@ -871,23 +1285,27 @@ def run_aggregation(
     duck = connect_duckdb(str(args.local_pg_url), int(args.threads))
     categories = (CATEGORY_JRA, CATEGORY_NAR, CATEGORY_BAN_EI)
     bucket_rows: list[tuple[object, ...]] = []
+    subgroup_rows: list[tuple[object, ...]] = []
     global_rows: list[tuple[object, ...]] = []
     try:
         for category in categories:
-            category_bucket_rows, global_row = collect_category(duck, args, category)
-            bucket_rows.extend(category_bucket_rows)
-            global_rows.append(global_row)
+            collection = collect_category(duck, args, category)
+            bucket_rows.extend(collection["bucket_rows"])
+            subgroup_rows.extend(collection["subgroup_rows"])
+            global_rows.append(collection["global_row"])
     finally:
         duck.close()
     pg = connect_pg(str(args.neon_url))
     try:
         ensure_neon_tables(pg)
         upsert_bucket_rows(pg, bucket_rows)
+        upsert_subgroup_rows(pg, subgroup_rows)
         upsert_global_rows(pg, global_rows)
     finally:
         pg.close()
     return {
         "bucket_rows": len(bucket_rows),
+        "subgroup_rows": len(subgroup_rows),
         "rollups": len(global_rows),
         "categories": len(categories),
     }

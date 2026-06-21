@@ -30,6 +30,7 @@ from realtime_odds_fetcher import (
     fetch_weight_for_race,
     fetch_with_retry,
     merge_weight_into_rows,
+    source_for_category,
 )
 
 # ruff wants uppercase-before-lowercase; reorder alphabetically
@@ -41,6 +42,22 @@ from realtime_odds_fetcher import (
 # ---------------------------------------------------------------------------
 # Race-key construction
 # ---------------------------------------------------------------------------
+
+
+def test_source_for_category_jra() -> None:
+    assert source_for_category("jra") == "jra"
+
+
+def test_source_for_category_nar() -> None:
+    assert source_for_category("nar") == "nar"
+
+
+def test_source_for_category_ban_ei_uses_nar() -> None:
+    assert source_for_category("ban-ei") == "nar"
+
+
+def test_source_for_category_unknown_defaults_to_nar() -> None:
+    assert source_for_category("turbo") == "nar"
 
 
 def testbuild_race_key_nar_format() -> None:

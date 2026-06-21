@@ -412,6 +412,123 @@ describe("runners table", () => {
     expect(rowTexts()[1]).toContain("2");
   });
 
+  it("shows the D1 finish position when PG kakuteiChakujun is empty and no realtime result exists", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "3", horseNumber: "01" }]}
+        runners={[runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" })]}
+      />,
+    );
+
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  it("prefers the realtime finish position over the D1 finish position", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "7", horseNumber: "12" }]}
+        initialRealtimePayload={{
+          horseWeights: null,
+          odds: null,
+          raceEntries: null,
+          raceResults: {
+            fetchedAt: "2026-06-19T18:50:00+09:00",
+            horses: [
+              {
+                fetchedAt: "2026-06-19T18:50:00+09:00",
+                finishPosition: "1",
+                horseName: "十二番",
+                horseNumber: "12",
+                time: "1:54.3",
+              },
+            ],
+          },
+          raceKey: "nar:2026:0619:45:11",
+          source: null,
+        }}
+        runners={[runner({ bamei: "十二番", kakuteiChakujun: "00", umaban: "12", wakuban: "6" })]}
+      />,
+    );
+
+    expect(screen.getByText("1")).toBeTruthy();
+    expect(screen.queryByText("7")).toBeNull();
+  });
+
+  it("falls back to the PG finish position when the D1 finish is the all-zero placeholder", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[{ finishPosition: "0", horseNumber: "12" }]}
+        runners={[runner({ bamei: "十二番", kakuteiChakujun: "9", umaban: "12", wakuban: "6" })]}
+      />,
+    );
+
+    expect(screen.getByText("9")).toBeTruthy();
+  });
+
+  it("sorts by the D1 finish position when PG kakuteiChakujun is empty", () => {
+    render(
+      <RunnersTable
+        d1FinishPositions={[
+          { finishPosition: "2", horseNumber: "01" },
+          { finishPosition: "1", horseNumber: "02" },
+        ]}
+        runners={[
+          runner({ bamei: "一番", kakuteiChakujun: "00", umaban: "01" }),
+          runner({ bamei: "二番", kakuteiChakujun: "00", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(rowTexts()[0]).toContain("二番");
+    expect(rowTexts()[1]).toContain("一番");
+  });
+
+  it("renders a dash in the blinker column for horses without a blinker pattern", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({ bamei: "対象外馬一", umaban: "01" }),
+          runner({ bamei: "対象外馬二", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("columnheader", { name: "ブリンカー" })).toBeTruthy();
+    expect(screen.queryByText("○")).toBeNull();
+    const firstBlinkerCell = screen
+      .getByText("対象外馬一")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(firstBlinkerCell?.textContent).toBe("-");
+    expect(firstBlinkerCell?.querySelector(".runner-blinker-pattern-badge")).toBeNull();
+  });
+
+  it("renders the blinker pattern label badge inside the blinker column cell, not the horse-name cell", () => {
+    render(
+      <RunnersTable
+        blinkerPatterns={[{ kettoTorokuBango: "2023100001", pattern: "A" }]}
+        runners={[
+          runner({ bamei: "初装着馬", kettoTorokuBango: "2023100001", umaban: "01" }),
+          runner({ bamei: "対象外馬", kettoTorokuBango: "2023100002", umaban: "02" }),
+        ]}
+      />,
+    );
+
+    const badge = screen.getByTitle("初ブリンカー");
+    expect(badge.textContent).toBe("初装着");
+    expect(badge.className).toBe("runner-blinker-pattern-badge pattern-A");
+    expect(badge.closest(".runner-blinker-cell")).toBeTruthy();
+    expect(badge.closest(".runner-horse-cell")).toBeNull();
+    const targetRow = screen.getByText("初装着馬").closest("tr");
+    expect(targetRow?.querySelector(".runner-horse-cell .runner-blinker-pattern-badge")).toBeNull();
+    const excludedBlinkerCell = screen
+      .getByText("対象外馬")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(excludedBlinkerCell?.textContent).toBe("-");
+    expect(excludedBlinkerCell?.querySelector(".runner-blinker-pattern-badge")).toBeNull();
+  });
+
   it("decodes ban-ei hexadecimal horse weights", () => {
     render(
       <RunnersTable

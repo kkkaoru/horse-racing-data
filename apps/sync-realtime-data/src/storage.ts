@@ -217,6 +217,7 @@ interface PremiumPaddockNotificationStateRow {
 interface PremiumRaceDataFetchStateRow {
   last_fetch_at: string | null;
   last_queued_at: string | null;
+  message: string | null;
   retry_after: string | null;
   status: string;
 }
@@ -1546,6 +1547,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
             )
             or (
               state.status in ('ok', 'empty', 'auth_required')
+              and (state.retry_after is null or state.retry_after <= ?)
               and (
                 not exists (
                   select 1
@@ -1576,7 +1578,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
           rs.race_bango
       `,
     )
-    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now, now, now)
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now, now, now, now)
     .all<{ race_key: string }>();
   return rows.results.map((row) => ({ raceKey: row.race_key }));
 };
@@ -1617,13 +1619,14 @@ export const getPremiumRaceDataFetchState = async (
 ): Promise<{
   lastFetchAt: string | null;
   lastQueuedAt: string | null;
+  message: string | null;
   retryAfter: string | null;
   status: string;
 } | null> => {
   const row = await db
     .prepare(
       `
-        select status, last_queued_at, last_fetch_at, retry_after
+        select status, last_queued_at, last_fetch_at, retry_after, message
         from premium_race_data_fetch_state
         where race_key = ?
       `,
@@ -1634,6 +1637,7 @@ export const getPremiumRaceDataFetchState = async (
     ? {
         lastFetchAt: row.last_fetch_at,
         lastQueuedAt: row.last_queued_at,
+        message: row.message ?? null,
         retryAfter: row.retry_after,
         status: row.status,
       }

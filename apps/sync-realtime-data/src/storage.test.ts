@@ -844,6 +844,25 @@ it("listPremiumRaceDataFetchCandidatesByDate returns mapped candidate rows", asy
   expect(result[0]!.raceKey).toBe("jra:2026:0512:08:01");
 });
 
+it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placeholder", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260512", "2026-05-12T03:00:00+09:00");
+  expect(bind).toHaveBeenCalledWith(
+    "2026",
+    "0512",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+  );
+});
+
 it("getLatestHorseWeights returns null when results are empty", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));
@@ -1671,6 +1690,7 @@ it("getPremiumRaceDataFetchState returns mapped row when present", async () => {
   const first = vi.fn(async () => ({
     last_fetch_at: "2026-05-12T11:00:00+09:00",
     last_queued_at: "2026-05-12T10:00:00+09:00",
+    message: '{"authRetryCount":2}',
     retry_after: null,
     status: "ready",
   }));
@@ -1680,8 +1700,28 @@ it("getPremiumRaceDataFetchState returns mapped row when present", async () => {
   expect(await getPremiumRaceDataFetchState(db, "key")).toStrictEqual({
     lastFetchAt: "2026-05-12T11:00:00+09:00",
     lastQueuedAt: "2026-05-12T10:00:00+09:00",
+    message: '{"authRetryCount":2}',
     retryAfter: null,
     status: "ready",
+  });
+});
+
+it("getPremiumRaceDataFetchState defaults missing message field to null", async () => {
+  const first = vi.fn(async () => ({
+    last_fetch_at: null,
+    last_queued_at: null,
+    retry_after: null,
+    status: "queued",
+  }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await getPremiumRaceDataFetchState(db, "key")).toStrictEqual({
+    lastFetchAt: null,
+    lastQueuedAt: null,
+    message: null,
+    retryAfter: null,
+    status: "queued",
   });
 });
 

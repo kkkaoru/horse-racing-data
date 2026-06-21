@@ -168,8 +168,10 @@ def test_build_bucket_upsert_sql_sets_metric_columns_only():
 
 
 def test_build_bucket_upsert_sql_has_thirty_placeholders_plus_now():
+    # 30 -> 34: the 4 appended subgroup columns (distance_band, field_size_band,
+    # season_band, class_code) joined BUCKET_INSERT_COLUMNS, adding 4 placeholders.
     sql = subject.build_bucket_upsert_sql()
-    assert "values (" + ", ".join(["%s"] * 30) + ", now())" in sql
+    assert "values (" + ", ".join(["%s"] * 34) + ", now())" in sql
 
 
 def test_build_global_upsert_sql_sets_accuracy_columns_only():
@@ -186,7 +188,9 @@ def test_build_global_upsert_sql_has_seventeen_placeholders_plus_now():
 
 
 def test_build_bucket_upsert_row_prepends_version_and_window_dims():
-    aggregate_row = tuple(range(24))
+    # aggregate_row grew 24 -> 28 (9 bucket dims + 15 metrics + 4 appended subgroup
+    # columns) and the upsert tuple grew 30 -> 34 (6 prepended version/window dims + 28).
+    aggregate_row = tuple(range(28))
     row = subject.build_bucket_upsert_row(
         aggregate_row=aggregate_row,
         model_version="m",
@@ -203,7 +207,13 @@ def test_build_bucket_upsert_row_prepends_version_and_window_dims():
     assert row[4] == "20200101"
     assert row[5] == "20201231"
     assert row[6] == 0
-    assert len(row) == 30
+    # row[30..33] are the 4 appended subgroup columns from the aggregate row tail
+    # (aggregate indices 24..27 -> distance_band, field_size_band, season_band, class_code).
+    assert row[30] == 24
+    assert row[31] == 25
+    assert row[32] == 26
+    assert row[33] == 27
+    assert len(row) == 34
 
 
 def test_compute_global_rollup_divides_sums_by_race_count():
@@ -388,11 +398,12 @@ def test_aggregate_category_year_executes_year_window_sql():
 
 
 def test_ensure_neon_tables_runs_only_ddl_and_commits():
+    # 3 DDLs now: bucket, global, and the new subgroup evaluations table.
     pg = MagicMock()
     cursor = MagicMock()
     pg.cursor.return_value.__enter__.return_value = cursor
     subject.ensure_neon_tables(pg)
-    assert cursor.execute.call_count == 2
+    assert cursor.execute.call_count == 3
     assert pg.commit.call_count == 1
 
 
@@ -415,6 +426,45 @@ def test_upsert_global_rows_runs_single_batch_and_commits():
     assert pg.commit.call_count == 1
 
 
+def _bucket_or_subgroup_fetchall(sql: str) -> MagicMock:
+    # collect_category / run_aggregation call duck.execute twice per (category, year):
+    # once for the bucket aggregate, once for the subgroup aggregate. The subgroup query
+    # uniquely contains "subgroup_dimension". Return a correctly-shaped row for each.
+    result = MagicMock()
+    if "subgroup_dimension" in sql:
+        result.fetchall.return_value = [
+            (
+                "nar",
+                "distance_band",
+                "sprint",
+                3,
+                30,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                9.0,
+                12,
+                2.0,
+                3,
+            )
+        ]
+        return result
+    result.fetchall.return_value = [
+        tuple(
+            [0] * 9
+            + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3]
+            + ["sprint", None, None, "010"]
+        )
+    ]
+    return result
+
+
 def test_collect_category_returns_bucket_rows_and_global_row():
     namespace = subject.parse_args(
         [
@@ -431,13 +481,42 @@ def test_collect_category_returns_bucket_rows_and_global_row():
         ]
     )
     duck = MagicMock()
-    aggregate_row = tuple([0] * 9 + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3])
-    duck.execute.return_value.fetchall.return_value = [aggregate_row]
-    bucket_rows, global_row = subject.collect_category(duck, namespace, subject.CATEGORY_BAN_EI)
-    assert len(bucket_rows) == len(subject.BAN_EI_YEARS)
-    assert global_row[1] == subject.CATEGORY_BAN_EI
-    assert global_row[2] == "20080101"
-    assert global_row[3] == "20261231"
+    duck.execute.side_effect = lambda sql: _bucket_or_subgroup_fetchall(sql)
+    collection = subject.collect_category(duck, namespace, subject.CATEGORY_BAN_EI)
+    assert len(collection["bucket_rows"]) == len(subject.BAN_EI_YEARS)
+    assert len(collection["subgroup_rows"]) == len(subject.BAN_EI_YEARS)
+    assert collection["global_row"][1] == subject.CATEGORY_BAN_EI
+    assert collection["global_row"][2] == "20080101"
+    assert collection["global_row"][3] == "20261231"
+
+
+def test_collect_category_subgroup_rows_prepend_model_window_dims():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+        ]
+    )
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_or_subgroup_fetchall(sql)
+    collection = subject.collect_category(duck, namespace, subject.CATEGORY_BAN_EI)
+    first_subgroup = collection["subgroup_rows"][0]
+    assert first_subgroup[0] == "banei-cb-v7-lineage-wf-21y"
+    assert first_subgroup[1] == subject.CATEGORY_BAN_EI
+    assert first_subgroup[2] == "20080101"
+    assert first_subgroup[3] == "20081231"
+    assert first_subgroup[4] == "nar"
+    assert first_subgroup[5] == "distance_band"
+    assert first_subgroup[6] == "sprint"
+    assert len(first_subgroup) == 22
 
 
 def test_run_aggregation_collects_upserts_and_closes_connections():
@@ -456,8 +535,7 @@ def test_run_aggregation_collects_upserts_and_closes_connections():
         ]
     )
     duck = MagicMock()
-    aggregate_row = tuple([0] * 9 + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3])
-    duck.execute.return_value.fetchall.return_value = [aggregate_row]
+    duck.execute.side_effect = lambda sql: _bucket_or_subgroup_fetchall(sql)
     pg = MagicMock()
     pg_cursor = MagicMock()
     pg.cursor.return_value.__enter__.return_value = pg_cursor
@@ -469,6 +547,9 @@ def test_run_aggregation_collects_upserts_and_closes_connections():
     assert result["categories"] == 3
     assert result["rollups"] == 3
     assert result["bucket_rows"] == len(subject.JRA_YEARS) + len(subject.NAR_YEARS) + len(
+        subject.BAN_EI_YEARS
+    )
+    assert result["subgroup_rows"] == len(subject.JRA_YEARS) + len(subject.NAR_YEARS) + len(
         subject.BAN_EI_YEARS
     )
     assert duck.close.call_count == 1
@@ -549,11 +630,440 @@ def test_default_psycopg_connect_opens_connection(monkeypatch: pytest.MonkeyPatc
     fake_module.connect.assert_called_once_with("postgres://neon")
 
 
+def test_build_distance_band_case_sql_emits_null_branch():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "case when d.kyori is null then null::text" in sql
+
+
+def test_build_distance_band_case_sql_emits_sprint_threshold():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "when d.kyori <= 1400 then 'sprint'" in sql
+
+
+def test_build_distance_band_case_sql_emits_mile_threshold():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "when d.kyori <= 1800 then 'mile'" in sql
+
+
+def test_build_distance_band_case_sql_emits_intermediate_threshold():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "when d.kyori <= 2200 then 'intermediate'" in sql
+
+
+def test_build_distance_band_case_sql_emits_long_threshold():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "when d.kyori <= 2800 then 'long'" in sql
+
+
+def test_build_distance_band_case_sql_emits_extended_else():
+    sql = subject.build_distance_band_case_sql("d.kyori")
+    assert "else 'extended' end" in sql
+
+
+def test_build_field_size_band_case_sql_emits_null_branch():
+    sql = subject.build_field_size_band_case_sql("d.shusso_tosu")
+    assert "case when d.shusso_tosu is null then null::text" in sql
+
+
+def test_build_field_size_band_case_sql_emits_small_threshold():
+    sql = subject.build_field_size_band_case_sql("d.shusso_tosu")
+    assert "when d.shusso_tosu <= 8 then 'small'" in sql
+
+
+def test_build_field_size_band_case_sql_emits_medium_threshold():
+    sql = subject.build_field_size_band_case_sql("d.shusso_tosu")
+    assert "when d.shusso_tosu <= 14 then 'medium'" in sql
+
+
+def test_build_field_size_band_case_sql_emits_large_else():
+    sql = subject.build_field_size_band_case_sql("d.shusso_tosu")
+    assert "else 'large' end" in sql
+
+
+def test_build_season_band_case_sql_emits_null_for_non_numeric_month():
+    sql = subject.build_season_band_case_sql("d.kaisai_tsukihi")
+    assert "case when try_cast(substr(d.kaisai_tsukihi, 1, 2) as integer) is null then null::text" in sql
+
+
+def test_build_season_band_case_sql_emits_spring_months():
+    sql = subject.build_season_band_case_sql("d.kaisai_tsukihi")
+    assert "when try_cast(substr(d.kaisai_tsukihi, 1, 2) as integer) in (3, 4, 5) then 'spring'" in sql
+
+
+def test_build_season_band_case_sql_emits_summer_months():
+    sql = subject.build_season_band_case_sql("d.kaisai_tsukihi")
+    assert "when try_cast(substr(d.kaisai_tsukihi, 1, 2) as integer) in (6, 7, 8) then 'summer'" in sql
+
+
+def test_build_season_band_case_sql_emits_autumn_months():
+    sql = subject.build_season_band_case_sql("d.kaisai_tsukihi")
+    assert "when try_cast(substr(d.kaisai_tsukihi, 1, 2) as integer) in (9, 10, 11) then 'autumn'" in sql
+
+
+def test_build_season_band_case_sql_emits_winter_else():
+    sql = subject.build_season_band_case_sql("d.kaisai_tsukihi")
+    assert "else 'winter' end" in sql
+
+
+def test_build_surface_case_sql_emits_turf_codes():
+    sql = subject.build_surface_case_sql("d.track_code")
+    assert "in ('10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22') then 'turf'" in sql
+
+
+def test_build_surface_case_sql_emits_obstacle_codes():
+    sql = subject.build_surface_case_sql("d.track_code")
+    assert "in ('51', '52', '53', '54', '55', '56', '57', '58', '59') then 'obstacle'" in sql
+
+
+def test_build_surface_case_sql_emits_dirt_codes():
+    sql = subject.build_surface_case_sql("d.track_code")
+    assert "in ('23', '24', '25', '26', '27', '28', '29') then 'dirt'" in sql
+
+
+def test_build_surface_case_sql_trims_ascii_space_and_else_null():
+    sql = subject.build_surface_case_sql("d.track_code")
+    assert "nullif(trim(d.track_code, ' '), '')" in sql
+    assert "else null::text end" in sql
+
+
+def test_subgroup_dimension_names_match_classifier_order():
+    assert subject.SUBGROUP_DIMENSION_NAMES == (
+        "distance_band",
+        "field_size_band",
+        "season_band",
+        "surface",
+        "class_code",
+        "venue",
+    )
+
+
+def test_build_bucket_aggregate_sql_appends_distance_band_via_any_value():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "any_value(case when d.kyori is null then null::text" in sql
+    assert "distance_band" in sql
+
+
+def test_build_bucket_aggregate_sql_nulls_field_size_and_season_on_bucket_rows():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "null::text field_size_band" in sql
+    assert "null::text season_band" in sql
+
+
+def test_build_bucket_aggregate_sql_jra_class_code_uses_any_value_joken():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "any_value(nullif(trim(d.kyoso_joken_code, ' '), '')) class_code" in sql
+
+
+def test_build_bucket_aggregate_sql_banei_class_code_is_null_text():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="banei-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_BAN_EI,
+            from_date="20080101",
+            to_date="20081231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "null::text class_code" in sql
+
+
+def test_build_bucket_aggregate_sql_group_by_unchanged_for_bucket_grain():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert (
+        "group by d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,\n"
+        "             d.kyoso_joken_code, d.condition_key, d.track_code, d.grade_code, d.race_name" in sql
+    )
+
+
+def test_build_subgroup_aggregate_sql_selects_subgroup_dimension_and_value():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "t.dim as subgroup_dimension, t.val as subgroup_value" in sql
+    assert "group by d.source, d.subgroup_dimension, d.subgroup_value" in sql
+
+
+def test_build_subgroup_aggregate_sql_unpivots_all_six_dimensions():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "('distance_band', rs.distance_band)" in sql
+    assert "('field_size_band', rs.field_size_band)" in sql
+    assert "('season_band', rs.season_band)" in sql
+    assert "('surface', rs.surface)" in sql
+    assert "('class_code', rs.class_code)" in sql
+    assert "('venue', rs.venue)" in sql
+
+
+def test_build_subgroup_aggregate_sql_drops_null_band_values():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "where t.val is not null" in sql
+
+
+def test_build_subgroup_aggregate_sql_emits_surface_and_field_size_real_bands():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "then 'turf'" in sql
+    assert "when d.shusso_tosu <= 8 then 'small'" in sql
+    assert "cast(ra.shusso_tosu as integer) as shusso_tosu" in sql
+
+
+def test_build_subgroup_aggregate_sql_banei_class_code_is_null_text():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="banei-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_BAN_EI,
+            from_date="20080101",
+            to_date="20081231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "null::text as class_code" in sql
+
+
+def test_build_subgroup_aggregate_sql_nar_class_code_uses_trimmed_joken():
+    sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "nullif(trim(d.kyoso_joken_code, ' '), '') as class_code" in sql
+
+
+def test_subgroup_and_bucket_share_identical_metric_select_fields():
+    bucket_sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    subgroup_sql = subject.build_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert subject.SHARED_METRIC_SELECT_FIELDS in bucket_sql
+    assert subject.SHARED_METRIC_SELECT_FIELDS in subgroup_sql
+
+
+def test_subgroup_and_bucket_share_identical_cte_prefix():
+    args = subject.to_aggregate_args(
+        predictions_glob="g.parquet",
+        model_version="jra-cb-v7-lineage-wf-21y",
+        category=subject.CATEGORY_JRA,
+        from_date="20200101",
+        to_date="20201231",
+        running_style_feature_version="v3",
+        finish_position_version="v1",
+    )
+    prefix = subject.build_shared_cte_prefix(args)
+    assert prefix in subject.build_bucket_aggregate_sql(args)
+    assert prefix in subject.build_subgroup_aggregate_sql(args)
+
+
+def test_build_subgroup_evaluations_ddl_creates_table_and_unique_index():
+    ddl = subject.build_subgroup_evaluations_ddl()
+    assert "create table if not exists model_prediction_subgroup_evaluations" in ddl
+    assert (
+        "create unique index if not exists model_prediction_subgroup_evaluations_uq" in ddl
+    )
+    assert "subgroup_dimension      text not null" in ddl
+    assert "subgroup_value          text not null" in ddl
+
+
+def test_build_subgroup_evaluations_ddl_has_no_running_style_columns():
+    ddl = subject.build_subgroup_evaluations_ddl()
+    assert "running_style_feature_version" not in ddl
+    assert "finish_position_version" not in ddl
+
+
+def test_build_subgroup_upsert_sql_has_twentytwo_placeholders_plus_now():
+    sql = subject.build_subgroup_upsert_sql()
+    assert "values (" + ", ".join(["%s"] * 22) + ", now())" in sql
+
+
+def test_build_subgroup_upsert_sql_conflict_on_seven_key_columns():
+    sql = subject.build_subgroup_upsert_sql()
+    assert "insert into model_prediction_subgroup_evaluations" in sql
+    assert (
+        "on conflict (model_version, category, evaluation_window_from, "
+        "evaluation_window_to, source, subgroup_dimension, subgroup_value)" in sql
+    )
+
+
+def test_build_subgroup_upsert_sql_sets_metrics_not_key_columns():
+    sql = subject.build_subgroup_upsert_sql()
+    assert "race_count = excluded.race_count" in sql
+    assert "subgroup_dimension = excluded.subgroup_dimension" not in sql
+    assert "subgroup_value = excluded.subgroup_value" not in sql
+    assert "evaluated_at = now()" in sql
+
+
+def test_build_subgroup_upsert_row_prepends_model_and_window_dims():
+    aggregate_row = ("nar", "distance_band", "sprint") + tuple(range(15))
+    row = subject.build_subgroup_upsert_row(
+        aggregate_row=aggregate_row,
+        model_version="m",
+        category="nar",
+        window_from="20200101",
+        window_to="20201231",
+    )
+    assert row[0] == "m"
+    assert row[1] == "nar"
+    assert row[2] == "20200101"
+    assert row[3] == "20201231"
+    assert row[4] == "nar"
+    assert row[5] == "distance_band"
+    assert row[6] == "sprint"
+    assert row[7] == 0
+    assert len(row) == 22
+
+
+def test_subgroup_insert_columns_count_is_twentytwo():
+    assert len(subject.SUBGROUP_INSERT_COLUMNS) == 22
+
+
+def test_subgroup_conflict_columns_are_seven_keys():
+    assert subject.SUBGROUP_CONFLICT_COLUMNS == (
+        "model_version",
+        "category",
+        "evaluation_window_from",
+        "evaluation_window_to",
+        "source",
+        "subgroup_dimension",
+        "subgroup_value",
+    )
+
+
+def test_aggregate_subgroup_category_year_executes_year_window_sql():
+    duck = MagicMock()
+    duck.execute.return_value.fetchall.return_value = [("nar", "distance_band", "sprint")]
+    rows = subject.aggregate_subgroup_category_year(
+        duck,
+        predictions_glob="g.parquet",
+        model_version="nar-xgb-v7-lineage-wf-21y",
+        category=subject.CATEGORY_NAR,
+        year=2020,
+        running_style_feature_version="v3",
+        finish_position_version="v1",
+    )
+    assert rows == [("nar", "distance_band", "sprint")]
+    executed_sql = duck.execute.call_args.args[0]
+    assert "rec.race_date between '20200101' and '20201231'" in executed_sql
+    assert "subgroup_dimension" in executed_sql
+
+
+def test_upsert_subgroup_rows_batches_by_chunk_size_and_commits():
+    pg = MagicMock()
+    cursor = MagicMock()
+    pg.cursor.return_value.__enter__.return_value = cursor
+    rows: list[tuple[object, ...]] = [(i,) for i in range(subject.UPSERT_BATCH_SIZE + 3)]
+    subject.upsert_subgroup_rows(pg, rows)
+    assert cursor.executemany.call_count == 2
+    assert pg.commit.call_count == 1
+
+
 def test_main_prints_json_summary(capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         subject,
         "run_aggregation",
-        lambda _args: {"bucket_rows": 7, "rollups": 3, "categories": 3},
+        lambda _args: {"bucket_rows": 7, "subgroup_rows": 11, "rollups": 3, "categories": 3},
     )
     subject.main(
         [

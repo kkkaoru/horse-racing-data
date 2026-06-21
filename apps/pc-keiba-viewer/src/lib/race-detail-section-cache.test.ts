@@ -70,3 +70,13 @@ describe("race detail section cache helpers", () => {
     expect(parseIsoDateParts("invalid")).toBeNull();
   });
 });
+
+it("strips __predictionRefresh from search params alongside __cacheWarm", () => {
+  const params = new URLSearchParams("__predictionRefresh=1&__cacheWarm=1");
+  expect(stripDetailSectionCacheWarmParams(params).toString()).toBe("");
+});
+
+it("keeps unrelated params while stripping __predictionRefresh", () => {
+  const params = new URLSearchParams("foo=bar&__predictionRefresh=1");
+  expect(stripDetailSectionCacheWarmParams(params).toString()).toBe("foo=bar");
+});

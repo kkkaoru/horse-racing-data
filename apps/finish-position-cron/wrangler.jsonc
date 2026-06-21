@@ -7,31 +7,43 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
-    // head_sampling_rate 0.1 is mandatory for new Workers
-    // (project_cloudflare_observability_cost).
     "head_sampling_rate": 0.1,
   },
-  // Cron disabled: Cloudflare Containers reaps batch instances at ~90-110s
-  // regardless of sleepAfter; this workload (DuckDB feature build ~10+ min)
-  // cannot complete within that window. Replaced by Mac launchd that runs the
-  // proven local docker pipeline daily at JST 03:00 — see
-  // apps/finish-position-predict-container/DEPLOY.md and scripts/launchd/.
-  // Worker is still deployed for the ad-hoc /run endpoint + /health + D1 audit.
+  // Predict cron (container) remains disabled: Cloudflare Containers reaps
+  // batch instances at ~90-110s regardless of sleepAfter; this workload
+  // (DuckDB feature build ~10+ min) cannot complete within that window.
+  // Replaced by Mac launchd that runs the proven local docker pipeline daily
+  // at JST 03:00 — see apps/finish-position-predict-container/DEPLOY.md and
+  // scripts/launchd/.
+  // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
+  // before prediction windows and during race hours. They complete in <1s and
+  // are safe to run inside a Worker (no container involved).
   "triggers": {
-    "crons": [],
+    "crons": [
+      "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
+      "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
+      "30 0 * * *", // JST 09:30 — feature build via Container (per-race parquets to R2)
+      "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
+      // Per-race coordinator cron (every 5 min, JST 10:00-20:59): inspects
+      // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore
+      // message for each race within T-X of post time. SHADOW-SAFE: the per-race
+      // rescore consumer (task B) is not wired yet, so an enqueued message has
+      // no effect on production predictions — it only reads D1 + writes the
+      // queue, and never starts the container or touches predict / warm crons.
+      "*/5 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator (shadow)
+      // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
+      // disabled until PHASE 3 pilot confirms full-mode container viability.
+      // To enable: uncomment the line below and wrangler deploy.
+      // "*/20 1-11 * * *",
+    ],
   },
-  // Container image runs real Python (DuckDB + CatBoost + XGBoost) for the v7
-  // feature build + scoring. standard-4 = 4 vCPU / 12 GiB / 20 GB (heaviest
-  // predefined instance type) for the DuckDB aggregation. image_build_context
-  // is the repo root so the Dockerfile can COPY both this app's src and the
-  // reused apps/pc-keiba-viewer feature-pipeline scripts.
   "containers": [
     {
       "class_name": "FinishPositionPredictContainer",
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
       "instance_type": "standard-4",
-      "max_instances": 1,
+      "max_instances": 3,
     },
   ],
   "durable_objects": {
@@ -40,6 +52,11 @@
         "class_name": "FinishPositionPredictContainer",
         "name": "FINISH_POSITION_PREDICT_CONTAINER",
       },
+      // Strong-consistency run dedup/state coordinator (replaces KV PREDICT_STATE).
+      {
+        "class_name": "PredictRunCoordinator",
+        "name": "PREDICT_RUN_COORDINATOR",
+      },
     ],
   },
   "migrations": [
@@ -47,20 +64,63 @@
       "tag": "v1",
       "new_sqlite_classes": ["FinishPositionPredictContainer"],
     },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PredictRunCoordinator"],
+    },
   ],
-  // Cron-run audit table (finish_position_cron_executions). Self-contained D1
-  // so the Worker never couples to Neon for its own bookkeeping. Replace the
-  // placeholder database_id during deploy (see DEPLOY.md).
   "d1_databases": [
     {
       "binding": "FINISH_POSITION_CRON_DB",
       "database_name": "finish-position-cron-db",
       "database_id": "9475ef83-d1da-4b47-9251-0cb431176aa8",
     },
+    {
+      // Read-only access to the sync-realtime-data D1, which owns
+      // realtime_race_sources (race_start_at_jst = JST ISO post time). The
+      // per-race coordinator only SELECTs from this DB to gate which races are
+      // within their T-X rescore window. Same source the running-style
+      // coordinator and the launchd race-prediction guard already read; Neon
+      // does not carry race_start_at_jst and a service binding would add an
+      // HTTP hop, so a direct read-only D1 binding is the shortest read path.
+      "binding": "REALTIME_DB",
+      "database_name": "sync-realtime-data",
+      "database_id": "d12ebd45-2aff-4d74-8556-295c1da9177e",
+    },
   ],
-  // PREDICT_DAYS_AHEAD: how many days past today to include in the upcoming
-  // window. NEON_DATABASE_URL is a secret (wrangler secret put), NOT a var.
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
+    // Per-race coordinator gate. "1" = active — the coordinator cron enqueues
+    // per-race rescore messages for NAR/Ban-ei (container held /predict) and JRA
+    // (Worker-native rescoreJraRace). Flipped from "0" (shadow) after NAR full-path
+    // e2e verification on 2026-06-19.
+    "COORDINATOR_ENABLED": "1",
+    // R2 bucket for the cached feature parquet GET in the container rescore path.
+    // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
+    // via `wrangler secret put` — never store secret values here.
+    "R2_BUCKET": "pc-keiba-features-archive",
   },
+  "queues": {
+    "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],
+    "consumers": [
+      {
+        "queue": "finish-position-predict-queue",
+        "max_batch_size": 3,
+        "max_batch_timeout": 5,
+        "dead_letter_queue": "finish-position-predict-dlq",
+      },
+    ],
+  },
+  // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
+  // The namespace data is retained as-is; no deletion required.
+  // DO-backed strong-consistency coordinator (PREDICT_RUN_COORDINATOR) replaces it.
+  "r2_buckets": [
+    {
+      // Feature parquet cache written by "full" runs and read by "rescore" runs.
+      // Re-uses the existing pc-keiba-features-archive bucket (already exists).
+      // Bucket name can be overridden at deploy time via wrangler.jsonc.
+      "binding": "FEATURES_CACHE",
+      "bucket_name": "pc-keiba-features-archive",
+    },
+  ],
 }

@@ -15,18 +15,18 @@
 
 以下の情報をユーザーに確認し、不足があれば質問する。
 
-| 引数 | CLI フラグ | 必須 | デフォルト | 説明 |
-|------|-----------|------|-----------|------|
-| 特徴量 parquet パス | `--features-parquet` | ✅ | — | 学習に使う parquet ファイルまたはディレクトリ |
-| カテゴリ | `--category` | ✅ | — | `jra` / `nar` / `ban-ei` のいずれか |
-| リポジトリルート | `--repo-root` | ✅ | — | リポジトリのルートディレクトリ (`model_meta.json` の場所を特定するため) |
-| レジストリ DB パス | `--registry-path` | — | `feature_registry.duckdb` | DuckDB ファイルのパス |
-| Docker タグ | `--docker-tag` | — | `finish-position-predict-local:split2` | ビルドする Docker イメージのタグ |
-| 基本試行数 | `--n-trials` | — | `20` | 1 ラウンドあたりの Optuna 試行数 |
-| 最小試行数 | `--min-trials` | — | `5` | 高負荷時の下限 |
-| 最大試行数 | `--max-trials` | — | `50` | 低負荷時の上限 |
-| デプロイ閾値 | `--deploy-threshold` | — | `0.005` | NDCG@3 の改善幅がこの値を超えたらデプロイ |
-| 最大ラウンド数 | `--max-rounds` | — | なし (無限) | 指定すると N ラウンドで自動停止 |
+| 引数                | CLI フラグ           | 必須 | デフォルト                             | 説明                                                                    |
+| ------------------- | -------------------- | ---- | -------------------------------------- | ----------------------------------------------------------------------- |
+| 特徴量 parquet パス | `--features-parquet` | ✅   | —                                      | 学習に使う parquet ファイルまたはディレクトリ                           |
+| カテゴリ            | `--category`         | ✅   | —                                      | `jra` / `nar` / `ban-ei` のいずれか                                     |
+| リポジトリルート    | `--repo-root`        | ✅   | —                                      | リポジトリのルートディレクトリ (`model_meta.json` の場所を特定するため) |
+| レジストリ DB パス  | `--registry-path`    | —    | `feature_registry.duckdb`              | DuckDB ファイルのパス                                                   |
+| Docker タグ         | `--docker-tag`       | —    | `finish-position-predict-local:split2` | ビルドする Docker イメージのタグ                                        |
+| 基本試行数          | `--n-trials`         | —    | `20`                                   | 1 ラウンドあたりの Optuna 試行数                                        |
+| 最小試行数          | `--min-trials`       | —    | `5`                                    | 高負荷時の下限                                                          |
+| 最大試行数          | `--max-trials`       | —    | `50`                                   | 低負荷時の上限                                                          |
+| デプロイ閾値        | `--deploy-threshold` | —    | `0.005`                                | NDCG@3 の改善幅がこの値を超えたらデプロイ                               |
+| 最大ラウンド数      | `--max-rounds`       | —    | なし (無限)                            | 指定すると N ラウンドで自動停止                                         |
 
 ---
 
@@ -126,10 +126,10 @@ uv run python src/scripts/continuous_learner.py \
 
 ## トラブルシューティング
 
-| エラー | 原因と対処 |
-|--------|-----------|
-| `FileNotFoundError: model_meta.json not found` | `--repo-root` が正しいか確認する |
-| `docker: command not found` | Docker / Colima が起動しているか確認する (`colima start`) |
-| `No parquet files found` | `--features-parquet` のパスが正しいか、parquet が生成済みか確認する |
-| `ModuleNotFoundError` | `uv sync` でパッケージをインストールする |
-| NDCG@3 が全ラウンド改善しない | `--deploy-threshold` を下げるか、`--n-trials` を増やす |
+| エラー                                         | 原因と対処                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------- |
+| `FileNotFoundError: model_meta.json not found` | `--repo-root` が正しいか確認する                                    |
+| `docker: command not found`                    | Docker / Colima が起動しているか確認する (`colima start`)           |
+| `No parquet files found`                       | `--features-parquet` のパスが正しいか、parquet が生成済みか確認する |
+| `ModuleNotFoundError`                          | `uv sync` でパッケージをインストールする                            |
+| NDCG@3 が全ラウンド改善しない                  | `--deploy-threshold` を下げるか、`--n-trials` を増やす              |

@@ -18,6 +18,10 @@
       "name": "finish-position-cron",
       "dependencies": {
         "@cloudflare/containers": "0.3.7",
+        "@neondatabase/serverless": "catalog:",
+        "catboost-json-tree": "workspace:*",
+        "hyparquet": "1.26.0",
+        "xgboost-json-tree": "workspace:*",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "catalog:",
@@ -206,6 +210,7 @@
     "@cloudflare/vitest-pool-workers": "0.16.15",
     "@cloudflare/workers-types": "4.20260616.1",
     "@dsnp/parquetjs": "1.8.7",
+    "@neondatabase/serverless": "1.1.0",
     "@types/node": "25.9.3",
     "@types/pg": "8.20.0",
     "@vitest/coverage-v8": "4.1.9",
@@ -557,6 +562,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@mediapipe/tasks-genai": ["@mediapipe/tasks-genai@0.10.27", "", {}, "sha512-cv69CPPAtEDBUs6dGZft2S+sBqde1XvEMST367siSyxrhffdWtm4uQIsfdedAbhJ33BwAjuMnAdxDrO9WrzIAQ=="],
+
+    "@neondatabase/serverless": ["@neondatabase/serverless@1.1.0", "", {}, "sha512-r3ZZhRjEcfEdKIZnoB1RusNgvHuaBRqfCzV4Gi+5A9yUX0S4HTws/ASWqt13wL4y4I+0rqsWGdA2w7EQXHi3+Q=="],
 
     "@next/env": ["@next/env@16.2.9", "", {}, "sha512-ki5VxxXfzD/9TDe13wyeTKIjQTAwBVpnr8KhRDUr8ltMUq1/NBpWNT5tiPoxiGl+PHM4X2ahSOiPk6iAimIzPg=="],
 

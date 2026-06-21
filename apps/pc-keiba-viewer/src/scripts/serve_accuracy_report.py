@@ -33,7 +33,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Final, Protocol, cast
+from typing import Final, NotRequired, Protocol, TypedDict, cast
 
 import psycopg
 
@@ -70,6 +70,40 @@ DEFAULT_PG_URL: Final[str] = (
 
 
 @dataclass
+class SubgroupAccuracy:
+    """Finish-position serve accuracy for one subgroup band of one dimension."""
+
+    dimension: str  # "distance_band" | "field_size_band" | "season_band" | "venue"
+    band: str
+    races: int
+    top1_hits: int
+    place2_hits: int
+    place3_hits: int
+    fukusho_2p_hits: int
+    top3_box_hits: int
+
+    @property
+    def top1_pct(self) -> float:
+        return 100.0 * self.top1_hits / self.races if self.races > 0 else 0.0
+
+    @property
+    def place2_pct(self) -> float:
+        return 100.0 * self.place2_hits / self.races if self.races > 0 else 0.0
+
+    @property
+    def place3_pct(self) -> float:
+        return 100.0 * self.place3_hits / self.races if self.races > 0 else 0.0
+
+    @property
+    def fukusho_2p_pct(self) -> float:
+        return 100.0 * self.fukusho_2p_hits / self.races if self.races > 0 else 0.0
+
+    @property
+    def top3_box_pct(self) -> float:
+        return 100.0 * self.top3_box_hits / self.races if self.races > 0 else 0.0
+
+
+@dataclass
 class FinishPositionMetrics:
     """Per-date finish-position serve accuracy metrics."""
 
@@ -85,6 +119,7 @@ class FinishPositionMetrics:
     top3_box_hits: int
     prediction_generated_at_jst: str
     model_version_counts: dict[str, int] = field(default_factory=dict)
+    subgroups: list[SubgroupAccuracy] = field(default_factory=list)
 
     @property
     def top1_pct(self) -> float:
@@ -169,8 +204,9 @@ class RunningStyleMetrics:
 
 # ── Row type aliases ─────────────────────────────────────────────────────────
 
-# (keibajo_code, race_bango, predicted_rank, actual_rank, model_version, gen_at)
-FpRow = tuple[str, str, int, int, str, datetime | None]
+# (keibajo_code, race_bango, predicted_rank, actual_rank, model_version, gen_at,
+#  kyori, shusso_tosu)
+FpRow = tuple[str, str, int, int, str, datetime | None, int, int]
 
 # (keibajo, race_bango, ketto, predicted_label, predicted_class,
 #  p_nige, p_senkou, p_sashi, p_oikomi, model_version, gen_at, corner_1, shusso_tosu)
@@ -239,6 +275,48 @@ def classify_running_style(corner1_norm: float | None) -> int | None:
     return RS_CLASS_OIKOMI
 
 
+def classify_distance_band(kyori: int) -> str:
+    """Map race distance (meters) to a band label.
+
+    Mirrors the CASE semantics used across the finish-position feature SQL:
+      <=1400 sprint / <=1800 mile / <=2200 intermediate / <=2800 long / else extended.
+    """
+    if kyori <= 1400:
+        return "sprint"
+    if kyori <= 1800:
+        return "mile"
+    if kyori <= 2200:
+        return "intermediate"
+    if kyori <= 2800:
+        return "long"
+    return "extended"
+
+
+def classify_field_size_band(shusso_tosu: int) -> str:
+    """Map field size to a band label: <=8 small / <=14 medium / else large."""
+    if shusso_tosu <= 8:
+        return "small"
+    if shusso_tosu <= 14:
+        return "medium"
+    return "large"
+
+
+def classify_season_band(kaisai_tsukihi: str) -> str:
+    """Map a race date's month (first 2 chars of MMDD) to a season label.
+
+    Callers pass a validated 4-char MMDD string sourced from the DB, so the
+    month is always present.
+    """
+    month = int(kaisai_tsukihi[:2])
+    if month in (3, 4, 5):
+        return "spring"
+    if month in (6, 7, 8):
+        return "summer"
+    if month in (9, 10, 11):
+        return "autumn"
+    return "winter"
+
+
 def aggregate_fp_metrics(
     race_rows: list[list[tuple[int, int]]],
 ) -> tuple[int, int, int, int, int]:
@@ -273,6 +351,54 @@ def aggregate_fp_metrics(
         if top3_in_actual_top3 == 3:
             top3_box += 1
     return top1, place2, place3, fukusho_2p, top3_box
+
+
+def compute_subgroup_accuracies(
+    race_partitions: list[tuple[str, str, str, str, list[tuple[int, int]]]],
+) -> list[SubgroupAccuracy]:
+    """Compute per-subgroup finish-position accuracy across four dimensions.
+
+    Each entry in ``race_partitions`` is one race:
+        (distance_band, field_size_band, season_band, venue, race_pairs)
+    where ``race_pairs`` is that race's list of (pred_rank, actual_rank).
+
+    Returns a flat list of SubgroupAccuracy ordered by dimension then band.
+    Pure: reuses ``aggregate_fp_metrics`` per partition and performs no I/O.
+    """
+    dimensions: tuple[str, str, str, str] = (
+        "distance_band",
+        "field_size_band",
+        "season_band",
+        "venue",
+    )
+    result: list[SubgroupAccuracy] = []
+    for dimension in dimensions:
+        buckets: dict[str, list[list[tuple[int, int]]]] = {}
+        for distance, field_size, season, venue, race_pairs in race_partitions:
+            band_by_dim: dict[str, str] = {
+                "distance_band": distance,
+                "field_size_band": field_size,
+                "season_band": season,
+                "venue": venue,
+            }
+            band = band_by_dim[dimension]
+            if band not in buckets:
+                buckets[band] = []
+            buckets[band].append(race_pairs)
+        for band in sorted(buckets):
+            partition = buckets[band]
+            top1, place2, place3, fukusho_2p, top3_box = aggregate_fp_metrics(partition)
+            result.append(SubgroupAccuracy(
+                dimension=dimension,
+                band=band,
+                races=len(partition),
+                top1_hits=top1,
+                place2_hits=place2,
+                place3_hits=place3,
+                fukusho_2p_hits=fukusho_2p,
+                top3_box_hits=top3_box,
+            ))
+    return result
 
 
 def compute_rs_per_class(
@@ -319,12 +445,14 @@ def query_finish_position_metrics(
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]
 
-    # JRA uses jvd_se; NAR uses nvd_se
+    # JRA uses jvd_se / jvd_ra; NAR uses nvd_se / nvd_ra
     result_table = "jvd_se" if category == "jra" else "nvd_se"
+    result_ra_table = "jvd_ra" if category == "jra" else "nvd_ra"
 
     cur = conn.cursor()
 
-    # Step 1: Get all served predictions per race (latest prediction per horse)
+    # Step 1: Get all served predictions per race (latest prediction per horse),
+    # joined with per-race dims (kyori, shusso_tosu) from the race table.
     cur.execute(
         f"""
         WITH served AS (
@@ -347,15 +475,25 @@ def query_finish_position_metrics(
         SELECT
             s.keibajo_code, s.race_bango,
             s.predicted_rank, r.actual_rank,
-            s.model_version, s.prediction_generated_at
+            s.model_version, s.prediction_generated_at,
+            CAST(ra.kyori AS int) as kyori,
+            CAST(ra.shusso_tosu AS int) as shusso_tosu
         FROM served s
         JOIN results r ON
             s.keibajo_code = r.keibajo_code AND
             s.race_bango = r.race_bango AND
             s.ketto_toroku_bango = r.ketto_toroku_bango
+        JOIN {result_ra_table} ra ON
+            ra.kaisai_nen = %s AND ra.kaisai_tsukihi = %s AND
+            ra.keibajo_code = s.keibajo_code AND
+            ra.race_bango = s.race_bango
         ORDER BY s.keibajo_code, s.race_bango, s.predicted_rank
         """,
-        (category, kaisai_nen, kaisai_tsukihi, kaisai_nen, kaisai_tsukihi),
+        (
+            category, kaisai_nen, kaisai_tsukihi,
+            kaisai_nen, kaisai_tsukihi,
+            kaisai_nen, kaisai_tsukihi,
+        ),
     )
     rows: list[FpRow] = cast(list[FpRow], cur.fetchall())
 
@@ -364,17 +502,32 @@ def query_finish_position_metrics(
 
     # Group by race
     races_dict: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    race_dims: dict[tuple[str, str], tuple[str, int, int]] = {}
     gen_ats: list[datetime] = []
-    for keibajo, race_bango, pred_rank, actual_rank, _model_ver, gen_at in rows:
+    for keibajo, race_bango, pred_rank, actual_rank, _model_ver, gen_at, kyori, tosu in rows:
         key = (keibajo, race_bango)
         if key not in races_dict:
             races_dict[key] = []
+            race_dims[key] = (keibajo, kyori, tosu)
         races_dict[key].append((pred_rank, actual_rank))
         if gen_at is not None:
             gen_ats.append(gen_at)
 
     race_rows = list(races_dict.values())
     top1, place2, place3, fukusho_2p, top3_box = aggregate_fp_metrics(race_rows)
+
+    # Build pure per-race partitions for subgroup breakdown
+    race_partitions: list[tuple[str, str, str, str, list[tuple[int, int]]]] = []
+    for key, pairs in races_dict.items():
+        venue, kyori, tosu = race_dims[key]
+        race_partitions.append((
+            classify_distance_band(kyori),
+            classify_field_size_band(tosu),
+            classify_season_band(kaisai_tsukihi),
+            venue,
+            pairs,
+        ))
+    subgroups = compute_subgroup_accuracies(race_partitions)
 
     # Determine era from latest gen_at (most recent prediction determines data availability)
     latest_gen = max(gen_ats) if gen_ats else None
@@ -388,7 +541,7 @@ def query_finish_position_metrics(
 
     # Count model versions
     model_version_counts: dict[str, int] = {}
-    for _, _, _, _, mv, _ in rows:
+    for _, _, _, _, mv, _, _, _ in rows:
         model_version_counts[mv] = model_version_counts.get(mv, 0) + 1
 
     return FinishPositionMetrics(
@@ -404,6 +557,7 @@ def query_finish_position_metrics(
         top3_box_hits=top3_box,
         prediction_generated_at_jst=gen_jst,
         model_version_counts=model_version_counts,
+        subgroups=subgroups,
     )
 
 
@@ -516,6 +670,27 @@ def query_running_style_metrics(
 # ── Output formatting ─────────────────────────────────────────────────────────
 
 
+def format_subgroup_report(subgroups: list[SubgroupAccuracy]) -> str:
+    """Format per-subgroup finish-position accuracy grouped by dimension then band."""
+    lines = [
+        "  Subgroup breakdown:",
+        f"  {'Dim/Band':<28} {'Races':>5} {'top1':>7} {'plc2':>7} "
+        f"{'plc3':>7} {'fk2p':>7} {'t3box':>7}",
+        f"  {'-' * 72}",
+    ]
+    current_dim = ""
+    for sg in subgroups:
+        if sg.dimension != current_dim:
+            current_dim = sg.dimension
+            lines.append(f"  [{sg.dimension}]")
+        lines.append(
+            f"    {sg.band:<26} {sg.races:>5} "
+            f"{sg.top1_pct:6.2f}% {sg.place2_pct:6.2f}% {sg.place3_pct:6.2f}% "
+            f"{sg.fukusho_2p_pct:6.2f}% {sg.top3_box_pct:6.2f}%"
+        )
+    return "\n".join(lines)
+
+
 def format_fp_report(m: FinishPositionMetrics) -> str:
     """Format finish-position metrics as a human-readable string."""
     lines = [
@@ -541,6 +716,8 @@ def format_fp_report(m: FinishPositionMetrics) -> str:
         lines += ["", "  Models served:"]
         for mv, cnt in sorted(m.model_version_counts.items(), key=lambda x: -x[1]):
             lines.append(f"    {mv}: {cnt} horses")
+    if m.subgroups:
+        lines += [f"", format_subgroup_report(m.subgroups)]
     return "\n".join(lines)
 
 
@@ -570,12 +747,76 @@ def format_rs_report(m: RunningStyleMetrics) -> str:
     return "\n".join(lines)
 
 
+class SubgroupDict(TypedDict):
+    """Serialized SubgroupAccuracy (JSON-friendly)."""
+
+    dimension: str
+    band: str
+    races: int
+    top1_pct: float
+    place2_pct: float
+    place3_pct: float
+    fukusho_2p_pct: float
+    top3_box_pct: float
+
+
+class RsPerClassDict(TypedDict):
+    """Serialized RunningStyleClassMetrics (JSON-friendly)."""
+
+    label: str
+    pred_count: int
+    actual_count: int
+    tp: int
+    precision_pct: float | None
+    recall_pct: float | None
+    f1_pct: float | None
+
+
+class FinishPositionDict(TypedDict):
+    """Serialized FinishPositionMetrics (JSON-friendly)."""
+
+    date_str: str
+    category: str
+    era: str
+    races: int
+    horses: int
+    top1_pct: float
+    place2_pct: float
+    place3_pct: float
+    fukusho_2p_pct: float
+    top3_box_pct: float
+    prediction_generated_at_jst: str
+    model_version_counts: dict[str, int]
+    subgroups: list[SubgroupDict]
+
+
+class RunningStyleDict(TypedDict):
+    """Serialized RunningStyleMetrics (JSON-friendly)."""
+
+    date_str: str
+    category: str
+    era: str
+    total_horses: int
+    overall_accuracy_pct: float
+    macro_f1_pct: float | None
+    model_version: str
+    prediction_generated_at_jst: str
+    per_class: list[RsPerClassDict]
+
+
+class MetricsDict(TypedDict):
+    """Top-level serialized metrics; each section is present only when computed."""
+
+    finish_position: NotRequired[FinishPositionDict]
+    running_style: NotRequired[RunningStyleDict]
+
+
 def metrics_to_dict(
     fp: FinishPositionMetrics | None,
     rs: RunningStyleMetrics | None,
-) -> dict[str, object]:
-    """Convert metrics objects to JSON-serializable dict."""
-    result: dict[str, object] = {}
+) -> MetricsDict:
+    """Convert metrics objects to a JSON-serializable typed dict."""
+    result: MetricsDict = {}
     if fp is not None:
         result["finish_position"] = {
             "date_str": fp.date_str,
@@ -590,6 +831,19 @@ def metrics_to_dict(
             "top3_box_pct": fp.top3_box_pct,
             "prediction_generated_at_jst": fp.prediction_generated_at_jst,
             "model_version_counts": fp.model_version_counts,
+            "subgroups": [
+                {
+                    "dimension": sg.dimension,
+                    "band": sg.band,
+                    "races": sg.races,
+                    "top1_pct": sg.top1_pct,
+                    "place2_pct": sg.place2_pct,
+                    "place3_pct": sg.place3_pct,
+                    "fukusho_2p_pct": sg.fukusho_2p_pct,
+                    "top3_box_pct": sg.top3_box_pct,
+                }
+                for sg in fp.subgroups
+            ],
         }
     if rs is not None:
         result["running_style"] = {

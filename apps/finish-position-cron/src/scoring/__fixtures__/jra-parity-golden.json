@@ -1,0 +1,382 @@
+{
+  "featureNames": [
+    "umaban",
+    "kyori",
+    "weight_avg_5",
+    "weight_diff_from_avg",
+    "speed_index_avg_5",
+    "career_win_rate",
+    "jockey_career_win_rate",
+    "days_since_last_race",
+    "sire_distance_win_rate",
+    "field_strength_avg_speed",
+    "popularity_score",
+    "odds_score"
+  ],
+  "entries": [
+    {
+      "umaban": 1,
+      "kyori": -1.1878611476017855,
+      "weight_avg_5": 1.1961567769806676,
+      "weight_diff_from_avg": 1.4877779056093676,
+      "speed_index_avg_5": -0.25960862123167605,
+      "career_win_rate": -0.7720520765018422,
+      "jockey_career_win_rate": 0.1792175894988158,
+      "days_since_last_race": -0.04330959087833018,
+      "sire_distance_win_rate": 0.9989960044726038,
+      "field_strength_avg_speed": -0.5772911038791102,
+      "popularity_score": -1.2641497580773169,
+      "odds_score": -0.4447142575592894,
+      "ketto_toroku_bango": "h00"
+    },
+    {
+      "umaban": 2,
+      "kyori": 0.5114965672273607,
+      "weight_avg_5": -0.7951014989696795,
+      "weight_diff_from_avg": 0.6474852080977264,
+      "speed_index_avg_5": -0.1624074811700317,
+      "career_win_rate": 0.6524017668360553,
+      "jockey_career_win_rate": -0.5743098049970327,
+      "days_since_last_race": 0.22448026232565352,
+      "sire_distance_win_rate": -0.30618923071545523,
+      "field_strength_avg_speed": 0.7492799838950823,
+      "popularity_score": 0.41026383227865054,
+      "odds_score": -0.33607467738654884,
+      "ketto_toroku_bango": "h01"
+    },
+    {
+      "umaban": 3,
+      "kyori": -0.2110815916910255,
+      "weight_avg_5": -2.678063144040372,
+      "weight_diff_from_avg": 0.5333339844117578,
+      "career_win_rate": 0.5799851384323523,
+      "jockey_career_win_rate": -0.8792127420567937,
+      "days_since_last_race": 0.44681572349205456,
+      "sire_distance_win_rate": 0.3545252270710554,
+      "field_strength_avg_speed": -0.38895987434066437,
+      "popularity_score": -1.128717547829349,
+      "odds_score": 0.310909875452347,
+      "ketto_toroku_bango": "h02"
+    },
+    {
+      "umaban": 4,
+      "kyori": 0.14338195130211231,
+      "weight_avg_5": -0.20596809825291046,
+      "weight_diff_from_avg": 1.84961259090044,
+      "speed_index_avg_5": 0.5574726978462549,
+      "career_win_rate": 1.93972769052869,
+      "jockey_career_win_rate": -1.2014737183343323,
+      "days_since_last_race": -0.4691412256506363,
+      "sire_distance_win_rate": 1.2217296216585096,
+      "field_strength_avg_speed": -1.1636408491223729,
+      "popularity_score": 0.6128081622322196,
+      "odds_score": -0.3370840503456476,
+      "ketto_toroku_bango": "h03"
+    },
+    {
+      "umaban": 5,
+      "kyori": 0.1390760710753388,
+      "weight_avg_5": -0.32581901724156714,
+      "weight_diff_from_avg": 0.9210461941808993,
+      "speed_index_avg_5": 0.07799149403321283,
+      "career_win_rate": 1.135926852362135,
+      "jockey_career_win_rate": 1.1180208224755674,
+      "days_since_last_race": 1.1157831734684711,
+      "sire_distance_win_rate": -1.0676158651197425,
+      "field_strength_avg_speed": -1.4319433626331397,
+      "popularity_score": -0.2777830550939205,
+      "odds_score": -0.8013083246629887,
+      "ketto_toroku_bango": "h04"
+    },
+    {
+      "umaban": 6,
+      "kyori": 1.1817071254067717,
+      "weight_avg_5": 1.2011613002435573,
+      "weight_diff_from_avg": -0.4401848009252007,
+      "speed_index_avg_5": 1.3144837506660745,
+      "career_win_rate": 0.8068369399341853,
+      "jockey_career_win_rate": -0.49506501853818474,
+      "days_since_last_race": -1.3409135604056182,
+      "sire_distance_win_rate": null,
+      "field_strength_avg_speed": -0.9181072288500394,
+      "popularity_score": -0.26909805562220845,
+      "odds_score": -0.6336077920669222,
+      "ketto_toroku_bango": "h05"
+    },
+    {
+      "umaban": 7,
+      "kyori": -0.6576541354434283,
+      "weight_avg_5": 0.7921359049214318,
+      "weight_diff_from_avg": 1.3957617672279445,
+      "speed_index_avg_5": -0.21428489062993314,
+      "career_win_rate": 0.9658005009448868,
+      "jockey_career_win_rate": 2.28750573452122,
+      "days_since_last_race": 0.20568902142499698,
+      "sire_distance_win_rate": 0.21717578484783526,
+      "field_strength_avg_speed": -0.5706743329497849,
+      "popularity_score": 0.14376750584051012,
+      "odds_score": -0.21809076099285182,
+      "ketto_toroku_bango": "h06"
+    },
+    {
+      "umaban": 8,
+      "kyori": 0.35412059115516975,
+      "weight_avg_5": 1.881404015065,
+      "weight_diff_from_avg": -0.8250250430542522,
+      "speed_index_avg_5": -0.6968426263069201,
+      "career_win_rate": 0.44933126001574064,
+      "jockey_career_win_rate": "",
+      "days_since_last_race": -0.4782700313537323,
+      "sire_distance_win_rate": -0.12236942628753031,
+      "field_strength_avg_speed": -0.7889305836536326,
+      "popularity_score": -0.5738802428282674,
+      "odds_score": -0.6233101955480121,
+      "ketto_toroku_bango": "h07"
+    },
+    {
+      "umaban": 9,
+      "kyori": -0.14952371876634277,
+      "weight_avg_5": 0.7580534729443972,
+      "weight_diff_from_avg": -0.9894681210233006,
+      "speed_index_avg_5": 1.8945067595615641,
+      "career_win_rate": -1.1199656471992536,
+      "jockey_career_win_rate": 0.6733442830875874,
+      "days_since_last_race": 1.2135815676417598,
+      "sire_distance_win_rate": 0.6477465521347396,
+      "field_strength_avg_speed": 1.573066304386169,
+      "popularity_score": 1.9055852597678098,
+      "odds_score": 0.2104379334180646,
+      "ketto_toroku_bango": "h08"
+    }
+  ],
+  "cbScores": [
+    -0.07968000783909854, 0.03879188932314729, -0.28737548488290293, -0.25860370596138393,
+    0.37957898912250376, -0.5125316283003938, -0.1863896592618412, 0.014808414252572961,
+    0.5637698337515975
+  ],
+  "xgbScores": [
+    -0.3117314875125885, -0.3634774684906006, -0.888683557510376, -0.5342323780059814,
+    0.7292718887329102, -0.9663079977035522, 0.4533692002296448, 0.05801794305443764,
+    0.08019557595252991
+  ],
+  "etop2Cases": {
+    "fires": [
+      {
+        "ketto": "1",
+        "umaban": 2,
+        "predictedRank": 1,
+        "predictedScore": 4.0
+      },
+      {
+        "ketto": "0",
+        "umaban": 1,
+        "predictedRank": 2,
+        "predictedScore": 3.5
+      },
+      {
+        "ketto": "2",
+        "umaban": 3,
+        "predictedRank": 3,
+        "predictedScore": 1.0
+      },
+      {
+        "ketto": "3",
+        "umaban": 4,
+        "predictedRank": 4,
+        "predictedScore": 0.5
+      }
+    ],
+    "agree": [
+      {
+        "ketto": "0",
+        "umaban": 1,
+        "predictedRank": 1,
+        "predictedScore": 3.0
+      },
+      {
+        "ketto": "1",
+        "umaban": 2,
+        "predictedRank": 2,
+        "predictedScore": 2.0
+      },
+      {
+        "ketto": "2",
+        "umaban": 3,
+        "predictedRank": 3,
+        "predictedScore": 1.0
+      },
+      {
+        "ketto": "3",
+        "umaban": 4,
+        "predictedRank": 4,
+        "predictedScore": 0.5
+      }
+    ],
+    "cb3plus": [
+      {
+        "ketto": "0",
+        "umaban": 1,
+        "predictedRank": 1,
+        "predictedScore": 3.0
+      },
+      {
+        "ketto": "1",
+        "umaban": 2,
+        "predictedRank": 2,
+        "predictedScore": 2.0
+      },
+      {
+        "ketto": "2",
+        "umaban": 3,
+        "predictedRank": 3,
+        "predictedScore": 1.0
+      },
+      {
+        "ketto": "3",
+        "umaban": 4,
+        "predictedRank": 4,
+        "predictedScore": 0.5
+      }
+    ],
+    "excluded": [
+      {
+        "ketto": "0",
+        "umaban": 1,
+        "predictedRank": 1,
+        "predictedScore": 3.0
+      },
+      {
+        "ketto": "1",
+        "umaban": 2,
+        "predictedRank": 2,
+        "predictedScore": 2.0
+      },
+      {
+        "ketto": "2",
+        "umaban": 3,
+        "predictedRank": 3,
+        "predictedScore": 1.0
+      },
+      {
+        "ketto": "3",
+        "umaban": 4,
+        "predictedRank": 4,
+        "predictedScore": 0.5
+      }
+    ]
+  },
+  "endToEnd": {
+    "eligible": [
+      {
+        "ketto": "h04",
+        "umaban": 5,
+        "predictedRank": 1,
+        "predictedScore": 1.5637698337515975
+      },
+      {
+        "ketto": "h08",
+        "umaban": 9,
+        "predictedRank": 2,
+        "predictedScore": 1.0637698337515975
+      },
+      {
+        "ketto": "h01",
+        "umaban": 2,
+        "predictedRank": 3,
+        "predictedScore": 0.03879188932314729
+      },
+      {
+        "ketto": "h07",
+        "umaban": 8,
+        "predictedRank": 4,
+        "predictedScore": 0.014808414252572961
+      },
+      {
+        "ketto": "h00",
+        "umaban": 1,
+        "predictedRank": 5,
+        "predictedScore": -0.07968000783909854
+      },
+      {
+        "ketto": "h06",
+        "umaban": 7,
+        "predictedRank": 6,
+        "predictedScore": -0.1863896592618412
+      },
+      {
+        "ketto": "h03",
+        "umaban": 4,
+        "predictedRank": 7,
+        "predictedScore": -0.25860370596138393
+      },
+      {
+        "ketto": "h02",
+        "umaban": 3,
+        "predictedRank": 8,
+        "predictedScore": -0.28737548488290293
+      },
+      {
+        "ketto": "h05",
+        "umaban": 6,
+        "predictedRank": 9,
+        "predictedScore": -0.5125316283003938
+      }
+    ],
+    "excluded": [
+      {
+        "ketto": "h08",
+        "umaban": 9,
+        "predictedRank": 1,
+        "predictedScore": 0.5637698337515975
+      },
+      {
+        "ketto": "h04",
+        "umaban": 5,
+        "predictedRank": 2,
+        "predictedScore": 0.37957898912250376
+      },
+      {
+        "ketto": "h01",
+        "umaban": 2,
+        "predictedRank": 3,
+        "predictedScore": 0.03879188932314729
+      },
+      {
+        "ketto": "h07",
+        "umaban": 8,
+        "predictedRank": 4,
+        "predictedScore": 0.014808414252572961
+      },
+      {
+        "ketto": "h00",
+        "umaban": 1,
+        "predictedRank": 5,
+        "predictedScore": -0.07968000783909854
+      },
+      {
+        "ketto": "h06",
+        "umaban": 7,
+        "predictedRank": 6,
+        "predictedScore": -0.1863896592618412
+      },
+      {
+        "ketto": "h03",
+        "umaban": 4,
+        "predictedRank": 7,
+        "predictedScore": -0.25860370596138393
+      },
+      {
+        "ketto": "h02",
+        "umaban": 3,
+        "predictedRank": 8,
+        "predictedScore": -0.28737548488290293
+      },
+      {
+        "ketto": "h05",
+        "umaban": 6,
+        "predictedRank": 9,
+        "predictedScore": -0.5125316283003938
+      }
+    ]
+  }
+}

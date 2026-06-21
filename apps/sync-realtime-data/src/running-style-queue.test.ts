@@ -43,6 +43,9 @@ vi.mock("./running-style-model-binary", () => ({
   buildRunningStyleFlatModelKey: vi.fn(() => "models/jra/latest.flatbin"),
   loadFlatLightGBMModelFromR2: vi.fn(),
 }));
+vi.mock("./running-style-neon", () => ({
+  upsertRunningStylePredictionsToNeon: vi.fn(async () => 2),
+}));
 vi.mock("./storage", () => ({
   getLatestRaceEntries: vi.fn(),
 }));
@@ -115,6 +118,7 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   const { markFinishPositionFeaturesCached } = await import("./finish-position-d1");
   const { putFinishPositionInputsCache } = await import("./finish-position-inputs-cache");
   const { markRunningStyleInferenceCompleted } = await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["x"], model_version: "v7-lineage" },
@@ -133,6 +137,7 @@ it("completes the job from an R2 hit and returns the success summary", async () 
     writtenCount: 2,
   } as never);
   vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}] as never);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(2);
 
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.modelVersion).toBe("v7-lineage");
@@ -141,6 +146,8 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   expect(summary?.horseCount).toBe(2);
   expect(summary?.featuresR2Key).toBe("features.parquet");
   expect(summary?.cacheWritten).toBe(true);
+  expect(summary?.neonWrittenCount).toBe(2);
+  expect(summary?.neonError).toBeUndefined();
   expect(vi.mocked(markFinishPositionFeaturesCached).mock.calls[0]?.[2]?.featuresR2Key).toBe(
     "features.parquet",
   );
@@ -254,6 +261,71 @@ it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.cacheError).toBe("d1 read failure");
   expect(summary?.cacheWritten).toBe(false);
+});
+
+it("returns neonWrittenCount when Neon write succeeds", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 3,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v7-lineage",
+    status: "completed",
+    writtenHorseCount: 3,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}, {}] as never);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(3);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.neonWrittenCount).toBe(3);
+  expect(summary?.neonError).toBeUndefined();
+});
+
+it("sets neonError when Neon write fails but does not throw", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 2,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v7-lineage",
+    status: "completed",
+    writtenHorseCount: 2,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}] as never);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockRejectedValue(
+    new Error("neon connection refused"),
+  );
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.neonWrittenCount).toBe(0);
+  expect(summary?.neonError).toBe("neon connection refused");
+  expect(summary?.skipped).toBe(true);
+});
+
+it("sets cacheWritten false when putViewerRunningStyleRaceCache rejects", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 2,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v7-lineage",
+    status: "completed",
+    writtenHorseCount: 2,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}] as never);
+  vi.mocked(putViewerRunningStyleRaceCache).mockRejectedValue(new Error("cache write failed"));
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(2);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.cacheWritten).toBe(false);
+  expect(summary?.neonWrittenCount).toBe(2);
 });
 
 it("passes calibrators to inference when loadCalibratorsFromR2 resolves", async () => {

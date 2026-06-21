@@ -131,6 +131,91 @@ def test_classify_rs_one_is_oikomi() -> None:
     assert subject.classify_running_style(1.0) == subject.RS_CLASS_OIKOMI
 
 
+# ── classify_distance_band ────────────────────────────────────────────────────
+
+
+def test_classify_distance_band_sprint_boundary() -> None:
+    assert subject.classify_distance_band(1400) == "sprint"
+
+
+def test_classify_distance_band_sprint_low() -> None:
+    assert subject.classify_distance_band(1000) == "sprint"
+
+
+def test_classify_distance_band_mile_boundary() -> None:
+    assert subject.classify_distance_band(1800) == "mile"
+
+
+def test_classify_distance_band_mile_just_above_sprint() -> None:
+    assert subject.classify_distance_band(1401) == "mile"
+
+
+def test_classify_distance_band_intermediate_boundary() -> None:
+    assert subject.classify_distance_band(2200) == "intermediate"
+
+
+def test_classify_distance_band_intermediate_just_above_mile() -> None:
+    assert subject.classify_distance_band(1801) == "intermediate"
+
+
+def test_classify_distance_band_long_boundary() -> None:
+    assert subject.classify_distance_band(2800) == "long"
+
+
+def test_classify_distance_band_long_just_above_intermediate() -> None:
+    assert subject.classify_distance_band(2201) == "long"
+
+
+def test_classify_distance_band_extended() -> None:
+    assert subject.classify_distance_band(3200) == "extended"
+
+
+# ── classify_field_size_band ──────────────────────────────────────────────────
+
+
+def test_classify_field_size_band_small_boundary() -> None:
+    assert subject.classify_field_size_band(8) == "small"
+
+
+def test_classify_field_size_band_small_low() -> None:
+    assert subject.classify_field_size_band(5) == "small"
+
+
+def test_classify_field_size_band_medium_boundary() -> None:
+    assert subject.classify_field_size_band(14) == "medium"
+
+
+def test_classify_field_size_band_medium_just_above_small() -> None:
+    assert subject.classify_field_size_band(9) == "medium"
+
+
+def test_classify_field_size_band_large() -> None:
+    assert subject.classify_field_size_band(18) == "large"
+
+
+# ── classify_season_band ──────────────────────────────────────────────────────
+
+
+def test_classify_season_band_spring() -> None:
+    assert subject.classify_season_band("0415") == "spring"
+
+
+def test_classify_season_band_summer() -> None:
+    assert subject.classify_season_band("0701") == "summer"
+
+
+def test_classify_season_band_autumn() -> None:
+    assert subject.classify_season_band("1031") == "autumn"
+
+
+def test_classify_season_band_winter_january() -> None:
+    assert subject.classify_season_band("0102") == "winter"
+
+
+def test_classify_season_band_winter_december() -> None:
+    assert subject.classify_season_band("1225") == "winter"
+
+
 # ── aggregate_fp_metrics ──────────────────────────────────────────────────────
 
 
@@ -225,6 +310,103 @@ def test_aggregate_fp_metrics_race_no_rank1() -> None:
     assert top1 == 0
     assert place2 == 0
     assert top3_box == 0
+
+
+# ── SubgroupAccuracy properties ───────────────────────────────────────────────
+
+
+def test_subgroup_accuracy_pcts_zero_races() -> None:
+    sg = subject.SubgroupAccuracy(
+        dimension="distance_band", band="sprint", races=0,
+        top1_hits=0, place2_hits=0, place3_hits=0,
+        fukusho_2p_hits=0, top3_box_hits=0,
+    )
+    assert sg.top1_pct == 0.0
+    assert sg.place2_pct == 0.0
+    assert sg.place3_pct == 0.0
+    assert sg.fukusho_2p_pct == 0.0
+    assert sg.top3_box_pct == 0.0
+
+
+def test_subgroup_accuracy_pcts_nonzero() -> None:
+    sg = subject.SubgroupAccuracy(
+        dimension="venue", band="05", races=4,
+        top1_hits=1, place2_hits=2, place3_hits=3,
+        fukusho_2p_hits=2, top3_box_hits=3,
+    )
+    assert sg.top1_pct == pytest.approx(25.0)
+    assert sg.place2_pct == pytest.approx(50.0)
+    assert sg.place3_pct == pytest.approx(75.0)
+    assert sg.fukusho_2p_pct == pytest.approx(50.0)
+    assert sg.top3_box_pct == pytest.approx(75.0)
+
+
+# ── compute_subgroup_accuracies ───────────────────────────────────────────────
+
+
+def test_compute_subgroup_accuracies_empty() -> None:
+    assert subject.compute_subgroup_accuracies([]) == []
+
+
+def test_compute_subgroup_accuracies_single_race_four_dims() -> None:
+    # one race: sprint / small / spring / venue 05, pred1 wins
+    partitions = [("sprint", "small", "spring", "05", [(1, 1), (2, 3)])]
+    result = subject.compute_subgroup_accuracies(partitions)
+    # 4 dimensions, each with exactly 1 band → 4 entries
+    assert len(result) == 4
+    assert result[0].dimension == "distance_band"
+    assert result[0].band == "sprint"
+    assert result[0].races == 1
+    assert result[0].top1_hits == 1
+    assert result[1].dimension == "field_size_band"
+    assert result[1].band == "small"
+    assert result[2].dimension == "season_band"
+    assert result[2].band == "spring"
+    assert result[3].dimension == "venue"
+    assert result[3].band == "05"
+    assert result[3].top1_hits == 1
+
+
+def test_compute_subgroup_accuracies_distance_split() -> None:
+    # two races differing only in distance band; field/season/venue identical
+    partitions = [
+        ("sprint", "medium", "summer", "05", [(1, 1)]),      # sprint top1 hit
+        ("mile", "medium", "summer", "05", [(1, 4)]),        # mile miss
+    ]
+    result = subject.compute_subgroup_accuracies(partitions)
+    distance = [sg for sg in result if sg.dimension == "distance_band"]
+    assert len(distance) == 2
+    # sorted by band: mile then sprint
+    assert distance[0].band == "mile"
+    assert distance[0].races == 1
+    assert distance[0].top1_hits == 0
+    assert distance[1].band == "sprint"
+    assert distance[1].races == 1
+    assert distance[1].top1_hits == 1
+    # field_size_band collapses to one band ("medium") spanning both races
+    field = [sg for sg in result if sg.dimension == "field_size_band"]
+    assert len(field) == 1
+    assert field[0].band == "medium"
+    assert field[0].races == 2
+    assert field[0].top1_hits == 1
+
+
+def test_compute_subgroup_accuracies_venue_split_hits() -> None:
+    partitions = [
+        ("mile", "large", "autumn", "06", [(1, 2), (2, 1)]),   # place2 + fukusho_2p
+        ("mile", "large", "autumn", "08", [(1, 3), (2, 9)]),   # place3 only
+    ]
+    result = subject.compute_subgroup_accuracies(partitions)
+    venues = [sg for sg in result if sg.dimension == "venue"]
+    assert len(venues) == 2
+    assert venues[0].band == "06"
+    assert venues[0].place2_hits == 1
+    assert venues[0].fukusho_2p_hits == 1
+    assert venues[0].top1_hits == 0
+    assert venues[1].band == "08"
+    assert venues[1].place3_hits == 1
+    assert venues[1].top3_box_hits == 0
+    assert venues[1].fukusho_2p_hits == 0
 
 
 # ── compute_rs_per_class ──────────────────────────────────────────────────────
@@ -490,6 +672,64 @@ def test_format_fp_report_shows_model_version_counts() -> None:
     assert "80" in report
 
 
+# ── format_subgroup_report ────────────────────────────────────────────────────
+
+
+def test_format_subgroup_report_groups_by_dimension() -> None:
+    subgroups = [
+        subject.SubgroupAccuracy(
+            dimension="distance_band", band="sprint", races=4,
+            top1_hits=2, place2_hits=3, place3_hits=3,
+            fukusho_2p_hits=2, top3_box_hits=3,
+        ),
+        subject.SubgroupAccuracy(
+            dimension="venue", band="05", races=4,
+            top1_hits=1, place2_hits=2, place3_hits=3,
+            fukusho_2p_hits=2, top3_box_hits=3,
+        ),
+    ]
+    report = subject.format_subgroup_report(subgroups)
+    assert "Subgroup breakdown:" in report
+    assert "[distance_band]" in report
+    assert "sprint" in report
+    assert "[venue]" in report
+    assert "50.00%" in report
+
+
+def test_format_fp_report_includes_subgroups_when_present() -> None:
+    subgroups = [
+        subject.SubgroupAccuracy(
+            dimension="distance_band", band="mile", races=2,
+            top1_hits=1, place2_hits=1, place3_hits=2,
+            fukusho_2p_hits=1, top3_box_hits=2,
+        ),
+    ]
+    m = subject.FinishPositionMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        races=2, horses=20,
+        top1_hits=1, place2_hits=1, place3_hits=2,
+        fukusho_2p_hits=1, top3_box_hits=2,
+        prediction_generated_at_jst="2026-06-14 09:30:00 JST",
+        subgroups=subgroups,
+    )
+    report = subject.format_fp_report(m)
+    assert "Subgroup breakdown:" in report
+    assert "[distance_band]" in report
+    assert "mile" in report
+
+
+def test_format_fp_report_omits_subgroups_when_empty() -> None:
+    m = subject.FinishPositionMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        races=2, horses=20,
+        top1_hits=1, place2_hits=1, place3_hits=2,
+        fukusho_2p_hits=1, top3_box_hits=2,
+        prediction_generated_at_jst="2026-06-14 09:30:00 JST",
+    )
+    report = subject.format_fp_report(m)
+    assert "Subgroup breakdown:" not in report
+
+
 # ── format_rs_report ──────────────────────────────────────────────────────────
 
 
@@ -574,6 +814,56 @@ def test_metrics_to_dict_fp_only() -> None:
     serialized = json.dumps(result)
     assert '"era": "POST_FIX"' in serialized
     assert f'"top1_pct": {m.top1_pct}' in serialized
+
+
+def test_metrics_to_dict_fp_subgroups_serialized() -> None:
+    subgroups = [
+        subject.SubgroupAccuracy(
+            dimension="distance_band", band="sprint", races=4,
+            top1_hits=1, place2_hits=2, place3_hits=3,
+            fukusho_2p_hits=2, top3_box_hits=3,
+        ),
+    ]
+    m = subject.FinishPositionMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        races=4, horses=40,
+        top1_hits=1, place2_hits=2, place3_hits=3,
+        fukusho_2p_hits=2, top3_box_hits=3,
+        prediction_generated_at_jst="",
+        subgroups=subgroups,
+    )
+    result = subject.metrics_to_dict(m, None)
+    fp = result.get("finish_position")
+    assert fp is not None
+    sgs = fp["subgroups"]
+    assert sgs == [
+        {
+            "dimension": "distance_band",
+            "band": "sprint",
+            "races": 4,
+            "top1_pct": 25.0,
+            "place2_pct": 50.0,
+            "place3_pct": 75.0,
+            "fukusho_2p_pct": 50.0,
+            "top3_box_pct": 75.0,
+        },
+    ]
+    serialized = json.dumps(result)
+    assert '"dimension": "distance_band"' in serialized
+
+
+def test_metrics_to_dict_fp_subgroups_empty_default() -> None:
+    m = subject.FinishPositionMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        races=4, horses=40,
+        top1_hits=1, place2_hits=2, place3_hits=3,
+        fukusho_2p_hits=2, top3_box_hits=3,
+        prediction_generated_at_jst="",
+    )
+    result = subject.metrics_to_dict(m, None)
+    fp = result.get("finish_position")
+    assert fp is not None
+    assert fp["subgroups"] == []
 
 
 def test_metrics_to_dict_json_serializable() -> None:
@@ -670,12 +960,12 @@ def test_query_fp_metrics_no_rows_returns_none() -> None:
 
 def test_query_fp_metrics_basic_result() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    # (keibajo, race_bango, predicted_rank, actual_rank, model_version, gen_at)
+    # (keibajo, race_bango, pred_rank, actual_rank, model_version, gen_at, kyori, tosu)
     rows = [
-        ("05", "01", 1, 1, "iter14", gen_at),
-        ("05", "01", 2, 3, "iter14", gen_at),
-        ("05", "02", 1, 4, "iter14", gen_at),
-        ("05", "02", 2, 1, "iter14", gen_at),
+        ("05", "01", 1, 1, "iter14", gen_at, 1200, 16),
+        ("05", "01", 2, 3, "iter14", gen_at, 1200, 16),
+        ("05", "02", 1, 4, "iter14", gen_at, 2000, 16),
+        ("05", "02", 2, 1, "iter14", gen_at, 2000, 16),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
@@ -690,7 +980,7 @@ def test_query_fp_metrics_basic_result() -> None:
 def test_query_fp_metrics_degraded_era() -> None:
     gen_at = datetime(2026, 6, 5, 20, 27, 0, tzinfo=timezone.utc)
     rows = [
-        ("05", "01", 1, 5, "iter14", gen_at),
+        ("05", "01", 1, 5, "iter14", gen_at, 1600, 12),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260606", "jra")
@@ -702,12 +992,40 @@ def test_query_fp_metrics_degraded_era() -> None:
 
 def test_query_fp_metrics_nar_category() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    rows = [("30", "01", 1, 1, "iter12", gen_at)]
+    rows = [("30", "01", 1, 1, "iter12", gen_at, 1400, 10)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "nar")
     assert result is not None
     assert result.category == "nar"
     assert result.top1_hits == 1
+
+
+def test_query_fp_metrics_populates_subgroups() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    # race 01: sprint (1200), small (8), venue 05, pred1 wins
+    # race 02: long (2400), large (16), venue 05, pred1 finishes 4th (miss)
+    rows = [
+        ("05", "01", 1, 1, "iter14", gen_at, 1200, 8),
+        ("05", "02", 1, 4, "iter14", gen_at, 2400, 16),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    distance = [sg for sg in result.subgroups if sg.dimension == "distance_band"]
+    assert len(distance) == 2
+    assert distance[0].band == "long"
+    assert distance[0].top1_hits == 0
+    assert distance[1].band == "sprint"
+    assert distance[1].top1_hits == 1
+    season = [sg for sg in result.subgroups if sg.dimension == "season_band"]
+    assert len(season) == 1
+    assert season[0].band == "summer"
+    assert season[0].races == 2
+    venue = [sg for sg in result.subgroups if sg.dimension == "venue"]
+    assert len(venue) == 1
+    assert venue[0].band == "05"
+    assert venue[0].races == 2
+    assert venue[0].top1_hits == 1
 
 
 def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
@@ -722,9 +1040,8 @@ def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
 
 
 def test_query_fp_metrics_jst_display_converts_utc_to_jst() -> None:
-    # UTC 00:30 = JST 09:30; the displayed string must show 09:30 JST
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    rows = [("05", "01", 1, 1, "iter14", gen_at)]
+    rows = [("05", "01", 1, 1, "iter14", gen_at, 1600, 16)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
     assert result is not None
