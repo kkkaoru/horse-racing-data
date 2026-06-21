@@ -382,6 +382,43 @@ def test_train_fold_passes_bucket_df_through(
     assert "sample_weight" in weighted_train.columns
 
 
+def test_train_fold_saves_model_json_when_fold_trainer_returns_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """train_fold must call model.save_model(..., format='json') when
+    the fold trainer returns a 'model' key, so continuous_learner can
+    stage model.json to the prediction container."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    mock_model = MagicMock()
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = {
+        "valid_predictions": df,
+        "best_iteration": 10,
+        "model": mock_model,
+    }
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    expected_path = str(model_dir / "model.json")
+    mock_model.save_model.assert_called_once_with(expected_path, format="json")
+
+
+def test_train_fold_does_not_save_model_when_fold_trainer_omits_model_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """Fold trainers that don't return a 'model' key (e.g. mocks or eval-only
+    runs) must not crash — save_model is simply skipped."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    deps = _make_fake_deps(df)  # mock returns dict without 'model' key
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    out = subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert out["status"] == "completed"
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    assert not (model_dir / "model.json").exists()
+
+
 def test_resolve_fold_years_inclusive(tmp_path: Path):
     args = _base_args(tmp_path)
     args["year_from"] = 2023

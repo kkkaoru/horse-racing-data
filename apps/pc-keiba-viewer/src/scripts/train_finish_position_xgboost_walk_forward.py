@@ -309,7 +309,8 @@ def train_fold(
     train_with_buckets = merge_bucket_weights_into_train(train_df, bucket_df)
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
-    _, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    booster, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    booster.save_model(str(model_dir / "model.json"))
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,

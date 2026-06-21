@@ -347,6 +347,27 @@ def test_train_fold_passes_bucket_df_through(
     assert "is_weak_bucket_score" in weighted_train.columns
 
 
+def test_train_fold_saves_model_json_via_booster(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """train_fold must call booster.save_model(path) so continuous_learner
+    can stage model.json to the prediction container.  The booster is the
+    first element of the tuple returned by the fold trainer."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    mock_booster = MagicMock()
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = (
+        mock_booster,
+        {"valid_predictions": df, "best_iteration": 10},
+    )
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    expected_path = str(model_dir / "model.json")
+    mock_booster.save_model.assert_called_once_with(expected_path)
+
+
 def test_resolve_fold_years_inclusive(tmp_path: Path):
     args = _base_args(tmp_path)
     args["year_from"] = 2023

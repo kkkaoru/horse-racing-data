@@ -420,7 +420,8 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
     for raw_value in bucket_values:
         bucket_key = normalize_bucket_key(raw_value)
         bucket_frame = frame[frame[column] == raw_value]
-        if len(bucket_frame) < args["min_bucket_samples"]:
+        bucket_races = race_count_from_frame(bucket_frame)
+        if bucket_races < args["min_bucket_samples"]:
             continue
         pair = fit_curves_for_frame(bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now)
         write_curve_pair(
@@ -454,9 +455,9 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
 
 
 def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
-    if curve["schema_version"] != CALIBRATION_SCHEMA_VERSION:
+    if curve.get("schema_version") != CALIBRATION_SCHEMA_VERSION:
         raise ValueError(
-            f"calibration file schema_version={curve['schema_version']} "
+            f"calibration file schema_version={curve.get('schema_version')!r} "
             f"!= expected {CALIBRATION_SCHEMA_VERSION}; re-run fit to regenerate"
         )
     xs = np.asarray(curve["iso_x"], dtype=float)

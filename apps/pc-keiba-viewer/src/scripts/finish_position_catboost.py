@@ -215,6 +215,7 @@ def train_catboost_ranker(
         "best_iteration": int(best_iter if best_iter is not None else cast(int, model.tree_count_)),
         "valid_predictions": valid_df,
         "metrics": metrics,
+        "model": model,
     }
 
 

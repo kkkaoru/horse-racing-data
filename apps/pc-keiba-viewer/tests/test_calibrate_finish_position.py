@@ -1097,12 +1097,11 @@ def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixtu
     assert captured.err == ""
 
 
-def test_fit_run_uses_row_count_not_race_count_for_bucket_threshold(tmp_path: Path):
-    """min_bucket_samples compares against len(bucket_frame), not unique race count."""
-    # 1 race, 10 horses → row_count=10, race_count=1.
-    # min_bucket_samples=5: row_count (10) >= 5 → bucket must be written (not fallback).
+def test_fit_run_uses_race_count_for_bucket_threshold_passes_when_enough_races(tmp_path: Path):
+    """min_bucket_samples compares against unique race count, not total row count.
+    10 races × 1 horse = 10 rows, race_count=10 >= min_bucket_samples=5 → bucket written."""
     frame = pd.DataFrame({
-        "race_id": ["r1"] * 10,
+        "race_id": [f"r{i}" for i in range(10)],
         "ketto_toroku_bango": [f"horse_{i}" for i in range(10)],
         "predicted_score": [float(i) / 10 for i in range(10)],
         "predicted_rank": list(range(1, 11)),
@@ -1294,3 +1293,56 @@ def test_isotonic_transform_accepts_current_schema_version():
     assert result.iloc[0] == pytest.approx(0.0)
     assert result.iloc[1] == pytest.approx(0.4)
     assert result.iloc[2] == pytest.approx(0.9)
+
+
+def test_isotonic_transform_raises_value_error_not_key_error_on_missing_schema_version():
+    """Old calibration JSON files written before schema_version was added lack
+    the key; curve.get() must be used so the diagnostic ValueError is raised
+    instead of a confusing KeyError."""
+    curve_dict: dict[str, object] = {
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.4, 0.9],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+        # schema_version intentionally absent
+    }
+    import typing
+    curve = typing.cast(subject.CalibrationCurve, curve_dict)
+    probs = pd.Series([0.3, 0.7])
+    with pytest.raises(ValueError, match="schema_version"):
+        subject.isotonic_transform(probs, curve)
+
+
+def test_fit_run_guards_bucket_threshold_by_race_count_not_row_count(tmp_path: Path):
+    """min_bucket_samples must compare against unique race count (via
+    race_count_from_frame) — NOT the total row count.  A bucket with
+    30 races × 10 horses = 300 rows must be skipped when
+    min_bucket_samples=50 (races), because 30 < 50."""
+    frame = _small_bucket_frame_300()  # 30 races, 300 rows, all kyoso_joken_code='005'
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 50,  # 30 races < 50 → bucket skipped → global fallback
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    # 30 races < threshold of 50 → bucket '005' must be skipped → global fallback used
+    assert result["fallback_used"] is True
+    first_call_path: Path = cast(Path, json_writer.call_args_list[0].args[1])
+    assert "bucket__cat_global" in first_call_path.as_posix()
