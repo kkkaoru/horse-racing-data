@@ -43,6 +43,8 @@ def _base_args(tmp_path: Path) -> subject.TrainCatBoostArgs:
         "iterations": 500,
         "depth": 8,
         "l2_leaf_reg": 3.0,
+        "bagging_temperature": None,
+        "random_strength": None,
         "learning_rate": 0.05,
     }
 
@@ -168,6 +170,22 @@ def test_load_hpo_params_raises_when_root_not_object(tmp_path: Path):
     assert "JSON object" in str(info.value)
 
 
+def test_load_hpo_params_extracts_nested_params_key(tmp_path: Path):
+    """Tune scripts write {trial_number, params: {...}, global_ndcg}; load_hpo_params
+    must return only the inner params dict, not the top-level wrapper."""
+    path = tmp_path / "hpo.json"
+    path.write_text(
+        json.dumps({
+            "trial_number": 3,
+            "params": {"iterations": 800, "depth": 10, "bagging_temperature": 1.5},
+            "global_ndcg": 0.75,
+        }),
+        encoding="utf-8",
+    )
+    result = subject.load_hpo_params(path)
+    assert result == {"iterations": 800, "depth": 10, "bagging_temperature": 1.5}
+
+
 def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     base = _base_args(tmp_path)
     merged = subject.apply_hpo_params(
@@ -178,6 +196,15 @@ def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     assert merged["depth"] == 10
     assert merged["l2_leaf_reg"] == 5.0
     assert merged["learning_rate"] == 0.1
+
+
+def test_apply_hpo_params_applies_bagging_temperature_and_random_strength(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(
+        base, {"bagging_temperature": 1.0, "random_strength": 2.5},
+    )
+    assert merged["bagging_temperature"] == pytest.approx(1.0)
+    assert merged["random_strength"] == pytest.approx(2.5)
 
 
 def test_apply_hpo_params_skips_unknown_keys(tmp_path: Path):
@@ -317,6 +344,22 @@ def test_build_fold_namespace_applies_fine_tune_lr_for_tail(tmp_path: Path):
     args["fine_tune_lr_divisor"] = 10
     ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
     assert ns.learning_rate == pytest.approx(0.005)
+
+
+def test_build_fold_namespace_propagates_bagging_temperature_and_random_strength(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["bagging_temperature"] = 1.5
+    args["random_strength"] = 2.0
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.bagging_temperature == pytest.approx(1.5)
+    assert ns.random_strength == pytest.approx(2.0)
+
+
+def test_build_fold_namespace_propagates_none_bagging_temperature(tmp_path: Path):
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.bagging_temperature is None
+    assert ns.random_strength is None
 
 
 def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):

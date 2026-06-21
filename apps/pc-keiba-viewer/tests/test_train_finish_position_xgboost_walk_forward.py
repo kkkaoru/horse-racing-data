@@ -46,6 +46,8 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "max_depth": 6,
         "min_child_weight": 30,
         "reg_lambda": 1.0,
+        "subsample": 1.0,
+        "colsample_bytree": 1.0,
         "learning_rate": 0.05,
     }
 
@@ -167,6 +169,18 @@ def test_load_hpo_params_raises_when_root_not_object(tmp_path: Path):
     assert "JSON object" in str(info.value)
 
 
+def test_load_hpo_params_extracts_nested_params_key(tmp_path: Path):
+    """Tune scripts write {trial_number, params: {...}, global_ndcg}; load_hpo_params
+    must return only the inner params dict, not the top-level wrapper."""
+    path = tmp_path / "hpo.json"
+    path.write_text(
+        json.dumps({"trial_number": 5, "params": {"num_rounds": 600, "max_depth": 7}, "global_ndcg": 0.8}),
+        encoding="utf-8",
+    )
+    result = subject.load_hpo_params(path)
+    assert result == {"num_rounds": 600, "max_depth": 7}
+
+
 def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     base = _base_args(tmp_path)
     merged = subject.apply_hpo_params(
@@ -190,6 +204,29 @@ def test_apply_hpo_params_applies_min_child_weight_and_reg_lambda(tmp_path: Path
     )
     assert merged["min_child_weight"] == 5
     assert merged["reg_lambda"] == pytest.approx(2.5)
+
+
+def test_apply_hpo_params_maps_n_estimators_to_num_rounds(tmp_path: Path):
+    """Tune script uses n_estimators key; walk-forward trainer uses num_rounds."""
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(base, {"n_estimators": 800})
+    assert merged["num_rounds"] == 800
+
+
+def test_apply_hpo_params_applies_subsample_and_colsample_bytree(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(base, {"subsample": 0.8, "colsample_bytree": 0.9})
+    assert merged["subsample"] == pytest.approx(0.8)
+    assert merged["colsample_bytree"] == pytest.approx(0.9)
+
+
+def test_build_fold_namespace_includes_subsample_and_colsample_bytree(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["subsample"] = 0.75
+    args["colsample_bytree"] = 0.85
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.subsample == pytest.approx(0.75)
+    assert ns.colsample_bytree == pytest.approx(0.85)
 
 
 def test_resolve_fold_random_seed_offsets_by_year():
@@ -601,6 +638,36 @@ def test_train_xgboost_ranker_uses_ndcg_objective_when_set(monkeypatch: pytest.M
     assert captured_params[0]["objective"] == "rank:ndcg"
     assert captured_params[0]["lambdarank_pair_method"] == "topk"
     assert captured_params[0]["lambdarank_num_pair_per_sample"] == 3
+
+
+def test_train_xgboost_ranker_passes_subsample_and_colsample_bytree(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        subsample=0.8, colsample_bytree=0.9,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["subsample"] == pytest.approx(0.8)
+    assert captured_params[0]["colsample_bytree"] == pytest.approx(0.9)
 
 
 def test_split_train_valid_filters_dates_and_labels():

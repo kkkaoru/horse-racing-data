@@ -34,6 +34,8 @@ DEFAULT_FINE_TUNE_FINAL_FOLDS: Final[int] = 0
 DEFAULT_FINE_TUNE_LR_DIVISOR: Final[int] = 10
 DEFAULT_MIN_CHILD_WEIGHT: Final[int] = 30
 DEFAULT_LAMBDA: Final[float] = 1.0
+DEFAULT_SUBSAMPLE: Final[float] = 1.0
+DEFAULT_COLSAMPLE_BYTREE: Final[float] = 1.0
 RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
@@ -60,6 +62,8 @@ class TrainXgboostArgs(TypedDict):
     max_depth: int
     min_child_weight: int
     reg_lambda: float
+    subsample: float
+    colsample_bytree: float
     learning_rate: float
 
 
@@ -124,6 +128,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--min-child-weight", type=int, default=DEFAULT_MIN_CHILD_WEIGHT)
     parser.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
+    parser.add_argument("--subsample", type=float, default=DEFAULT_SUBSAMPLE)
+    parser.add_argument("--colsample-bytree", type=float, default=DEFAULT_COLSAMPLE_BYTREE)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     return parser
 
@@ -159,6 +165,8 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "max_depth": int(cast(int, args.max_depth)),
         "min_child_weight": int(cast(int, args.min_child_weight)),
         "reg_lambda": float(cast(float, args.reg_lambda)),
+        "subsample": float(cast(float, args.subsample)),
+        "colsample_bytree": float(cast(float, args.colsample_bytree)),
         "learning_rate": float(cast(float, args.learning_rate)),
     }
 
@@ -169,19 +177,28 @@ def load_hpo_params(path: Path | None) -> dict[str, object]:
     parsed = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError(f"HPO params file must be a JSON object, got {type(parsed)!r}")
-    return cast(dict[str, object], parsed)
+    top = cast(dict[str, object], parsed)
+    if "params" in top and isinstance(top["params"], dict):
+        return cast(dict[str, object], top["params"])
+    return top
 
 
 def apply_hpo_params(args: TrainXgboostArgs, params: dict[str, object]) -> TrainXgboostArgs:
     merged = cast(TrainXgboostArgs, dict(args))
     if "num_rounds" in params:
         merged["num_rounds"] = int(cast(int, params["num_rounds"]))
+    if "n_estimators" in params:
+        merged["num_rounds"] = int(cast(int, params["n_estimators"]))
     if "max_depth" in params:
         merged["max_depth"] = int(cast(int, params["max_depth"]))
     if "min_child_weight" in params:
         merged["min_child_weight"] = int(cast(int, params["min_child_weight"]))
     if "reg_lambda" in params:
         merged["reg_lambda"] = float(cast(float, params["reg_lambda"]))
+    if "subsample" in params:
+        merged["subsample"] = float(cast(float, params["subsample"]))
+    if "colsample_bytree" in params:
+        merged["colsample_bytree"] = float(cast(float, params["colsample_bytree"]))
     if "learning_rate" in params:
         merged["learning_rate"] = float(cast(float, params["learning_rate"]))
     return merged
@@ -273,6 +290,8 @@ def build_fold_namespace(
         learning_rate=fold_lr,
         min_child_weight=args["min_child_weight"],
         reg_lambda=args["reg_lambda"],
+        subsample=args["subsample"],
+        colsample_bytree=args["colsample_bytree"],
         early_stopping_rounds=30,
         seed=resolve_fold_random_seed(fold_year),
         relevance_rank1=3,

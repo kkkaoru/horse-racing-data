@@ -200,6 +200,13 @@ def train_catboost_ranker(
         "task_type": "CPU",
         "verbose": 50,
     }
+    bagging_temp = getattr(args, "bagging_temperature", None)
+    random_strength = getattr(args, "random_strength", None)
+    if bagging_temp is not None:
+        params["bagging_temperature"] = float(bagging_temp)
+        params["bootstrap_type"] = "Bayesian"
+    if random_strength is not None:
+        params["random_strength"] = float(random_strength)
     model = CatBoost(params)
     model.fit(train_pool, eval_set=valid_pool, verbose=False)
     pred = model.predict(valid_pool)

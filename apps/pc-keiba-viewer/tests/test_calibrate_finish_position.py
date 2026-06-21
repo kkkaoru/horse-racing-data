@@ -481,10 +481,11 @@ def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
     assert (result <= 1.0).all()
 
 
-def test_derive_prob_from_rank_propagates_nan_rank_as_nan():
-    """NaN predicted_rank must propagate as NaN so fit_curves_for_frame can
-    filter these rows out of the isotonic fit rather than treating them as
-    proxy=0.0 (which would corrupt win-probability calibration for low ranks)."""
+def test_derive_prob_from_rank_clamps_nan_rank_to_zero():
+    """NaN predicted_rank must become proxy=0.0 (not NaN) so apply_run can safely
+    calibrate without crashing re_rank_predictions().astype(int) with
+    IntCastingNaNError. fit_curves_for_frame filters NaN-rank rows at frame level
+    before calling this function, so the 0.0 fallback only matters for inference."""
     frame = pd.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "predicted_rank": [1.0, 2.0, float("nan")],
@@ -492,7 +493,7 @@ def test_derive_prob_from_rank_propagates_nan_rank_as_nan():
     result = subject.derive_prob_from_rank(frame, top_n=1)
     assert result.iloc[0] > 0.0
     assert result.iloc[1] > 0.0
-    assert result.isna().iloc[2]
+    assert result.iloc[2] == pytest.approx(0.0)
 
 
 def test_win_indicator_marks_rank_one_only():
@@ -513,9 +514,9 @@ def test_top3_indicator_marks_top_three():
 
 
 def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
-    """Rows with NaN predicted_rank must be dropped before isotonic fit.
-    If they were included as proxy=0.0, a NaN-rank winner would create a
-    spurious (X=0.0, y=1.0) knot that distorts win-probability estimates."""
+    """Rows with NaN predicted_rank must be dropped before isotonic fit when using
+    rank-based proxy. Including them would create spurious (proxy=0.0, target=1.0)
+    knots that distort win-probability calibration."""
     rows = []
     for race_idx in range(20):
         for horse_idx in range(10):
@@ -540,6 +541,56 @@ def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
         frame_with_nan, cat="jra", bucket_key="test", now=FIXED_NOW,
     )
     assert pair_clean["top1"]["n_samples"] == pair_with_nan["top1"]["n_samples"]
+
+
+def test_fit_curves_for_frame_raises_when_all_ranks_are_nan():
+    """When every row has NaN predicted_rank and no probability column is present,
+    fit_curves_for_frame must raise ValueError rather than passing empty arrays
+    to IsotonicRegression.fit([],[]) which also raises ValueError."""
+    frame = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "predicted_rank": [float("nan"), float("nan")],
+        "actual_finish_position": [1.0, 2.0],
+    })
+    with pytest.raises(ValueError, match="No valid rows"):
+        subject.fit_curves_for_frame(frame, cat="jra", bucket_key="empty_bucket", now=FIXED_NOW)
+
+
+def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path):
+    """fit_run must skip buckets where all predicted_ranks are NaN, fall through
+    to the global fallback, and not crash."""
+    frame_valid = pd.DataFrame({
+        "race_id": [f"r{i}" for i in range(60) for _ in range(10)],
+        "predicted_rank": [float(h + 1) for _ in range(60) for h in range(10)],
+        "actual_finish_position": [float(h + 1) for _ in range(60) for h in range(10)],
+        "kyoso_joken_code": ["001"] * 600,
+    })
+    frame_nanrank = pd.DataFrame({
+        "race_id": ["r_nan"] * 5,
+        "predicted_rank": [float("nan")] * 5,
+        "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "kyoso_joken_code": ["002"] * 5,
+    })
+    frame = pd.concat([frame_valid, frame_nanrank], ignore_index=True)
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    assert result["buckets_written"] == 1  # bucket 001 only; bucket 002 skipped
 
 
 def test_fit_single_curve_returns_schema_v1_and_finite_brier():

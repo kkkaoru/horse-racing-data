@@ -143,6 +143,8 @@ def train_xgboost_ranker(
         "max_depth": args.max_depth,
         "min_child_weight": args.min_child_weight,
         "reg_lambda": args.reg_lambda,
+        "subsample": getattr(args, "subsample", 1.0),
+        "colsample_bytree": getattr(args, "colsample_bytree", 1.0),
         "tree_method": "hist",
         "seed": args.seed,
         "verbosity": 1,

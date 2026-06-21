@@ -57,6 +57,8 @@ class TrainCatBoostArgs(TypedDict):
     iterations: int
     depth: int
     l2_leaf_reg: float
+    bagging_temperature: float | None
+    random_strength: float | None
     learning_rate: float
 
 
@@ -116,6 +118,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument("--depth", type=int, default=8)
     parser.add_argument("--l2-leaf-reg", type=float, default=3.0)
+    parser.add_argument("--bagging-temperature", type=float, default=None)
+    parser.add_argument("--random-strength", type=float, default=None)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     return parser
 
@@ -149,6 +153,14 @@ def normalize_args(args: argparse.Namespace) -> TrainCatBoostArgs:
         "iterations": int(cast(int, args.iterations)),
         "depth": int(cast(int, args.depth)),
         "l2_leaf_reg": float(cast(float, args.l2_leaf_reg)),
+        "bagging_temperature": (
+            float(cast(float, args.bagging_temperature))
+            if args.bagging_temperature is not None else None
+        ),
+        "random_strength": (
+            float(cast(float, args.random_strength))
+            if args.random_strength is not None else None
+        ),
         "learning_rate": float(cast(float, args.learning_rate)),
     }
 
@@ -159,7 +171,10 @@ def load_hpo_params(path: Path | None) -> dict[str, object]:
     parsed = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError(f"HPO params file must be a JSON object, got {type(parsed)!r}")
-    return cast(dict[str, object], parsed)
+    top = cast(dict[str, object], parsed)
+    if "params" in top and isinstance(top["params"], dict):
+        return cast(dict[str, object], top["params"])
+    return top
 
 
 def apply_hpo_params(args: TrainCatBoostArgs, params: dict[str, object]) -> TrainCatBoostArgs:
@@ -170,6 +185,10 @@ def apply_hpo_params(args: TrainCatBoostArgs, params: dict[str, object]) -> Trai
         merged["depth"] = int(cast(int, params["depth"]))
     if "l2_leaf_reg" in params:
         merged["l2_leaf_reg"] = float(cast(float, params["l2_leaf_reg"]))
+    if "bagging_temperature" in params:
+        merged["bagging_temperature"] = float(cast(float, params["bagging_temperature"]))
+    if "random_strength" in params:
+        merged["random_strength"] = float(cast(float, params["random_strength"]))
     if "learning_rate" in params:
         merged["learning_rate"] = float(cast(float, params["learning_rate"]))
     return merged
@@ -260,6 +279,8 @@ def build_fold_namespace(
         iterations=args["iterations"],
         depth=args["depth"],
         l2_leaf_reg=args["l2_leaf_reg"],
+        bagging_temperature=args["bagging_temperature"],
+        random_strength=args["random_strength"],
         learning_rate=fold_lr,
         early_stopping_rounds=30,
         seed=resolve_fold_random_seed(fold_year),

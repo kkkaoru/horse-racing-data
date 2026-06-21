@@ -289,7 +289,7 @@ def derive_prob_from_rank(frame: pd.DataFrame, *, top_n: int) -> pd.Series:
         proxy = (race_sizes - ranks + 1.0) / race_sizes
     else:
         proxy = ((race_sizes - ranks + 1.0) / race_sizes) * float(top_n)
-    return proxy.clip(lower=0.0, upper=float(top_n))
+    return proxy.clip(lower=0.0, upper=float(top_n)).fillna(0.0)
 
 
 def win_indicator(frame: pd.DataFrame) -> pd.Series:
@@ -355,14 +355,22 @@ def fit_curves_for_frame(
     bucket_key: str,
     now: datetime,
 ) -> CurvePair:
-    top1_probs_s = derive_top1_prob(frame)
-    top3_probs_s = derive_top3_prob(frame)
-    valid_mask = top1_probs_s.notna() & top3_probs_s.notna()
-    top1_probs = top1_probs_s[valid_mask].to_numpy(dtype=float)
-    top3_probs = top3_probs_s[valid_mask].to_numpy(dtype=float)
-    filtered_frame = frame[valid_mask]
-    top1_targets = win_indicator(filtered_frame).to_numpy(dtype=float)
-    top3_targets = top3_indicator(filtered_frame).to_numpy(dtype=float)
+    # When using rank-based proxy (no direct probability column), exclude NaN-rank
+    # rows before fitting so they don't create spurious calibration knots.
+    if PREDICTED_RANK_COLUMN in frame.columns and (
+        PREDICTED_TOP1_PROB_COLUMN not in frame.columns
+        or frame[PREDICTED_TOP1_PROB_COLUMN].isna().all()
+    ):
+        frame = frame[frame[PREDICTED_RANK_COLUMN].notna()]
+    if len(frame) == 0:
+        raise ValueError(
+            f"No valid rows for calibration fit (bucket_key={bucket_key!r}); "
+            "all rows have NaN predicted_rank and no direct probability column"
+        )
+    top1_probs = derive_top1_prob(frame).to_numpy(dtype=float)
+    top3_probs = derive_top3_prob(frame).to_numpy(dtype=float)
+    top1_targets = win_indicator(frame).to_numpy(dtype=float)
+    top3_targets = top3_indicator(frame).to_numpy(dtype=float)
     top1_curve = fit_single_curve(
         top1_probs,
         top1_targets,
@@ -426,7 +434,12 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
         bucket_races = race_count_from_frame(bucket_frame)
         if bucket_races < args["min_bucket_samples"]:
             continue
-        pair = fit_curves_for_frame(bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now)
+        try:
+            pair = fit_curves_for_frame(
+                bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now,
+            )
+        except ValueError:
+            continue
         write_curve_pair(
             pair,
             output_dir=args["output_dir"],
@@ -435,12 +448,24 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
         )
         buckets_written += 1
     if buckets_written == 0:
-        pair = fit_curves_for_frame(
-            frame,
-            cat=args["cat"],
-            bucket_key=CAT_GLOBAL_BUCKET_KEY,
-            now=now,
-        )
+        try:
+            pair = fit_curves_for_frame(
+                frame,
+                cat=args["cat"],
+                bucket_key=CAT_GLOBAL_BUCKET_KEY,
+                now=now,
+            )
+        except ValueError:
+            sys.stderr.write(
+                "calibrate_finish_position: no valid rows for global fallback fit; "
+                "no calibration JSON written.\n",
+            )
+            return {
+                "cat": args["cat"],
+                "buckets_written": 0,
+                "fallback_used": False,
+                "race_count": race_count_from_frame(frame),
+            }
         write_curve_pair(
             pair,
             output_dir=args["output_dir"],
