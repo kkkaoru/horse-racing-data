@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import duckdb
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "src" / "scripts" / "finish-position-features"
@@ -43,7 +44,12 @@ def test_append_features_sql_keeps_horse_popularity_vs_field() -> None:
 
 def _seed_base_parquet(parquet_dir: Path) -> str:
     """Write a 2-row synthetic base parquet carrying the meta columns the
-    near-miss layer re-joins (so the rename / exclude path is exercised)."""
+    near-miss layer re-joins (so the rename / exclude path is exercised).
+
+    horse_a: ninki=1, odds=3.0 (favourite)
+    horse_b: ninki=2, odds=6.0 (second choice)
+    Expected field_dominant_favorite_indicator = 3.0 / 6.0 = 0.5
+    """
     parquet_dir.mkdir(parents=True, exist_ok=True)
     seed_con = duckdb.connect(":memory:")
     seed_con.execute(
@@ -52,13 +58,13 @@ def _seed_base_parquet(parquet_dir: Path) -> str:
         select * from (
           values
             ('nar', '2025', '0415', '54', '11', 'horse_a', '20250415', 2025,
-              'JOCKEY_A'::varchar, 1::integer, 12::integer),
+              'JOCKEY_A'::varchar, 1::integer, 12::integer, 3.0::double),
             ('nar', '2025', '0415', '54', '11', 'horse_b', '20250415', 2025,
-              'JOCKEY_B'::varchar, 2::integer, 12::integer)
+              'JOCKEY_B'::varchar, 2::integer, 12::integer, 6.0::double)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, race_date, race_year,
-          kishumei_ryakusho, tansho_ninkijun, shusso_tosu
+          kishumei_ryakusho, tansho_ninkijun, shusso_tosu, tansho_odds
         )
         """
     )
@@ -137,17 +143,6 @@ def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
-    con.execute(
-        """
-        create or replace temp table race_favorite_dominance(
-          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
-          keibajo_code varchar, race_bango varchar,
-          field_dominant_favorite_indicator double
-        )
-        """
-    )
-
-
 def test_append_features_sql_output_has_canonical_and_suffixed_shusso(
     tmp_path: Path,
 ) -> None:
@@ -195,3 +190,35 @@ def test_append_features_sql_canonical_shusso_tosu_is_bigint(tmp_path: Path) -> 
     # BIGINT cast mirrors the trained parquet dtype for the index-2 column.
     assert described[0][0] == "shusso_tosu"
     assert described[0][1] == "BIGINT"
+
+
+def test_append_features_sql_field_dominant_favorite_from_base_parquet(
+    tmp_path: Path,
+) -> None:
+    """field_dominant_favorite_indicator is computed from the base parquet (not
+    race_history), so upcoming races without a finish_position row still get a
+    non-NULL value.  With horse_a (ninki=1, odds=3.0) and horse_b (ninki=2,
+    odds=6.0), the ratio should be 3.0/6.0 = 0.5 for both rows in the race."""
+    con = duckdb.connect(":memory:")
+    glob = _seed_base_parquet(tmp_path / "input")
+    _seed_join_temps(con)
+    sql = subject.append_features_sql(glob)
+    rows = con.execute(
+        f"select ketto_toroku_bango, field_dominant_favorite_indicator"
+        f" from ({sql}) order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    assert rows[0][0] == "horse_a"
+    assert rows[0][1] == pytest.approx(0.5)
+    assert rows[1][0] == "horse_b"
+    assert rows[1][1] == pytest.approx(0.5)
+
+
+def test_append_features_sql_computes_fav_dominance_sql_from_base_cte() -> None:
+    """The SQL string must reference fav_ranked / fav_pivoted / race_favorite_dominance
+    CTEs sourced from base — not from a pre-built race_favorite_dominance temp table."""
+    sql = subject.append_features_sql("dummy.parquet")
+    assert "fav_ranked" in sql
+    assert "fav_pivoted" in sql
+    assert "race_favorite_dominance" in sql
+    assert "from base" in sql.lower()
