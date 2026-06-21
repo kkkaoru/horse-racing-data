@@ -366,6 +366,18 @@ def test_evaluate_subgroup_two_races_mixed_results():
     assert result["top3_box_accuracy"] == 0.5
 
 
+def test_evaluate_subgroup_top3_not_counted_when_fewer_than_3_valid_finish_positions():
+    joined = pd.DataFrame({
+        "race_id": ["r1"] * 4,
+        "ketto_toroku_bango": ["a", "b", "c", "d"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1.0, 2.0, float("nan"), float("nan")],
+    })
+    result = subject.evaluate_subgroup(joined)
+    assert result["race_count"] == 1
+    assert result["top3_box_accuracy"] == 0.0
+
+
 def test_compute_subgroup_diagnostics_returns_sorted_list():
     ground_truth = _make_ground_truth([
         {
