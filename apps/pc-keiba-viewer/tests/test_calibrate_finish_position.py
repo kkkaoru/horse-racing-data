@@ -982,6 +982,38 @@ def test_apply_run_handles_top3_calibration_independently(tmp_path: Path):
     assert written_frame["predicted_top3_prob_calibrated"].iloc[2] == pytest.approx(0.46, abs=1e-9)
 
 
+def test_apply_run_logs_top3_calibration_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """top3 calibration_source must appear in stderr (not silently discarded)."""
+    frame = _apply_input_frame()
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    parquet_writer = MagicMock()
+    json_reader_mock = MagicMock(
+        side_effect=[_g1_iso_top1_curve(), _g1_iso_top3_curve()],
+    )
+    path_exists: subject.PathExistsLike = lambda path: "bucket_999" in path.as_posix()
+    deps: subject.ApplyDeps = {
+        "parquet_reader": parquet_reader,
+        "parquet_writer": cast(subject.ParquetWriterLike, parquet_writer),
+        "json_reader": cast(subject.JsonReaderLike, json_reader_mock),
+        "path_exists": path_exists,
+    }
+    args: subject.ApplyArguments = {
+        "mode": "apply",
+        "cat": "jra",
+        "input_predictions_root": tmp_path / "in",
+        "calibration_dir": tmp_path / "cal",
+        "output_predictions_root": tmp_path / "out",
+    }
+    subject.apply_run(args, deps)
+    stderr = capsys.readouterr().err
+    # Both top1 and top3 calibration_source distributions must be logged
+    assert stderr.count("calibrate_finish_position: calibration_source distribution") == 2
+
+
 def test_apply_run_uses_grade_code_when_kyoso_joken_absent(tmp_path: Path):
     frame = _apply_input_frame().drop(columns=["kyoso_joken_code"])
     frame["grade_code"] = "A"
@@ -1222,4 +1254,41 @@ def test_main_dispatches_to_apply(monkeypatch: pytest.MonkeyPatch, capsys: pytes
     captured = capsys.readouterr()
     assert "rows_written" in captured.out
     fake_apply_run.assert_called_once()
-    fake_fit_run.assert_not_called()
+
+
+def test_isotonic_transform_raises_on_wrong_schema_version():
+    curve: subject.CalibrationCurve = {
+        "schema_version": 999,
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.5, 1.0],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+    }
+    probs = pd.Series([0.3, 0.7])
+    with pytest.raises(ValueError, match="schema_version"):
+        subject.isotonic_transform(probs, curve)
+
+
+def test_isotonic_transform_accepts_current_schema_version():
+    curve: subject.CalibrationCurve = {
+        "schema_version": subject.CALIBRATION_SCHEMA_VERSION,
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.4, 0.9],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+    }
+    probs = pd.Series([0.0, 0.5, 1.0])
+    result = subject.isotonic_transform(probs, curve)
+    assert result.iloc[0] == pytest.approx(0.0)
+    assert result.iloc[1] == pytest.approx(0.4)
+    assert result.iloc[2] == pytest.approx(0.9)

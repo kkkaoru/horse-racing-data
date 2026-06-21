@@ -454,6 +454,11 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
 
 
 def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
+    if curve["schema_version"] != CALIBRATION_SCHEMA_VERSION:
+        raise ValueError(
+            f"calibration file schema_version={curve['schema_version']} "
+            f"!= expected {CALIBRATION_SCHEMA_VERSION}; re-run fit to regenerate"
+        )
     xs = np.asarray(curve["iso_x"], dtype=float)
     ys = np.asarray(curve["iso_y"], dtype=float)
     if xs.size == 0:
@@ -562,7 +567,7 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
         deps=deps,
         calibration_dir=args["calibration_dir"],
     )
-    calibrated_top3, _ = calibrated_series_for_target(
+    calibrated_top3, source_top3 = calibrated_series_for_target(
         frame,
         raw_series=raw_top3,
         bucket_column=bucket_column,
@@ -570,6 +575,7 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
         deps=deps,
         calibration_dir=args["calibration_dir"],
     )
+    log_source_distribution(source_top3)
     out = frame.copy()
     out[PREDICTED_TOP1_PROB_CALIBRATED_COLUMN] = calibrated_top1.astype(float)
     out[PREDICTED_TOP3_PROB_CALIBRATED_COLUMN] = calibrated_top3.astype(float)
