@@ -85,14 +85,16 @@ class ExplorationResult(TypedDict):
 def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
     ndcg_scores: list[float] = []
     for _, group in valid_df.groupby("race_id"):
-        sorted_group = group.sort_values("predicted_rank")
-        dcg = 0.0
-        for rank_idx, finish_pos in enumerate(
-            sorted_group["finish_position"].tolist()[:3], start=1
-        ):
-            dcg += _RELEVANCE_MAP.get(int(finish_pos), 0.0) / math.log2(rank_idx + 1)
+        valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
+        sorted_group = valid_group.sort_values("predicted_rank")
+        dcg = sum(
+            _RELEVANCE_MAP.get(int(finish_pos), 0.0) / math.log2(rank_idx + 1)
+            for rank_idx, finish_pos in enumerate(
+                sorted_group["finish_position"].tolist()[:3], start=1
+            )
+        )
         ideal_relevances = sorted(
-            (_RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"]),
+            (_RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
             reverse=True,
         )[:3]
         ideal_dcg = sum(
@@ -115,10 +117,10 @@ def _xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[st
 
 def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
     _, predictions, _ = run_walk_forward_fold(fold, params)
-    valid_with_pos = predictions.merge(
-        fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]],
+    valid_with_pos = fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+        predictions,
         on=["race_id", "ketto_toroku_bango"],
-        how="inner",
+        how="left",
     )
     return _ndcg_at_3_from_valid_df(valid_with_pos)
 

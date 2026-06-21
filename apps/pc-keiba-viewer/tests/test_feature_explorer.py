@@ -230,6 +230,32 @@ def test_ndcg_at_3_from_valid_df_skips_race_with_no_relevant_finishers() -> None
     assert result == pytest.approx(1.0)
 
 
+def test_ndcg_at_3_from_valid_df_nan_predicted_rank_penalises_ideal() -> None:
+    # Horse "a" has NaN predicted_rank (e.g. absent from predictions after left join)
+    # but finishes 1st. DCG only includes b and c; ideal still uses all 3 finishers.
+    # NDCG must be < 1.0 (winner was not ranked).
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "predicted_rank": [float("nan"), 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 3.0],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert 0.0 < result < 1.0
+
+
+def test_ndcg_at_3_from_valid_df_nan_finish_position_excluded_from_dcg_slot() -> None:
+    # Horse "a" has predicted_rank=1 but finish_position=NaN (scratched).
+    # It must NOT occupy the top DCG slot — only "b" (rank=2, finish=1) contributes.
+    # Perfect prediction among scoreable horses → NDCG = 1.0.
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "predicted_rank": [1.0, 2.0],
+        "finish_position": [float("nan"), 1.0],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(1.0)
+
+
 # --- _xgb_numeric_features ---
 
 def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -> None:
