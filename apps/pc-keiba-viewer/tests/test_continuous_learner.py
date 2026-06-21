@@ -148,6 +148,19 @@ def test_learner_custom_validation_years_stored() -> None:
         assert learner._validation_years == [2022, 2023]
 
 
+def test_learner_raises_when_validation_years_is_empty() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        with pytest.raises(ValueError, match="non-empty"):
+            subject.ContinuousLearner(
+                registry=reg,
+                df=pd.DataFrame(),
+                category="jra",
+                repo_root=Path("/tmp"),
+                scripts_dir=Path("/tmp"),
+                validation_years=[],
+            )
+
+
 def test_learner_initial_stop_flag_is_false() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
@@ -392,6 +405,39 @@ def test_deploy_records_deployment_in_registry() -> None:
         assert reg.get_deployed_ndcg() == 0.77
 
 
+def test_deploy_rollback_triggered_when_record_deployment_raises(tmp_path: Path) -> None:
+    """record_deployment runs inside the try block so that if it fails,
+    staged artifacts are rolled back via _rollback_deploy."""
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        entry = _make_entry(ndcg=0.77, feature_names=["feat_a"])
+        staged_dir = tmp_path / "staged"
+        staged_dir.mkdir()
+
+        with (
+            patch(
+                "continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(
+                learner, "_stage_model", return_value=staged_dir
+            ),
+            patch.object(learner, "_update_model_meta_json", return_value=None),
+            patch.object(learner, "_rebuild_docker"),
+            patch.object(
+                reg, "record_deployment", side_effect=RuntimeError("db write fail")
+            ),
+            patch.object(learner, "_rollback_deploy") as mock_rollback,
+        ):
+            with pytest.raises(RuntimeError, match="db write fail"):
+                learner._deploy(entry)
+
+        mock_rollback.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _make_model_version
 # ---------------------------------------------------------------------------
@@ -556,6 +602,17 @@ def test_stage_model_creates_destination_directory(tmp_path: Path) -> None:
 
     dest = tmp_path / subject._CONTAINER_MODELS_ROOT / "nar" / "auto-nar-v1"
     assert dest.is_dir()
+
+
+def test_stage_model_raises_file_not_found_when_model_json_missing(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model_dir"
+    model_dir.mkdir()
+    # model.json intentionally not created
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
+        with pytest.raises(FileNotFoundError, match="model.json"):
+            learner._stage_model(model_dir, ["feat_speed"], "auto-jra-v1")
 
 
 # ---------------------------------------------------------------------------

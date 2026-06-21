@@ -1295,10 +1295,9 @@ def test_isotonic_transform_accepts_current_schema_version():
     assert result.iloc[2] == pytest.approx(0.9)
 
 
-def test_isotonic_transform_raises_value_error_not_key_error_on_missing_schema_version():
-    """Old calibration JSON files written before schema_version was added lack
-    the key; curve.get() must be used so the diagnostic ValueError is raised
-    instead of a confusing KeyError."""
+def test_isotonic_transform_accepts_old_file_without_schema_version():
+    """Old calibration JSON files (pre-schema_version) lack the key entirely.
+    Missing key means get() returns None — backward-compatible, no error raised."""
     curve_dict: dict[str, object] = {
         "cat": "jra",
         "bucket_key": "G1",
@@ -1309,13 +1308,15 @@ def test_isotonic_transform_raises_value_error_not_key_error_on_missing_schema_v
         "fit_at": "2026-06-04T12:00:00Z",
         "brier_score_before": 0.25,
         "brier_score_after": 0.20,
-        # schema_version intentionally absent
+        # schema_version intentionally absent — old file, treated as backward-compatible
     }
     import typing
     curve = typing.cast(subject.CalibrationCurve, curve_dict)
-    probs = pd.Series([0.3, 0.7])
-    with pytest.raises(ValueError, match="schema_version"):
-        subject.isotonic_transform(probs, curve)
+    probs = pd.Series([0.0, 0.5, 1.0])
+    result = subject.isotonic_transform(probs, curve)
+    assert result.iloc[0] == pytest.approx(0.0)
+    assert result.iloc[1] == pytest.approx(0.4)
+    assert result.iloc[2] == pytest.approx(0.9)
 
 
 def test_fit_run_guards_bucket_threshold_by_race_count_not_row_count(tmp_path: Path):

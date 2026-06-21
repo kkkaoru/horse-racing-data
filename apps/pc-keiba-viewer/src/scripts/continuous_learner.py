@@ -174,6 +174,8 @@ class ContinuousLearner:
             if validation_years is not None
             else list(DEFAULT_VALIDATION_YEARS)
         )
+        if not self._validation_years:
+            raise ValueError("validation_years must be a non-empty list of years")
         self._train_start: str = train_start
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
@@ -297,11 +299,11 @@ class ContinuousLearner:
             prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
             _logger.info("│  [5/5] rebuilding Docker image ...")
             self._rebuild_docker()
+            self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         except Exception:
             _logger.error("│  deploy failed — rolling back staged artifacts")
             self._rollback_deploy(staged_dest, prev_meta_content)
             raise
-        self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         _logger.info("└── deploy finished %s", "─" * 44)
 
     def _make_model_version(self) -> str:
@@ -340,9 +342,15 @@ class ContinuousLearner:
     def _stage_model(
         self, model_dir: Path, feature_names: list[str], model_version: str
     ) -> Path:
+        model_json = model_dir / "model.json"
+        if not model_json.exists():
+            raise FileNotFoundError(
+                f"model.json not found in fold directory: {model_json}. "
+                "Re-train this fold without --resume-from-checkpoint to regenerate."
+            )
         dest = self._repo_root / _CONTAINER_MODELS_ROOT / self._category / model_version
         dest.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(model_dir / "model.json", dest / "model.json")
+        shutil.copy2(model_json, dest / "model.json")
         (dest / "metadata.json").write_text(
             json.dumps({"feature_names": feature_names}, ensure_ascii=False),
             encoding="utf-8",
