@@ -211,7 +211,8 @@ def merge_bucket_weights_into_train(
             "bucket membership parquet must contain is_weak_bucket_score",
         )
     merge_cols = ["race_id", "is_weak_bucket_score"]
-    return train_df.merge(bucket_df[merge_cols], on="race_id", how="left")
+    deduped = bucket_df[merge_cols].drop_duplicates("race_id")
+    return train_df.merge(deduped, on="race_id", how="left")
 
 
 def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:

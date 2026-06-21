@@ -481,6 +481,19 @@ def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
     assert (result <= 1.0).all()
 
 
+def test_derive_prob_from_rank_replaces_nan_rank_with_zero():
+    """NaN predicted_rank must become 0.0 proxy so it does not propagate
+    through isotonic_transform into re_rank_predictions where .astype(int)
+    would raise ValueError on NaN."""
+    frame = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "predicted_rank": [1.0, 2.0, float("nan")],
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=1)
+    assert not result.isna().any()
+    assert result.iloc[2] == pytest.approx(0.0)
+
+
 def test_win_indicator_marks_rank_one_only():
     frame = pd.DataFrame({"actual_finish_position": [1.0, 2.0, 3.0, 4.0]})
     result = subject.win_indicator(frame)

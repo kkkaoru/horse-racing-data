@@ -289,8 +289,7 @@ def derive_prob_from_rank(frame: pd.DataFrame, *, top_n: int) -> pd.Series:
         proxy = (race_sizes - ranks + 1.0) / race_sizes
     else:
         proxy = ((race_sizes - ranks + 1.0) / race_sizes) * float(top_n)
-    proxy = proxy.clip(lower=0.0, upper=float(top_n))
-    return proxy
+    return proxy.fillna(0.0).clip(lower=0.0, upper=float(top_n))
 
 
 def win_indicator(frame: pd.DataFrame) -> pd.Series:

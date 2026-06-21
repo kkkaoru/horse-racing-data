@@ -313,8 +313,8 @@ def query_finish_position_metrics(
 ) -> FinishPositionMetrics | None:
     """Query served predictions and results for a date, return metrics.
 
-    Uses DISTINCT ON keibajo_code, race_bango to pick the latest-generated
-    prediction per race (handles multiple model versions / re-runs).
+    Uses DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango) to pick the
+    latest-generated prediction per horse per race (handles multiple model versions / re-runs).
     """
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]

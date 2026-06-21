@@ -264,6 +264,17 @@ def test_merge_bucket_weights_raises_when_score_missing():
     assert "is_weak_bucket_score" in str(info.value)
 
 
+def test_merge_bucket_weights_deduplicates_bucket_df_by_race_id():
+    """Duplicate race_ids in bucket_df must not multiply training rows."""
+    train_df = _feature_df()  # 4 rows: 2 horses × 2 races
+    bucket_df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2"],  # r1 appears twice
+        "is_weak_bucket_score": [1.0, 0.5, 0.0],
+    })
+    out = subject.merge_bucket_weights_into_train(train_df, bucket_df)
+    assert len(out) == len(train_df)  # no row multiplication
+
+
 def test_attach_sample_weights_uses_time_decay_only_when_no_bucket_column():
     train_df = _feature_df()
     out = subject.attach_sample_weights(train_df, alpha=0.5)
