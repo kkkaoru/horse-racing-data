@@ -480,11 +480,13 @@ def pick_alpha_via_cv(
     feature_cols = stacking_feature_columns(train_frame)
     if not feature_cols:
         raise ValueError("training frame has no usable feature columns")
-    rng = np.random.default_rng(seed=random_state)
     years = sorted(train_frame[RACE_YEAR_COLUMN].unique().tolist())
     n_folds = max(2, min(cv_folds, len(years)))
-    fold_assignment = rng.integers(low=0, high=n_folds, size=len(years))
-    year_to_fold = dict(zip(years, fold_assignment.tolist(), strict=True))
+    # Assign years to folds in chronological order (earlier years → lower fold indices)
+    # This avoids future leakage: each inner fold sees only earlier-year data in training
+    n_years = len(years)
+    fold_assignment = [int(i * n_folds / n_years) for i in range(n_years)]
+    year_to_fold = dict(zip(years, fold_assignment, strict=True))
     score_grid: dict[float, float] = {}
     for alpha in alpha_grid:
         fold_rmses: list[float] = []

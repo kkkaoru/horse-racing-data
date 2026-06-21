@@ -740,6 +740,18 @@ def test_load_calibration_map_raises_when_root_not_object(tmp_path: Path):
     assert "top-level object" in str(info.value)
 
 
+def test_load_calibration_map_raises_when_breakpoints_not_monotone(tmp_path: Path):
+    path = tmp_path / "iso.json"
+    path.write_text(
+        json.dumps({"jra": [[0.0, 0.1], [0.8, 0.7], [0.5, 0.5]]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as info:
+        subject.load_calibration_map(path)
+    assert "monotonically non-decreasing" in str(info.value)
+    assert "jra" in str(info.value)
+
+
 def test_apply_calibration_returns_input_when_map_empty():
     predictions = _predictions_frame()
     out = subject.apply_calibration(predictions, {}, "jra")

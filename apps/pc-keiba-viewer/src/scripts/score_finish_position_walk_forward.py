@@ -484,6 +484,13 @@ def load_calibration_map(path: Path | None) -> dict[str, list[list[float]]]:
         raise ValueError(
             f"calibration JSON must be a top-level object, got {type(parsed)!r}",
         )
+    for key, pairs in parsed.items():
+        xs = [float(p[0]) for p in pairs]
+        if not all(xs[i] <= xs[i + 1] for i in range(len(xs) - 1)):
+            raise ValueError(
+                f"calibration breakpoints for bucket {key!r} must be monotonically "
+                f"non-decreasing, got {xs!r}",
+            )
     return cast(dict[str, list[list[float]]], parsed)
 
 
