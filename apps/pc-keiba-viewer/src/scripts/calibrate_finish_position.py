@@ -483,7 +483,7 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
 
 
 def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
-    schema_ver = curve.get("schema_version")
+    schema_ver = cast("dict[str, object]", curve).get("schema_version")
     if schema_ver is not None and schema_ver != CALIBRATION_SCHEMA_VERSION:
         raise ValueError(
             f"calibration file schema_version={schema_ver!r} "

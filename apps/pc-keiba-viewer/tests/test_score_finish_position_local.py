@@ -193,9 +193,9 @@ def test_write_predictions_parquet_partitions_by_category_and_year(tmp_path: Pat
 def test_write_predictions_parquet_passes_delete_matching_behavior(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    captured_kwargs: list[dict] = []
+    captured_kwargs: list[dict[str, object]] = []
 
-    def mock_to_parquet(self, path, **kwargs):
+    def mock_to_parquet(self: pd.DataFrame, path: object, **kwargs: object) -> None:
         captured_kwargs.append(kwargs)
         # Don't actually write — just capture kwargs
 

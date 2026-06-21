@@ -182,7 +182,7 @@ def test_aggregate_fp_metrics_top3_box_hit_when_all_three_in_top3() -> None:
 def test_aggregate_fp_metrics_top3_box_zero_when_one_prediction_misses() -> None:
     # pred1 and pred2 hit, pred3 misses — place3=1 but top3_box=0
     race_rows = [[(1, 1), (2, 2), (3, 4)]]
-    top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
+    _top1, _place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
     assert place3 == 1
     assert top3_box == 0
 

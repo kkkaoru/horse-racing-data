@@ -318,7 +318,11 @@ def train_transformer(
     no_improve = 0
     for epoch in range(1, config["max_epochs"] + 1):
         train_loss = _run_epoch(model, optimizer, loss_and_grad, train_arrays, config["batch_size"], rng)
-        valid_score = evaluate_ndcg(model, valid_arrays, config["batch_size"]) if has_valid else 0.0
+        valid_score = (
+            evaluate_ndcg(model, valid_arrays, config["batch_size"])
+            if valid_arrays is not None and has_valid
+            else 0.0
+        )
         history.append({"epoch": epoch, "train_loss": train_loss, "valid_ndcg_at_3": valid_score})
         if has_valid:
             if valid_score > best_score and np.isfinite(valid_score):

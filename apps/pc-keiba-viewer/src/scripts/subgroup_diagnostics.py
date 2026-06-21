@@ -63,25 +63,43 @@ def make_subgroup_key(source_label: str, surface: str, distance_band: str) -> st
 
 def assign_subgroup_keys(df: pd.DataFrame) -> pd.Series:
     """Return a Series of subgroup key strings aligned with df's index."""
-    source_labels = df.apply(
-        lambda r: get_source_label(str(r["source"]), str(r["keibajo_code"])),
-        axis=1,
+    source = df["source"].astype(str)
+    keibajo_code = df["keibajo_code"].astype(str)
+    track_code = df["track_code"].astype(str)
+    kyori = df["kyori"].astype(int)
+
+    source_labels = np.select(
+        [keibajo_code == BANEI_KEIBAJO_CODE, source == "jra"],
+        ["banei", "jra"],
+        default="nar",
     )
-    surfaces = df.apply(
-        lambda r: get_surface_label(str(r["track_code"]), source_labels[r.name]),
-        axis=1,
-    )
-    bands = df["kyori"].apply(lambda k: get_distance_band(int(k)))
-    return pd.Series(
+    is_jra = source_labels == "jra"
+    surfaces = np.select(
         [
-            make_subgroup_key(src, surf, band)
-            for src, surf, band in zip(source_labels, surfaces, bands, strict=True)
+            ~is_jra,
+            is_jra & track_code.isin(JRA_TURF_CODES),
+            is_jra & track_code.isin(JRA_DIRT_CODES),
         ],
-        index=df.index,
+        ["dirt", "turf", "dirt"],
+        default="other",
     )
+    bands = np.select(
+        [
+            kyori < KYORI_BAND_SPRINT_UPPER,
+            kyori < KYORI_BAND_MILE_UPPER,
+            kyori < KYORI_BAND_INTERMEDIATE_UPPER,
+            kyori < KYORI_BAND_LONG_UPPER,
+        ],
+        ["sprint", "mile", "intermediate", "long"],
+        default="extended",
+    )
+    source_series = pd.Series(source_labels, index=df.index, dtype=str)
+    surface_series = pd.Series(surfaces, index=df.index, dtype=str)
+    band_series = pd.Series(bands, index=df.index, dtype=str)
+    return source_series + "_" + surface_series + "_" + band_series
 
 
-def _dcg_at_3(sorted_finish_positions: list[float]) -> float:
+def dcg_at_3(sorted_finish_positions: list[float]) -> float:
     dcg = 0.0
     for rank_idx, finish_pos in enumerate(sorted_finish_positions[:3], start=1):
         rel = RELEVANCE_MAP.get(int(finish_pos), 0.0)
@@ -93,7 +111,7 @@ def compute_race_ndcg(group: pd.DataFrame) -> float:
     valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
     sorted_group = valid_group.sort_values("predicted_rank")
     finish_positions = sorted_group["finish_position"].tolist()
-    dcg = _dcg_at_3(finish_positions)
+    dcg = dcg_at_3(finish_positions)
     ideal_relevances = sorted(
         (RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
         reverse=True,
@@ -108,7 +126,7 @@ def compute_race_top1(group: pd.DataFrame) -> bool:
         return False
     best = group.loc[predicted_rank.idxmin()]
     fp = best["finish_position"]
-    return pd.notna(fp) and int(fp) == 1
+    return bool(pd.notna(fp)) and int(float(str(fp))) == 1
 
 
 def compute_race_top3_box(group: pd.DataFrame) -> bool:

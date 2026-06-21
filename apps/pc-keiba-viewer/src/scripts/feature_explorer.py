@@ -81,7 +81,7 @@ class ExplorationResult(TypedDict):
     promoted: bool
 
 
-def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
+def ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
     ndcg_scores: list[float] = []
     for _, group in valid_df.groupby("race_id"):
         valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
@@ -106,7 +106,7 @@ def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
     return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
 
 
-def _xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[str]:
+def xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[str]:
     excluded = set(META_COLUMNS) | _LABEL_COLS
     return [
         c for c in feature_names
@@ -121,18 +121,18 @@ def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
         on=["race_id", "ketto_toroku_bango"],
         how="left",
     )
-    return _ndcg_at_3_from_valid_df(valid_with_pos)
+    return ndcg_at_3_from_valid_df(valid_with_pos)
 
 
 def _run_fold_xgboost(fold: FoldSplit) -> float | None:
-    feature_cols = _xgb_numeric_features(fold["train_df"], list(fold["train_df"].columns))
+    feature_cols = xgb_numeric_features(fold["train_df"], list(fold["train_df"].columns))
     if not feature_cols:
         return None
     _, result = train_xgboost_ranker(
         fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
     )
     valid_df = cast(pd.DataFrame, result["valid_predictions"])
-    return _ndcg_at_3_from_valid_df(valid_df)
+    return ndcg_at_3_from_valid_df(valid_df)
 
 
 def _run_fold_catboost(fold: FoldSplit) -> float | None:
@@ -144,7 +144,7 @@ def _run_fold_catboost(fold: FoldSplit) -> float | None:
         fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
     )
     valid_df = cast(pd.DataFrame, result["valid_predictions"])
-    return _ndcg_at_3_from_valid_df(valid_df)
+    return ndcg_at_3_from_valid_df(valid_df)
 
 
 def run_fold_with_backend(

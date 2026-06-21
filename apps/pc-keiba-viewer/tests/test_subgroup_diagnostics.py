@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import subgroup_diagnostics as subject
 
 
-def _make_ground_truth(races: list[dict]) -> pd.DataFrame:
+def _make_ground_truth(races: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 
-def _make_predictions(races: list[dict]) -> pd.DataFrame:
+def _make_predictions(races: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 
@@ -161,29 +160,29 @@ def test_assign_subgroup_keys_multiple_rows():
 
 
 def test_dcg_at_3_perfect_prediction():
-    dcg = subject._dcg_at_3([1, 2, 3])
+    dcg = subject.dcg_at_3([1, 2, 3])
     expected = 3.0 / np.log2(2) + 2.0 / np.log2(3) + 1.0 / np.log2(4)
     assert abs(dcg - expected) < 1e-9
 
 
 def test_dcg_at_3_mixed_order():
-    dcg = subject._dcg_at_3([2, 1, 3])
+    dcg = subject.dcg_at_3([2, 1, 3])
     expected = 2.0 / np.log2(2) + 3.0 / np.log2(3) + 1.0 / np.log2(4)
     assert abs(dcg - expected) < 1e-9
 
 
 def test_dcg_at_3_empty_list_returns_zero():
-    assert subject._dcg_at_3([]) == 0.0
+    assert subject.dcg_at_3([]) == 0.0
 
 
 def test_dcg_at_3_irrelevant_positions_yield_zero_contribution():
-    dcg = subject._dcg_at_3([4, 5, 6])
+    dcg = subject.dcg_at_3([4, 5, 6])
     assert dcg == 0.0
 
 
 def test_dcg_at_3_only_uses_first_three_positions():
-    dcg_short = subject._dcg_at_3([1, 2, 3])
-    dcg_long = subject._dcg_at_3([1, 2, 3, 4, 5, 6])
+    dcg_short = subject.dcg_at_3([1, 2, 3])
+    dcg_long = subject.dcg_at_3([1, 2, 3, 4, 5, 6])
     assert abs(dcg_short - dcg_long) < 1e-9
 
 

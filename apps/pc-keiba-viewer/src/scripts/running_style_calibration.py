@@ -58,7 +58,7 @@ def load_calibrators(calibrators_path: str) -> RunningStyleCalibrators:
             "Run validate_calibration_robustness.py to generate it."
         )
     raw: object = json.loads(path.read_text(encoding="utf-8"))
-    _validate_calibrators_payload(raw, calibrators_path)
+    validate_calibrators_payload(raw, calibrators_path)
     assert isinstance(raw, dict)
     raw_dict = cast(dict[str, object], raw)
     calibrators_obj = raw_dict["calibrators"]
@@ -88,7 +88,7 @@ def _build_calibration_table(table: object, cls_name: str, source: str) -> Calib
     )
 
 
-def _validate_calibrators_payload(raw: object, source: str) -> None:
+def validate_calibrators_payload(raw: object, source: str) -> None:
     if not isinstance(raw, dict):
         raise ValueError(f"Expected dict at top level in {source}")
     raw_dict = cast(dict[str, object], raw)

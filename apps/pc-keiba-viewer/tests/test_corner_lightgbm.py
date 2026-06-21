@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -176,7 +177,7 @@ def test_load_dataset_derives_vector_neighbor_features_with_mlx(
     tmp_path: Path,
 ) -> None:
     try:
-        import mlx.core  # noqa: F401
+        importlib.import_module("mlx.core")
     except (ImportError, OSError):
         pytest.skip("MLX requires Apple Silicon/macOS")
     input_path = tmp_path / "dataset.csv"

@@ -17,7 +17,7 @@ import importlib
 import json
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Callable, Protocol, TypedDict
+from typing import Callable, Protocol, TypedDict, cast
 
 BUCKET_TABLE = "running_style_model_bucket_evaluations"
 
@@ -328,7 +328,7 @@ def build_row_tuple(
 
 
 class PgCursor(Protocol):
-    pass
+    def executemany(self, query: str, params_seq: list[tuple[object, ...]], /) -> None: ...
 
 
 class PgConnection(Protocol):
@@ -338,15 +338,15 @@ class PgConnection(Protocol):
 
 def _default_psycopg_connect(pg_url: str) -> AbstractContextManager[PgConnection]:
     module = importlib.import_module("psycopg")
-    return module.connect(pg_url)
+    return cast(AbstractContextManager[PgConnection], module.connect(pg_url))
 
 
-def _default_execute_values() -> Callable[..., None]:
+def default_execute_values() -> Callable[..., None]:
     def _execute_values(
         cursor: PgCursor, sql: str, args: list[tuple[object, ...]], *, template: str
     ) -> None:
         row_sql = sql.replace("VALUES %s", f"VALUES {template}")
-        cursor.executemany(row_sql, args)  # type: ignore[attr-defined]
+        cursor.executemany(row_sql, args)
 
     return _execute_values
 
@@ -359,7 +359,7 @@ def execute_upsert(
 ) -> None:
     sql = build_upsert_sql()
     template = build_row_template()
-    runner = execute_values_fn if execute_values_fn is not None else _default_execute_values()
+    runner = execute_values_fn if execute_values_fn is not None else default_execute_values()
     with connect(pg_url) as connection:
         with connection.cursor() as cursor:
             runner(cursor, sql, rows, template=template)

@@ -454,23 +454,8 @@ def test_inner_cv_fold_assignment_is_chronologically_ordered() -> None:
 def test_inner_cv_uses_forward_chain_no_future_year_in_training() -> None:
     # When pick_alpha_via_cv trains on fold k, the training years must all be
     # strictly before the holdout years (forward-chain / expanding-window).
-    training_year_sets: list[set[int]] = []
-    holdout_year_sets: list[set[int]] = []
-
-    def recording_ridge_factory(alpha: float, random_state: int) -> object:
-        from sklearn.linear_model import Ridge
-
-        class RecordingRidge(Ridge):
-            def fit(self, x: object, y: object) -> "RecordingRidge":  # type: ignore[override]
-                return super().fit(x, y)
-
-        return RecordingRidge(alpha=alpha, random_state=random_state)
-
-    # Override pick_alpha_via_cv by intercepting via a thin wrapper that captures years
     import train_finish_position_stacking_metalearner as m
 
-    original_isin = m.pd.Series.isin  # type: ignore[attr-defined]
-    captured: list[tuple[set[int], set[int]]] = []
     frame = _multiyear_dataset([2018, 2019, 2020, 2021, 2022, 2023])
 
     # Reconstruct fold assignment using same formula as production code
@@ -620,7 +605,7 @@ def test_train_one_fold_feature_cols_derived_from_train_frame_not_full_dataset()
 
     fitted_columns: list[list[str]] = []
 
-    def capturing_ridge_factory(alpha: float, random_state: int) -> object:
+    def capturing_ridge_factory(*, alpha: float, random_state: int) -> Ridge:
         base_model = subject.default_ridge_factory(alpha=alpha, random_state=random_state)
 
         class CapturingRidge:
@@ -637,7 +622,7 @@ def test_train_one_fold_feature_cols_derived_from_train_frame_not_full_dataset()
             def get_params(self, deep: bool = True) -> dict[str, object]:
                 return base_model.get_params(deep=deep)
 
-        return CapturingRidge()
+        return cast("Ridge", CapturingRidge())
 
     # Capture the feature_cols by checking meta["feature_columns"] returned by
     # train_one_fold — that key is set from feature_cols directly after the fix.

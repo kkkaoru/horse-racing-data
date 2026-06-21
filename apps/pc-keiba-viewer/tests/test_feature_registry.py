@@ -48,6 +48,24 @@ def test_activate_sets_is_active_true_and_clears_others() -> None:
         assert active["id"] == id2
 
 
+def test_activate_nonexistent_entry_raises_value_error() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        with pytest.raises(ValueError, match="9999 does not exist"):
+            reg.activate(9999)
+
+
+def test_activate_nonexistent_leaves_existing_active_unchanged() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        id1 = reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.activate(id1)
+        with pytest.raises(ValueError, match="does not exist"):
+            reg.activate(9999)
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["id"] == id1
+
+
 def test_maybe_promote_when_ndcg_exceeds_threshold_promotes_and_returns_true() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("trial-1", 0.5, ["feat_a"])
@@ -114,7 +132,7 @@ def test_context_manager_enter_exit_works() -> None:
     with reg as r:
         r.record_trial("trial-1", 0.5, ["feat_a"])
         assert r.get_best_ndcg() == 0.5
-    assert reg._con is None
+    assert reg.con is None
 
 
 def test_feature_names_roundtrip_list_to_json_to_list() -> None:
@@ -144,7 +162,7 @@ def test_close_called_twice_is_safe() -> None:
     reg.open()
     reg.close()
     reg.close()
-    assert reg._con is None
+    assert reg.con is None
 
 
 def test_maybe_promote_first_trial_always_promotes() -> None:
@@ -226,21 +244,21 @@ def test_next_deployment_id_increments_each_time() -> None:
 def test_record_deployment_stores_timestamp() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.record_deployment(0.55, 25)
-        assert reg._con is not None
-        row = reg._con.execute("SELECT deployed_at FROM deployments").fetchone()
+        assert reg.con is not None
+        row = reg.con.execute("SELECT deployed_at FROM deployments").fetchone()
         assert row is not None
         assert row[0] != ""
 
 
 def test_sync_sequence_skips_past_manually_inserted_ids() -> None:
-    """_sync_sequence_to_table advances sequence past current max id."""
+    """sync_sequence_to_table advances sequence past current max id."""
     with subject.FeatureRegistry(Path(":memory:")) as reg:
-        assert reg._con is not None
+        assert reg.con is not None
         # Bypass sequence by inserting a row with a high id (simulates old-code row)
-        reg._con.execute(
+        reg.con.execute(
             "INSERT INTO feature_trials VALUES (100, 't0', 0.9, FALSE, '[]', '{}', '2024-01-01')"
         )
-        reg._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
+        reg.sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
         next_id = reg.record_trial("trial-new", 0.6, ["feat_a"])
         assert next_id == 101
 

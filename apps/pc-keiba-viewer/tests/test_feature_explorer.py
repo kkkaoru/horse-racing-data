@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +10,7 @@ import pytest
 
 import feature_explorer as subject
 from feature_registry import FeatureRegistry
-from finish_position_lightgbm import META_COLUMNS
+from finish_position_lightgbm import META_COLUMNS, FoldSplit
 
 
 def _make_df() -> pd.DataFrame:
@@ -44,8 +43,8 @@ def _make_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _make_fold() -> dict:
-    """FoldSplit-compatible dict with numeric feature columns."""
+def _make_fold() -> FoldSplit:
+    """FoldSplit with numeric feature columns."""
     rows = []
     for i in range(4):
         rows.append({
@@ -71,11 +70,11 @@ def _make_fold() -> dict:
             "feat_jockey": 0.3,
         })
     df = pd.DataFrame(rows)
-    return {"train_df": df, "valid_df": df.copy()}
+    return FoldSplit(train_df=df, valid_df=df.copy(), valid_year=2022)
 
 
-def _make_meta_only_fold() -> dict:
-    """FoldSplit-compatible dict with only meta and label columns — no feature columns."""
+def _make_meta_only_fold() -> FoldSplit:
+    """FoldSplit with only meta and label columns — no feature columns."""
     rows = []
     for i in range(4):
         rows.append({
@@ -99,7 +98,7 @@ def _make_meta_only_fold() -> dict:
             "target_running_style_class": 0,
         })
     df = pd.DataFrame(rows)
-    return {"train_df": df, "valid_df": df.copy()}
+    return FoldSplit(train_df=df, valid_df=df.copy(), valid_year=2022)
 
 
 def _make_df_3years() -> pd.DataFrame:
@@ -176,13 +175,13 @@ def test_ndcg_at_3_from_valid_df_perfect_ranking_returns_one() -> None:
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(1.0)
 
 
 def test_ndcg_at_3_from_valid_df_empty_df_returns_zero() -> None:
     df = pd.DataFrame(columns=["race_id", "predicted_rank", "finish_position"])
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(0.0)
 
 
@@ -193,7 +192,7 @@ def test_ndcg_at_3_from_valid_df_worst_ranking_is_less_than_one() -> None:
         "predicted_rank": [4, 3, 2, 1],
         "finish_position": [1, 2, 3, 4],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result < 1.0
     assert result >= 0.0
 
@@ -205,7 +204,7 @@ def test_ndcg_at_3_from_valid_df_multiple_races_returns_mean() -> None:
         "predicted_rank": [1, 2, 3, 3, 2, 1],
         "finish_position": [1, 2, 3, 1, 2, 3],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert 0.0 < result <= 1.0
 
 
@@ -215,7 +214,7 @@ def test_ndcg_at_3_from_valid_df_two_horse_race_perfect_returns_one() -> None:
         "predicted_rank": [1, 2],
         "finish_position": [1, 2],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(1.0)
 
 
@@ -226,7 +225,7 @@ def test_ndcg_at_3_from_valid_df_skips_race_with_no_relevant_finishers() -> None
         "predicted_rank": [1, 2, 1, 2, 3, 4],
         "finish_position": [4, 5, 1, 2, 3, 4],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(1.0)
 
 
@@ -239,7 +238,7 @@ def test_ndcg_at_3_from_valid_df_nan_predicted_rank_penalises_ideal() -> None:
         "predicted_rank": [float("nan"), 1.0, 2.0],
         "finish_position": [1.0, 2.0, 3.0],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert 0.0 < result < 1.0
 
 
@@ -252,7 +251,7 @@ def test_ndcg_at_3_from_valid_df_nan_finish_position_excluded_from_dcg_slot() ->
         "predicted_rank": [1.0, 2.0],
         "finish_position": [float("nan"), 1.0],
     })
-    result = subject._ndcg_at_3_from_valid_df(df)
+    result = subject.ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(1.0)
 
 
@@ -266,20 +265,20 @@ def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -
         "finish_position": [1],
         "umaban": [1],
     })
-    result = subject._xgb_numeric_features(df, list(df.columns))
+    result = subject.xgb_numeric_features(df, list(df.columns))
     assert result == ["feat_numeric"]
 
 
 def test_xgb_numeric_features_returns_empty_when_only_meta_and_label() -> None:
     fold = _make_meta_only_fold()
     df = fold["train_df"]
-    result = subject._xgb_numeric_features(df, list(df.columns))
+    result = subject.xgb_numeric_features(df, list(df.columns))
     assert result == []
 
 
 def test_xgb_numeric_features_excludes_all_meta_columns() -> None:
     df = _make_df()
-    result = subject._xgb_numeric_features(df, list(df.columns))
+    result = subject.xgb_numeric_features(df, list(df.columns))
     assert not (set(result) & set(META_COLUMNS))
 
 

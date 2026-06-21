@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,13 +31,15 @@ from feature_registry import FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
 from walk_forward_common import atomic_write_metadata
 
+_psutil: types.ModuleType | None = None
+_psutil_available = False
 try:
-    import psutil as _psutil
+    import psutil
 
-    _PSUTIL_AVAILABLE: bool = True
+    _psutil = psutil
+    _psutil_available = True
 except ImportError:
-    _psutil = None  # type: ignore[assignment]
-    _PSUTIL_AVAILABLE = False
+    pass
 
 _logger = logging.getLogger(__name__)
 
@@ -73,10 +76,10 @@ DEFAULT_N_TRIALS: Final[int] = 20
 DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 
-_CONTAINER_MODELS_ROOT: Final[str] = (
+CONTAINER_MODELS_ROOT: Final[str] = (
     "apps/finish-position-predict-container/models/finish-position"
 )
-_MODEL_META_JSON_PATH: Final[str] = (
+MODEL_META_JSON_PATH: Final[str] = (
     "apps/finish-position-predict-container/src/predict_lib/model_meta.json"
 )
 
@@ -103,13 +106,13 @@ class AdaptiveLoadController:
         mem_high_pct: float = 80.0,
         mem_low_pct: float = 60.0,
     ) -> None:
-        self._base_n_trials = base_n_trials
-        self._min_n_trials = min_n_trials
-        self._max_n_trials = max_n_trials
-        self._cpu_high_pct = cpu_high_pct
-        self._cpu_low_pct = cpu_low_pct
-        self._mem_high_pct = mem_high_pct
-        self._mem_low_pct = mem_low_pct
+        self.base_n_trials: int = base_n_trials
+        self.min_n_trials: int = min_n_trials
+        self.max_n_trials: int = max_n_trials
+        self.cpu_high_pct: float = cpu_high_pct
+        self.cpu_low_pct: float = cpu_low_pct
+        self.mem_high_pct: float = mem_high_pct
+        self.mem_low_pct: float = mem_low_pct
 
     def adjusted_n_trials(self) -> int:
         """Return trial count scaled by current system load (delegates to round_params)."""
@@ -121,23 +124,23 @@ class AdaptiveLoadController:
 
     def round_params(self) -> tuple[int, float]:
         """Read CPU/mem once and return (n_trials, sleep_secs) for the upcoming round."""
-        cpu = self._cpu_percent()
-        mem = self._mem_percent()
-        if cpu > self._cpu_high_pct or mem > self._mem_high_pct:
-            return max(round(self._base_n_trials * 0.5), self._min_n_trials), 5.0
-        if cpu < self._cpu_low_pct and mem < self._mem_low_pct:
-            return min(round(self._base_n_trials * 1.25), self._max_n_trials), 0.0
-        return self._base_n_trials, 0.0
+        cpu = self.cpu_percent()
+        mem = self.mem_percent()
+        if cpu > self.cpu_high_pct or mem > self.mem_high_pct:
+            return max(round(self.base_n_trials * 0.5), self.min_n_trials), 5.0
+        if cpu < self.cpu_low_pct and mem < self.mem_low_pct:
+            return min(round(self.base_n_trials * 1.25), self.max_n_trials), 0.0
+        return self.base_n_trials, 0.0
 
-    def _cpu_percent(self) -> float:
+    def cpu_percent(self) -> float:
         """psutil.cpu_percent(interval=0.5). Returns 0.0 if psutil not installed."""
-        if not _PSUTIL_AVAILABLE:
+        if not _psutil_available or _psutil is None:
             return 0.0
         return float(_psutil.cpu_percent(interval=0.5))
 
-    def _mem_percent(self) -> float:
+    def mem_percent(self) -> float:
         """psutil.virtual_memory().percent. Returns 0.0 if psutil not installed."""
-        if not _PSUTIL_AVAILABLE:
+        if not _psutil_available or _psutil is None:
             return 0.0
         return float(_psutil.virtual_memory().percent)
 
@@ -169,21 +172,21 @@ class ContinuousLearner:
         self._scripts_dir: Path = scripts_dir
         self._docker_image_tag: str = docker_image_tag
         self._n_trials: int = n_trials_per_round
-        self._validation_years: list[int] = (
+        self.validation_years: list[int] = (
             list(validation_years)
             if validation_years is not None
             else list(DEFAULT_VALIDATION_YEARS)
         )
-        if not self._validation_years:
+        if not self.validation_years:
             raise ValueError("validation_years must be a non-empty list of years")
         self._train_start: str = train_start
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
-        self._stop: bool = False
+        self.stop: bool = False
         self._load_controller: AdaptiveLoadController | None = load_controller
 
     def request_stop(self) -> None:
-        self._stop = True
+        self.stop = True
 
     def run(self, max_rounds: int | None = None) -> None:
         round_label = f"max {max_rounds} rounds" if max_rounds is not None else "unlimited"
@@ -194,7 +197,7 @@ class ContinuousLearner:
             self._n_trials,
         )
         round_num = 0
-        while not self._stop:
+        while not self.stop:
             if max_rounds is not None and round_num >= max_rounds:
                 _logger.info("reached max rounds (%d) — stopping", max_rounds)
                 break
@@ -215,8 +218,8 @@ class ContinuousLearner:
             )
             _logger.info("─── round %s started (trials: %d) ───", progress, actual_trials)
             _round_t0 = time.perf_counter()
-            self._explore_round(round_num, n_trials=actual_trials)
-            self._maybe_deploy()
+            self.explore_round(round_num, n_trials=actual_trials)
+            self.maybe_deploy()
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
@@ -235,19 +238,19 @@ class ContinuousLearner:
             "━━━ continuous learning loop finished ━━━  completed rounds: %d", round_num
         )
 
-    def _explore_round(self, round_num: int, n_trials: int) -> None:
+    def explore_round(self, round_num: int, n_trials: int) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=study_name,
             n_trials=n_trials,
-            validation_years=self._validation_years,
+            validation_years=self.validation_years,
             train_start=self._train_start,
             backends=self._backends,
         )
 
-    def _maybe_deploy(self) -> None:
+    def maybe_deploy(self) -> None:
         active = self._registry.get_active_entry()
         if active is None:
             _logger.debug("no active entry — skipping deploy")
@@ -270,11 +273,11 @@ class ContinuousLearner:
             deployed_ndcg,
             active["ndcg_at_3"],
         )
-        self._deploy(active)
+        self.deploy(active)
 
-    def _deploy(self, entry: FeatureEntry) -> None:
+    def deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]
-        model_version = self._make_model_version()
+        model_version = self.make_model_version()
         _logger.info("┌── deploy started %s", "─" * 44)
         _logger.info("│  version    : %s", model_version)
         _logger.info("│  ndcg@3     : %.4f", entry["ndcg_at_3"])
@@ -290,31 +293,31 @@ class ContinuousLearner:
                     self._df, feature_names, tmp_path / "parquet"
                 )
                 _logger.info("│  [2/5] training production model ...")
-                model_dir = self._train_production_model(
+                model_dir = self.train_production_model(
                     filtered_parquet, tmp_path / "models", model_version
                 )
                 _logger.info("│  [3/5] staging model artifacts ...")
-                staged_dest = self._stage_model(model_dir, feature_names, model_version)
+                staged_dest = self.stage_model(model_dir, feature_names, model_version)
             _logger.info("│  [4/5] updating model_meta.json ...")
-            prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
+            prev_meta_content = self.update_model_meta_json(model_version, len(feature_names))
             _logger.info("│  [5/5] rebuilding Docker image ...")
-            self._rebuild_docker()
+            self.rebuild_docker()
             self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         except Exception:
             _logger.error("│  deploy failed — rolling back staged artifacts")
-            self._rollback_deploy(staged_dest, prev_meta_content)
+            self.rollback_deploy(staged_dest, prev_meta_content)
             raise
         _logger.info("└── deploy finished %s", "─" * 44)
 
-    def _make_model_version(self) -> str:
+    def make_model_version(self) -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         return f"auto-{self._category}-{ts}"
 
-    def _train_production_model(
+    def train_production_model(
         self, parquet_path: Path, model_root: Path, model_version: str
     ) -> Path:
         script_name = _TRAINING_SCRIPT[self._category]
-        year_to = max(self._validation_years)
+        year_to = max(self.validation_years)
         _logger.info("│    script: %s  target year: %d", script_name, year_to)
         cmd = [
             sys.executable,
@@ -339,7 +342,7 @@ class ContinuousLearner:
         subprocess.run(cmd, check=True, timeout=DEFAULT_TRAINING_TIMEOUT_S)
         return model_root / self._category / "iter0" / f"fold-{year_to}"
 
-    def _stage_model(
+    def stage_model(
         self, model_dir: Path, feature_names: list[str], model_version: str
     ) -> Path:
         model_json = model_dir / "model.json"
@@ -348,7 +351,7 @@ class ContinuousLearner:
                 f"model.json not found in fold directory: {model_json}. "
                 "Re-train this fold without --resume-from-checkpoint to regenerate."
             )
-        dest = self._repo_root / _CONTAINER_MODELS_ROOT / self._category / model_version
+        dest = self._repo_root / CONTAINER_MODELS_ROOT / self._category / model_version
         dest.mkdir(parents=True, exist_ok=True)
         shutil.copy2(model_json, dest / "model.json")
         (dest / "metadata.json").write_text(
@@ -358,8 +361,8 @@ class ContinuousLearner:
         _logger.info("│    staged to: %s", dest)
         return dest
 
-    def _update_model_meta_json(self, model_version: str, feature_count: int) -> str:
-        json_path = self._repo_root / _MODEL_META_JSON_PATH
+    def update_model_meta_json(self, model_version: str, feature_count: int) -> str:
+        json_path = self._repo_root / MODEL_META_JSON_PATH
         if not json_path.exists():
             raise FileNotFoundError(f"model_meta.json not found: {json_path}")
         prev_content = json_path.read_text(encoding="utf-8")
@@ -384,7 +387,7 @@ class ContinuousLearner:
         )
         return prev_content
 
-    def _rebuild_docker(self) -> None:
+    def rebuild_docker(self) -> None:
         dockerfile = (
             self._repo_root
             / "apps"
@@ -407,7 +410,7 @@ class ContinuousLearner:
         )
         _logger.info("│    Docker build succeeded")
 
-    def _rollback_deploy(self, staged_dest: Path | None, prev_meta_content: str | None) -> None:
+    def rollback_deploy(self, staged_dest: Path | None, prev_meta_content: str | None) -> None:
         """Remove staged artifacts and restore model_meta.json after a failed deploy."""
         if staged_dest is not None:
             try:
@@ -419,7 +422,7 @@ class ContinuousLearner:
         if prev_meta_content is None:
             return
         try:
-            json_path = self._repo_root / _MODEL_META_JSON_PATH
+            json_path = self._repo_root / MODEL_META_JSON_PATH
             temp_path = json_path.with_suffix(json_path.suffix + ".tmp")
             temp_path.write_text(prev_meta_content, encoding="utf-8")
             os.replace(temp_path, json_path)
@@ -428,7 +431,7 @@ class ContinuousLearner:
             _logger.error("│    [rollback] failed to restore model_meta.json: %s", exc)
 
 
-def _setup_signal_handler(learner: ContinuousLearner) -> None:
+def setup_signal_handler(learner: ContinuousLearner) -> None:
     def _handler(signum: int, _frame: object) -> None:
         _ = signum
         learner.request_stop()
@@ -479,7 +482,7 @@ def main(argv: list[str] | None = None) -> None:
             deploy_threshold=float(args.deploy_threshold),
             load_controller=load_controller,
         )
-        _setup_signal_handler(learner)
+        setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)
 
 

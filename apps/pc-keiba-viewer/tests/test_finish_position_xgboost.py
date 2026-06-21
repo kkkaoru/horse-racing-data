@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from typing import cast
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -188,71 +189,71 @@ def test_build_group_sizes_single_race():
 
 
 # ---------------------------------------------------------------------------
-# _top1_hit
+# top1_hit
 # ---------------------------------------------------------------------------
 
-def test_top1_hit_returns_one_when_predicted_rank1_finished_first():
+def testtop1_hit_returns_one_when_predicted_rank1_finished_first():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3],
         "finish_position": [1.0, 2.0, 3.0],
     })
-    assert subject._top1_hit(g) == 1
+    assert subject.top1_hit(g) == 1
 
 
-def test_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
+def testtop1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3],
         "finish_position": [2.0, 1.0, 3.0],
     })
-    assert subject._top1_hit(g) == 0
+    assert subject.top1_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
-# _top3_box_hit
+# top3_box_hit
 # ---------------------------------------------------------------------------
 
-def test_top3_box_hit_returns_one_when_all_three_finish_in_top3():
+def testtop3_box_hit_returns_one_when_all_three_finish_in_top3():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 3.0, 2.0, 4.0],
     })
-    assert subject._top3_box_hit(g) == 1
+    assert subject.top3_box_hit(g) == 1
 
 
-def test_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
+def testtop3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
-    assert subject._top3_box_hit(g) == 0
+    assert subject.top3_box_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
-# _top3_exact_hit
+# top3_exact_hit
 # ---------------------------------------------------------------------------
 
-def test_top3_exact_hit_returns_one_when_all_ranks_match():
+def testtop3_exact_hit_returns_one_when_all_ranks_match():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 3.0, 4.0],
     })
-    assert subject._top3_exact_hit(g) == 1
+    assert subject.top3_exact_hit(g) == 1
 
 
-def test_top3_exact_hit_returns_zero_when_only_two_match():
+def testtop3_exact_hit_returns_zero_when_only_two_match():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
-    assert subject._top3_exact_hit(g) == 0
+    assert subject.top3_exact_hit(g) == 0
 
 
-def test_top3_exact_hit_returns_zero_when_first_place_wrong():
+def testtop3_exact_hit_returns_zero_when_first_place_wrong():
     g = pd.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [2.0, 1.0, 3.0, 4.0],
     })
-    assert subject._top3_exact_hit(g) == 0
+    assert subject.top3_exact_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +592,7 @@ def test_train_xgboost_ranker_returns_metrics_and_booster(
     assert booster is fake_booster
     assert result["best_iteration"] == 7
     assert "valid_predictions" in result
-    metrics = result["metrics"]
+    metrics = cast(dict[str, float], result["metrics"])
     assert "top1_accuracy" in metrics
     assert "top3_box_accuracy" in metrics
     assert "top3_exact_accuracy" in metrics
@@ -635,7 +636,7 @@ def test_train_xgboost_ranker_passes_sample_weight_to_dmatrix(
     train_call = dmatrix_calls[0]
     assert train_call["weight"] is not None, "sample_weight was not passed to xgb.DMatrix"
     np.testing.assert_array_almost_equal(
-        train_call["weight"], np.array([1.5, 2.0]),
+        cast(np.ndarray, train_call["weight"]), np.array([1.5, 2.0]),
     )
 
 
@@ -740,7 +741,7 @@ def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch.setattr(subject.xgb, "train", MagicMock(return_value=fake_booster))
     args = _make_args()
     _, result = subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
-    preds = result["valid_predictions"]
+    preds = cast(pd.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.8 (row 1) gets rank 1
     assert preds["predicted_rank"].tolist() == [2, 1]
 

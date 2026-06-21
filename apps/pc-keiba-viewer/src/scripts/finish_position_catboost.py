@@ -143,7 +143,7 @@ def race_group_ids(df: pd.DataFrame) -> np.ndarray:
     return df["race_id"].astype("category").cat.codes.to_numpy()
 
 
-def _prepare_feature_matrix(
+def prepare_feature_matrix(
     df: pd.DataFrame, feature_cols: list[str], cat_indices: list[int],
 ) -> pd.DataFrame:
     cat_set = {feature_cols[i] for i in cat_indices}
@@ -171,8 +171,8 @@ def train_catboost_ranker(
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     use_cat = not getattr(args, "no_cat_features", False)
     cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
-    train_features = _prepare_feature_matrix(train_df, feature_cols, cat_indices)
-    valid_features = _prepare_feature_matrix(valid_df, feature_cols, cat_indices)
+    train_features = prepare_feature_matrix(train_df, feature_cols, cat_indices)
+    valid_features = prepare_feature_matrix(valid_df, feature_cols, cat_indices)
     train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
     train_pool = Pool(
         data=train_features,
@@ -226,19 +226,19 @@ def train_catboost_ranker(
     }
 
 
-def _cb_top1_hit(g: pd.DataFrame) -> int:
+def cb_top1_hit(g: pd.DataFrame) -> int:
     return int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any())
 
 
-def _cb_top3_box_hit(g: pd.DataFrame) -> int:
+def cb_top3_box_hit(g: pd.DataFrame) -> int:
     return int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3)
 
 
 def compute_fold_metrics(valid_df: pd.DataFrame) -> dict[str, float]:
     groups = [g for _, g in valid_df.groupby("race_id")]
     race_count = len(groups)
-    top1_hits = [_cb_top1_hit(g) for g in groups]
-    top3_box = [_cb_top3_box_hit(g) for g in groups]
+    top1_hits = [cb_top1_hit(g) for g in groups]
+    top3_box = [cb_top3_box_hit(g) for g in groups]
     return {
         "race_count": race_count,
         "valid_rows": int(len(valid_df)),

@@ -485,7 +485,7 @@ def test_main_reads_file_normalizes_rows_and_calls_execute_upsert(
 
 
 def test_default_execute_values_uses_executemany_not_psycopg_extras():
-    fn = subject._default_execute_values()
+    fn = subject.default_execute_values()
     cursor_mock = MagicMock()
     sql = "INSERT INTO t (a, b, evaluated_at) VALUES %s ON CONFLICT (a) DO UPDATE SET b = excluded.b"
     template = "(%s, %s, now())"

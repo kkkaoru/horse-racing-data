@@ -66,6 +66,10 @@ class ParquetReaderLike(Protocol):
     def __call__(self, path: Path) -> pd.DataFrame: ...
 
 
+class SaveModelLike(Protocol):
+    def save_model(self, fname: str, format: str) -> None: ...
+
+
 class FoldTrainerLike(Protocol):
     def __call__(
         self,
@@ -331,7 +335,7 @@ def train_fold(
     saved_model = fold_result.get("model")
     if saved_model is not None:
         model_dir.mkdir(parents=True, exist_ok=True)
-        saved_model.save_model(str(model_dir / "model.json"), format="json")
+        cast(SaveModelLike, saved_model).save_model(str(model_dir / "model.json"), format="json")
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,
