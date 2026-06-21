@@ -37,6 +37,7 @@ from running_style_calibration import (
 )
 from running_style_lightgbm import (
     PROBABILITY_COLUMNS,
+    detect_categorical_features,
     predict_softmax,
     resolve_feature_columns,
 )
@@ -132,7 +133,7 @@ def score_frame(
     calibrators: RunningStyleCalibrators | None = None,
 ) -> pd.DataFrame:
     feature_columns = resolve_feature_columns(list(frame.columns))
-    probabilities = predict_softmax(booster, frame, feature_columns, [])
+    probabilities = predict_softmax(booster, frame, feature_columns, detect_categorical_features(feature_columns))
     if calibrators is not None:
         probabilities = apply_calibration(probabilities, calibrators)
     race_keys = select_race_key_frame(frame)
