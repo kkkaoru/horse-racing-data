@@ -42,7 +42,8 @@ SUPPORTED_MODES: tuple[str, str] = (MODE_FIT, MODE_APPLY)
 
 CATEGORY_JRA: str = "jra"
 CATEGORY_NAR: str = "nar"
-SUPPORTED_CATEGORIES: tuple[str, str] = (CATEGORY_JRA, CATEGORY_NAR)
+CATEGORY_BANEI: str = "ban-ei"
+SUPPORTED_CATEGORIES: tuple[str, str, str] = (CATEGORY_JRA, CATEGORY_NAR, CATEGORY_BANEI)
 
 BUCKET_DIM_KYOSO_JOKEN: str = "kyoso_joken"
 BUCKET_DIM_GRADE: str = "grade"
@@ -419,8 +420,7 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
     for raw_value in bucket_values:
         bucket_key = normalize_bucket_key(raw_value)
         bucket_frame = frame[frame[column] == raw_value]
-        bucket_races = race_count_from_frame(bucket_frame)
-        if bucket_races < args["min_bucket_samples"]:
+        if len(bucket_frame) < args["min_bucket_samples"]:
             continue
         pair = fit_curves_for_frame(bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now)
         write_curve_pair(

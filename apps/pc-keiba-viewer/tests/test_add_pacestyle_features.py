@@ -186,6 +186,22 @@ def test_append_features_sql_emits_all_ten_pacestyle_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet", "jra")
     assert "past_style_x_field_pace_match" in sql
     assert "sire_x_field_pace_score" in sql
+
+
+def test_append_features_sql_pace_cross_terms_use_case_when_not_coalesce() -> None:
+    """NULL past_nige_rate_self/sire_nige_rate must propagate NULL, not 0.
+
+    The cross-term columns must use CASE WHEN IS NOT NULL instead of coalesce(, 0)
+    so that horses with no style history produce NULL (unknown) rather than 0.0
+    (falsely implying zero style-pace interaction).
+    """
+    sql = subject.append_features_sql("dummy.parquet", "jra")
+    assert "CASE WHEN b.past_nige_rate_self IS NOT NULL" in sql
+    assert "CASE WHEN b.sire_nige_rate IS NOT NULL" in sql
+    assert "coalesce(b.past_nige_rate_self, 0)" not in sql
+    # coalesce(b.sire_nige_rate, 0) appears inside rs_sire_style_match where it is already
+    # guarded by CASE WHEN rs.rs_p_nige IS NOT NULL — verify the unguarded form is absent
+    assert "coalesce(b.past_oikomi_rate_self, 0)" not in sql
     assert "rs_p_nige" in sql
     assert "rs_p_senkou" in sql
     assert "rs_p_sashi" in sql

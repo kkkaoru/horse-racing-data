@@ -248,16 +248,18 @@ def append_features_sql(input_glob: str, category: str) -> str:
     so in production both will be populated).
     """
     base_extra = (
-        "(coalesce(b.past_nige_rate_self, 0) * coalesce(b.field_nige_pressure, 0)"
-        " + coalesce(b.past_senkou_rate_self, 0) * coalesce(b.field_senkou_pressure, 0)"
-        " + coalesce(b.past_sashi_rate_self, 0) * coalesce(b.field_sashi_pressure, 0)"
-        " + coalesce(b.past_oikomi_rate_self, 0) * coalesce(b.field_oikomi_pressure, 0))"
-        " as past_style_x_field_pace_match,\n"
-        " (coalesce(b.sire_nige_rate, 0) * coalesce(b.field_nige_pressure, 0)"
-        " + coalesce(b.sire_senkou_rate, 0) * coalesce(b.field_senkou_pressure, 0)"
-        " + coalesce(b.sire_sashi_rate, 0) * coalesce(b.field_sashi_pressure, 0)"
-        " + coalesce(b.sire_oikomi_rate, 0) * coalesce(b.field_oikomi_pressure, 0))"
-        " as sire_x_field_pace_score"
+        "CASE WHEN b.past_nige_rate_self IS NOT NULL THEN"
+        " b.past_nige_rate_self * coalesce(b.field_nige_pressure, 0)"
+        " + b.past_senkou_rate_self * coalesce(b.field_senkou_pressure, 0)"
+        " + b.past_sashi_rate_self * coalesce(b.field_sashi_pressure, 0)"
+        " + b.past_oikomi_rate_self * coalesce(b.field_oikomi_pressure, 0)"
+        " END as past_style_x_field_pace_match,\n"
+        " CASE WHEN b.sire_nige_rate IS NOT NULL THEN"
+        " b.sire_nige_rate * coalesce(b.field_nige_pressure, 0)"
+        " + b.sire_senkou_rate * coalesce(b.field_senkou_pressure, 0)"
+        " + b.sire_sashi_rate * coalesce(b.field_sashi_pressure, 0)"
+        " + b.sire_oikomi_rate * coalesce(b.field_oikomi_pressure, 0)"
+        " END as sire_x_field_pace_score"
     )
 
     rs_extra = (

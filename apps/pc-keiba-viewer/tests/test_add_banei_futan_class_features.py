@@ -44,6 +44,15 @@ def test_futan_bucket_sql_has_7_buckets() -> None:
     assert "else 6" in sql, "missing catch-all bucket 6"
 
 
+def test_stage_horse_pedigree_uses_ketto_joho_05a_for_damsire() -> None:
+    """damsire_id must come from ketto_joho_05a (damsire), not ketto_joho_04a (dam)."""
+    import inspect
+
+    src = inspect.getsource(subject.stage_horse_pedigree)
+    assert "ketto_joho_05a" in src
+    assert "ketto_joho_04a" not in src
+
+
 def test_append_features_sql_contains_futan_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "current_futan_class" in sql

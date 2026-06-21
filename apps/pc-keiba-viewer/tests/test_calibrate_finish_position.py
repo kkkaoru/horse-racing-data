@@ -1063,6 +1063,48 @@ def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixtu
     assert captured.err == ""
 
 
+def test_fit_run_uses_row_count_not_race_count_for_bucket_threshold(tmp_path: Path):
+    """min_bucket_samples compares against len(bucket_frame), not unique race count."""
+    # 1 race, 10 horses → row_count=10, race_count=1.
+    # min_bucket_samples=5: row_count (10) >= 5 → bucket must be written (not fallback).
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 10,
+        "ketto_toroku_bango": [f"horse_{i}" for i in range(10)],
+        "predicted_score": [float(i) / 10 for i in range(10)],
+        "predicted_rank": list(range(1, 11)),
+        "predicted_top1_prob": [float(i) / 10 for i in range(10)],
+        "predicted_top3_prob": [min(float(i) / 10 * 3, 1.0) for i in range(10)],
+        "actual_finish_position": [float(i + 1) for i in range(10)],
+        "kyoso_joken_code": ["016"] * 10,
+        "grade_code": ["B"] * 10,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    assert result["buckets_written"] == 1
+    assert result["fallback_used"] is False
+
+
+def test_supported_categories_includes_banei():
+    assert subject.CATEGORY_BANEI == "ban-ei"
+    assert "ban-ei" in subject.SUPPORTED_CATEGORIES
+
+
 def test_default_write_calibration_json_round_trip(tmp_path: Path):
     payload = _g1_iso_top1_curve()
     out_path = tmp_path / "bucket_999" / "iso.json"

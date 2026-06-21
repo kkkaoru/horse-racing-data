@@ -132,7 +132,7 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
         select
           ketto_toroku_bango,
           nullif(trim(ketto_joho_01a), '') as sire_id,
-          nullif(trim(ketto_joho_04a), '') as damsire_id
+          nullif(trim(ketto_joho_05a), '') as damsire_id
         from pg.nvd_um
         where ketto_toroku_bango is not null
         """
