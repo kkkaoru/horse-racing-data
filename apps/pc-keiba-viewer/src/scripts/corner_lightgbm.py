@@ -617,6 +617,8 @@ def top_vector_neighbor_candidates(
     squared_distances: FloatArray,
 ) -> tuple[IntArray, FloatArray]:
     top_count = min(VECTOR_NEIGHBOR_MAX_CANDIDATES, len(candidate_positions))
+    if top_count == 0:
+        return candidate_positions, np.sqrt(squared_distances)
     top_local = np.argpartition(squared_distances, top_count - 1)[:top_count]
     top_local = top_local[np.argsort(squared_distances[top_local])]
     return candidate_positions[top_local], np.sqrt(squared_distances[top_local])

@@ -6,7 +6,6 @@ import argparse
 import json
 import math
 from collections.abc import Callable
-from pathlib import Path
 from typing import Final, Literal, TypedDict, cast
 
 import optuna

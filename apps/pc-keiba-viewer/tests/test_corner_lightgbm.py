@@ -284,6 +284,26 @@ def test_lightgbm_gpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert model.fit_calls == 2
 
 
+def test_top_vector_neighbor_candidates_empty_input_returns_empty() -> None:
+    empty_positions = np.array([], dtype=np.int64)
+    empty_distances = np.array([], dtype=np.float64)
+
+    positions, distances = subject.top_vector_neighbor_candidates(empty_positions, empty_distances)
+
+    assert len(positions) == 0
+    assert len(distances) == 0
+
+
+def test_top_vector_neighbor_candidates_selects_closest() -> None:
+    candidate_positions = np.array([0, 1, 2, 3], dtype=np.int64)
+    squared_distances = np.array([9.0, 1.0, 4.0, 16.0], dtype=np.float64)
+
+    positions, distances = subject.top_vector_neighbor_candidates(candidate_positions, squared_distances)
+
+    assert positions[0] == 1
+    assert abs(distances[0] - 1.0) < 1e-9
+
+
 def test_choose_ensemble_prediction_returns_best_candidate() -> None:
     frame = make_model_frame()
     frame["regression_corner1_norm"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
