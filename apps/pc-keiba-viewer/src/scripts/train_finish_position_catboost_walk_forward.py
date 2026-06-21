@@ -309,6 +309,7 @@ def train_fold(
     fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
     saved_model = fold_result.get("model")
     if saved_model is not None:
+        model_dir.mkdir(parents=True, exist_ok=True)
         saved_model.save_model(str(model_dir / "model.json"), format="json")
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {

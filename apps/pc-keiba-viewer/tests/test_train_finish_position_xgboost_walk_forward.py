@@ -44,6 +44,8 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "fine_tune_lr_divisor": 10,
         "num_rounds": 450,
         "max_depth": 6,
+        "min_child_weight": 30,
+        "reg_lambda": 1.0,
         "learning_rate": 0.05,
     }
 
@@ -181,6 +183,15 @@ def test_apply_hpo_params_returns_unchanged_for_empty_dict(tmp_path: Path):
     assert merged["num_rounds"] == base["num_rounds"]
 
 
+def test_apply_hpo_params_applies_min_child_weight_and_reg_lambda(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(
+        base, {"min_child_weight": 5, "reg_lambda": 2.5},
+    )
+    assert merged["min_child_weight"] == 5
+    assert merged["reg_lambda"] == pytest.approx(2.5)
+
+
 def test_resolve_fold_random_seed_offsets_by_year():
     assert subject.resolve_fold_random_seed(2024) == subject.RANDOM_SEED_BASE + 2024
 
@@ -276,6 +287,17 @@ def test_attach_sample_weights_raises_when_race_year_missing():
     train_df = _feature_df().drop(columns=["race_year"])
     with pytest.raises(ValueError):
         subject.attach_sample_weights(train_df, alpha=0.0)
+
+
+def test_build_fold_namespace_uses_min_child_weight_and_reg_lambda_from_args(
+    tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    args["min_child_weight"] = 7
+    args["reg_lambda"] = 2.0
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.min_child_weight == 7
+    assert ns.reg_lambda == pytest.approx(2.0)
 
 
 def test_build_fold_namespace_sets_relevance_rank3_to_one(tmp_path: Path):
@@ -376,6 +398,31 @@ def test_train_fold_saves_model_json_via_booster(
     model_dir = subject.build_per_fold_model_dir(args, 2024)
     expected_path = str(model_dir / "model.json")
     mock_booster.save_model.assert_called_once_with(expected_path)
+
+
+def test_train_fold_creates_model_dir_before_save_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """model_dir must exist when booster.save_model() is called; XGBoost
+    does not auto-create parent directories and raises XGBoostError otherwise."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    dir_existed_at_save: list[bool] = []
+
+    def check_dir(path: str) -> None:
+        dir_existed_at_save.append(model_dir.exists())
+
+    mock_booster = MagicMock()
+    mock_booster.save_model.side_effect = check_dir
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = (
+        mock_booster,
+        {"valid_predictions": df, "best_iteration": 10},
+    )
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert dir_existed_at_save == [True]
 
 
 def test_resolve_fold_years_inclusive(tmp_path: Path):

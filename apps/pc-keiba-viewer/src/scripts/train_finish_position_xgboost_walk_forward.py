@@ -32,6 +32,8 @@ DEFAULT_ITERATION_ID: Final[int] = 0
 DEFAULT_ALPHA_BUCKET_WEIGHT: Final[float] = 0.0
 DEFAULT_FINE_TUNE_FINAL_FOLDS: Final[int] = 0
 DEFAULT_FINE_TUNE_LR_DIVISOR: Final[int] = 10
+DEFAULT_MIN_CHILD_WEIGHT: Final[int] = 30
+DEFAULT_LAMBDA: Final[float] = 1.0
 RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
@@ -56,6 +58,8 @@ class TrainXgboostArgs(TypedDict):
     fine_tune_lr_divisor: int
     num_rounds: int
     max_depth: int
+    min_child_weight: int
+    reg_lambda: float
     learning_rate: float
 
 
@@ -118,6 +122,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--num-rounds", type=int, default=450)
     parser.add_argument("--max-depth", type=int, default=6)
+    parser.add_argument("--min-child-weight", type=int, default=DEFAULT_MIN_CHILD_WEIGHT)
+    parser.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     return parser
 
@@ -151,6 +157,8 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "fine_tune_lr_divisor": int(cast(int, args.fine_tune_lr_divisor)),
         "num_rounds": int(cast(int, args.num_rounds)),
         "max_depth": int(cast(int, args.max_depth)),
+        "min_child_weight": int(cast(int, args.min_child_weight)),
+        "reg_lambda": float(cast(float, args.reg_lambda)),
         "learning_rate": float(cast(float, args.learning_rate)),
     }
 
@@ -170,6 +178,10 @@ def apply_hpo_params(args: TrainXgboostArgs, params: dict[str, object]) -> Train
         merged["num_rounds"] = int(cast(int, params["num_rounds"]))
     if "max_depth" in params:
         merged["max_depth"] = int(cast(int, params["max_depth"]))
+    if "min_child_weight" in params:
+        merged["min_child_weight"] = int(cast(int, params["min_child_weight"]))
+    if "reg_lambda" in params:
+        merged["reg_lambda"] = float(cast(float, params["reg_lambda"]))
     if "learning_rate" in params:
         merged["learning_rate"] = float(cast(float, params["learning_rate"]))
     return merged
@@ -259,8 +271,8 @@ def build_fold_namespace(
         num_rounds=args["num_rounds"],
         max_depth=args["max_depth"],
         learning_rate=fold_lr,
-        min_child_weight=30,
-        reg_lambda=1.0,
+        min_child_weight=args["min_child_weight"],
+        reg_lambda=args["reg_lambda"],
         early_stopping_rounds=30,
         seed=resolve_fold_random_seed(fold_year),
         relevance_rank1=3,
@@ -311,6 +323,7 @@ def train_fold(
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
     booster, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    model_dir.mkdir(parents=True, exist_ok=True)
     booster.save_model(str(model_dir / "model.json"))
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {

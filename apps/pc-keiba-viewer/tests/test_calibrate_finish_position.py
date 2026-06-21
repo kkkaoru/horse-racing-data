@@ -481,17 +481,18 @@ def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
     assert (result <= 1.0).all()
 
 
-def test_derive_prob_from_rank_replaces_nan_rank_with_zero():
-    """NaN predicted_rank must become 0.0 proxy so it does not propagate
-    through isotonic_transform into re_rank_predictions where .astype(int)
-    would raise ValueError on NaN."""
+def test_derive_prob_from_rank_propagates_nan_rank_as_nan():
+    """NaN predicted_rank must propagate as NaN so fit_curves_for_frame can
+    filter these rows out of the isotonic fit rather than treating them as
+    proxy=0.0 (which would corrupt win-probability calibration for low ranks)."""
     frame = pd.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "predicted_rank": [1.0, 2.0, float("nan")],
     })
     result = subject.derive_prob_from_rank(frame, top_n=1)
-    assert not result.isna().any()
-    assert result.iloc[2] == pytest.approx(0.0)
+    assert result.iloc[0] > 0.0
+    assert result.iloc[1] > 0.0
+    assert result.isna().iloc[2]
 
 
 def test_win_indicator_marks_rank_one_only():
@@ -509,6 +510,36 @@ def test_top3_indicator_marks_top_three():
     assert result.iloc[1] == 1.0
     assert result.iloc[2] == 1.0
     assert result.iloc[3] == 0.0
+
+
+def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
+    """Rows with NaN predicted_rank must be dropped before isotonic fit.
+    If they were included as proxy=0.0, a NaN-rank winner would create a
+    spurious (X=0.0, y=1.0) knot that distorts win-probability estimates."""
+    rows = []
+    for race_idx in range(20):
+        for horse_idx in range(10):
+            rank = float(horse_idx + 1)
+            actual = 1.0 if horse_idx == 0 else float(horse_idx + 1)
+            rows.append({
+                "race_id": f"r{race_idx}",
+                "predicted_rank": rank,
+                "actual_finish_position": actual,
+            })
+    frame = pd.DataFrame(rows)
+    nan_row = pd.DataFrame([{
+        "race_id": "r_extra",
+        "predicted_rank": float("nan"),
+        "actual_finish_position": 1.0,
+    }])
+    frame_with_nan = pd.concat([frame, nan_row], ignore_index=True)
+    pair_clean = subject.fit_curves_for_frame(
+        frame, cat="jra", bucket_key="test", now=FIXED_NOW,
+    )
+    pair_with_nan = subject.fit_curves_for_frame(
+        frame_with_nan, cat="jra", bucket_key="test", now=FIXED_NOW,
+    )
+    assert pair_clean["top1"]["n_samples"] == pair_with_nan["top1"]["n_samples"]
 
 
 def test_fit_single_curve_returns_schema_v1_and_finite_brier():

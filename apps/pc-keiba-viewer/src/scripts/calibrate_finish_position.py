@@ -289,7 +289,7 @@ def derive_prob_from_rank(frame: pd.DataFrame, *, top_n: int) -> pd.Series:
         proxy = (race_sizes - ranks + 1.0) / race_sizes
     else:
         proxy = ((race_sizes - ranks + 1.0) / race_sizes) * float(top_n)
-    return proxy.fillna(0.0).clip(lower=0.0, upper=float(top_n))
+    return proxy.clip(lower=0.0, upper=float(top_n))
 
 
 def win_indicator(frame: pd.DataFrame) -> pd.Series:
@@ -355,10 +355,14 @@ def fit_curves_for_frame(
     bucket_key: str,
     now: datetime,
 ) -> CurvePair:
-    top1_probs = derive_top1_prob(frame).to_numpy(dtype=float)
-    top3_probs = derive_top3_prob(frame).to_numpy(dtype=float)
-    top1_targets = win_indicator(frame).to_numpy(dtype=float)
-    top3_targets = top3_indicator(frame).to_numpy(dtype=float)
+    top1_probs_s = derive_top1_prob(frame)
+    top3_probs_s = derive_top3_prob(frame)
+    valid_mask = top1_probs_s.notna() & top3_probs_s.notna()
+    top1_probs = top1_probs_s[valid_mask].to_numpy(dtype=float)
+    top3_probs = top3_probs_s[valid_mask].to_numpy(dtype=float)
+    filtered_frame = frame[valid_mask]
+    top1_targets = win_indicator(filtered_frame).to_numpy(dtype=float)
+    top3_targets = top3_indicator(filtered_frame).to_numpy(dtype=float)
     top1_curve = fit_single_curve(
         top1_probs,
         top1_targets,

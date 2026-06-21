@@ -415,6 +415,32 @@ def test_train_fold_saves_model_json_when_fold_trainer_returns_model(
     mock_model.save_model.assert_called_once_with(expected_path, format="json")
 
 
+def test_train_fold_creates_model_dir_before_save_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """model_dir must exist when model.save_model() is called; CatBoost
+    does not auto-create parent directories and raises otherwise."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    dir_existed_at_save: list[bool] = []
+
+    def check_dir(path: str, format: str) -> None:
+        dir_existed_at_save.append(model_dir.exists())
+
+    mock_model = MagicMock()
+    mock_model.save_model.side_effect = check_dir
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = {
+        "valid_predictions": df,
+        "best_iteration": 10,
+        "model": mock_model,
+    }
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert dir_existed_at_save == [True]
+
+
 def test_train_fold_does_not_save_model_when_fold_trainer_omits_model_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
