@@ -94,7 +94,7 @@ def compute_race_ndcg(group: pd.DataFrame) -> float:
     finish_positions = sorted_group["finish_position"].tolist()
     dcg = _dcg_at_3(finish_positions)
     ideal_relevances = sorted(
-        (RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"]),
+        (RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
         reverse=True,
     )[:3]
     ideal_dcg = sum(rel / np.log2(i + 2) for i, rel in enumerate(ideal_relevances))

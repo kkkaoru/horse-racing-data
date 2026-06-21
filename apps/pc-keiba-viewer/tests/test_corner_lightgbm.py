@@ -345,3 +345,51 @@ def test_main_writes_metrics_and_predictions(
     assert metrics["test_rows"] == 4
     assert predictions["predicted_corner1_norm"].between(0, 1).all()
     assert (model_dir / "corner1_norm.txt").exists()
+
+
+def test_main_uses_neural_predictions_when_models_available(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
+    monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
+    monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
+    fake_neural_model = object()
+    monkeypatch.setattr(subject, "train_lstm_model", lambda _seq, _target: fake_neural_model)
+    monkeypatch.setattr(subject, "train_transformer_model", lambda _seq, _target: fake_neural_model)
+    monkeypatch.setattr(
+        subject,
+        "predict_neural_corner_model",
+        lambda _model, features: pd.Series(np.linspace(0.1, 0.9, len(features))),
+    )
+    input_path = tmp_path / "dataset.csv"
+    model_dir = tmp_path / "models"
+    predictions_path = tmp_path / "predictions.csv"
+    metrics_path = tmp_path / "metrics.json"
+    make_model_frame().to_csv(input_path, index=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input",
+            str(input_path),
+            "--train-to-date",
+            "2025-12-31",
+            "--test-from-date",
+            "2026-01-01",
+            "--test-to-date",
+            "2026-12-31",
+            "--model-output",
+            str(model_dir),
+            "--predictions-output",
+            str(predictions_path),
+            "--metrics-output",
+            str(metrics_path),
+        ],
+    )
+
+    subject.main()
+
+    predictions = pd.read_csv(predictions_path)
+    assert predictions["predicted_corner1_norm"].between(0, 1).all()

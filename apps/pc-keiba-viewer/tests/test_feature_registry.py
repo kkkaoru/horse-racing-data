@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import feature_registry as subject
 
 
@@ -241,3 +243,13 @@ def test_sync_sequence_skips_past_manually_inserted_ids() -> None:
         reg._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
         next_id = reg.record_trial("trial-new", 0.6, ["feat_a"])
         assert next_id == 101
+
+
+def test_maybe_promote_rolls_back_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        def broken_record_trial(*args: object, **kwargs: object) -> int:
+            raise RuntimeError("injected failure")
+        monkeypatch.setattr(reg, "record_trial", broken_record_trial)
+        with pytest.raises(RuntimeError, match="injected failure"):
+            reg.maybe_promote("t1", 0.9, ["f"])
+        assert reg.get_best_ndcg() == 0.0

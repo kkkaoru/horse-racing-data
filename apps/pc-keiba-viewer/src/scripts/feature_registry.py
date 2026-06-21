@@ -150,14 +150,16 @@ class FeatureRegistry:
     ) -> bool:
         assert self._con is not None
         self._con.begin()
-        current_best = self.get_best_ndcg()
-        entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
-        promoted = ndcg_at_3 > current_best + threshold
-        if promoted:
-            self._con.execute(
-                "UPDATE feature_trials SET is_active = (id = ?)", [entry_id]
-            )
-        self._con.commit()
+        try:
+            current_best = self.get_best_ndcg()
+            entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
+            promoted = ndcg_at_3 > current_best + threshold
+            if promoted:
+                self.activate(entry_id)
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
         return promoted
 
     def _next_deployment_id(self) -> int:

@@ -231,6 +231,17 @@ def test_compute_race_ndcg_all_irrelevant_gives_zero():
     assert result == 0.0
 
 
+def test_compute_race_ndcg_with_nan_finish_position():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [1.0, float("nan"), 3.0],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert 0.0 <= result <= 1.0
+
+
 def test_compute_race_top1_true_when_predicted_rank1_finishes_first():
     group = pd.DataFrame({
         "race_id": ["r1", "r1", "r1"],

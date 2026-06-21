@@ -1820,22 +1820,30 @@ def main() -> None:
         # Train MLX neural models when available; skip gracefully on non-Apple-Silicon.
         # Each model is guarded independently so a partial failure doesn't silently
         # discard a successfully-trained companion model.
+        # Training failures (ImportError/OSError/RuntimeError/AttributeError) are caught;
+        # prediction errors (e.g. disk-full OSError) are intentionally not caught here.
         _lstm_col: str | None
         _transformer_col: str | None
         try:
-            _lstm_model = train_lstm_model(train_sequences, train[target_column])
+            _lstm_model: object = train_lstm_model(train_sequences, train[target_column])
+        except (ImportError, OSError, RuntimeError, AttributeError):
+            _lstm_model = None
+        if _lstm_model is not None:
             test[lstm_prediction_column] = predict_neural_corner_model(_lstm_model, test_sequences).to_numpy(dtype=float)
             _lstm_col = lstm_prediction_column
-        except (ImportError, OSError):
+        else:
             _lstm_col = None
         try:
-            _transformer_model = train_transformer_model(train_sequences, train[target_column])
+            _transformer_model: object = train_transformer_model(train_sequences, train[target_column])
+        except (ImportError, OSError, RuntimeError, AttributeError):
+            _transformer_model = None
+        if _transformer_model is not None:
             test[transformer_prediction_column] = predict_neural_corner_model(
                 _transformer_model,
                 test_sequences,
             ).to_numpy(dtype=float)
             _transformer_col = transformer_prediction_column
-        except (ImportError, OSError):
+        else:
             _transformer_col = None
         prediction, alpha, alpha_scores = choose_ensemble_prediction(
             test,
