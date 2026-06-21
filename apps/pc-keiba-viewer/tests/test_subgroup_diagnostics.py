@@ -64,27 +64,39 @@ def test_get_distance_band_sprint_below_max():
 
 
 def test_get_distance_band_sprint_at_boundary():
-    assert subject.get_distance_band(1300) == "sprint"
+    assert subject.get_distance_band(1199) == "sprint"
 
 
 def test_get_distance_band_mile_just_above_sprint():
-    assert subject.get_distance_band(1301) == "mile"
+    assert subject.get_distance_band(1200) == "mile"
 
 
 def test_get_distance_band_mile_at_boundary():
-    assert subject.get_distance_band(1700) == "mile"
+    assert subject.get_distance_band(1599) == "mile"
 
 
 def test_get_distance_band_intermediate_just_above_mile():
-    assert subject.get_distance_band(1701) == "intermediate"
+    assert subject.get_distance_band(1600) == "intermediate"
 
 
 def test_get_distance_band_intermediate_at_boundary():
-    assert subject.get_distance_band(2200) == "intermediate"
+    assert subject.get_distance_band(1999) == "intermediate"
 
 
 def test_get_distance_band_long_above_intermediate():
-    assert subject.get_distance_band(2201) == "long"
+    assert subject.get_distance_band(2000) == "long"
+
+
+def test_get_distance_band_long_at_boundary():
+    assert subject.get_distance_band(2399) == "long"
+
+
+def test_get_distance_band_extended_above_long():
+    assert subject.get_distance_band(2400) == "extended"
+
+
+def test_get_distance_band_extended_far():
+    assert subject.get_distance_band(3200) == "extended"
 
 
 def test_make_subgroup_key_concatenates_with_underscores():
@@ -100,7 +112,7 @@ def test_assign_subgroup_keys_jra_turf_mile():
         "source": "jra",
         "keibajo_code": "10",
         "track_code": "10",
-        "kyori": 1600,
+        "kyori": 1400,
     }])
     result = subject.assign_subgroup_keys(df)
     assert result.tolist() == ["jra_turf_mile"]
@@ -111,10 +123,21 @@ def test_assign_subgroup_keys_nar_dirt_long():
         "source": "nar",
         "keibajo_code": "40",
         "track_code": "10",
-        "kyori": 2400,
+        "kyori": 2200,
     }])
     result = subject.assign_subgroup_keys(df)
     assert result.tolist() == ["nar_dirt_long"]
+
+
+def test_assign_subgroup_keys_jra_turf_extended():
+    df = pd.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "10",
+        "track_code": "10",
+        "kyori": 3000,
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.tolist() == ["jra_turf_extended"]
 
 
 def test_assign_subgroup_keys_banei_dirt_sprint():
@@ -130,7 +153,7 @@ def test_assign_subgroup_keys_banei_dirt_sprint():
 
 def test_assign_subgroup_keys_multiple_rows():
     df = pd.DataFrame([
-        {"source": "jra", "keibajo_code": "10", "track_code": "23", "kyori": 1200},
+        {"source": "jra", "keibajo_code": "10", "track_code": "23", "kyori": 1100},
         {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1800},
     ])
     result = subject.assign_subgroup_keys(df)
@@ -184,6 +207,28 @@ def test_compute_race_ndcg_worst_order_is_less_than_one():
     })
     result = subject.compute_race_ndcg(group)
     assert result < 1.0
+
+
+def test_compute_race_ndcg_two_horse_perfect_gives_one():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["a", "b"],
+        "predicted_rank": [1, 2],
+        "finish_position": [1, 2],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert abs(result - 1.0) < 1e-9
+
+
+def test_compute_race_ndcg_all_irrelevant_gives_zero():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["a", "b"],
+        "predicted_rank": [1, 2],
+        "finish_position": [4, 5],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert result == 0.0
 
 
 def test_compute_race_top1_true_when_predicted_rank1_finishes_first():
@@ -309,7 +354,7 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
         {
             "race_id": "r1",
@@ -318,7 +363,7 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
         {
             "race_id": "r1",
@@ -327,7 +372,7 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
     ])
     predictions = _make_predictions([
@@ -349,7 +394,7 @@ def test_compute_subgroup_diagnostics_empty_predictions_returns_empty():
         "source": "jra",
         "keibajo_code": "10",
         "track_code": "10",
-        "kyori": 1600,
+        "kyori": 1400,
     }])
     predictions = pd.DataFrame(
         columns=["race_id", "ketto_toroku_bango", "predicted_rank"]
@@ -366,7 +411,7 @@ def test_compute_subgroup_diagnostics_no_matching_rows_returns_empty():
         "source": "jra",
         "keibajo_code": "10",
         "track_code": "10",
-        "kyori": 1600,
+        "kyori": 1400,
     }])
     predictions = _make_predictions([{
         "race_id": "r999",
@@ -386,7 +431,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
         {
             "race_id": "r1",
@@ -395,7 +440,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
         {
             "race_id": "r1",
@@ -404,7 +449,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "jra",
             "keibajo_code": "10",
             "track_code": "10",
-            "kyori": 1600,
+            "kyori": 1400,
         },
         {
             "race_id": "r2",
@@ -413,7 +458,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "nar",
             "keibajo_code": "40",
             "track_code": "10",
-            "kyori": 1200,
+            "kyori": 1100,
         },
         {
             "race_id": "r2",
@@ -422,7 +467,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "nar",
             "keibajo_code": "40",
             "track_code": "10",
-            "kyori": 1200,
+            "kyori": 1100,
         },
         {
             "race_id": "r2",
@@ -431,7 +476,7 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "source": "nar",
             "keibajo_code": "40",
             "track_code": "10",
-            "kyori": 1200,
+            "kyori": 1100,
         },
     ])
     predictions = _make_predictions([
@@ -444,10 +489,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 2
-    subgroup_keys = [r["subgroup"] for r in results]
-    assert subgroup_keys == sorted(subgroup_keys)
-    assert "jra_turf_mile" in subgroup_keys
-    assert "nar_dirt_sprint" in subgroup_keys
+    assert results[0]["subgroup"] < results[1]["subgroup"]
+    assert {results[0]["subgroup"], results[1]["subgroup"]} == {"jra_turf_mile", "nar_dirt_sprint"}
 
 
 def test_compute_subgroup_diagnostics_banei_subgroup():
@@ -567,4 +610,4 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_other_long"
+    assert results[0]["subgroup"] == "jra_other_extended"

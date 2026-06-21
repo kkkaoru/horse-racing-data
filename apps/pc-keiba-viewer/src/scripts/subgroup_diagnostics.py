@@ -7,18 +7,16 @@ from typing import Final, TypedDict
 import numpy as np
 import pandas as pd
 
-KYORI_BAND_SPRINT_MAX: Final[int] = 1300
-KYORI_BAND_MILE_MAX: Final[int] = 1700
-KYORI_BAND_INTERMEDIATE_MAX: Final[int] = 2200
+KYORI_BAND_SPRINT_UPPER: Final[int] = 1200   # sprint: [0, 1200)
+KYORI_BAND_MILE_UPPER: Final[int] = 1600     # mile:   [1200, 1600)
+KYORI_BAND_INTERMEDIATE_UPPER: Final[int] = 2000  # intermediate: [1600, 2000)
+KYORI_BAND_LONG_UPPER: Final[int] = 2400     # long:   [2000, 2400);  extended: [2400, ∞)
 
 JRA_TURF_CODES: Final[frozenset[str]] = frozenset(str(i) for i in range(10, 23))
 JRA_DIRT_CODES: Final[frozenset[str]] = frozenset(str(i) for i in range(23, 30))
 BANEI_KEIBAJO_CODE: Final[str] = "83"
 
 RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
-IDEAL_DCG_AT_3: Final[float] = (
-    3.0 / np.log2(2) + 2.0 / np.log2(3) + 1.0 / np.log2(4)
-)
 
 
 class SubgroupMetrics(TypedDict):
@@ -48,13 +46,15 @@ def get_surface_label(track_code: str, source_label: str) -> str:
 
 
 def get_distance_band(kyori: int) -> str:
-    if kyori <= KYORI_BAND_SPRINT_MAX:
+    if kyori < KYORI_BAND_SPRINT_UPPER:
         return "sprint"
-    if kyori <= KYORI_BAND_MILE_MAX:
+    if kyori < KYORI_BAND_MILE_UPPER:
         return "mile"
-    if kyori <= KYORI_BAND_INTERMEDIATE_MAX:
+    if kyori < KYORI_BAND_INTERMEDIATE_UPPER:
         return "intermediate"
-    return "long"
+    if kyori < KYORI_BAND_LONG_UPPER:
+        return "long"
+    return "extended"
 
 
 def make_subgroup_key(source_label: str, surface: str, distance_band: str) -> str:
@@ -93,7 +93,12 @@ def compute_race_ndcg(group: pd.DataFrame) -> float:
     sorted_group = group.sort_values("predicted_rank")
     finish_positions = sorted_group["finish_position"].tolist()
     dcg = _dcg_at_3(finish_positions)
-    return dcg / IDEAL_DCG_AT_3 if IDEAL_DCG_AT_3 > 0 else 0.0
+    ideal_relevances = sorted(
+        (RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"]),
+        reverse=True,
+    )[:3]
+    ideal_dcg = sum(rel / np.log2(i + 2) for i, rel in enumerate(ideal_relevances))
+    return dcg / ideal_dcg if ideal_dcg > 0 else 0.0
 
 
 def compute_race_top1(group: pd.DataFrame) -> bool:
@@ -118,8 +123,6 @@ def evaluate_subgroup(joined: pd.DataFrame) -> SubgroupMetrics:
     top3_hits = 0
     race_count = 0
     for _race_id, group in joined.groupby("race_id"):
-        if group.empty:
-            continue
         race_count += 1
         ndcg_scores.append(compute_race_ndcg(group))
         if compute_race_top1(group):

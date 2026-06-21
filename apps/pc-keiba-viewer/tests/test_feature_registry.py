@@ -41,9 +41,9 @@ def test_activate_sets_is_active_true_and_clears_others() -> None:
         id2 = reg.record_trial("trial-2", 0.8, ["feat_b"])
         reg.activate(id1)
         reg.activate(id2)
-        trials = reg.list_trials(limit=10)
-        active_ids = [t["id"] for t in trials if t["is_active"]]
-        assert active_ids == [id2]
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["id"] == id2
 
 
 def test_maybe_promote_when_ndcg_exceeds_threshold_promotes_and_returns_true() -> None:
@@ -77,7 +77,10 @@ def test_list_trials_returns_sorted_by_ndcg_desc() -> None:
         reg.record_trial("trial-2", 0.9, ["feat_b"])
         reg.record_trial("trial-3", 0.6, ["feat_c"])
         trials = reg.list_trials(limit=10)
-        assert [t["ndcg_at_3"] for t in trials] == [0.9, 0.6, 0.3]
+        assert len(trials) == 3
+        assert trials[0]["ndcg_at_3"] == 0.9
+        assert trials[1]["ndcg_at_3"] == 0.6
+        assert trials[2]["ndcg_at_3"] == 0.3
 
 
 def test_list_trials_respects_limit() -> None:
@@ -164,18 +167,20 @@ def test_maybe_promote_exactly_at_threshold_does_not_promote() -> None:
 
 def test_activate_multiple_times_only_last_is_active() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
-        id1 = reg.record_trial("trial-1", 0.5, ["feat_a"])
-        id2 = reg.record_trial("trial-2", 0.6, ["feat_b"])
-        id3 = reg.record_trial("trial-3", 0.7, ["feat_c"])
-        reg.activate(id1)
-        reg.activate(id2)
-        reg.activate(id3)
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.record_trial("trial-2", 0.6, ["feat_b"])
+        reg.record_trial("trial-3", 0.7, ["feat_c"])
+        reg.activate(1)
+        reg.activate(2)
+        reg.activate(3)
         active = reg.get_active_entry()
         assert active is not None
-        assert active["id"] == id3
+        assert active["id"] == 3
+        # list_trials returns DESC by ndcg: 0.7(id3), 0.6(id2), 0.5(id1)
         trials = reg.list_trials(limit=10)
-        active_count = sum(1 for t in trials if t["is_active"])
-        assert active_count == 1
+        assert trials[0]["is_active"] is True
+        assert trials[1]["is_active"] is False
+        assert trials[2]["is_active"] is False
 
 
 def test_record_trial_default_definition_json_is_empty_object() -> None:

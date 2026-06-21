@@ -48,6 +48,8 @@ class FeatureRegistry:
 
     def _ensure_schema(self) -> None:
         assert self._con is not None
+        self._con.execute("CREATE SEQUENCE IF NOT EXISTS seq_feature_trials_id START 1")
+        self._con.execute("CREATE SEQUENCE IF NOT EXISTS seq_deployments_id START 1")
         self._con.execute("""
             CREATE TABLE IF NOT EXISTS feature_trials (
                 id              INTEGER PRIMARY KEY,
@@ -70,11 +72,11 @@ class FeatureRegistry:
 
     def _next_id(self, table: str = "feature_trials") -> int:
         assert self._con is not None
-        sql = {
-            "feature_trials": "SELECT COALESCE(MAX(id), 0) + 1 FROM feature_trials",
-            "deployments": "SELECT COALESCE(MAX(id), 0) + 1 FROM deployments",
+        seq = {
+            "feature_trials": "seq_feature_trials_id",
+            "deployments": "seq_deployments_id",
         }[table]
-        row = self._con.execute(sql).fetchone()
+        row = self._con.execute(f"SELECT nextval('{seq}')").fetchone()
         assert row is not None
         return int(row[0])
 
@@ -121,12 +123,9 @@ class FeatureRegistry:
 
     def activate(self, entry_id: int) -> None:
         assert self._con is not None
-        self._con.begin()
-        self._con.execute("UPDATE feature_trials SET is_active = FALSE")
         self._con.execute(
-            "UPDATE feature_trials SET is_active = TRUE WHERE id = ?", [entry_id]
+            "UPDATE feature_trials SET is_active = (id = ?)", [entry_id]
         )
-        self._con.commit()
 
     def maybe_promote(
         self,
@@ -136,14 +135,17 @@ class FeatureRegistry:
         definition_json: str = "{}",
         threshold: float = NDCG_IMPROVEMENT_THRESHOLD,
     ) -> bool:
+        assert self._con is not None
+        self._con.begin()
         current_best = self.get_best_ndcg()
-        entry_id = self.record_trial(
-            trial_id, ndcg_at_3, feature_names, definition_json
-        )
-        if ndcg_at_3 > current_best + threshold:
-            self.activate(entry_id)
-            return True
-        return False
+        entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
+        promoted = ndcg_at_3 > current_best + threshold
+        if promoted:
+            self._con.execute(
+                "UPDATE feature_trials SET is_active = (id = ?)", [entry_id]
+            )
+        self._con.commit()
+        return promoted
 
     def _next_deployment_id(self) -> int:
         return self._next_id("deployments")
