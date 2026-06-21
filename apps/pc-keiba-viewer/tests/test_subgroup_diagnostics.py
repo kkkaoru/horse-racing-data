@@ -668,11 +668,27 @@ def test_compute_race_top1_returns_false_when_all_predicted_rank_nan():
     assert subject.compute_race_top1(group) is False
 
 
-def test_compute_race_ndcg_excludes_nan_predicted_rank_horses():
+def test_compute_race_ndcg_excludes_nan_predicted_rank_from_dcg_but_not_ideal():
+    # Horse "a" has no predicted rank but finishes 1st (rel=3.0).
+    # DCG: only b(rank=1,finish=2nd,rel=2.0) and c(rank=2,finish=3rd,rel=1.0) contribute.
+    # Ideal: all 3 horses (including a) define the best possible ordering.
+    # So NDCG is penalized for missing the winner, not inflated to 1.0.
     group = pd.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
         "predicted_rank": [float("nan"), 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 3.0],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert result < 1.0
+
+
+def test_compute_race_ndcg_returns_one_when_predicted_perfectly_among_ranked_horses():
+    # No NaN predicted_rank: perfect ranking → NDCG = 1.0.
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1.0, 2.0, 3.0],
         "finish_position": [1.0, 2.0, 3.0],
     })
     result = subject.compute_race_ndcg(group)
