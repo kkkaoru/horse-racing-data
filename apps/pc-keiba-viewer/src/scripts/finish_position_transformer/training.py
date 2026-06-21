@@ -310,6 +310,7 @@ def train_transformer(
     optimizer = opt.AdamW(learning_rate=schedule, weight_decay=config["weight_decay"])
     loss_fn = _make_loss_fn(config["loss_weights"])
     loss_and_grad = nn.value_and_grad(model, loss_fn)
+    has_valid = valid_arrays is not None and len(valid_arrays["race_ids"]) > 0
     best_score = -float("inf")
     best_epoch = 0
     best_params: dict[str, mx.array] | None = None
@@ -319,19 +320,22 @@ def train_transformer(
         train_loss = _run_epoch(model, optimizer, loss_and_grad, train_arrays, config["batch_size"], rng)
         valid_score = (
             evaluate_ndcg(model, valid_arrays, config["batch_size"])
-            if valid_arrays is not None and len(valid_arrays["race_ids"]) > 0
+            if valid_arrays is not None and has_valid
             else 0.0
         )
         history.append({"epoch": epoch, "train_loss": train_loss, "valid_ndcg_at_3": valid_score})
-        if valid_score > best_score and np.isfinite(valid_score):
-            best_score = valid_score
-            best_epoch = epoch
-            no_improve = 0
-            best_params = dict(mlx.utils.tree_flatten(model.parameters()))
+        if has_valid:
+            if valid_score > best_score and np.isfinite(valid_score):
+                best_score = valid_score
+                best_epoch = epoch
+                no_improve = 0
+                best_params = dict(mlx.utils.tree_flatten(model.parameters()))
+            else:
+                no_improve += 1
+            if no_improve >= config["early_stopping_epochs"]:
+                break
         else:
-            no_improve += 1
-        if no_improve >= config["early_stopping_epochs"]:
-            break
+            best_epoch = epoch
     if best_params is not None:
         model.update(mlx.utils.tree_unflatten(list(best_params.items())))
         mx.eval(model.parameters())

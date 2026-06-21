@@ -143,28 +143,28 @@ def stage_futan_juryo(
 def stage_horse_history(con: duckdb.DuckDBPyConnection) -> None:
     """Pre-compute per-horse futan stats for join.
 
-    Uses ``futan_raw`` as source, which includes both past and upcoming races
-    for each horse.  At training time ``race_entry_corner_features`` included
-    the target race, so ``past_futan_juryo_avg5`` was computed with that race
-    in the window; the se fallback mirrors this behaviour at serve time.
+    Uses ``futan_raw`` as source, ordered chronologically.
+    ``past_futan_juryo_avg5`` is the average of the current race and up to 4
+    prior races (ROWS BETWEEN 4 PRECEDING AND CURRENT ROW); at serve time
+    only the upcoming race exists so the window collapses to that single row,
+    giving avg5 = current futan (same as training).  Past races beyond the
+    current date are never included, preventing data leakage during training.
     """
     con.execute(
         """
         create or replace temp table horse_futan_hist as
-        with ranked as (
-          select source, ketto_toroku_bango, kaisai_nen, kaisai_tsukihi, futan_juryo,
-            row_number() over (
-              partition by source, ketto_toroku_bango
-              order by kaisai_nen desc, kaisai_tsukihi desc
-            ) as rn
-          from futan_raw
-        )
         select source, ketto_toroku_bango, kaisai_nen, kaisai_tsukihi,
-          avg(futan_juryo) filter (where rn between 1 and 5) over horse_window as past_futan_juryo_avg5,
-          avg(case when futan_juryo > {threshold} then 1.0 else 0.0 end)
-            filter (where rn between 1 and 10) over horse_window as past_high_futan_share
-        from ranked
-        window horse_window as (partition by source, ketto_toroku_bango)
+          avg(futan_juryo) over (
+            partition by source, ketto_toroku_bango
+            order by kaisai_nen asc, kaisai_tsukihi asc
+            rows between 4 preceding and current row
+          ) as past_futan_juryo_avg5,
+          avg(case when futan_juryo > {threshold} then 1.0 else 0.0 end) over (
+            partition by source, ketto_toroku_bango
+            order by kaisai_nen asc, kaisai_tsukihi asc
+            rows between 9 preceding and current row
+          ) as past_high_futan_share
+        from futan_raw
         """.format(threshold=HIGH_FUTAN_THRESHOLD)
     )
 

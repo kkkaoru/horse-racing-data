@@ -254,6 +254,7 @@ def stage_class_promotion(con: duckdb.DuckDBPyConnection) -> None:
             and rh.finish_position = 1
             and rh.class_level is not null
             and bi.target_class_level is not null
+            and bi.target_class_level > 0
             and rh.class_level >= bi.target_class_level - {PROMOTION_LEVEL_BUFFER}
         )
         select

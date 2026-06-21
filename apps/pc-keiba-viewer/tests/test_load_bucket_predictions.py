@@ -178,7 +178,9 @@ def test_build_version_mismatch_check_sql_counts_mismatched_rows():
     )
     sql = subject.build_version_mismatch_check_sql(args)
     assert "select count(*) from read_parquet" in sql
+    assert "finish_position_version is null" in sql
     assert "finish_position_version <> 'fpY'" in sql
+    assert "running_style_feature_version is null" in sql
     assert "running_style_feature_version <> 'rsX'" in sql
     assert "category = 'nar'" in sql
 
@@ -734,7 +736,7 @@ def test_main_invokes_load_and_prints_json(
     subject.main(_build_argv())
     fake_load.assert_called_once()
     captured = capsys.readouterr()
-    payload = json.loads(captured.out.strip())
+    payload = json.loads(captured.err.strip())
     assert payload["loaded_rows"] == 7
     assert payload["category"] == "jra"
     assert payload["year_from"] == 2004
@@ -742,3 +744,4 @@ def test_main_invokes_load_and_prints_json(
     assert payload["finish_position_version"] == "v1"
     assert payload["running_style_feature_version"] == "v1"
     assert payload["temp_table_name"] == "tmp_bucket_eval_finish_position_predictions"
+    assert captured.out == ""

@@ -165,7 +165,7 @@ def load_year_parquet(root: Path, year: int) -> pd.DataFrame | None:
 
 
 def load_bucket_year(root: Path, year: int) -> pd.DataFrame | None:
-    year_dir = root / f"category=nar" / f"race_year={year}"
+    year_dir = root / "category=nar" / f"race_year={year}"
     if not year_dir.exists():
         return None
     files = sorted(glob.glob(str(year_dir / "*.parquet")))
@@ -291,7 +291,7 @@ def build_fold_frames(
     train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     assert_no_race_overlap(train_df, valid_df)
-    available_cols = [c for c in feature_cols if c in valid_df.columns]
+    available_cols = [c for c in feature_cols if c in valid_df.columns and c in train_df.columns]
     bucket_df = None
     if bucket_root is not None:
         bucket_df = load_bucket_year(bucket_root, held_out_year)
@@ -504,12 +504,14 @@ def run_study(args: TuneArgs) -> dict[str, object]:
     import optuna
 
     sys.stderr.write("[hpo] loading shared CV feature columns ...\n")
-    sample_df = load_year_parquet(args.features_parquet_root, args.cv_years[0])
-    if sample_df is None:
+    sample_parts = [load_year_parquet(args.features_parquet_root, y) for y in args.cv_years]
+    sample_dfs = [df for df in sample_parts if df is not None]
+    if not sample_dfs:
         raise RuntimeError(
-            f"Cannot load sample year {args.cv_years[0]} for feature column resolution",
+            f"Cannot load any CV year {args.cv_years} for feature column resolution",
         )
-    feature_cols = resolve_feature_columns(sample_df)
+    combined_sample = pd.concat(sample_dfs, ignore_index=True)
+    feature_cols = resolve_feature_columns(combined_sample)
     sys.stderr.write(f"[hpo] feature_cols count={len(feature_cols)}\n")
 
     def fold_frames_loader(held_out: int, cols: list[str]) -> FoldFrames:

@@ -480,11 +480,13 @@ def pick_alpha_via_cv(
     feature_cols = stacking_feature_columns(train_frame)
     if not feature_cols:
         raise ValueError("training frame has no usable feature columns")
-    rng = np.random.default_rng(seed=random_state)
     years = sorted(train_frame[RACE_YEAR_COLUMN].unique().tolist())
     n_folds = max(2, min(cv_folds, len(years)))
-    fold_assignment = rng.integers(low=0, high=n_folds, size=len(years))
-    year_to_fold = dict(zip(years, fold_assignment.tolist(), strict=True))
+    # Assign years to folds in chronological order (earlier years → lower fold indices).
+    # Forward-chain CV: fold k trains on folds 0..k-1 and validates on fold k.
+    n_years = len(years)
+    fold_assignment = [int(i * n_folds / n_years) for i in range(n_years)]
+    year_to_fold = dict(zip(years, fold_assignment, strict=True))
     score_grid: dict[float, float] = {}
     for alpha in alpha_grid:
         fold_rmses: list[float] = []
@@ -492,7 +494,9 @@ def pick_alpha_via_cv(
             holdout_years = {y for y, f in year_to_fold.items() if f == fold_idx}
             if not holdout_years:
                 continue
-            train_mask = ~train_frame[RACE_YEAR_COLUMN].isin(holdout_years)
+            # Forward-chain: train only on years assigned to earlier folds
+            train_years = {y for y, f in year_to_fold.items() if f < fold_idx}
+            train_mask = train_frame[RACE_YEAR_COLUMN].isin(train_years)
             val_mask = train_frame[RACE_YEAR_COLUMN].isin(holdout_years)
             if train_mask.sum() == 0 or val_mask.sum() == 0:
                 continue
@@ -600,7 +604,7 @@ def train_one_fold(
         random_state=random_state,
         ridge_factory=ridge_factory,
     )
-    feature_cols = stacking_feature_columns(dataset)
+    feature_cols = stacking_feature_columns(train_frame)
     model = ridge_factory(alpha=alpha_picked, random_state=random_state)
     x_train = train_frame[feature_cols].to_numpy(dtype=float)
     y_train = train_frame[ACTUAL_FINISH_POSITION_COLUMN].to_numpy(dtype=float)
@@ -631,7 +635,7 @@ def resolve_fold_years(
 ) -> tuple[int, ...]:
     available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
     if requested is None:
-        return tuple(available)
+        return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
     if not keep:
         raise ValueError(f"none of the requested fold years {requested!r} exist in the dataset")

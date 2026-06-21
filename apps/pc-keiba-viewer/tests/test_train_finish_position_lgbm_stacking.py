@@ -323,6 +323,14 @@ def test_relevance_from_finish_handles_nulls() -> None:
     assert rel[2] == 3
 
 
+def test_relevance_from_finish_clips_zero_finish_to_truncation_level() -> None:
+    series = pd.Series([0, 1, 2])
+    rel = subject.relevance_from_finish(series, truncation_level=5)
+    assert rel[0] == 5
+    assert rel[1] == 5
+    assert rel[2] == 4
+
+
 def test_rerank_within_race_descends_score() -> None:
     frame = pd.DataFrame(
         {
@@ -358,6 +366,23 @@ def test_compute_oos_metrics_counts_hits() -> None:
     assert metrics["top3_box"] == pytest.approx(1.0)
 
 
+def test_compute_oos_metrics_top3_box_correct_for_small_field() -> None:
+    """A 2-horse race where both are predicted and finish top-3 must score top3_box=1.0.
+
+    Old code compared box_sum == TOP3_FINISH (3) which is never reachable for a
+    2-horse race — the sum can be at most 2. Fix clips expected sum to field size.
+    """
+    frame = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1"],
+            "predicted_rank": [1, 2],
+            "actual_finish_position": [1, 2],
+        }
+    )
+    metrics = subject.compute_oos_metrics(frame)
+    assert metrics["top3_box"] == pytest.approx(1.0)
+
+
 def test_filter_to_fold_year_splits_correctly() -> None:
     frame = _build_dataset_frame((0, 1, 2))
     train, val = subject.filter_to_fold_year(frame, fold_year=2012)
@@ -389,7 +414,7 @@ def test_split_train_val_caps_holdout_to_n_minus_one() -> None:
 def test_resolve_fold_years_returns_all_by_default() -> None:
     dataset = _build_dataset_frame((0, 1, 2))
     years = subject.resolve_fold_years(dataset, requested=None)
-    assert years == (2010, 2011, 2012)
+    assert years == (2011, 2012)
 
 
 def test_resolve_fold_years_filters_requested() -> None:

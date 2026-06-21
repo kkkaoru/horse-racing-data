@@ -1160,3 +1160,53 @@ def test_integration_weekday_no_races_futan_no_binder_exception(
     con.close()
     assert fr == (0,)
     assert hh == (0,)
+
+
+def test_stage_horse_history_excludes_future_races_from_window() -> None:
+    """past_futan_juryo_avg5 for a historical row must only include races on or
+    before that row's date — not future races.
+
+    horse_x has three races:
+      2020/0415: 50.0 kg (past of 2022 target)
+      2022/0415: 52.0 kg (target row)
+      2024/0415: 56.0 kg (future — must NOT be included)
+
+    With the correct window (4 PRECEDING..CURRENT ROW ordered ASC):
+      2022 row avg5 = avg(50.0, 52.0) = 51.0
+
+    With the old buggy global window (filter rn 1..5):
+      rn1=2024, rn2=2022, rn3=2020 -> avg5 = avg(56.0, 52.0, 50.0) = 52.67
+    """
+    con = duckdb.connect(":memory:")
+    # stage_futan_juryo drives from jvd_se, so se_rows must be populated.
+    # rec values win over se when both are present (rec is authoritative).
+    _seed_pg_schema(
+        con,
+        rec_rows=[
+            ("jra", "2020", "0415", "05", "11", "horse_x", "20200415", "500"),
+            ("jra", "2022", "0415", "05", "11", "horse_x", "20220415", "520"),
+            ("jra", "2024", "0415", "05", "11", "horse_x", "20240415", "560"),
+        ],
+        se_rows=[
+            ("jra", "2020", "0415", "05", "11", "horse_x", "20200415", "500"),
+            ("jra", "2022", "0415", "05", "11", "horse_x", "20220415", "520"),
+            ("jra", "2024", "0415", "05", "11", "horse_x", "20240415", "560"),
+        ],
+    )
+    subject.stage_futan_juryo(con, "20100101", "20991231", "pg.jvd_se")
+    subject.stage_horse_history(con)
+    row = con.execute(
+        """
+        select past_futan_juryo_avg5
+        from horse_futan_hist
+        where ketto_toroku_bango = 'horse_x'
+          and kaisai_nen = '2022'
+          and kaisai_tsukihi = '0415'
+        """
+    ).fetchone()
+    con.close()
+    assert row is not None, "horse_x 2022 row not found in horse_futan_hist"
+    # avg(50.0, 52.0) = 51.0 — the 2024 race (56.0 kg) must NOT be included
+    assert row[0] == pytest.approx(51.0, abs=1e-6), (
+        f"past_futan_juryo_avg5 = {row[0]} includes future data (expected 51.0 = avg(50.0, 52.0))"
+    )

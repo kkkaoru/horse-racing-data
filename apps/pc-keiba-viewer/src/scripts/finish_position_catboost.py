@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -77,6 +78,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_parquet_dir(path: Path) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 
@@ -119,6 +122,12 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
     return _to
 
 
+def subtract_one_day(date_str: str) -> str:
+    """Return the date string for the day before date_str (YYYYMMDD format)."""
+    dt = datetime.strptime(date_str, "%Y%m%d")
+    return (dt - timedelta(days=1)).strftime("%Y%m%d")
+
+
 def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     mask = (df["race_date"] >= start) & (df["race_date"] <= end) & df["finish_position"].notna()
     return df[mask].copy()
@@ -134,7 +143,7 @@ def race_group_ids(df: pd.DataFrame) -> np.ndarray:
     return df["race_id"].astype("category").cat.codes.to_numpy()
 
 
-def _prepare_feature_matrix(
+def prepare_feature_matrix(
     df: pd.DataFrame, feature_cols: list[str], cat_indices: list[int],
 ) -> pd.DataFrame:
     cat_set = {feature_cols[i] for i in cat_indices}
@@ -162,13 +171,15 @@ def train_catboost_ranker(
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     use_cat = not getattr(args, "no_cat_features", False)
     cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
-    train_features = _prepare_feature_matrix(train_df, feature_cols, cat_indices)
-    valid_features = _prepare_feature_matrix(valid_df, feature_cols, cat_indices)
+    train_features = prepare_feature_matrix(train_df, feature_cols, cat_indices)
+    valid_features = prepare_feature_matrix(valid_df, feature_cols, cat_indices)
+    train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
     train_pool = Pool(
         data=train_features,
         label=train_labels,
         group_id=race_group_ids(train_df),
         cat_features=cat_indices if cat_indices else None,
+        weight=train_weights,
     )
     valid_pool = Pool(
         data=valid_features,
@@ -189,34 +200,45 @@ def train_catboost_ranker(
         "task_type": "CPU",
         "verbose": 50,
     }
+    bagging_temp = getattr(args, "bagging_temperature", None)
+    random_strength = getattr(args, "random_strength", None)
+    if bagging_temp is not None:
+        params["bagging_temperature"] = float(bagging_temp)
+        params["bootstrap_type"] = "Bayesian"
+    if random_strength is not None:
+        params["random_strength"] = float(random_strength)
     model = CatBoost(params)
     model.fit(train_pool, eval_set=valid_pool, verbose=False)
     pred = model.predict(valid_pool)
     valid_df = valid_df.assign(predicted_score=pred)
     valid_df["predicted_rank"] = (
-        valid_df.groupby("race_id")["predicted_score"].rank(method="first", ascending=False).astype(int)
+        valid_df.groupby("race_id")["predicted_score"]
+        .rank(method="first", ascending=False, na_option="bottom")
+        .astype(int)
     )
     metrics = compute_fold_metrics(valid_df)
+    best_iter = model.get_best_iteration()
     return {
-        "best_iteration": int(cast(int, model.get_best_iteration() or model.tree_count_)),
+        "best_iteration": int(best_iter if best_iter is not None else cast(int, model.tree_count_)),
         "valid_predictions": valid_df,
         "metrics": metrics,
+        "model": model,
     }
 
 
-def _cb_top1_hit(g: pd.DataFrame) -> int:
+def cb_top1_hit(g: pd.DataFrame) -> int:
     return int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any())
 
 
-def _cb_top3_box_hit(g: pd.DataFrame) -> int:
+def cb_top3_box_hit(g: pd.DataFrame) -> int:
     return int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3)
 
 
 def compute_fold_metrics(valid_df: pd.DataFrame) -> dict[str, float]:
     groups = [g for _, g in valid_df.groupby("race_id")]
     race_count = len(groups)
-    top1_hits = [_cb_top1_hit(g) for g in groups]
-    top3_box = [_cb_top3_box_hit(g) for g in groups]
+    top1_hits = [cb_top1_hit(g) for g in groups]
+    top3_box = [cb_top3_box_hit(g) for g in groups]
     return {
         "race_count": race_count,
         "valid_rows": int(len(valid_df)),
@@ -246,7 +268,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     feature_cols = resolve_feature_columns(df, use_cat_features=use_cat)
     folds: list[dict[str, object]] = []
     if args.validation_from_date and args.validation_to_date:
-        train_end = args.train_end_date or args.validation_from_date
+        train_end = args.train_end_date or subtract_one_day(args.validation_from_date)
         train_df = filter_range(df, args.train_start_date, train_end)
         valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
         if len(train_df) > 0 and len(valid_df) > 0:

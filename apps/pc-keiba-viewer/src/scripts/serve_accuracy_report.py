@@ -32,15 +32,15 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Final, NotRequired, Protocol, TypedDict, cast
 
 import psycopg
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-# 09:30 fix went live on 2026-06-11 (commit fe871a6)
-ERA_POSTFIX_CUTOFF_JST: Final[datetime] = datetime(2026, 6, 11, 0, 0, 0,
+# 09:30 fix went live on 2026-06-11 JST = 2026-06-11 00:30:00 UTC (commit fe871a6)
+ERA_POSTFIX_CUTOFF_JST: Final[datetime] = datetime(2026, 6, 11, 0, 30, 0,
                                                     tzinfo=timezone.utc)
 
 # Running-style class thresholds (must match running-style-feature-sql.ts)
@@ -325,17 +325,20 @@ def aggregate_fp_metrics(
     race_rows: list of per-race lists of (pred_rank, actual_rank).
     Returns (top1_hits, place2_hits, place3_hits, fukusho_2p_hits, top3_box_hits).
     fukusho_2p: whether *any* of the predicted top-2 horses finished <=2.
-    top3_box: whether predicted rank-1 horse finished <=3.
+    top3_box: whether predicted ranks 1, 2, and 3 all finished in the top 3.
     """
     top1 = place2 = place3 = fukusho_2p = top3_box = 0
     for race in race_rows:
         pred1_actual: int | None = None
         any_top2_in_top2 = False
+        top3_in_actual_top3 = 0
         for pred_rank, actual_rank in race:
             if pred_rank == 1:
                 pred1_actual = actual_rank
             if pred_rank <= 2 and actual_rank <= 2:
                 any_top2_in_top2 = True
+            if pred_rank <= 3 and actual_rank <= 3:
+                top3_in_actual_top3 += 1
         if pred1_actual is not None:
             if pred1_actual == 1:
                 top1 += 1
@@ -343,9 +346,10 @@ def aggregate_fp_metrics(
                 place2 += 1
             if pred1_actual <= 3:
                 place3 += 1
-                top3_box += 1
         if any_top2_in_top2:
             fukusho_2p += 1
+        if top3_in_actual_top3 == 3:
+            top3_box += 1
     return top1, place2, place3, fukusho_2p, top3_box
 
 
@@ -435,8 +439,8 @@ def query_finish_position_metrics(
 ) -> FinishPositionMetrics | None:
     """Query served predictions and results for a date, return metrics.
 
-    Uses DISTINCT ON keibajo_code, race_bango to pick the latest-generated
-    prediction per race (handles multiple model versions / re-runs).
+    Uses DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango) to pick the
+    latest-generated prediction per horse per race (handles multiple model versions / re-runs).
     """
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]
@@ -447,17 +451,17 @@ def query_finish_position_metrics(
 
     cur = conn.cursor()
 
-    # Step 1: Get all served predictions per race (latest model_version per race),
+    # Step 1: Get all served predictions per race (latest prediction per horse),
     # joined with per-race dims (kyori, shusso_tosu) from the race table.
     cur.execute(
         f"""
         WITH served AS (
-            SELECT DISTINCT ON (keibajo_code, race_bango)
+            SELECT DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)
                 keibajo_code, race_bango, ketto_toroku_bango, predicted_rank,
                 model_version, prediction_generated_at
             FROM race_finish_position_model_predictions
             WHERE source = %s AND kaisai_nen = %s AND kaisai_tsukihi = %s
-            ORDER BY keibajo_code, race_bango, prediction_generated_at DESC
+            ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC
         ),
         results AS (
             SELECT keibajo_code, race_bango, ketto_toroku_bango,
@@ -525,18 +529,14 @@ def query_finish_position_metrics(
         ))
     subgroups = compute_subgroup_accuracies(race_partitions)
 
-    # Determine era from median gen_at
+    # Determine era from latest gen_at (most recent prediction determines data availability)
     latest_gen = max(gen_ats) if gen_ats else None
     era = infer_era(latest_gen)
 
     # JST display
     gen_jst = ""
     if latest_gen:
-        jst_offset = 9 * 3600
-        jst_dt = datetime.fromtimestamp(
-            latest_gen.timestamp() + jst_offset,
-            tz=timezone.utc,
-        )
+        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
     # Count model versions
@@ -649,11 +649,7 @@ def query_running_style_metrics(
 
     gen_jst = ""
     if latest_gen:
-        jst_offset = 9 * 3600
-        jst_dt = datetime.fromtimestamp(
-            latest_gen.timestamp() + jst_offset,
-            tz=timezone.utc,
-        )
+        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
     model_version = model_versions[0] if model_versions else ""
@@ -702,7 +698,7 @@ def format_fp_report(m: FinishPositionMetrics) -> str:
         f"  Era:           {m.era}",
         f"  Generated:     {m.prediction_generated_at_jst}",
         f"  Races:         {m.races}  |  Horses matched: {m.horses}",
-        f"",
+        "",
         f"  top1:          {m.top1_pct:6.2f}%  ({m.top1_hits}/{m.races})",
         f"  place2:        {m.place2_pct:6.2f}%  ({m.place2_hits}/{m.races})",
         f"  place3:        {m.place3_pct:6.2f}%  ({m.place3_hits}/{m.races})",
@@ -711,13 +707,13 @@ def format_fp_report(m: FinishPositionMetrics) -> str:
     ]
     if m.category == "jra":
         lines += [
-            f"",
-            f"  Baselines (population n=11703):",
-            f"    DEGRADED top1= 31.78%  place2= 15.25%  place3=  9.19%",
-            f"    FULL     top1= 44.71%  place2= 24.51%  place3= 15.48%",
+            "",
+            "  Baselines (population n=11703):",
+            "    DEGRADED top1= 31.78%  place2= 15.25%  place3=  9.19%",
+            "    FULL     top1= 44.71%  place2= 24.51%  place3= 15.48%",
         ]
     if m.model_version_counts:
-        lines += [f"", f"  Models served:"]
+        lines += ["", "  Models served:"]
         for mv, cnt in sorted(m.model_version_counts.items(), key=lambda x: -x[1]):
             lines.append(f"    {mv}: {cnt} horses")
     if m.subgroups:
@@ -735,7 +731,7 @@ def format_rs_report(m: RunningStyleMetrics) -> str:
         f"  Horses (cornered tracks): {m.total_horses}",
         f"  Overall acc:   {m.overall_accuracy * 100:.2f}%",
         f"  Macro-F1:      {m.macro_f1 * 100:.2f}%" if m.macro_f1 is not None else "  Macro-F1:      N/A",
-        f"",
+        "",
         f"  {'Class':<10} {'Pred%':>6} {'Act%':>6} {'Prec':>6} {'Rec':>6} {'F1':>6}",
         f"  {'-'*48}",
     ]

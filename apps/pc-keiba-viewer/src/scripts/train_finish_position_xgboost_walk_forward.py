@@ -32,6 +32,10 @@ DEFAULT_ITERATION_ID: Final[int] = 0
 DEFAULT_ALPHA_BUCKET_WEIGHT: Final[float] = 0.0
 DEFAULT_FINE_TUNE_FINAL_FOLDS: Final[int] = 0
 DEFAULT_FINE_TUNE_LR_DIVISOR: Final[int] = 10
+DEFAULT_MIN_CHILD_WEIGHT: Final[int] = 30
+DEFAULT_LAMBDA: Final[float] = 1.0
+DEFAULT_SUBSAMPLE: Final[float] = 1.0
+DEFAULT_COLSAMPLE_BYTREE: Final[float] = 1.0
 RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
@@ -56,11 +60,19 @@ class TrainXgboostArgs(TypedDict):
     fine_tune_lr_divisor: int
     num_rounds: int
     max_depth: int
+    min_child_weight: int
+    reg_lambda: float
+    subsample: float
+    colsample_bytree: float
     learning_rate: float
 
 
 class ParquetReaderLike(Protocol):
     def __call__(self, path: Path) -> pd.DataFrame: ...
+
+
+class SaveModelLike(Protocol):
+    def save_model(self, fname: str) -> None: ...
 
 
 class FoldTrainerLike(Protocol):
@@ -118,6 +130,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--num-rounds", type=int, default=450)
     parser.add_argument("--max-depth", type=int, default=6)
+    parser.add_argument("--min-child-weight", type=int, default=DEFAULT_MIN_CHILD_WEIGHT)
+    parser.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
+    parser.add_argument("--subsample", type=float, default=DEFAULT_SUBSAMPLE)
+    parser.add_argument("--colsample-bytree", type=float, default=DEFAULT_COLSAMPLE_BYTREE)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     return parser
 
@@ -151,6 +167,10 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "fine_tune_lr_divisor": int(cast(int, args.fine_tune_lr_divisor)),
         "num_rounds": int(cast(int, args.num_rounds)),
         "max_depth": int(cast(int, args.max_depth)),
+        "min_child_weight": int(cast(int, args.min_child_weight)),
+        "reg_lambda": float(cast(float, args.reg_lambda)),
+        "subsample": float(cast(float, args.subsample)),
+        "colsample_bytree": float(cast(float, args.colsample_bytree)),
         "learning_rate": float(cast(float, args.learning_rate)),
     }
 
@@ -161,15 +181,28 @@ def load_hpo_params(path: Path | None) -> dict[str, object]:
     parsed = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(parsed, dict):
         raise ValueError(f"HPO params file must be a JSON object, got {type(parsed)!r}")
-    return cast(dict[str, object], parsed)
+    top = cast(dict[str, object], parsed)
+    if "params" in top and isinstance(top["params"], dict):
+        return cast(dict[str, object], top["params"])
+    return top
 
 
 def apply_hpo_params(args: TrainXgboostArgs, params: dict[str, object]) -> TrainXgboostArgs:
     merged = cast(TrainXgboostArgs, dict(args))
     if "num_rounds" in params:
         merged["num_rounds"] = int(cast(int, params["num_rounds"]))
+    if "n_estimators" in params:
+        merged["num_rounds"] = int(cast(int, params["n_estimators"]))
     if "max_depth" in params:
         merged["max_depth"] = int(cast(int, params["max_depth"]))
+    if "min_child_weight" in params:
+        merged["min_child_weight"] = int(cast(int, params["min_child_weight"]))
+    if "reg_lambda" in params:
+        merged["reg_lambda"] = float(cast(float, params["reg_lambda"]))
+    if "subsample" in params:
+        merged["subsample"] = float(cast(float, params["subsample"]))
+    if "colsample_bytree" in params:
+        merged["colsample_bytree"] = float(cast(float, params["colsample_bytree"]))
     if "learning_rate" in params:
         merged["learning_rate"] = float(cast(float, params["learning_rate"]))
     return merged
@@ -210,7 +243,8 @@ def merge_bucket_weights_into_train(
             "bucket membership parquet must contain is_weak_bucket_score",
         )
     merge_cols = ["race_id", "is_weak_bucket_score"]
-    return train_df.merge(bucket_df[merge_cols], on="race_id", how="left")
+    deduped = bucket_df[merge_cols].drop_duplicates("race_id")
+    return train_df.merge(deduped, on="race_id", how="left")
 
 
 def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:
@@ -258,13 +292,15 @@ def build_fold_namespace(
         num_rounds=args["num_rounds"],
         max_depth=args["max_depth"],
         learning_rate=fold_lr,
-        min_child_weight=30,
-        reg_lambda=1.0,
+        min_child_weight=args["min_child_weight"],
+        reg_lambda=args["reg_lambda"],
+        subsample=args["subsample"],
+        colsample_bytree=args["colsample_bytree"],
         early_stopping_rounds=30,
         seed=resolve_fold_random_seed(fold_year),
         relevance_rank1=3,
         relevance_rank2=2,
-        relevance_rank3=2,
+        relevance_rank3=1,
         objective=args["objective"],
     )
     if args["objective"] == OBJECTIVE_NDCG:
@@ -309,7 +345,9 @@ def train_fold(
     train_with_buckets = merge_bucket_weights_into_train(train_df, bucket_df)
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
-    _, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    booster, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    cast(SaveModelLike, booster).save_model(str(model_dir / "model.json"))
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,

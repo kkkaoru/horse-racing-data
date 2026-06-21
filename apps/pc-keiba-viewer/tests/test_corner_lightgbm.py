@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -175,6 +176,10 @@ def test_load_dataset_derives_vector_neighbor_features_with_mlx(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    try:
+        importlib.import_module("mlx.core")
+    except (ImportError, OSError):
+        pytest.skip("MLX requires Apple Silicon/macOS")
     input_path = tmp_path / "dataset.csv"
     frame = make_model_frame().drop(columns=subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
     frame.to_csv(input_path, index=False)
@@ -280,6 +285,26 @@ def test_lightgbm_gpu_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert model.fit_calls == 2
 
 
+def test_top_vector_neighbor_candidates_empty_input_returns_empty() -> None:
+    empty_positions = np.array([], dtype=np.int64)
+    empty_distances = np.array([], dtype=np.float64)
+
+    positions, distances = subject.top_vector_neighbor_candidates(empty_positions, empty_distances)
+
+    assert len(positions) == 0
+    assert len(distances) == 0
+
+
+def test_top_vector_neighbor_candidates_selects_closest() -> None:
+    candidate_positions = np.array([0, 1, 2, 3], dtype=np.int64)
+    squared_distances = np.array([9.0, 1.0, 4.0, 16.0], dtype=np.float64)
+
+    positions, distances = subject.top_vector_neighbor_candidates(candidate_positions, squared_distances)
+
+    assert positions[0] == 1
+    assert abs(distances[0] - 1.0) < 1e-9
+
+
 def test_choose_ensemble_prediction_returns_best_candidate() -> None:
     frame = make_model_frame()
     frame["regression_corner1_norm"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
@@ -341,3 +366,109 @@ def test_main_writes_metrics_and_predictions(
     assert metrics["test_rows"] == 4
     assert predictions["predicted_corner1_norm"].between(0, 1).all()
     assert (model_dir / "corner1_norm.txt").exists()
+
+
+def test_main_uses_neural_predictions_when_models_available(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
+    monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
+    monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
+    fake_neural_model = object()
+    monkeypatch.setattr(subject, "train_lstm_model", lambda _seq, _target: fake_neural_model)
+    monkeypatch.setattr(subject, "train_transformer_model", lambda _seq, _target: fake_neural_model)
+    monkeypatch.setattr(
+        subject,
+        "predict_neural_corner_model",
+        lambda _model, features: pd.Series(np.linspace(0.1, 0.9, len(features))),
+    )
+    input_path = tmp_path / "dataset.csv"
+    model_dir = tmp_path / "models"
+    predictions_path = tmp_path / "predictions.csv"
+    metrics_path = tmp_path / "metrics.json"
+    make_model_frame().to_csv(input_path, index=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input",
+            str(input_path),
+            "--train-to-date",
+            "2025-12-31",
+            "--test-from-date",
+            "2026-01-01",
+            "--test-to-date",
+            "2026-12-31",
+            "--model-output",
+            str(model_dir),
+            "--predictions-output",
+            str(predictions_path),
+            "--metrics-output",
+            str(metrics_path),
+        ],
+    )
+
+    subject.main()
+
+    predictions = pd.read_csv(predictions_path)
+    assert predictions["predicted_corner1_norm"].between(0, 1).all()
+
+
+def test_stacker_training_uses_pairwise_model_not_regression_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify pairwise_prediction_column is set by apply_pairwise_model during stacker training."""
+    monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
+    monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
+    monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
+    monkeypatch.setattr(subject, "train_lstm_model", lambda _seq, _target: object())
+    monkeypatch.setattr(subject, "train_transformer_model", lambda _seq, _target: object())
+    monkeypatch.setattr(
+        subject,
+        "predict_neural_corner_model",
+        lambda _model, features: pd.Series(np.linspace(0.2, 0.8, len(features))),
+    )
+
+    captured_stacking_frames: list[pd.DataFrame] = []
+    original_train_stacking = subject.train_stacking_model
+
+    def capturing_train_stacking(
+        train: pd.DataFrame, target_column: str, stacking_features: pd.DataFrame,
+    ) -> lgb.LGBMRegressor:
+        captured_stacking_frames.append(stacking_features.copy())
+        return original_train_stacking(train, target_column, stacking_features)
+
+    monkeypatch.setattr(subject, "train_stacking_model", capturing_train_stacking)
+
+    input_path = tmp_path / "dataset.csv"
+    make_model_frame().to_csv(input_path, index=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input", str(input_path),
+            "--train-to-date", "2025-12-31",
+            "--test-from-date", "2026-01-01",
+            "--test-to-date", "2026-12-31",
+            "--model-output", str(tmp_path / "models"),
+            "--predictions-output", str(tmp_path / "preds.csv"),
+            "--metrics-output", str(tmp_path / "metrics.json"),
+        ],
+    )
+
+    subject.main()
+
+    # At least one stacking frame must have been captured
+    assert len(captured_stacking_frames) > 0
+    sf = captured_stacking_frames[0]
+    # pairwise column must exist and must not equal the regression column
+    assert "pairwise" in sf.columns.str.cat()
+    assert "regression" in sf.columns.str.cat()
+    pairwise_col = [c for c in sf.columns if c.startswith("pairwise")][0]
+    regression_col = [c for c in sf.columns if c.startswith("regression")][0]
+    # In-sample pairwise predictions from apply_pairwise_model differ from plain regression output
+    assert not sf[pairwise_col].equals(sf[regression_col])

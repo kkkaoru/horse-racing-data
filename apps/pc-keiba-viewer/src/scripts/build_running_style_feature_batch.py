@@ -35,7 +35,7 @@ PEER_INPUT_COLUMNS: dict[str, str] = {
     "speed_index_avg_5": "speedIndexAvg5",
     "speed_index_best_5": "speedIndexBest5",
     "past_first_3f_avg_5": "pastFirst3fAvg5",
-    "kohan_3f_avg_5": "kohan3fAvg5",
+    "kohan3f_avg_5": "kohan3fAvg5",
     "career_win_rate": "careerWinRate",
 }
 EXCLUDED_FROM_PER_HORSE: tuple[str, ...] = (

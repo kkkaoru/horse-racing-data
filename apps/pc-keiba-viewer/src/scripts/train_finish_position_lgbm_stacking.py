@@ -496,7 +496,7 @@ def relevance_from_finish(actuals: pd.Series, truncation_level: int) -> np.ndarr
     """
     actual = pd.to_numeric(actuals, errors="coerce").fillna(99).astype(int).to_numpy()
     rel = truncation_level + 1 - actual
-    rel = np.clip(rel, 0, truncation_level + 1)
+    rel = np.clip(rel, 0, truncation_level)
     return rel.astype(np.int64)
 
 
@@ -524,7 +524,9 @@ def compute_oos_metrics(frame: pd.DataFrame) -> dict[str, float]:
     top1_per_race = top1_hit.groupby(frame[RACE_ID_COLUMN]).max()
     place2_per_race = place2_hit.groupby(frame[RACE_ID_COLUMN]).max()
     place3_per_race = place3_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    box_per_race = (box_match.groupby(frame[RACE_ID_COLUMN]).sum() == TOP3_FINISH).astype(int)
+    box_sum_per_race = box_match.groupby(frame[RACE_ID_COLUMN]).sum()
+    field_size_per_race = frame.groupby(frame[RACE_ID_COLUMN])[RACE_ID_COLUMN].count()
+    box_per_race = (box_sum_per_race >= field_size_per_race.clip(upper=TOP3_FINISH)).astype(int)
     races = int(len(top1_per_race))
     return {
         "races": races,
@@ -676,7 +678,7 @@ def resolve_fold_years(
 ) -> tuple[int, ...]:
     available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
     if requested is None:
-        return tuple(available)
+        return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
     if not keep:
         raise ValueError(f"none of the requested fold years {requested!r} exist in the dataset")

@@ -138,6 +138,23 @@ def test_load_calibrators_table_mismatched_xy_lengths(tmp_path: Path) -> None:
         subject.load_calibrators(str(p))
 
 
+def test_validate_calibrators_payload_raises_when_class_is_missing() -> None:
+    calibrators_path = "test_source"
+    raw = {
+        "category": "jra",
+        "fit_year": 2023,
+        "classes": ["nige", "senkou", "sashi"],
+        "calibrators": {
+            "nige": {"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            "senkou": {"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            "sashi": {"x": [0.0, 1.0], "y": [0.0, 1.0]},
+            # oikomi is missing
+        },
+    }
+    with pytest.raises(ValueError, match="oikomi"):
+        subject.validate_calibrators_payload(raw, calibrators_path)
+
+
 def test_load_calibrators_nar_category(tmp_path: Path) -> None:
     payload = _make_calibrators_dict(category="nar", fit_year=2024)
     p = _write_calibrators(tmp_path, payload)

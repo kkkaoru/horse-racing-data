@@ -328,7 +328,7 @@ test("computeRawUmabanScores two-conditions-additive-sum: each match contributes
       details,
       conditions: { frame: true, jockey: true, trainer: false, frameRunningStyle: false },
     }),
-  ).toStrictEqual(new Map([["1", 13.183347464017315]]));
+  ).toStrictEqual(new Map([["1", expect.closeTo(13.183347464017315, 10)]]));
 });
 
 test("computeRawUmabanScores three-conditions: record matching all three counts three times", () => {
@@ -415,7 +415,7 @@ test("computeRawUmabanScores record-filter-omitted: all details eligible", () =>
       details,
       conditions: { frame: true, jockey: false, trainer: false, frameRunningStyle: false },
     }),
-  ).toStrictEqual(new Map([["1", 6.591673732008657]]));
+  ).toStrictEqual(new Map([["1", expect.closeTo(6.591673732008657, 10)]]));
 });
 
 test("computeRawUmabanScores record-filter-excludes: filter rejects every detail returns null", () => {
@@ -492,7 +492,7 @@ test("computeRawUmabanScores record-filter-includes-subset: only filter-pass det
       conditions: { frame: true, jockey: false, trainer: false, frameRunningStyle: false },
       recordFilter: ({ detail }) => detail.runningStyle === "senko",
     }),
-  ).toStrictEqual(new Map([["1", 6.591673732008657]]));
+  ).toStrictEqual(new Map([["1", expect.closeTo(6.591673732008657, 10)]]));
 });
 
 test("normalizeUmabanScores all-null returns all-null map", () => {

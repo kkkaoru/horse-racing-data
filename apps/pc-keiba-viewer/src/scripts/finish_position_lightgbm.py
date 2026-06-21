@@ -24,6 +24,8 @@ import optuna
 import pandas as pd
 from numpy.typing import NDArray
 
+from subgroup_diagnostics import compute_race_ndcg
+
 LightgbmCallback = Callable[..., object]
 
 FloatArray = NDArray[np.float64]
@@ -58,9 +60,18 @@ RELEVANCE_TIER_PRESETS: dict[str, dict[int, int]] = {
     "default": {1: 3, 2: 2, 3: 1},
     "place_weighted": {1: 2, 2: 3, 3: 2},
     "sequence_aware": {1: 1, 2: 2, 3: 3},
+    "graded_top6": {1: 6, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1},
 }
 DEFAULT_RELEVANCE_TIER_NAME = "default"
 DEFAULT_RELEVANCE = 0
+
+DISTANCE_BAND_RANGES: dict[str, tuple[int, int]] = {
+    "sprint": (0, 1200),
+    "mile": (1200, 1600),
+    "intermediate": (1600, 2000),
+    "long": (2000, 2400),
+    "extended": (2400, 99999),
+}
 TOP3_K = 3
 MONOTONE_CONSTRAINTS: dict[str, int] = {
     "inverse_odds_implied_prob": 1,
@@ -215,6 +226,20 @@ def load_dataset(path: Path) -> pd.DataFrame:
 
 def sort_for_grouping(df: pd.DataFrame) -> pd.DataFrame:
     return df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+
+
+def filter_by_distance_band(df: pd.DataFrame, band: str) -> pd.DataFrame:
+    """Return rows whose ``kyori`` value falls within the named distance band.
+
+    Raises ``ValueError`` for an unknown band name. The upper bound is
+    exclusive so bands partition the space without overlap.
+    """
+    if band not in DISTANCE_BAND_RANGES:
+        raise ValueError(
+            f"Unknown distance band: {band!r}. Valid: {sorted(DISTANCE_BAND_RANGES)}"
+        )
+    lo, hi = DISTANCE_BAND_RANGES[band]
+    return df[(df["kyori"] >= lo) & (df["kyori"] < hi)].reset_index(drop=True)
 
 
 def select_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
@@ -398,7 +423,7 @@ class PredictionRow(TypedDict):
 
 def score_dataset(booster: "lgb.Booster", df: pd.DataFrame) -> pd.DataFrame:
     sorted_df = sort_for_grouping(df)
-    feature_columns = resolve_feature_columns(list(sorted_df.columns))
+    feature_columns = booster.feature_name()
     frame = encode_categoricals(
         select_feature_frame(sorted_df, feature_columns),
         detect_categorical_features(feature_columns),
@@ -542,9 +567,11 @@ def split_walk_forward(df: pd.DataFrame, train_start: str, valid_year: int) -> F
     train_end = f"{valid_year - 1}1231"
     valid_start = f"{valid_year}0101"
     valid_end = f"{valid_year}1231"
+    train_raw = filter_by_date_range(df, train_start, train_end)
+    valid_raw = filter_by_date_range(df, valid_start, valid_end)
     return {
-        "train_df": filter_by_date_range(df, train_start, train_end),
-        "valid_df": filter_by_date_range(df, valid_start, valid_end),
+        "train_df": train_raw[train_raw["finish_position"].notna()].reset_index(drop=True),
+        "valid_df": valid_raw[valid_raw["finish_position"].notna()].reset_index(drop=True),
         "valid_year": valid_year,
     }
 
@@ -560,12 +587,12 @@ class FoldMetrics(TypedDict):
 
 
 def compute_top_k_actuals(group: pd.DataFrame, k: int) -> list[str]:
-    actual_top = group.nsmallest(k, "finish_position").sort_values("finish_position")
+    actual_top = group.dropna(subset=["finish_position"]).nsmallest(k, "finish_position").sort_values("finish_position")
     return actual_top["ketto_toroku_bango"].tolist()
 
 
 def compute_top_k_predicted(group: pd.DataFrame, k: int) -> list[str]:
-    predicted_top = group.nsmallest(k, "predicted_rank").sort_values("predicted_rank")
+    predicted_top = group.dropna(subset=["predicted_rank"]).nsmallest(k, "predicted_rank").sort_values("predicted_rank")
     return predicted_top["ketto_toroku_bango"].tolist()
 
 
@@ -584,19 +611,21 @@ def race_top1_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
 
 
 def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) -> dict[str, float | int]:
-    joined = predictions.merge(
-        ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]],
+    joined = ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+        predictions,
         on=["race_id", "ketto_toroku_bango"],
-        how="inner",
+        how="left",
     )
     box_hits = 0
     exact_hits = 0
     top1_hits = 0
     race_count = 0
+    ndcg_scores: list[float] = []
     for _race_id, group in joined.groupby("race_id"):
         actual = compute_top_k_actuals(group, TOP3_K)
         predicted = compute_top_k_predicted(group, TOP3_K)
         race_count += 1
+        ndcg_scores.append(compute_race_ndcg(group))
         if race_top3_box_hit(actual, predicted):
             box_hits += 1
         if race_top3_exact_hit(actual, predicted):
@@ -606,6 +635,7 @@ def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) 
     safe_total = max(race_count, 1)
     return {
         "race_count": race_count,
+        "ndcg_at_3": float(np.mean(ndcg_scores)) if ndcg_scores else 0.0,
         "top1_accuracy": top1_hits / safe_total,
         "top3_box_accuracy": box_hits / safe_total,
         "top3_exact_accuracy": exact_hits / safe_total,
@@ -627,9 +657,8 @@ def run_walk_forward_fold(
     booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
-    ndcg_value = eval_metrics.get("ndcg_at_3", training_result["best_ndcg_at_3"])
     metrics: FoldMetrics = {
-        "ndcg_at_3": float(ndcg_value) if ndcg_value is not None else 0.0,
+        "ndcg_at_3": float(eval_metrics["ndcg_at_3"]),
         "race_count": int(eval_metrics["race_count"]),
         "top1_accuracy": float(eval_metrics["top1_accuracy"]),
         "top3_box_accuracy": float(eval_metrics["top3_box_accuracy"]),
@@ -715,11 +744,14 @@ def evaluate_fold_set(
     train_start: str,
     validation_years: list[int],
     params: TrainingParams,
+    relevance_tier_name: str | None = None,
 ) -> dict[str, float | int]:
     fold_metrics: list[FoldMetrics] = []
     for valid_year in validation_years:
         fold = split_walk_forward(df, train_start, valid_year)
-        _booster, _predictions, metrics = run_walk_forward_fold(fold, params)
+        _booster, _predictions, metrics = run_walk_forward_fold(
+            fold, params, relevance_tier_name=relevance_tier_name
+        )
         fold_metrics.append(metrics)
     return aggregate_fold_metrics(fold_metrics)
 
@@ -745,10 +777,13 @@ def run_hpo_command(args: argparse.Namespace) -> HpoSummary:
     df = load_dataset(args.csv)
     validation_years = parse_year_list(args.validation_years)
     objective_value: str = getattr(args, "objective", OBJECTIVE_LAMBDARANK)
+    relevance_tier_name: str | None = getattr(args, "relevance_tier", None)
 
     def objective(trial: optuna.trial.Trial) -> float:
         params = suggest_hpo_params(trial, int(args.num_iterations), objective_value)
-        aggregate = evaluate_fold_set(df, args.train_start_date, validation_years, params)
+        aggregate = evaluate_fold_set(
+            df, args.train_start_date, validation_years, params, relevance_tier_name
+        )
         return float(aggregate["ndcg_at_3_mean"])
 
     sampler = optuna.samplers.TPESampler(seed=int(args.seed))

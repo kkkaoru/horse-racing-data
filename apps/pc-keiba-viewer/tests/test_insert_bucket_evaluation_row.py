@@ -341,6 +341,20 @@ def test_main_reads_file_normalizes_rows_and_calls_execute_upsert(
     assert tuples_arg[0][2] == "fp1"
 
 
+def test_default_execute_values_uses_executemany_not_psycopg_extras():
+    fn = subject.default_execute_values()
+    cursor_mock = MagicMock()
+    sql = "INSERT INTO t (a, b, evaluated_at) VALUES %s ON CONFLICT (a) DO UPDATE SET b = excluded.b"
+    template = "(%s, %s, now())"
+    rows = [("v1", 1), ("v2", 2)]
+    fn(cursor_mock, sql, rows, template=template)
+    cursor_mock.executemany.assert_called_once()
+    call_sql, call_rows = cursor_mock.executemany.call_args.args
+    assert "VALUES %s" not in call_sql
+    assert f"VALUES {template}" in call_sql
+    assert call_rows == rows
+
+
 def test_main_handles_metrics_json_without_rows_field(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

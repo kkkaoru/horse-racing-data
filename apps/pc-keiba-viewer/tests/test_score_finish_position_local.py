@@ -186,7 +186,24 @@ def test_write_predictions_parquet_partitions_by_category_and_year(tmp_path: Pat
         output_dir.as_posix(),
         partition_cols=["category", "race_year"],
         index=False,
+        existing_data_behavior="delete_matching",
     )
+
+
+def test_write_predictions_parquet_passes_delete_matching_behavior(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    captured_kwargs: list[dict[str, object]] = []
+
+    def mock_to_parquet(self: pd.DataFrame, path: object, **kwargs: object) -> None:
+        captured_kwargs.append(kwargs)
+        # Don't actually write — just capture kwargs
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", mock_to_parquet)
+    frame = pd.DataFrame({"category": ["jra"], "race_year": [2024], "predicted_score": [0.5]})
+    subject.write_predictions_parquet(frame, tmp_path / "out")
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0].get("existing_data_behavior") == "delete_matching"
 
 
 def test_run_orchestrates_resolve_score_and_write(
