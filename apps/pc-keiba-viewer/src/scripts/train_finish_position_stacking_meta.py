@@ -432,7 +432,9 @@ def compute_oos_metrics(frame: pd.DataFrame) -> dict[str, float]:
     top1_per_race = top1_hit.groupby(frame[RACE_ID_COLUMN]).max()
     place2_per_race = place2_hit.groupby(frame[RACE_ID_COLUMN]).max()
     place3_per_race = place3_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    box_per_race = (box_match.groupby(frame[RACE_ID_COLUMN]).sum() == TOP3_FINISH).astype(int)
+    box_sum_per_race = box_match.groupby(frame[RACE_ID_COLUMN]).sum()
+    field_size_per_race = frame.groupby(frame[RACE_ID_COLUMN])[RACE_ID_COLUMN].count()
+    box_per_race = (box_sum_per_race >= field_size_per_race.clip(upper=TOP3_FINISH)).astype(int)
     races = int(len(top1_per_race))
     return {
         "races": races,

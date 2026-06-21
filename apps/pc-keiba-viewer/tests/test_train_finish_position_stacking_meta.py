@@ -320,6 +320,23 @@ def test_compute_oos_metrics_counts_hits() -> None:
     assert metrics["top3_box"] == pytest.approx(1.0)
 
 
+def test_compute_oos_metrics_top3_box_correct_for_small_field() -> None:
+    """A 2-horse race where both are predicted and finish top-3 must score top3_box=1.0.
+
+    Old code compared box_sum == TOP3_FINISH (3) which is never reachable for a
+    2-horse race — the sum can be at most 2. Fix clips expected sum to field size.
+    """
+    frame = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1"],
+            "predicted_rank": [1, 2],
+            "actual_finish_position": [1, 2],
+        }
+    )
+    metrics = subject.compute_oos_metrics(frame)
+    assert metrics["top3_box"] == pytest.approx(1.0)
+
+
 def test_filter_to_fold_year_splits_correctly() -> None:
     frame = _build_dataset_frame((0, 1, 2))
     train, val = subject.filter_to_fold_year(frame, fold_year=2012)
