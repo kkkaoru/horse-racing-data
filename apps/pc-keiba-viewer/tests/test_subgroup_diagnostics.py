@@ -419,7 +419,20 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
     assert results[0]["race_count"] == 1
 
 
-def test_compute_subgroup_diagnostics_empty_predictions_returns_empty():
+def test_compute_subgroup_diagnostics_empty_ground_truth_returns_empty():
+    ground_truth = pd.DataFrame(columns=[
+        "race_id", "ketto_toroku_bango", "finish_position",
+        "source", "keibajo_code", "track_code", "kyori",
+    ])
+    predictions = _make_predictions([{
+        "race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1,
+    }])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert results == []
+
+
+def test_compute_subgroup_diagnostics_empty_predictions_returns_zero_ndcg():
+    # left join: ground_truth rows appear with NaN predicted_rank → NDCG=0.0 (all races penalized).
     ground_truth = _make_ground_truth([{
         "race_id": "r1",
         "ketto_toroku_bango": "a",
@@ -433,10 +446,13 @@ def test_compute_subgroup_diagnostics_empty_predictions_returns_empty():
         columns=["race_id", "ketto_toroku_bango", "predicted_rank"]
     )
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
-    assert results == []
+    assert len(results) == 1
+    assert results[0]["ndcg_at_3"] == 0.0
+    assert results[0]["race_count"] == 1
 
 
-def test_compute_subgroup_diagnostics_no_matching_rows_returns_empty():
+def test_compute_subgroup_diagnostics_no_matching_rows_returns_zero_ndcg():
+    # left join: ground_truth horses without matching predictions get NaN predicted_rank → NDCG=0.0.
     ground_truth = _make_ground_truth([{
         "race_id": "r1",
         "ketto_toroku_bango": "a",
@@ -452,7 +468,9 @@ def test_compute_subgroup_diagnostics_no_matching_rows_returns_empty():
         "predicted_rank": 1,
     }])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
-    assert results == []
+    assert len(results) == 1
+    assert results[0]["ndcg_at_3"] == 0.0
+    assert results[0]["race_count"] == 1
 
 
 def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
@@ -680,7 +698,10 @@ def test_compute_race_ndcg_excludes_nan_predicted_rank_from_dcg_but_not_ideal():
         "finish_position": [1.0, 2.0, 3.0],
     })
     result = subject.compute_race_ndcg(group)
-    assert result < 1.0
+    # exact: DCG = 2/log2(2) + 1/log2(3); ideal = 3/log2(2) + 2/log2(3) + 1/log2(4)
+    dcg = 2.0 / np.log2(2) + 1.0 / np.log2(3)
+    ideal_dcg = 3.0 / np.log2(2) + 2.0 / np.log2(3) + 1.0 / np.log2(4)
+    assert abs(result - dcg / ideal_dcg) < 1e-9
 
 
 def test_compute_race_ndcg_returns_one_when_predicted_perfectly_among_ranked_horses():
@@ -693,3 +714,45 @@ def test_compute_race_ndcg_returns_one_when_predicted_perfectly_among_ranked_hor
     })
     result = subject.compute_race_ndcg(group)
     assert abs(result - 1.0) < 1e-9
+
+
+def test_compute_race_ndcg_excludes_nan_finish_position_from_dcg_slot():
+    # Horse "a" has predicted_rank=1 but finish_position=NaN (e.g. scratched).
+    # It must NOT occupy a DCG slot — only "b" (rank=2, finish=1) contributes.
+    # Ideal: only "b" has a known finish_position.
+    # Result: perfect prediction among scoreable horses → NDCG = 1.0.
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["a", "b"],
+        "predicted_rank": [1.0, 2.0],
+        "finish_position": [float("nan"), 1.0],
+    })
+    result = subject.compute_race_ndcg(group)
+    assert abs(result - 1.0) < 1e-9
+
+
+def test_compute_subgroup_diagnostics_penalizes_unpredicted_winner_via_left_join():
+    # ground_truth has 3 horses. predictions only covers b and c — the winner (a) is absent.
+    # After left join, "a" appears with NaN predicted_rank and finish_position=1.
+    # NDCG must be < 1.0 because the winner was never ranked.
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "c", "predicted_rank": 2},
+    ])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert len(results) == 1
+    assert results[0]["ndcg_at_3"] < 1.0

@@ -81,16 +81,16 @@ def assign_subgroup_keys(df: pd.DataFrame) -> pd.Series:
     )
 
 
-def _dcg_at_3(sorted_finish_positions: list[int]) -> float:
+def _dcg_at_3(sorted_finish_positions: list[float]) -> float:
     dcg = 0.0
     for rank_idx, finish_pos in enumerate(sorted_finish_positions[:3], start=1):
-        rel = RELEVANCE_MAP.get(finish_pos, 0.0)
+        rel = RELEVANCE_MAP.get(int(finish_pos), 0.0)
         dcg += rel / np.log2(rank_idx + 1)
     return dcg
 
 
 def compute_race_ndcg(group: pd.DataFrame) -> float:
-    valid_group = group.dropna(subset=["predicted_rank"])
+    valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
     sorted_group = valid_group.sort_values("predicted_rank")
     finish_positions = sorted_group["finish_position"].tolist()
     dcg = _dcg_at_3(finish_positions)
@@ -166,13 +166,13 @@ def compute_subgroup_diagnostics(
     -------
     list[SubgroupMetrics] sorted by subgroup key ascending.
     """
-    joined = predictions.merge(
-        ground_truth[
-            ["race_id", "ketto_toroku_bango", "finish_position",
-             "source", "keibajo_code", "track_code", "kyori"]
-        ],
+    joined = ground_truth[
+        ["race_id", "ketto_toroku_bango", "finish_position",
+         "source", "keibajo_code", "track_code", "kyori"]
+    ].merge(
+        predictions,
         on=["race_id", "ketto_toroku_bango"],
-        how="inner",
+        how="left",
     )
     if joined.empty:
         return []
