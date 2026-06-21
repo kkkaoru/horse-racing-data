@@ -103,7 +103,8 @@ def compute_race_ndcg(group: pd.DataFrame) -> float:
 
 def compute_race_top1(group: pd.DataFrame) -> bool:
     best = group.loc[group["predicted_rank"].idxmin()]
-    return int(best["finish_position"]) == 1
+    fp = best["finish_position"]
+    return pd.notna(fp) and int(fp) == 1
 
 
 def compute_race_top3_box(group: pd.DataFrame) -> bool:

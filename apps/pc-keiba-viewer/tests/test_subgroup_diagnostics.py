@@ -262,6 +262,16 @@ def test_compute_race_top1_false_when_predicted_rank1_finishes_second():
     assert subject.compute_race_top1(group) is False
 
 
+def test_compute_race_top1_false_when_predicted_rank1_has_nan_finish_position():
+    group = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [float("nan"), 1.0, 2.0],
+    })
+    assert subject.compute_race_top1(group) is False
+
+
 def test_compute_race_top3_box_true_when_exact_match():
     group = pd.DataFrame({
         "race_id": ["r1"] * 4,
