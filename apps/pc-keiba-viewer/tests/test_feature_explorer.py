@@ -641,3 +641,39 @@ def test_run_exploration_uses_default_validation_years_when_not_specified() -> N
             results = subject.run_exploration(df, registry, n_trials=1)
 
     assert results == []
+
+
+def test_run_exploration_reconstructs_feature_names_from_trial_params_not_candidate_list() -> None:
+    """Old trials stored in Optuna may include features absent from the current df.
+
+    feature_names must be reconstructed from trial.params directly, not by
+    filtering candidate_features — otherwise features from old trials that are
+    no longer in the current candidate list are silently dropped.
+    """
+    df = _make_df()
+
+    # Old trial used "feat_old" (not in current df) AND "feat_speed" (in current df).
+    mock_trial = MagicMock()
+    mock_trial.value = 0.80
+    mock_trial.number = 0
+    mock_trial.params = {"use_feat_speed": True, "use_feat_old": True, "use_feat_jockey": False}
+    mock_trial.user_attrs = {"promoted": False}
+
+    mock_study = MagicMock()
+    mock_study.trials = [mock_trial]
+
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
+            results = subject.run_exploration(
+                df,
+                registry,
+                n_trials=1,
+                validation_years=[2023],
+                study_name="test_study",
+            )
+
+    assert len(results) == 1
+    feature_names = set(results[0]["feature_names"])
+    assert "feat_speed" in feature_names
+    assert "feat_old" in feature_names
+    assert "feat_jockey" not in feature_names

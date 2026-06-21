@@ -28,23 +28,25 @@ def _make_con_with_mock_pg(
 ) -> duckdb.DuckDBPyConnection:
     """Create an in-memory DuckDB connection with pg.jvd_um and pg.nvd_um mocked.
 
-    Each row is (ketto_toroku_bango, ketto_joho_01a, ketto_joho_04a).
+    Each row is (ketto_toroku_bango, ketto_joho_01a, ketto_joho_05a).
+    ketto_joho_05a is the damsire name field (母父馬名).
     """
     con = duckdb.connect(":memory:")
     con.execute("create schema pg")
-    # jvd_um mock
+    # jvd_um mock — includes both ketto_joho_04a (dam name) and ketto_joho_05a (damsire name)
     con.execute(
         """
         create table pg.jvd_um (
           ketto_toroku_bango varchar,
           ketto_joho_01a varchar,
-          ketto_joho_04a varchar
+          ketto_joho_04a varchar,
+          ketto_joho_05a varchar
         )
         """
     )
     for row in jvd_rows:
         con.execute(
-            "insert into pg.jvd_um values (?, ?, ?)",
+            "insert into pg.jvd_um (ketto_toroku_bango, ketto_joho_01a, ketto_joho_05a) values (?, ?, ?)",
             list(row),
         )
     # nvd_um mock
@@ -53,13 +55,14 @@ def _make_con_with_mock_pg(
         create table pg.nvd_um (
           ketto_toroku_bango varchar,
           ketto_joho_01a varchar,
-          ketto_joho_04a varchar
+          ketto_joho_04a varchar,
+          ketto_joho_05a varchar
         )
         """
     )
     for row in nvd_rows:
         con.execute(
-            "insert into pg.nvd_um values (?, ?, ?)",
+            "insert into pg.nvd_um (ketto_toroku_bango, ketto_joho_01a, ketto_joho_05a) values (?, ?, ?)",
             list(row),
         )
     return con
@@ -153,3 +156,40 @@ def test_mixed_jra_and_nar_horses_both_populated() -> None:
     assert ("JRA_A", "SIRE_A", "DAMSIRE_A") in rows
     assert ("NAR_B", "SIRE_B", "DAMSIRE_B") in rows
     assert len(rows) == 2
+
+
+def test_damsire_id_reads_from_ketto_joho_05a_not_04a() -> None:
+    """damsire_id must use ketto_joho_05a (damsire name) not ketto_joho_04a (dam name).
+
+    Both columns differ so we can verify which one is used.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_um (
+          ketto_toroku_bango varchar,
+          ketto_joho_01a varchar,
+          ketto_joho_04a varchar,
+          ketto_joho_05a varchar
+        )
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_um (
+          ketto_toroku_bango varchar,
+          ketto_joho_01a varchar,
+          ketto_joho_04a varchar,
+          ketto_joho_05a varchar
+        )
+        """
+    )
+    con.execute(
+        "insert into pg.jvd_um values (?, ?, ?, ?)",
+        ["HORSE_X", "SIRE_NAME", "DAM_NAME", "DAMSIRE_NAME"],
+    )
+    subject.stage_horse_pedigree(con)
+    rows = con.execute("select sire_id, damsire_id from horse_pedigree").fetchall()
+    con.close()
+    assert rows == [("SIRE_NAME", "DAMSIRE_NAME")]

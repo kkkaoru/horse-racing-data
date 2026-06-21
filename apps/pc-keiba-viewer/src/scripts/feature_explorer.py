@@ -258,9 +258,9 @@ def run_exploration(
         if trial.value is None:
             continue
         selected = [
-            col
-            for col in candidate_features
-            if trial.params.get(f"use_{col}", False)
+            col[len("use_"):]
+            for col, val in trial.params.items()
+            if col.startswith("use_") and val
         ]
         results.append(
             ExplorationResult(

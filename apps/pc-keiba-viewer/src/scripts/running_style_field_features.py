@@ -26,7 +26,7 @@ PEER_INPUT_COLUMNS: dict[str, str] = {
     "speed_index_avg_5": "speedIndexAvg5",
     "speed_index_best_5": "speedIndexBest5",
     "past_first_3f_avg_5": "pastFirst3fAvg5",
-    "kohan_3f_avg_5": "kohan3fAvg5",
+    "kohan3f_avg_5": "kohan3fAvg5",
     "career_win_rate": "careerWinRate",
 }
 
@@ -61,7 +61,7 @@ class HorsePeerInputs:
     speed_index_avg_5: float | None
     speed_index_best_5: float | None
     past_first_3f_avg_5: float | None
-    kohan_3f_avg_5: float | None
+    kohan3f_avg_5: float | None
     career_win_rate: float | None
 
 
@@ -93,7 +93,7 @@ def compute_field_features_per_horse(horses: list[HorsePeerInputs]) -> list[dict
     speed_avg = [horse.speed_index_avg_5 for horse in horses]
     speed_best = [horse.speed_index_best_5 for horse in horses]
     first_3f = [horse.past_first_3f_avg_5 for horse in horses]
-    kohan_3f = [horse.kohan_3f_avg_5 for horse in horses]
+    kohan_3f = [horse.kohan3f_avg_5 for horse in horses]
     career_win = [horse.career_win_rate for horse in horses]
 
     rows: list[dict[str, float | int | None]] = []
@@ -168,7 +168,7 @@ def _row_to_peer_inputs(row: pd.Series) -> HorsePeerInputs:
         speed_index_avg_5=_nullable_float(row.get("speed_index_avg_5")),
         speed_index_best_5=_nullable_float(row.get("speed_index_best_5")),
         past_first_3f_avg_5=_nullable_float(row.get("past_first_3f_avg_5")),
-        kohan_3f_avg_5=_nullable_float(row.get("kohan_3f_avg_5")),
+        kohan3f_avg_5=_nullable_float(row.get("kohan3f_avg_5")),
         career_win_rate=_nullable_float(row.get("career_win_rate")),
     )
 
