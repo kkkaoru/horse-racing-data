@@ -149,6 +149,7 @@ def test_build_select_from_parquet_sql_filters_versions_and_years():
     args = _sample_args(
         predictions_parquet_glob="tmp/preds/category=jra",
         running_style_feature_version="rsX",
+        model_version="jra-running-style-lgbm-v1.0",
         year_from=2010,
         year_to=2025,
     )
@@ -156,10 +157,23 @@ def test_build_select_from_parquet_sql_filters_versions_and_years():
     assert "read_parquet('tmp/preds/category=jra')" in sql
     assert "cast(kaisai_nen as integer) between 2010 and 2025" in sql
     assert "running_style_feature_version = 'rsX'" in sql
+    assert "model_version = 'jra-running-style-lgbm-v1.0'" in sql
     assert "target_running_style_class" in sql
     assert "predicted_class" in sql
     assert "p_nige" in sql
     assert "p_oikomi" in sql
+
+
+def test_build_select_from_parquet_sql_filters_on_model_version():
+    args = _sample_args(
+        predictions_parquet_glob="tmp/preds/category=nar",
+        running_style_feature_version="rsY",
+        model_version="nar-running-style-lgbm-v2.0",
+        year_from=2020,
+        year_to=2024,
+    )
+    sql = subject.build_select_from_parquet_sql(args)
+    assert "and model_version = 'nar-running-style-lgbm-v2.0'" in sql
 
 
 def test_build_select_from_parquet_sql_omits_hive_partitioning_and_category_predicate():
@@ -180,6 +194,7 @@ def test_build_version_mismatch_check_sql_counts_mismatched_rows():
     args = _sample_args(
         predictions_parquet_glob="tmp/preds/category=nar",
         running_style_feature_version="rsX",
+        model_version="nar-running-style-lgbm-v2.0",
         category="nar",
         year_from=2020,
         year_to=2024,
@@ -189,6 +204,21 @@ def test_build_version_mismatch_check_sql_counts_mismatched_rows():
     assert "running_style_feature_version is null" in sql
     assert "running_style_feature_version <> 'rsX'" in sql
     assert "cast(kaisai_nen as integer) between 2020 and 2024" in sql
+    assert "model_version is null" in sql
+    assert "model_version <> 'nar-running-style-lgbm-v2.0'" in sql
+
+
+def test_build_version_mismatch_check_sql_filters_on_model_version():
+    args = _sample_args(
+        predictions_parquet_glob="tmp/preds/category=jra",
+        running_style_feature_version="rsZ",
+        model_version="jra-running-style-lgbm-v1.0",
+        category="jra",
+        year_from=2015,
+        year_to=2025,
+    )
+    sql = subject.build_version_mismatch_check_sql(args)
+    assert "or model_version is null or model_version <> 'jra-running-style-lgbm-v1.0'" in sql
 
 
 def test_build_version_mismatch_check_sql_omits_hive_partitioning_and_category_predicate():
