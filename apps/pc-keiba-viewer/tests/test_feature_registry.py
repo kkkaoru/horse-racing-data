@@ -167,15 +167,15 @@ def test_maybe_promote_exactly_at_threshold_does_not_promote() -> None:
 
 def test_activate_multiple_times_only_last_is_active() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
-        reg.record_trial("trial-1", 0.5, ["feat_a"])
-        reg.record_trial("trial-2", 0.6, ["feat_b"])
-        reg.record_trial("trial-3", 0.7, ["feat_c"])
-        reg.activate(1)
-        reg.activate(2)
-        reg.activate(3)
+        id1 = reg.record_trial("trial-1", 0.5, ["feat_a"])
+        id2 = reg.record_trial("trial-2", 0.6, ["feat_b"])
+        id3 = reg.record_trial("trial-3", 0.7, ["feat_c"])
+        reg.activate(id1)
+        reg.activate(id2)
+        reg.activate(id3)
         active = reg.get_active_entry()
         assert active is not None
-        assert active["id"] == 3
+        assert active["id"] == id3
         # list_trials returns DESC by ndcg: 0.7(id3), 0.6(id2), 0.5(id1)
         trials = reg.list_trials(limit=10)
         assert trials[0]["is_active"] is True
@@ -228,3 +228,16 @@ def test_record_deployment_stores_timestamp() -> None:
         row = reg._con.execute("SELECT deployed_at FROM deployments").fetchone()
         assert row is not None
         assert row[0] != ""
+
+
+def test_sync_sequence_skips_past_manually_inserted_ids() -> None:
+    """_sync_sequence_to_table advances sequence past current max id."""
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._con is not None
+        # Bypass sequence by inserting a row with a high id (simulates old-code row)
+        reg._con.execute(
+            "INSERT INTO feature_trials VALUES (100, 't0', 0.9, FALSE, '[]', '{}', '2024-01-01')"
+        )
+        reg._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
+        next_id = reg.record_trial("trial-new", 0.6, ["feat_a"])
+        assert next_id == 101

@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import mlx.core as mx
+import pytest
+
+try:
+    import mlx.core as mx
+except (ImportError, OSError):
+    pytest.skip("MLX requires Apple Silicon/macOS", allow_module_level=True)
+
 import numpy as np
 import pandas as pd
-import pytest
 
 from finish_position_transformer import cli as cli_module
 from finish_position_transformer.dataset import (

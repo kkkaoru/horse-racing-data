@@ -175,6 +175,10 @@ def test_load_dataset_derives_vector_neighbor_features_with_mlx(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    try:
+        import mlx.core  # noqa: F401
+    except (ImportError, OSError):
+        pytest.skip("MLX requires Apple Silicon/macOS")
     input_path = tmp_path / "dataset.csv"
     frame = make_model_frame().drop(columns=subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
     frame.to_csv(input_path, index=False)

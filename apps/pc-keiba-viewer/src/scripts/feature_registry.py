@@ -69,6 +69,19 @@ class FeatureRegistry:
                 deployed_at   TEXT    NOT NULL
             )
         """)
+        # Sync sequences past existing row ids so pre-migration databases don't collide.
+        self._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
+        self._sync_sequence_to_table("seq_deployments_id", "deployments")
+
+    def _sync_sequence_to_table(self, seq_name: str, table_name: str) -> None:
+        assert self._con is not None
+        row = self._con.execute(
+            f"SELECT COALESCE(MAX(id), 0) FROM {table_name}"
+        ).fetchone()
+        max_id = int(row[0]) if row else 0
+        # DuckDB does not support ALTER SEQUENCE RESTART WITH, so drop and recreate.
+        self._con.execute(f"DROP SEQUENCE IF EXISTS {seq_name}")
+        self._con.execute(f"CREATE SEQUENCE {seq_name} START {max_id + 1}")
 
     def _next_id(self, table: str = "feature_trials") -> int:
         assert self._con is not None

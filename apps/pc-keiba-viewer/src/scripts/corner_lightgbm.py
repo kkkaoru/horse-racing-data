@@ -680,6 +680,18 @@ def import_mlx_optimizers() -> object:
     return importlib.import_module("mlx.optimizers")
 
 
+def _mlx_module_base() -> type:
+    """Return mlx.nn.Module when MLX is available, otherwise object."""
+    try:
+        mod = importlib.import_module("mlx.nn")
+        return mod.Module  # type: ignore[attr-defined]
+    except (ImportError, OSError):
+        return object
+
+
+_MlxModuleBase: type = _mlx_module_base()
+
+
 def add_derived_vector_neighbor_features_sklearn(df: pd.DataFrame) -> pd.DataFrame:
     output = empty_vector_neighbor_output(len(df))
     vectors = build_vector_neighbor_input(df)
@@ -1177,7 +1189,7 @@ def neural_sequence_tensor(df: pd.DataFrame) -> FloatArray:
     return cast(FloatArray, sequences[inverse_order])
 
 
-class CornerLstmModel(import_mlx_nn().Module):  # ty: ignore[unresolved-attribute]  # pragma: no cover
+class CornerLstmModel(_MlxModuleBase):  # pragma: no cover
     def __init__(self, input_size: int, hidden_size: int) -> None:
         super().__init__()
         nn = import_mlx_nn()
@@ -1189,7 +1201,7 @@ class CornerLstmModel(import_mlx_nn().Module):  # ty: ignore[unresolved-attribut
         return self.output(hidden[:, -1, :]).squeeze(-1)
 
 
-class CornerTransformerModel(import_mlx_nn().Module):  # ty: ignore[unresolved-attribute]  # pragma: no cover
+class CornerTransformerModel(_MlxModuleBase):  # pragma: no cover
     def __init__(self, input_size: int, hidden_size: int) -> None:
         super().__init__()
         nn = import_mlx_nn()
@@ -1777,8 +1789,6 @@ def main() -> None:
                 pairwise_prediction_column,
             ),
         )
-        lstm_model = train_lstm_model(train_sequences, train[target_column])
-        transformer_model = train_transformer_model(train_sequences, train[target_column])
         model.booster_.save_model(str(model_dir / f"{target_column}.txt"))
         ranker.booster_.save_model(str(model_dir / f"{target_column}.ranker.txt"))
         pairwise_model.booster_.save_model(str(model_dir / f"{target_column}.pairwise.txt"))
@@ -1807,11 +1817,22 @@ def main() -> None:
             0,
             1,
         )
-        test[lstm_prediction_column] = predict_neural_corner_model(lstm_model, test_sequences).to_numpy(dtype=float)
-        test[transformer_prediction_column] = predict_neural_corner_model(
-            transformer_model,
-            test_sequences,
-        ).to_numpy(dtype=float)
+        # Train MLX neural models when available; skip gracefully on non-Apple-Silicon.
+        _lstm_col: str | None
+        _transformer_col: str | None
+        try:
+            _lstm_model = train_lstm_model(train_sequences, train[target_column])
+            _transformer_model = train_transformer_model(train_sequences, train[target_column])
+            test[lstm_prediction_column] = predict_neural_corner_model(_lstm_model, test_sequences).to_numpy(dtype=float)
+            test[transformer_prediction_column] = predict_neural_corner_model(
+                _transformer_model,
+                test_sequences,
+            ).to_numpy(dtype=float)
+            _lstm_col = lstm_prediction_column
+            _transformer_col = transformer_prediction_column
+        except (ImportError, OSError):
+            _lstm_col = None
+            _transformer_col = None
         prediction, alpha, alpha_scores = choose_ensemble_prediction(
             test,
             target_column,
@@ -1819,8 +1840,8 @@ def main() -> None:
             ranker_prediction_column,
             pairwise_prediction_column,
             stacked_prediction_column,
-            lstm_prediction_column,
-            transformer_prediction_column,
+            _lstm_col,
+            _transformer_col,
         )
         test[prediction_column] = prediction
         metrics[target_column] = {
