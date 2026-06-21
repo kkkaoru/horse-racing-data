@@ -1414,6 +1414,43 @@ def test_isotonic_transform_accepts_old_file_without_schema_version():
     assert result.iloc[2] == pytest.approx(0.9)
 
 
+def test_fit_run_returns_zero_buckets_when_global_fallback_has_all_nan_ranks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+):
+    """When all rows have NaN predicted_rank and no bucket meets the threshold,
+    the global fallback fit_curves_for_frame raises ValueError; fit_run must
+    return gracefully with buckets_written=0 and log a warning."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 5,
+        "predicted_rank": [float("nan")] * 5,
+        "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "kyoso_joken_code": ["001"] * 5,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 500,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    captured = capsys.readouterr()
+    assert result["buckets_written"] == 0
+    assert result["fallback_used"] is False
+    assert "no valid rows for global fallback" in captured.err
+    json_writer.assert_not_called()
+
+
 def test_fit_run_guards_bucket_threshold_by_race_count_not_row_count(tmp_path: Path):
     """min_bucket_samples must compare against unique race count (via
     race_count_from_frame) — NOT the total row count.  A bucket with
@@ -1442,3 +1479,54 @@ def test_fit_run_guards_bucket_threshold_by_race_count_not_row_count(tmp_path: P
     assert result["fallback_used"] is True
     first_call_path: Path = cast(Path, json_writer.call_args_list[0].args[1])
     assert "bucket__cat_global" in first_call_path.as_posix()
+
+
+def test_fit_run_skips_bucket_when_threshold_met_but_all_ranks_are_nan(tmp_path: Path):
+    """Bucket with >= min_bucket_samples races but all NaN predicted_rank must be
+    skipped via except ValueError: continue rather than crashing.
+    The global fallback uses the full frame; NaN-rank rows are filtered there,
+    leaving the valid-bucket rows which are enough to fit."""
+    nan_rows: list[dict[str, object]] = []
+    for race_idx in range(6):
+        for horse_idx in range(5):
+            nan_rows.append({
+                "race_id": f"nan_race_{race_idx:02d}",
+                "predicted_rank": float("nan"),
+                "actual_finish_position": float(horse_idx + 1),
+                "kyoso_joken_code": "A",
+            })
+    valid_rows: list[dict[str, object]] = []
+    for race_idx in range(4):
+        for horse_idx in range(5):
+            valid_rows.append({
+                "race_id": f"valid_race_{race_idx:02d}",
+                "predicted_rank": float(horse_idx + 1),
+                "actual_finish_position": float(horse_idx + 1),
+                "kyoso_joken_code": "B",
+            })
+    frame = pd.DataFrame(nan_rows + valid_rows)
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    # Bucket "A": 6 races >= 5 threshold but all NaN predicted_rank
+    #   → fit_curves_for_frame raises ValueError → except ValueError: continue
+    # Bucket "B": 4 races < 5 threshold → skipped before try
+    # buckets_written == 0 → global fallback with full frame
+    #   → NaN-rank rows filtered → 4 valid races remain → global fallback succeeds
+    assert result["buckets_written"] == 1
+    assert result["fallback_used"] is True
