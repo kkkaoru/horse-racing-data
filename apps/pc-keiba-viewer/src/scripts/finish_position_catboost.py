@@ -206,8 +206,9 @@ def train_catboost_ranker(
         valid_df.groupby("race_id")["predicted_score"].rank(method="first", ascending=False).astype(int)
     )
     metrics = compute_fold_metrics(valid_df)
+    best_iter = model.get_best_iteration()
     return {
-        "best_iteration": int(cast(int, model.get_best_iteration() or model.tree_count_)),
+        "best_iteration": int(best_iter if best_iter is not None else cast(int, model.tree_count_)),
         "valid_predictions": valid_df,
         "metrics": metrics,
     }

@@ -567,9 +567,11 @@ def split_walk_forward(df: pd.DataFrame, train_start: str, valid_year: int) -> F
     train_end = f"{valid_year - 1}1231"
     valid_start = f"{valid_year}0101"
     valid_end = f"{valid_year}1231"
+    train_raw = filter_by_date_range(df, train_start, train_end)
+    valid_raw = filter_by_date_range(df, valid_start, valid_end)
     return {
-        "train_df": filter_by_date_range(df, train_start, train_end),
-        "valid_df": filter_by_date_range(df, valid_start, valid_end),
+        "train_df": train_raw[train_raw["finish_position"].notna()].reset_index(drop=True),
+        "valid_df": valid_raw[valid_raw["finish_position"].notna()].reset_index(drop=True),
         "valid_year": valid_year,
     }
 

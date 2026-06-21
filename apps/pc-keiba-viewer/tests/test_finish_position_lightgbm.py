@@ -622,12 +622,25 @@ def test_split_walk_forward_uses_year_window():
         {
             "race_date": ["20191231", "20200101", "20201231", "20210101", "20210601", "20211231", "20220101"],
             "value": ["a", "b", "c", "d", "e", "f", "g"],
+            "finish_position": [1.0, 2.0, 1.0, 1.0, 2.0, 3.0, 1.0],
         }
     )
     fold = subject.split_walk_forward(df, "20160101", 2021)
     assert fold["valid_year"] == 2021
     assert fold["train_df"]["value"].tolist() == ["a", "b", "c"]
     assert fold["valid_df"]["value"].tolist() == ["d", "e", "f"]
+
+
+def test_split_walk_forward_excludes_nan_finish_position():
+    df = pd.DataFrame(
+        {
+            "race_date": ["20210101", "20210102", "20210103"],
+            "value": ["keep", "drop_nan", "keep2"],
+            "finish_position": [1.0, float("nan"), 2.0],
+        }
+    )
+    fold = subject.split_walk_forward(df, "20200101", 2021)
+    assert fold["valid_df"]["value"].tolist() == ["keep", "keep2"]
 
 
 def test_evaluate_predictions_computes_box_and_exact_hits():

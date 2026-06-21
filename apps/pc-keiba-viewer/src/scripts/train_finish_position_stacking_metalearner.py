@@ -482,8 +482,8 @@ def pick_alpha_via_cv(
         raise ValueError("training frame has no usable feature columns")
     years = sorted(train_frame[RACE_YEAR_COLUMN].unique().tolist())
     n_folds = max(2, min(cv_folds, len(years)))
-    # Assign years to folds in chronological order (earlier years → lower fold indices)
-    # This avoids future leakage: each inner fold sees only earlier-year data in training
+    # Assign years to folds in chronological order (earlier years → lower fold indices).
+    # Forward-chain CV: fold k trains on folds 0..k-1 and validates on fold k.
     n_years = len(years)
     fold_assignment = [int(i * n_folds / n_years) for i in range(n_years)]
     year_to_fold = dict(zip(years, fold_assignment, strict=True))
@@ -494,7 +494,9 @@ def pick_alpha_via_cv(
             holdout_years = {y for y, f in year_to_fold.items() if f == fold_idx}
             if not holdout_years:
                 continue
-            train_mask = ~train_frame[RACE_YEAR_COLUMN].isin(holdout_years)
+            # Forward-chain: train only on years assigned to earlier folds
+            train_years = {y for y, f in year_to_fold.items() if f < fold_idx}
+            train_mask = train_frame[RACE_YEAR_COLUMN].isin(train_years)
             val_mask = train_frame[RACE_YEAR_COLUMN].isin(holdout_years)
             if train_mask.sum() == 0 or val_mask.sum() == 0:
                 continue
@@ -633,7 +635,7 @@ def resolve_fold_years(
 ) -> tuple[int, ...]:
     available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
     if requested is None:
-        return tuple(available)
+        return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
     if not keep:
         raise ValueError(f"none of the requested fold years {requested!r} exist in the dataset")

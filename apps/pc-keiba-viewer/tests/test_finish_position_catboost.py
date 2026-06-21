@@ -636,6 +636,33 @@ def test_train_catboost_ranker_uses_no_cat_features_when_flag_set(
     assert result["best_iteration"] == 5
 
 
+def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """get_best_iteration() returning 0 must not fall back to tree_count_ (falsy-zero bug)."""
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+    fake_model = MagicMock()
+    fake_model.predict.return_value = np.array([0.9, 0.5])
+    fake_model.get_best_iteration.return_value = 0  # 0 is falsy — the bug returned tree_count_
+    fake_model.tree_count_ = 99
+    monkeypatch.setattr(subject, "CatBoost", MagicMock(return_value=fake_model))
+    monkeypatch.setattr(subject, "Pool", MagicMock())
+    args = _make_args()
+    result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
+    assert result["best_iteration"] == 0, "best_iteration=0 must not fall back to tree_count_"
+
+
 # ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------

@@ -421,25 +421,28 @@ def test_derive_top3_prob_uses_existing_column():
 
 
 def test_derive_top3_prob_falls_back_to_rank_when_column_missing():
+    # 4-horse race, top_n=3: proxy = (race_size - rank + 1) / race_size * 3
+    # Rank 1: (4/4)*3=3.0, Rank 2: (3/4)*3=2.25, Rank 3: (2/4)*3=1.5, Rank 4: (1/4)*3=0.75
     frame = pd.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[2] == 1.0
-    assert result.iloc[3] == 0.75
+    assert result.iloc[0] == pytest.approx(3.0)
+    assert result.iloc[2] == pytest.approx(1.5)
+    assert result.iloc[3] == pytest.approx(0.75)
 
 
 def test_derive_top3_prob_falls_back_when_existing_column_all_null():
+    # 2-horse race, top_n=3: Rank 1: (2/2)*3=3.0, Rank 2: (1/2)*3=1.5
     frame = pd.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top3_prob": [None, None],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[1] == 1.0
+    assert result.iloc[0] == pytest.approx(3.0)
+    assert result.iloc[1] == pytest.approx(1.5)
 
 
 def test_derive_prob_from_rank_returns_zeros_when_rank_column_missing():
@@ -447,6 +450,35 @@ def test_derive_prob_from_rank_returns_zeros_when_rank_column_missing():
     result = subject.derive_prob_from_rank(frame, top_n=1)
     assert result.iloc[0] == 0.0
     assert result.iloc[1] == 0.0
+
+
+def test_derive_prob_from_rank_top3_allows_values_above_one():
+    """top_n=3 proxy must NOT be clipped to 1.0 — top-ranked horses need
+    distinguishable proxy values > 1.0 so isotonic regression can learn a
+    meaningful calibration curve over them."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 10,
+        "predicted_rank": list(range(1, 11)),
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=3)
+    # Rank 1 in a 10-horse race: (10/10)*3 = 3.0 — well above 1.0
+    assert result.iloc[0] > 1.0, "rank-1 proxy for top_n=3 must exceed 1.0"
+    # Rank 10: (1/10)*3 = 0.3 — below 1.0
+    assert result.iloc[9] < 1.0
+    # All values must be positive
+    assert (result > 0.0).all()
+    # Proxy must decrease with rank
+    assert result.iloc[0] > result.iloc[4] > result.iloc[9]
+
+
+def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 5,
+        "predicted_rank": [1, 2, 3, 4, 5],
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=1)
+    assert (result >= 0.0).all()
+    assert (result <= 1.0).all()
 
 
 def test_win_indicator_marks_rank_one_only():
