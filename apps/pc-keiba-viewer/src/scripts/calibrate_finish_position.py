@@ -534,7 +534,7 @@ def re_rank_predictions(frame: pd.DataFrame, *, prob_column: str) -> pd.Series:
     )
 
 
-def log_source_distribution(source_series: pd.Series) -> None:
+def log_source_distribution(source_series: pd.Series, label: str) -> None:
     counts = source_series.value_counts(dropna=False)
     total = int(counts.sum())
     if total == 0:
@@ -543,7 +543,7 @@ def log_source_distribution(source_series: pd.Series) -> None:
     cat_global = int(counts.get(CALIBRATION_SOURCE_CAT_GLOBAL, 0))
     uncalibrated = int(counts.get(CALIBRATION_SOURCE_UNCALIBRATED, 0))
     sys.stderr.write(
-        "calibrate_finish_position: calibration_source distribution"
+        f"calibrate_finish_position: calibration_source distribution [{label}]"
         f" bucket={bucket}/{total} cat-global={cat_global}/{total}"
         f" uncalibrated={uncalibrated}/{total}\n",
     )
@@ -575,7 +575,6 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
         deps=deps,
         calibration_dir=args["calibration_dir"],
     )
-    log_source_distribution(source_top3)
     out = frame.copy()
     out[PREDICTED_TOP1_PROB_CALIBRATED_COLUMN] = calibrated_top1.astype(float)
     out[PREDICTED_TOP3_PROB_CALIBRATED_COLUMN] = calibrated_top3.astype(float)
@@ -583,7 +582,8 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
     out[PREDICTED_RANK_COLUMN] = re_rank_predictions(
         out, prob_column=PREDICTED_TOP1_PROB_CALIBRATED_COLUMN,
     )
-    log_source_distribution(source_top1)
+    log_source_distribution(source_top1, label="top1")
+    log_source_distribution(source_top3, label="top3")
     deps["parquet_writer"](out, args["output_predictions_root"])
     return {"cat": args["cat"], "rows_written": int(len(out))}
 

@@ -140,31 +140,51 @@ def test_aggregate_fp_metrics_empty() -> None:
 
 
 def test_aggregate_fp_metrics_top1_hit() -> None:
-    # Race with predicted rank 1 winning
+    # Race with predicted rank 1 winning; pred rank 3 misses top3 so box is 0
     race_rows = [[(1, 1), (2, 3), (3, 5)]]
     top1, place2, place3, _fk2, top3_box = subject.aggregate_fp_metrics(race_rows)
     assert top1 == 1
     assert place2 == 1
     assert place3 == 1
-    assert top3_box == 1
+    assert top3_box == 0
 
 
 def test_aggregate_fp_metrics_place2_hit_but_not_top1() -> None:
+    # pred rank 3 finishes 5th so box fails even though pred1 and pred2 hit
     race_rows = [[(1, 2), (2, 1), (3, 5)]]
     top1, place2, place3, _fukusho_2p, top3_box = subject.aggregate_fp_metrics(race_rows)
+    assert top1 == 0
+    assert place2 == 1
+    assert place3 == 1
+    assert top3_box == 0
+
+
+def test_aggregate_fp_metrics_place3_hit() -> None:
+    # pred rank 2 finishes 5th so box fails even though pred1 and pred3 hit top3
+    race_rows = [[(1, 3), (2, 5), (3, 1)]]
+    top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
+    assert top1 == 0
+    assert place2 == 0
+    assert place3 == 1
+    assert top3_box == 0
+
+
+def test_aggregate_fp_metrics_top3_box_hit_when_all_three_in_top3() -> None:
+    # All three predicted top horses land in the actual top 3
+    race_rows = [[(1, 2), (2, 3), (3, 1)]]
+    top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
     assert top1 == 0
     assert place2 == 1
     assert place3 == 1
     assert top3_box == 1
 
 
-def test_aggregate_fp_metrics_place3_hit() -> None:
-    race_rows = [[(1, 3), (2, 5), (3, 1)]]
+def test_aggregate_fp_metrics_top3_box_zero_when_one_prediction_misses() -> None:
+    # pred1 and pred2 hit, pred3 misses — place3=1 but top3_box=0
+    race_rows = [[(1, 1), (2, 2), (3, 4)]]
     top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
-    assert top1 == 0
-    assert place2 == 0
     assert place3 == 1
-    assert top3_box == 1
+    assert top3_box == 0
 
 
 def test_aggregate_fp_metrics_all_miss() -> None:

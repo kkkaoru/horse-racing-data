@@ -247,17 +247,20 @@ def aggregate_fp_metrics(
     race_rows: list of per-race lists of (pred_rank, actual_rank).
     Returns (top1_hits, place2_hits, place3_hits, fukusho_2p_hits, top3_box_hits).
     fukusho_2p: whether *any* of the predicted top-2 horses finished <=2.
-    top3_box: whether predicted rank-1 horse finished <=3.
+    top3_box: whether predicted ranks 1, 2, and 3 all finished in the top 3.
     """
     top1 = place2 = place3 = fukusho_2p = top3_box = 0
     for race in race_rows:
         pred1_actual: int | None = None
         any_top2_in_top2 = False
+        top3_in_actual_top3 = 0
         for pred_rank, actual_rank in race:
             if pred_rank == 1:
                 pred1_actual = actual_rank
             if pred_rank <= 2 and actual_rank <= 2:
                 any_top2_in_top2 = True
+            if pred_rank <= 3 and actual_rank <= 3:
+                top3_in_actual_top3 += 1
         if pred1_actual is not None:
             if pred1_actual == 1:
                 top1 += 1
@@ -265,9 +268,10 @@ def aggregate_fp_metrics(
                 place2 += 1
             if pred1_actual <= 3:
                 place3 += 1
-                top3_box += 1
         if any_top2_in_top2:
             fukusho_2p += 1
+        if top3_in_actual_top3 == 3:
+            top3_box += 1
     return top1, place2, place3, fukusho_2p, top3_box
 
 
@@ -491,11 +495,7 @@ def query_running_style_metrics(
 
     gen_jst = ""
     if latest_gen:
-        jst_offset = 9 * 3600
-        jst_dt = datetime.fromtimestamp(
-            latest_gen.timestamp() + jst_offset,
-            tz=timezone.utc,
-        )
+        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
     model_version = model_versions[0] if model_versions else ""

@@ -1010,8 +1010,9 @@ def test_apply_run_logs_top3_calibration_source(
     }
     subject.apply_run(args, deps)
     stderr = capsys.readouterr().err
-    # Both top1 and top3 calibration_source distributions must be logged
-    assert stderr.count("calibrate_finish_position: calibration_source distribution") == 2
+    # Both top1 and top3 calibration_source distributions must be logged with labels
+    assert "calibration_source distribution [top1]" in stderr
+    assert "calibration_source distribution [top3]" in stderr
 
 
 def test_apply_run_uses_grade_code_when_kyoso_joken_absent(tmp_path: Path):
@@ -1081,8 +1082,9 @@ def test_race_count_from_frame_uses_nunique():
 
 def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture[str]):
     series = pd.Series(["bucket", "bucket", "cat-global", "uncalibrated"])
-    subject.log_source_distribution(series)
+    subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
+    assert "[top1]" in captured.err
     assert "bucket=2/4" in captured.err
     assert "cat-global=1/4" in captured.err
     assert "uncalibrated=1/4" in captured.err
@@ -1090,7 +1092,7 @@ def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture
 
 def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixture[str]):
     series = pd.Series([], dtype=str)
-    subject.log_source_distribution(series)
+    subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
     assert captured.err == ""
 

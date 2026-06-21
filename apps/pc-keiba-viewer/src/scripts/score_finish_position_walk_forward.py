@@ -530,7 +530,7 @@ def apply_calibration(
     out["predicted_score"] = [interp_calibrated(float(value), pairs) for value in scores_arr]
     out["predicted_rank"] = (
         out.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False)
+        .rank(method="first", ascending=False, na_option="bottom")
         .astype(int)
     )
     return out

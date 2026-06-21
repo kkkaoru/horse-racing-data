@@ -559,6 +559,11 @@ def test_load_parquet_dir_reads_and_concatenates_parquet_files(tmp_path: Path):
     assert sorted(result["x"].tolist()) == [1, 2, 3, 4]
 
 
+def test_load_parquet_dir_raises_on_empty_directory(tmp_path: Path):
+    with pytest.raises(ValueError, match="no parquet files found"):
+        subject.load_parquet_dir(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # train_catboost_ranker (with CatBoost mocked out)
 # ---------------------------------------------------------------------------
@@ -661,6 +666,34 @@ def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
     args = _make_args()
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
     assert result["best_iteration"] == 0, "best_iteration=0 must not fall back to tree_count_"
+
+
+def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+    fake_model = MagicMock()
+    fake_model.predict.return_value = np.array([float("nan"), 0.5])
+    fake_model.get_best_iteration.return_value = 1
+    fake_model.tree_count_ = 1
+    monkeypatch.setattr(subject, "CatBoost", MagicMock(return_value=fake_model))
+    monkeypatch.setattr(subject, "Pool", MagicMock())
+    args = _make_args()
+    result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
+    preds = result["valid_predictions"]
+    # NaN score (row 0) must get bottom rank; valid score 0.5 (row 1) gets rank 1
+    assert preds["predicted_rank"].tolist() == [2, 1]
 
 
 # ---------------------------------------------------------------------------

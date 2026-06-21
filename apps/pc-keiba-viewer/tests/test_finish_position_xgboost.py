@@ -342,6 +342,11 @@ def test_load_parquet_dir_reads_and_concatenates_parquet_files(tmp_path: Path):
     assert sorted(result["x"].tolist()) == [1, 2, 3, 4]
 
 
+def test_load_parquet_dir_raises_on_empty_directory(tmp_path: Path):
+    with pytest.raises(ValueError, match="no parquet files found"):
+        subject.load_parquet_dir(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # OOT fence: train_end must be day BEFORE validation_from_date
 # ---------------------------------------------------------------------------
@@ -712,6 +717,32 @@ def test_train_xgboost_ranker_uses_ndcg_objective_when_specified(
     subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
 
     assert captured_params[0]["objective"] == "rank:ndcg"
+
+
+def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+    fake_booster = _make_mock_booster(best_iteration=1)
+    fake_booster.predict.return_value = np.array([float("nan"), 0.8])
+    monkeypatch.setattr(subject.xgb, "DMatrix", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(subject.xgb, "train", MagicMock(return_value=fake_booster))
+    args = _make_args()
+    _, result = subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
+    preds = result["valid_predictions"]
+    # NaN score (row 0) must get bottom rank; valid score 0.8 (row 1) gets rank 1
+    assert preds["predicted_rank"].tolist() == [2, 1]
 
 
 # ---------------------------------------------------------------------------

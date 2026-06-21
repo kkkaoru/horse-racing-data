@@ -815,3 +815,17 @@ def test_apply_calibration_returns_input_when_bucket_pairs_empty():
 
 def test_interp_calibrated_returns_score_when_pairs_empty():
     assert subject.interp_calibrated(0.5, []) == 0.5
+
+
+def test_apply_calibration_assigns_bottom_rank_to_nan_score():
+    predictions = pd.DataFrame({
+        "race_id": ["r", "r"],
+        "ketto_toroku_bango": ["a", "b"],
+        "umaban": [1, 2],
+        "predicted_score": [float("nan"), 0.8],
+        "predicted_rank": [1, 2],
+    })
+    calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.9]]}
+    out = subject.apply_calibration(predictions, calibration_map, "jra")
+    # NaN score propagates through calibration and must get bottom rank (2), not crash
+    assert out["predicted_rank"].tolist() == [2, 1]

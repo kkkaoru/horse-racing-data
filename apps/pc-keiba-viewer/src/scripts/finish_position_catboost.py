@@ -78,6 +78,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_parquet_dir(path: Path) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 
@@ -203,7 +205,9 @@ def train_catboost_ranker(
     pred = model.predict(valid_pool)
     valid_df = valid_df.assign(predicted_score=pred)
     valid_df["predicted_rank"] = (
-        valid_df.groupby("race_id")["predicted_score"].rank(method="first", ascending=False).astype(int)
+        valid_df.groupby("race_id")["predicted_score"]
+        .rank(method="first", ascending=False, na_option="bottom")
+        .astype(int)
     )
     metrics = compute_fold_metrics(valid_df)
     best_iter = model.get_best_iteration()
