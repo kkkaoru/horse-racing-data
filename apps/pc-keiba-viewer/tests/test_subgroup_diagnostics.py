@@ -644,3 +644,15 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
     assert results[0]["subgroup"] == "jra_other_extended"
+
+
+def test_evaluate_subgroup_top3_not_counted_when_fewer_than_3_valid_predicted_ranks():
+    joined = pd.DataFrame({
+        "race_id": ["r1"] * 4,
+        "ketto_toroku_bango": ["a", "b", "c", "d"],
+        "predicted_rank": [1.0, 2.0, float("nan"), float("nan")],
+        "finish_position": [1.0, 2.0, 3.0, 4.0],
+    })
+    result = subject.evaluate_subgroup(joined)
+    assert result["race_count"] == 1
+    assert result["top3_box_accuracy"] == 0.0

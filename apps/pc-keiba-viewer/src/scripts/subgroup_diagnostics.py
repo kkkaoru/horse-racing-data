@@ -128,7 +128,11 @@ def evaluate_subgroup(joined: pd.DataFrame) -> SubgroupMetrics:
         ndcg_scores.append(compute_race_ndcg(group))
         if compute_race_top1(group):
             top1_hits += 1
-        if group["finish_position"].notna().sum() >= 3 and compute_race_top3_box(group):
+        if (
+            group["finish_position"].notna().sum() >= 3
+            and group["predicted_rank"].notna().sum() >= 3
+            and compute_race_top3_box(group)
+        ):
             top3_hits += 1
     safe = max(race_count, 1)
     return SubgroupMetrics(
