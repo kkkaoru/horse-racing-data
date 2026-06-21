@@ -424,6 +424,23 @@ def test_track_bias_cte_defines_inside_and_front_thresholds():
     assert f"<= {subject.FRONT_CORNER_THRESHOLD}" in cte
 
 
+def test_track_bias_cte_guards_null_shusso_tosu():
+    cte = subject.track_bias_cte()
+    assert "h.shusso_tosu is not null" in cte
+
+
+def test_track_bias_cte_guards_null_corner1_norm():
+    cte = subject.track_bias_cte()
+    assert "h.corner1_norm is not null" in cte
+
+
+def test_pedigree_score_for_race_respects_min_races_guard():
+    sql = subject.base_features_select_sql("jra")
+    assert f"race_count >= {subject.PEDIGREE_MIN_RACES}" in sql
+    assert "pedigree_score_for_race" in sql
+    assert "sire_distance_win_rate_val else null end, 0)" in sql
+
+
 def test_weight_cte_aggregates_baked_bataiju_from_horse_history_base():
     cte = subject.weight_cte()
     assert "from horse_history_base" in cte
