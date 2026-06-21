@@ -302,6 +302,18 @@ def test_compute_race_top3_box_false_when_different_horses():
     assert subject.compute_race_top3_box(group) is False
 
 
+def test_compute_race_top3_box_excludes_nan_predicted_rank():
+    # Horse "a" (winner) has NaN predicted_rank — should NOT appear in predicted_top3.
+    # predicted_top3 = {"b", "c"}, actual_top3 = {"a", "b", "c"} → False
+    group = pd.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [float("nan"), 1.0, 2.0],
+        "finish_position": [1, 2, 3],
+    })
+    assert subject.compute_race_top3_box(group) is False
+
+
 def test_evaluate_subgroup_empty_df_returns_zero_race_count():
     empty = pd.DataFrame(columns=[
         "race_id", "ketto_toroku_bango", "predicted_rank", "finish_position",

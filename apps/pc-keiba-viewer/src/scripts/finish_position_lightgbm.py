@@ -585,12 +585,12 @@ class FoldMetrics(TypedDict):
 
 
 def compute_top_k_actuals(group: pd.DataFrame, k: int) -> list[str]:
-    actual_top = group.nsmallest(k, "finish_position").sort_values("finish_position")
+    actual_top = group.dropna(subset=["finish_position"]).nsmallest(k, "finish_position").sort_values("finish_position")
     return actual_top["ketto_toroku_bango"].tolist()
 
 
 def compute_top_k_predicted(group: pd.DataFrame, k: int) -> list[str]:
-    predicted_top = group.nsmallest(k, "predicted_rank").sort_values("predicted_rank")
+    predicted_top = group.dropna(subset=["predicted_rank"]).nsmallest(k, "predicted_rank").sort_values("predicted_rank")
     return predicted_top["ketto_toroku_bango"].tolist()
 
 

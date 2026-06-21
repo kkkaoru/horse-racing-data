@@ -270,3 +270,13 @@ def test_maybe_promote_rolls_back_on_exception(monkeypatch: pytest.MonkeyPatch) 
         with pytest.raises(RuntimeError, match="injected failure"):
             reg.maybe_promote("t1", 0.9, ["f"])
         assert reg.get_best_ndcg() == 0.0
+
+
+def test_maybe_promote_rolls_back_insert_when_activate_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        def broken_activate(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("injected activate failure")
+        monkeypatch.setattr(reg, "activate", broken_activate)
+        with pytest.raises(RuntimeError, match="injected activate failure"):
+            reg.maybe_promote("t1", 0.9, ["f"])
+        assert reg.get_best_ndcg() == 0.0

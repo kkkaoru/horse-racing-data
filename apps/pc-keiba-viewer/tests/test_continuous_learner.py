@@ -1325,3 +1325,41 @@ def test_rollback_deploy_skips_staged_removal_when_staged_dest_is_none(tmp_path:
     assert json_path.read_text(encoding="utf-8") == '{"current": true}'
 
 
+def test_train_production_model_passes_timeout_to_subprocess(tmp_path: Path) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", validation_years=[2024])
+        with patch("subprocess.run") as mock_run:
+            learner._train_production_model(
+                Path("/p/features.parquet"), tmp_path / "models", "auto-jra-v1"
+            )
+    assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_TRAINING_TIMEOUT_S
+
+
+def test_rollback_deploy_logs_error_when_rmtree_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    staged = tmp_path / "staged_model"
+    staged.mkdir()
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        with patch("continuous_learner.shutil.rmtree", side_effect=OSError("disk error")):
+            import logging
+            with caplog.at_level(logging.ERROR, logger="continuous_learner"):
+                learner._rollback_deploy(staged, None)
+    assert any("failed to remove staged dir" in r.message for r in caplog.records)
+    assert all(r.levelno == logging.ERROR for r in caplog.records if "failed to remove staged dir" in r.message)
+
+
+def test_rollback_deploy_logs_error_when_write_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, repo_root=tmp_path)
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            import logging
+            with caplog.at_level(logging.ERROR, logger="continuous_learner"):
+                learner._rollback_deploy(None, '{"original": true}')
+    assert any("failed to restore model_meta.json" in r.message for r in caplog.records)
+    assert all(r.levelno == logging.ERROR for r in caplog.records if "failed to restore model_meta.json" in r.message)
+
+

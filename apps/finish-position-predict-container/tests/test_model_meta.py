@@ -201,3 +201,72 @@ def test_load_model_meta_raises_value_error_when_category_count_missing(
     p.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="ban-ei"):
         _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_model_version_is_empty_string(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_model_version_is_whitespace(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "   ", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_bool(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": True, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_zero(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 0, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_negative(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": -1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_resolve_category_nar() -> None:
+    assert resolve_category("nar") == "nar"

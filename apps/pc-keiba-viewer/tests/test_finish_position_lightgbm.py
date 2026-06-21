@@ -648,6 +648,9 @@ def test_evaluate_predictions_ndcg_penalizes_missing_winner():
     metrics = subject.evaluate_predictions(predictions, truth)
     assert metrics["race_count"] == 1
     assert float(metrics["ndcg_at_3"]) < 1.0
+    assert metrics["top1_accuracy"] == 0.0
+    assert metrics["top3_box_accuracy"] == 0.0
+    assert metrics["top3_exact_accuracy"] == 0.0
 
 
 def test_aggregate_fold_metrics_averages():

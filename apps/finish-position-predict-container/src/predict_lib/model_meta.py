@@ -45,12 +45,12 @@ def _load_model_meta(
     counts: dict[Category, int] = {}
     for cat in get_args(Category):
         val = mv.get(cat)
-        if not isinstance(val, str):
-            raise ValueError(f"model_meta.json missing model_version for '{cat}': {path}")
+        if not isinstance(val, str) or not val.strip():
+            raise ValueError(f"model_meta.json missing or empty model_version for '{cat}': {path}")
         versions[cat] = val
         cnt = fc.get(cat)
-        if not isinstance(cnt, int):
-            raise ValueError(f"model_meta.json missing feature_count for '{cat}': {path}")
+        if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt <= 0:
+            raise ValueError(f"model_meta.json missing or invalid feature_count for '{cat}': {path}")
         counts[cat] = cnt
     return versions, counts
 

@@ -153,7 +153,7 @@ def compute_time_decay_weights(years: NDArray[np.int64]) -> FloatArray:
         return np.full(years.shape, TIME_DECAY_MAX_WEIGHT, dtype=np.float64)
     span = float(max_year - min_year)
     normalized = (years.astype(np.float64) - float(min_year)) / span
-    return TIME_DECAY_MIN_WEIGHT + TIME_DECAY_MIN_WEIGHT * normalized
+    return TIME_DECAY_MIN_WEIGHT + (TIME_DECAY_MAX_WEIGHT - TIME_DECAY_MIN_WEIGHT) * normalized
 
 
 def compute_bucket_aware_weights(

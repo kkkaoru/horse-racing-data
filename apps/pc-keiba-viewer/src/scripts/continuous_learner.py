@@ -71,6 +71,7 @@ DEFAULT_DOCKER_TAG: Final[str] = "finish-position-predict-local:split2"
 DEFAULT_DEPLOY_THRESHOLD: Final[float] = 0.005
 DEFAULT_N_TRIALS: Final[int] = 20
 DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
+DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 
 _CONTAINER_MODELS_ROOT: Final[str] = (
     "apps/finish-position-predict-container/models/finish-position"
@@ -333,7 +334,7 @@ class ContinuousLearner:
             "--iteration-id",
             "0",
         ]
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=DEFAULT_TRAINING_TIMEOUT_S)
         return model_root / self._category / "iter0" / f"fold-{year_to}"
 
     def _stage_model(
@@ -406,7 +407,7 @@ class ContinuousLearner:
                     shutil.rmtree(staged_dest)
                     _logger.info("│    [rollback] removed staged dir: %s", staged_dest)
             except Exception as exc:
-                _logger.warning("│    [rollback] failed to remove staged dir: %s", exc)
+                _logger.error("│    [rollback] failed to remove staged dir: %s", exc)
         if prev_meta_content is None:
             return
         try:
@@ -416,7 +417,7 @@ class ContinuousLearner:
             os.replace(temp_path, json_path)
             _logger.info("│    [rollback] restored model_meta.json")
         except Exception as exc:
-            _logger.warning("│    [rollback] failed to restore model_meta.json: %s", exc)
+            _logger.error("│    [rollback] failed to restore model_meta.json: %s", exc)
 
 
 def _setup_signal_handler(learner: ContinuousLearner) -> None:

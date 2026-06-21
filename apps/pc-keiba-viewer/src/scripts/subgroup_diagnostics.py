@@ -113,7 +113,7 @@ def compute_race_top1(group: pd.DataFrame) -> bool:
 
 def compute_race_top3_box(group: pd.DataFrame) -> bool:
     predicted_top3 = set(
-        group.nsmallest(3, "predicted_rank")["ketto_toroku_bango"].tolist()
+        group.dropna(subset=["predicted_rank"]).nsmallest(3, "predicted_rank")["ketto_toroku_bango"].tolist()
     )
     actual_top3 = set(
         group.nsmallest(3, "finish_position")["ketto_toroku_bango"].tolist()
