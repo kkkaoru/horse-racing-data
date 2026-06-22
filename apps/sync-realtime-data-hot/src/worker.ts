@@ -77,6 +77,17 @@ const FRESH_HEALTH_STATUS = 200;
 // older per-type history cap) and we fall through to the D1 path which
 // returns full uncapped history.
 const MIN_DO_TRUSTED_SNAPSHOTS = 10;
+// Once a planner tick observes stateCount == expectedCount (and both are >0),
+// today's `odds_fetch_state` for this JST day is fully seeded and the self-
+// discovery populate gate cannot fire. Writing this KV flag lets later
+// per-minute ticks skip BOTH the D1 count(*) and the expected-count read for
+// the next 10 minutes — the dominant per-tick work in the steady-state
+// polling window. TTL 600s keeps the safety margin small enough that a
+// late-day populate (e.g. operator manually re-syncs NAR) is re-detected
+// within 10 min by the next post-expiry tick.
+const PLAN_STABLE_FLAG_KV_PREFIX = "expected-race-count:stable:";
+const PLAN_STABLE_FLAG_TTL_SECONDS = 600;
+const PLAN_STABLE_FLAG_VALUE = "1";
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -454,6 +465,57 @@ const safePopulateTodayOddsFetchState = async (env: Env, now: Date): Promise<voi
   }
 };
 
+const buildPlanStableFlagKey = (todayYyyymmdd: string): string =>
+  `${PLAN_STABLE_FLAG_KV_PREFIX}${todayYyyymmdd}`;
+
+const isPlanStable = async (env: Env, todayYyyymmdd: string): Promise<boolean> => {
+  try {
+    const cached = await env.ODDS_HOT_KV.get(buildPlanStableFlagKey(todayYyyymmdd));
+    return cached === PLAN_STABLE_FLAG_VALUE;
+  } catch {
+    // KV read failure must never break the planner — fall through to the
+    // full D1 + Hyperdrive count path so the populate self-heal still runs.
+    return false;
+  }
+};
+
+const writePlanStableFlag = async (env: Env, todayYyyymmdd: string): Promise<void> => {
+  try {
+    await env.ODDS_HOT_KV.put(buildPlanStableFlagKey(todayYyyymmdd), PLAN_STABLE_FLAG_VALUE, {
+      expirationTtl: PLAN_STABLE_FLAG_TTL_SECONDS,
+    });
+  } catch (error) {
+    await logScheduledError(env, "scheduled-plan-stable-flag-write-error", error);
+  }
+};
+
+const runPopulateGate = async (env: Env, now: Date, todayYyyymmdd: string): Promise<void> => {
+  // Self-discovery: compare today's actual `odds_fetch_state` row count
+  // against the expected total from Hyperdrive (`jvd_ra` + `nvd_ra`).
+  // When the count is short — e.g. the 05:55 JST populate ran before NAR
+  // venues (Ban'ei, Mizusawa) published their `keiba.go` RaceList HTML, so
+  // only a partial day was seeded — re-run populate so the planner does not
+  // skip the missing venue for the rest of the day. The legacy `=== 0`
+  // gate hid this regression because a single JRA venue was enough to lock
+  // populate out for the entire day.
+  const stateCount = await safeCountOddsFetchStateForDate(env, todayYyyymmdd);
+  const expectedCount = await safeGetExpectedRaceCount(env, todayYyyymmdd, now);
+  if (stateCount === null || expectedCount === null) {
+    return;
+  }
+  if (stateCount < expectedCount) {
+    await safePopulateTodayOddsFetchState(env, now);
+    return;
+  }
+  // stateCount == expectedCount path. Only write the stable flag when both
+  // numbers are positive — a zero-race day (no JRA, no NAR scheduled) must
+  // not lock in `stable` because there is nothing to short-circuit and a
+  // later populate could still legitimately add rows.
+  if (stateCount > 0) {
+    await writePlanStableFlag(env, todayYyyymmdd);
+  }
+};
+
 const runPlanForDate = async (env: Env, now: Date, yyyymmdd: string): Promise<void> => {
   try {
     await planOddsFetches(env, now, yyyymmdd);
@@ -464,18 +526,13 @@ const runPlanForDate = async (env: Env, now: Date, yyyymmdd: string): Promise<vo
 
 export const runScheduledPlan = async (env: Env, now: Date): Promise<void> => {
   const todayYyyymmdd = getTodayJst(now);
-  // Fallback self-discovery: compare today's actual `odds_fetch_state` row
-  // count against the expected total from Hyperdrive (`jvd_ra` + `nvd_ra`).
-  // When the count is short — e.g. the 05:55 JST populate ran before NAR
-  // venues (Ban'ei, Mizusawa) published their `keiba.go` RaceList HTML, so
-  // only a partial day was seeded — re-run populate so the planner does not
-  // skip the missing venue for the rest of the day. The legacy `=== 0`
-  // gate hid this regression because a single JRA venue was enough to lock
-  // populate out for the entire day.
-  const stateCount = await safeCountOddsFetchStateForDate(env, todayYyyymmdd);
-  const expectedCount = await safeGetExpectedRaceCount(env, todayYyyymmdd, now);
-  if (stateCount !== null && expectedCount !== null && stateCount < expectedCount) {
-    await safePopulateTodayOddsFetchState(env, now);
+  // Steady-state short-circuit: once a recent tick has confirmed
+  // stateCount == expectedCount with both > 0, today's `odds_fetch_state` is
+  // fully seeded and the populate self-heal gate cannot fire. The stable
+  // flag's TTL caps how long we trust that observation; on expiry the next
+  // tick re-runs the full D1 count + Hyperdrive expected-count path.
+  if (!(await isPlanStable(env, todayYyyymmdd))) {
+    await runPopulateGate(env, now, todayYyyymmdd);
   }
   // `Promise.allSettled` ensures one rejected date never blocks the others.
   // Individual rejections are logged inside `runPlanForDate`.

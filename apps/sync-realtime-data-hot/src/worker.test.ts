@@ -1049,6 +1049,95 @@ it("runScheduledPlan logs and continues when populateTodayOddsFetchState throws"
   expect(logRun).toHaveBeenCalled();
 });
 
+it("runScheduledPlan writes stable KV flag when stateCount equals expectedCount with both above zero", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 58 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalledWith(
+    "expected-race-count:stable:20260528",
+    "1",
+    { expirationTtl: 600 },
+  );
+});
+
+it("runScheduledPlan skips stable KV flag write when stateCount equals expectedCount but both are zero", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(0);
+  const env = buildEnv({ REALTIME_HOT_DB: buildDb({ stateCount: 0 }) });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  const putMock = vi.mocked(env.ODDS_HOT_KV.put);
+  expect(putMock.mock.calls.some(([key]) => key === "expected-race-count:stable:20260528")).toBe(
+    false,
+  );
+});
+
+it("runScheduledPlan short-circuits the populate gate when the stable KV flag is present", async () => {
+  const stableKvGet = vi.fn(async (key: string) => {
+    if (key === "odds-polling-window:active") {
+      return "true";
+    }
+    if (key === "expected-race-count:stable:20260528") {
+      return "1";
+    }
+    return null;
+  });
+  const env = buildEnv({
+    ODDS_HOT_KV: {
+      delete: vi.fn(async () => undefined),
+      get: stableKvGet,
+      put: vi.fn(async () => undefined),
+    } as unknown as KVNamespace,
+    REALTIME_HOT_DB: buildDb({ stateCount: 5 }),
+  });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  const prepareCalls = vi.mocked(env.REALTIME_HOT_DB.prepare).mock.calls.map(([sql]) => sql);
+  expect(prepareCalls.some((sql) => sql.toLowerCase().includes("count(*)"))).toBe(false);
+  expect(vi.mocked(getExpectedRaceCountForDate)).not.toHaveBeenCalled();
+});
+
+it("runScheduledPlan treats a stable KV read failure as not-stable and runs the populate gate", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  const errorKvGet = vi.fn(async (key: string) => {
+    if (key === "odds-polling-window:active") {
+      return "true";
+    }
+    if (key === "expected-race-count:stable:20260528") {
+      throw new Error("kv down");
+    }
+    return null;
+  });
+  const env = buildEnv({
+    ODDS_HOT_KV: {
+      delete: vi.fn(async () => undefined),
+      get: errorKvGet,
+      put: vi.fn(async () => undefined),
+    } as unknown as KVNamespace,
+    REALTIME_HOT_DB: buildDb({ stateCount: 58 }),
+  });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(vi.mocked(getExpectedRaceCountForDate)).toHaveBeenCalledTimes(1);
+});
+
+it("runScheduledPlan logs and continues when the stable KV flag write throws", async () => {
+  vi.mocked(getExpectedRaceCountForDate).mockResolvedValueOnce(58);
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const flakyKvPut = vi.fn(async (key: string) => {
+    if (key === "expected-race-count:stable:20260528") {
+      throw new Error("kv put down");
+    }
+    return undefined;
+  });
+  const env = buildEnv({
+    ODDS_HOT_KV: {
+      delete: vi.fn(async () => undefined),
+      get: vi.fn(async (key: string) => (key === "odds-polling-window:active" ? "true" : null)),
+      put: flakyKvPut,
+    } as unknown as KVNamespace,
+    REALTIME_HOT_DB: buildDb({ logRun, stateCount: 58 }),
+  });
+  await runScheduledPlan(env, new Date("2026-05-28T01:00:00Z"));
+  expect(logRun).toHaveBeenCalled();
+});
+
 it("runScheduledPlan uses allSettled so a single planOddsFetches rejection does not block others", async () => {
   let queueSendCalls = 0;
   const queueSend = vi.fn(async () => {
