@@ -14,7 +14,7 @@ Two CLI modes via ``--mode`` flag:
 
 Buckets are formed from a categorical column on the predictions parquet
 (``--bucket-dim {kyoso_joken,grade}``). A bucket with fewer than
-``--min-bucket-samples`` rows falls back to the cat-global curve so the
+``--min-bucket-samples`` races falls back to the cat-global curve so the
 calibrator never overfits on tiny grade slices.
 
 All file I/O is injected so unit tests can run fully mocked. Run with::
@@ -536,7 +536,7 @@ def calibrated_series_for_target(
         raw_bucket_keys = pd.Series(["_unknown"] * len(frame), index=frame.index)
     else:
         raw_bucket_keys = frame[bucket_column].map(normalize_bucket_key)
-    calibrated_values = raw_series.astype(float).copy()
+    calibrated_values = raw_series.clip(lower=0.0, upper=1.0).astype(float).copy()
     source_values = pd.Series([CALIBRATION_SOURCE_UNCALIBRATED] * len(frame), index=frame.index)
     unique_keys: list[str] = sorted(set(raw_bucket_keys.tolist()))
     for bucket_key in unique_keys:

@@ -1530,3 +1530,47 @@ def test_fit_run_skips_bucket_when_threshold_met_but_all_ranks_are_nan(tmp_path:
     #   → NaN-rank rows filtered → 4 valid races remain → global fallback succeeds
     assert result["buckets_written"] == 1
     assert result["fallback_used"] is True
+
+
+def test_apply_run_clamps_uncalibrated_top3_to_unit_interval(tmp_path: Path):
+    """When no calibration files exist (cold start), derive_top3_prob falls back to
+    the rank proxy which returns values in [0, 3].  calibrated_series_for_target must
+    clip raw_series to [0, 1] before using it as the uncalibrated default so that
+    predicted_top3_prob_calibrated is always a valid probability."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 10,
+        "ketto_toroku_bango": [f"horse{i}" for i in range(10)],
+        "umaban": list(range(1, 11)),
+        "predicted_rank": list(range(1, 11)),
+        "predicted_top1_prob": [1.0 - i * 0.09 for i in range(10)],
+        # NOTE: no predicted_top3_prob column → derive_top3_prob uses rank proxy [0, 3]
+        "kyoso_joken_code": ["001"] * 10,
+        "category": ["jra"] * 10,
+        "race_year": [2024] * 10,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    parquet_writer = MagicMock()
+    json_reader_mock = MagicMock()
+    path_exists: subject.PathExistsLike = lambda path: False  # no calibration files
+    deps: subject.ApplyDeps = {
+        "parquet_reader": parquet_reader,
+        "parquet_writer": cast(subject.ParquetWriterLike, parquet_writer),
+        "json_reader": cast(subject.JsonReaderLike, json_reader_mock),
+        "path_exists": path_exists,
+    }
+    args: subject.ApplyArguments = {
+        "mode": "apply",
+        "cat": "jra",
+        "input_predictions_root": tmp_path / "in",
+        "calibration_dir": tmp_path / "cal",
+        "output_predictions_root": tmp_path / "out",
+    }
+    result = subject.apply_run(args, deps)
+    written = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    top3_vals = written["predicted_top3_prob_calibrated"]
+    # rank proxy for top_n=3 produces values up to 3.0 — must be clamped to [0, 1]
+    assert float(top3_vals.max()) <= 1.0
+    assert float(top3_vals.min()) >= 0.0
+    assert result["rows_written"] == 10

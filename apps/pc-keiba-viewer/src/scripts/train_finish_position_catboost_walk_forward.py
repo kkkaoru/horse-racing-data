@@ -392,7 +392,7 @@ def default_parquet_reader(path: Path) -> pd.DataFrame:
 
 def default_feature_resolver(df: pd.DataFrame) -> list[str]:
     import finish_position_catboost as cb_walk
-    return cb_walk.resolve_feature_columns(df, use_cat_features=False)
+    return cb_walk.resolve_feature_columns(df, use_cat_features=True)
 
 
 def default_fold_trainer(

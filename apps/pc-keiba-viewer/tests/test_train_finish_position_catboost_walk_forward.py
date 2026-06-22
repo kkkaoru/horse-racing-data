@@ -362,6 +362,16 @@ def test_build_fold_namespace_propagates_none_bagging_temperature(tmp_path: Path
     assert ns.random_strength is None
 
 
+def test_build_fold_namespace_sets_no_cat_features_false(tmp_path: Path):
+    """no_cat_features=False in the namespace must be consistent with
+    default_feature_resolver using use_cat_features=True so that
+    categorical columns are actually included in feature_cols and
+    passed to the CatBoost Pool."""
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.no_cat_features is False
+
+
 def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     args = _base_args(tmp_path)
     args["resume_from_checkpoint"] = True
@@ -564,7 +574,7 @@ def test_default_parquet_reader_delegates_to_finish_position_catboost(
     assert out is sentinel
 
 
-def test_default_feature_resolver_delegates_with_no_cat(monkeypatch: pytest.MonkeyPatch):
+def test_default_feature_resolver_delegates_with_cat_features(monkeypatch: pytest.MonkeyPatch):
     import finish_position_catboost as cb_walk
 
     resolver = MagicMock(return_value=["x"])
@@ -572,6 +582,8 @@ def test_default_feature_resolver_delegates_with_no_cat(monkeypatch: pytest.Monk
     out = subject.default_feature_resolver(pd.DataFrame({"x": [1]}))
     assert out == ["x"]
     resolver.assert_called_once()
+    _, kwargs = resolver.call_args
+    assert kwargs.get("use_cat_features") is True
 
 
 def test_default_fold_trainer_calls_train_catboost_ranker(monkeypatch: pytest.MonkeyPatch):
