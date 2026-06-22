@@ -3,10 +3,8 @@ import type { Env } from "../types";
 
 const ENQUEUE_LOCK_KEY_PREFIX = "odds:enqueue-lock";
 const PAST_RACE_GRACE_MINUTES_AFTER = 2;
-// Catch-up window (task F2 C): allow a single final-slot enqueue for races
-// that ran in the last 60 minutes but never had their finalSlot fetched.
-// Beyond that, the race result is in and odds are no longer changing.
-const CATCH_UP_WINDOW_MINUTES_AFTER = 60;
+// catch-up window for late venue self-discovery; covers ~6h after race start
+const CATCH_UP_WINDOW_MINUTES_AFTER = 360;
 const LOCK_TTL_SKIP_PAST_RACE = 0;
 // Upper cap (60min cadence). Lower clamp at KV minimum (60s) matches the
 // 1min cadence window and keeps any Cloudflare KV expirationTtl >= 60.

@@ -43,6 +43,12 @@ import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./
 const PLAN_ODDS_FETCHES_CRON = "* * * * *";
 const ARCHIVE_ODDS_CRON = "0 4 * * *";
 const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
+// re-populate today's odds_fetch_state after morning NAR Neon sync completes
+const MORNING_POPULATE_MULTI_DAY_CRON = "0 23 * * *";
+const POPULATE_MULTI_DAY_CRONS: ReadonlySet<string> = new Set([
+  POPULATE_MULTI_DAY_CRON,
+  MORNING_POPULATE_MULTI_DAY_CRON,
+]);
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 const PLAN_DAYS_AHEAD = 2;
@@ -463,7 +469,7 @@ const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<voi
     await runScheduledArchive(args.env, args.now);
     return;
   }
-  if (args.cron === POPULATE_MULTI_DAY_CRON) {
+  if (POPULATE_MULTI_DAY_CRONS.has(args.cron)) {
     await runScheduledPopulateMultiDay(args.env, args.now);
   }
 };

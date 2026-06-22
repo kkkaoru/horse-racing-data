@@ -261,13 +261,13 @@ it("skips past race when lastOddsFetchAt already covers the final slot", async (
   expect(env.REALTIME_HOT_JOBS.send).not.toHaveBeenCalled();
 });
 
-it("skips past race that is older than the 60-minute catch-up window", async () => {
-  // raceStart = 09:00 JST, now = 11:00 JST → 120 minutes past, beyond catch-up.
+it("skips past race that is older than the 360-minute catch-up window", async () => {
+  // raceStart = 04:00 JST, now = 11:00 JST → 420 minutes past, beyond catch-up.
   const ancientNar: RaceListEntry[] = [
     {
       lastOddsFetchAt: null,
       raceKey: "nar:20260528:42:01",
-      raceStartAtJst: "2026-05-28T09:00:00+09:00",
+      raceStartAtJst: "2026-05-28T04:00:00+09:00",
       source: "nar",
     },
   ];

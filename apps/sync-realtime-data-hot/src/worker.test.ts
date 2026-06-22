@@ -1186,6 +1186,21 @@ it("handleScheduled dispatches populate-multi-day cron to runScheduledPopulateMu
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
+it("handleScheduled dispatches morning populate-multi-day cron (JST 08:00) to runScheduledPopulateMultiDay", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "0 23 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-05-28T23:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(populateMultiDayOddsFetchState)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
+});
+
 it("handleScheduled catches runScheduledArchive rejection and logs via logFetch", async () => {
   const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
   const prepareMock = vi.fn((sql: string) => {

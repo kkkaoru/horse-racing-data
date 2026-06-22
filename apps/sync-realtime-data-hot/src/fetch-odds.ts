@@ -21,7 +21,8 @@ import {
 } from "./time";
 import type { Env, OddsData, OddsFetchStateRow, OddsType } from "./types";
 
-const ODDS_FETCH_LOCK_MINUTES = 10;
+// D1-side lock TTL; short enough that a stuck fetch recovers within the 1-min cadence window
+const ODDS_FETCH_LOCK_MINUTES = 3;
 const MS_PER_MINUTE = 60_000;
 // Non-retryable scrape errors leave the planner lock in place so we do not
 // spin against a known-broken row. Anything else (transient browser timeout,
