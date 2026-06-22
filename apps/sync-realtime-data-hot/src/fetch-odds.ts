@@ -1,11 +1,11 @@
 import { releaseEnqueueLock } from "./gates/enqueue-lock-kv";
 import { extractOddsLinks, fetchOdds, fetchRacePage } from "./keiba-go";
 import { fetchJraOddsWithPlaywright } from "./jra";
+import { getCachedNarVenueLastRaceStartAtJst } from "./nar-venue-cache";
 import {
   claimOddsFetch,
   completeOddsFetch,
   failOddsFetch,
-  getNarVenueLastRaceStartAtJst,
   getOddsFetchState,
   insertOddsSnapshot,
   logFetch,
@@ -87,12 +87,11 @@ export const resolveOddsSlotAt = async (
   if (state.source === "jra") {
     return getJraAdvanceOddsFetchSlotAt(raceStart, now) ?? getOddsFetchSlotAt(raceStart, now);
   }
-  const venueLastRaceStartAtJst = await getNarVenueLastRaceStartAtJst(
-    env.REALTIME_HOT_DB,
-    state.kaisaiNen,
-    state.kaisaiTsukihi,
-    state.keibajoCode,
-  );
+  const venueLastRaceStartAtJst = await getCachedNarVenueLastRaceStartAtJst(env, {
+    kaisaiNen: state.kaisaiNen,
+    kaisaiTsukihi: state.kaisaiTsukihi,
+    keibajoCode: state.keibajoCode,
+  });
   const saleStart = getNarOddsSaleStartAt({
     keibajoCode: state.keibajoCode,
     raceStartAtJst: state.raceStartAtJst,
