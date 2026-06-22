@@ -20,7 +20,14 @@ const MAX_SAFE_RANK = Number.MAX_SAFE_INTEGER;
 // at ~10K rows — well inside D1's per-query CPU budget — while still moving
 // the archive backlog meaningfully every cron tick (every fetched_at becomes
 // one or more R2 objects).
-const DISTINCT_FETCHED_AT_LIMIT = 50;
+// Per-tick cap on the Phase-1 `DISTINCT fetched_at` walk. Each distinct value
+// fans out to roughly 6 (race_key, odds_type) aggregate groups in Phase 2,
+// each of which becomes a single R2 put in `runScheduledArchive`. The cap is
+// chosen so the total subrequest count per cron tick (~150 * 6 + 2 D1 reads +
+// 1 fetch_logs write = ~903) stays under Cloudflare's 1000 paid subrequest
+// budget. Raising this further requires either batching the puts or
+// trimming D1 reads.
+const DISTINCT_FETCHED_AT_LIMIT = 150;
 
 const ODDS_TREND_LIMITS: Record<OddsType, number> = {
   "3renpuku": 30,

@@ -45,7 +45,13 @@ import { addDaysToYyyymmdd, getTodayJst } from "./time";
 import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
 
 const PLAN_ODDS_FETCHES_CRON = "* * * * *";
-const ARCHIVE_ODDS_CRON = "0 4 * * *";
+// Quadrupling the daily 04:00 UTC tick to every 6h (00/06/12/18 UTC) yields
+// 4 archive runs/day. Combined with `DISTINCT_FETCHED_AT_LIMIT = 150` in
+// storage.ts this targets ~3600 R2 archive writes/day, sufficient to drain
+// the 24M-row `odds_snapshots` backlog in roughly 5–7 weeks. Held at every
+// 6h (not hourly) so the first deploy can be observed for stability before
+// pushing further.
+const ARCHIVE_ODDS_CRON = "0 */6 * * *";
 const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
 // re-populate today's odds_fetch_state after morning NAR Neon sync completes
 const MORNING_POPULATE_MULTI_DAY_CRON = "0 23 * * *";
@@ -56,7 +62,11 @@ const POPULATE_MULTI_DAY_CRONS: ReadonlySet<string> = new Set([
 // JST 22:30 = UTC 13:30. Synchronous closing-odds re-fetch for races whose
 // last poll happened before raceStart - 5min (final betting window missed).
 const CLOSING_BACKFILL_CRON = "30 13 * * *";
-const ARCHIVE_QUERY_LIMIT = 200;
+// Storage-side Phase-1 distinct walk re-clamps via
+// `Math.min(options.limit, DISTINCT_FETCHED_AT_LIMIT)`. Keeping this at the
+// storage cap (150) keeps worker-side intent explicit and avoids a silent
+// clamp when the storage limit changes.
+const ARCHIVE_QUERY_LIMIT = 150;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 const PLAN_DAYS_AHEAD = 2;
 // Silent-death detector for the per-minute scheduled cron. `dispatchScheduledByCron`

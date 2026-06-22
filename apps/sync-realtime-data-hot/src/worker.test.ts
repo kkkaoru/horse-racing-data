@@ -1352,6 +1352,80 @@ it("runScheduledArchive swallows logFetch failure when post-upload summary throw
   expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalledTimes(1);
 });
 
+it("runScheduledArchive passes the per-tick batch limit (150) to the distinct fetched_at query", async () => {
+  const distinctBind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("select distinct fetched_at")) {
+      return { bind: distinctBind };
+    }
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+    }
+    return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(distinctBind).toHaveBeenCalledWith(expect.any(String), 150);
+});
+
+it("runScheduledArchive stops gracefully (no R2 puts, logs no-candidates) when phase 1 returns zero rows even at batch limit", async () => {
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      archiveDistinctFetchedAt: { results: [] },
+      logRun,
+    }),
+  });
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(vi.mocked(env.ODDS_ARCHIVE.put)).not.toHaveBeenCalled();
+  expect(summary).toStrictEqual({
+    candidates: 0,
+    failed: 0,
+    sampleFailures: [],
+    uploaded: 0,
+  });
+  expect(logRun).toHaveBeenCalled();
+});
+
+it("dispatchScheduledByCron routes the new 0 */6 cron to runScheduledArchive (not closing-backfill or populate)", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "0 */6 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-05-28T06:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+  expect(vi.mocked(populateMultiDayOddsFetchState)).not.toHaveBeenCalled();
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("dispatchScheduledByCron no longer dispatches the retired 0 4 cron to runScheduledArchive", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "0 4 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  // The archive code path uses `prepare("select distinct fetched_at ...")`.
+  // With the old cron retired, only the cron heartbeat (KV write — no D1)
+  // remains. No prepare call ever reaches D1.
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
+});
+
 it("handleRunArchiveOnce rejects unauthorized callers", async () => {
   const env = buildEnv();
   const response = await handleFetchRequest(
@@ -1433,7 +1507,7 @@ it("handleScheduled dispatches archive cron to runScheduledArchive", async () =>
   const env = buildEnv();
   await handleScheduled(
     {
-      cron: "0 4 * * *",
+      cron: "0 */6 * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1499,7 +1573,7 @@ it("handleScheduled catches runScheduledArchive rejection and logs via logFetch"
   });
   await handleScheduled(
     {
-      cron: "0 4 * * *",
+      cron: "0 */6 * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1542,7 +1616,7 @@ it("handleScheduled falls back to console.error when both inner work and logFetc
   });
   await handleScheduled(
     {
-      cron: "0 4 * * *",
+      cron: "0 */6 * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1699,7 +1773,7 @@ it("handleScheduled archive cron does not invoke runScheduledClosingBackfill", a
   const env = buildEnv();
   await handleScheduled(
     {
-      cron: "0 4 * * *",
+      cron: "0 */6 * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-22T04:00:00Z").getTime(),
     } as unknown as ScheduledController,

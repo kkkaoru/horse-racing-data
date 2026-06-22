@@ -21,12 +21,16 @@
     "ODDS_R2_ARCHIVE_RETENTION_DAYS": "7",
     "ODDS_STALE_MIRROR_SECONDS": "90",
   },
-  // High-frequency cron for odds polling (* * * * *), daily R2 archive (0 4 * * *),
-  // and self-discovery populate of today's odds_fetch_state from Hyperdrive at
-  // 20:55 UTC = 05:55 JST so the 06:00 polling window has the day's race list
-  // ready even if the legacy worker is down. Re-enabled at cutover (PR3).
+  // High-frequency cron for odds polling (* * * * *), R2 archive every 6h
+  // (0 */6 * * * = 00/06/12/18 UTC, 4x/day), and self-discovery populate of
+  // today's odds_fetch_state from Hyperdrive at 20:55 UTC = 05:55 JST so the
+  // 06:00 polling window has the day's race list ready even if the legacy
+  // worker is down. Re-enabled at cutover (PR3). Archive cron was raised
+  // from 0 4 * * * (1x/day, ~300 R2 puts/day) to 0 */6 * * * + per-tick batch
+  // 150 fetched_at (~900 puts/tick) for ~12x throughput to drain the
+  // odds_snapshots backlog.
   "triggers": {
-    "crons": ["* * * * *", "0 4 * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
+    "crons": ["* * * * *", "0 */6 * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
   },
   "queues": {
     "producers": [

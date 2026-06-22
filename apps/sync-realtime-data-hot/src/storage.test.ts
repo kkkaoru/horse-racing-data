@@ -866,7 +866,7 @@ it("listArchiveCandidatesBeforeCutoff chains phase 1 then phase 2", async () => 
   expect(result.length).toBe(2);
 });
 
-it("listArchiveCandidatesBeforeCutoff caps the distinct fetched_at fan-out to 50", async () => {
+it("listArchiveCandidatesBeforeCutoff caps the distinct fetched_at fan-out to 150", async () => {
   const distinctBind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
   const prepare = vi.fn((sql: string) => {
     const lowered = sql.toLowerCase();
@@ -880,5 +880,22 @@ it("listArchiveCandidatesBeforeCutoff caps the distinct fetched_at fan-out to 50
     cutoffIso: "2026-05-21T00:00:00.000Z",
     limit: 9999,
   });
-  expect(distinctBind).toHaveBeenCalledWith("2026-05-21T00:00:00.000Z", 50);
+  expect(distinctBind).toHaveBeenCalledWith("2026-05-21T00:00:00.000Z", 150);
+});
+
+it("listArchiveCandidatesBeforeCutoff honors caller limit when it is below the 150 cap", async () => {
+  const distinctBind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
+  const prepare = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("select distinct fetched_at")) {
+      return { bind: distinctBind };
+    }
+    return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+  });
+  const db = { prepare } as unknown as D1Database;
+  await listArchiveCandidatesBeforeCutoff(db, {
+    cutoffIso: "2026-05-21T00:00:00.000Z",
+    limit: 25,
+  });
+  expect(distinctBind).toHaveBeenCalledWith("2026-05-21T00:00:00.000Z", 25);
 });
