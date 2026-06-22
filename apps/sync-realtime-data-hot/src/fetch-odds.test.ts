@@ -377,6 +377,49 @@ it("fetchAndStoreOdds writes a partial-fetch warn log when missingTypes is non-e
   expect(fetchLogCalls.length >= 2).toBe(true);
 });
 
+it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to claimOddsFetch", async () => {
+  const bindSpy = vi.fn((..._bindArgs: string[]) => ({
+    run: vi.fn(async () => ({ meta: { changes: 1 } })),
+  }));
+  const prepareSpy = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("update odds_fetch_state set odds_fetch_lock_until")) {
+      return { bind: bindSpy };
+    }
+    if (lowered.includes("select * from odds_fetch_state")) {
+      const state = sampleNarState();
+      const first = vi.fn(async () => ({
+        deba_url: state.debaUrl,
+        kaisai_nen: state.kaisaiNen,
+        kaisai_tsukihi: state.kaisaiTsukihi,
+        keibajo_code: state.keibajoCode,
+        last_odds_fetch_at: state.lastOddsFetchAt,
+        last_odds_queued_at: state.lastOddsQueuedAt,
+        odds_fetch_lock_until: state.oddsFetchLockUntil,
+        odds_links_json: state.oddsLinksJson,
+        race_bango: state.raceBango,
+        race_key: state.raceKey,
+        race_start_at_jst: state.raceStartAtJst,
+        source: state.source,
+        updated_at: state.updatedAt,
+      }));
+      return { bind: vi.fn(() => ({ first })) };
+    }
+    if (lowered.includes("select max(race_start_at_jst)")) {
+      const first = vi.fn(async () => ({ last_race_start_at_jst: null }));
+      return { bind: vi.fn(() => ({ first })) };
+    }
+    const run = vi.fn(async () => ({ meta: { changes: 1 } }));
+    return { bind: vi.fn(() => ({ run })) };
+  });
+  const db = { batch: vi.fn(async () => []), prepare: prepareSpy } as unknown as D1Database;
+  const env = { JRA_BROWSER: {}, ODDS_HOT_KV: buildKv(), REALTIME_HOT_DB: db } as unknown as Env;
+  await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z"));
+  const firstCall = bindSpy.mock.calls[0];
+  const lockUntilArg = firstCall ? firstCall[0] : null;
+  expect(lockUntilArg).toBe("2026-05-28T14:58:00+09:00");
+});
+
 it("fetchAndStoreOdds skips the partial-fetch log when every JRA tab succeeded (K1-A)", async () => {
   vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
     entryHtml: "<html></html>",
