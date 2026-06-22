@@ -1,0 +1,27 @@
+{
+  "name": "venue-weather",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "d1:migrate": "wrangler d1 migrations apply venue-weather-db --remote",
+    "format": "oxfmt --write src migrations package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "format:check": "oxfmt --check src migrations package.json tsconfig.json vitest.config.ts wrangler.jsonc",
+    "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "miniflare": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

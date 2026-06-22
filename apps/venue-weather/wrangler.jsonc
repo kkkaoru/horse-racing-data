@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "venue-weather",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["30 21 * * *", "0 11 * * *"],
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "WEATHER_JOBS",
+        "queue": "venue-weather-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "venue-weather-jobs",
+        "max_batch_size": 1,
+        "max_batch_timeout": 5,
+        "max_concurrency": 3,
+      },
+    ],
+  },
+  "d1_databases": [
+    {
+      "binding": "WEATHER_DB",
+      "database_name": "venue-weather-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+    },
+  ],
+}
