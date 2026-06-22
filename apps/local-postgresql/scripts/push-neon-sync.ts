@@ -51,12 +51,14 @@ import {
   type DependencyEdge,
   type VerifyMismatchPolicy,
 } from "../src/replica-push/core";
+import { warmViewerCachesForTomorrowJst } from "../src/replica-push/viewer-cache-warm";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(scriptDir, "..");
 const envPath = resolve(appDir, ".env");
 const replicaEnvPath = resolve(appDir, ".env.replica");
 const analyticsIndexesPath = resolve(appDir, "sql", "analytics-indexes.sql");
+const viewerEnvLocalPath = resolve(appDir, "..", "pc-keiba-viewer", ".env.local");
 const defaultExcludedLogTables = new Set([
   "finish_position_tuning_random_trials",
   "race_finish_position_features",
@@ -1583,7 +1585,25 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
     dependencyEdges,
   );
   await syncAnalyticsIndexes(env);
+  await warmViewerCaches(env);
   reportSkippedTables(skippedTables);
+}
+
+function loadViewerEnv(): Record<string, string | undefined> {
+  if (!existsSync(viewerEnvLocalPath)) {
+    return {};
+  }
+  return parseEnvFile(viewerEnvLocalPath);
+}
+
+async function warmViewerCaches(env: Record<string, string | undefined>): Promise<void> {
+  await warmViewerCachesForTomorrowJst({
+    pushEnv: env,
+    viewerEnv: loadViewerEnv(),
+    now: new Date(),
+    fetchImpl: fetch,
+    log: (message) => writeLine(`[${formatNow()}] ${message}`),
+  });
 }
 
 interface SyncTableWithSkipTrackingOptions extends SyncTableOptions {

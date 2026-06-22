@@ -1,5 +1,6 @@
 "use client";
 
+import type { CSSProperties, ReactElement } from "react";
 import { useMemo, useState } from "react";
 import {
   CartesianGrid,
@@ -11,6 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
+import { isWearingBlinker } from "../../../lib/blinker-pattern";
 import { formatDistance } from "../../../lib/format";
 import {
   buildHorseRaceChartSeriesList,
@@ -62,6 +64,22 @@ interface ChartLineDot {
   r: number;
 }
 
+// Minimal blinker flag carried on the dot's payload; the overview rank/value
+// points carry the raw "blinkerShiyoKubun" so the per-point marker can read it.
+// `isUpcoming` marks the synthetic target-race point so it can draw the larger
+// dot plus a wider ring that still encircles it.
+interface OverviewDotPayload {
+  blinker?: string | null;
+  isUpcoming?: boolean;
+}
+
+interface OverviewChartDotProps {
+  cx?: number;
+  cy?: number;
+  payload?: OverviewDotPayload;
+  stroke?: string;
+}
+
 interface ChartTooltipPayloadEntry {
   payload?: HorseRaceChartPoint;
   value?: number | string;
@@ -95,9 +113,12 @@ interface RealtimeTanshoRow {
   rank?: number;
 }
 
-// The selected horse's resolved upcoming weight/delta/popularity, threaded into
-// the paddock 近走 chart for the 馬別相関 view (null when no override matched).
+// The selected horse's resolved upcoming weight/delta/popularity + target-race
+// blinker flag, threaded into the paddock 近走 chart for the 馬別相関 view (the
+// numeric fields are null when no override matched; blinker comes from the
+// entered runner so it survives even without a realtime weight/odds snapshot).
 interface SelectedUpcoming {
+  blinker: string | null;
   popularity: number | null;
   weight: number | null;
   weightDelta: number | null;
@@ -124,6 +145,27 @@ const WHITE_FRAME_NUMBERS: ReadonlySet<string> = new Set(
 );
 const CHART_INITIAL_DIMENSION: ChartInitialDimension = { height: 1, width: 1 };
 const CHART_LINE_DOT: ChartLineDot = { r: 2 };
+// The synthetic upcoming (target-race) point uses a larger filled dot so it
+// stands out as the newest, to-be-run race at the right edge of every panel.
+const UPCOMING_DOT_RADIUS = 4;
+// A blinker-worn race keeps its filled dot but gains an outer hollow ring (drawn
+// in the series stroke color) so the reader can SEE which races had a blinker
+// without hovering, while preserving the line's color identity. The upcoming
+// point uses a wider ring so the halo still sits outside its larger r=4 dot.
+const BLINKER_RING_RADIUS = 5;
+const UPCOMING_BLINKER_RING_RADIUS = 7;
+const BLINKER_RING_STROKE_WIDTH = 1.5;
+const BLINKER_RING_FILL = "none";
+// One-line hint shown above the overview panels so a viewer knows the on-chart
+// ring marks a past race where the horse wore a blinker. Styled inline so no
+// globals.css change is needed for this marker feature.
+const BLINKER_HINT_LABEL = "○ = ブリンカー装着";
+const BLINKER_HINT_COLOR = "#495057";
+const BLINKER_HINT_STYLE: CSSProperties = {
+  color: BLINKER_HINT_COLOR,
+  fontSize: 11,
+  margin: "0 0 6px",
+};
 // The four overview panels share one syncId and match hover points by X value,
 // so hovering one date highlights the same race date in every panel.
 const OVERVIEW_SYNC_ID = "race-results-overview";
@@ -142,6 +184,9 @@ const CHIP_GROUP_LABELS: Record<ChartViewMode, string> = {
 const MIN_PERIOD_MONTHS = 1;
 const PERIOD_SLIDER_STEP = 1;
 const COMBINE_FUTAN_LABEL = "馬体重に斤量を合算";
+// Tooltip line shown only when the hovered race's blinker flag is "1"; JRA is the
+// only category that populates blinkerShiyoKubun, so this never shows for NAR.
+const BLINKER_WORN_TOOLTIP_LABEL = "ブリンカー ○";
 // Heading shown on the weight panel while body weight + carried weight are summed,
 // so the reader can tell the plotted line is the combined value.
 const COMBINED_WEIGHT_HEADING = "馬体重+斤量";
@@ -276,9 +321,10 @@ const toUpcomingWeightOverrides = (
     weightDelta: signedWeightDelta(horse),
   }));
 
-// Empty upcoming context for the 馬別相関 chart when no override matched the
-// selected horse, so the paddock chart simply omits the synthetic latest point.
+// Empty upcoming context for the 馬別相関 chart when the selected horse is not an
+// entered runner, so the paddock chart simply omits the synthetic latest point.
 const EMPTY_SELECTED_UPCOMING: SelectedUpcoming = {
+  blinker: null,
   popularity: null,
   weight: null,
   weightDelta: null,
@@ -294,10 +340,12 @@ const filterResultsToHorse = (
     ? []
     : results.filter((result) => (result.kettoTorokuBango ?? "").trim() === selectedKetto);
 
-// Resolve the selected horse's upcoming weight/delta/popularity for the paddock
-// chart: find its entered runner (matched by kettoTorokuBango) to read the umaban,
-// then look up the realtime override keyed by that normalized umaban. Returns the
-// empty context when the horse is not entered or no override matched.
+// Resolve the selected horse's upcoming weight/delta/popularity + target-race
+// blinker for the paddock chart: find its entered runner (matched by
+// kettoTorokuBango) to read the umaban + blinker flag, then look up the realtime
+// override keyed by that normalized umaban. The blinker survives even when no
+// realtime override matched (it comes from the static runner, not the snapshot),
+// so the upcoming point can still show its ring before the weigh-in / odds open.
 const resolveSelectedUpcoming = (
   upcomingWeights: UpcomingWeightOverride[],
   runners: HorseRaceChartRunner[],
@@ -307,16 +355,64 @@ const resolveSelectedUpcoming = (
   if (runner === undefined) {
     return EMPTY_SELECTED_UPCOMING;
   }
+  const blinker = runner.blinkerShiyoKubun ?? null;
   const umabanKey = formatRunnerNumber(runner.umaban);
   const override = upcomingWeights.find((entry) => formatRunnerNumber(entry.umaban) === umabanKey);
   if (override === undefined) {
-    return EMPTY_SELECTED_UPCOMING;
+    return { blinker, popularity: null, weight: null, weightDelta: null };
   }
   return {
+    blinker,
     popularity: override.popularity,
     weight: override.weight,
     weightDelta: override.weightDelta,
   };
+};
+
+// Resolve the filled-dot radius: the upcoming point uses the larger dot so it
+// stands out as the to-be-run race; every past point keeps the small dot.
+const resolveOverviewDotRadius = (isUpcoming: boolean | undefined): number =>
+  isUpcoming === true ? UPCOMING_DOT_RADIUS : CHART_LINE_DOT.r;
+
+// Resolve the blinker-ring radius so the halo always sits outside the dot: the
+// larger upcoming dot needs the wider ring, a past dot keeps the normal ring.
+const resolveOverviewRingRadius = (isUpcoming: boolean | undefined): number =>
+  isUpcoming === true ? UPCOMING_BLINKER_RING_RADIUS : BLINKER_RING_RADIUS;
+
+// Custom per-point dot for the overview lines: a filled dot (larger for the
+// synthetic upcoming point) plus an outer hollow ring when the point's race wore
+// a blinker (blinker === "1"). The upcoming point reads its target-race blinker
+// flag, so a horse wearing a blinker in the upcoming race also gets the ring.
+export const OverviewChartDot = ({
+  cx,
+  cy,
+  payload,
+  stroke,
+}: OverviewChartDotProps): ReactElement | null => {
+  if (cx === undefined || cy === undefined) {
+    return null;
+  }
+  return (
+    <g>
+      {isWearingBlinker(payload?.blinker) ? (
+        <circle
+          cx={cx}
+          cy={cy}
+          fill={BLINKER_RING_FILL}
+          r={resolveOverviewRingRadius(payload?.isUpcoming)}
+          stroke={stroke}
+          strokeWidth={BLINKER_RING_STROKE_WIDTH}
+        />
+      ) : null}
+      <circle
+        cx={cx}
+        cy={cy}
+        fill={stroke}
+        r={resolveOverviewDotRadius(payload?.isUpcoming)}
+        stroke={stroke}
+      />
+    </g>
+  );
 };
 
 const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
@@ -334,6 +430,9 @@ const MetricTooltip = ({ active, metric, payload }: MetricTooltipProps) => {
       </p>
       <p className="race-results-chart-tooltip-meta">距離 {formatDistance(point.kyori)}</p>
       <p className="race-results-chart-tooltip-meta">騎手 {point.jockey ?? "-"}</p>
+      {isWearingBlinker(point.blinker) ? (
+        <p className="race-results-chart-tooltip-meta">{BLINKER_WORN_TOOLTIP_LABEL}</p>
+      ) : null}
     </div>
   );
 };
@@ -343,57 +442,60 @@ const OverviewPanels = ({
   metricLabels,
   seriesListsByMetric,
 }: OverviewPanelsProps) => (
-  <div className="race-results-chart-grid">
-    {HORSE_RACE_CHART_METRICS.map((metric) => (
-      <section className="race-results-chart-panel" key={metric}>
-        <h3>{metricLabels[metric]}</h3>
-        <ResponsiveContainer
-          height={CHART_PANEL_HEIGHT}
-          initialDimension={CHART_INITIAL_DIMENSION}
-          width="100%"
-        >
-          <LineChart syncId={OVERVIEW_SYNC_ID} syncMethod={CHART_SYNC_METHOD}>
-            <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
-            <XAxis
-              dataKey="dateValue"
-              domain={TIME_AXIS_DOMAIN}
-              scale="time"
-              tickFormatter={formatHorseRaceChartDate}
-              type="number"
-            />
-            <YAxis
-              allowDecimals={false}
-              domain={Y_AXIS_DOMAIN_BY_METRIC[metric]}
-              reversed={REVERSED_Y_AXIS_BY_METRIC[metric]}
-            />
-            {METRIC_HAS_RACE_CONTEXT[metric] ? (
-              <Tooltip content={<MetricTooltip metric={metric} />} />
-            ) : (
-              <Tooltip
-                formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
-                labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
+  <>
+    <p style={BLINKER_HINT_STYLE}>{BLINKER_HINT_LABEL}</p>
+    <div className="race-results-chart-grid">
+      {HORSE_RACE_CHART_METRICS.map((metric) => (
+        <section className="race-results-chart-panel" key={metric}>
+          <h3>{metricLabels[metric]}</h3>
+          <ResponsiveContainer
+            height={CHART_PANEL_HEIGHT}
+            initialDimension={CHART_INITIAL_DIMENSION}
+            width="100%"
+          >
+            <LineChart syncId={OVERVIEW_SYNC_ID} syncMethod={CHART_SYNC_METHOD}>
+              <CartesianGrid stroke={CHART_GRID_STROKE} strokeDasharray={CHART_GRID_DASH} />
+              <XAxis
+                dataKey="dateValue"
+                domain={TIME_AXIS_DOMAIN}
+                scale="time"
+                tickFormatter={formatHorseRaceChartDate}
+                type="number"
               />
-            )}
-            {seriesListsByMetric[metric]
-              .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
-              .map((series) => (
-                <Line
-                  data={series.points}
-                  dataKey="value"
-                  dot={CHART_LINE_DOT}
-                  isAnimationActive={false}
-                  key={series.kettoTorokuBango}
-                  name={getHorseChipLabel(series)}
-                  stroke={resolveSeriesStroke(series)}
-                  strokeWidth={resolveSeriesStrokeWidth(series)}
-                  type="monotone"
+              <YAxis
+                allowDecimals={false}
+                domain={Y_AXIS_DOMAIN_BY_METRIC[metric]}
+                reversed={REVERSED_Y_AXIS_BY_METRIC[metric]}
+              />
+              {METRIC_HAS_RACE_CONTEXT[metric] ? (
+                <Tooltip content={<MetricTooltip metric={metric} />} />
+              ) : (
+                <Tooltip
+                  formatter={(value) => `${String(value)}${HORSE_RACE_CHART_METRIC_UNITS[metric]}`}
+                  labelFormatter={(label) => formatHorseRaceChartDate(Number(label))}
                 />
-              ))}
-          </LineChart>
-        </ResponsiveContainer>
-      </section>
-    ))}
-  </div>
+              )}
+              {seriesListsByMetric[metric]
+                .filter((series) => !hiddenHorses.has(series.kettoTorokuBango))
+                .map((series) => (
+                  <Line
+                    data={series.points}
+                    dataKey="value"
+                    dot={<OverviewChartDot />}
+                    isAnimationActive={false}
+                    key={series.kettoTorokuBango}
+                    name={getHorseChipLabel(series)}
+                    stroke={resolveSeriesStroke(series)}
+                    strokeWidth={resolveSeriesStrokeWidth(series)}
+                    type="monotone"
+                  />
+                ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </section>
+      ))}
+    </div>
+  </>
 );
 
 export const HorseRaceResultsChart = ({
@@ -617,6 +719,7 @@ export const HorseRaceResultsChart = ({
       ) : (
         <PaddockRecentResultsChart
           results={selectedHorseResults}
+          upcomingBlinker={selectedUpcoming.blinker}
           upcomingPopularity={selectedUpcoming.popularity}
           upcomingRaceDate={targetRaceDate}
           upcomingWeight={selectedUpcoming.weight}

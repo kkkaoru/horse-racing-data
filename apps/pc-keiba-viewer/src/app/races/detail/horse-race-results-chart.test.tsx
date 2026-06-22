@@ -10,7 +10,7 @@ import type { HorseRaceChartRunner } from "../../../lib/horse-race-results-chart
 import type { HorseWeightSnapshot } from "../../../lib/horse-weight-stream-client";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
-import { HorseRaceResultsChart } from "./horse-race-results-chart";
+import { HorseRaceResultsChart, OverviewChartDot } from "./horse-race-results-chart";
 import { useRealtimeRacePayload } from "./realtime-client";
 
 interface RealtimePayloadResult {
@@ -45,7 +45,10 @@ interface YAxisStubProps {
 
 interface MetricTooltipInjectedProps {
   active?: boolean;
-  payload?: { payload: { dateValue: number; jockey: string; kyori: string }; value: number }[];
+  payload?: {
+    payload: { blinker: string | null; dateValue: number; jockey: string; kyori: string };
+    value: number;
+  }[];
 }
 
 interface TooltipStubProps {
@@ -54,11 +57,17 @@ interface TooltipStubProps {
 
 interface PaddockChartStubProps {
   results: HorseRaceResult[];
+  upcomingBlinker?: string | null;
   upcomingPopularity?: number | null;
   upcomingRaceDate?: string | null;
   upcomingWeight?: number | null;
   upcomingWeightDelta?: number | null;
 }
+
+// Mutable blinker flag injected into the tooltip stub's payload so individual
+// tests can drive the overview tooltip's blinker line on / off. Reset per test.
+// The `mock` prefix lets vitest hoist it above the recharts factory below.
+const mockTooltipBlinker: { value: string | null } = { value: null };
 
 vi.mock("recharts", () => ({
   CartesianGrid: () => <div data-testid="cartesian-grid-stub" />,
@@ -88,7 +97,17 @@ vi.mock("recharts", () => ({
         ? null
         : React.cloneElement(content, {
             active: true,
-            payload: [{ payload: { dateValue: 0, jockey: "ルメール", kyori: "2000" }, value: 1 }],
+            payload: [
+              {
+                payload: {
+                  blinker: mockTooltipBlinker.value,
+                  dateValue: 0,
+                  jockey: "ルメール",
+                  kyori: "2000",
+                },
+                value: 1,
+              },
+            ],
           })}
     </div>
   ),
@@ -101,6 +120,7 @@ vi.mock("recharts", () => ({
 vi.mock("./paddock-recent-results-chart", () => ({
   PaddockRecentResultsChart: ({
     results,
+    upcomingBlinker,
     upcomingPopularity,
     upcomingRaceDate,
     upcomingWeight,
@@ -109,6 +129,7 @@ vi.mock("./paddock-recent-results-chart", () => ({
     <div
       data-results-count={results.length}
       data-testid="paddock-recent-chart-stub"
+      data-upcoming-blinker={upcomingBlinker ?? "none"}
       data-upcoming-popularity={String(upcomingPopularity)}
       data-upcoming-race-date={upcomingRaceDate ?? ""}
       data-upcoming-weight={String(upcomingWeight)}
@@ -131,6 +152,7 @@ vi.mock("./realtime-client", () => ({
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  mockTooltipBlinker.value = null;
 });
 
 const mockTanshoPayload = (tansho: RealtimeOddsData[]) => {
@@ -518,6 +540,18 @@ test("renders distance and jockey in the finish and popularity tooltips only", (
   expect(screen.getAllByText("騎手 ルメール").length).toStrictEqual(2);
 });
 
+test("shows the worn blinker line in the rank tooltips when the hovered point blinker is 1", () => {
+  mockTooltipBlinker.value = "1";
+  render(<HorseRaceResultsChart results={[chartResult({ blinkerShiyoKubun: "1" })]} />);
+  expect(screen.getAllByText("ブリンカー ○").length).toStrictEqual(2);
+});
+
+test("omits the blinker line in the rank tooltips when the hovered point blinker is null", () => {
+  mockTooltipBlinker.value = null;
+  render(<HorseRaceResultsChart results={[chartResult({ blinkerShiyoKubun: "0" })]} />);
+  expect(screen.queryAllByText("ブリンカー ○").length).toStrictEqual(0);
+});
+
 test("hides one horse in every panel via its chip and shows it again on the second click", () => {
   render(
     <HorseRaceResultsChart
@@ -683,6 +717,35 @@ test("passes null upcoming values to the correlation paddock chart when no overr
   expect(chart.getAttribute("data-upcoming-weight")).toStrictEqual("null");
   expect(chart.getAttribute("data-upcoming-weight-delta")).toStrictEqual("null");
   expect(chart.getAttribute("data-upcoming-popularity")).toStrictEqual("null");
+});
+
+test("passes the selected runner's target-race blinker to the correlation paddock chart", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      runners={[chartRunner({ blinkerShiyoKubun: "1" })]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260613"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-upcoming-blinker"),
+  ).toStrictEqual("1");
+});
+
+test("passes a null blinker to the correlation paddock chart when the horse is not an entered runner", () => {
+  render(
+    <HorseRaceResultsChart
+      results={[chartResult({})]}
+      targetKeibajoCode="05"
+      targetRaceDate="20260613"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "馬別（相関）" }));
+  expect(
+    screen.getByTestId("paddock-recent-chart-stub").getAttribute("data-upcoming-blinker"),
+  ).toStrictEqual("none");
 });
 
 test("hides the bulk buttons and single-selects the first horse in the correlation view", () => {
@@ -864,6 +927,103 @@ test("sums weight and futan and relabels the weight heading when the combine tog
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
   ).toStrictEqual(["着順", "人気", "馬体重+斤量", "馬体重増減", "斤量"]);
   expect(screen.getAllByTestId("line-stub")[4]?.getAttribute("data-value-sum")).toStrictEqual("55");
+});
+
+test("OverviewChartDot draws the blinker ring plus a normal dot for a worn point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="#e6194b" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("5");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#e6194b");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#e6194b");
+});
+
+test("OverviewChartDot draws only the normal dot for a not-worn point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "0" }} stroke="#1971c2" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#1971c2");
+});
+
+test("OverviewChartDot draws only the normal dot when the blinker flag is null", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: null }} stroke="#0ca678" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+});
+
+test("OverviewChartDot draws the wider ring around the larger dot for a worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: true }}
+        stroke="#e6194b"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("7");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#e6194b");
+});
+
+test("OverviewChartDot draws only the larger dot for a not-worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: true }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#0ca678");
+});
+
+test("OverviewChartDot renders nothing when the coordinates are missing", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot payload={{ blinker: "1" }} stroke="#e6194b" />
+    </svg>,
+  );
+  expect(container.querySelectorAll("circle").length).toStrictEqual(0);
+});
+
+test("OverviewChartDot renders nothing when only the y coordinate is missing", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} payload={{ blinker: "0" }} stroke="#1971c2" />
+    </svg>,
+  );
+  expect(container.querySelectorAll("circle").length).toStrictEqual(0);
+});
+
+test("renders the on-chart blinker ring hint above the overview panels", () => {
+  render(<HorseRaceResultsChart results={[chartResult({})]} />);
+  expect(screen.getByText("○ = ブリンカー装着").textContent).toStrictEqual("○ = ブリンカー装着");
 });
 
 test("marks each chip with a data-active flag matching its pressed state", () => {

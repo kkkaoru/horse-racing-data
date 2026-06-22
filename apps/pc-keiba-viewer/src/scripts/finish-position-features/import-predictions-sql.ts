@@ -21,6 +21,18 @@ const PRIMARY_KEY_COLUMNS = [
   "ketto_toroku_bango",
 ];
 
+// Race-level subgroup metadata mirrored from the Python Container path
+// (apps/finish-position-predict-container/src/predict_lib/subgroup.py). Nullable
+// text labels classified from race metadata; they sit in INSERT + UPDATABLE only
+// and are NOT part of the primary key.
+const SUBGROUP_COLUMNS: string[] = [
+  "distance_band",
+  "field_size_band",
+  "season_band",
+  "class_code",
+  "surface",
+];
+
 const INSERT_COLUMNS = [
   ...PRIMARY_KEY_COLUMNS,
   "umaban",
@@ -29,6 +41,7 @@ const INSERT_COLUMNS = [
   "predicted_top1_prob",
   "predicted_top3_prob",
   "predicted_finish_position",
+  ...SUBGROUP_COLUMNS,
 ];
 
 const UPDATABLE_COLUMNS = [
@@ -38,6 +51,7 @@ const UPDATABLE_COLUMNS = [
   "predicted_top1_prob",
   "predicted_top3_prob",
   "predicted_finish_position",
+  ...SUBGROUP_COLUMNS,
 ];
 
 export const buildPredictionsTableDdl = (): string => `
@@ -55,6 +69,11 @@ export const buildPredictionsTableDdl = (): string => `
       predicted_top1_prob numeric,
       predicted_top3_prob numeric,
       predicted_finish_position numeric,
+      distance_band text,
+      field_size_band text,
+      season_band text,
+      class_code text,
+      surface text,
       prediction_generated_at timestamptz not null default now(),
       primary key (${PRIMARY_KEY_COLUMNS.join(", ")})
     )

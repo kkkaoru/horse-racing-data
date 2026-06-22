@@ -71,6 +71,10 @@ class ParquetReaderLike(Protocol):
     def __call__(self, path: Path) -> pd.DataFrame: ...
 
 
+class SaveModelLike(Protocol):
+    def save_model(self, fname: str) -> None: ...
+
+
 class FoldTrainerLike(Protocol):
     def __call__(
         self,

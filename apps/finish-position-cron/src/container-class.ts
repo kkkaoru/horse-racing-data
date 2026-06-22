@@ -1,44 +1,141 @@
 // Run with bun. Durable-Object-backed Container class for the predictor image.
-// This is a thin binding wrapper around @cloudflare/containers — it only sets
-// shared config and extends Container, which cannot be instantiated inside the
-// vitest pool, so it is excluded from the coverage gate (the start() options it
-// receives are built + tested in dispatch.ts).
-//
-// IMPORTANT: Cloudflare Containers reaps batch instances that receive no
-// inbound HTTP traffic, independent of sleepAfter. To survive the multi-minute
-// DuckDB + CatBoost feature build we run a DO-side keepalive loop:
-// onStart() schedules a recurring containerFetch every KEEPALIVE_INTERVAL_SECS
-// against the LIVENESS_PORT HTTP server in predict_upcoming.py. The loop stops
-// on its own when the container exits (containerFetch raises after the
-// process is gone). Without this loop the container is SIGTERM'd ~90s after
-// the Worker request returns and only a partial traceback survives.
+// Held-fetch design: the queue consumer calls stub.fetch("/predict?...") which
+// the DO proxies via containerFetch — the in-flight containerFetch keeps the
+// container alive without any keepalive loop. sleepAfter resets automatically
+// per CF docs while the HTTP request is in-flight. container-class.ts is
+// excluded from the coverage gate (see vitest.config.ts).
 
 import { Container } from "@cloudflare/containers";
+import type { PerRaceParquetEntry, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
-const LIVENESS_PORT = 8080;
-const KEEPALIVE_INTERVAL_SECS = 30;
-const KEEPALIVE_CALLBACK = "keepalivePing";
-const KEEPALIVE_PATH = "/keepalive";
+const DEFAULT_PORT = 8080;
+const SLEEP_AFTER = "15m";
+const MODELS_DIR_DEFAULT = "/models";
+const EMPTY_ENV_VALUE = "";
+const RESULT_LINE_TYPE = "result";
+const NDJSON_CONTENT_TYPE = "application/x-ndjson";
+const TEXT_DECODER = new TextDecoder();
 
-export class FinishPositionPredictContainer extends Container<Env> {
-  override defaultPort = LIVENESS_PORT;
-  override sleepAfter = "45m";
-  override enableInternet = true;
-
-  override async onStart(): Promise<void> {
-    await this.schedule(KEEPALIVE_INTERVAL_SECS, KEEPALIVE_CALLBACK, {});
+// Proxy the feature parquet bytes embedded in the NDJSON result line to R2 via
+// the Worker's FEATURES_CACHE binding. The Container's S3 token is read-only so
+// the Python side embeds the parquet as base64 in the result line, and the Worker
+// DO does the R2 PUT here — no S3 credentials needed in the Container env.
+const proxyParquetToR2 = async (result: PredictResultLine, env: Env): Promise<void> => {
+  const { parquetBase64, parquetKey } = result;
+  if (!parquetBase64 || !parquetKey) return;
+  try {
+    const bytes = Uint8Array.from(atob(parquetBase64), (c) => c.charCodeAt(0));
+    await env.FEATURES_CACHE.put(parquetKey, bytes.buffer, {
+      httpMetadata: { contentType: "application/octet-stream" },
+    });
+    console.log(`[container-class] R2 proxy ok key=${parquetKey} bytes=${bytes.length}`);
+  } catch (err) {
+    // R2 proxy failure must never block predictions — log and continue.
+    console.error(`[container-class] R2 proxy failed key=${parquetKey}: ${String(err)}`);
   }
+};
 
-  async keepalivePing(): Promise<void> {
+// Proxy each per-race feature parquet embedded in the NDJSON result line to R2
+// via the Worker's FEATURES_CACHE binding, for the same read-only-S3-token reason
+// as proxyParquetToR2 above. Failures are logged and never block the response.
+const proxyPerRaceParquetsToR2 = async (
+  parquets: ReadonlyArray<PerRaceParquetEntry>,
+  env: Env,
+): Promise<void> => {
+  await Promise.all(
+    parquets.map(async (entry) => {
+      try {
+        const bytes = Uint8Array.from(atob(entry.parquetBase64), (c) => c.charCodeAt(0));
+        await env.FEATURES_CACHE.put(entry.parquetKey, bytes.buffer, {
+          httpMetadata: { contentType: "application/octet-stream" },
+        });
+        console.log(
+          `[container-class] R2 per-race proxy ok key=${entry.parquetKey} bytes=${bytes.length}`,
+        );
+      } catch (err) {
+        console.error(
+          `[container-class] R2 per-race proxy failed key=${entry.parquetKey}: ${String(err)}`,
+        );
+      }
+    }),
+  );
+};
+
+// Parse the NDJSON body to find the result line and proxy parquet if present,
+// then return a reconstructed Response with the same body for the caller.
+const proxyParquetFromNdjson = async (response: Response, env: Env): Promise<Response> => {
+  if (!response.body) return response;
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (!contentType.includes(NDJSON_CONTENT_TYPE)) return response;
+
+  // Buffer the full response body to extract the result line, then re-stream it.
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) chunks.push(value);
+  }
+  const combined = new Uint8Array(chunks.reduce((acc, c) => acc + c.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  const text = TEXT_DECODER.decode(combined);
+
+  // Find and proxy the result line asynchronously (non-blocking).
+  const lastLine = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .at(-1);
+  if (lastLine) {
     try {
-      const response = await this.containerFetch(new Request(`http://container${KEEPALIVE_PATH}`));
-      if (!response.ok) {
-        return;
+      const parsed = JSON.parse(lastLine) as { type: string };
+      if (parsed.type === RESULT_LINE_TYPE) {
+        const resultLine = parsed as PredictResultLine;
+        void proxyParquetToR2(resultLine, env);
+        if (resultLine.perRaceParquets && resultLine.perRaceParquets.length > 0) {
+          void proxyPerRaceParquetsToR2(resultLine.perRaceParquets, env);
+        }
       }
     } catch {
-      return;
+      // Malformed JSON — ignore; parseNdjsonStream will surface the error.
     }
-    await this.schedule(KEEPALIVE_INTERVAL_SECS, KEEPALIVE_CALLBACK, {});
+  }
+
+  // Reconstruct the response with the original headers and buffered body.
+  return new Response(combined, {
+    status: response.status,
+    headers: response.headers,
+  });
+};
+
+export class FinishPositionPredictContainer extends Container<Env> {
+  override defaultPort = DEFAULT_PORT;
+  override sleepAfter = SLEEP_AFTER;
+  override enableInternet = true;
+
+  override async fetch(request: Request): Promise<Response> {
+    // Inject Worker runtime secrets into container env before containerFetch
+    // starts the container. The Dockerfile default PREDICT_SERVE_MODE=http
+    // activates the HTTP /predict server mode. NEON_DATABASE_URL is required
+    // at container bootstrap time.
+    this.envVars = {
+      MODELS_DIR: MODELS_DIR_DEFAULT,
+      NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
+      PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
+      // R2 S3 credentials forwarded for the rescore GET path (read-only token is
+      // sufficient for GET). The full-run PUT is proxied via FEATURES_CACHE binding
+      // above, so the S3 token write-access gap is bypassed.
+      R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
+      R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
+      R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
+      R2_BUCKET: this.env.R2_BUCKET ?? EMPTY_ENV_VALUE,
+    };
+    const response = await this.containerFetch(request);
+    return proxyParquetFromNdjson(response, this.env);
   }
 }

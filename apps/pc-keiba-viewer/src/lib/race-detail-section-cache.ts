@@ -1,6 +1,7 @@
 import type { RaceSource } from "./codes";
 
 export const DETAIL_SECTION_CACHE_WARM_PARAM = "__cacheWarm";
+export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 
 export const DETAIL_SECTION_CACHE_VERSION = "v2";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
@@ -86,6 +87,7 @@ export const stripDetailSectionCacheWarmParams = (
 ): URLSearchParams => {
   const next = new URLSearchParams(searchParams);
   next.delete(DETAIL_SECTION_CACHE_WARM_PARAM);
+  next.delete(PREDICTION_REFRESH_PARAM);
   return next;
 };
 

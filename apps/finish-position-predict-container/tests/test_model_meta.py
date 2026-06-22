@@ -13,14 +13,21 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.model_meta import (
+    JRA_ETOP2_ENABLED,
+    JRA_ETOP2_MODEL_VERSION,
+    JRA_ETOP2_XGB_MODEL_VERSION,
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
     _load_model_meta,
     architecture_for,
+    build_r2_nar_etop2_key,
     build_r2_object_key,
+    build_r2_xgb_etop2_key,
     feature_count_for,
+    get_train_start_year,
     is_category,
     is_lightgbm_model_version,
+    load_model_meta,
     member_model_file_name,
     model_version_for,
     resolve_category,

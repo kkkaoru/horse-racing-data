@@ -8,7 +8,19 @@ interface BuildStartOptionsInput {
   env: Env;
   runDate: string;
   runYmd: string;
+  category?: string;
 }
+
+const categoryEnvVars = (input: BuildStartOptionsInput): Record<string, string> =>
+  input.category
+    ? {
+        MODELS_DIR: "/models",
+        PREDICT_SERVE_MODE: "http",
+        RS_SOURCE: "pg",
+        SOURCE_DATABASE_URL: input.env.NEON_DATABASE_URL,
+        category: input.category,
+      }
+    : {};
 
 // Build the per-run container start configuration. Secrets (NEON_DATABASE_URL)
 // and the run window are passed as container env vars; outbound internet is
@@ -22,5 +34,6 @@ export const buildPredictStartOptions = (input: BuildStartOptionsInput): Predict
     PREDICT_DAYS_AHEAD: input.env.PREDICT_DAYS_AHEAD,
     RUN_DATE: input.runYmd,
     RUN_DATE_ISO: input.runDate,
+    ...categoryEnvVars(input),
   },
 });

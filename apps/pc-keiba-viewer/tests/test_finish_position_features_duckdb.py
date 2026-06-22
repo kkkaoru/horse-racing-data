@@ -598,31 +598,31 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
               1600, '11', 'A', '99', 16, 1, 1.0/16,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 50.0, null::int, 0.00),
+              '1', '1', 1, 50.0, null::int, 0.00, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100002', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 16, 2, 2.0/16,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 100.0, null::int, 0.20),
+              '1', '1', 2, 100.0, null::int, 0.20, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100003', 8, 'jockey_c', 'trainer_c',
               1600, '11', 'A', '99', 16, 10, 10.0/16,
               'name_c', 'fukudai_c',
               null::double, null::double, null::double, null::double,
-              '1', '1', 5, 500.0, null::int, 0.50),
+              '1', '1', 5, 500.0, null::int, 0.50, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100004', 12, 'jockey_d', 'trainer_d',
               1600, '11', 'A', '99', 16, 15, 15.0/16,
               'name_d', 'fukudai_d',
               null::double, null::double, null::double, null::double,
-              '1', '1', 12, 1500.0, null::int, 0.95),
+              '1', '1', 12, 1500.0, null::int, 0.95, 1),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100005', 16, 'jockey_e', 'trainer_e',
               1600, '11', 'A', '99', 16, null::int, null::double,
               'name_e', 'fukudai_e',
               null::double, null::double, null::double, null::double,
-              '1', '1', 16, 2000.0, null::int, null::double)
+              '1', '1', 16, 2000.0, null::int, null::double, 1)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -630,7 +630,7 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )
@@ -861,7 +861,7 @@ def test_build_target_table_keeps_finish_position_intact():
               1800, '11', 'A', '99', 12, 3, 3.0/12,
               'name_x', 'fukudai_x',
               null::double, null::double, null::double, null::double,
-              '1', '1', 3, 250.0, null::int, 0.18)
+              '1', '1', 3, 250.0, null::int, 0.18, 1)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -869,7 +869,7 @@ def test_build_target_table_keeps_finish_position_intact():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )
@@ -1680,13 +1680,13 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 5.0, null::int, null::double),
+              '1', '1', 2, 5.0, null::int, null::double, '1'),
             ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
               'horse_b', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 8.0, null::int, null::double)
+              '1', '1', 1, 8.0, null::int, null::double, '2')
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -1695,7 +1695,7 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code
         )
         """
     )

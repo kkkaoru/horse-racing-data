@@ -1,39 +1,60 @@
-// Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container)
-// handlers.
+// Run with bun. Fetch (health + on-demand trigger) + scheduled (cron -> container) + queue handlers.
 
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
-import { PREDICT_CRON, shouldRunPredictCron } from "./cron-decision";
+import {
+  PREDICT_CRON,
+  shouldRunCoordinatorCron,
+  shouldRunFeatureBuildCron,
+  shouldRunPredictCron,
+  shouldRunRescoreCron,
+  shouldRunWarmCron,
+} from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
+import { warmNeon } from "./neon-warm";
+import { PredictRunCoordinator } from "./predict-run-coordinator";
+import { handleQueue } from "./queue-consumer";
+import { enqueuePredict } from "./queue-producer";
+import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
-import type { CronAuditRecord, Env, RunDates } from "./types";
+import type {
+  CronAuditRecord,
+  Env,
+  PredictCategory,
+  PredictMode,
+  PredictQueueMessage,
+  RunDates,
+} from "./types";
 
 const CONTAINER_INSTANCE_NAME = "daily-finish-position-predict";
 const ZERO_RACES = 0;
 const RUN_DATE_FIELD = "runDate";
+const MODE_FIELD = "mode";
+const CATEGORY_FIELD = "category";
+const KEIBAJO_CODE_FIELD = "keibajoCode";
+const RACE_BANGO_FIELD = "raceBango";
+const DEFAULT_MODE: PredictMode = "full";
+const FULL_MODE: PredictMode = "full";
+const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
+const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
+const RESCORE_DAYS_AHEAD = 0;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_ACCEPTED = 202;
 
-export { FinishPositionPredictContainer };
+export { FinishPositionPredictContainer, PredictRunCoordinator };
 
 const healthResponse = (): Response =>
   Response.json({ cron: PREDICT_CRON, name: "finish-position-cron", ok: true });
 
-// Persist one audit row. Excluded from coverage with worker.ts (D1 binding),
-// but the record + SQL it uses are built by tested helpers.
 const recordAudit = async (env: Env, record: CronAuditRecord): Promise<void> => {
   await env.FINISH_POSITION_CRON_DB.prepare(buildAuditInsertSql())
     .bind(...buildAuditBindParams(record))
     .run();
 };
 
-// Start the predictor container as a batch job for the given run dates. Uses
-// start() (not fetch) because the container exposes no port — it runs the
-// entrypoint to completion. start() resolves once the container has launched;
-// the audit row here marks the dispatch, and the container writes its own
-// detailed audit row on completion (see predict_lib/audit.py).
 const runPrediction = async (env: Env, dates: RunDates): Promise<void> => {
   const startedAt = Date.now();
   const container = getContainer(env.FINISH_POSITION_PREDICT_CONTAINER, CONTAINER_INSTANCE_NAME);
@@ -52,8 +73,33 @@ const runPrediction = async (env: Env, dates: RunDates): Promise<void> => {
   );
 };
 
-// Resolve the run date for an on-demand trigger: an explicit "YYYYMMDD" in the
-// JSON body, or today's JST date when the body omits it.
+const resolveMode = (body: Record<string, unknown>): PredictMode => {
+  const requested = body[MODE_FIELD];
+  return typeof requested === "string" && VALID_MODES.has(requested)
+    ? (requested as PredictMode)
+    : DEFAULT_MODE;
+};
+
+const resolveCategory = (body: Record<string, unknown>): PredictCategory | undefined => {
+  const requested = body[CATEGORY_FIELD];
+  return typeof requested === "string" && VALID_CATEGORIES.has(requested)
+    ? (requested as PredictCategory)
+    : undefined;
+};
+
+// A per-race target field (keibajoCode / raceBango) is a non-empty trimmed
+// string when present; anything else (absent, non-string, blank) is treated as
+// undefined so the legacy per-category path stays untouched.
+const resolveRaceTargetField = (
+  body: Record<string, unknown>,
+  field: string,
+): string | undefined => {
+  const requested = body[field];
+  if (typeof requested !== "string") return undefined;
+  const trimmed = requested.trim();
+  return trimmed === "" ? undefined : trimmed;
+};
+
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -71,14 +117,24 @@ const parseBody = async (request: Request): Promise<Record<string, unknown>> => 
   return JSON.parse(text) as Record<string, unknown>;
 };
 
-// Authenticated POST /run: start a prediction for an explicit or today's date.
 const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
-  const dates = resolveTriggerDates(await parseBody(request));
-  await runPrediction(env, dates);
-  return Response.json({ ok: true, runDate: dates.runDate });
+  const body = await parseBody(request);
+  const dates = resolveTriggerDates(body);
+  const mode = resolveMode(body);
+  const queued = await enqueuePredict({
+    category: resolveCategory(body),
+    daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+    env,
+    keibajoCode: resolveRaceTargetField(body, KEIBAJO_CODE_FIELD),
+    mode,
+    raceBango: resolveRaceTargetField(body, RACE_BANGO_FIELD),
+    runDate: dates.runDate,
+    runYmd: dates.runYmd,
+  });
+  return Response.json({ ok: true, queued, runDate: dates.runDate }, { status: HTTP_ACCEPTED });
 };
 
 const guardedTrigger = async (request: Request, env: Env): Promise<Response> => {
@@ -98,6 +154,49 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
 };
 
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
+  if (shouldRunWarmCron(event.cron)) {
+    await warmNeon(env.NEON_DATABASE_URL);
+    return;
+  }
+  if (shouldRunCoordinatorCron(event.cron)) {
+    // Per-race timing layer: enqueue rescore messages for races within T-X of
+    // post time. Shadow-safe — the rescore consumer (task B) is not wired yet,
+    // so an enqueued message is a no-op for production predictions. Does not
+    // start the container or touch the predict / warm crons.
+    await runRaceCoordinatorTick({
+      env,
+      leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,
+      now: new Date(event.scheduledTime),
+    });
+    return;
+  }
+  if (shouldRunFeatureBuildCron(event.cron)) {
+    // Enqueue the full-mode Container pipeline for all categories so per-race
+    // feature parquets are generated and uploaded to R2 before race hours.
+    // Omitting category fans out to every category in a single call.
+    const scheduledAt = new Date(event.scheduledTime);
+    await enqueuePredict({
+      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+      env,
+      mode: FULL_MODE,
+      runDate: getRunDateJst(scheduledAt),
+      runYmd: getRunYmdJst(scheduledAt),
+    });
+    return;
+  }
+  if (shouldRunRescoreCron(event.cron)) {
+    // Enqueue rescore messages for all categories (race-hours freshness).
+    // daysAhead=0: only today's races need re-scoring.
+    const scheduledAt = new Date(event.scheduledTime);
+    await enqueuePredict({
+      daysAhead: RESCORE_DAYS_AHEAD,
+      env,
+      mode: "rescore",
+      runDate: getRunDateJst(scheduledAt),
+      runYmd: getRunYmdJst(scheduledAt),
+    });
+    return;
+  }
   if (!shouldRunPredictCron(event.cron)) {
     return;
   }
@@ -114,5 +213,8 @@ export default {
   },
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
     await handleScheduled(event, env);
+  },
+  async queue(batch: MessageBatch<PredictQueueMessage>, env: Env): Promise<void> {
+    await handleQueue(batch, env);
   },
 };

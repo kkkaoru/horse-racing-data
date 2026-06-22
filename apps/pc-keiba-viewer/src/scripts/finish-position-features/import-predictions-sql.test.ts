@@ -37,19 +37,52 @@ test("PRIMARY_KEY_COLUMNS lists the seven identifier columns", () => {
   ]);
 });
 
-test("INSERT_COLUMNS contains 13 fields", () => {
-  expect(INSERT_COLUMNS.length).toBe(13);
+test("INSERT_COLUMNS contains 18 fields", () => {
+  expect(INSERT_COLUMNS.length).toBe(18);
 });
 
-test("INSERT_COLUMNS starts with the primary key and ends with predicted_finish_position", () => {
-  expect(INSERT_COLUMNS.slice(0, 7)).toStrictEqual(PRIMARY_KEY_COLUMNS);
-  expect(INSERT_COLUMNS[INSERT_COLUMNS.length - 1]).toBe("predicted_finish_position");
+test("INSERT_COLUMNS lists the primary key, prediction and subgroup columns in order", () => {
+  expect(INSERT_COLUMNS).toStrictEqual([
+    "model_version",
+    "source",
+    "kaisai_nen",
+    "kaisai_tsukihi",
+    "keibajo_code",
+    "race_bango",
+    "ketto_toroku_bango",
+    "umaban",
+    "predicted_score",
+    "predicted_rank",
+    "predicted_top1_prob",
+    "predicted_top3_prob",
+    "predicted_finish_position",
+    "distance_band",
+    "field_size_band",
+    "season_band",
+    "class_code",
+    "surface",
+  ]);
 });
 
-test("UPDATABLE_COLUMNS excludes the primary key", () => {
-  for (const key of PRIMARY_KEY_COLUMNS) {
-    expect(UPDATABLE_COLUMNS).not.toContain(key);
-  }
+test("UPDATABLE_COLUMNS lists the mutable prediction and subgroup columns", () => {
+  expect(UPDATABLE_COLUMNS).toStrictEqual([
+    "umaban",
+    "predicted_score",
+    "predicted_rank",
+    "predicted_top1_prob",
+    "predicted_top3_prob",
+    "predicted_finish_position",
+    "distance_band",
+    "field_size_band",
+    "season_band",
+    "class_code",
+    "surface",
+  ]);
+});
+
+test("UPDATABLE_COLUMNS excludes every primary key column", () => {
+  const leakedKeys = PRIMARY_KEY_COLUMNS.filter((key) => UPDATABLE_COLUMNS.includes(key));
+  expect(leakedKeys).toStrictEqual([]);
 });
 
 test("buildPredictionsTableDdl declares numeric and integer fields", () => {
@@ -58,6 +91,15 @@ test("buildPredictionsTableDdl declares numeric and integer fields", () => {
   expect(ddl).toContain("predicted_rank integer not null");
   expect(ddl).toContain("prediction_generated_at timestamptz not null default now()");
   expect(ddl).toContain("primary key (model_version, source, kaisai_nen");
+});
+
+test("buildPredictionsTableDdl declares the five nullable subgroup columns", () => {
+  const ddl = buildPredictionsTableDdl();
+  expect(ddl).toContain("distance_band text,");
+  expect(ddl).toContain("field_size_band text,");
+  expect(ddl).toContain("season_band text,");
+  expect(ddl).toContain("class_code text,");
+  expect(ddl).toContain("surface text,");
 });
 
 test("buildActiveModelsTableDdl exposes category, subclass and model_version", () => {
@@ -95,8 +137,12 @@ test("buildPredictionsLookupIndexSql covers the race tuple", () => {
 
 test("buildBatchInsertSql produces one placeholder block per row", () => {
   const sql = buildBatchInsertSql(2);
-  expect(sql).toContain("$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13");
-  expect(sql).toContain("$14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26");
+  expect(sql).toContain(
+    "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18",
+  );
+  expect(sql).toContain(
+    "$19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36",
+  );
 });
 
 test("buildBatchInsertSql includes the conflict clause", () => {
@@ -106,6 +152,15 @@ test("buildBatchInsertSql includes the conflict clause", () => {
   );
   expect(sql).toContain("predicted_score = excluded.predicted_score");
   expect(sql).toContain("prediction_generated_at = now()");
+});
+
+test("buildBatchInsertSql updates the subgroup columns on conflict", () => {
+  const sql = buildBatchInsertSql(1);
+  expect(sql).toContain("distance_band = excluded.distance_band");
+  expect(sql).toContain("field_size_band = excluded.field_size_band");
+  expect(sql).toContain("season_band = excluded.season_band");
+  expect(sql).toContain("class_code = excluded.class_code");
+  expect(sql).toContain("surface = excluded.surface");
 });
 
 test("buildActivateModelSql upserts the category fallback (NULL subclass) row", () => {

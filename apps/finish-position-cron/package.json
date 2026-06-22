@@ -15,7 +15,11 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "@cloudflare/containers": "0.3.7"
+    "@cloudflare/containers": "0.3.7",
+    "@neondatabase/serverless": "catalog:",
+    "catboost-json-tree": "workspace:*",
+    "hyparquet": "1.26.0",
+    "xgboost-json-tree": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",

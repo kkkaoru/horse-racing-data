@@ -542,6 +542,7 @@ export const getRaceRunners = cache(
               se.corner_3 as "corner3",
               se.corner_4 as "corner4",
               se.kohan_3f as "kohan3f",
+              se.blinker_shiyo_kubun as "blinkerShiyoKubun",
               coalesce(
                 nullif(regexp_replace(primary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), ''),
                 nullif(regexp_replace(secondary_um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')
@@ -638,6 +639,7 @@ export const getRaceRunners = cache(
             se.corner_3 as "corner3",
             se.corner_4 as "corner4",
             se.kohan_3f as "kohan3f",
+            se.blinker_shiyo_kubun as "blinkerShiyoKubun",
             nullif(regexp_replace(um.ketto_joho_01b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "sireName",
             nullif(regexp_replace(um.ketto_joho_03b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "sireSireName",
             nullif(regexp_replace(um.ketto_joho_05b, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '') as "damSireName"
@@ -2343,6 +2345,7 @@ export const getHorseRaceResults = async (
           past."corner3",
           past."corner4",
           past."kohan3f",
+          past."blinkerShiyoKubun",
           row_number() over (
             partition by ch."currentUmaban"
             order by past."kaisaiNen" desc, past."kaisaiTsukihi" desc, past."raceBango" desc
@@ -2393,7 +2396,8 @@ export const getHorseRaceResults = async (
             se.corner_2 "corner2",
             se.corner_3 "corner3",
             se.corner_4 "corner4",
-            se.kohan_3f "kohan3f"
+            se.kohan_3f "kohan3f",
+            se.blinker_shiyo_kubun "blinkerShiyoKubun"
           from ${jvdSe} se
           join ${jvdRa} ra
             on ra.kaisai_nen = se.kaisai_nen
@@ -2448,7 +2452,8 @@ export const getHorseRaceResults = async (
             se.corner_2 "corner2",
             se.corner_3 "corner3",
             se.corner_4 "corner4",
-            se.kohan_3f "kohan3f"
+            se.kohan_3f "kohan3f",
+            se.blinker_shiyo_kubun "blinkerShiyoKubun"
           from ${nvdSe} se
           join ${nvdRa} ra
             on ra.kaisai_nen = se.kaisai_nen
@@ -2509,7 +2514,8 @@ export const getHorseRaceResults = async (
         "corner2",
         "corner3",
         "corner4",
-        "kohan3f"
+        "kohan3f",
+        "blinkerShiyoKubun"
       from history
       order by "currentUmaban"::int asc, "kaisaiNen" desc, "kaisaiTsukihi" desc, "raceBango" desc
     `);

@@ -27,6 +27,19 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
+__all__ = [
+    "compute_fold_metrics",
+    "make_to_relevance",
+    "resolve_feature_columns",
+    "run_walk_forward",
+    "top1_hit",
+    "top3_box_hit",
+    "top3_exact_hit",
+    "train_xgboost_ranker",
+    "write_predictions_jsonl",
+    "xgb",
+]
+
 META_COLUMNS = (
     "race_id", "race_date", "race_year", "source", "kaisai_nen", "kaisai_tsukihi",
     "keibajo_code", "race_bango", "ketto_toroku_bango", "umaban", "bamei",
@@ -177,15 +190,15 @@ def train_xgboost_ranker(
     }
 
 
-def _top1_hit(g: pd.DataFrame) -> int:
+def top1_hit(g: pd.DataFrame) -> int:
     return int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any())
 
 
-def _top3_box_hit(g: pd.DataFrame) -> int:
+def top3_box_hit(g: pd.DataFrame) -> int:
     return int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3)
 
 
-def _top3_exact_hit(g: pd.DataFrame) -> int:
+def top3_exact_hit(g: pd.DataFrame) -> int:
     return int(
         ((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any()
         and ((g["predicted_rank"] == 2) & (g["finish_position"] == 2)).any()
@@ -196,9 +209,9 @@ def _top3_exact_hit(g: pd.DataFrame) -> int:
 def compute_fold_metrics(valid_df: pd.DataFrame) -> dict[str, float]:
     groups = [g for _, g in valid_df.groupby("race_id")]
     race_count = len(groups)
-    top1_hits = [_top1_hit(g) for g in groups]
-    top3_box = [_top3_box_hit(g) for g in groups]
-    top3_exact = [_top3_exact_hit(g) for g in groups]
+    top1_hits = [top1_hit(g) for g in groups]
+    top3_box = [top3_box_hit(g) for g in groups]
+    top3_exact = [top3_exact_hit(g) for g in groups]
     return {
         "race_count": race_count,
         "valid_rows": int(len(valid_df)),

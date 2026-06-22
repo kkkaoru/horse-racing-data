@@ -10,6 +10,7 @@ import {
   PaddockChartDot,
   PaddockRecentResultsChart,
   PaddockRecentTooltip,
+  shouldRenderBlinkerRing,
 } from "./paddock-recent-results-chart";
 
 interface ChartChildrenStubProps {
@@ -17,6 +18,7 @@ interface ChartChildrenStubProps {
 }
 
 interface ComposedChartRowStub {
+  blinker: string | null;
   dateValue: number;
   futan: number | null;
   isUpcoming?: boolean;
@@ -67,6 +69,7 @@ interface PaddockTooltipInjectedProps {
 }
 
 interface HorseRaceResultRowStub {
+  blinker: string | null;
   dateValue: number;
   finish: number | null;
   futan: number | null;
@@ -85,6 +88,7 @@ interface TooltipStubProps {
 }
 
 const TOOLTIP_FIXTURE_ROW: HorseRaceResultRowStub = {
+  blinker: "1",
   dateValue: 0,
   finish: 1,
   futan: 55,
@@ -104,6 +108,8 @@ vi.mock("recharts", () => ({
   ),
   ComposedChart: ({ children, data }: ComposedChartStubProps) => (
     <div
+      data-first-blinker={data?.at(0)?.blinker ?? "none"}
+      data-last-blinker={data?.at(-1)?.blinker ?? "none"}
       data-last-futan={String(data?.at(-1)?.futan ?? "none")}
       data-last-is-upcoming={String(data?.at(-1)?.isUpcoming ?? false)}
       data-last-popularity={String(data?.at(-1)?.popularity ?? "none")}
@@ -841,6 +847,127 @@ test("PaddockChartDot renders nothing when only the y coordinate is missing", ()
   expect(container.querySelectorAll("circle").length).toStrictEqual(0);
 });
 
+test("PaddockChartDot draws the blinker ring plus a normal dot for a worn past point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: false }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("5");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#0ca678");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#0ca678");
+});
+
+test("PaddockChartDot draws only the normal dot for a not-worn past point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: false }}
+        stroke="#e03131"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#e03131");
+});
+
+test("PaddockChartDot draws only the normal dot when the blinker flag is null", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: null, isUpcoming: false }}
+        stroke="#1971c2"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("2");
+});
+
+test("PaddockChartDot draws the wider ring around the larger dot for a worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "1", isUpcoming: true }}
+        stroke="#0ca678"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("7");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("none");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#0ca678");
+  expect(circles[1]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#0ca678");
+});
+
+test("PaddockChartDot draws only the larger dot for a not-worn upcoming point", () => {
+  const { container } = render(
+    <svg>
+      <PaddockChartDot
+        cx={10}
+        cy={20}
+        payload={{ blinker: "0", isUpcoming: true }}
+        stroke="#1971c2"
+      />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(1);
+  expect(circles[0]?.getAttribute("r")).toStrictEqual("4");
+  expect(circles[0]?.getAttribute("fill")).toStrictEqual("#1971c2");
+});
+
+test("shouldRenderBlinkerRing returns true for a worn past point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: false })).toStrictEqual(true);
+});
+
+test("shouldRenderBlinkerRing returns false for a not-worn past point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "0", isUpcoming: false })).toStrictEqual(false);
+});
+
+test("shouldRenderBlinkerRing returns false for a null blinker flag", () => {
+  expect(shouldRenderBlinkerRing({ blinker: null, isUpcoming: false })).toStrictEqual(false);
+});
+
+test("shouldRenderBlinkerRing returns false for an undefined blinker flag", () => {
+  expect(shouldRenderBlinkerRing({ blinker: undefined, isUpcoming: undefined })).toStrictEqual(
+    false,
+  );
+});
+
+test("shouldRenderBlinkerRing returns true for the worn upcoming point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "1", isUpcoming: true })).toStrictEqual(true);
+});
+
+test("shouldRenderBlinkerRing returns false for a not-worn upcoming point", () => {
+  expect(shouldRenderBlinkerRing({ blinker: "0", isUpcoming: true })).toStrictEqual(false);
+});
+
+test("renders the on-chart blinker ring hint above the paddock chart", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({})]} />);
+  expect(screen.getByText("○ = ブリンカー装着").textContent).toStrictEqual("○ = ブリンカー装着");
+});
+
 test("drops only the weight value when the weight prop is an infinite number", () => {
   render(
     <PaddockRecentResultsChart
@@ -891,6 +1018,7 @@ test("renders the tooltip with the date, every metric value and the metadata fie
   expect(screen.getByText("騎手 ルメール").textContent).toStrictEqual("騎手 ルメール");
   expect(screen.getByText("距離 2000m").textContent).toStrictEqual("距離 2000m");
   expect(screen.getByText("競馬場 東京").textContent).toStrictEqual("競馬場 東京");
+  expect(screen.getByText("ブリンカー ○").textContent).toStrictEqual("ブリンカー ○");
 });
 
 test("renders the tooltip with a white background and dark text for mobile readability", () => {
@@ -909,6 +1037,7 @@ test("PaddockRecentTooltip renders nothing when it is not active", () => {
       payload={[
         {
           payload: {
+            blinker: "1",
             dateValue: 0,
             finish: 1,
             futan: 55,
@@ -941,6 +1070,7 @@ test("PaddockRecentTooltip omits null metric lines and shows dash meta with a fa
       payload={[
         {
           payload: {
+            blinker: null,
             dateValue: 0,
             finish: null,
             futan: null,
@@ -972,6 +1102,7 @@ test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash",
       payload={[
         {
           payload: {
+            blinker: null,
             dateValue: 0,
             finish: 2,
             futan: 55,
@@ -991,6 +1122,127 @@ test("PaddockRecentTooltip treats whitespace-only jockey and wakuban as a dash",
   );
   expect(screen.getByText("枠番 -").textContent).toStrictEqual("枠番 -");
   expect(screen.getByText("騎手 -").textContent).toStrictEqual("騎手 -");
+});
+
+test("populates the chart row blinker flag from the worn result", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: "1" })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("1");
+});
+
+test("populates the chart row blinker flag from the not-worn result", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: "0" })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("0");
+});
+
+test("leaves the chart row blinker flag none when the result has no blinker value", () => {
+  render(<PaddockRecentResultsChart results={[chartResult({ blinkerShiyoKubun: null })]} />);
+  expect(
+    screen.getByTestId("composed-chart-stub").getAttribute("data-first-blinker"),
+  ).toStrictEqual("none");
+});
+
+test("leaves the upcoming synthetic row blinker flag none when no upcoming blinker is given", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "1", kaisaiTsukihi: "0322" })]}
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "none",
+  );
+});
+
+test("carries the worn upcoming blinker flag onto the synthetic row", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "0", kaisaiTsukihi: "0322" })]}
+      upcomingBlinker="1"
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "1",
+  );
+});
+
+test("treats a blank upcoming blinker flag as none on the synthetic row", () => {
+  render(
+    <PaddockRecentResultsChart
+      results={[chartResult({ blinkerShiyoKubun: "0", kaisaiTsukihi: "0322" })]}
+      upcomingBlinker=" "
+      upcomingRaceDate="20260614"
+      upcomingWeight={486}
+      upcomingWeightDelta={6}
+    />,
+  );
+  expect(screen.getByTestId("composed-chart-stub").getAttribute("data-last-blinker")).toStrictEqual(
+    "none",
+  );
+});
+
+test("PaddockRecentTooltip shows the worn blinker line when the row blinker is 1", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            blinker: "1",
+            dateValue: 0,
+            finish: 1,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "ルメール",
+            kyori: "2000",
+            popularity: 3,
+            raceDate: "20260322",
+            wakuban: "3",
+            weight: 480,
+            weightDelta: 6,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText("ブリンカー ○").textContent).toStrictEqual("ブリンカー ○");
+});
+
+test("PaddockRecentTooltip omits the blinker line when the row blinker is 0", () => {
+  render(
+    <PaddockRecentTooltip
+      active={true}
+      payload={[
+        {
+          payload: {
+            blinker: "0",
+            dateValue: 0,
+            finish: 1,
+            futan: 55,
+            isUpcoming: false,
+            keibajoCode: "05",
+            kishumeiRyakusho: "ルメール",
+            kyori: "2000",
+            popularity: 3,
+            raceDate: "20260322",
+            wakuban: "3",
+            weight: 480,
+            weightDelta: 6,
+          },
+        },
+      ]}
+    />,
+  );
+  expect(screen.queryAllByText("ブリンカー ○").length).toStrictEqual(0);
 });
 
 test("renders the finish chip swatch with the crimson palette color", () => {

@@ -76,6 +76,12 @@ COPY apps/finish-position-predict-container/models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline
 
+# HTTP server mode is the default so CF Containers can probe port 8080 and the
+# queue-consumer held-fetch pattern works (container serves /predict + /ping).
+# Mac launchd overrides this to empty ("") via docker run -e PREDICT_SERVE_MODE=
+# to keep the one-shot CLI batch behaviour unchanged.
+ENV PREDICT_SERVE_MODE=http
+
 # Default entrypoint is the daily predictor. The Worker overrides entrypoint /
 # envVars per start() call when needed.
 ENTRYPOINT ["python", "/app/src/predict_upcoming.py"]

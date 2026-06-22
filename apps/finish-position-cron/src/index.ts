@@ -1,4 +1,4 @@
 // Run with bun. Worker entry — re-exports the default handler + the Container
-// class (Durable Object) so wrangler can bind it.
+// class (Durable Object) and PredictRunCoordinator DO so wrangler can bind them.
 
-export { default, FinishPositionPredictContainer } from "./worker";
+export { default, FinishPositionPredictContainer, PredictRunCoordinator } from "./worker";
