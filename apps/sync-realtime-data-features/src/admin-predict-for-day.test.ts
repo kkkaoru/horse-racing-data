@@ -2,11 +2,11 @@
 import { expect, it, vi } from "vitest";
 
 vi.mock("./scheduled-race-list", () => ({
-  listTodayRaceKeysFromHyperdrive: vi.fn(),
+  listTodayRaceKeysWithKvCache: vi.fn(),
 }));
 
 import { runPredictionsForDay } from "./admin-predict-for-day";
-import { listTodayRaceKeysFromHyperdrive, type TodayRaceKey } from "./scheduled-race-list";
+import { listTodayRaceKeysWithKvCache, type TodayRaceKey } from "./scheduled-race-list";
 import type { Env } from "./types";
 
 interface InferenceStateRaceKeyRow {
@@ -79,7 +79,7 @@ const threeRaces: TodayRaceKey[] = [
 ];
 
 it("runPredictionsForDay source=all enqueues 6 messages (2 per race)", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "all", targetYmd: "20260531" });
@@ -98,7 +98,7 @@ it("runPredictionsForDay source=all enqueues 6 messages (2 per race)", async () 
 });
 
 it("runPredictionsForDay source=jra enqueues only JRA races (2 messages)", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "jra", targetYmd: "20260531" });
@@ -109,7 +109,7 @@ it("runPredictionsForDay source=jra enqueues only JRA races (2 messages)", async
 });
 
 it("runPredictionsForDay source=nar enqueues only NAR races (4 messages)", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "nar", targetYmd: "20260531" });
@@ -123,7 +123,7 @@ it("runPredictionsForDay source=nar enqueues only NAR races (4 messages)", async
 });
 
 it("runPredictionsForDay enqueues predict-running-style and predict-finish-position with correct shape", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   await runPredictionsForDay(env, { source: "all", targetYmd: "20260531" });
@@ -152,7 +152,7 @@ it("runPredictionsForDay enqueues predict-running-style and predict-finish-posit
 });
 
 it("runPredictionsForDay records skipped reasons when send rejects for running-style", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi
     .fn()
     .mockRejectedValueOnce(new Error("queue boom"))
@@ -167,7 +167,7 @@ it("runPredictionsForDay records skipped reasons when send rejects for running-s
 });
 
 it("runPredictionsForDay records skipped reasons when send rejects for finish-position", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[1]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[1]!]);
   const send = vi
     .fn()
     .mockResolvedValueOnce(undefined)
@@ -182,7 +182,7 @@ it("runPredictionsForDay records skipped reasons when send rejects for finish-po
 });
 
 it("runPredictionsForDay records both skipped reasons when send rejects for both jobs", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi
     .fn()
     .mockRejectedValueOnce(new Error("rs down"))
@@ -198,7 +198,7 @@ it("runPredictionsForDay records both skipped reasons when send rejects for both
 });
 
 it("runPredictionsForDay stringifies non-Error rejection reasons", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi.fn().mockRejectedValueOnce("string-error").mockResolvedValueOnce(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "jra", targetYmd: "20260531" });
@@ -208,7 +208,7 @@ it("runPredictionsForDay stringifies non-Error rejection reasons", async () => {
 });
 
 it("runPredictionsForDay returns empty result when no races match the source filter", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[1]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[1]!]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "jra", targetYmd: "20260531" });
@@ -221,7 +221,7 @@ it("runPredictionsForDay returns empty result when no races match the source fil
 });
 
 it("runPredictionsForDay returns empty result when Hyperdrive returns no races", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   const result = await runPredictionsForDay(env, { source: "all", targetYmd: "20260531" });
@@ -233,16 +233,20 @@ it("runPredictionsForDay returns empty result when Hyperdrive returns no races",
   });
 });
 
-it("runPredictionsForDay forwards targetYmd to listTodayRaceKeysFromHyperdrive", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([]);
+it("runPredictionsForDay forwards targetYmd to listTodayRaceKeysWithKvCache", async () => {
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
   await runPredictionsForDay(env, { source: "all", targetYmd: "20260601" });
-  expect(listTodayRaceKeysFromHyperdrive).toHaveBeenCalledWith(env, "20260601");
+  expect(listTodayRaceKeysWithKvCache).toHaveBeenCalledWith({
+    context: {},
+    env,
+    yyyymmdd: "20260601",
+  });
 });
 
 it("runPredictionsForDay skipCompleted=true skips races completed in both inference state tables", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
     finishPositionCompletedRaceKeys: ["jra:2026:0531:05:01", "nar:2026:0531:30:08"],
@@ -264,7 +268,7 @@ it("runPredictionsForDay skipCompleted=true skips races completed in both infere
 });
 
 it("runPredictionsForDay skipCompleted=true does NOT skip races completed only in running-style", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
     finishPositionCompletedRaceKeys: [],
@@ -291,7 +295,7 @@ it("runPredictionsForDay skipCompleted=true does NOT skip races completed only i
 });
 
 it("runPredictionsForDay skipCompleted=true does NOT skip races completed only in finish-position", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
     finishPositionCompletedRaceKeys: ["nar:2026:0531:30:08"],
@@ -318,10 +322,7 @@ it("runPredictionsForDay skipCompleted=true does NOT skip races completed only i
 });
 
 it("runPredictionsForDay skipCompleted=true emits already-completed skippedReasons entries", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
-    threeRaces[0]!,
-    threeRaces[2]!,
-  ]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!, threeRaces[2]!]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
     finishPositionCompletedRaceKeys: ["nar:2026:0531:83:11"],
@@ -339,7 +340,7 @@ it("runPredictionsForDay skipCompleted=true emits already-completed skippedReaso
 });
 
 it("runPredictionsForDay skipCompleted=false (default) ignores inference_state and enqueues all", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce(threeRaces);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce(threeRaces);
   const send = vi.fn().mockResolvedValue(undefined);
   const prepare = vi.fn();
   const env = {
@@ -361,7 +362,7 @@ it("runPredictionsForDay skipCompleted=false (default) ignores inference_state a
 });
 
 it("runPredictionsForDay skipCompleted=true with empty Hyperdrive returns empty result", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
     finishPositionCompletedRaceKeys: ["jra:2026:0531:05:01"],
@@ -382,7 +383,7 @@ it("runPredictionsForDay skipCompleted=true with empty Hyperdrive returns empty 
 });
 
 it("runPredictionsForDay skipCompleted=true handles undefined results from D1 .all()", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi.fn().mockResolvedValue(undefined);
   const all = vi.fn().mockResolvedValue({});
   const bind = vi.fn().mockReturnValue({ all });
@@ -405,7 +406,7 @@ it("runPredictionsForDay skipCompleted=true handles undefined results from D1 .a
 });
 
 it("runPredictionsForDay skipCompleted=true with invalid targetYmd length skips no races", async () => {
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([threeRaces[0]!]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([threeRaces[0]!]);
   const send = vi.fn().mockResolvedValue(undefined);
   const prepare = vi.fn();
   const env = {

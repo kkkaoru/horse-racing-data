@@ -30,8 +30,8 @@ vi.mock("./scheduled-race-list", async () => {
     await vi.importActual<typeof import("./scheduled-race-list")>("./scheduled-race-list");
   return {
     ...actual,
-    listTodayRaceKeysFromHyperdrive: vi.fn(async () => []),
-    listTomorrowRaceKeysFromHyperdrive: vi.fn(async () => []),
+    listTodayRaceKeysWithKvCache: vi.fn(async () => []),
+    listTomorrowRaceKeysWithKvCache: vi.fn(async () => []),
   };
 });
 vi.mock("./gates/adaptive-batch-kv", () => ({
@@ -47,8 +47,8 @@ import { handleFinishPositionPredictionJob } from "./finish-position/inference";
 import { readNextBatchSize, recordRecomputeOutcome } from "./gates/adaptive-batch-kv";
 import { handleRunningStylePredictionJob } from "./running-style/inference";
 import {
-  listTodayRaceKeysFromHyperdrive,
-  listTomorrowRaceKeysFromHyperdrive,
+  listTodayRaceKeysWithKvCache,
+  listTomorrowRaceKeysWithKvCache,
 } from "./scheduled-race-list";
 import {
   buildAndPersistRaceFeatures,
@@ -106,10 +106,10 @@ beforeEach(() => {
   vi.mocked(buildRaceFeatures).mockResolvedValue([]);
   vi.mocked(encodeRaceFeaturesParquet).mockReset();
   vi.mocked(encodeRaceFeaturesParquet).mockResolvedValue(new Uint8Array([1, 2, 3]));
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockReset();
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValue([]);
-  vi.mocked(listTomorrowRaceKeysFromHyperdrive).mockReset();
-  vi.mocked(listTomorrowRaceKeysFromHyperdrive).mockResolvedValue([]);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockReset();
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValue([]);
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockReset();
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockResolvedValue([]);
   vi.mocked(readNextBatchSize).mockReset();
   vi.mocked(readNextBatchSize).mockResolvedValue(5);
   vi.mocked(recordRecomputeOutcome).mockReset();
@@ -1018,7 +1018,7 @@ it("runScheduledFeaturesPlan runs inside polling window with empty hyperdrive re
 it("runScheduledFeaturesPlan enqueues today builds plus today inference jobs (batchSize=2 cap)", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(2);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1052,7 +1052,7 @@ it("runScheduledFeaturesPlan enqueues today builds plus today inference jobs (ba
 it("runScheduledFeaturesPlan skips enqueue when lock is held for every candidate", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(5);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1078,7 +1078,7 @@ it("runScheduledFeaturesPlan skips enqueue when lock is held for every candidate
 it("runScheduledFeaturesPlan enqueues build-race-features when no build-state KV", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1112,7 +1112,7 @@ it("runScheduledFeaturesPlan enqueues build-race-features when no build-state KV
 it("runScheduledFeaturesPlan skips build-race-features when build-state fresh within 10 min", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1152,7 +1152,7 @@ it("runScheduledFeaturesPlan skips build-race-features when build-state fresh wi
 it("runScheduledFeaturesPlan re-enqueues build-race-features when build-state older than 10 min", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1192,7 +1192,7 @@ it("runScheduledFeaturesPlan re-enqueues build-race-features when build-state ol
 it("runScheduledFeaturesPlan re-enqueues build-race-features when prior rowCount was 0", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1230,7 +1230,7 @@ it("runScheduledFeaturesPlan re-enqueues build-race-features when prior rowCount
 it("runScheduledFeaturesPlan skips build-race-features when build enqueue-lock active", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1264,8 +1264,8 @@ it("runScheduledFeaturesPlan skips build-race-features when build enqueue-lock a
 it("runScheduledFeaturesPlan enqueues tomorrow builds tracked in tomorrowCount", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([]);
-  vi.mocked(listTomorrowRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0530",
@@ -1296,7 +1296,7 @@ it("runScheduledFeaturesPlan enqueues tomorrow builds tracked in tomorrowCount",
 it("runScheduledFeaturesPlan enqueues past14 builds tracked in past14Count", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(3);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1319,8 +1319,8 @@ it("runScheduledFeaturesPlan enqueues past14 builds tracked in past14Count", asy
 it("runScheduledFeaturesPlan skips tomorrow when freshness 6h is current", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([]);
-  vi.mocked(listTomorrowRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0530",
@@ -1360,7 +1360,7 @@ it("runScheduledFeaturesPlan skips tomorrow when freshness 6h is current", async
 it("runScheduledFeaturesPlan skips past14 builds when 7d freshness state present", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",
@@ -1401,7 +1401,7 @@ it("runScheduledFeaturesPlan skips past14 builds when 7d freshness state present
 it("runScheduledFeaturesPlan honors adaptive batchSize cap of 0", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(0);
-  vi.mocked(listTodayRaceKeysFromHyperdrive).mockResolvedValueOnce([
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
     {
       kaisaiNen: "2026",
       kaisaiTsukihi: "0529",

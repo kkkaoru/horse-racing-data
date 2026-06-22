@@ -7,6 +7,7 @@
 import type { Pool } from "pg";
 
 import { getFeaturesPool } from "./features/postgres-pool";
+import { getTodayRaceKeysFromKv, putTodayRaceKeysToKv } from "./gates/today-race-keys-kv-cache";
 import { computeTomorrowJst } from "./time";
 import type { Env, RaceJobKey } from "./types";
 
@@ -89,6 +90,73 @@ export const listTodayRaceKeysFromHyperdrive = async (
     kaisaiTsukihi,
   ]);
   return result.rows.filter(isCompleteRow).map(toTodayRaceKey);
+};
+
+const partitionByCachedSource = (
+  rows: TodayRaceKey[],
+): { jra: TodayRaceKey[]; nar: TodayRaceKey[] } => ({
+  jra: rows.filter((row) => row.source === "jra"),
+  nar: rows.filter((row) => row.source === "nar"),
+});
+
+interface ListTodayRaceKeysWithKvCacheArgs {
+  env: Env;
+  yyyymmdd: string;
+  context: ListTodayRaceKeysContext;
+}
+
+interface ListTomorrowRaceKeysWithKvCacheArgs {
+  env: Env;
+  now: Date;
+  context: ListTodayRaceKeysContext;
+}
+
+const fetchAndCacheTodayRaceKeys = async (
+  args: ListTodayRaceKeysWithKvCacheArgs,
+): Promise<TodayRaceKey[]> => {
+  const fresh = await listTodayRaceKeysFromHyperdrive(args.env, args.yyyymmdd, args.context);
+  const partitioned = partitionByCachedSource(fresh);
+  await Promise.all([
+    putTodayRaceKeysToKv(args.env, "jra", args.yyyymmdd, partitioned.jra),
+    putTodayRaceKeysToKv(args.env, "nar", args.yyyymmdd, partitioned.nar),
+  ]);
+  return fresh;
+};
+
+// KV-cached variant of listTodayRaceKeysFromHyperdrive. Reads the per-source
+// `race-keys:v1:{source}:{yyyymmdd}` entries first; only when at least one
+// is missing does it fall through to Hyperdrive. The single UNION query is
+// then partitioned and written back into KV so the next tick can short-circuit.
+// On Hyperdrive failure we log + return an empty list so the */10 cron tick
+// no-ops cleanly and the next tick retries; the put-side is gated on a
+// successful query so the cache is never poisoned with empty values.
+export const listTodayRaceKeysWithKvCache = async (
+  args: ListTodayRaceKeysWithKvCacheArgs,
+): Promise<TodayRaceKey[]> => {
+  const [jraCached, narCached] = await Promise.all([
+    getTodayRaceKeysFromKv(args.env, "jra", args.yyyymmdd),
+    getTodayRaceKeysFromKv(args.env, "nar", args.yyyymmdd),
+  ]);
+  if (jraCached && narCached) {
+    return [...jraCached, ...narCached];
+  }
+  try {
+    return await fetchAndCacheTodayRaceKeys(args);
+  } catch (error) {
+    console.error("[features] listTodayRaceKeysWithKvCache hyperdrive failure", error);
+    return [];
+  }
+};
+
+export const listTomorrowRaceKeysWithKvCache = async (
+  args: ListTomorrowRaceKeysWithKvCacheArgs,
+): Promise<TodayRaceKey[]> => {
+  const tomorrowJst = computeTomorrowJst(args.now);
+  return listTodayRaceKeysWithKvCache({
+    context: args.context,
+    env: args.env,
+    yyyymmdd: tomorrowJst,
+  });
 };
 
 export const toRaceJobKeyFromTodayRaceKey = (entry: TodayRaceKey): RaceJobKey => ({

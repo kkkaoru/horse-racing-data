@@ -5,7 +5,7 @@
 // (does NOT directly invoke handlers) so the queue's max_concurrency=4
 // throttles correctly and the result aligns with the existing cron path.
 
-import { listTodayRaceKeysFromHyperdrive } from "./scheduled-race-list";
+import { listTodayRaceKeysWithKvCache } from "./scheduled-race-list";
 import type { Env, Job, RaceJobKey } from "./types";
 
 export type PredictForDaySource = "jra" | "nar" | "all";
@@ -281,7 +281,11 @@ export const runPredictionsForDay = async (
   env: Env,
   params: RunPredictionsForDayParams,
 ): Promise<RunPredictionsForDayResult> => {
-  const todayRaceKeys = await listTodayRaceKeysFromHyperdrive(env, params.targetYmd);
+  const todayRaceKeys = await listTodayRaceKeysWithKvCache({
+    context: {},
+    env,
+    yyyymmdd: params.targetYmd,
+  });
   const filter = SOURCE_FILTERS[params.source];
   const sourceFiltered = todayRaceKeys.filter((entry) => filter(entry.source));
   const allRaceJobKeys: RaceJobKey[] = sourceFiltered.map(toRaceJobKey);

@@ -20,6 +20,11 @@
     "FEATURES_R2_LIST_CACHE_TTL_SECONDS": "600",
     "FEATURES_PARQUET_BYTES_CACHE_TTL_SECONDS": "300",
     "FEATURES_LATEST_KV_TTL_SECONDS": "600",
+    // 30-min TTL for the today/tomorrow race-key list KV cache. Matches the hot
+    // worker's expected-race-count TTL choice. After the JST ~08:30 local-PG ->
+    // Neon sync completes, race_key sets are immutable for the rest of the day,
+    // so a 30-min cache delay is safe for the features build path.
+    "FEATURES_TODAY_RACE_KEYS_KV_TTL_SECONDS": "1800",
   },
   // */10 * * * * — Phase F adaptive auto-seed. Each tick lists today + tomorrow
   // races from Hyperdrive, computes past-14 venue-day targets, then enqueues up

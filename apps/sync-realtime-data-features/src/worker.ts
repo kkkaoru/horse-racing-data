@@ -25,8 +25,8 @@ import { jsonResponse } from "./http";
 import { handleRunningStylePredictionJob } from "./running-style/inference";
 import { buildPast14Targets } from "./scheduled-past14-targets";
 import {
-  listTodayRaceKeysFromHyperdrive,
-  listTomorrowRaceKeysFromHyperdrive,
+  listTodayRaceKeysWithKvCache,
+  listTomorrowRaceKeysWithKvCache,
   toRaceJobKeyFromTodayRaceKey,
 } from "./scheduled-race-list";
 import {
@@ -604,8 +604,12 @@ export const runScheduledFeaturesPlan = async (
   }
   const todayJst = getTodayJst(now);
   const batchSize = await readNextBatchSize(env);
-  const todayRaceKeys = await listTodayRaceKeysFromHyperdrive(env, todayJst);
-  const tomorrowRaceKeys = await listTomorrowRaceKeysFromHyperdrive(env, now);
+  const todayRaceKeys = await listTodayRaceKeysWithKvCache({
+    context: {},
+    env,
+    yyyymmdd: todayJst,
+  });
+  const tomorrowRaceKeys = await listTomorrowRaceKeysWithKvCache({ context: {}, env, now });
   const todayJobs = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   const tomorrowJobs = tomorrowRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   const past14Jobs = buildPast14Targets({
