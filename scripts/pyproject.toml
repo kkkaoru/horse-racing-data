@@ -3,7 +3,7 @@ name = "horse-racing-data-scripts"
 version = "0.0.0"
 description = "Repo-root Python scripts (PC-KEIBA Database auto-update etc.)"
 requires-python = ">=3.12"
-dependencies = ["psutil>=7.0"]
+dependencies = ["duckdb>=1.1.0", "psutil>=7.0"]
 
 [dependency-groups]
 dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.7.0", "ty>=0.0.35"]
@@ -37,13 +37,13 @@ python = ".venv/bin/python"
 extra-paths = ["stubs"]
 
 [tool.pytest.ini_options]
-addopts = "--cov=pc_keiba_auto_update --cov-report=term-missing --cov-fail-under=95"
+addopts = "--cov=pc_keiba_auto_update --cov=racing_venue_weather --cov-report=term-missing --cov-fail-under=95"
 pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["pc_keiba_auto_update"]
+source = ["pc_keiba_auto_update", "racing_venue_weather"]
 
 [tool.coverage.report]
 exclude_lines = [

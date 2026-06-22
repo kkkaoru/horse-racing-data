@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent: daily weather fetch for all horse racing venues.
+
+  Runs at JST 06:00 every day via Open-Meteo (free, no API key required).
+  Stores daily weather (weather_code, temperature, precipitation, wind) in
+  ~/.horse-racing/venue_weather.duckdb keyed by (keibajo_code, weather_date).
+
+  Covers 25 venues: 10 JRA (01–10) + 15 NAR/Ban'ei (30,35,36,42–48,50,51,54,55,83).
+
+  Install:
+    cp com.kkk4oru.racing-venue-weather-daily.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.kkk4oru.racing-venue-weather-daily.plist
+
+  Backfill historical data (one-off):
+    cd scripts && uv run python racing_venue_weather.py \
+      --mode backfill --start 2020-01-01 --end 2025-12-31
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.racing-venue-weather-daily</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/racing-venue-weather-daily.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <!-- JST 06:00 daily — Open-Meteo forecast API has today's data by this time. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>6</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/racing-venue-weather/launchd-stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/racing-venue-weather/launchd-stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
