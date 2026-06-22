@@ -73,6 +73,17 @@ const MILLISECONDS_PER_SECOND = 1000;
 const STALE_HEALTH_STATUS = 503;
 const MISSING_HEALTH_STATUS = 503;
 const FRESH_HEALTH_STATUS = 200;
+// Piggyback cron recovery. Workers has no platform API to revive a dead
+// scheduled handler from inside the worker, so we use viewer odds traffic as
+// the wakeup signal. When `handleGetOdds` observes a heartbeat older than
+// `CRON_HEALTH_MAX_AGE_SECONDS` (or missing entirely), the first viewer that
+// claims `CRON_RECOVERY_LOCK_KV_KEY` (TTL 60s, best-effort — KV has no atomic
+// CAS so racing viewers are tolerated by the heartbeat-refresh-first design)
+// fires `runRecoveryWork` via `ctx.waitUntil`. The HTTP response is never
+// blocked.
+const CRON_RECOVERY_LOCK_KV_KEY = "cron:recovery:in-progress";
+const CRON_RECOVERY_LOCK_TTL_SECONDS = 60;
+const CRON_RECOVERY_LOCK_VALUE = "1";
 // Minimum distinct tansho snapshots required for the DO cache to be trusted
 // as a trend source. The viewer's オッズ推移 line chart becomes visually
 // meaningful around 5-10 timepoints. Below this floor the DO is treated as
@@ -691,6 +702,106 @@ const writeCronHeartbeat = async (env: Env, now: Date): Promise<void> => {
   }
 };
 
+// Stale-check used by the piggyback recovery path. Returns the heartbeat age in
+// seconds when stale (or `null` when the key is missing entirely), and
+// `undefined` when the heartbeat is fresh or unreadable. A KV read failure is
+// deliberately treated as "fresh" so the GET hot path can never throw —
+// `/api/internal/cron-health` is the primary signal for KV outages.
+const readPiggybackStaleness = async (env: Env, now: Date): Promise<number | null | undefined> => {
+  try {
+    const lastTickAt = await env.ODDS_HOT_KV.get(CRON_HEARTBEAT_KV_KEY);
+    if (lastTickAt === null) {
+      return null;
+    }
+    const ageSeconds = Math.floor(
+      (now.getTime() - new Date(lastTickAt).getTime()) / MILLISECONDS_PER_SECOND,
+    );
+    return ageSeconds > CRON_HEALTH_MAX_AGE_SECONDS ? ageSeconds : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// Stampede lock claim. KV has no atomic CAS so we read-then-put: two viewers
+// racing inside the same colo could both claim, which is acceptable because
+// `runRecoveryWork` refreshes the heartbeat first and `runScheduledPlan` is
+// idempotent. Any KV failure falls through as "not claimed" so the hot path
+// never throws.
+const tryClaimRecoveryLock = async (env: Env): Promise<boolean> => {
+  try {
+    const existing = await env.ODDS_HOT_KV.get(CRON_RECOVERY_LOCK_KV_KEY);
+    if (existing !== null) {
+      return false;
+    }
+    await env.ODDS_HOT_KV.put(CRON_RECOVERY_LOCK_KV_KEY, CRON_RECOVERY_LOCK_VALUE, {
+      expirationTtl: CRON_RECOVERY_LOCK_TTL_SECONDS,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const formatPiggybackStaleValue = (ageSeconds: number | null): string =>
+  ageSeconds === null ? "missing" : String(ageSeconds);
+
+const logPiggybackRecovery = async (env: Env, ageSeconds: number | null): Promise<void> => {
+  await logFetch(
+    env.REALTIME_HOT_DB,
+    "cron-piggyback-recovery",
+    "ok",
+    null,
+    formatPiggybackStaleValue(ageSeconds),
+  ).catch(() => undefined);
+};
+
+const logPiggybackRecoveryError = async (env: Env, error: unknown): Promise<void> => {
+  await logFetch(
+    env.REALTIME_HOT_DB,
+    "cron-piggyback-recovery-error",
+    "error",
+    null,
+    formatError(error),
+  ).catch(() => undefined);
+};
+
+// Runs inside `ctx.waitUntil`. Refreshes the heartbeat FIRST so any concurrent
+// stale-checker stops firing recovery, then drives the same `runScheduledPlan`
+// path the cron uses. Never rethrows — a recovery failure must never surface
+// as an unhandled rejection in the worker logs.
+export const runRecoveryWork = async (env: Env, now: Date): Promise<void> => {
+  try {
+    await writeCronHeartbeat(env, now);
+    await runScheduledPlan(env, now);
+  } catch (error) {
+    await logPiggybackRecoveryError(env, error);
+  }
+};
+
+interface MaybeFirePiggybackRecoveryArgs {
+  env: Env;
+  ctx: ExecutionContext;
+  now: Date;
+}
+
+// Non-blocking entry point invoked at the top of every GET odds request. The
+// HTTP response never waits on this work — it returns void immediately and the
+// recovery runs under `ctx.waitUntil` on the claimant request only.
+export const maybeFirePiggybackRecovery = async (
+  args: MaybeFirePiggybackRecoveryArgs,
+): Promise<void> => {
+  const staleness = await readPiggybackStaleness(args.env, args.now);
+  if (staleness === undefined) {
+    return;
+  }
+  const claimed = await tryClaimRecoveryLock(args.env);
+  if (!claimed) {
+    return;
+  }
+  await logPiggybackRecovery(args.env, staleness);
+  args.ctx.waitUntil(runRecoveryWork(args.env, args.now));
+};
+
 const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<void> => {
   // Record the heartbeat first so a cron-branch failure further down still
   // leaves a recent ISO timestamp in KV. `/api/internal/cron-health` reads
@@ -812,8 +923,22 @@ export const handleQueue = async (batch: MessageBatch<Job>, env: Env): Promise<v
   }
 };
 
+// Piggyback gate: only odds GET requests piggyback (the high-frequency viewer
+// path). Internal-token endpoints and the root health probe are intentionally
+// excluded so a single curl from an operator does not race with the cron.
+const isPiggybackEligibleRequest = (request: Request): boolean => {
+  if (request.method !== "GET") {
+    return false;
+  }
+  const url = new URL(request.url);
+  return parseRaceKeyFromPath(url.pathname) !== null;
+};
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (isPiggybackEligibleRequest(request)) {
+      ctx.waitUntil(maybeFirePiggybackRecovery({ ctx, env, now: new Date() }));
+    }
     return handleFetchRequest(env, request);
   },
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {

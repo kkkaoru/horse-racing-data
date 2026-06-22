@@ -41,10 +41,12 @@ import worker, {
   handleScheduled,
   handleUpsertOddsFetchState,
   isAuthorizedInternalRequest,
+  maybeFirePiggybackRecovery,
   parseRaceKeyFromPath,
   processArchiveJob,
   processFetchOddsJob,
   reportScheduledOuterThrow,
+  runRecoveryWork,
   runScheduledArchive,
   runScheduledClosingBackfill,
   runScheduledPlan,
@@ -1870,7 +1872,7 @@ it("handleQueue retries on error", async () => {
 });
 
 it("default worker fetch dispatches to handleFetchRequest", async () => {
-  const response = await worker.fetch(new Request("https://x/"), buildEnv());
+  const response = await worker.fetch(new Request("https://x/"), buildEnv(), buildCtx());
   expect(response.status).toBe(200);
 });
 
@@ -2297,4 +2299,366 @@ it("handleFetchRequest routes GET /api/internal/cron-health with valid token", a
     }),
   );
   expect(response.status).toBe(503);
+});
+
+it("maybeFirePiggybackRecovery does not claim the lock or log when the heartbeat is fresh", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:23:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) =>
+    key === "cron:heartbeat:scheduled" ? "2026-06-23T05:22:30.000Z" : null,
+  );
+  const ctx = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx, env, now: new Date() });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  expect(kvPut.mock.calls.some(([key]) => key === "cron:recovery:in-progress")).toBe(false);
+  const prepareCalls = vi.mocked(env.REALTIME_HOT_DB.prepare).mock.calls.map(([sql]) => sql);
+  expect(prepareCalls.some((sql) => sql.toLowerCase().includes("insert into fetch_logs"))).toBe(
+    false,
+  );
+  expect(vi.mocked(ctx.waitUntil)).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+it("maybeFirePiggybackRecovery treats a missing heartbeat as stale and fires recovery", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:23:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const ctx = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx, env, now: new Date() });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  expect(kvPut.mock.calls.some(([key]) => key === "cron:recovery:in-progress")).toBe(true);
+  expect(vi.mocked(ctx.waitUntil)).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
+});
+
+it("maybeFirePiggybackRecovery treats a 400s-old heartbeat as stale and fires recovery exactly once across three concurrent requests", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:30:00Z"));
+  const claimedFlag = { value: false };
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      return "2026-06-23T05:23:00.000Z";
+    }
+    if (key === "cron:recovery:in-progress") {
+      return claimedFlag.value ? "1" : null;
+    }
+    return null;
+  });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:recovery:in-progress") {
+      claimedFlag.value = true;
+    }
+    return undefined;
+  });
+  const logBind = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: vi.fn(async () => ({ meta: { changes: 1 } })) };
+  });
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: logBind };
+    }
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ first: vi.fn(async () => ({ count: 0 })) })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const envWithLog = buildEnv({
+    ODDS_HOT_KV: env.ODDS_HOT_KV,
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  const ctx1 = buildCtx();
+  const ctx2 = buildCtx();
+  const ctx3 = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx: ctx1, env: envWithLog, now: new Date() });
+  await maybeFirePiggybackRecovery({ ctx: ctx2, env: envWithLog, now: new Date() });
+  await maybeFirePiggybackRecovery({ ctx: ctx3, env: envWithLog, now: new Date() });
+  expect(vi.mocked(ctx1.waitUntil)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(ctx2.waitUntil)).not.toHaveBeenCalled();
+  expect(vi.mocked(ctx3.waitUntil)).not.toHaveBeenCalled();
+  const recoveryLogCalls = logBind.mock.calls.filter(
+    (args) => args[1] === "cron-piggyback-recovery",
+  );
+  expect(recoveryLogCalls.length).toBe(1);
+  expect(recoveryLogCalls[0]?.[2]).toBe("ok");
+  expect(recoveryLogCalls[0]?.[3]).toBe("420");
+  vi.useRealTimers();
+});
+
+it("maybeFirePiggybackRecovery logs the stale value as 'missing' when the heartbeat key is absent", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:30:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const logBind = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: vi.fn(async () => ({ meta: { changes: 1 } })) };
+  });
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: logBind };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const envWithLog = buildEnv({
+    ODDS_HOT_KV: env.ODDS_HOT_KV,
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await maybeFirePiggybackRecovery({ ctx: buildCtx(), env: envWithLog, now: new Date() });
+  const recoveryLogCalls = logBind.mock.calls.filter(
+    (args) => args[1] === "cron-piggyback-recovery",
+  );
+  expect(recoveryLogCalls[0]?.[3]).toBe("missing");
+  vi.useRealTimers();
+});
+
+it("maybeFirePiggybackRecovery treats a KV get failure as fresh and does not fire recovery", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockRejectedValue(new Error("kv read down"));
+  const ctx = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx, env, now: new Date() });
+  expect(vi.mocked(ctx.waitUntil)).not.toHaveBeenCalled();
+});
+
+it("maybeFirePiggybackRecovery treats a KV put failure on the lock as a non-claim and does not fire recovery", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:30:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) =>
+    key === "cron:heartbeat:scheduled" ? "2026-06-23T05:23:00.000Z" : null,
+  );
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:recovery:in-progress") {
+      throw new Error("kv put down");
+    }
+    return undefined;
+  });
+  const ctx = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx, env, now: new Date() });
+  expect(vi.mocked(ctx.waitUntil)).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+it("runRecoveryWork refreshes the heartbeat before running runScheduledPlan", async () => {
+  const env = buildEnv();
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  await runRecoveryWork(env, new Date("2026-06-23T05:30:00Z"));
+  const heartbeatCall = kvPut.mock.calls.find(([key]) => key === "cron:heartbeat:scheduled");
+  expect(heartbeatCall?.[0]).toBe("cron:heartbeat:scheduled");
+  expect(heartbeatCall?.[2]).toStrictEqual({ expirationTtl: 600 });
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("runRecoveryWork logs cron-piggyback-recovery-error when runScheduledPlan throws and never rethrows", async () => {
+  const logBind = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: vi.fn(async () => ({ meta: { changes: 1 } })) };
+  });
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: logBind };
+    }
+    return {
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => {
+          throw new Error("d1 down");
+        }),
+        first: vi.fn(async () => {
+          throw new Error("d1 down");
+        }),
+        run: vi.fn(async () => {
+          throw new Error("d1 down");
+        }),
+      })),
+    };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      throw new Error("heartbeat refresh down");
+    }
+    return undefined;
+  });
+  // Invalid Date (NaN) makes runScheduledPlan -> getTodayJst -> Intl format
+  // throw a RangeError, so the outer try/catch in runRecoveryWork catches it
+  // and routes through logPiggybackRecoveryError.
+  await runRecoveryWork(env, new Date(Number.NaN));
+  const errorBind = logBind.mock.calls.find((args) => args[1] === "cron-piggyback-recovery-error");
+  expect(errorBind?.[1]).toBe("cron-piggyback-recovery-error");
+  expect(errorBind?.[2]).toBe("error");
+});
+
+it("runRecoveryWork swallows logFetch failure when logPiggybackRecoveryError itself rejects", async () => {
+  const prepareMock = vi.fn((sql: string) => {
+    void sql;
+    return {
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => {
+          throw new Error("d1 down");
+        }),
+        first: vi.fn(async () => {
+          throw new Error("d1 down");
+        }),
+        run: vi.fn(async () => {
+          throw new Error("fetch_logs also down");
+        }),
+      })),
+    };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  await runRecoveryWork(env, new Date(Number.NaN));
+  expect(prepareMock).toHaveBeenCalled();
+});
+
+it("maybeFirePiggybackRecovery swallows logFetch failure when logPiggybackRecovery itself rejects (the catch arm on the success log)", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:30:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const prepareMock = vi.fn((sql: string) => {
+    void sql;
+    return {
+      bind: vi.fn(() => ({
+        run: vi.fn(async () => {
+          throw new Error("fetch_logs down");
+        }),
+      })),
+    };
+  });
+  const envWithLog = buildEnv({
+    ODDS_HOT_KV: env.ODDS_HOT_KV,
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  const ctx = buildCtx();
+  await maybeFirePiggybackRecovery({ ctx, env: envWithLog, now: new Date() });
+  expect(vi.mocked(ctx.waitUntil)).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
+});
+
+it("default worker fetch fires piggyback recovery (via ctx.waitUntil) for GET odds requests when heartbeat is missing", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      return null;
+    }
+    return null;
+  });
+  const waitUntil = vi.fn();
+  const ctx = {
+    passThroughOnException: vi.fn(),
+    waitUntil,
+  } as unknown as ExecutionContext;
+  const response = await worker.fetch(
+    new Request("https://x/api/odds/nar:20260528:42:01?fresh=1"),
+    env,
+    ctx,
+  );
+  expect(response.status).toBe(200);
+  // Two waitUntil calls: outer guards the staleness/lock-claim probes (so the
+  // HTTP response never blocks on KV ops), inner guards `runRecoveryWork`
+  // (so the recovery survives past the request lifetime).
+  expect(waitUntil).toHaveBeenCalledTimes(2);
+});
+
+it("default worker fetch does not fire piggyback recovery for the root health probe", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const waitUntil = vi.fn();
+  const ctx = {
+    passThroughOnException: vi.fn(),
+    waitUntil,
+  } as unknown as ExecutionContext;
+  const response = await worker.fetch(new Request("https://x/"), env, ctx);
+  expect(response.status).toBe(200);
+  expect(waitUntil).not.toHaveBeenCalled();
+});
+
+it("default worker fetch does not fire piggyback recovery for internal POST endpoints", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const waitUntil = vi.fn();
+  const ctx = {
+    passThroughOnException: vi.fn(),
+    waitUntil,
+  } as unknown as ExecutionContext;
+  const response = await worker.fetch(
+    new Request("https://x/api/internal/r2-archive-rows", { method: "POST" }),
+    env,
+    ctx,
+  );
+  expect(response.status).toBe(401);
+  expect(waitUntil).not.toHaveBeenCalled();
+});
+
+it("default worker fetch does not block the HTTP response on the piggyback work", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  const pendingResolverRef: { resolver: ((value: string | null) => void) | null } = {
+    resolver: null,
+  };
+  kvGet.mockImplementation(
+    (key: string) =>
+      new Promise<string | null>((resolve) => {
+        if (key === "cron:heartbeat:scheduled") {
+          pendingResolverRef.resolver = resolve;
+          return;
+        }
+        resolve(null);
+      }),
+  );
+  const waitUntil = vi.fn();
+  const ctx = {
+    passThroughOnException: vi.fn(),
+    waitUntil,
+  } as unknown as ExecutionContext;
+  const response = await worker.fetch(
+    new Request("https://x/api/odds/nar:20260528:42:01?fresh=1"),
+    env,
+    ctx,
+  );
+  expect(response.status).toBe(200);
+  expect(waitUntil).toHaveBeenCalledTimes(1);
+  expect(pendingResolverRef.resolver).not.toBeNull();
+  pendingResolverRef.resolver?.(null);
 });
