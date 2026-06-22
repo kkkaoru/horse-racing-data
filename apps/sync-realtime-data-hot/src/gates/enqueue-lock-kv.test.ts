@@ -325,11 +325,55 @@ it("calculateEnqueueLockTtlSecondsFromInput returns 300 catch-up TTL when lastOd
   ).toBe(300);
 });
 
-it("calculateEnqueueLockTtlSecondsFromInput returns 0 once past 60-minute catch-up window expires", () => {
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 once past 360-minute catch-up window expires", () => {
   expect(
     calculateEnqueueLockTtlSecondsFromInput({
       allowCatchUp: true,
       lastOddsFetchAt: null,
+      now: new Date("2026-05-28T16:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 300 catch-up TTL 90 minutes past race when lastOddsFetchAt is null (06-22 regression for 36:02)", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T11:30:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(300);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 300 catch-up TTL 300 minutes past race when lastOddsFetchAt is null (boundary inside 360-min window)", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T15:00:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(300);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 at 400 minutes past race (outside 360-min cap)", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: null,
+      now: new Date("2026-05-28T16:40:00+09:00"),
+      raceStart: new Date("2026-05-28T10:00:00+09:00"),
+    }),
+  ).toBe(0);
+});
+
+it("calculateEnqueueLockTtlSecondsFromInput returns 0 at 90 minutes past race when lastOddsFetchAt is already set (catch-up consumed)", () => {
+  expect(
+    calculateEnqueueLockTtlSecondsFromInput({
+      allowCatchUp: true,
+      lastOddsFetchAt: "2026-05-28T10:02:00+09:00",
       now: new Date("2026-05-28T11:30:00+09:00"),
       raceStart: new Date("2026-05-28T10:00:00+09:00"),
     }),
