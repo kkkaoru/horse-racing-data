@@ -214,7 +214,7 @@ def test_cb_top1_hit_returns_one_when_predicted_rank1_finished_first():
         "predicted_rank": [1, 2, 3],
         "finish_position": [1.0, 2.0, 3.0],
     })
-    assert subject._cb_top1_hit(g) == 1
+    assert subject.cb_top1_hit(g) == 1
 
 
 def test_cb_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
@@ -222,7 +222,7 @@ def test_cb_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
         "predicted_rank": [1, 2, 3],
         "finish_position": [2.0, 1.0, 3.0],
     })
-    assert subject._cb_top1_hit(g) == 0
+    assert subject.cb_top1_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ def test_cb_top3_box_hit_returns_one_when_all_three_finish_in_top3():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 3.0, 2.0, 4.0],
     })
-    assert subject._cb_top3_box_hit(g) == 1
+    assert subject.cb_top3_box_hit(g) == 1
 
 
 def test_cb_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
@@ -242,7 +242,7 @@ def test_cb_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3()
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
-    assert subject._cb_top3_box_hit(g) == 0
+    assert subject.cb_top3_box_hit(g) == 0
 
 
 def test_cb_top3_box_hit_returns_zero_when_nan_finish_position_in_top3_predicted():
@@ -252,7 +252,7 @@ def test_cb_top3_box_hit_returns_zero_when_nan_finish_position_in_top3_predicted
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, float("nan"), 3.0, 2.0],
     })
-    assert subject._cb_top3_box_hit(g) == 0
+    assert subject.cb_top3_box_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +522,7 @@ def test_prepare_feature_matrix_converts_numeric_to_float32():
     })
     feature_cols = ["feature_a", "keibajo_code"]
     cat_indices = [1]
-    out = subject._prepare_feature_matrix(df, feature_cols, cat_indices)
+    out = subject.prepare_feature_matrix(df, feature_cols, cat_indices)
     assert out["feature_a"].dtype == np.float32
 
 
@@ -533,13 +533,13 @@ def test_prepare_feature_matrix_fills_cat_nan_with_missing_sentinel():
     })
     feature_cols = ["feature_a", "keibajo_code"]
     cat_indices = [1]
-    out = subject._prepare_feature_matrix(df, feature_cols, cat_indices)
+    out = subject.prepare_feature_matrix(df, feature_cols, cat_indices)
     assert out["keibajo_code"].tolist() == ["01", "__missing__"]
 
 
 def test_prepare_feature_matrix_no_cat_indices_only_float():
     df = pd.DataFrame({"feature_a": [1.0, 2.0], "feature_b": [3.0, 4.0]})
-    out = subject._prepare_feature_matrix(df, ["feature_a", "feature_b"], [])
+    out = subject.prepare_feature_matrix(df, ["feature_a", "feature_b"], [])
     assert out["feature_a"].dtype == np.float32
     assert out["feature_b"].dtype == np.float32
 

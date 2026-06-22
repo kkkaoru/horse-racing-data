@@ -1011,10 +1011,38 @@ def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
     assert "ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC" in sql_call
 
 
+def test_query_fp_metrics_populates_subgroups() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    # race 01: sprint (1200), small (8), venue 05, pred1 wins
+    # race 02: long (2400), large (16), venue 05, pred1 finishes 4th (miss)
+    rows = [
+        ("05", "01", 1, 1, "iter14", gen_at, 1200, 8),
+        ("05", "02", 1, 4, "iter14", gen_at, 2400, 16),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    distance = [sg for sg in result.subgroups if sg.dimension == "distance_band"]
+    assert len(distance) == 2
+    assert distance[0].band == "long"
+    assert distance[0].top1_hits == 0
+    assert distance[1].band == "sprint"
+    assert distance[1].top1_hits == 1
+    season = [sg for sg in result.subgroups if sg.dimension == "season_band"]
+    assert len(season) == 1
+    assert season[0].band == "summer"
+    assert season[0].races == 2
+    venue = [sg for sg in result.subgroups if sg.dimension == "venue"]
+    assert len(venue) == 1
+    assert venue[0].band == "05"
+    assert venue[0].races == 2
+    assert venue[0].top1_hits == 1
+
+
 def test_query_fp_metrics_jst_display_converts_utc_to_jst() -> None:
     # UTC 00:30 = JST 09:30; the displayed string must show 09:30 JST
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    rows = [("05", "01", 1, 1, "iter14", gen_at)]
+    rows = [("05", "01", 1, 1, "iter14", gen_at, 1600, 16)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
     assert result is not None

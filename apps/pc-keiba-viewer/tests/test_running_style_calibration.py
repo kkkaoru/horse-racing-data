@@ -152,7 +152,7 @@ def test_validate_calibrators_payload_raises_when_class_is_missing() -> None:
         },
     }
     with pytest.raises(ValueError, match="oikomi"):
-        subject._validate_calibrators_payload(raw, calibrators_path)
+        subject.validate_calibrators_payload(raw, calibrators_path)
 
 
 def test_load_calibrators_nar_category(tmp_path: Path) -> None:

@@ -33,7 +33,7 @@ import json
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
-from typing import Final, Protocol, cast
+from typing import Final, NotRequired, Protocol, TypedDict, cast
 
 import psycopg
 
@@ -514,6 +514,19 @@ def query_finish_position_metrics(
 
     race_rows = list(races_dict.values())
     top1, place2, place3, fukusho_2p, top3_box = aggregate_fp_metrics(race_rows)
+
+    # Build pure per-race partitions for subgroup breakdown
+    race_partitions: list[tuple[str, str, str, str, list[tuple[int, int]]]] = []
+    for key, pairs in races_dict.items():
+        venue, kyori, tosu = race_dims[key]
+        race_partitions.append((
+            classify_distance_band(kyori),
+            classify_field_size_band(tosu),
+            classify_season_band(kaisai_tsukihi),
+            venue,
+            pairs,
+        ))
+    subgroups = compute_subgroup_accuracies(race_partitions)
 
     # Determine era from latest gen_at (most recent prediction determines data availability)
     latest_gen = max(gen_ats) if gen_ats else None

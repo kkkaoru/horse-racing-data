@@ -196,7 +196,7 @@ def test_top1_hit_returns_one_when_predicted_rank1_finished_first():
         "predicted_rank": [1, 2, 3],
         "finish_position": [1.0, 2.0, 3.0],
     })
-    assert subject._top1_hit(g) == 1
+    assert subject.top1_hit(g) == 1
 
 
 def test_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
@@ -204,7 +204,7 @@ def test_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
         "predicted_rank": [1, 2, 3],
         "finish_position": [2.0, 1.0, 3.0],
     })
-    assert subject._top1_hit(g) == 0
+    assert subject.top1_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +216,7 @@ def test_top3_box_hit_returns_one_when_all_three_finish_in_top3():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 3.0, 2.0, 4.0],
     })
-    assert subject._top3_box_hit(g) == 1
+    assert subject.top3_box_hit(g) == 1
 
 
 def test_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
@@ -224,7 +224,7 @@ def test_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
-    assert subject._top3_box_hit(g) == 0
+    assert subject.top3_box_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +236,7 @@ def test_top3_exact_hit_returns_one_when_all_ranks_match():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 3.0, 4.0],
     })
-    assert subject._top3_exact_hit(g) == 1
+    assert subject.top3_exact_hit(g) == 1
 
 
 def test_top3_exact_hit_returns_zero_when_only_two_match():
@@ -244,7 +244,7 @@ def test_top3_exact_hit_returns_zero_when_only_two_match():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
-    assert subject._top3_exact_hit(g) == 0
+    assert subject.top3_exact_hit(g) == 0
 
 
 def test_top3_exact_hit_returns_zero_when_first_place_wrong():
@@ -252,7 +252,7 @@ def test_top3_exact_hit_returns_zero_when_first_place_wrong():
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [2.0, 1.0, 3.0, 4.0],
     })
-    assert subject._top3_exact_hit(g) == 0
+    assert subject.top3_exact_hit(g) == 0
 
 
 # ---------------------------------------------------------------------------
