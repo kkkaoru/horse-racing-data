@@ -28,6 +28,7 @@ import worker, {
   buildOddsPayloadFromD1,
   collectPlanDates,
   groupRowsForFinalBackup,
+  handleCronHealth,
   handleFetchRequest,
   handleGetMigrationState,
   handleGetOdds,
@@ -1795,4 +1796,247 @@ it("scheduled-outer-runs-without-error-when-handler-ok", async () => {
   );
   expect(insertLogCalls.length).toBe(0);
   expect(consoleSpy).not.toHaveBeenCalled();
+});
+
+it("handleScheduled writes the cron heartbeat KV key as the first action of every tick", async () => {
+  const env = buildEnv();
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  const heartbeatCall = kvPut.mock.calls.find(([key]) => key === "cron:heartbeat:scheduled");
+  expect(heartbeatCall?.[0]).toBe("cron:heartbeat:scheduled");
+  expect(heartbeatCall?.[2]).toStrictEqual({ expirationTtl: 600 });
+  expect(typeof heartbeatCall?.[1]).toBe("string");
+  expect(Number.isNaN(new Date(heartbeatCall?.[1] as string).getTime())).toBe(false);
+});
+
+it("handleScheduled writes the cron heartbeat even when the cron is unknown so silent-dead is still detectable", async () => {
+  const env = buildEnv();
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  await handleScheduled(
+    {
+      cron: "*/15 * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  const heartbeatCall = kvPut.mock.calls.find(([key]) => key === "cron:heartbeat:scheduled");
+  expect(heartbeatCall?.[0]).toBe("cron:heartbeat:scheduled");
+});
+
+it("handleScheduled still dispatches the underlying cron branch even when the heartbeat KV.put rejects", async () => {
+  const env = buildEnv();
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      throw new Error("kv namespace mis-bound");
+    }
+    return undefined;
+  });
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("handleScheduled writes a cron-heartbeat-kv-error fetch_logs row when the heartbeat KV.put rejects", async () => {
+  const logBind = vi.fn((...args: unknown[]) => {
+    void args;
+    return { run: vi.fn(async () => ({ meta: { changes: 1 } })) };
+  });
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return { bind: logBind };
+    }
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ first: vi.fn(async () => ({ count: 0 })) })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      throw new Error("kv outage");
+    }
+    return undefined;
+  });
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  const heartbeatErrorBind = logBind.mock.calls.find(
+    (args) => args[1] === "cron-heartbeat-kv-error",
+  );
+  expect(heartbeatErrorBind?.[1]).toBe("cron-heartbeat-kv-error");
+  expect(heartbeatErrorBind?.[2]).toBe("error");
+  expect(heartbeatErrorBind?.[0]).toBeNull();
+});
+
+it("handleScheduled swallows logFetch failure when the heartbeat KV.put rejects so the cron path never throws", async () => {
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("insert into fetch_logs")) {
+      return {
+        bind: vi.fn(() => ({
+          run: vi.fn(async () => {
+            throw new Error("fetch_logs also down");
+          }),
+        })),
+      };
+    }
+    if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ first: vi.fn(async () => ({ count: 0 })) })) };
+    }
+    if (lowered.includes("from odds_fetch_state")) {
+      return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  kvPut.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") {
+      throw new Error("kv down");
+    }
+    return undefined;
+  });
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(prepareMock).toHaveBeenCalled();
+});
+
+it("handleCronHealth returns 401 when the request lacks the internal token", async () => {
+  const response = await handleCronHealth(
+    buildEnv(),
+    new Request("https://x/api/internal/cron-health"),
+  );
+  expect(response.status).toBe(401);
+  expect(await response.json()).toStrictEqual({ error: "unauthorized" });
+});
+
+it("handleCronHealth returns 503 with null fields when the heartbeat KV key is missing", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const response = await handleCronHealth(
+    env,
+    new Request("https://x/api/internal/cron-health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toStrictEqual({
+    ageSeconds: null,
+    lastTickAt: null,
+    ok: false,
+  });
+});
+
+it("handleCronHealth returns 200 with ok=true when the heartbeat is fresh", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T05:23:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) =>
+    key === "cron:heartbeat:scheduled" ? "2026-06-23T05:22:18.000Z" : null,
+  );
+  const response = await handleCronHealth(
+    env,
+    new Request("https://x/api/internal/cron-health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    ageSeconds: 42,
+    lastTickAt: "2026-06-23T05:22:18.000Z",
+    ok: true,
+  });
+  vi.useRealTimers();
+});
+
+it("handleCronHealth returns 503 with ok=false when the heartbeat is older than 300s", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T06:00:00Z"));
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) =>
+    key === "cron:heartbeat:scheduled" ? "2026-06-23T05:23:00.000Z" : null,
+  );
+  const response = await handleCronHealth(
+    env,
+    new Request("https://x/api/internal/cron-health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(503);
+  expect(await response.json()).toStrictEqual({
+    ageSeconds: 2220,
+    lastTickAt: "2026-06-23T05:23:00.000Z",
+    ok: false,
+  });
+  vi.useRealTimers();
+});
+
+it("handleFetchRequest routes GET /api/internal/cron-health and applies the token gate", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/cron-health"),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleFetchRequest routes GET /api/internal/cron-health with valid token", async () => {
+  const env = buildEnv();
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockResolvedValue(null);
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/cron-health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(503);
 });

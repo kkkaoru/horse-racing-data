@@ -56,6 +56,20 @@ const CLOSING_BACKFILL_CRON = "30 13 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 const PLAN_DAYS_AHEAD = 2;
+// Silent-death detector for the per-minute scheduled cron. `dispatchScheduledByCron`
+// writes this key at the very top of every tick so a missing value == cron is dead.
+// TTL 600s is wide enough that a few skipped ticks do not trigger false alerts but
+// narrow enough that 6h of silence has no value present at all.
+const CRON_HEARTBEAT_KV_KEY = "cron:heartbeat:scheduled";
+const CRON_HEARTBEAT_TTL_SECONDS = 600;
+// `handleCronHealth` returns 503 once the latest heartbeat exceeds this age. 300s
+// (5 scheduled ticks for the `* * * * *` cron) is conservative — by then any
+// reasonable polling-window cadence should have refreshed the key.
+const CRON_HEALTH_MAX_AGE_SECONDS = 300;
+const MILLISECONDS_PER_SECOND = 1000;
+const STALE_HEALTH_STATUS = 503;
+const MISSING_HEALTH_STATUS = 503;
+const FRESH_HEALTH_STATUS = 200;
 // Minimum distinct tansho snapshots required for the DO cache to be trusted
 // as a trend source. The viewer's オッズ推移 line chart becomes visually
 // meaningful around 5-10 timepoints. Below this floor the DO is treated as
@@ -69,6 +83,12 @@ interface OddsPayload {
   history: ReturnType<typeof toHorseTrends>;
   historyByType: ReturnType<typeof toOddsTrendsByType>;
   latest: Partial<Record<OddsType, OddsData[]>>;
+}
+
+interface CronHealthBody {
+  ok: boolean;
+  lastTickAt: string | null;
+  ageSeconds: number | null;
 }
 
 export const parseRaceKeyFromPath = (pathname: string): string | null => {
@@ -306,6 +326,44 @@ export const handleGetMigrationState = async (env: Env, request: Request): Promi
   return jsonResponse({ key, value });
 };
 
+const buildStaleHealthBody = (lastTickAt: string, ageSeconds: number): CronHealthBody => ({
+  ageSeconds,
+  lastTickAt,
+  ok: false,
+});
+
+const buildMissingHealthBody = (): CronHealthBody => ({
+  ageSeconds: null,
+  lastTickAt: null,
+  ok: false,
+});
+
+const buildFreshHealthBody = (lastTickAt: string, ageSeconds: number): CronHealthBody => ({
+  ageSeconds,
+  lastTickAt,
+  ok: true,
+});
+
+export const handleCronHealth = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const lastTickAt = await env.ODDS_HOT_KV.get(CRON_HEARTBEAT_KV_KEY);
+  if (!lastTickAt) {
+    return jsonResponse(buildMissingHealthBody(), { status: MISSING_HEALTH_STATUS });
+  }
+  const ageMs = Date.now() - new Date(lastTickAt).getTime();
+  const ageSeconds = Math.floor(ageMs / MILLISECONDS_PER_SECOND);
+  if (ageSeconds > CRON_HEALTH_MAX_AGE_SECONDS) {
+    return jsonResponse(buildStaleHealthBody(lastTickAt, ageSeconds), {
+      status: STALE_HEALTH_STATUS,
+    });
+  }
+  return jsonResponse(buildFreshHealthBody(lastTickAt, ageSeconds), {
+    status: FRESH_HEALTH_STATUS,
+  });
+};
+
 export const handleFetchRequest = async (env: Env, request: Request): Promise<Response> => {
   const url = new URL(request.url);
   if (url.pathname === "/") {
@@ -325,6 +383,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "GET" && url.pathname === "/api/internal/migration-state") {
     return handleGetMigrationState(env, request);
+  }
+  if (request.method === "GET" && url.pathname === "/api/internal/cron-health") {
+    return handleCronHealth(env, request);
   }
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-today") {
     return handleRunPopulateToday(env, request);
@@ -483,7 +544,32 @@ interface DispatchScheduledArgs {
   ctx: ExecutionContext;
 }
 
+// Heartbeat write. Must be the first thing in `dispatchScheduledByCron` so a
+// cron-branch failure still leaves a recent timestamp behind. If the KV write
+// itself rejects (namespace mis-bound, KV outage), we record one fetch_logs
+// row tagged `cron-heartbeat-kv-error` and continue — the heartbeat path must
+// never become the thing that kills the cron.
+const writeCronHeartbeat = async (env: Env, now: Date): Promise<void> => {
+  try {
+    await env.ODDS_HOT_KV.put(CRON_HEARTBEAT_KV_KEY, now.toISOString(), {
+      expirationTtl: CRON_HEARTBEAT_TTL_SECONDS,
+    });
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_HOT_DB,
+      "cron-heartbeat-kv-error",
+      "error",
+      null,
+      formatError(error),
+    ).catch(() => undefined);
+  }
+};
+
 const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<void> => {
+  // Record the heartbeat first so a cron-branch failure further down still
+  // leaves a recent ISO timestamp in KV. `/api/internal/cron-health` reads
+  // this key; missing == 503.
+  await writeCronHeartbeat(args.env, args.now);
   // `ctx` is threaded through so any future `ctx.waitUntil(...)` hook in the
   // per-cron branches can extend the cron's lifetime beyond the immediate
   // body. Today the existing branches are fully awaited so no waitUntil call
