@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the daily NAR closing-odds backfill safety net.
+
+  WHY THIS EXISTS:
+    On 2026-06-22 the hot worker's per-minute odds polling cron entered a
+    silent-death state at 14:23 JST and stopped firing for 6+ hours. For
+    every NAR race that started between 14:35 and 21:00 the latest captured
+    odds were from 14:22, missing the final 10-15 min betting window where
+    odds shift the most. Viewer popularity ranks then no longer matched the
+    site's closing popularity.
+
+    This plist fires `odds-closing-backfill-daily.sh` once per day at JST
+    22:30 (well after the last NAR race finishes) which (1) re-fetches the
+    post-race closing odds from keiba.go into the legacy D1 via the
+    existing `backfill-nar-realtime-date.ts`, then (2) transfers those rows
+    into the hot D1 via the new `transfer-odds-old-to-hot.ts` and purges
+    the per-race odds:latest KV mirror so the next viewer fetch reads
+    fresh from D1.
+
+    This does NOT replace the per-minute polling cron — it only kicks in
+    after-the-fact if the closing window was missed.
+
+  SCHEDULE:
+    StartCalendarInterval Hour=22 Minute=30 — fires once per day at JST
+    22:30, by which time every NAR venue has finished its day.
+
+  CATCH-UP BEHAVIOUR:
+    StartCalendarInterval fires on next wake if the scheduled time was
+    missed while the Mac was asleep (launchd's "catch up on missed runs"
+    behaviour). The two underlying scripts are idempotent on the same date
+    — phase 1 uses DELETE+INSERT per race, phase 2 uses INSERT OR IGNORE —
+    so a delayed catch-up fire is safe.
+
+  STDOUT/STDERR PATHS:
+    launchd does NOT expand "~", so the paths below are literal absolute
+    paths under /tmp/. The wrapper script also tees a rolling log to
+    /tmp/odds-closing-backfill.log.
+
+  NOT RunAtLoad:
+    This is a scheduled-only job. Loading the plist on every boot should
+    NOT re-trigger the backfill, so RunAtLoad is set to false.
+
+  SECRETS:
+    No secrets live in this plist. The two underlying scripts use
+    `wrangler` from the user's local shell — wrangler must already be
+    authenticated (`wrangler login`) or have a long-lived
+    `CLOUDFLARE_API_TOKEN` exported via the user's launchd EnvironmentVariables
+    elsewhere. See README.md for the operator note.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.odds-closing-backfill</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/odds-closing-backfill-daily.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>22</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/odds-closing-backfill.stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/odds-closing-backfill.stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- PATH so the wrapper finds bun / bunx / wrangler / date without
+         relying on the user's interactive shell init. /opt/homebrew/bin is
+         Apple-Silicon Homebrew. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
