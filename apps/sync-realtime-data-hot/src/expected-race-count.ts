@@ -21,7 +21,15 @@ import type { Env } from "./types";
 
 const KV_KEY_PREFIX = "expected-race-count:";
 const KV_LAST_KNOWN_GOOD_KEY = "expected-race-count:last-known-good";
-const KV_TTL_SECONDS = 300;
+// 30-min per-day cache TTL. The expected-race-count for a given JST date is
+// essentially immutable once the morning NAR sync completes (~08:30 JST), so
+// the previous 5-min value was burning ~10 extra Hyperdrive trips per hour
+// during the 11-hour NAR polling window for no real freshness benefit. A
+// 30-min lag is comfortably absorbed by the planner's deployed
+// `CATCH_UP_WINDOW_MINUTES_AFTER = 360` window — populate self-heal still
+// catches mid-day race additions, just at most ~30 min after they appear in
+// jvd_ra/nvd_ra instead of ~5 min.
+const KV_TTL_SECONDS = 1800;
 // 7-day last-known-good TTL: long enough that a multi-day Hyperdrive
 // outage during the morning planner still has a fallback total to seed
 // the planner with, short enough that a stale schema change cannot poison

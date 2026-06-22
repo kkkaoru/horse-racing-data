@@ -61,7 +61,7 @@ it("getExpectedRaceCountForDate queries Hyperdrive on KV miss and sums jra plus 
   expect(total).toBe(50);
   expect(query).toHaveBeenCalledWith(expect.any(String), ["2026", "0531"]);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "50", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -76,7 +76,7 @@ it("getExpectedRaceCountForDate handles string count values from pg by parsing t
   });
   expect(total).toBe(50);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "50", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -91,7 +91,7 @@ it("getExpectedRaceCountForDate returns zero when Hyperdrive yields zero counts 
   });
   expect(total).toBe(0);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -106,7 +106,7 @@ it("getExpectedRaceCountForDate returns zero when Hyperdrive yields an empty row
   });
   expect(total).toBe(0);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -133,7 +133,7 @@ it("getExpectedRaceCountForDate treats unparseable cached KV value as a miss and
   });
   expect(total).toBe(12);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "12", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -197,7 +197,7 @@ it("getExpectedRaceCountForDate caches total zero at race-day window upper edge 
   });
   expect(total).toBe(0);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -216,7 +216,7 @@ it("getExpectedRaceCountForDate caches total zero when REPLICA_SYNC_HOT_TRUST_ZE
   });
   expect(total).toBe(0);
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
 });
 
@@ -292,7 +292,7 @@ it("getExpectedRaceCountForDate skips last-known-good write when query returns z
   expect(total).toBe(0);
   // KV put for per-day cache happens, but LKG put does not.
   expect(kvPut).toHaveBeenCalledWith("expected-race-count:20260531", "0", {
-    expirationTtl: 300,
+    expirationTtl: 1800,
   });
   expect(kvPut).not.toHaveBeenCalledWith(
     "expected-race-count:last-known-good",
