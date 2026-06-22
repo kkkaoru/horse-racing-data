@@ -22,11 +22,14 @@ import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv
 import { jsonResponse } from "./http";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
+import {
+  getCachedOddsFetchStateCount,
+  invalidateOddsFetchStateCount,
+} from "./odds-fetch-state-count-cache";
 import { planOddsFetches } from "./plan";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
   bulkInsertOddsSnapshotRows,
-  countOddsFetchStateForDate,
   getLatestOddsFromD1,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
@@ -433,11 +436,7 @@ const safeCountOddsFetchStateForDate = async (
   todayYyyymmdd: string,
 ): Promise<number | null> => {
   try {
-    return await countOddsFetchStateForDate(
-      env.REALTIME_HOT_DB,
-      todayYyyymmdd.slice(0, 4),
-      todayYyyymmdd.slice(4, 8),
-    );
+    return await getCachedOddsFetchStateCount(env, todayYyyymmdd);
   } catch (error) {
     await logScheduledError(env, "scheduled-plan-count-state-error", error);
     return null;
@@ -457,9 +456,16 @@ const safeGetExpectedRaceCount = async (
   }
 };
 
-const safePopulateTodayOddsFetchState = async (env: Env, now: Date): Promise<void> => {
+const safePopulateTodayOddsFetchState = async (
+  env: Env,
+  now: Date,
+  todayYyyymmdd: string,
+): Promise<void> => {
   try {
     await populateTodayOddsFetchState(env, now);
+    // Drop the stale count cache so the next planner tick re-reads D1 and
+    // observes the fresh row total instead of looping on the pre-populate value.
+    await invalidateOddsFetchStateCount(env, todayYyyymmdd);
   } catch (error) {
     await logScheduledError(env, "scheduled-plan-populate-error", error);
   }
@@ -504,7 +510,7 @@ const runPopulateGate = async (env: Env, now: Date, todayYyyymmdd: string): Prom
     return;
   }
   if (stateCount < expectedCount) {
-    await safePopulateTodayOddsFetchState(env, now);
+    await safePopulateTodayOddsFetchState(env, now, todayYyyymmdd);
     return;
   }
   // stateCount == expectedCount path. Only write the stable flag when both
