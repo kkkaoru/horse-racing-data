@@ -45,6 +45,7 @@ import worker, {
   processFetchOddsJob,
   reportScheduledOuterThrow,
   runScheduledArchive,
+  runScheduledClosingBackfill,
   runScheduledPlan,
   runScheduledPopulateMultiDay,
 } from "./worker";
@@ -76,6 +77,8 @@ afterEach(() => {
   vi.mocked(getExpectedRaceCountForDate).mockResolvedValue(0);
   vi.mocked(readCachedOdds).mockReset();
   vi.mocked(readCachedOdds).mockResolvedValue(null);
+  vi.mocked(fetchAndStoreOdds).mockReset();
+  vi.mocked(fetchAndStoreOdds).mockResolvedValue(null);
 });
 
 const POLLING_WINDOW_KV_KEY = "odds-polling-window:active";
@@ -112,6 +115,7 @@ interface BuildDbOptions {
   logRun?: ReturnType<typeof vi.fn>;
   archiveCandidates?: { results: unknown[] };
   stateCount?: number;
+  closingBackfillCandidates?: { results: unknown[] };
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -136,6 +140,13 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
       const first = vi.fn(async () => ({ count: options.stateCount ?? 0 }));
       return { bind: vi.fn(() => ({ first })) };
+    }
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      const all = vi.fn(async () => options.closingBackfillCandidates ?? { results: [] });
+      return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("from odds_fetch_state")) {
       const all = vi.fn(async () => ({ results: [] }));
@@ -1386,6 +1397,171 @@ it("processArchiveJob delegates to runScheduledArchive", async () => {
   const env = buildEnv();
   await processArchiveJob(env, new Date("2026-05-28T13:00:00Z"));
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+});
+
+it("handleScheduled dispatches closing-backfill cron (JST 22:30) to runScheduledClosingBackfill", async () => {
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      closingBackfillCandidates: {
+        results: [{ race_key: "nar:20260622:42:01" }],
+      },
+    }),
+  });
+  await handleScheduled(
+    {
+      cron: "30 13 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-22T13:30:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(fetchAndStoreOdds)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(populateMultiDayOddsFetchState)).not.toHaveBeenCalled();
+});
+
+it("handleScheduled plan cron does not invoke runScheduledClosingBackfill", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "* * * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-22T01:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleScheduled archive cron does not invoke runScheduledClosingBackfill", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "0 4 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-22T04:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleScheduled populate-multi-day cron does not invoke runScheduledClosingBackfill", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "55 20 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-22T20:55:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleScheduled morning populate-multi-day cron does not invoke runScheduledClosingBackfill", async () => {
+  const env = buildEnv();
+  await handleScheduled(
+    {
+      cron: "0 23 * * *",
+      noRetry: () => undefined,
+      scheduledTime: new Date("2026-06-22T23:00:00Z").getTime(),
+    } as unknown as ScheduledController,
+    env,
+    buildCtx(),
+  );
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("runScheduledClosingBackfill writes ok status when every fetch resolves", async () => {
+  const logBindArgs: unknown[][] = [];
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({
+            results: [{ race_key: "nar:20260622:42:01" }, { race_key: "nar:20260622:42:02" }],
+          })),
+        })),
+      };
+    }
+    if (lowered.includes("insert into fetch_logs")) {
+      return {
+        bind: vi.fn((...bindArgs: unknown[]) => {
+          logBindArgs.push(bindArgs);
+          return { run: logRun };
+        }),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+  await runScheduledClosingBackfill(env, new Date("2026-06-22T13:30:00Z"));
+  expect(vi.mocked(fetchAndStoreOdds)).toHaveBeenCalledTimes(2);
+  expect(logRun).toHaveBeenCalledTimes(1);
+  expect(logBindArgs[0]?.[2]).toBe("ok");
+});
+
+it("runScheduledClosingBackfill writes warn status when at least one fetch rejects", async () => {
+  const logBindArgs: unknown[][] = [];
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({
+            results: [{ race_key: "nar:20260622:42:01" }, { race_key: "nar:20260622:42:02" }],
+          })),
+        })),
+      };
+    }
+    if (lowered.includes("insert into fetch_logs")) {
+      return {
+        bind: vi.fn((...bindArgs: unknown[]) => {
+          logBindArgs.push(bindArgs);
+          return { run: logRun };
+        }),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  vi.mocked(fetchAndStoreOdds)
+    .mockResolvedValueOnce(null)
+    .mockRejectedValueOnce(new Error("scrape boom"));
+  await runScheduledClosingBackfill(env, new Date("2026-06-22T13:30:00Z"));
+  expect(vi.mocked(fetchAndStoreOdds)).toHaveBeenCalledTimes(2);
+  expect(logRun).toHaveBeenCalledTimes(1);
+  expect(logBindArgs[0]?.[2]).toBe("warn");
+});
+
+it("runScheduledClosingBackfill no-ops fetchAndStoreOdds when no candidates exist", async () => {
+  const env = buildEnv();
+  await runScheduledClosingBackfill(env, new Date("2026-06-22T13:30:00Z"));
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
 });
 
 it("handleQueue acks fetch-odds messages", async () => {

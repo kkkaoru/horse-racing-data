@@ -299,6 +299,32 @@ export const countOddsFetchStateForDate = async (
   return row?.count ?? 0;
 };
 
+// Closing-odds safety net: select races whose last successful poll was more
+// than 5 minutes before race start. The 5-minute threshold mirrors the
+// betting-close gate — any race poll older than that missed the final
+// finalOddsSlot window and should be re-fetched once after the day's races
+// are done (idx_odds_fetch_state_date covers the kaisai_nen + kaisai_tsukihi
+// + race_start_at_jst order-by).
+export const listClosingBackfillCandidates = async (
+  db: D1Database,
+  kaisaiNen: string,
+  kaisaiTsukihi: string,
+): Promise<string[]> => {
+  const result = await db
+    .prepare(
+      `select race_key from odds_fetch_state
+       where kaisai_nen = ? and kaisai_tsukihi = ?
+         and (
+           last_odds_fetch_at is null
+           or datetime(last_odds_fetch_at) < datetime(race_start_at_jst, '-5 minutes')
+         )
+       order by race_start_at_jst asc`,
+    )
+    .bind(kaisaiNen, kaisaiTsukihi)
+    .all<{ race_key: string }>();
+  return result.results.map((row) => row.race_key);
+};
+
 export const listOddsFetchStateForDate = async (
   db: D1Database,
   source: OddsSource,

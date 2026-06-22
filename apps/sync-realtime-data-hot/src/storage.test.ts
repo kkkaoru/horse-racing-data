@@ -10,6 +10,7 @@ import {
   getOddsFetchState,
   insertOddsSnapshot,
   listArchiveCandidatesBeforeCutoff,
+  listClosingBackfillCandidates,
   listOddsFetchStateForDate,
   listOddsHistoryByType,
   listOddsSnapshotsBeforeCutoff,
@@ -717,6 +718,46 @@ it("countOddsFetchStateForDate returns 0 when first() yields null", async () => 
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   expect(await countOddsFetchStateForDate(db, "2026", "0529")).toBe(0);
+});
+
+it("listClosingBackfillCandidates returns race keys with last_odds_fetch_at null", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:20260622:42:01" }],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listClosingBackfillCandidates(db, "2026", "0622");
+  expect(result).toStrictEqual(["nar:20260622:42:01"]);
+});
+
+it("listClosingBackfillCandidates returns race keys whose last poll predates close window", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:20260622:42:02" }, { race_key: "nar:20260622:42:03" }],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listClosingBackfillCandidates(db, "2026", "0622");
+  expect(result).toStrictEqual(["nar:20260622:42:02", "nar:20260622:42:03"]);
+});
+
+it("listClosingBackfillCandidates excludes races whose last poll caught the close window", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listClosingBackfillCandidates(db, "2026", "0622");
+  expect(result).toStrictEqual([]);
+});
+
+it("listClosingBackfillCandidates returns empty array when no rows exist for the date", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listClosingBackfillCandidates(db, "2026", "0625");
+  expect(result).toStrictEqual([]);
 });
 
 it("listArchiveCandidatesBeforeCutoff returns grouped rows", async () => {

@@ -287,20 +287,3 @@ exists for launchd plists). This plist assumes the Mac is configured to
 integer in the plist accordingly. The wrapper computes `TARGET_DATE` from
 UTC+9 directly (`date -u -v+9H`), so the _which-day-to-guard_ logic is
 robust to TZ drift; only the _when-to-fire_ depends on the system TZ.
-
----
-
-# `com.kkk4oru.odds-closing-backfill` — daily NAR closing-odds safety net
-
-JST 22:30 fire of `odds-closing-backfill-daily.sh` that (1) re-fetches NAR
-closing odds from keiba.go into the legacy `sync-realtime-data` D1, then
-(2) copies those rows into the hot `sync-realtime-data-hot` D1 the viewer
-reads from and purges the per-race `odds:latest:nar:YYYYMMDD:NN:RR` KV
-mirror. This is the after-the-fact safety net for the case where the hot
-worker's per-minute polling cron stalls during a NAR race day (as it did
-on 2026-06-22 between 14:23 and 21:00 JST). Install manually:
-
-```sh
-launchctl bootstrap gui/$(id -u) \
-  /Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/com.kkk4oru.odds-closing-backfill.plist
-```

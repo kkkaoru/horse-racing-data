@@ -29,6 +29,7 @@ import {
   countOddsFetchStateForDate,
   getLatestOddsFromD1,
   listArchiveCandidatesBeforeCutoff,
+  listClosingBackfillCandidates,
   listOddsHistoryByType,
   listTanshoHistory,
   logFetch,
@@ -49,6 +50,9 @@ const POPULATE_MULTI_DAY_CRONS: ReadonlySet<string> = new Set([
   POPULATE_MULTI_DAY_CRON,
   MORNING_POPULATE_MULTI_DAY_CRON,
 ]);
+// JST 22:30 = UTC 13:30. Synchronous closing-odds re-fetch for races whose
+// last poll happened before raceStart - 5min (final betting window missed).
+const CLOSING_BACKFILL_CRON = "30 13 * * *";
 const ARCHIVE_QUERY_LIMIT = 200;
 const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
 const PLAN_DAYS_AHEAD = 2;
@@ -423,6 +427,37 @@ export const runScheduledPopulateMultiDay = async (env: Env, now: Date): Promise
   await populateMultiDayOddsFetchState(env, now);
 };
 
+const formatBackfillFailure = (outcome: PromiseRejectedResult): string => String(outcome.reason);
+
+const isRejected = (outcome: PromiseSettledResult<unknown>): outcome is PromiseRejectedResult =>
+  outcome.status === "rejected";
+
+const BACKFILL_FAILURE_SAMPLE_LIMIT = 3;
+
+export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<void> => {
+  const today = getTodayJst(now);
+  const candidates = await listClosingBackfillCandidates(
+    env.REALTIME_HOT_DB,
+    today.slice(0, 4),
+    today.slice(4, 8),
+  );
+  const outcomes = await Promise.allSettled(
+    candidates.map((raceKey) => fetchAndStoreOdds(env, raceKey, now)),
+  );
+  const failures = outcomes.filter(isRejected).map(formatBackfillFailure);
+  await logFetch(
+    env.REALTIME_HOT_DB,
+    "scheduled-closing-backfill",
+    failures.length === 0 ? "ok" : "warn",
+    null,
+    JSON.stringify({
+      candidates: candidates.length,
+      failures: failures.length,
+      sampleFailures: failures.slice(0, BACKFILL_FAILURE_SAMPLE_LIMIT),
+    }),
+  );
+};
+
 export const runScheduledArchive = async (env: Env, now: Date): Promise<void> => {
   const cutoff = computeArchiveCutoffIso(env, now);
   const candidates = await listArchiveCandidatesBeforeCutoff(env.REALTIME_HOT_DB, {
@@ -471,6 +506,11 @@ const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<voi
   }
   if (POPULATE_MULTI_DAY_CRONS.has(args.cron)) {
     await runScheduledPopulateMultiDay(args.env, args.now);
+    return;
+  }
+  if (args.cron === CLOSING_BACKFILL_CRON) {
+    await runScheduledClosingBackfill(args.env, args.now);
+    return;
   }
 };
 
