@@ -91,6 +91,7 @@ const MIN_DO_TRUSTED_SNAPSHOTS = 10;
 const PLAN_STABLE_FLAG_KV_PREFIX = "expected-race-count:stable:";
 const PLAN_STABLE_FLAG_TTL_SECONDS = 600;
 const PLAN_STABLE_FLAG_VALUE = "1";
+const ARCHIVE_FAILURE_SAMPLE_LIMIT = 3;
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -103,6 +104,13 @@ interface CronHealthBody {
   ok: boolean;
   lastTickAt: string | null;
   ageSeconds: number | null;
+}
+
+interface ArchiveRunSummary {
+  candidates: number;
+  uploaded: number;
+  failed: number;
+  sampleFailures: string[];
 }
 
 export const parseRaceKeyFromPath = (pathname: string): string | null => {
@@ -407,6 +415,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-multi-day") {
     return handleRunPopulateMultiDay(env, request);
   }
+  if (request.method === "POST" && url.pathname === "/api/internal/run-archive-once") {
+    return handleRunArchiveOnce(env, request);
+  }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
     return handleGetOdds(env, request, raceKey);
@@ -582,13 +593,51 @@ export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<
   );
 };
 
-export const runScheduledArchive = async (env: Env, now: Date): Promise<void> => {
+const formatArchiveFailure = (outcome: PromiseRejectedResult): string => String(outcome.reason);
+
+const summarizeArchiveOutcomes = (
+  candidates: number,
+  outcomes: PromiseSettledResult<unknown>[],
+): ArchiveRunSummary => {
+  const failures = outcomes.filter(isRejected).map(formatArchiveFailure);
+  return {
+    candidates,
+    failed: failures.length,
+    sampleFailures: failures.slice(0, ARCHIVE_FAILURE_SAMPLE_LIMIT),
+    uploaded: outcomes.length - failures.length,
+  };
+};
+
+const logArchiveSummary = async (env: Env, summary: ArchiveRunSummary): Promise<void> => {
+  await logFetch(
+    env.REALTIME_HOT_DB,
+    "scheduled-archive-to-r2",
+    summary.failed === 0 ? "ok" : "warn",
+    null,
+    JSON.stringify(summary),
+  ).catch(() => undefined);
+};
+
+const logArchiveNoCandidates = async (env: Env): Promise<void> => {
+  await logFetch(env.REALTIME_HOT_DB, "scheduled-archive-no-candidates", "ok", null, null).catch(
+    () => undefined,
+  );
+};
+
+export const runScheduledArchive = async (env: Env, now: Date): Promise<ArchiveRunSummary> => {
   const cutoff = computeArchiveCutoffIso(env, now);
   const candidates = await listArchiveCandidatesBeforeCutoff(env.REALTIME_HOT_DB, {
     cutoffIso: cutoff,
     limit: ARCHIVE_QUERY_LIMIT,
   });
-  await Promise.all(
+  if (candidates.length === 0) {
+    await logArchiveNoCandidates(env);
+    return { candidates: 0, failed: 0, sampleFailures: [], uploaded: 0 };
+  }
+  // `Promise.allSettled` so a single R2 reject does not block sibling writes
+  // and does not bubble out as a `scheduled-cron-error`. Failures are
+  // surfaced via the explicit `scheduled-archive-to-r2` log row instead.
+  const outcomes = await Promise.allSettled(
     candidates.map((row) =>
       putArchiveRowToR2(env, {
         fetchedAt: row.fetched_at,
@@ -598,6 +647,20 @@ export const runScheduledArchive = async (env: Env, now: Date): Promise<void> =>
       }),
     ),
   );
+  const summary = summarizeArchiveOutcomes(candidates.length, outcomes);
+  await logArchiveSummary(env, summary);
+  return summary;
+};
+
+// Internal trigger so operators can manually drain the archive backlog or
+// smoke-test the cron path without waiting for the next `0 4 * * *` tick.
+// Token-gated identical to `handleRunPopulateToday`.
+export const handleRunArchiveOnce = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const summary = await runScheduledArchive(env, new Date());
+  return jsonResponse(summary);
 };
 
 interface DispatchScheduledArgs {

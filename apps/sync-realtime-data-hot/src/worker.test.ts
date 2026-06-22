@@ -115,6 +115,7 @@ interface BuildDbOptions {
   upsertRun?: ReturnType<typeof vi.fn>;
   logRun?: ReturnType<typeof vi.fn>;
   archiveCandidates?: { results: unknown[] };
+  archiveDistinctFetchedAt?: { results: unknown[] };
   stateCount?: number;
   closingBackfillCandidates?: { results: unknown[] };
 }
@@ -128,6 +129,10 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     }
     if (lowered.includes("odds_type = 'tansho'")) {
       const all = vi.fn(async () => options.tansho ?? { results: [] });
+      return { bind: vi.fn(() => ({ all })) };
+    }
+    if (lowered.includes("select distinct fetched_at")) {
+      const all = vi.fn(async () => options.archiveDistinctFetchedAt ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
@@ -1219,10 +1224,174 @@ it("runScheduledArchive lists candidates and pushes to R2", async () => {
           },
         ],
       },
+      archiveDistinctFetchedAt: {
+        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
+      },
     }),
   });
-  await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
   expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalledTimes(1);
+  expect(summary).toStrictEqual({
+    candidates: 1,
+    failed: 0,
+    sampleFailures: [],
+    uploaded: 1,
+  });
+});
+
+it("runScheduledArchive logs scheduled-archive-no-candidates and skips R2 when phase 1 returns empty", async () => {
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({ logRun }),
+  });
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(vi.mocked(env.ODDS_ARCHIVE.put)).not.toHaveBeenCalled();
+  expect(summary).toStrictEqual({
+    candidates: 0,
+    failed: 0,
+    sampleFailures: [],
+    uploaded: 0,
+  });
+  expect(logRun).toHaveBeenCalled();
+});
+
+it("runScheduledArchive captures per-row R2 failures and still completes siblings", async () => {
+  const failingR2 = {
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () => null),
+    head: vi.fn(async () => null),
+    list: vi.fn(async () => ({ objects: [] })),
+    put: vi
+      .fn()
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("R2 put exploded"))
+      .mockResolvedValueOnce({}),
+  } as unknown as R2Bucket;
+  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
+  const env = buildEnv({
+    ODDS_ARCHIVE: failingR2,
+    REALTIME_HOT_DB: buildDb({
+      archiveCandidates: {
+        results: [
+          {
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            snapshot_json: "[]",
+          },
+          {
+            fetched_at: "2026-05-20T10:01:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:02",
+            snapshot_json: "[]",
+          },
+          {
+            fetched_at: "2026-05-20T10:02:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:03",
+            snapshot_json: "[]",
+          },
+        ],
+      },
+      archiveDistinctFetchedAt: {
+        results: [
+          { fetched_at: "2026-05-20T10:00:00+09:00" },
+          { fetched_at: "2026-05-20T10:01:00+09:00" },
+          { fetched_at: "2026-05-20T10:02:00+09:00" },
+        ],
+      },
+      logRun,
+    }),
+  });
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(vi.mocked(failingR2.put)).toHaveBeenCalledTimes(3);
+  expect(summary.candidates).toBe(3);
+  expect(summary.uploaded).toBe(2);
+  expect(summary.failed).toBe(1);
+  expect(summary.sampleFailures.length).toBe(1);
+  expect(logRun).toHaveBeenCalled();
+});
+
+it("runScheduledArchive swallows logFetch failure when no-candidates summary throws", async () => {
+  const logRun = vi.fn(async () => {
+    throw new Error("fetch_logs unavailable");
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({ logRun }),
+  });
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(summary.candidates).toBe(0);
+});
+
+it("runScheduledArchive swallows logFetch failure when post-upload summary throws", async () => {
+  const logRun = vi.fn(async () => {
+    throw new Error("fetch_logs unavailable");
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      archiveCandidates: {
+        results: [
+          {
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            snapshot_json: "[]",
+          },
+        ],
+      },
+      archiveDistinctFetchedAt: {
+        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
+      },
+      logRun,
+    }),
+  });
+  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
+  expect(summary.uploaded).toBe(1);
+  expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalledTimes(1);
+});
+
+it("handleRunArchiveOnce rejects unauthorized callers", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/run-archive-once", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleRunArchiveOnce returns the summary when token matches", async () => {
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      archiveCandidates: {
+        results: [
+          {
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            snapshot_json: "[]",
+          },
+        ],
+      },
+      archiveDistinctFetchedAt: {
+        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
+      },
+    }),
+  });
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/run-archive-once", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body).toStrictEqual({
+    candidates: 1,
+    failed: 0,
+    sampleFailures: [],
+    uploaded: 1,
+  });
 });
 
 it("handleScheduled dispatches plan cron to runScheduledPlan", async () => {
@@ -1309,7 +1478,7 @@ it("handleScheduled catches runScheduledArchive rejection and logs via logFetch"
     if (lowered.includes("insert into fetch_logs")) {
       return { bind: vi.fn(() => ({ run: logRun })) };
     }
-    if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
+    if (lowered.includes("select distinct fetched_at")) {
       return {
         bind: vi.fn(() => ({
           all: vi.fn(async () => {
@@ -1352,7 +1521,7 @@ it("handleScheduled falls back to console.error when both inner work and logFetc
         })),
       };
     }
-    if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
+    if (lowered.includes("select distinct fetched_at")) {
       return {
         bind: vi.fn(() => ({
           all: vi.fn(async () => {

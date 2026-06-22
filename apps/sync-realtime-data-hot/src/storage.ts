@@ -14,6 +14,13 @@ import type {
 
 const D1_BATCH_SIZE = 100;
 const MAX_SAFE_RANK = Number.MAX_SAFE_INTEGER;
+// Phase-1 fan-out controls how many distinct `fetched_at` values we pull per
+// archive cron tick. The aggregator (Phase 2) scans ~200 rows per fetched_at
+// (one row per horse-combination per odds_type), so 50 keeps the total work
+// at ~10K rows — well inside D1's per-query CPU budget — while still moving
+// the archive backlog meaningfully every cron tick (every fetched_at becomes
+// one or more R2 objects).
+const DISTINCT_FETCHED_AT_LIMIT = 50;
 
 const ODDS_TREND_LIMITS: Record<OddsType, number> = {
   "3renpuku": 30,
@@ -512,15 +519,71 @@ interface AggregateArchiveRow {
   snapshot_json: string;
 }
 
+interface DistinctFetchedAtRow {
+  fetched_at: string;
+}
+
+// Builds the `?, ?, ?, ...` placeholder string for the Phase-2 `IN (...)`
+// clause. Required because D1's prepared-statement binding does not accept
+// an array directly for IN expressions.
+const buildInPlaceholders = (count: number): string =>
+  Array.from({ length: count }, () => "?").join(", ");
+
+// Phase 1: pick the oldest `DISTINCT fetched_at` values that fall before the
+// cutoff. This walks `idx_odds_snapshots_fetched_at` as a covering index
+// (`SEARCH ... USING COVERING INDEX (fetched_at<?)`), so even with 16M+
+// qualifying rows the read is bounded to a few thousand entries before the
+// LIMIT kicks in.
+export const listDistinctArchiveFetchedAtBeforeCutoff = async (
+  db: D1Database,
+  options: ListOddsSnapshotsCutoffOptions,
+): Promise<string[]> => {
+  const result = await db
+    .prepare(
+      `select distinct fetched_at from odds_snapshots where fetched_at < ? order by fetched_at asc limit ?`,
+    )
+    .bind(options.cutoffIso, options.limit)
+    .all<DistinctFetchedAtRow>();
+  return result.results.map((row) => row.fetched_at);
+};
+
+// Phase 2: aggregate `odds_snapshots` rows whose `fetched_at` is in the
+// bounded list produced by Phase 1. SQLite uses
+// `idx_odds_snapshots_fetched_at (fetched_at=?)` per IN value, so the scan
+// touches only the ~200 rows per timestamp and the GROUP BY operates on a
+// tiny working set.
+export const aggregateArchiveRowsForFetchedAtList = async (
+  db: D1Database,
+  fetchedAtList: string[],
+): Promise<AggregateArchiveRow[]> => {
+  if (fetchedAtList.length === 0) {
+    return [];
+  }
+  const placeholders = buildInPlaceholders(fetchedAtList.length);
+  const result = await db
+    .prepare(
+      `select race_key, odds_type, fetched_at, json_group_array(json_object('combination', combination, 'odds', odds, 'min_odds', min_odds, 'max_odds', max_odds, 'average_odds', average_odds, 'rank', rank)) as snapshot_json from odds_snapshots where fetched_at in (${placeholders}) group by race_key, odds_type, fetched_at order by fetched_at asc`,
+    )
+    .bind(...fetchedAtList)
+    .all<AggregateArchiveRow>();
+  return result.results;
+};
+
+// Two-phase archive lookup. The legacy single-query version
+// (`where fetched_at < ? group by ... order by fetched_at asc limit ?`) ran
+// `SCAN odds_snapshots USING INDEX (race_key, fetched_at, odds_type, combination)`
+// followed by `USE TEMP B-TREE FOR ORDER BY`, which forced SQLite to scan
+// every qualifying row (~16M+) and materialize all groups before applying
+// the LIMIT — every cron tick tripped D1's per-query CPU/timeout limit and
+// the bucket stayed empty for 25+ days. The split avoids that path entirely:
+// Phase 1 is a covering-index walk, Phase 2 is a small IN-bounded aggregate.
 export const listArchiveCandidatesBeforeCutoff = async (
   db: D1Database,
   options: ListOddsSnapshotsCutoffOptions,
 ): Promise<AggregateArchiveRow[]> => {
-  const result = await db
-    .prepare(
-      `select race_key, odds_type, fetched_at, json_group_array(json_object('combination', combination, 'odds', odds, 'min_odds', min_odds, 'max_odds', max_odds, 'average_odds', average_odds, 'rank', rank)) as snapshot_json from odds_snapshots where fetched_at < ? group by race_key, odds_type, fetched_at order by fetched_at asc limit ?`,
-    )
-    .bind(options.cutoffIso, options.limit)
-    .all<AggregateArchiveRow>();
-  return result.results;
+  const fetchedAtList = await listDistinctArchiveFetchedAtBeforeCutoff(db, {
+    cutoffIso: options.cutoffIso,
+    limit: Math.min(options.limit, DISTINCT_FETCHED_AT_LIMIT),
+  });
+  return aggregateArchiveRowsForFetchedAtList(db, fetchedAtList);
 };

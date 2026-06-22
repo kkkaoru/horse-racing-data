@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 
 import {
+  aggregateArchiveRowsForFetchedAtList,
   claimOddsFetch,
   completeOddsFetch,
   countOddsFetchStateForDate,
@@ -11,6 +12,7 @@ import {
   insertOddsSnapshot,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
+  listDistinctArchiveFetchedAtBeforeCutoff,
   listOddsFetchStateForDate,
   listOddsHistoryByType,
   listOddsSnapshotsBeforeCutoff,
@@ -760,11 +762,36 @@ it("listClosingBackfillCandidates returns empty array when no rows exist for the
   expect(result).toStrictEqual([]);
 });
 
-it("listArchiveCandidatesBeforeCutoff returns grouped rows", async () => {
+it("listDistinctArchiveFetchedAtBeforeCutoff returns the ordered fetched_at list", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      { fetched_at: "2026-05-20T10:00:00+09:00" },
+      { fetched_at: "2026-05-20T10:01:00+09:00" },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await listDistinctArchiveFetchedAtBeforeCutoff(db, {
+    cutoffIso: "2026-05-21T00:00:00.000Z",
+    limit: 50,
+  });
+  expect(result).toStrictEqual(["2026-05-20T10:00:00+09:00", "2026-05-20T10:01:00+09:00"]);
+});
+
+it("aggregateArchiveRowsForFetchedAtList returns empty array when list is empty", async () => {
+  const prepare = vi.fn();
+  const db = { prepare } as unknown as D1Database;
+  const result = await aggregateArchiveRowsForFetchedAtList(db, []);
+  expect(result).toStrictEqual([]);
+  expect(prepare).not.toHaveBeenCalled();
+});
+
+it("aggregateArchiveRowsForFetchedAtList binds every fetched_at and returns grouped rows", async () => {
   const all = vi.fn(async () => ({
     results: [
       {
-        fetched_at: "2026-05-21T00:00:00+09:00",
+        fetched_at: "2026-05-20T10:00:00+09:00",
         odds_type: "tansho",
         race_key: "nar:20260520:42:01",
         snapshot_json: '[{"combination":"01","odds":2.5}]',
@@ -774,9 +801,84 @@ it("listArchiveCandidatesBeforeCutoff returns grouped rows", async () => {
   const bind = vi.fn(() => ({ all }));
   const prepare = vi.fn(() => ({ bind }));
   const db = { prepare } as unknown as D1Database;
+  const result = await aggregateArchiveRowsForFetchedAtList(db, [
+    "2026-05-20T10:00:00+09:00",
+    "2026-05-20T10:01:00+09:00",
+  ]);
+  expect(result.length).toBe(1);
+  expect(bind).toHaveBeenCalledWith("2026-05-20T10:00:00+09:00", "2026-05-20T10:01:00+09:00");
+});
+
+it("listArchiveCandidatesBeforeCutoff returns empty array when phase 1 yields no fetched_at values", async () => {
+  const distinctAll = vi.fn(async () => ({ results: [] }));
+  const aggregateAll = vi.fn(async () => ({ results: [] }));
+  const prepare = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("select distinct fetched_at")) {
+      return { bind: vi.fn(() => ({ all: distinctAll })) };
+    }
+    return { bind: vi.fn(() => ({ all: aggregateAll })) };
+  });
+  const db = { prepare } as unknown as D1Database;
   const result = await listArchiveCandidatesBeforeCutoff(db, {
     cutoffIso: "2026-05-21T00:00:00.000Z",
     limit: 100,
   });
-  expect(result.length).toBe(1);
+  expect(result).toStrictEqual([]);
+  expect(aggregateAll).not.toHaveBeenCalled();
+});
+
+it("listArchiveCandidatesBeforeCutoff chains phase 1 then phase 2", async () => {
+  const distinctAll = vi.fn(async () => ({
+    results: [
+      { fetched_at: "2026-05-20T10:00:00+09:00" },
+      { fetched_at: "2026-05-20T10:01:00+09:00" },
+    ],
+  }));
+  const aggregateAll = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "2026-05-20T10:00:00+09:00",
+        odds_type: "tansho",
+        race_key: "nar:20260520:42:01",
+        snapshot_json: '[{"combination":"01","odds":2.5}]',
+      },
+      {
+        fetched_at: "2026-05-20T10:01:00+09:00",
+        odds_type: "tansho",
+        race_key: "nar:20260520:42:01",
+        snapshot_json: '[{"combination":"01","odds":2.4}]',
+      },
+    ],
+  }));
+  const prepare = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("select distinct fetched_at")) {
+      return { bind: vi.fn(() => ({ all: distinctAll })) };
+    }
+    return { bind: vi.fn(() => ({ all: aggregateAll })) };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const result = await listArchiveCandidatesBeforeCutoff(db, {
+    cutoffIso: "2026-05-21T00:00:00.000Z",
+    limit: 100,
+  });
+  expect(result.length).toBe(2);
+});
+
+it("listArchiveCandidatesBeforeCutoff caps the distinct fetched_at fan-out to 50", async () => {
+  const distinctBind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
+  const prepare = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (lowered.includes("select distinct fetched_at")) {
+      return { bind: distinctBind };
+    }
+    return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
+  });
+  const db = { prepare } as unknown as D1Database;
+  await listArchiveCandidatesBeforeCutoff(db, {
+    cutoffIso: "2026-05-21T00:00:00.000Z",
+    limit: 9999,
+  });
+  expect(distinctBind).toHaveBeenCalledWith("2026-05-21T00:00:00.000Z", 50);
 });
