@@ -69,6 +69,24 @@ class TestVenueCoords:
 
 
 # ---------------------------------------------------------------------------
+# _year_db_path
+# ---------------------------------------------------------------------------
+
+
+class TestYearDbPath:
+    def test_returns_correct_filename(self, tmp_path: Path) -> None:
+        p = rw._year_db_path(2023, tmp_path)
+        assert p == tmp_path / "venue_weather_2023.duckdb"
+
+    def test_different_years_produce_different_paths(self, tmp_path: Path) -> None:
+        assert rw._year_db_path(2022, tmp_path) != rw._year_db_path(2023, tmp_path)
+
+    def test_path_is_inside_db_dir(self, tmp_path: Path) -> None:
+        p = rw._year_db_path(2020, tmp_path)
+        assert p.parent == tmp_path
+
+
+# ---------------------------------------------------------------------------
 # build_url
 # ---------------------------------------------------------------------------
 
@@ -262,7 +280,7 @@ class TestParseHourly:
 
 
 class TestBuildRecords:
-    _VENUE: rw.VenueInfo = {"name": "東京", "lat": 35.6894, "lon": 139.4990}
+    _VENUE: rw.VenueInfo = {"name": "東京", "lat": 35.6622, "lon": 139.4856}
 
     def test_builds_correct_tuples(self) -> None:
         rows: list[dict[str, object]] = [
@@ -283,8 +301,8 @@ class TestBuildRecords:
         assert rec[1] == "2023-01-01"
         assert rec[2] == 9
         assert rec[3] == "東京"
-        assert rec[4] == 35.6894
-        assert rec[5] == 139.4990
+        assert rec[4] == 35.6622
+        assert rec[5] == 139.4856
         assert rec[6] == 3
         assert rec[11] == "ts"
 
@@ -553,7 +571,7 @@ class TestUpsertRecords:
 
 
 class TestFetchVenue:
-    _VENUE: rw.VenueInfo = {"name": "東京", "lat": 35.6894, "lon": 139.4990}
+    _VENUE: rw.VenueInfo = {"name": "東京", "lat": 35.6622, "lon": 139.4856}
 
     def _mock_response(self, data: dict[str, object]) -> MagicMock:
         mock_resp = MagicMock()
@@ -722,25 +740,44 @@ class TestSyncAllVenues:
 
 
 class TestRunBackfill:
-    def test_single_chunk_calls_sync_once(self, tmp_path: Path) -> None:
+    def test_single_year_range_calls_sync_once(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather._sync_all_venues") as mock_sync:
-            rw.run_backfill(date(2023, 1, 1), date(2023, 12, 31), tmp_path / "w.duckdb")
+            rw.run_backfill(date(2023, 1, 1), date(2023, 12, 31), tmp_path)
         assert mock_sync.call_count == 1
         _, kwargs = mock_sync.call_args
         assert kwargs["archive"] is True
 
-    def test_multi_year_calls_sync_multiple_times(self, tmp_path: Path) -> None:
+    def test_multi_year_calls_sync_per_year(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather._sync_all_venues") as mock_sync:
-            rw.run_backfill(date(2022, 1, 1), date(2023, 12, 31), tmp_path / "w.duckdb")
+            rw.run_backfill(date(2022, 1, 1), date(2023, 12, 31), tmp_path)
         assert mock_sync.call_count == 2
+
+    def test_creates_year_based_db_files(self, tmp_path: Path) -> None:
+        with patch("racing_venue_weather._sync_all_venues"):
+            rw.run_backfill(date(2022, 1, 1), date(2023, 12, 31), tmp_path)
+        assert (tmp_path / "venue_weather_2022.duckdb").exists()
+        assert (tmp_path / "venue_weather_2023.duckdb").exists()
 
     def test_single_day_range(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather._sync_all_venues") as mock_sync:
-            rw.run_backfill(date(2023, 6, 1), date(2023, 6, 1), tmp_path / "w.duckdb")
+            rw.run_backfill(date(2023, 6, 1), date(2023, 6, 1), tmp_path)
         assert mock_sync.call_count == 1
         _args, _kwargs = mock_sync.call_args
         assert _args[1] == date(2023, 6, 1)
         assert _args[2] == date(2023, 6, 1)
+
+    def test_partial_year_respects_start_and_end(self, tmp_path: Path) -> None:
+        with patch("racing_venue_weather._sync_all_venues") as mock_sync:
+            rw.run_backfill(date(2023, 6, 1), date(2023, 8, 31), tmp_path)
+        assert mock_sync.call_count == 1
+        _args, _kwargs = mock_sync.call_args
+        assert _args[1] == date(2023, 6, 1)
+        assert _args[2] == date(2023, 8, 31)
+
+    def test_cross_year_partial_range(self, tmp_path: Path) -> None:
+        with patch("racing_venue_weather._sync_all_venues") as mock_sync:
+            rw.run_backfill(date(2022, 6, 1), date(2023, 3, 31), tmp_path)
+        assert mock_sync.call_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -751,7 +788,7 @@ class TestRunBackfill:
 class TestRunDaily:
     def test_uses_provided_today(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather._sync_all_venues") as mock_sync:
-            rw.run_daily(tmp_path / "w.duckdb", today=date(2024, 6, 1))
+            rw.run_daily(tmp_path, today=date(2024, 6, 1))
         mock_sync.assert_called_once()
         _args, kwargs = mock_sync.call_args
         assert kwargs["archive"] is False
@@ -760,10 +797,15 @@ class TestRunDaily:
 
     def test_uses_date_today_when_not_provided(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather._sync_all_venues") as mock_sync:
-            rw.run_daily(tmp_path / "w.duckdb")
+            rw.run_daily(tmp_path)
         mock_sync.assert_called_once()
         _, kwargs = mock_sync.call_args
         assert kwargs["archive"] is False
+
+    def test_creates_year_based_db_file(self, tmp_path: Path) -> None:
+        with patch("racing_venue_weather._sync_all_venues"):
+            rw.run_daily(tmp_path, today=date(2024, 6, 1))
+        assert (tmp_path / "venue_weather_2024.duckdb").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -817,13 +859,13 @@ class TestParseArgs:
         assert args.start == "2020-01-01"
         assert args.end == "2020-12-31"
 
-    def test_custom_db_path(self) -> None:
-        args = rw._parse_args(["--mode", "daily", "--db-path", "/tmp/custom.duckdb"])
-        assert args.db_path == "/tmp/custom.duckdb"
+    def test_custom_db_dir(self) -> None:
+        args = rw._parse_args(["--mode", "daily", "--db-dir", "/tmp/weather"])
+        assert args.db_dir == "/tmp/weather"
 
-    def test_default_db_path(self) -> None:
+    def test_default_db_dir(self) -> None:
         args = rw._parse_args(["--mode", "daily"])
-        assert args.db_path == str(rw.DEFAULT_DB_PATH)
+        assert args.db_dir == str(rw.DEFAULT_DB_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +876,7 @@ class TestParseArgs:
 class TestMain:
     def test_daily_mode_returns_zero(self, tmp_path: Path) -> None:
         with patch("racing_venue_weather.run_daily") as mock_daily:
-            rc = rw.main(["--mode", "daily", "--db-path", str(tmp_path / "w.duckdb")])
+            rc = rw.main(["--mode", "daily", "--db-dir", str(tmp_path)])
         assert rc == 0
         mock_daily.assert_called_once()
 
@@ -848,15 +890,15 @@ class TestMain:
                     "2023-01-01",
                     "--end",
                     "2023-12-31",
-                    "--db-path",
-                    str(tmp_path / "w.duckdb"),
+                    "--db-dir",
+                    str(tmp_path),
                 ]
             )
         assert rc == 0
         mock_backfill.assert_called_once()
 
     def test_backfill_missing_dates_returns_one(self, tmp_path: Path) -> None:
-        rc = rw.main(["--mode", "backfill", "--db-path", str(tmp_path / "w.duckdb")])
+        rc = rw.main(["--mode", "backfill", "--db-dir", str(tmp_path)])
         assert rc == 1
 
     def test_backfill_invalid_start_returns_one(self, tmp_path: Path) -> None:
@@ -868,8 +910,8 @@ class TestMain:
                 "INVALID",
                 "--end",
                 "2023-12-31",
-                "--db-path",
-                str(tmp_path / "w.duckdb"),
+                "--db-dir",
+                str(tmp_path),
             ]
         )
         assert rc == 1
@@ -883,8 +925,8 @@ class TestMain:
                 "2023-12-31",
                 "--end",
                 "2023-01-01",
-                "--db-path",
-                str(tmp_path / "w.duckdb"),
+                "--db-dir",
+                str(tmp_path),
             ]
         )
         assert rc == 1

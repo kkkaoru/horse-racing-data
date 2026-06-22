@@ -2,13 +2,20 @@
 
 Usage:
     # Backfill historical data for all venues
-    uv run python racing_venue_weather.py --mode backfill --start 2020-01-01 --end 2025-12-31
+    uv run python racing_venue_weather.py --mode backfill --start 2013-01-01 --end 2026-12-31
 
     # Fetch today's weather for all venues (daily cron)
     uv run python racing_venue_weather.py --mode daily
 
-    # Custom DuckDB path
-    uv run python racing_venue_weather.py --mode daily --db-path /data/venue_weather.duckdb
+    # Custom storage directory (year-sharded files are created inside)
+    uv run python racing_venue_weather.py --mode daily --db-dir /data/weather
+
+Data is stored in year-sharded DuckDB files:
+    <db-dir>/venue_weather_2013.duckdb
+    <db-dir>/venue_weather_2014.duckdb
+    ...
+Each file holds one calendar year of hourly data (~9 MB), well under
+GitHub's 100 MB per-file limit.
 """
 
 from __future__ import annotations
@@ -29,7 +36,7 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = Path.home() / ".horse-racing" / "venue_weather.duckdb"
+DEFAULT_DB_DIR = Path.home() / ".horse-racing"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _VENUE_COORDS_PATH = Path(__file__).parent / "venue_coords.json"
@@ -96,6 +103,10 @@ def _load_venue_coords() -> dict[str, VenueInfo]:
 
 
 VENUE_COORDS: dict[str, VenueInfo] = _load_venue_coords()
+
+
+def _year_db_path(year: int, db_dir: Path) -> Path:
+    return db_dir / f"venue_weather_{year}.duckdb"
 
 
 def build_url(lat: float, lon: float, start: date, end: date, *, archive: bool) -> str:
@@ -244,24 +255,29 @@ def _sync_all_venues(
         time.sleep(_SLEEP_SEC)
 
 
-def run_backfill(start: date, end: date, db_path: Path) -> None:
-    conn = open_db(db_path)
-    try:
-        fetched_at = datetime.now(timezone.utc).isoformat()
-        current = start
-        while current <= end:
-            chunk_end = min(current + timedelta(days=_CHUNK_DAYS - 1), end)
-            _sync_all_venues(
-                conn, current, chunk_end, archive=True, fetched_at=fetched_at
-            )
-            current = chunk_end + timedelta(days=1)
-    finally:
-        conn.close()
+def run_backfill(start: date, end: date, db_dir: Path) -> None:
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    year = start.year
+    while year <= end.year:
+        year_start = max(start, date(year, 1, 1))
+        year_end = min(end, date(year, 12, 31))
+        conn = open_db(_year_db_path(year, db_dir))
+        try:
+            current = year_start
+            while current <= year_end:
+                chunk_end = min(current + timedelta(days=_CHUNK_DAYS - 1), year_end)
+                _sync_all_venues(
+                    conn, current, chunk_end, archive=True, fetched_at=fetched_at
+                )
+                current = chunk_end + timedelta(days=1)
+        finally:
+            conn.close()
+        year += 1
 
 
-def run_daily(db_path: Path, *, today: date | None = None) -> None:
+def run_daily(db_dir: Path, *, today: date | None = None) -> None:
     actual_today = today if today is not None else date.today()
-    conn = open_db(db_path)
+    conn = open_db(_year_db_path(actual_today.year, db_dir))
     try:
         fetched_at = datetime.now(timezone.utc).isoformat()
         _sync_all_venues(
@@ -302,10 +318,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--start", metavar="YYYY-MM-DD", help="Backfill start date")
     parser.add_argument("--end", metavar="YYYY-MM-DD", help="Backfill end date")
     parser.add_argument(
-        "--db-path",
-        default=str(DEFAULT_DB_PATH),
-        metavar="PATH",
-        help=f"DuckDB file path (default: {DEFAULT_DB_PATH})",
+        "--db-dir",
+        default=str(DEFAULT_DB_DIR),
+        metavar="DIR",
+        help=f"Directory for year-sharded DuckDB files (default: {DEFAULT_DB_DIR})",
     )
     return parser.parse_args(argv)
 
@@ -315,14 +331,14 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     args = _parse_args(argv)
-    db_path = Path(args.db_path)
+    db_dir = Path(args.db_dir)
     if args.mode == "daily":
-        run_daily(db_path)
+        run_daily(db_dir)
         return 0
     dates = _parse_date_range(args.start, args.end)
     if dates is None:
         return 1
-    run_backfill(dates[0], dates[1], db_path)
+    run_backfill(dates[0], dates[1], db_dir)
     return 0
 
 

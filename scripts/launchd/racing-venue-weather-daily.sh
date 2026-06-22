@@ -15,6 +15,6 @@ find "${LOG_DIR}" -name "*.log" -mtime +30 -delete 2>/dev/null || true
 {
   echo "=== racing-venue-weather-daily $(date -Iseconds) ==="
   cd "${REPO_ROOT}/scripts"
-  uv run python racing_venue_weather.py --mode daily
+  uv run python racing_venue_weather.py --mode daily --db-dir "${HOME}/.horse-racing"
   echo "=== done $(date -Iseconds) ==="
 } 2>&1 | tee -a "${LOG_FILE}"
