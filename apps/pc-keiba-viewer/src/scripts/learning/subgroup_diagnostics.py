@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, TypedDict
+from typing import Final, SupportsInt, TypedDict, cast
 
 import numpy as np
 import pandas as pd
@@ -108,7 +108,7 @@ def compute_race_top1(group: pd.DataFrame) -> bool:
         return False
     best = group.loc[predicted_rank.idxmin()]
     fp = best["finish_position"]
-    return pd.notna(fp) and int(fp) == 1
+    return bool(pd.notna(fp)) and int(cast(SupportsInt, fp)) == 1
 
 
 def compute_race_top3_box(group: pd.DataFrame) -> bool:

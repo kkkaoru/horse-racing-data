@@ -1234,9 +1234,19 @@ def test_evaluate_fold_set_passes_relevance_tier_name_to_walk_forward_fold(
     captured_tier: list[str | None] = []
     original_fold = subject.run_walk_forward_fold
 
-    def capturing_fold(fold, params, **kwargs):
-        captured_tier.append(kwargs.get("relevance_tier_name"))
-        return original_fold(fold, params, **kwargs)
+    def capturing_fold(
+        fold: subject.FoldSplit,
+        params: subject.TrainingParams,
+        sample_weight_mode: str = subject.SAMPLE_WEIGHT_MODE_NONE,
+        relevance_tier_name: str | None = None,
+    ) -> tuple[lgb.Booster, pd.DataFrame, subject.FoldMetrics]:
+        captured_tier.append(relevance_tier_name)
+        return original_fold(
+            fold,
+            params,
+            sample_weight_mode=sample_weight_mode,
+            relevance_tier_name=relevance_tier_name,
+        )
 
     monkeypatch.setattr(subject, "run_walk_forward_fold", capturing_fold)
     params: subject.TrainingParams = {

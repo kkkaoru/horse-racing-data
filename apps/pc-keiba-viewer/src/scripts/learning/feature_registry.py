@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, SupportsFloat, SupportsInt, TypedDict, cast
 
 import duckdb
 
@@ -27,7 +27,7 @@ class FeatureRegistry:
     """Context-manager wrapper around a DuckDB feature trial store."""
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
-        self._db_path = db_path
+        self._db_path: Path = db_path
         self._con: duckdb.DuckDBPyConnection | None = None
 
     def open(self) -> None:
@@ -50,6 +50,7 @@ class FeatureRegistry:
         assert self._con is not None
         self._con.execute("CREATE SEQUENCE IF NOT EXISTS seq_feature_trials_id START 1")
         self._con.execute("CREATE SEQUENCE IF NOT EXISTS seq_deployments_id START 1")
+        self._con.execute("CREATE SEQUENCE IF NOT EXISTS seq_inverse_trials_id START 1")
         self._con.execute("""
             CREATE TABLE IF NOT EXISTS feature_trials (
                 id              INTEGER PRIMARY KEY,
@@ -69,9 +70,22 @@ class FeatureRegistry:
                 deployed_at   TEXT    NOT NULL
             )
         """)
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS inverse_trials (
+                id                INTEGER PRIMARY KEY,
+                original_trial_id TEXT    NOT NULL,
+                inverse_name      TEXT    NOT NULL,
+                approach_type     TEXT    NOT NULL,
+                delta_pp_json     TEXT    NOT NULL DEFAULT '{}',
+                decision          TEXT    NOT NULL DEFAULT 'PENDING',
+                created_at        TEXT    NOT NULL,
+                UNIQUE(original_trial_id, inverse_name)
+            )
+        """)
         # Sync sequences past existing row ids so pre-migration databases don't collide.
         self._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
         self._sync_sequence_to_table("seq_deployments_id", "deployments")
+        self._sync_sequence_to_table("seq_inverse_trials_id", "inverse_trials")
 
     def _sync_sequence_to_table(self, seq_name: str, table_name: str) -> None:
         assert self._con is not None
@@ -88,6 +102,7 @@ class FeatureRegistry:
         seq = {
             "feature_trials": "seq_feature_trials_id",
             "deployments": "seq_deployments_id",
+            "inverse_trials": "seq_inverse_trials_id",
         }[table]
         row = self._con.execute(f"SELECT nextval('{seq}')").fetchone()
         assert row is not None
@@ -197,12 +212,91 @@ class FeatureRegistry:
         ).fetchall()
         return [_row_to_entry(row) for row in rows]
 
+    def record_inverse_trial(
+        self,
+        original_trial_id: str,
+        inverse_name: str,
+        approach_type: str,
+        delta_pp: dict[str, float],
+        decision: str,
+    ) -> int:
+        assert self._con is not None
+        entry_id = self._next_id("inverse_trials")
+        self._con.execute(
+            "INSERT INTO inverse_trials "
+            "(id, original_trial_id, inverse_name, approach_type, delta_pp_json, decision, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                entry_id,
+                original_trial_id,
+                inverse_name,
+                approach_type,
+                json.dumps(delta_pp),
+                decision,
+                datetime.now(timezone.utc).isoformat(),
+            ],
+        )
+        return entry_id
+
+    def has_inverse_been_tried(self, original_trial_id: str, inverse_name: str) -> bool:
+        assert self._con is not None
+        row = self._con.execute(
+            "SELECT COUNT(*) FROM inverse_trials "
+            "WHERE original_trial_id = ? AND inverse_name = ?",
+            [original_trial_id, inverse_name],
+        ).fetchone()
+        return row is not None and int(row[0]) > 0
+
+    def list_strongly_negative_trials(
+        self, threshold_pp: float = -1.0
+    ) -> list[FeatureEntry]:
+        assert self._con is not None
+        rows = self._con.execute(
+            "SELECT id, trial_id, ndcg_at_3, is_active, feature_names, definition_json, created_at "
+            "FROM feature_trials ORDER BY id"
+        ).fetchall()
+        return [
+            entry
+            for entry in (_row_to_entry(row) for row in rows)
+            if _min_delta_pp(entry["definition_json"]) <= threshold_pp
+        ]
+
+    def list_untried_inverses(self, original_trial_id: str) -> list[str]:
+        assert self._con is not None
+        rows = self._con.execute(
+            "SELECT approach_type FROM inverse_trials WHERE original_trial_id = ?",
+            [original_trial_id],
+        ).fetchall()
+        tried = {str(row[0]) for row in rows}
+        return [approach for approach in INVERSE_APPROACH_TYPES if approach not in tried]
+
+
+INVERSE_APPROACH_TYPES: Final[tuple[str, ...]] = (
+    "feature_negate",
+    "weight_invert",
+    "window_invert",
+    "anti_correlation",
+)
+
+
+def _min_delta_pp(definition_json: str) -> float:
+    payload = json.loads(definition_json)
+    if not isinstance(payload, dict):
+        return 0.0
+    raw = payload.get("delta_pp")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return float(raw)
+    if isinstance(raw, dict):
+        values = [float(v) for v in raw.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        return min(values) if values else 0.0
+    return 0.0
+
 
 def _row_to_entry(row: tuple[object, ...]) -> FeatureEntry:
     return FeatureEntry(
-        id=int(row[0]),
+        id=int(cast(SupportsInt, row[0])),
         trial_id=str(row[1]),
-        ndcg_at_3=float(row[2]),
+        ndcg_at_3=float(cast(SupportsFloat, row[2])),
         is_active=bool(row[3]),
         feature_names=json.loads(str(row[4])),
         definition_json=str(row[5]),

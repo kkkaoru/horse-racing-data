@@ -347,7 +347,7 @@ def train_fold(
     ns = build_fold_namespace(args, fold_year, fold_years)
     booster, fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
     model_dir.mkdir(parents=True, exist_ok=True)
-    booster.save_model(str(model_dir / "model.json"))
+    cast(SaveModelLike, booster).save_model(str(model_dir / "model.json"))
     valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,

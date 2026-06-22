@@ -359,7 +359,7 @@ def execute_upsert(
 ) -> None:
     sql = build_upsert_sql()
     template = build_row_template()
-    runner = execute_values_fn if execute_values_fn is not None else default_execute_values()
+    runner = execute_values_fn if execute_values_fn is not None else _default_execute_values()
     with connect(pg_url) as connection:
         with connection.cursor() as cursor:
             runner(cursor, sql, rows, template=template)

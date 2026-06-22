@@ -13,8 +13,8 @@ import pytest
 
 import pandas as pd
 
-import continuous_learner as subject
-from feature_registry import FeatureEntry, FeatureRegistry
+import learning.continuous_learner as subject
+from learning.feature_registry import FeatureEntry, FeatureRegistry
 
 
 def _make_df() -> pd.DataFrame:
@@ -135,7 +135,7 @@ def test_write_filtered_parquet_returns_path_to_parquet(tmp_path: Path) -> None:
 
 
 def test_learner_default_validation_years_matches_feature_explorer() -> None:
-    from feature_explorer import DEFAULT_VALIDATION_YEARS
+    from learning.feature_explorer import DEFAULT_VALIDATION_YEARS
 
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
@@ -260,7 +260,7 @@ def test_explore_round_calls_run_exploration_with_registry_and_df() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         df = _make_df()
         learner = _make_learner(registry=reg, df=df, validation_years=[2024])
-        with patch("continuous_learner.run_exploration") as mock_run:
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._explore_round(0, n_trials=20)
             mock_run.assert_called_once()
             kwargs = mock_run.call_args.kwargs
@@ -272,7 +272,7 @@ def test_explore_round_calls_run_exploration_with_registry_and_df() -> None:
 def test_explore_round_study_name_includes_category_and_round() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, category="nar")
-        with patch("continuous_learner.run_exploration") as mock_run:
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._explore_round(3, n_trials=20)
             study_name = mock_run.call_args.kwargs["study_name"]
             assert study_name.startswith("auto-nar-r3-")
@@ -281,7 +281,7 @@ def test_explore_round_study_name_includes_category_and_round() -> None:
 def test_explore_round_uses_override_n_trials() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, n_trials_per_round=20)
-        with patch("continuous_learner.run_exploration") as mock_run:
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._explore_round(0, n_trials=3)
             kwargs = mock_run.call_args.kwargs
             assert kwargs["n_trials"] == 3
@@ -350,7 +350,7 @@ def test_deploy_calls_pipeline_steps_in_correct_order() -> None:
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 side_effect=lambda *a, **kw: (
                     order.append("write"),
                     Path("/tmp/f.parquet"),
@@ -390,7 +390,7 @@ def test_deploy_records_deployment_in_registry() -> None:
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 return_value=Path("/tmp/f.parquet"),
             ),
             patch.object(
@@ -416,7 +416,7 @@ def test_deploy_rollback_triggered_when_record_deployment_raises(tmp_path: Path)
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 return_value=Path("/tmp/f.parquet"),
             ),
             patch.object(
@@ -902,7 +902,9 @@ def test_main_wires_trial_counts_into_controller(tmp_path: Path) -> None:
     registry_path = tmp_path / "reg.duckdb"
 
     created_controllers: list[subject.AdaptiveLoadController] = []
-    original_init = subject.AdaptiveLoadController.__init__
+    original_init = cast(
+        "Callable[..., None]", subject.AdaptiveLoadController.__init__
+    )
 
     def capturing_init(
         self: subject.AdaptiveLoadController, *args: object, **kwargs: object
@@ -1034,32 +1036,34 @@ def test_adaptive_controller_sleep_seconds_nonzero_when_high() -> None:
 
 def test_adaptive_controller_cpu_percent_returns_zero_without_psutil() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
-    with patch.object(subject, "_PSUTIL_AVAILABLE", False):
+    with patch.object(subject, "_psutil", None):
         result = ctrl._cpu_percent()
     assert result == 0.0
 
 
 def test_adaptive_controller_cpu_percent_returns_float_when_psutil_available() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
-    with patch.object(subject, "_PSUTIL_AVAILABLE", True):
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent.return_value = 42.5
+    with patch.object(subject, "_psutil", fake_psutil):
         result = ctrl._cpu_percent()
-    assert isinstance(result, float)
-    assert 0.0 <= result <= 100.0
+    assert result == 42.5
 
 
 def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
-    with patch.object(subject, "_PSUTIL_AVAILABLE", False):
+    with patch.object(subject, "_psutil", None):
         result = ctrl._mem_percent()
     assert result == 0.0
 
 
 def test_adaptive_controller_mem_percent_returns_float_when_psutil_available() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
-    with patch.object(subject, "_PSUTIL_AVAILABLE", True):
+    fake_psutil = MagicMock()
+    fake_psutil.virtual_memory.return_value = MagicMock(percent=63.0)
+    with patch.object(subject, "_psutil", fake_psutil):
         result = ctrl._mem_percent()
-    assert isinstance(result, float)
-    assert 0.0 <= result <= 100.0
+    assert result == 63.0
 
 
 # ---------------------------------------------------------------------------
@@ -1092,7 +1096,7 @@ def test_run_with_controller_sleeps_when_nonzero() -> None:
         with (
             patch.object(learner, "_explore_round"),
             patch.object(learner, "_maybe_deploy"),
-            patch("continuous_learner.time.sleep") as mock_sleep,
+            patch("learning.continuous_learner.time.sleep") as mock_sleep,
         ):
             learner.run(max_rounds=1)
         mock_sleep.assert_called_once_with(5.0)
@@ -1104,7 +1108,7 @@ def test_run_without_controller_no_sleep() -> None:
         with (
             patch.object(learner, "_explore_round"),
             patch.object(learner, "_maybe_deploy"),
-            patch("continuous_learner.time.sleep") as mock_sleep,
+            patch("learning.continuous_learner.time.sleep") as mock_sleep,
         ):
             learner.run(max_rounds=2)
         mock_sleep.assert_not_called()
@@ -1256,7 +1260,7 @@ def test_rollback_deploy_handles_rmtree_error(tmp_path: Path) -> None:
 
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, repo_root=tmp_path)
-        with patch("continuous_learner.shutil.rmtree", side_effect=OSError("cannot remove")):
+        with patch("learning.continuous_learner.shutil.rmtree", side_effect=OSError("cannot remove")):
             learner._rollback_deploy(staged, "{}")
 
     assert json_path.read_text(encoding="utf-8") == "{}"
@@ -1284,7 +1288,7 @@ def test_deploy_rollback_when_docker_fails(tmp_path: Path) -> None:
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 return_value=Path("/tmp/f.parquet"),
             ),
             patch.object(
@@ -1310,7 +1314,7 @@ def test_deploy_does_not_rollback_on_success(tmp_path: Path) -> None:
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 return_value=Path("/tmp/f.parquet"),
             ),
             patch.object(
@@ -1334,7 +1338,7 @@ def test_deploy_rollback_when_update_meta_fails(tmp_path: Path) -> None:
 
         with (
             patch(
-                "continuous_learner.write_filtered_parquet",
+                "learning.continuous_learner.write_filtered_parquet",
                 return_value=Path("/tmp/f.parquet"),
             ),
             patch.object(
@@ -1399,9 +1403,9 @@ def test_rollback_deploy_logs_error_when_rmtree_fails(
     staged.mkdir()
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, repo_root=tmp_path)
-        with patch("continuous_learner.shutil.rmtree", side_effect=OSError("disk error")):
+        with patch("learning.continuous_learner.shutil.rmtree", side_effect=OSError("disk error")):
             import logging
-            with caplog.at_level(logging.ERROR, logger="continuous_learner"):
+            with caplog.at_level(logging.ERROR, logger="learning.continuous_learner"):
                 learner._rollback_deploy(staged, None)
     assert any("failed to remove staged dir" in r.message for r in caplog.records)
     assert all(r.levelno == logging.ERROR for r in caplog.records if "failed to remove staged dir" in r.message)
@@ -1414,9 +1418,227 @@ def test_rollback_deploy_logs_error_when_write_fails(
         learner = _make_learner(registry=reg, repo_root=tmp_path)
         with patch.object(Path, "write_text", side_effect=OSError("disk full")):
             import logging
-            with caplog.at_level(logging.ERROR, logger="continuous_learner"):
+            with caplog.at_level(logging.ERROR, logger="learning.continuous_learner"):
                 learner._rollback_deploy(None, '{"original": true}')
     assert any("failed to restore model_meta.json" in r.message for r in caplog.records)
     assert all(r.levelno == logging.ERROR for r in caplog.records if "failed to restore model_meta.json" in r.message)
+
+
+# ---------------------------------------------------------------------------
+# _check_and_try_inverses / _run_inverse_exploration
+# ---------------------------------------------------------------------------
+
+
+def test_strong_negative_threshold_constant() -> None:
+    assert subject.STRONG_NEGATIVE_THRESHOLD_PP == -1.0
+
+
+def test_inverse_approach_types_constant() -> None:
+    from learning import feature_registry
+
+    assert feature_registry.INVERSE_APPROACH_TYPES == (
+        "feature_negate",
+        "weight_invert",
+        "window_invert",
+        "anti_correlation",
+    )
+
+
+def test_learning_package_lazy_reexports_feature_registry_symbol() -> None:
+    import learning
+
+    from learning.feature_registry import FeatureRegistry as DirectFeatureRegistry
+
+    assert learning.FeatureRegistry is DirectFeatureRegistry
+
+
+def test_learning_package_getattr_raises_for_unknown_symbol() -> None:
+    import learning
+
+    with pytest.raises(AttributeError, match="has no attribute 'NoSuchSymbol'"):
+        _ = learning.NoSuchSymbol
+
+
+def test_check_and_try_inverses_does_nothing_when_no_negative_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch.object(learner, "_run_inverse_exploration") as mock_run:
+            learner._check_and_try_inverses(0, 20)
+            mock_run.assert_not_called()
+
+
+def test_check_and_try_inverses_skips_already_tried() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = [
+        _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+    ]
+    mock_registry.has_inverse_been_tried.return_value = True
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_inverse_exploration") as mock_run:
+        learner._check_and_try_inverses(0, 20)
+    mock_run.assert_not_called()
+    mock_registry.record_inverse_trial.assert_not_called()
+    assert mock_registry.has_inverse_been_tried.call_count == 4
+
+
+def test_check_and_try_inverses_runs_new_inverse_for_each_approach() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = [
+        _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+    ]
+    mock_registry.has_inverse_been_tried.return_value = False
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(
+        learner,
+        "_run_inverse_exploration",
+        return_value={"delta_pp": {"ndcg_delta": 0.01}, "decision": "ADOPT"},
+    ) as mock_run:
+        learner._check_and_try_inverses(2, 20)
+    assert mock_run.call_count == 4
+    assert mock_registry.record_inverse_trial.call_count == 4
+
+
+def test_check_and_try_inverses_records_inverse_name_and_decision() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = [
+        _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+    ]
+    mock_registry.has_inverse_been_tried.return_value = False
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(
+        learner,
+        "_run_inverse_exploration",
+        return_value={"delta_pp": {"ndcg_delta": -0.02}, "decision": "REJECT"},
+    ):
+        learner._check_and_try_inverses(0, 20)
+    first_call = mock_registry.record_inverse_trial.call_args_list[0]
+    assert first_call.kwargs["original_trial_id"] == "trial-x"
+    assert first_call.kwargs["inverse_name"] == "trial-x__feature_negate"
+    assert first_call.kwargs["approach_type"] == "feature_negate"
+    assert first_call.kwargs["decision"] == "REJECT"
+    assert first_call.kwargs["delta_pp"] == {"ndcg_delta": -0.02}
+
+
+def test_check_and_try_inverses_dedup_uses_full_inverse_name() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = [
+        _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+    ]
+    mock_registry.has_inverse_been_tried.return_value = True
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_inverse_exploration"):
+        learner._check_and_try_inverses(0, 20)
+    tried_names = [c.args[1] for c in mock_registry.has_inverse_been_tried.call_args_list]
+    assert tried_names == [
+        "trial-x__feature_negate",
+        "trial-x__weight_invert",
+        "trial-x__window_invert",
+        "trial-x__anti_correlation",
+    ]
+
+
+def test_run_inverse_exploration_calls_run_exploration_with_half_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, validation_years=[2024])
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["n_trials"] == 10
+        assert kwargs["registry"] is reg
+        assert kwargs["validation_years"] == [2024]
+
+
+def test_run_inverse_exploration_clamps_trials_to_minimum_three() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_inverse_exploration(trial, "feature_negate", 1, 2)
+        assert mock_run.call_args.kwargs["n_trials"] == 3
+
+
+def test_run_inverse_exploration_study_name_includes_approach_and_trial() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_inverse_exploration(trial, "weight_invert", 3, 20)
+        assert mock_run.call_args.kwargs["study_name"] == "inv-weight_invert-trial-x-r3"
+
+
+def test_run_inverse_exploration_returns_adopt_when_best_beats_active() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.50, ["feat_speed"])
+        reg.activate(1)
+        reg.record_trial("better", 0.60, ["feat_speed"])
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration"):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "ADOPT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.10)}
+
+
+def test_run_inverse_exploration_returns_reject_when_best_not_better() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.60, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration"):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "REJECT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.0)}
+
+
+def test_run_inverse_exploration_uses_zero_active_when_none_active() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("inactive", 0.30, ["feat_speed"])
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration"):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "ADOPT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.30)}
+
+
+def test_run_calls_check_inverses_after_each_round() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        order: list[str] = []
+        with (
+            patch.object(
+                learner,
+                "_explore_round",
+                side_effect=lambda *a, **kw: order.append("explore"),
+            ),
+            patch.object(
+                learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
+            ),
+            patch.object(
+                learner,
+                "_check_and_try_inverses",
+                side_effect=lambda *a, **kw: order.append("inverse"),
+            ),
+        ):
+            learner.run(max_rounds=2)
+        assert order == ["explore", "deploy", "inverse", "explore", "deploy", "inverse"]
+
+
+def test_run_passes_actual_trials_to_check_inverses() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        ctrl = MagicMock(spec=subject.AdaptiveLoadController)
+        ctrl.round_params.return_value = (15, 0.0)
+        learner = _make_learner(
+            registry=reg, n_trials_per_round=20, load_controller=ctrl
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_called_once_with(0, 15)
 
 

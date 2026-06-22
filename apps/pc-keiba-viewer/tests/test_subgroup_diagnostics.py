@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
-import subgroup_diagnostics as subject
+import learning.subgroup_diagnostics as subject
 
 
-def _make_ground_truth(races: list[dict]) -> pd.DataFrame:
+def _make_ground_truth(races: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 
-def _make_predictions(races: list[dict]) -> pd.DataFrame:
+def _make_predictions(races: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(races)
 
 

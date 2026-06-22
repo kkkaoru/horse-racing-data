@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
 
-import feature_explorer as subject
-from feature_registry import FeatureRegistry
-from finish_position_lightgbm import META_COLUMNS
+import learning.feature_explorer as subject
+from learning.feature_registry import FeatureRegistry
+from finish_position_lightgbm import META_COLUMNS, FoldSplit
 
 
 def _make_df() -> pd.DataFrame:
@@ -44,7 +44,7 @@ def _make_df() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _make_fold() -> dict:
+def _make_fold() -> FoldSplit:
     """FoldSplit-compatible dict with numeric feature columns."""
     rows = []
     for i in range(4):
@@ -71,10 +71,10 @@ def _make_fold() -> dict:
             "feat_jockey": 0.3,
         })
     df = pd.DataFrame(rows)
-    return {"train_df": df, "valid_df": df.copy()}
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy()})
 
 
-def _make_meta_only_fold() -> dict:
+def _make_meta_only_fold() -> FoldSplit:
     """FoldSplit-compatible dict with only meta and label columns — no feature columns."""
     rows = []
     for i in range(4):
@@ -99,7 +99,7 @@ def _make_meta_only_fold() -> dict:
             "target_running_style_class": 0,
         })
     df = pd.DataFrame(rows)
-    return {"train_df": df, "valid_df": df.copy()}
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy()})
 
 
 def _make_df_3years() -> pd.DataFrame:
@@ -297,7 +297,7 @@ def test_run_fold_with_backend_lightgbm_computes_ndcg_from_predictions() -> None
         "predicted_rank": [1, 2, 3, 4],  # perfect ranking → NDCG=1.0
     })
     with patch(
-        "feature_explorer.run_walk_forward_fold",
+        "learning.feature_explorer.run_walk_forward_fold",
         return_value=(MagicMock(), preds_df, {"ndcg_at_3": 0.8}),
     ) as mock_fold:
         result = subject.run_fold_with_backend(fold, "lightgbm", params)
@@ -315,7 +315,7 @@ def test_run_fold_with_backend_xgboost_returns_ndcg_from_predictions() -> None:
         "finish_position": [1, 2, 3, 4],
     })
     with patch(
-        "feature_explorer.train_xgboost_ranker",
+        "learning.feature_explorer.train_xgboost_ranker",
         return_value=(MagicMock(), {"valid_predictions": valid_preds}),
     ) as mock_xgb:
         result = subject.run_fold_with_backend(fold, "xgboost", params)
@@ -333,7 +333,7 @@ def test_run_fold_with_backend_catboost_returns_ndcg_from_predictions() -> None:
         "finish_position": [1, 2, 3, 4],
     })
     with patch(
-        "feature_explorer.train_catboost_ranker",
+        "learning.feature_explorer.train_catboost_ranker",
         return_value={"valid_predictions": valid_preds},
     ) as mock_cb:
         result = subject.run_fold_with_backend(fold, "catboost", params)
@@ -406,7 +406,7 @@ def test_evaluate_feature_set_returns_mean_of_both_folds() -> None:
     df = _make_df_3years()
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         side_effect=[0.60, 0.90],
     ):
         result = subject.evaluate_feature_set(
@@ -420,7 +420,7 @@ def test_evaluate_feature_set_single_fold_returns_that_ndcg() -> None:
     df = _make_df()
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         return_value=0.75,
     ):
         result = subject.evaluate_feature_set(
@@ -434,7 +434,7 @@ def test_evaluate_feature_set_skips_year_with_empty_train() -> None:
     df = _make_df()  # data only for 2022+2023; 2022 fold has empty train → skipped
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         return_value=0.75,
     ) as mock_rfwb:
         result = subject.evaluate_feature_set(
@@ -448,7 +448,7 @@ def test_evaluate_feature_set_skips_year_with_empty_train() -> None:
 def test_evaluate_feature_set_no_valid_folds_returns_zero() -> None:
     df = _make_df()
     params = subject.DEFAULT_PARAMS
-    with patch("feature_explorer.run_walk_forward_fold") as mock_fold:
+    with patch("learning.feature_explorer.run_walk_forward_fold") as mock_fold:
         result = subject.evaluate_feature_set(
             df, ["feat_speed"], [2020], "20250101", params
         )
@@ -461,7 +461,7 @@ def test_evaluate_feature_set_filters_to_correct_columns() -> None:
     params = subject.DEFAULT_PARAMS
     captured_folds: list[object] = []
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         side_effect=lambda fold, backend, p: (captured_folds.append(fold), 0.80)[1],
     ):
         subject.evaluate_feature_set(
@@ -475,7 +475,7 @@ def test_evaluate_feature_set_multi_backend_averages_scores_across_backends() ->
     df = _make_df()
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         side_effect=[0.6, 0.7, 0.8],
     ):
         result = subject.evaluate_feature_set(
@@ -489,7 +489,7 @@ def test_evaluate_feature_set_skips_none_scores_from_backend() -> None:
     df = _make_df()
     params = subject.DEFAULT_PARAMS
     with patch(
-        "feature_explorer.run_fold_with_backend",
+        "learning.feature_explorer.run_fold_with_backend",
         side_effect=[0.75, None],
     ):
         result = subject.evaluate_feature_set(
@@ -502,7 +502,7 @@ def test_evaluate_feature_set_skips_none_scores_from_backend() -> None:
 def test_evaluate_feature_set_returns_zero_when_all_backend_scores_none() -> None:
     df = _make_df()
     params = subject.DEFAULT_PARAMS
-    with patch("feature_explorer.run_fold_with_backend", return_value=None):
+    with patch("learning.feature_explorer.run_fold_with_backend", return_value=None):
         result = subject.evaluate_feature_set(
             df, ["feat_speed"], [2023], "20160101", params,
             backends=("lightgbm",),
@@ -518,7 +518,7 @@ def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> N
     candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
     with FeatureRegistry(Path(":memory:")) as registry:
         with patch(
-            "feature_explorer.run_fold_with_backend",
+            "learning.feature_explorer.run_fold_with_backend",
             return_value=0.75,
         ) as mock_rfwb:
             objective = subject.build_objective(
@@ -545,7 +545,7 @@ def test_build_objective_returns_zero_when_selected_below_min_features() -> None
     params = subject.DEFAULT_PARAMS
     candidate_features = ["feat_speed", "feat_jockey"]
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch("feature_explorer.run_walk_forward_fold") as mock_fold:
+        with patch("learning.feature_explorer.run_walk_forward_fold") as mock_fold:
             objective = subject.build_objective(
                 df,
                 candidate_features,
@@ -579,7 +579,7 @@ def test_run_exploration_returns_list_of_exploration_results() -> None:
     mock_study.trials = [mock_trial]
 
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
+        with patch("learning.feature_explorer.optuna.create_study", return_value=mock_study):
             results = subject.run_exploration(
                 df,
                 registry,
@@ -615,8 +615,8 @@ def test_run_exploration_excludes_trials_with_none_value() -> None:
     mock_study.trials = [mock_trial_with_value, mock_trial_none]
 
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
-            with patch("feature_explorer.run_walk_forward_fold"):
+        with patch("learning.feature_explorer.optuna.create_study", return_value=mock_study):
+            with patch("learning.feature_explorer.run_walk_forward_fold"):
                 results = subject.run_exploration(
                     df,
                     registry,
@@ -637,7 +637,7 @@ def test_run_exploration_uses_default_validation_years_when_not_specified() -> N
     mock_study.trials = []
 
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
+        with patch("learning.feature_explorer.optuna.create_study", return_value=mock_study):
             results = subject.run_exploration(df, registry, n_trials=1)
 
     assert results == []
@@ -663,7 +663,7 @@ def test_run_exploration_reconstructs_feature_names_from_trial_params_not_candid
     mock_study.trials = [mock_trial]
 
     with FeatureRegistry(Path(":memory:")) as registry:
-        with patch("feature_explorer.optuna.create_study", return_value=mock_study):
+        with patch("learning.feature_explorer.optuna.create_study", return_value=mock_study):
             results = subject.run_exploration(
                 df,
                 registry,

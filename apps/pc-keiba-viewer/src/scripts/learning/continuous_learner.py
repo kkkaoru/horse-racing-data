@@ -15,28 +15,29 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final
+from types import ModuleType
+from typing import Final, TypedDict
 
 import pandas as pd
 
-from feature_explorer import (
+from learning.feature_explorer import (
     DEFAULT_BACKENDS,
     DEFAULT_TRAIN_START,
     DEFAULT_VALIDATION_YEARS,
     ModelBackend,
     run_exploration,
 )
-from feature_registry import FeatureEntry, FeatureRegistry
+from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
 from walk_forward_common import atomic_write_metadata
 
+_psutil: ModuleType | None
 try:
-    import psutil as _psutil
+    import psutil
 
-    _PSUTIL_AVAILABLE: bool = True
+    _psutil = psutil
 except ImportError:
-    _psutil = None  # type: ignore[assignment]
-    _PSUTIL_AVAILABLE = False
+    _psutil = None
 
 _logger = logging.getLogger(__name__)
 
@@ -72,6 +73,12 @@ DEFAULT_DEPLOY_THRESHOLD: Final[float] = 0.005
 DEFAULT_N_TRIALS: Final[int] = 20
 DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
+STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
+
+
+class InverseResult(TypedDict):
+    delta_pp: dict[str, float]
+    decision: str
 
 _CONTAINER_MODELS_ROOT: Final[str] = (
     "apps/finish-position-predict-container/models/finish-position"
@@ -103,13 +110,13 @@ class AdaptiveLoadController:
         mem_high_pct: float = 80.0,
         mem_low_pct: float = 60.0,
     ) -> None:
-        self._base_n_trials = base_n_trials
-        self._min_n_trials = min_n_trials
-        self._max_n_trials = max_n_trials
-        self._cpu_high_pct = cpu_high_pct
-        self._cpu_low_pct = cpu_low_pct
-        self._mem_high_pct = mem_high_pct
-        self._mem_low_pct = mem_low_pct
+        self._base_n_trials: int = base_n_trials
+        self._min_n_trials: int = min_n_trials
+        self._max_n_trials: int = max_n_trials
+        self._cpu_high_pct: float = cpu_high_pct
+        self._cpu_low_pct: float = cpu_low_pct
+        self._mem_high_pct: float = mem_high_pct
+        self._mem_low_pct: float = mem_low_pct
 
     def adjusted_n_trials(self) -> int:
         """Return trial count scaled by current system load (delegates to round_params)."""
@@ -131,13 +138,13 @@ class AdaptiveLoadController:
 
     def _cpu_percent(self) -> float:
         """psutil.cpu_percent(interval=0.5). Returns 0.0 if psutil not installed."""
-        if not _PSUTIL_AVAILABLE:
+        if _psutil is None:
             return 0.0
         return float(_psutil.cpu_percent(interval=0.5))
 
     def _mem_percent(self) -> float:
         """psutil.virtual_memory().percent. Returns 0.0 if psutil not installed."""
-        if not _PSUTIL_AVAILABLE:
+        if _psutil is None:
             return 0.0
         return float(_psutil.virtual_memory().percent)
 
@@ -217,6 +224,7 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
+            self._check_and_try_inverses(round_num, actual_trials)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
@@ -246,6 +254,56 @@ class ContinuousLearner:
             train_start=self._train_start,
             backends=self._backends,
         )
+
+    def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
+        """Try the inverse of each strongly negative trial, skipping ones already tried."""
+        negative_trials = self._registry.list_strongly_negative_trials(
+            STRONG_NEGATIVE_THRESHOLD_PP
+        )
+        for trial in negative_trials:
+            trial_id = trial["trial_id"]
+            for approach in INVERSE_APPROACH_TYPES:
+                inverse_name = f"{trial_id}__{approach}"
+                if self._registry.has_inverse_been_tried(trial_id, inverse_name):
+                    _logger.info(
+                        "inverse already tried: %s / %s — skipping", trial_id, approach
+                    )
+                    continue
+                _logger.info("trying inverse: %s / %s", trial_id, approach)
+                inverse_result = self._run_inverse_exploration(
+                    trial, approach, round_num, n_trials
+                )
+                self._registry.record_inverse_trial(
+                    original_trial_id=trial_id,
+                    inverse_name=inverse_name,
+                    approach_type=approach,
+                    delta_pp=inverse_result["delta_pp"],
+                    decision=inverse_result["decision"],
+                )
+
+    def _run_inverse_exploration(
+        self, trial: FeatureEntry, approach: str, round_num: int, n_trials: int
+    ) -> InverseResult:
+        """Run one inverse approach and return its delta_pp and ADOPT/REJECT decision."""
+        inverse_study_name = f"inv-{approach}-{trial['trial_id']}-r{round_num}"
+        _logger.info(
+            "inverse exploration: %s approach=%s", inverse_study_name, approach
+        )
+        run_exploration(
+            df=self._df,
+            registry=self._registry,
+            study_name=inverse_study_name,
+            n_trials=max(n_trials // 2, 3),
+            validation_years=self._validation_years,
+            train_start=self._train_start,
+            backends=self._backends,
+        )
+        best = self._registry.get_best_ndcg()
+        active = self._registry.get_active_entry()
+        active_ndcg = active["ndcg_at_3"] if active is not None else 0.0
+        delta = best - active_ndcg
+        decision = "ADOPT" if delta > 0 else "REJECT"
+        return {"delta_pp": {"ndcg_delta": delta}, "decision": decision}
 
     def _maybe_deploy(self) -> None:
         active = self._registry.get_active_entry()

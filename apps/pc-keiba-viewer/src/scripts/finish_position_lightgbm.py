@@ -24,7 +24,7 @@ import optuna
 import pandas as pd
 from numpy.typing import NDArray
 
-from subgroup_diagnostics import compute_race_ndcg
+from learning.subgroup_diagnostics import compute_race_ndcg
 
 LightgbmCallback = Callable[..., object]
 

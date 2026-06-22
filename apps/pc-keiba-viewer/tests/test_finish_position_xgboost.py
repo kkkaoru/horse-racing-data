@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from typing import cast
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -591,7 +592,7 @@ def test_train_xgboost_ranker_returns_metrics_and_booster(
     assert booster is fake_booster
     assert result["best_iteration"] == 7
     assert "valid_predictions" in result
-    metrics = result["metrics"]
+    metrics = cast(dict[str, float], result["metrics"])
     assert "top1_accuracy" in metrics
     assert "top3_box_accuracy" in metrics
     assert "top3_exact_accuracy" in metrics
@@ -635,7 +636,7 @@ def test_train_xgboost_ranker_passes_sample_weight_to_dmatrix(
     train_call = dmatrix_calls[0]
     assert train_call["weight"] is not None, "sample_weight was not passed to xgb.DMatrix"
     np.testing.assert_array_almost_equal(
-        train_call["weight"], np.array([1.5, 2.0]),
+        cast(np.ndarray, train_call["weight"]), np.array([1.5, 2.0]),
     )
 
 
@@ -740,7 +741,7 @@ def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch.setattr(subject.xgb, "train", MagicMock(return_value=fake_booster))
     args = _make_args()
     _, result = subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
-    preds = result["valid_predictions"]
+    preds = cast(pd.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.8 (row 1) gets rank 1
     assert preds["predicted_rank"].tolist() == [2, 1]
 

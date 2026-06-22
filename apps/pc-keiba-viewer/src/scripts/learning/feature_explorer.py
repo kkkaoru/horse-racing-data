@@ -11,7 +11,7 @@ from typing import Final, Literal, TypedDict, cast
 import optuna
 import pandas as pd
 
-from feature_registry import FeatureRegistry
+from learning.feature_registry import FeatureRegistry
 from finish_position_catboost import train_catboost_ranker
 from finish_position_lightgbm import (
     LABEL_COLUMNS,

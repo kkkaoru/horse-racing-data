@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -610,7 +611,7 @@ def test_train_catboost_ranker_returns_metrics_and_predictions(
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
     assert result["best_iteration"] == 10
     assert "valid_predictions" in result
-    metrics = result["metrics"]
+    metrics = cast(dict[str, float], result["metrics"])
     assert "top1_accuracy" in metrics
     assert "top3_box_accuracy" in metrics
 
@@ -691,7 +692,7 @@ def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch.setattr(subject, "Pool", MagicMock())
     args = _make_args()
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
-    preds = result["valid_predictions"]
+    preds = cast(pd.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.5 (row 1) gets rank 1
     assert preds["predicted_rank"].tolist() == [2, 1]
 

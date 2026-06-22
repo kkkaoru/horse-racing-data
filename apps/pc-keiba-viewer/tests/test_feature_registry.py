@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import duckdb
 import pytest
 
-import feature_registry as subject
+import learning.feature_registry as subject
 
 
 def test_get_best_ndcg_on_empty_registry_returns_zero() -> None:
@@ -280,3 +281,192 @@ def test_maybe_promote_rolls_back_insert_when_activate_fails(monkeypatch: pytest
         with pytest.raises(RuntimeError, match="injected activate failure"):
             reg.maybe_promote("t1", 0.9, ["f"])
         assert reg.get_best_ndcg() == 0.0
+
+
+def test_inverse_trials_table_created() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._con is not None
+        rows = reg._con.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'inverse_trials' ORDER BY ordinal_position"
+        ).fetchall()
+        columns = [row[0] for row in rows]
+        assert columns == [
+            "id",
+            "original_trial_id",
+            "inverse_name",
+            "approach_type",
+            "delta_pp_json",
+            "decision",
+            "created_at",
+        ]
+
+
+def test_record_inverse_trial_first_returns_id_one() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        entry_id = reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {"top1": -1.2}, "REJECT"
+        )
+        assert entry_id == 1
+
+
+def test_record_inverse_trial_stores_fields() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__weight_invert", "weight_invert", {"top1": 0.4}, "ADOPT"
+        )
+        assert reg._con is not None
+        row = reg._con.execute(
+            "SELECT original_trial_id, inverse_name, approach_type, delta_pp_json, decision "
+            "FROM inverse_trials"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "orig-1"
+        assert row[1] == "orig-1__weight_invert"
+        assert row[2] == "weight_invert"
+        assert row[3] == '{"top1": 0.4}'
+        assert row[4] == "ADOPT"
+
+
+def test_record_inverse_trial_stores_timestamp() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        assert reg._con is not None
+        row = reg._con.execute("SELECT created_at FROM inverse_trials").fetchone()
+        assert row is not None
+        assert row[0] != ""
+
+
+def test_has_inverse_been_tried_false_then_true() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg.has_inverse_been_tried("orig-1", "orig-1__feature_negate") is False
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        assert reg.has_inverse_been_tried("orig-1", "orig-1__feature_negate") is True
+
+
+def test_has_inverse_been_tried_distinguishes_by_inverse_name() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        assert reg.has_inverse_been_tried("orig-1", "orig-1__weight_invert") is False
+
+
+def test_record_inverse_trial_unique_constraint_raises() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        with pytest.raises(duckdb.ConstraintException):
+            reg.record_inverse_trial(
+                "orig-1", "orig-1__feature_negate", "feature_negate", {}, "ADOPT"
+            )
+
+
+def test_list_strongly_negative_trials_returns_scalar_delta_below_threshold() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("strong-neg", 0.4, ["f"], '{"delta_pp": -1.5}')
+        reg.record_trial("mild-neg", 0.4, ["f"], '{"delta_pp": -0.3}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        assert len(result) == 1
+        assert result[0]["trial_id"] == "strong-neg"
+
+
+def test_list_strongly_negative_trials_uses_min_of_dict_delta() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("dict-neg", 0.4, ["f"], '{"delta_pp": {"top1": 0.2, "place2": -1.3}}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        assert len(result) == 1
+        assert result[0]["trial_id"] == "dict-neg"
+
+
+def test_list_strongly_negative_trials_excludes_when_no_delta_pp() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("no-delta", 0.4, ["f"], '{"features": ["f"]}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        assert result == []
+
+
+def test_list_strongly_negative_trials_includes_value_equal_to_threshold() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("at-threshold", 0.4, ["f"], '{"delta_pp": -1.0}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        assert len(result) == 1
+        assert result[0]["trial_id"] == "at-threshold"
+
+
+def test_list_strongly_negative_trials_empty_when_none_negative() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("positive", 0.7, ["f"], '{"delta_pp": 0.5}')
+        assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_untried_inverses_returns_all_when_none_tried() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        result = reg.list_untried_inverses("orig-1")
+        assert result == [
+            "feature_negate",
+            "weight_invert",
+            "window_invert",
+            "anti_correlation",
+        ]
+
+
+def test_list_untried_inverses_excludes_tried_approaches() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__window_invert", "window_invert", {}, "REJECT"
+        )
+        result = reg.list_untried_inverses("orig-1")
+        assert result == ["weight_invert", "anti_correlation"]
+
+
+def test_list_untried_inverses_isolates_by_original_trial() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_inverse_trial(
+            "orig-1", "orig-1__feature_negate", "feature_negate", {}, "REJECT"
+        )
+        result = reg.list_untried_inverses("orig-2")
+        assert result == [
+            "feature_negate",
+            "weight_invert",
+            "window_invert",
+            "anti_correlation",
+        ]
+
+
+def test_min_delta_pp_returns_zero_for_non_dict_json() -> None:
+    assert subject._min_delta_pp("[1, 2, 3]") == 0.0
+
+
+def test_min_delta_pp_ignores_bool_scalar_delta() -> None:
+    assert subject._min_delta_pp('{"delta_pp": true}') == 0.0
+
+
+def test_min_delta_pp_ignores_bool_values_in_dict_delta() -> None:
+    assert subject._min_delta_pp('{"delta_pp": {"flag": true, "score": -2.0}}') == -2.0
+
+
+def test_min_delta_pp_returns_zero_for_empty_dict_delta() -> None:
+    assert subject._min_delta_pp('{"delta_pp": {}}') == 0.0
+
+
+def test_record_inverse_trial_sync_skips_past_manual_ids() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._con is not None
+        reg._con.execute(
+            "INSERT INTO inverse_trials VALUES "
+            "(50, 'orig-0', 'orig-0__feature_negate', 'feature_negate', '{}', 'REJECT', '2024-01-01')"
+        )
+        reg._sync_sequence_to_table("seq_inverse_trials_id", "inverse_trials")
+        next_id = reg.record_inverse_trial(
+            "orig-1", "orig-1__weight_invert", "weight_invert", {}, "ADOPT"
+        )
+        assert next_id == 51

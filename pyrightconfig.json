@@ -13,6 +13,7 @@
   "reportImportCycles": "error",
   "reportMissingTypeStubs": "error",
   "reportPrivateLocalImportUsage": "error",
+  "reportPrivateUsage": "none",
   "reportUnannotatedClassAttribute": "error",
   "reportUnknownArgumentType": "none",
   "reportUnknownLambdaType": "none",
