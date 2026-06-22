@@ -1,4 +1,4 @@
-"""Fetch and store daily weather data for every horse racing venue.
+"""Fetch and store hourly weather data for every horse racing venue.
 
 Usage:
     # Backfill historical data for all venues
@@ -33,13 +33,12 @@ DEFAULT_DB_PATH = Path.home() / ".horse-racing" / "venue_weather.duckdb"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-_DAILY_VARS = (
+_HOURLY_VARS = (
     "weather_code,"
-    "temperature_2m_max,"
-    "temperature_2m_min,"
-    "precipitation_sum,"
-    "wind_speed_10m_max,"
-    "wind_gusts_10m_max"
+    "temperature_2m,"
+    "precipitation,"
+    "wind_speed_10m,"
+    "wind_gusts_10m"
 )
 _TIMEZONE = "Asia/Tokyo"
 _TIMEOUT_SEC = 30
@@ -48,39 +47,37 @@ _SLEEP_SEC = 0.2
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS venue_weather (
-    keibajo_code VARCHAR NOT NULL,
+    keibajo_code  VARCHAR NOT NULL,
     weather_date  DATE    NOT NULL,
+    weather_hour  INTEGER NOT NULL,
     venue_name    VARCHAR NOT NULL,
     latitude      DOUBLE  NOT NULL,
     longitude     DOUBLE  NOT NULL,
-    weather_code      INTEGER,
-    temperature_max   DOUBLE,
-    temperature_min   DOUBLE,
-    precipitation_sum DOUBLE,
-    wind_speed_max    DOUBLE,
-    wind_gusts_max    DOUBLE,
+    weather_code  INTEGER,
+    temperature   DOUBLE,
+    precipitation DOUBLE,
+    wind_speed    DOUBLE,
+    wind_gusts    DOUBLE,
     fetched_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (keibajo_code, weather_date)
+    PRIMARY KEY (keibajo_code, weather_date, weather_hour)
 )
 """
 
 _UPSERT_SQL = """
 INSERT INTO venue_weather
-    (keibajo_code, weather_date, venue_name, latitude, longitude,
-     weather_code, temperature_max, temperature_min,
-     precipitation_sum, wind_speed_max, wind_gusts_max, fetched_at)
+    (keibajo_code, weather_date, weather_hour, venue_name, latitude, longitude,
+     weather_code, temperature, precipitation, wind_speed, wind_gusts, fetched_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT (keibajo_code, weather_date) DO UPDATE SET
-    venue_name        = excluded.venue_name,
-    latitude          = excluded.latitude,
-    longitude         = excluded.longitude,
-    weather_code      = excluded.weather_code,
-    temperature_max   = excluded.temperature_max,
-    temperature_min   = excluded.temperature_min,
-    precipitation_sum = excluded.precipitation_sum,
-    wind_speed_max    = excluded.wind_speed_max,
-    wind_gusts_max    = excluded.wind_gusts_max,
-    fetched_at        = excluded.fetched_at
+ON CONFLICT (keibajo_code, weather_date, weather_hour) DO UPDATE SET
+    venue_name    = excluded.venue_name,
+    latitude      = excluded.latitude,
+    longitude     = excluded.longitude,
+    weather_code  = excluded.weather_code,
+    temperature   = excluded.temperature,
+    precipitation = excluded.precipitation,
+    wind_speed    = excluded.wind_speed,
+    wind_gusts    = excluded.wind_gusts,
+    fetched_at    = excluded.fetched_at
 """
 
 
@@ -126,7 +123,7 @@ def build_url(lat: float, lon: float, start: date, end: date, *, archive: bool) 
     params = {
         "latitude": lat,
         "longitude": lon,
-        "daily": _DAILY_VARS,
+        "hourly": _HOURLY_VARS,
         "timezone": _TIMEZONE,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
@@ -145,26 +142,34 @@ def _nth(values: object, i: int) -> object | None:
     return values[i]
 
 
-def parse_daily(raw: bytes) -> list[dict[str, object]]:
+def _split_time(t: str) -> tuple[str, int]:
+    dt = datetime.fromisoformat(t)
+    return dt.date().isoformat(), dt.hour
+
+
+def parse_hourly(raw: bytes) -> list[dict[str, object]]:
     outer: dict[str, object] = json.loads(raw)
-    daily = outer.get("daily")
-    if not isinstance(daily, dict):
+    hourly = outer.get("hourly")
+    if not isinstance(hourly, dict):
         return []
-    times = daily.get("time")
+    times = hourly.get("time")
     if not isinstance(times, list):
         return []
-    return [
-        {
-            "date": t,
-            "weather_code": _nth(daily.get("weather_code"), i),
-            "temperature_max": _nth(daily.get("temperature_2m_max"), i),
-            "temperature_min": _nth(daily.get("temperature_2m_min"), i),
-            "precipitation_sum": _nth(daily.get("precipitation_sum"), i),
-            "wind_speed_max": _nth(daily.get("wind_speed_10m_max"), i),
-            "wind_gusts_max": _nth(daily.get("wind_gusts_10m_max"), i),
-        }
-        for i, t in enumerate(times)
-    ]
+    rows: list[dict[str, object]] = []
+    for i, t in enumerate(times):
+        d, h = _split_time(str(t))
+        rows.append(
+            {
+                "date": d,
+                "hour": h,
+                "weather_code": _nth(hourly.get("weather_code"), i),
+                "temperature": _nth(hourly.get("temperature_2m"), i),
+                "precipitation": _nth(hourly.get("precipitation"), i),
+                "wind_speed": _nth(hourly.get("wind_speed_10m"), i),
+                "wind_gusts": _nth(hourly.get("wind_gusts_10m"), i),
+            }
+        )
+    return rows
 
 
 def build_records(
@@ -177,24 +182,34 @@ def build_records(
         (
             keibajo_code,
             row["date"],
+            row["hour"],
             venue["name"],
             venue["lat"],
             venue["lon"],
             row.get("weather_code"),
-            row.get("temperature_max"),
-            row.get("temperature_min"),
-            row.get("precipitation_sum"),
-            row.get("wind_speed_max"),
-            row.get("wind_gusts_max"),
+            row.get("temperature"),
+            row.get("precipitation"),
+            row.get("wind_speed"),
+            row.get("wind_gusts"),
             fetched_at,
         )
         for row in rows
     ]
 
 
+def _needs_migration(conn: duckdb.DuckDBPyConnection) -> bool:
+    try:
+        cols = {row[0] for row in conn.execute("DESCRIBE venue_weather").fetchall()}
+        return "weather_hour" not in cols
+    except duckdb.Error:
+        return False
+
+
 def open_db(db_path: Path) -> duckdb.DuckDBPyConnection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = duckdb.connect(str(db_path))
+    if _needs_migration(conn):
+        conn.execute("DROP TABLE IF EXISTS venue_weather")
     conn.execute(_CREATE_SQL)
     return conn
 
@@ -220,7 +235,7 @@ def fetch_venue(
 ) -> list[tuple[object, ...]]:
     url = build_url(venue["lat"], venue["lon"], start, end, archive=archive)
     raw = fetch_raw(url)
-    rows = parse_daily(raw)
+    rows = parse_hourly(raw)
     return build_records(keibajo_code, venue, rows, fetched_at)
 
 

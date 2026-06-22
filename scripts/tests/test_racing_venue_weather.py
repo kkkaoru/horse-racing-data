@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 
+import duckdb
+
 import racing_venue_weather as rw
 
 
@@ -74,19 +76,25 @@ class TestBuildUrl:
         assert "2023-06-01" in url
         assert "2023-06-30" in url
 
-    def test_contains_daily_variables(self) -> None:
+    def test_contains_hourly_variables(self) -> None:
         url = rw.build_url(
             35.69, 139.49, date(2023, 1, 1), date(2023, 1, 31), archive=True
         )
         assert "weather_code" in url
-        assert "temperature_2m_max" in url
-        assert "precipitation_sum" in url
+        assert "temperature_2m" in url
+        assert "precipitation" in url
 
     def test_contains_timezone(self) -> None:
         url = rw.build_url(
             35.69, 139.49, date(2023, 1, 1), date(2023, 1, 31), archive=True
         )
         assert "Asia" in url
+
+    def test_uses_hourly_param_key(self) -> None:
+        url = rw.build_url(
+            35.69, 139.49, date(2023, 1, 1), date(2023, 1, 31), archive=True
+        )
+        assert "hourly=" in url
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +111,7 @@ class TestFetchRaw:
         return mock_resp
 
     def test_returns_response_body(self) -> None:
-        body = b'{"daily": {}}'
+        body = b'{"hourly": {}}'
         with patch(
             "racing_venue_weather.urlopen", return_value=self._make_mock_response(body)
         ):
@@ -144,73 +152,91 @@ class TestNth:
 
 
 # ---------------------------------------------------------------------------
-# parse_daily
+# _split_time
 # ---------------------------------------------------------------------------
 
 
-class TestParseDaily:
+class TestSplitTime:
+    def test_midnight(self) -> None:
+        assert rw._split_time("2024-01-01T00:00") == ("2024-01-01", 0)
+
+    def test_noon(self) -> None:
+        assert rw._split_time("2024-06-15T12:00") == ("2024-06-15", 12)
+
+    def test_last_hour(self) -> None:
+        assert rw._split_time("2024-12-31T23:00") == ("2024-12-31", 23)
+
+    def test_single_digit_hour(self) -> None:
+        assert rw._split_time("2024-01-01T09:00") == ("2024-01-01", 9)
+
+
+# ---------------------------------------------------------------------------
+# parse_hourly
+# ---------------------------------------------------------------------------
+
+
+class TestParseHourly:
     def test_empty_object_returns_empty(self) -> None:
-        assert rw.parse_daily(b"{}") == []
+        assert rw.parse_hourly(b"{}") == []
 
-    def test_null_daily_returns_empty(self) -> None:
-        assert rw.parse_daily(b'{"daily": null}') == []
+    def test_null_hourly_returns_empty(self) -> None:
+        assert rw.parse_hourly(b'{"hourly": null}') == []
 
-    def test_non_dict_daily_returns_empty(self) -> None:
-        assert rw.parse_daily(b'{"daily": []}') == []
+    def test_non_dict_hourly_returns_empty(self) -> None:
+        assert rw.parse_hourly(b'{"hourly": []}') == []
 
     def test_missing_time_returns_empty(self) -> None:
-        assert rw.parse_daily(b'{"daily": {"weather_code": [1]}}') == []
+        assert rw.parse_hourly(b'{"hourly": {"weather_code": [1]}}') == []
 
     def test_null_time_returns_empty(self) -> None:
-        assert rw.parse_daily(b'{"daily": {"time": null}}') == []
+        assert rw.parse_hourly(b'{"hourly": {"time": null}}') == []
 
     def test_full_response_parses_all_fields(self) -> None:
         data = {
-            "daily": {
-                "time": ["2023-01-01", "2023-01-02"],
+            "hourly": {
+                "time": ["2023-01-01T00:00", "2023-01-01T01:00"],
                 "weather_code": [3, 61],
-                "temperature_2m_max": [10.5, 8.2],
-                "temperature_2m_min": [5.1, 3.4],
-                "precipitation_sum": [0.0, 12.3],
-                "wind_speed_10m_max": [15.2, 20.1],
-                "wind_gusts_10m_max": [25.3, 32.1],
+                "temperature_2m": [10.5, 8.2],
+                "precipitation": [0.0, 12.3],
+                "wind_speed_10m": [15.2, 20.1],
+                "wind_gusts_10m": [25.3, 32.1],
             }
         }
-        rows = rw.parse_daily(json.dumps(data).encode())
+        rows = rw.parse_hourly(json.dumps(data).encode())
         assert len(rows) == 2
         assert rows[0]["date"] == "2023-01-01"
+        assert rows[0]["hour"] == 0
         assert rows[0]["weather_code"] == 3
-        assert rows[0]["temperature_max"] == 10.5
-        assert rows[0]["temperature_min"] == 5.1
-        assert rows[0]["precipitation_sum"] == 0.0
-        assert rows[0]["wind_speed_max"] == 15.2
-        assert rows[0]["wind_gusts_max"] == 25.3
-        assert rows[1]["date"] == "2023-01-02"
-        assert rows[1]["temperature_max"] == 8.2
+        assert rows[0]["temperature"] == 10.5
+        assert rows[0]["precipitation"] == 0.0
+        assert rows[0]["wind_speed"] == 15.2
+        assert rows[0]["wind_gusts"] == 25.3
+        assert rows[1]["hour"] == 1
+        assert rows[1]["temperature"] == 8.2
 
     def test_missing_optional_keys_produce_none(self) -> None:
-        data = {"daily": {"time": ["2023-01-01"]}}
-        rows = rw.parse_daily(json.dumps(data).encode())
+        data = {"hourly": {"time": ["2023-01-01T00:00"]}}
+        rows = rw.parse_hourly(json.dumps(data).encode())
         assert len(rows) == 1
         assert rows[0]["weather_code"] is None
-        assert rows[0]["temperature_max"] is None
-        assert rows[0]["precipitation_sum"] is None
+        assert rows[0]["temperature"] is None
+        assert rows[0]["precipitation"] is None
 
-    def test_single_date(self) -> None:
+    def test_single_hour(self) -> None:
         data = {
-            "daily": {
-                "time": ["2024-06-01"],
+            "hourly": {
+                "time": ["2024-06-01T09:00"],
                 "weather_code": [0],
-                "temperature_2m_max": [28.0],
-                "temperature_2m_min": [18.0],
-                "precipitation_sum": [0.0],
-                "wind_speed_10m_max": [12.0],
-                "wind_gusts_10m_max": [20.0],
+                "temperature_2m": [28.0],
+                "precipitation": [0.0],
+                "wind_speed_10m": [12.0],
+                "wind_gusts_10m": [20.0],
             }
         }
-        rows = rw.parse_daily(json.dumps(data).encode())
+        rows = rw.parse_hourly(json.dumps(data).encode())
         assert len(rows) == 1
         assert rows[0]["date"] == "2024-06-01"
+        assert rows[0]["hour"] == 9
 
 
 # ---------------------------------------------------------------------------
@@ -225,12 +251,12 @@ class TestBuildRecords:
         rows: list[dict[str, object]] = [
             {
                 "date": "2023-01-01",
+                "hour": 9,
                 "weather_code": 3,
-                "temperature_max": 10.5,
-                "temperature_min": 5.1,
-                "precipitation_sum": 0.0,
-                "wind_speed_max": 15.2,
-                "wind_gusts_max": 25.3,
+                "temperature": 10.5,
+                "precipitation": 0.0,
+                "wind_speed": 15.2,
+                "wind_gusts": 25.3,
             }
         ]
         records = rw.build_records("05", self._VENUE, rows, "ts")
@@ -238,10 +264,11 @@ class TestBuildRecords:
         rec = records[0]
         assert rec[0] == "05"
         assert rec[1] == "2023-01-01"
-        assert rec[2] == "東京"
-        assert rec[3] == 35.6894
-        assert rec[4] == 139.4990
-        assert rec[5] == 3
+        assert rec[2] == 9
+        assert rec[3] == "東京"
+        assert rec[4] == 35.6894
+        assert rec[5] == 139.4990
+        assert rec[6] == 3
         assert rec[11] == "ts"
 
     def test_empty_rows_returns_empty_list(self) -> None:
@@ -251,27 +278,62 @@ class TestBuildRecords:
         rows: list[dict[str, object]] = [
             {
                 "date": "2023-01-01",
+                "hour": 0,
                 "weather_code": 1,
-                "temperature_max": None,
-                "temperature_min": None,
-                "precipitation_sum": None,
-                "wind_speed_max": None,
-                "wind_gusts_max": None,
+                "temperature": None,
+                "precipitation": None,
+                "wind_speed": None,
+                "wind_gusts": None,
             },
             {
-                "date": "2023-01-02",
+                "date": "2023-01-01",
+                "hour": 1,
                 "weather_code": 2,
-                "temperature_max": None,
-                "temperature_min": None,
-                "precipitation_sum": None,
-                "wind_speed_max": None,
-                "wind_gusts_max": None,
+                "temperature": None,
+                "precipitation": None,
+                "wind_speed": None,
+                "wind_gusts": None,
             },
         ]
         records = rw.build_records("05", self._VENUE, rows, "ts")
         assert len(records) == 2
-        assert records[0][1] == "2023-01-01"
-        assert records[1][1] == "2023-01-02"
+        assert records[0][2] == 0
+        assert records[1][2] == 1
+
+
+# ---------------------------------------------------------------------------
+# _needs_migration
+# ---------------------------------------------------------------------------
+
+
+class TestNeedsMigration:
+    def test_returns_false_when_no_table(self, tmp_path: Path) -> None:
+        conn = duckdb.connect(str(tmp_path / "w.duckdb"))
+        assert rw._needs_migration(conn) is False
+        conn.close()
+
+    def test_returns_false_for_current_schema(self, tmp_path: Path) -> None:
+        conn = duckdb.connect(str(tmp_path / "w.duckdb"))
+        conn.execute(rw._CREATE_SQL)
+        assert rw._needs_migration(conn) is False
+        conn.close()
+
+    def test_returns_true_for_old_schema_without_weather_hour(
+        self, tmp_path: Path
+    ) -> None:
+        conn = duckdb.connect(str(tmp_path / "w.duckdb"))
+        conn.execute(
+            """
+            CREATE TABLE venue_weather (
+                keibajo_code VARCHAR NOT NULL,
+                weather_date DATE NOT NULL,
+                venue_name VARCHAR NOT NULL,
+                PRIMARY KEY (keibajo_code, weather_date)
+            )
+        """
+        )
+        assert rw._needs_migration(conn) is True
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +367,26 @@ class TestOpenDb:
         c2 = rw.open_db(db_path)
         c2.close()
 
+    def test_migration_drops_old_schema_and_recreates(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "w.duckdb"
+        old_conn = duckdb.connect(str(db_path))
+        old_conn.execute(
+            """
+            CREATE TABLE venue_weather (
+                keibajo_code VARCHAR NOT NULL,
+                weather_date DATE NOT NULL,
+                venue_name VARCHAR NOT NULL,
+                PRIMARY KEY (keibajo_code, weather_date)
+            )
+        """
+        )
+        old_conn.close()
+
+        conn = rw.open_db(db_path)
+        cols = {row[0] for row in conn.execute("DESCRIBE venue_weather").fetchall()}
+        assert "weather_hour" in cols
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # upsert_records
@@ -325,12 +407,12 @@ class TestUpsertRecords:
             (
                 "05",
                 "2023-01-01",
+                9,
                 "東京",
                 35.69,
                 139.49,
                 3,
                 10.5,
-                5.1,
                 0.0,
                 15.2,
                 25.3,
@@ -349,12 +431,12 @@ class TestUpsertRecords:
             (
                 "05",
                 "2023-01-01",
+                9,
                 "東京",
                 35.69,
                 139.49,
                 3,
                 10.5,
-                5.1,
                 0.0,
                 15.2,
                 25.3,
@@ -363,12 +445,12 @@ class TestUpsertRecords:
             (
                 "09",
                 "2023-01-01",
+                9,
                 "阪神",
                 34.73,
                 135.37,
                 0,
                 20.0,
-                10.0,
                 0.0,
                 8.0,
                 12.0,
@@ -384,12 +466,12 @@ class TestUpsertRecords:
             (
                 "05",
                 "2023-01-01",
+                9,
                 "東京",
                 35.69,
                 139.49,
                 3,
                 10.5,
-                5.1,
                 0.0,
                 15.2,
                 25.3,
@@ -400,12 +482,12 @@ class TestUpsertRecords:
             (
                 "05",
                 "2023-01-01",
+                9,
                 "東京",
                 35.69,
                 139.49,
                 61,
                 8.2,
-                3.4,
                 12.3,
                 20.1,
                 32.1,
@@ -415,7 +497,8 @@ class TestUpsertRecords:
         rw.upsert_records(conn, r1)
         rw.upsert_records(conn, r2)
         rows = conn.execute(
-            "SELECT weather_code FROM venue_weather WHERE keibajo_code='05' AND weather_date='2023-01-01'"
+            "SELECT weather_code FROM venue_weather"
+            " WHERE keibajo_code='05' AND weather_date='2023-01-01' AND weather_hour=9"
         ).fetchall()
         assert len(rows) == 1
         assert rows[0][0] == 61
@@ -427,10 +510,10 @@ class TestUpsertRecords:
             (
                 "01",
                 "2023-01-01",
+                0,
                 "札幌",
                 43.04,
                 141.40,
-                None,
                 None,
                 None,
                 None,
@@ -464,14 +547,13 @@ class TestFetchVenue:
 
     def test_returns_records_from_api(self) -> None:
         data = {
-            "daily": {
-                "time": ["2023-01-01"],
+            "hourly": {
+                "time": ["2023-01-01T00:00"],
                 "weather_code": [3],
-                "temperature_2m_max": [10.5],
-                "temperature_2m_min": [5.1],
-                "precipitation_sum": [0.0],
-                "wind_speed_10m_max": [15.2],
-                "wind_gusts_10m_max": [25.3],
+                "temperature_2m": [10.5],
+                "precipitation": [0.0],
+                "wind_speed_10m": [15.2],
+                "wind_gusts_10m": [25.3],
             }
         }
         with patch(
@@ -487,9 +569,10 @@ class TestFetchVenue:
             )
         assert len(records) == 1
         assert records[0][0] == "05"
-        assert records[0][2] == "東京"
+        assert records[0][2] == 0
+        assert records[0][3] == "東京"
 
-    def test_empty_daily_returns_empty_records(self) -> None:
+    def test_empty_hourly_returns_empty_records(self) -> None:
         with patch(
             "racing_venue_weather.urlopen", return_value=self._mock_response({})
         ):
@@ -517,12 +600,12 @@ class TestSyncAllVenues:
             (
                 "01",
                 "2023-01-01",
+                0,
                 "札幌",
                 43.04,
                 141.40,
                 0,
                 5.0,
-                -1.0,
                 0.0,
                 10.0,
                 15.0,
