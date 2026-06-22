@@ -12,8 +12,25 @@ import racing_venue_weather as rw
 
 
 # ---------------------------------------------------------------------------
-# VENUE_COORDS
+# _load_venue_coords / VENUE_COORDS
 # ---------------------------------------------------------------------------
+
+
+class TestLoadVenueCoords:
+    def test_loads_from_json_file(self, tmp_path: Path) -> None:
+        data = {"01": {"name": "札幌", "lat": 43.0775, "lon": 141.3269}}
+        f = tmp_path / "venue_coords.json"
+        f.write_text(json.dumps(data), encoding="utf-8")
+        with patch.object(rw, "_VENUE_COORDS_PATH", f):
+            result = rw._load_venue_coords()
+        assert result == data
+
+    def test_returns_dict_with_venue_info_shape(self) -> None:
+        result = rw._load_venue_coords()
+        for code, venue in result.items():
+            assert "name" in venue, f"{code} missing name"
+            assert "lat" in venue, f"{code} missing lat"
+            assert "lon" in venue, f"{code} missing lon"
 
 
 class TestVenueCoords:

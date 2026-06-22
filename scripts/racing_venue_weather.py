@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB_PATH = Path.home() / ".horse-racing" / "venue_weather.duckdb"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_VENUE_COORDS_PATH = Path(__file__).parent / "venue_coords.json"
 
 _HOURLY_VARS = (
     "weather_code,"
@@ -87,35 +88,14 @@ class VenueInfo(TypedDict):
     lon: float
 
 
-VENUE_COORDS: dict[str, VenueInfo] = {
-    # JRA venues (keibajo_code 01–10) — racetrack coordinates
-    "01": {"name": "札幌", "lat": 43.0776, "lon": 141.3240},
-    "02": {"name": "函館", "lat": 41.7829, "lon": 140.7755},
-    "03": {"name": "福島", "lat": 37.7651, "lon": 140.4804},
-    "04": {"name": "新潟", "lat": 37.9489, "lon": 139.1858},
-    "05": {"name": "東京", "lat": 35.6652, "lon": 139.4856},
-    "06": {"name": "中山", "lat": 35.7266, "lon": 139.9594},
-    "07": {"name": "中京", "lat": 35.0665, "lon": 136.9895},
-    "08": {"name": "京都", "lat": 34.9070, "lon": 135.7246},
-    "09": {"name": "阪神", "lat": 34.7811, "lon": 135.3630},
-    "10": {"name": "小倉", "lat": 33.8432, "lon": 130.8746},
-    # NAR venues — racetrack coordinates
-    "30": {"name": "門別", "lat": 42.5380, "lon": 142.0046},
-    "35": {"name": "盛岡", "lat": 39.6924, "lon": 141.2191},
-    "36": {"name": "水沢", "lat": 39.1295, "lon": 141.1689},
-    "42": {"name": "浦和", "lat": 35.8570, "lon": 139.6695},
-    "43": {"name": "船橋", "lat": 35.6842, "lon": 139.9920},
-    "44": {"name": "大井", "lat": 35.5935, "lon": 139.7434},
-    "45": {"name": "川崎", "lat": 35.5335, "lon": 139.7103},
-    "46": {"name": "金沢", "lat": 36.6368, "lon": 136.6729},
-    "47": {"name": "笠松", "lat": 35.3728, "lon": 136.7663},
-    "48": {"name": "名古屋", "lat": 35.0538, "lon": 136.7838},
-    "50": {"name": "園田", "lat": 34.7655, "lon": 135.4449},
-    "51": {"name": "姫路", "lat": 34.8551, "lon": 134.7011},
-    "54": {"name": "高知", "lat": 33.5046, "lon": 133.5301},
-    "55": {"name": "佐賀", "lat": 33.2683, "lon": 130.2852},
-    "83": {"name": "帯広", "lat": 42.9211, "lon": 143.1822},  # Ban'ei
-}
+def _load_venue_coords() -> dict[str, VenueInfo]:
+    raw: dict[str, VenueInfo] = json.loads(
+        _VENUE_COORDS_PATH.read_text(encoding="utf-8")
+    )
+    return raw
+
+
+VENUE_COORDS: dict[str, VenueInfo] = _load_venue_coords()
 
 
 def build_url(lat: float, lon: float, start: date, end: date, *, archive: bool) -> str:
