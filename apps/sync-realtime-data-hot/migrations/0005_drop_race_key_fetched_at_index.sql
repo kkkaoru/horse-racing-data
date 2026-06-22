@@ -1,0 +1,26 @@
+-- 0005: Drop second redundant index idx_odds_snapshots_race_key_fetched_at
+-- (race_key, fetched_at) is a strict leftmost-prefix of the UNIQUE index
+-- idx_odds_snapshots_race_fetched_type_combination_unique
+-- (race_key, fetched_at, odds_type, combination). Verified against the live
+-- 24,143,152-row remote D1 with EXPLAIN QUERY PLAN:
+--
+--   SELECT * FROM odds_snapshots WHERE race_key='nar:2026:0622:48:01'
+--     ORDER BY fetched_at DESC LIMIT 5
+--
+-- planner picks idx_odds_snapshots_race_key_fetched_at today, and switches to
+-- the UNIQUE index cleanly when the narrow one is forced unavailable (same
+-- (race_key, fetched_at) prefix, payload is wider but semantically identical
+-- for every existing read path: getLatestOddsForRace MAX(fetched_at) subquery,
+-- viewer "latest odds" lookup, history accessors). The UNIQUE index cannot be
+-- dropped (ON CONFLICT in insertOddsSnapshot / bulkInsertOddsSnapshotRows),
+-- so the narrow one is dead write-amplification: one B-tree update per INSERT
+-- with zero read benefit.
+--
+-- This is the second of two redundant-index drops following the 2026-06-22
+-- 13:01 JST D1 CPU exhaust. After 0004 cut amplification 5 → 4; this drop
+-- cuts it 4 → 3 (another ~25% relief on per-INSERT B-tree updates). Estimated
+-- index page reclaim ~720 MB on next VACUUM (24M rows × ~30B entry).
+--
+-- feedback_no_data_delete: DROP INDEX is a schema change, not data deletion.
+
+DROP INDEX IF EXISTS idx_odds_snapshots_race_key_fetched_at;
