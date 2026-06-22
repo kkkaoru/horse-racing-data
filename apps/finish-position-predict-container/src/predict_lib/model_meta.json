@@ -2,7 +2,7 @@
   "model_versions": {
     "jra": "iter20-jra-cb-2013-v8",
     "nar": "iter12-nar-xgb-hpo-v8",
-    "ban-ei": "banei-cb-v7-lineage-wf-21y"
+    "ban-ei": "banei-cb-v8-window2011-wf-15y"
   },
   "feature_counts": {
     "jra": 244,

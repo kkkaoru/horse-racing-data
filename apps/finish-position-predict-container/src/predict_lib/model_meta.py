@@ -23,6 +23,7 @@ E-top2 (iter22-jra-etop2, STAGED 2026-06-18):
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, Literal, get_args
 
@@ -34,7 +35,7 @@ CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 MODEL_META_JSON_PATH: Final[Path] = Path(__file__).parent / "model_meta.json"
 
 
-def _load_model_meta(
+def load_model_meta(
     path: Path = MODEL_META_JSON_PATH,
 ) -> tuple[dict[Category, str], dict[Category, int]]:
     """Load model_meta.json; raises FileNotFoundError if missing, ValueError if malformed."""
@@ -58,12 +59,14 @@ def _load_model_meta(
         versions[cat] = val
         cnt = fc.get(cat)
         if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt <= 0:
-            raise ValueError(f"model_meta.json missing or invalid feature_count for '{cat}': {path}")
+            raise ValueError(
+                f"model_meta.json missing or invalid feature_count for '{cat}': {path}"
+            )
         counts[cat] = cnt
     return versions, counts
 
 
-_resolved_versions, _resolved_counts = _load_model_meta()
+_resolved_versions, _resolved_counts = load_model_meta()
 
 # Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
 # MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific

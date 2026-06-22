@@ -151,7 +151,7 @@ def test_build_prediction_rows_banei_class_code_none() -> None:
     rows = build_prediction_rows(
         "ban-ei:2026:1201:83:07", "ban-ei", ranked, None, entries[0]
     )
-    assert rows[0][0] == "banei-cb-v7-lineage-wf-21y"
+    assert rows[0][0] == "banei-cb-v8-window2011-wf-15y"
     assert rows[0][13] == "sprint"
     assert rows[0][14] == "small"
     assert rows[0][15] == "winter"
