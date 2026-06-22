@@ -14,7 +14,7 @@ Two CLI modes via ``--mode`` flag:
 
 Buckets are formed from a categorical column on the predictions parquet
 (``--bucket-dim {kyoso_joken,grade}``). A bucket with fewer than
-``--min-bucket-samples`` rows falls back to the cat-global curve so the
+``--min-bucket-samples`` races falls back to the cat-global curve so the
 calibrator never overfits on tiny grade slices.
 
 All file I/O is injected so unit tests can run fully mocked. Run with::
@@ -42,7 +42,8 @@ SUPPORTED_MODES: tuple[str, str] = (MODE_FIT, MODE_APPLY)
 
 CATEGORY_JRA: str = "jra"
 CATEGORY_NAR: str = "nar"
-SUPPORTED_CATEGORIES: tuple[str, str] = (CATEGORY_JRA, CATEGORY_NAR)
+CATEGORY_BANEI: str = "ban-ei"
+SUPPORTED_CATEGORIES: tuple[str, str, str] = (CATEGORY_JRA, CATEGORY_NAR, CATEGORY_BANEI)
 
 BUCKET_DIM_KYOSO_JOKEN: str = "kyoso_joken"
 BUCKET_DIM_GRADE: str = "grade"
@@ -288,8 +289,7 @@ def derive_prob_from_rank(frame: pd.DataFrame, *, top_n: int) -> pd.Series:
         proxy = (race_sizes - ranks + 1.0) / race_sizes
     else:
         proxy = ((race_sizes - ranks + 1.0) / race_sizes) * float(top_n)
-    proxy = proxy.clip(lower=0.0, upper=1.0)
-    return proxy
+    return proxy.clip(lower=0.0, upper=float(top_n)).fillna(0.0)
 
 
 def win_indicator(frame: pd.DataFrame) -> pd.Series:
@@ -355,6 +355,18 @@ def fit_curves_for_frame(
     bucket_key: str,
     now: datetime,
 ) -> CurvePair:
+    # When using rank-based proxy (no direct probability column), exclude NaN-rank
+    # rows before fitting so they don't create spurious calibration knots.
+    if PREDICTED_RANK_COLUMN in frame.columns and (
+        PREDICTED_TOP1_PROB_COLUMN not in frame.columns
+        or frame[PREDICTED_TOP1_PROB_COLUMN].isna().all()
+    ):
+        frame = frame[frame[PREDICTED_RANK_COLUMN].notna()]
+    if len(frame) == 0:
+        raise ValueError(
+            f"No valid rows for calibration fit (bucket_key={bucket_key!r}); "
+            "all rows have NaN predicted_rank and no direct probability column"
+        )
     top1_probs = derive_top1_prob(frame).to_numpy(dtype=float)
     top3_probs = derive_top3_prob(frame).to_numpy(dtype=float)
     top1_targets = win_indicator(frame).to_numpy(dtype=float)
@@ -422,7 +434,12 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
         bucket_races = race_count_from_frame(bucket_frame)
         if bucket_races < args["min_bucket_samples"]:
             continue
-        pair = fit_curves_for_frame(bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now)
+        try:
+            pair = fit_curves_for_frame(
+                bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now,
+            )
+        except ValueError:
+            continue
         write_curve_pair(
             pair,
             output_dir=args["output_dir"],
@@ -431,12 +448,24 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
         )
         buckets_written += 1
     if buckets_written == 0:
-        pair = fit_curves_for_frame(
-            frame,
-            cat=args["cat"],
-            bucket_key=CAT_GLOBAL_BUCKET_KEY,
-            now=now,
-        )
+        try:
+            pair = fit_curves_for_frame(
+                frame,
+                cat=args["cat"],
+                bucket_key=CAT_GLOBAL_BUCKET_KEY,
+                now=now,
+            )
+        except ValueError:
+            sys.stderr.write(
+                "calibrate_finish_position: no valid rows for global fallback fit; "
+                "no calibration JSON written.\n",
+            )
+            return {
+                "cat": args["cat"],
+                "buckets_written": 0,
+                "fallback_used": False,
+                "race_count": race_count_from_frame(frame),
+            }
         write_curve_pair(
             pair,
             output_dir=args["output_dir"],
@@ -454,6 +483,12 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
 
 
 def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
+    schema_ver = curve.get("schema_version")
+    if schema_ver is not None and schema_ver != CALIBRATION_SCHEMA_VERSION:
+        raise ValueError(
+            f"calibration file schema_version={schema_ver!r} "
+            f"!= expected {CALIBRATION_SCHEMA_VERSION}; re-run fit to regenerate"
+        )
     xs = np.asarray(curve["iso_x"], dtype=float)
     ys = np.asarray(curve["iso_y"], dtype=float)
     if xs.size == 0:
@@ -501,7 +536,7 @@ def calibrated_series_for_target(
         raw_bucket_keys = pd.Series(["_unknown"] * len(frame), index=frame.index)
     else:
         raw_bucket_keys = frame[bucket_column].map(normalize_bucket_key)
-    calibrated_values = raw_series.astype(float).copy()
+    calibrated_values = raw_series.clip(lower=0.0, upper=1.0).astype(float).copy()
     source_values = pd.Series([CALIBRATION_SOURCE_UNCALIBRATED] * len(frame), index=frame.index)
     unique_keys: list[str] = sorted(set(raw_bucket_keys.tolist()))
     for bucket_key in unique_keys:
@@ -529,7 +564,7 @@ def re_rank_predictions(frame: pd.DataFrame, *, prob_column: str) -> pd.Series:
     )
 
 
-def log_source_distribution(source_series: pd.Series) -> None:
+def log_source_distribution(source_series: pd.Series, label: str) -> None:
     counts = source_series.value_counts(dropna=False)
     total = int(counts.sum())
     if total == 0:
@@ -538,7 +573,7 @@ def log_source_distribution(source_series: pd.Series) -> None:
     cat_global = int(counts.get(CALIBRATION_SOURCE_CAT_GLOBAL, 0))
     uncalibrated = int(counts.get(CALIBRATION_SOURCE_UNCALIBRATED, 0))
     sys.stderr.write(
-        "calibrate_finish_position: calibration_source distribution"
+        f"calibrate_finish_position: calibration_source distribution [{label}]"
         f" bucket={bucket}/{total} cat-global={cat_global}/{total}"
         f" uncalibrated={uncalibrated}/{total}\n",
     )
@@ -562,7 +597,7 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
         deps=deps,
         calibration_dir=args["calibration_dir"],
     )
-    calibrated_top3, _ = calibrated_series_for_target(
+    calibrated_top3, source_top3 = calibrated_series_for_target(
         frame,
         raw_series=raw_top3,
         bucket_column=bucket_column,
@@ -577,7 +612,8 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
     out[PREDICTED_RANK_COLUMN] = re_rank_predictions(
         out, prob_column=PREDICTED_TOP1_PROB_CALIBRATED_COLUMN,
     )
-    log_source_distribution(source_top1)
+    log_source_distribution(source_top1, label="top1")
+    log_source_distribution(source_top3, label="top3")
     deps["parquet_writer"](out, args["output_predictions_root"])
     return {"cat": args["cat"], "rows_written": int(len(out))}
 

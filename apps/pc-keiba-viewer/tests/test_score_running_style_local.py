@@ -505,6 +505,36 @@ def test_run_passes_none_calibrators_when_absent() -> None:
     apply_mock.assert_not_called()
 
 
+def test_score_frame_passes_detected_categoricals_to_predict_softmax() -> None:
+    """score_frame must call detect_categorical_features and pass the result to predict_softmax."""
+    booster = MagicMock()
+    frame = pd.DataFrame({
+        "source": ["jra"],
+        "kaisai_nen": ["2024"],
+        "kaisai_tsukihi": ["0101"],
+        "keibajo_code": ["05"],
+        "race_bango": ["01"],
+        "ketto_toroku_bango": ["2020100001"],
+        "track_code": ["A"],
+        "speed_index_avg_5": [50.0],
+    })
+    detected_cats = ["track_code"]
+    with patch.object(
+        subject, "detect_categorical_features",
+        return_value=detected_cats,
+    ) as detect_mock:
+        with patch.object(
+            subject, "predict_softmax",
+            return_value=np.array([[0.7, 0.1, 0.1, 0.1]]),
+        ) as predict_mock:
+            subject.score_frame(
+                booster=booster, frame=frame, feature_version="v1", model_version="m1",
+            )
+    detect_mock.assert_called_once()
+    called_categoricals = predict_mock.call_args[0][3]
+    assert called_categoricals == detected_cats
+
+
 def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
     fake_booster = MagicMock()
     argv = [

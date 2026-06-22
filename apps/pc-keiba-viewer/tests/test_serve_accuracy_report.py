@@ -30,8 +30,15 @@ def test_infer_era_before_cutoff_returns_degraded() -> None:
     assert subject.infer_era(gen_at) == "DEGRADED"
 
 
+def test_infer_era_one_minute_before_cutoff_returns_degraded() -> None:
+    # 2026-06-11 00:29 UTC = 09:29 JST = before the 09:30 cron fix
+    gen_at = datetime(2026, 6, 11, 0, 29, 0, tzinfo=timezone.utc)
+    assert subject.infer_era(gen_at) == "DEGRADED"
+
+
 def test_infer_era_at_cutoff_returns_post_fix() -> None:
-    gen_at = datetime(2026, 6, 11, 0, 0, 0, tzinfo=timezone.utc)
+    # 2026-06-11 00:30 UTC = 09:30 JST = cron fix went live
+    gen_at = datetime(2026, 6, 11, 0, 30, 0, tzinfo=timezone.utc)
     assert subject.infer_era(gen_at) == "POST_FIX"
 
 
@@ -133,31 +140,51 @@ def test_aggregate_fp_metrics_empty() -> None:
 
 
 def test_aggregate_fp_metrics_top1_hit() -> None:
-    # Race with predicted rank 1 winning
+    # Race with predicted rank 1 winning; pred rank 3 misses top3 so box is 0
     race_rows = [[(1, 1), (2, 3), (3, 5)]]
     top1, place2, place3, _fk2, top3_box = subject.aggregate_fp_metrics(race_rows)
     assert top1 == 1
     assert place2 == 1
     assert place3 == 1
-    assert top3_box == 1
+    assert top3_box == 0
 
 
 def test_aggregate_fp_metrics_place2_hit_but_not_top1() -> None:
+    # pred rank 3 finishes 5th so box fails even though pred1 and pred2 hit
     race_rows = [[(1, 2), (2, 1), (3, 5)]]
     top1, place2, place3, _fukusho_2p, top3_box = subject.aggregate_fp_metrics(race_rows)
+    assert top1 == 0
+    assert place2 == 1
+    assert place3 == 1
+    assert top3_box == 0
+
+
+def test_aggregate_fp_metrics_place3_hit() -> None:
+    # pred rank 2 finishes 5th so box fails even though pred1 and pred3 hit top3
+    race_rows = [[(1, 3), (2, 5), (3, 1)]]
+    top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
+    assert top1 == 0
+    assert place2 == 0
+    assert place3 == 1
+    assert top3_box == 0
+
+
+def test_aggregate_fp_metrics_top3_box_hit_when_all_three_in_top3() -> None:
+    # All three predicted top horses land in the actual top 3
+    race_rows = [[(1, 2), (2, 3), (3, 1)]]
+    top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
     assert top1 == 0
     assert place2 == 1
     assert place3 == 1
     assert top3_box == 1
 
 
-def test_aggregate_fp_metrics_place3_hit() -> None:
-    race_rows = [[(1, 3), (2, 5), (3, 1)]]
+def test_aggregate_fp_metrics_top3_box_zero_when_one_prediction_misses() -> None:
+    # pred1 and pred2 hit, pred3 misses — place3=1 but top3_box=0
+    race_rows = [[(1, 1), (2, 2), (3, 4)]]
     top1, place2, place3, _fk, top3_box = subject.aggregate_fp_metrics(race_rows)
-    assert top1 == 0
-    assert place2 == 0
     assert place3 == 1
-    assert top3_box == 1
+    assert top3_box == 0
 
 
 def test_aggregate_fp_metrics_all_miss() -> None:
@@ -683,6 +710,27 @@ def test_query_fp_metrics_nar_category() -> None:
     assert result.top1_hits == 1
 
 
+def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
+    mock_cur = MagicMock()
+    mock_cur.fetchall.return_value = []
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cur
+    subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    sql_call = mock_cur.execute.call_args[0][0]
+    assert "DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)" in sql_call
+    assert "ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC" in sql_call
+
+
+def test_query_fp_metrics_jst_display_converts_utc_to_jst() -> None:
+    # UTC 00:30 = JST 09:30; the displayed string must show 09:30 JST
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [("05", "01", 1, 1, "iter14", gen_at)]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
+
+
 # ── query_running_style_metrics (mocked) ──────────────────────────────────────
 
 
@@ -737,6 +785,18 @@ def test_query_rs_metrics_nar_category() -> None:
     result = subject.query_running_style_metrics(mock_conn, "20260614", "nar")
     assert result is not None
     assert result.category == "nar"
+
+
+def test_query_rs_metrics_jst_display_converts_utc_to_jst() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [
+        ("05", "01", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
 
 
 # ── run() integration (mocked) ────────────────────────────────────────────────

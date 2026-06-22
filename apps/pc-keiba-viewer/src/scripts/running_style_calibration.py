@@ -113,6 +113,11 @@ def _validate_calibrators_payload(raw: object, source: str) -> None:
             raise ValueError(
                 f"Calibration table for '{cls_name}' has mismatched x/y lengths in {source}"
             )
+    for required_class in ("nige", "senkou", "sashi", "oikomi"):
+        if required_class not in calibrators_dict:
+            raise ValueError(
+                f"Calibrators JSON is missing required class '{required_class}' in {source}"
+            )
 
 
 def apply_calibration(

@@ -6,6 +6,9 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import duckdb
+import numpy as np
+import pandas as pd
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +186,22 @@ def test_append_features_sql_emits_all_ten_pacestyle_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet", "jra")
     assert "past_style_x_field_pace_match" in sql
     assert "sire_x_field_pace_score" in sql
+
+
+def test_append_features_sql_pace_cross_terms_use_case_when_not_coalesce() -> None:
+    """NULL past_nige_rate_self/sire_nige_rate must propagate NULL, not 0.
+
+    The cross-term columns must use CASE WHEN IS NOT NULL instead of coalesce(, 0)
+    so that horses with no style history produce NULL (unknown) rather than 0.0
+    (falsely implying zero style-pace interaction).
+    """
+    sql = subject.append_features_sql("dummy.parquet", "jra")
+    assert "CASE WHEN b.past_nige_rate_self IS NOT NULL" in sql
+    assert "CASE WHEN b.sire_nige_rate IS NOT NULL" in sql
+    assert "coalesce(b.past_nige_rate_self, 0)" not in sql
+    # coalesce(b.sire_nige_rate, 0) appears inside rs_sire_style_match where it is already
+    # guarded by CASE WHEN rs.rs_p_nige IS NOT NULL — verify the unguarded form is absent
+    assert "coalesce(b.past_oikomi_rate_self, 0)" not in sql
     assert "rs_p_nige" in sql
     assert "rs_p_senkou" in sql
     assert "rs_p_sashi" in sql
@@ -589,3 +608,109 @@ def test_main_invokes_stage_rs_predictions_with_args(
     assert seen["rs_source"] == "auto"
     assert seen["run_date"] == "20260607"
     assert seen["wrote"] is True
+
+
+# ---------------------------------------------------------------------------
+# SQL correctness: rs_confidence_entropy / cross-terms must be NULL for
+# horses with no RS prediction (LEFT JOIN miss), not 0.
+# ---------------------------------------------------------------------------
+
+def _base_parquet(tmp_path: Path) -> str:
+    """Write a minimal base parquet and return the file glob string."""
+    df = pd.DataFrame({
+        "kaisai_nen": ["2024", "2024"],
+        "kaisai_tsukihi": ["0101", "0101"],
+        "keibajo_code": ["01", "01"],
+        "race_bango": ["1", "1"],
+        "ketto_toroku_bango": ["a", "b"],
+        # base_extra referenced columns — all nullable, set to NaN for simplicity
+        "past_nige_rate_self": [np.nan, np.nan],
+        "past_senkou_rate_self": [np.nan, np.nan],
+        "past_sashi_rate_self": [np.nan, np.nan],
+        "past_oikomi_rate_self": [np.nan, np.nan],
+        "field_nige_pressure": [np.nan, np.nan],
+        "field_senkou_pressure": [np.nan, np.nan],
+        "field_sashi_pressure": [np.nan, np.nan],
+        "field_oikomi_pressure": [np.nan, np.nan],
+        "sire_nige_rate": [np.nan, np.nan],
+        "sire_senkou_rate": [np.nan, np.nan],
+        "sire_sashi_rate": [np.nan, np.nan],
+        "sire_oikomi_rate": [np.nan, np.nan],
+        "field_pace_index": [np.nan, np.nan],
+        "race_year": [2024, 2024],
+    })
+    out = tmp_path / "race_year=2024" / "base.parquet"
+    out.parent.mkdir(parents=True)
+    df.to_parquet(out, index=False)
+    return str(tmp_path / "race_year=*" / "*.parquet")
+
+
+def _rs_preds_df() -> pd.DataFrame:
+    """RS predictions only for horse 'a' — horse 'b' is unscored."""
+    return pd.DataFrame({
+        "race_id": ["jra:2024:0101:01:1"],
+        "ketto_toroku_bango": ["a"],
+        "rs_p_nige": [0.6],
+        "rs_p_senkou": [0.2],
+        "rs_p_sashi": [0.1],
+        "rs_p_oikomi": [0.1],
+        "rs_predicted_class": ["nige"],
+        "model_version": ["v1.0"],
+        "race_date": ["20240101"],
+    })
+
+
+def test_append_features_sql_uses_case_when_for_rs_columns():
+    """SQL string must use CASE WHEN guard instead of coalesce-to-zero for rs_p_* columns."""
+    sql = subject.append_features_sql("dummy.parquet", "jra")
+    assert "CASE WHEN rs.rs_p_nige IS NOT NULL" in sql, (
+        "rs_confidence_entropy and cross-terms must be guarded with CASE WHEN IS NOT NULL"
+    )
+
+
+def test_append_features_sql_rs_confidence_entropy_null_for_unscored_horse(tmp_path: Path):
+    """Horse with no RS prediction must get NULL rs_confidence_entropy, not 0."""
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect()
+    con.register("rs_preds", _rs_preds_df())
+    sql = subject.append_features_sql(input_glob, "jra")
+    result = con.execute(sql).df()
+
+    horse_a = result[result["ketto_toroku_bango"] == "a"].iloc[0]
+    horse_b = result[result["ketto_toroku_bango"] == "b"].iloc[0]
+
+    assert not pd.isna(horse_a["rs_confidence_entropy"]), "scored horse must have non-NULL entropy"
+    assert pd.isna(horse_b["rs_confidence_entropy"]), (
+        "unscored horse must have NULL entropy, not 0 (0 would falsely imply max confidence)"
+    )
+
+
+def test_append_features_sql_cross_terms_null_for_unscored_horse(tmp_path: Path):
+    """rs_p_nige_x_field_pace and rs_sire_style_match must be NULL for unscored horses."""
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect()
+    con.register("rs_preds", _rs_preds_df())
+    sql = subject.append_features_sql(input_glob, "jra")
+    result = con.execute(sql).df()
+
+    horse_b = result[result["ketto_toroku_bango"] == "b"].iloc[0]
+    assert pd.isna(horse_b["rs_p_nige_x_field_pace"]), (
+        "unscored horse rs_p_nige_x_field_pace must be NULL"
+    )
+    assert pd.isna(horse_b["rs_sire_style_match"]), (
+        "unscored horse rs_sire_style_match must be NULL"
+    )
+
+
+def test_append_features_sql_cross_terms_non_null_for_scored_horse(tmp_path: Path):
+    """rs_p_nige_x_field_pace and rs_sire_style_match must be non-NULL for scored horses."""
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect()
+    con.register("rs_preds", _rs_preds_df())
+    sql = subject.append_features_sql(input_glob, "jra")
+    result = con.execute(sql).df()
+
+    horse_a = result[result["ketto_toroku_bango"] == "a"].iloc[0]
+    # With all base columns NULL (0 from coalesce), cross-terms should be 0.0 (not NULL)
+    assert not pd.isna(horse_a["rs_p_nige_x_field_pace"])
+    assert not pd.isna(horse_a["rs_sire_style_match"])

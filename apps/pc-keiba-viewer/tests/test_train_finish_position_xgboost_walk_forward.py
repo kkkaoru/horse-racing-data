@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -43,6 +44,10 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "fine_tune_lr_divisor": 10,
         "num_rounds": 450,
         "max_depth": 6,
+        "min_child_weight": 30,
+        "reg_lambda": 1.0,
+        "subsample": 1.0,
+        "colsample_bytree": 1.0,
         "learning_rate": 0.05,
     }
 
@@ -164,6 +169,18 @@ def test_load_hpo_params_raises_when_root_not_object(tmp_path: Path):
     assert "JSON object" in str(info.value)
 
 
+def test_load_hpo_params_extracts_nested_params_key(tmp_path: Path):
+    """Tune scripts write {trial_number, params: {...}, global_ndcg}; load_hpo_params
+    must return only the inner params dict, not the top-level wrapper."""
+    path = tmp_path / "hpo.json"
+    path.write_text(
+        json.dumps({"trial_number": 5, "params": {"num_rounds": 600, "max_depth": 7}, "global_ndcg": 0.8}),
+        encoding="utf-8",
+    )
+    result = subject.load_hpo_params(path)
+    assert result == {"num_rounds": 600, "max_depth": 7}
+
+
 def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     base = _base_args(tmp_path)
     merged = subject.apply_hpo_params(
@@ -178,6 +195,38 @@ def test_apply_hpo_params_returns_unchanged_for_empty_dict(tmp_path: Path):
     base = _base_args(tmp_path)
     merged = subject.apply_hpo_params(base, {})
     assert merged["num_rounds"] == base["num_rounds"]
+
+
+def test_apply_hpo_params_applies_min_child_weight_and_reg_lambda(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(
+        base, {"min_child_weight": 5, "reg_lambda": 2.5},
+    )
+    assert merged["min_child_weight"] == 5
+    assert merged["reg_lambda"] == pytest.approx(2.5)
+
+
+def test_apply_hpo_params_maps_n_estimators_to_num_rounds(tmp_path: Path):
+    """Tune script uses n_estimators key; walk-forward trainer uses num_rounds."""
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(base, {"n_estimators": 800})
+    assert merged["num_rounds"] == 800
+
+
+def test_apply_hpo_params_applies_subsample_and_colsample_bytree(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(base, {"subsample": 0.8, "colsample_bytree": 0.9})
+    assert merged["subsample"] == pytest.approx(0.8)
+    assert merged["colsample_bytree"] == pytest.approx(0.9)
+
+
+def test_build_fold_namespace_includes_subsample_and_colsample_bytree(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["subsample"] = 0.75
+    args["colsample_bytree"] = 0.85
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.subsample == pytest.approx(0.75)
+    assert ns.colsample_bytree == pytest.approx(0.85)
 
 
 def test_resolve_fold_random_seed_offsets_by_year():
@@ -249,6 +298,16 @@ def test_merge_bucket_weights_raises_when_score_missing():
         subject.merge_bucket_weights_into_train(_feature_df(), bucket_df)
 
 
+def test_merge_bucket_weights_deduplicates_bucket_df_by_race_id():
+    """Duplicate race_ids in bucket_df must not multiply training rows."""
+    bucket_df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2"],  # r1 appears twice
+        "is_weak_bucket_score": [1.0, 0.5, 0.0],
+    })
+    out = subject.merge_bucket_weights_into_train(_feature_df(), bucket_df)
+    assert len(out) == len(_feature_df())  # no row multiplication
+
+
 def test_attach_sample_weights_uses_time_only_when_bucket_absent():
     train_df = _feature_df()
     out = subject.attach_sample_weights(train_df, alpha=0.0)
@@ -265,6 +324,23 @@ def test_attach_sample_weights_raises_when_race_year_missing():
     train_df = _feature_df().drop(columns=["race_year"])
     with pytest.raises(ValueError):
         subject.attach_sample_weights(train_df, alpha=0.0)
+
+
+def test_build_fold_namespace_uses_min_child_weight_and_reg_lambda_from_args(
+    tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    args["min_child_weight"] = 7
+    args["reg_lambda"] = 2.0
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.min_child_weight == 7
+    assert ns.reg_lambda == pytest.approx(2.0)
+
+
+def test_build_fold_namespace_sets_relevance_rank3_to_one(tmp_path: Path):
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.relevance_rank3 == 1
 
 
 def test_build_fold_namespace_includes_lambdarank_extras_when_ndcg(tmp_path: Path):
@@ -338,6 +414,52 @@ def test_train_fold_passes_bucket_df_through(
     train_call = cast(MagicMock, deps["fold_trainer"]).call_args
     weighted_train = train_call.args[0]
     assert "is_weak_bucket_score" in weighted_train.columns
+
+
+def test_train_fold_saves_model_json_via_booster(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """train_fold must call booster.save_model(path) so continuous_learner
+    can stage model.json to the prediction container.  The booster is the
+    first element of the tuple returned by the fold trainer."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    mock_booster = MagicMock()
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = (
+        mock_booster,
+        {"valid_predictions": df, "best_iteration": 10},
+    )
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    expected_path = str(model_dir / "model.json")
+    mock_booster.save_model.assert_called_once_with(expected_path)
+
+
+def test_train_fold_creates_model_dir_before_save_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """model_dir must exist when booster.save_model() is called; XGBoost
+    does not auto-create parent directories and raises XGBoostError otherwise."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    dir_existed_at_save: list[bool] = []
+
+    def check_dir(path: str) -> None:
+        dir_existed_at_save.append(model_dir.exists())
+
+    mock_booster = MagicMock()
+    mock_booster.save_model.side_effect = check_dir
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = (
+        mock_booster,
+        {"valid_predictions": df, "best_iteration": 10},
+    )
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert dir_existed_at_save == [True]
 
 
 def test_resolve_fold_years_inclusive(tmp_path: Path):
@@ -456,6 +578,96 @@ def test_main_prints_json(
     ])
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["category"] == "nar"
+
+
+def test_train_xgboost_ranker_uses_pairwise_objective_by_default(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["objective"] == "rank:pairwise"
+    assert "lambdarank_pair_method" not in captured_params[0]
+
+
+def test_train_xgboost_ranker_uses_ndcg_objective_when_set(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+        objective="ndcg", lambdarank_pair_method="topk", lambdarank_num_pair_per_sample=3,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["objective"] == "rank:ndcg"
+    assert captured_params[0]["lambdarank_pair_method"] == "topk"
+    assert captured_params[0]["lambdarank_num_pair_per_sample"] == 3
+
+
+def test_train_xgboost_ranker_passes_subsample_and_colsample_bytree(monkeypatch: pytest.MonkeyPatch):
+    import finish_position_xgboost as fp_xgb
+    import xgboost as xgb
+
+    captured_params: list[dict[str, object]] = []
+
+    def fake_train(params: dict[str, object], *args: object, **kwargs: object) -> object:
+        captured_params.append(dict(params))
+        fake_booster = MagicMock()
+        fake_booster.best_iteration = 5
+        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        return fake_booster
+
+    monkeypatch.setattr(xgb, "train", fake_train)
+    df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1, 2],
+        "finish_position": [1.0, 2.0],
+    })
+    ns = argparse.Namespace(
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        learning_rate=0.05, max_depth=6, min_child_weight=30, reg_lambda=1.0,
+        subsample=0.8, colsample_bytree=0.9,
+        seed=42, verbosity=1, num_rounds=10, early_stopping_rounds=5,
+    )
+    fp_xgb.train_xgboost_ranker(df, df, [], ns)
+    assert captured_params[0]["subsample"] == pytest.approx(0.8)
+    assert captured_params[0]["colsample_bytree"] == pytest.approx(0.9)
 
 
 def test_split_train_valid_filters_dates_and_labels():

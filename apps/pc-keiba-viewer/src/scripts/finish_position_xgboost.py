@@ -5,7 +5,7 @@
 Mirrors the I/O contract of finish_position_lightgbm.py:
   --csv (parquet dir), --train-start-date, --validation-years, --output-report, --output-predictions-dir
 
-Uses rank:pairwise objective with NDCG@3 metric.
+Supports rank:pairwise (default) and rank:ndcg objectives via args.objective.
 
 Run with:
   apps/pc-keiba-viewer/.venv/bin/python apps/pc-keiba-viewer/src/scripts/finish_position_xgboost.py walk-forward \\
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -74,6 +75,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def load_parquet_dir(path: Path) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 
@@ -91,6 +94,11 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
         return rel_map.get(int(cast(float, value)), DEFAULT_RELEVANCE)
 
     return _to
+
+
+def subtract_one_day(date_str: str) -> str:
+    dt = datetime.strptime(date_str, "%Y%m%d") - timedelta(days=1)
+    return dt.strftime("%Y%m%d")
 
 
 def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
@@ -121,21 +129,29 @@ def train_xgboost_ranker(
     )
     train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
-    dtrain = xgb.DMatrix(train_df[feature_cols], label=train_labels)
+    train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
+    dtrain = xgb.DMatrix(train_df[feature_cols], label=train_labels, weight=train_weights)
     dtrain.set_group(build_group_sizes(train_df))
     dvalid = xgb.DMatrix(valid_df[feature_cols], label=valid_labels)
     dvalid.set_group(build_group_sizes(valid_df))
-    params = {
-        "objective": "rank:pairwise",
+    objective_arg = getattr(args, "objective", "pairwise")
+    xgb_objective = "rank:ndcg" if objective_arg == "ndcg" else "rank:pairwise"
+    params: dict[str, object] = {
+        "objective": xgb_objective,
         "eval_metric": "ndcg@3",
         "learning_rate": args.learning_rate,
         "max_depth": args.max_depth,
         "min_child_weight": args.min_child_weight,
         "reg_lambda": args.reg_lambda,
+        "subsample": getattr(args, "subsample", 1.0),
+        "colsample_bytree": getattr(args, "colsample_bytree", 1.0),
         "tree_method": "hist",
         "seed": args.seed,
         "verbosity": 1,
     }
+    if objective_arg == "ndcg":
+        params["lambdarank_pair_method"] = getattr(args, "lambdarank_pair_method", "topk")
+        params["lambdarank_num_pair_per_sample"] = getattr(args, "lambdarank_num_pair_per_sample", 3)
     evals_result: dict[str, dict[str, list[float]]] = {}
     booster = xgb.train(
         params,
@@ -149,7 +165,9 @@ def train_xgboost_ranker(
     valid_pred = booster.predict(dvalid, iteration_range=(0, booster.best_iteration + 1))
     valid_df = valid_df.assign(predicted_score=valid_pred)
     valid_df["predicted_rank"] = (
-        valid_df.groupby("race_id")["predicted_score"].rank(method="first", ascending=False).astype(int)
+        valid_df.groupby("race_id")["predicted_score"]
+        .rank(method="first", ascending=False, na_option="bottom")
+        .astype(int)
     )
     metrics = compute_fold_metrics(valid_df)
     return booster, {
@@ -210,7 +228,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     feature_cols = resolve_feature_columns(df)
     folds: list[dict[str, object]] = []
     if args.validation_from_date and args.validation_to_date:
-        train_end = args.train_end_date or args.validation_from_date
+        train_end = args.train_end_date or subtract_one_day(args.validation_from_date)
         train_df = filter_range(df, args.train_start_date, train_end)
         valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
         if len(train_df) > 0 and len(valid_df) > 0:

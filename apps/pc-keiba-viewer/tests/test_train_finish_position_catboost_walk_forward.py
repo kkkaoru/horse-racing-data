@@ -43,6 +43,8 @@ def _base_args(tmp_path: Path) -> subject.TrainCatBoostArgs:
         "iterations": 500,
         "depth": 8,
         "l2_leaf_reg": 3.0,
+        "bagging_temperature": None,
+        "random_strength": None,
         "learning_rate": 0.05,
     }
 
@@ -168,6 +170,22 @@ def test_load_hpo_params_raises_when_root_not_object(tmp_path: Path):
     assert "JSON object" in str(info.value)
 
 
+def test_load_hpo_params_extracts_nested_params_key(tmp_path: Path):
+    """Tune scripts write {trial_number, params: {...}, global_ndcg}; load_hpo_params
+    must return only the inner params dict, not the top-level wrapper."""
+    path = tmp_path / "hpo.json"
+    path.write_text(
+        json.dumps({
+            "trial_number": 3,
+            "params": {"iterations": 800, "depth": 10, "bagging_temperature": 1.5},
+            "global_ndcg": 0.75,
+        }),
+        encoding="utf-8",
+    )
+    result = subject.load_hpo_params(path)
+    assert result == {"iterations": 800, "depth": 10, "bagging_temperature": 1.5}
+
+
 def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     base = _base_args(tmp_path)
     merged = subject.apply_hpo_params(
@@ -178,6 +196,15 @@ def test_apply_hpo_params_overrides_each_field(tmp_path: Path):
     assert merged["depth"] == 10
     assert merged["l2_leaf_reg"] == 5.0
     assert merged["learning_rate"] == 0.1
+
+
+def test_apply_hpo_params_applies_bagging_temperature_and_random_strength(tmp_path: Path):
+    base = _base_args(tmp_path)
+    merged = subject.apply_hpo_params(
+        base, {"bagging_temperature": 1.0, "random_strength": 2.5},
+    )
+    assert merged["bagging_temperature"] == pytest.approx(1.0)
+    assert merged["random_strength"] == pytest.approx(2.5)
 
 
 def test_apply_hpo_params_skips_unknown_keys(tmp_path: Path):
@@ -264,6 +291,17 @@ def test_merge_bucket_weights_raises_when_score_missing():
     assert "is_weak_bucket_score" in str(info.value)
 
 
+def test_merge_bucket_weights_deduplicates_bucket_df_by_race_id():
+    """Duplicate race_ids in bucket_df must not multiply training rows."""
+    train_df = _feature_df()  # 4 rows: 2 horses × 2 races
+    bucket_df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2"],  # r1 appears twice
+        "is_weak_bucket_score": [1.0, 0.5, 0.0],
+    })
+    out = subject.merge_bucket_weights_into_train(train_df, bucket_df)
+    assert len(out) == len(train_df)  # no row multiplication
+
+
 def test_attach_sample_weights_uses_time_decay_only_when_no_bucket_column():
     train_df = _feature_df()
     out = subject.attach_sample_weights(train_df, alpha=0.5)
@@ -306,6 +344,32 @@ def test_build_fold_namespace_applies_fine_tune_lr_for_tail(tmp_path: Path):
     args["fine_tune_lr_divisor"] = 10
     ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
     assert ns.learning_rate == pytest.approx(0.005)
+
+
+def test_build_fold_namespace_propagates_bagging_temperature_and_random_strength(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["bagging_temperature"] = 1.5
+    args["random_strength"] = 2.0
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.bagging_temperature == pytest.approx(1.5)
+    assert ns.random_strength == pytest.approx(2.0)
+
+
+def test_build_fold_namespace_propagates_none_bagging_temperature(tmp_path: Path):
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.bagging_temperature is None
+    assert ns.random_strength is None
+
+
+def test_build_fold_namespace_sets_no_cat_features_false(tmp_path: Path):
+    """no_cat_features=False in the namespace must be consistent with
+    default_feature_resolver using use_cat_features=True so that
+    categorical columns are actually included in feature_cols and
+    passed to the CatBoost Pool."""
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.no_cat_features is False
 
 
 def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
@@ -382,6 +446,69 @@ def test_train_fold_passes_bucket_df_through(
     assert "sample_weight" in weighted_train.columns
 
 
+def test_train_fold_saves_model_json_when_fold_trainer_returns_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """train_fold must call model.save_model(..., format='json') when
+    the fold trainer returns a 'model' key, so continuous_learner can
+    stage model.json to the prediction container."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    mock_model = MagicMock()
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = {
+        "valid_predictions": df,
+        "best_iteration": 10,
+        "model": mock_model,
+    }
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    expected_path = str(model_dir / "model.json")
+    mock_model.save_model.assert_called_once_with(expected_path, format="json")
+
+
+def test_train_fold_creates_model_dir_before_save_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """model_dir must exist when model.save_model() is called; CatBoost
+    does not auto-create parent directories and raises otherwise."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    dir_existed_at_save: list[bool] = []
+
+    def check_dir(path: str, format: str) -> None:
+        dir_existed_at_save.append(model_dir.exists())
+
+    mock_model = MagicMock()
+    mock_model.save_model.side_effect = check_dir
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = {
+        "valid_predictions": df,
+        "best_iteration": 10,
+        "model": mock_model,
+    }
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert dir_existed_at_save == [True]
+
+
+def test_train_fold_does_not_save_model_when_fold_trainer_omits_model_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """Fold trainers that don't return a 'model' key (e.g. mocks or eval-only
+    runs) must not crash — save_model is simply skipped."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    deps = _make_fake_deps(df)  # mock returns dict without 'model' key
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    out = subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert out["status"] == "completed"
+    model_dir = subject.build_per_fold_model_dir(args, 2024)
+    assert not (model_dir / "model.json").exists()
+
+
 def test_resolve_fold_years_inclusive(tmp_path: Path):
     args = _base_args(tmp_path)
     args["year_from"] = 2023
@@ -447,7 +574,7 @@ def test_default_parquet_reader_delegates_to_finish_position_catboost(
     assert out is sentinel
 
 
-def test_default_feature_resolver_delegates_with_no_cat(monkeypatch: pytest.MonkeyPatch):
+def test_default_feature_resolver_delegates_with_cat_features(monkeypatch: pytest.MonkeyPatch):
     import finish_position_catboost as cb_walk
 
     resolver = MagicMock(return_value=["x"])
@@ -455,6 +582,8 @@ def test_default_feature_resolver_delegates_with_no_cat(monkeypatch: pytest.Monk
     out = subject.default_feature_resolver(pd.DataFrame({"x": [1]}))
     assert out == ["x"]
     resolver.assert_called_once()
+    _, kwargs = resolver.call_args
+    assert kwargs.get("use_cat_features") is True
 
 
 def test_default_fold_trainer_calls_train_catboost_ranker(monkeypatch: pytest.MonkeyPatch):

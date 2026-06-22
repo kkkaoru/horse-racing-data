@@ -197,11 +197,13 @@ def build_select_from_parquet_sql(args: LoadArguments) -> str:
     """
     safe_glob = sql_quote_literal(args["predictions_parquet_glob"])
     safe_rs = sql_quote_literal(args["running_style_feature_version"])
+    safe_mv = sql_quote_literal(args["model_version"])
     columns = ", ".join(PARQUET_SELECT_COLUMNS)
     return (
         f"select {columns} from read_parquet('{safe_glob}') "
         f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
-        f"and running_style_feature_version = '{safe_rs}'"
+        f"and running_style_feature_version = '{safe_rs}' "
+        f"and model_version = '{safe_mv}'"
     )
 
 
@@ -214,10 +216,12 @@ def build_version_mismatch_check_sql(args: LoadArguments) -> str:
     """
     safe_glob = sql_quote_literal(args["predictions_parquet_glob"])
     safe_rs = sql_quote_literal(args["running_style_feature_version"])
+    safe_mv = sql_quote_literal(args["model_version"])
     return (
         f"select count(*) from read_parquet('{safe_glob}') "
         f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
-        f"and running_style_feature_version <> '{safe_rs}'"
+        f"and (running_style_feature_version is null or running_style_feature_version <> '{safe_rs}' "
+        f"or model_version is null or model_version <> '{safe_mv}')"
     )
 
 

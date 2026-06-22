@@ -286,7 +286,7 @@ def category_source_filter(category: str, alias: str) -> str:
     if category == "jra":
         return f"{alias}.source = 'jra' and {alias}.keibajo_code in {JRA_KEIBAJO_CODES_SQL}"
     if category == "nar":
-        return f"{alias}.source = 'nar' and {alias}.keibajo_code <> '83'"
+        return f"{alias}.source = 'nar' and ({alias}.keibajo_code is null or {alias}.keibajo_code <> '83')"
     if category == "ban-ei":
         return f"{alias}.source = 'nar' and {alias}.keibajo_code = '83'"
     return "true"
@@ -531,7 +531,7 @@ def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -
             "nvd_ra",
             target_from,
             target_to,
-            f"se.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}'",
+            f"(se.keibajo_code is null or se.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}')",
         )
     if category == CATEGORY_BAN_EI:
         return _rec_select_from_se_ra(
@@ -1052,7 +1052,7 @@ def pedigree_rec_um_subquery(category: str) -> str:
         return (
             "select rec.*, um.ketto_joho_01b, um.ketto_joho_05b"
             " from rec join nar_um um using (ketto_toroku_bango)"
-            " where rec.source = 'nar' and rec.keibajo_code <> '83'"
+            " where rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
         )
     if category == "ban-ei":
         return (
@@ -1151,10 +1151,10 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
             " count(corner1_norm) as corner1_norm_count"
         ),
         "accum_metrics_select": (
-            "sum(m.nige_count)::double / nullif(sum(m.race_count), 0) as sire_nige_rate_val,"
-            " sum(m.senkou_count)::double / nullif(sum(m.race_count), 0) as sire_senkou_rate_val,"
-            " sum(m.sashi_count)::double / nullif(sum(m.race_count), 0) as sire_sashi_rate_val,"
-            " sum(m.oikomi_count)::double / nullif(sum(m.race_count), 0) as sire_oikomi_rate_val,"
+            "sum(m.nige_count)::double / nullif(sum(m.corner1_norm_count), 0) as sire_nige_rate_val,"
+            " sum(m.senkou_count)::double / nullif(sum(m.corner1_norm_count), 0) as sire_senkou_rate_val,"
+            " sum(m.sashi_count)::double / nullif(sum(m.corner1_norm_count), 0) as sire_sashi_rate_val,"
+            " sum(m.oikomi_count)::double / nullif(sum(m.corner1_norm_count), 0) as sire_oikomi_rate_val,"
             " sum(m.corner1_norm_sum)::double / nullif(sum(m.corner1_norm_count), 0) as sire_corner_1_norm_avg_val"
         ),
     },
@@ -1266,8 +1266,8 @@ def track_bias_cte(target_filter: str = "true") -> str:
     return f"""
     track_bias as (
       select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
-        avg(case when h.finish_position = 1 and h.umaban * 2 <= h.shusso_tosu + 1 then 1 else 0 end) as track_bias_inside,
-        avg(case when h.finish_position = 1 and cast(h.corner1_norm as double) <= {FRONT_CORNER_THRESHOLD} then 1 else 0 end) as track_bias_front
+        avg(case when h.finish_position = 1 and h.shusso_tosu is not null and h.umaban * 2 <= h.shusso_tosu + 1 then 1 else 0 end) as track_bias_inside,
+        avg(case when h.finish_position = 1 and h.corner1_norm is not null and cast(h.corner1_norm as double) <= {FRONT_CORNER_THRESHOLD} then 1 else 0 end) as track_bias_front
       from target t
       left join rec h
         on h.source = t.source and h.keibajo_code = t.keibajo_code
@@ -1608,10 +1608,15 @@ def base_features_select_sql(category: str) -> str:
       case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_oikomi_rate_val else null end as sire_oikomi_rate,
       case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_corner_1_norm_avg_val else null end as sire_corner_1_norm_avg,
       (
-        coalesce(sds.sire_distance_win_rate_val, 0) +
-        coalesce(dsd.dam_sire_distance_win_rate_val, 0) +
-        coalesce(sts.sire_track_win_rate_val, 0)
-      ) / {PEDIGREE_COMPOSITE_DIVISOR}::double as pedigree_score_for_race,
+        coalesce(case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) +
+        coalesce(case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end, 0) +
+        coalesce(case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end, 0)
+      ) / nullif(
+        (case when sds.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when dsd.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when sts.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end),
+        0
+      )::double as pedigree_score_for_race,
       rfa.race_avg_speed as field_strength_avg_speed,
       rts.race_top_speed as field_strength_top3_speed,
       greatest(0, rfa.race_strong_count - case when hc.same_distance_win_rate > {RIVAL_DISTANCE_THRESHOLD} then 1 else 0 end) as rival_count_at_distance,

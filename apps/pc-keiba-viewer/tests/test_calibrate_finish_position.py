@@ -421,25 +421,28 @@ def test_derive_top3_prob_uses_existing_column():
 
 
 def test_derive_top3_prob_falls_back_to_rank_when_column_missing():
+    # 4-horse race, top_n=3: proxy = (race_size - rank + 1) / race_size * 3
+    # Rank 1: (4/4)*3=3.0, Rank 2: (3/4)*3=2.25, Rank 3: (2/4)*3=1.5, Rank 4: (1/4)*3=0.75
     frame = pd.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[2] == 1.0
-    assert result.iloc[3] == 0.75
+    assert result.iloc[0] == pytest.approx(3.0)
+    assert result.iloc[2] == pytest.approx(1.5)
+    assert result.iloc[3] == pytest.approx(0.75)
 
 
 def test_derive_top3_prob_falls_back_when_existing_column_all_null():
+    # 2-horse race, top_n=3: Rank 1: (2/2)*3=3.0, Rank 2: (1/2)*3=1.5
     frame = pd.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top3_prob": [None, None],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[1] == 1.0
+    assert result.iloc[0] == pytest.approx(3.0)
+    assert result.iloc[1] == pytest.approx(1.5)
 
 
 def test_derive_prob_from_rank_returns_zeros_when_rank_column_missing():
@@ -447,6 +450,50 @@ def test_derive_prob_from_rank_returns_zeros_when_rank_column_missing():
     result = subject.derive_prob_from_rank(frame, top_n=1)
     assert result.iloc[0] == 0.0
     assert result.iloc[1] == 0.0
+
+
+def test_derive_prob_from_rank_top3_allows_values_above_one():
+    """top_n=3 proxy must NOT be clipped to 1.0 — top-ranked horses need
+    distinguishable proxy values > 1.0 so isotonic regression can learn a
+    meaningful calibration curve over them."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 10,
+        "predicted_rank": list(range(1, 11)),
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=3)
+    # Rank 1 in a 10-horse race: (10/10)*3 = 3.0 — well above 1.0
+    assert result.iloc[0] > 1.0, "rank-1 proxy for top_n=3 must exceed 1.0"
+    # Rank 10: (1/10)*3 = 0.3 — below 1.0
+    assert result.iloc[9] < 1.0
+    # All values must be positive
+    assert (result > 0.0).all()
+    # Proxy must decrease with rank
+    assert result.iloc[0] > result.iloc[4] > result.iloc[9]
+
+
+def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 5,
+        "predicted_rank": [1, 2, 3, 4, 5],
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=1)
+    assert (result >= 0.0).all()
+    assert (result <= 1.0).all()
+
+
+def test_derive_prob_from_rank_clamps_nan_rank_to_zero():
+    """NaN predicted_rank must become proxy=0.0 (not NaN) so apply_run can safely
+    calibrate without crashing re_rank_predictions().astype(int) with
+    IntCastingNaNError. fit_curves_for_frame filters NaN-rank rows at frame level
+    before calling this function, so the 0.0 fallback only matters for inference."""
+    frame = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "predicted_rank": [1.0, 2.0, float("nan")],
+    })
+    result = subject.derive_prob_from_rank(frame, top_n=1)
+    assert result.iloc[0] > 0.0
+    assert result.iloc[1] > 0.0
+    assert result.iloc[2] == pytest.approx(0.0)
 
 
 def test_win_indicator_marks_rank_one_only():
@@ -464,6 +511,86 @@ def test_top3_indicator_marks_top_three():
     assert result.iloc[1] == 1.0
     assert result.iloc[2] == 1.0
     assert result.iloc[3] == 0.0
+
+
+def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
+    """Rows with NaN predicted_rank must be dropped before isotonic fit when using
+    rank-based proxy. Including them would create spurious (proxy=0.0, target=1.0)
+    knots that distort win-probability calibration."""
+    rows = []
+    for race_idx in range(20):
+        for horse_idx in range(10):
+            rank = float(horse_idx + 1)
+            actual = 1.0 if horse_idx == 0 else float(horse_idx + 1)
+            rows.append({
+                "race_id": f"r{race_idx}",
+                "predicted_rank": rank,
+                "actual_finish_position": actual,
+            })
+    frame = pd.DataFrame(rows)
+    nan_row = pd.DataFrame([{
+        "race_id": "r_extra",
+        "predicted_rank": float("nan"),
+        "actual_finish_position": 1.0,
+    }])
+    frame_with_nan = pd.concat([frame, nan_row], ignore_index=True)
+    pair_clean = subject.fit_curves_for_frame(
+        frame, cat="jra", bucket_key="test", now=FIXED_NOW,
+    )
+    pair_with_nan = subject.fit_curves_for_frame(
+        frame_with_nan, cat="jra", bucket_key="test", now=FIXED_NOW,
+    )
+    assert pair_clean["top1"]["n_samples"] == pair_with_nan["top1"]["n_samples"]
+
+
+def test_fit_curves_for_frame_raises_when_all_ranks_are_nan():
+    """When every row has NaN predicted_rank and no probability column is present,
+    fit_curves_for_frame must raise ValueError rather than passing empty arrays
+    to IsotonicRegression.fit([],[]) which also raises ValueError."""
+    frame = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "predicted_rank": [float("nan"), float("nan")],
+        "actual_finish_position": [1.0, 2.0],
+    })
+    with pytest.raises(ValueError, match="No valid rows"):
+        subject.fit_curves_for_frame(frame, cat="jra", bucket_key="empty_bucket", now=FIXED_NOW)
+
+
+def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path):
+    """fit_run must skip buckets where all predicted_ranks are NaN, fall through
+    to the global fallback, and not crash."""
+    frame_valid = pd.DataFrame({
+        "race_id": [f"r{i}" for i in range(60) for _ in range(10)],
+        "predicted_rank": [float(h + 1) for _ in range(60) for h in range(10)],
+        "actual_finish_position": [float(h + 1) for _ in range(60) for h in range(10)],
+        "kyoso_joken_code": ["001"] * 600,
+    })
+    frame_nanrank = pd.DataFrame({
+        "race_id": ["r_nan"] * 5,
+        "predicted_rank": [float("nan")] * 5,
+        "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "kyoso_joken_code": ["002"] * 5,
+    })
+    frame = pd.concat([frame_valid, frame_nanrank], ignore_index=True)
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    assert result["buckets_written"] == 1  # bucket 001 only; bucket 002 skipped
 
 
 def test_fit_single_curve_returns_schema_v1_and_finite_brier():
@@ -950,6 +1077,39 @@ def test_apply_run_handles_top3_calibration_independently(tmp_path: Path):
     assert written_frame["predicted_top3_prob_calibrated"].iloc[2] == pytest.approx(0.46, abs=1e-9)
 
 
+def test_apply_run_logs_top3_calibration_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """top3 calibration_source must appear in stderr (not silently discarded)."""
+    frame = _apply_input_frame()
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    parquet_writer = MagicMock()
+    json_reader_mock = MagicMock(
+        side_effect=[_g1_iso_top1_curve(), _g1_iso_top3_curve()],
+    )
+    path_exists: subject.PathExistsLike = lambda path: "bucket_999" in path.as_posix()
+    deps: subject.ApplyDeps = {
+        "parquet_reader": parquet_reader,
+        "parquet_writer": cast(subject.ParquetWriterLike, parquet_writer),
+        "json_reader": cast(subject.JsonReaderLike, json_reader_mock),
+        "path_exists": path_exists,
+    }
+    args: subject.ApplyArguments = {
+        "mode": "apply",
+        "cat": "jra",
+        "input_predictions_root": tmp_path / "in",
+        "calibration_dir": tmp_path / "cal",
+        "output_predictions_root": tmp_path / "out",
+    }
+    subject.apply_run(args, deps)
+    stderr = capsys.readouterr().err
+    # Both top1 and top3 calibration_source distributions must be logged with labels
+    assert "calibration_source distribution [top1]" in stderr
+    assert "calibration_source distribution [top3]" in stderr
+
+
 def test_apply_run_uses_grade_code_when_kyoso_joken_absent(tmp_path: Path):
     frame = _apply_input_frame().drop(columns=["kyoso_joken_code"])
     frame["grade_code"] = "A"
@@ -1017,8 +1177,9 @@ def test_race_count_from_frame_uses_nunique():
 
 def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture[str]):
     series = pd.Series(["bucket", "bucket", "cat-global", "uncalibrated"])
-    subject.log_source_distribution(series)
+    subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
+    assert "[top1]" in captured.err
     assert "bucket=2/4" in captured.err
     assert "cat-global=1/4" in captured.err
     assert "uncalibrated=1/4" in captured.err
@@ -1026,9 +1187,50 @@ def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture
 
 def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixture[str]):
     series = pd.Series([], dtype=str)
-    subject.log_source_distribution(series)
+    subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+def test_fit_run_uses_race_count_for_bucket_threshold_passes_when_enough_races(tmp_path: Path):
+    """min_bucket_samples compares against unique race count, not total row count.
+    10 races × 1 horse = 10 rows, race_count=10 >= min_bucket_samples=5 → bucket written."""
+    frame = pd.DataFrame({
+        "race_id": [f"r{i}" for i in range(10)],
+        "ketto_toroku_bango": [f"horse_{i}" for i in range(10)],
+        "predicted_score": [float(i) / 10 for i in range(10)],
+        "predicted_rank": list(range(1, 11)),
+        "predicted_top1_prob": [float(i) / 10 for i in range(10)],
+        "predicted_top3_prob": [min(float(i) / 10 * 3, 1.0) for i in range(10)],
+        "actual_finish_position": [float(i + 1) for i in range(10)],
+        "kyoso_joken_code": ["016"] * 10,
+        "grade_code": ["B"] * 10,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    assert result["buckets_written"] == 1
+    assert result["fallback_used"] is False
+
+
+def test_supported_categories_includes_banei():
+    assert subject.CATEGORY_BANEI == "ban-ei"
+    assert "ban-ei" in subject.SUPPORTED_CATEGORIES
 
 
 def test_default_write_calibration_json_round_trip(tmp_path: Path):
@@ -1148,4 +1350,227 @@ def test_main_dispatches_to_apply(monkeypatch: pytest.MonkeyPatch, capsys: pytes
     captured = capsys.readouterr()
     assert "rows_written" in captured.out
     fake_apply_run.assert_called_once()
-    fake_fit_run.assert_not_called()
+
+
+def test_isotonic_transform_raises_on_wrong_schema_version():
+    curve: subject.CalibrationCurve = {
+        "schema_version": 999,
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.5, 1.0],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+    }
+    probs = pd.Series([0.3, 0.7])
+    with pytest.raises(ValueError, match="schema_version"):
+        subject.isotonic_transform(probs, curve)
+
+
+def test_isotonic_transform_accepts_current_schema_version():
+    curve: subject.CalibrationCurve = {
+        "schema_version": subject.CALIBRATION_SCHEMA_VERSION,
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.4, 0.9],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+    }
+    probs = pd.Series([0.0, 0.5, 1.0])
+    result = subject.isotonic_transform(probs, curve)
+    assert result.iloc[0] == pytest.approx(0.0)
+    assert result.iloc[1] == pytest.approx(0.4)
+    assert result.iloc[2] == pytest.approx(0.9)
+
+
+def test_isotonic_transform_accepts_old_file_without_schema_version():
+    """Old calibration JSON files (pre-schema_version) lack the key entirely.
+    Missing key means get() returns None — backward-compatible, no error raised."""
+    curve_dict: dict[str, object] = {
+        "cat": "jra",
+        "bucket_key": "G1",
+        "target": "top1",
+        "n_samples": 10,
+        "iso_x": [0.0, 0.5, 1.0],
+        "iso_y": [0.0, 0.4, 0.9],
+        "fit_at": "2026-06-04T12:00:00Z",
+        "brier_score_before": 0.25,
+        "brier_score_after": 0.20,
+        # schema_version intentionally absent — old file, treated as backward-compatible
+    }
+    import typing
+    curve = typing.cast(subject.CalibrationCurve, curve_dict)
+    probs = pd.Series([0.0, 0.5, 1.0])
+    result = subject.isotonic_transform(probs, curve)
+    assert result.iloc[0] == pytest.approx(0.0)
+    assert result.iloc[1] == pytest.approx(0.4)
+    assert result.iloc[2] == pytest.approx(0.9)
+
+
+def test_fit_run_returns_zero_buckets_when_global_fallback_has_all_nan_ranks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+):
+    """When all rows have NaN predicted_rank and no bucket meets the threshold,
+    the global fallback fit_curves_for_frame raises ValueError; fit_run must
+    return gracefully with buckets_written=0 and log a warning."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 5,
+        "predicted_rank": [float("nan")] * 5,
+        "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "kyoso_joken_code": ["001"] * 5,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 500,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    captured = capsys.readouterr()
+    assert result["buckets_written"] == 0
+    assert result["fallback_used"] is False
+    assert "no valid rows for global fallback" in captured.err
+    json_writer.assert_not_called()
+
+
+def test_fit_run_guards_bucket_threshold_by_race_count_not_row_count(tmp_path: Path):
+    """min_bucket_samples must compare against unique race count (via
+    race_count_from_frame) — NOT the total row count.  A bucket with
+    30 races × 10 horses = 300 rows must be skipped when
+    min_bucket_samples=50 (races), because 30 < 50."""
+    frame = _small_bucket_frame_300()  # 30 races, 300 rows, all kyoso_joken_code='005'
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 50,  # 30 races < 50 → bucket skipped → global fallback
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    # 30 races < threshold of 50 → bucket '005' must be skipped → global fallback used
+    assert result["fallback_used"] is True
+    first_call_path: Path = cast(Path, json_writer.call_args_list[0].args[1])
+    assert "bucket__cat_global" in first_call_path.as_posix()
+
+
+def test_fit_run_skips_bucket_when_threshold_met_but_all_ranks_are_nan(tmp_path: Path):
+    """Bucket with >= min_bucket_samples races but all NaN predicted_rank must be
+    skipped via except ValueError: continue rather than crashing.
+    The global fallback uses the full frame; NaN-rank rows are filtered there,
+    leaving the valid-bucket rows which are enough to fit."""
+    nan_rows: list[dict[str, object]] = []
+    for race_idx in range(6):
+        for horse_idx in range(5):
+            nan_rows.append({
+                "race_id": f"nan_race_{race_idx:02d}",
+                "predicted_rank": float("nan"),
+                "actual_finish_position": float(horse_idx + 1),
+                "kyoso_joken_code": "A",
+            })
+    valid_rows: list[dict[str, object]] = []
+    for race_idx in range(4):
+        for horse_idx in range(5):
+            valid_rows.append({
+                "race_id": f"valid_race_{race_idx:02d}",
+                "predicted_rank": float(horse_idx + 1),
+                "actual_finish_position": float(horse_idx + 1),
+                "kyoso_joken_code": "B",
+            })
+    frame = pd.DataFrame(nan_rows + valid_rows)
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    json_writer = MagicMock()
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, json_writer),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 5,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    # Bucket "A": 6 races >= 5 threshold but all NaN predicted_rank
+    #   → fit_curves_for_frame raises ValueError → except ValueError: continue
+    # Bucket "B": 4 races < 5 threshold → skipped before try
+    # buckets_written == 0 → global fallback with full frame
+    #   → NaN-rank rows filtered → 4 valid races remain → global fallback succeeds
+    assert result["buckets_written"] == 1
+    assert result["fallback_used"] is True
+
+
+def test_apply_run_clamps_uncalibrated_top3_to_unit_interval(tmp_path: Path):
+    """When no calibration files exist (cold start), derive_top3_prob falls back to
+    the rank proxy which returns values in [0, 3].  calibrated_series_for_target must
+    clip raw_series to [0, 1] before using it as the uncalibrated default so that
+    predicted_top3_prob_calibrated is always a valid probability."""
+    frame = pd.DataFrame({
+        "race_id": ["r1"] * 10,
+        "ketto_toroku_bango": [f"horse{i}" for i in range(10)],
+        "umaban": list(range(1, 11)),
+        "predicted_rank": list(range(1, 11)),
+        "predicted_top1_prob": [1.0 - i * 0.09 for i in range(10)],
+        # NOTE: no predicted_top3_prob column → derive_top3_prob uses rank proxy [0, 3]
+        "kyoso_joken_code": ["001"] * 10,
+        "category": ["jra"] * 10,
+        "race_year": [2024] * 10,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike, MagicMock(return_value=frame),
+    )
+    parquet_writer = MagicMock()
+    json_reader_mock = MagicMock()
+    path_exists: subject.PathExistsLike = lambda path: False  # no calibration files
+    deps: subject.ApplyDeps = {
+        "parquet_reader": parquet_reader,
+        "parquet_writer": cast(subject.ParquetWriterLike, parquet_writer),
+        "json_reader": cast(subject.JsonReaderLike, json_reader_mock),
+        "path_exists": path_exists,
+    }
+    args: subject.ApplyArguments = {
+        "mode": "apply",
+        "cat": "jra",
+        "input_predictions_root": tmp_path / "in",
+        "calibration_dir": tmp_path / "cal",
+        "output_predictions_root": tmp_path / "out",
+    }
+    result = subject.apply_run(args, deps)
+    written = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    top3_vals = written["predicted_top3_prob_calibrated"]
+    # rank proxy for top_n=3 produces values up to 3.0 — must be clamped to [0, 1]
+    assert float(top3_vals.max()) <= 1.0
+    assert float(top3_vals.min()) >= 0.0
+    assert result["rows_written"] == 10

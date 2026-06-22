@@ -168,7 +168,7 @@ def test_normalize_arguments_uses_300_iterations_for_banei_when_unset():
     assert normalized["relevance_rank3"] == 1
 
 
-def test_normalize_arguments_uses_xgb_relevance_222_for_nar():
+def test_normalize_arguments_uses_xgb_relevance_321_for_nar():
     raw = subject.parse_args([
         "--features-parquet",
         "tmp/feat-nar-v7-baba",
@@ -190,7 +190,7 @@ def test_normalize_arguments_uses_xgb_relevance_222_for_nar():
     normalized = subject.normalize_arguments(raw)
     assert normalized["relevance_rank1"] == 3
     assert normalized["relevance_rank2"] == 2
-    assert normalized["relevance_rank3"] == 2
+    assert normalized["relevance_rank3"] == 1
 
 
 def test_normalize_arguments_honors_explicit_iterations_override():
@@ -450,6 +450,7 @@ def test_default_write_parquet_partitions_by_category_and_year(tmp_path: Path):
         output_dir.as_posix(),
         partition_cols=["category", "race_year"],
         index=False,
+        existing_data_behavior="delete_matching",
     )
 
 
@@ -740,6 +741,18 @@ def test_load_calibration_map_raises_when_root_not_object(tmp_path: Path):
     assert "top-level object" in str(info.value)
 
 
+def test_load_calibration_map_raises_when_breakpoints_not_monotone(tmp_path: Path):
+    path = tmp_path / "iso.json"
+    path.write_text(
+        json.dumps({"jra": [[0.0, 0.1], [0.8, 0.7], [0.5, 0.5]]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as info:
+        subject.load_calibration_map(path)
+    assert "monotonically non-decreasing" in str(info.value)
+    assert "jra" in str(info.value)
+
+
 def test_apply_calibration_returns_input_when_map_empty():
     predictions = _predictions_frame()
     out = subject.apply_calibration(predictions, {}, "jra")
@@ -802,3 +815,17 @@ def test_apply_calibration_returns_input_when_bucket_pairs_empty():
 
 def test_interp_calibrated_returns_score_when_pairs_empty():
     assert subject.interp_calibrated(0.5, []) == 0.5
+
+
+def test_apply_calibration_assigns_bottom_rank_to_nan_score():
+    predictions = pd.DataFrame({
+        "race_id": ["r", "r"],
+        "ketto_toroku_bango": ["a", "b"],
+        "umaban": [1, 2],
+        "predicted_score": [float("nan"), 0.8],
+        "predicted_rank": [1, 2],
+    })
+    calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.9]]}
+    out = subject.apply_calibration(predictions, calibration_map, "jra")
+    # NaN score propagates through calibration and must get bottom rank (2), not crash
+    assert out["predicted_rank"].tolist() == [2, 1]

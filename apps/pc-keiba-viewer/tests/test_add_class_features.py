@@ -252,6 +252,20 @@ def test_stage_class_promotion_skips_when_target_class_level_null(tmp_path: Path
     assert rows == (0,)
 
 
+def test_stage_class_promotion_skips_when_target_class_level_zero(tmp_path: Path) -> None:
+    """target_class_level=0 produces class_level >= -1 (always true) without the guard.
+
+    The fix adds `and bi.target_class_level > 0` so class-0 target races are excluded,
+    preventing every historical win from matching regardless of class level.
+    """
+    con = duckdb.connect(":memory:")
+    _seed_history_and_base(con, target_class_level=0)
+    subject.stage_class_promotion(con)
+    rows = con.execute("select count(*) from class_promotion").fetchone()
+    con.close()
+    assert rows == (0,)
+
+
 def test_stage_horse_class_variance_computes_stddev_over_window(tmp_path: Path) -> None:
     con = duckdb.connect(":memory:")
     _seed_history_and_base(con, target_class_level=4)

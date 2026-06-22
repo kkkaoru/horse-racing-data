@@ -112,7 +112,7 @@ def test_upcoming_target_union_sql_jra_restricts_to_central_keibajo():
 def test_category_source_filter_nar_excludes_ban_ei():
     assert (
         subject.category_source_filter("nar", "rec")
-        == "rec.source = 'nar' and rec.keibajo_code <> '83'"
+        == "rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
     )
 
 
@@ -266,7 +266,7 @@ def test_upcoming_target_union_sql_requires_numeric_umaban():
 def test_upcoming_target_union_sql_nar_excludes_ban_ei_keibajo():
     sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
     assert "pg.nvd_se se" in sql
-    assert "se.keibajo_code <> '83'" in sql
+    assert "(se.keibajo_code is null or se.keibajo_code <> '83')" in sql
     assert "'nar' as source" in sql
 
 
@@ -279,7 +279,7 @@ def test_upcoming_target_union_sql_ban_ei_filters_to_ban_ei_keibajo():
 def test_upcoming_target_union_sql_all_unions_three_categories():
     sql = subject.upcoming_target_union_sql("all", "20260603", "20260603")
     assert "pg.jvd_se se" in sql
-    assert "se.keibajo_code <> '83'" in sql
+    assert "(se.keibajo_code is null or se.keibajo_code <> '83')" in sql
     assert "se.keibajo_code = '83'" in sql
 
 
@@ -402,7 +402,7 @@ def test_target_months_sql_groups_distinct_year_months():
 def test_pedigree_rec_um_subquery_returns_distinct_clauses_per_category():
     assert "where rec.source = 'jra'" in subject.pedigree_rec_um_subquery("jra")
     assert (
-        "where rec.source = 'nar' and rec.keibajo_code <> '83'"
+        "where rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
         in subject.pedigree_rec_um_subquery("nar")
     )
     assert (
@@ -422,6 +422,23 @@ def test_track_bias_cte_defines_inside_and_front_thresholds():
     cte = subject.track_bias_cte()
     assert "h.umaban * 2 <= h.shusso_tosu + 1" in cte
     assert f"<= {subject.FRONT_CORNER_THRESHOLD}" in cte
+
+
+def test_track_bias_cte_guards_null_shusso_tosu():
+    cte = subject.track_bias_cte()
+    assert "h.shusso_tosu is not null" in cte
+
+
+def test_track_bias_cte_guards_null_corner1_norm():
+    cte = subject.track_bias_cte()
+    assert "h.corner1_norm is not null" in cte
+
+
+def test_pedigree_score_for_race_respects_min_races_guard():
+    sql = subject.base_features_select_sql("jra")
+    assert f"race_count >= {subject.PEDIGREE_MIN_RACES}" in sql
+    assert "pedigree_score_for_race" in sql
+    assert "sire_distance_win_rate_val else null end, 0)" in sql
 
 
 def test_weight_cte_aggregates_baked_bataiju_from_horse_history_base():
@@ -1696,3 +1713,85 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
     assert rows[0] == ("horse_a", 5.0, 2)
     assert rows[1] == ("horse_b", 8.0, 1)
     con.close()
+
+
+def test_category_source_filter_nar_includes_null_keibajo() -> None:
+    """NAR filter must include rows with NULL keibajo_code (not just non-'83' rows).
+
+    `keibajo_code <> '83'` yields NULL (not TRUE) when keibajo_code IS NULL under
+    SQL three-valued logic, silently dropping valid NAR rows with missing keibajo.
+    """
+    sql = subject.category_source_filter("nar", "t")
+    assert "keibajo_code is null" in sql.lower() or "is null" in sql.lower(), (
+        "NAR filter does not handle NULL keibajo_code — rows with missing keibajo are silently dropped"
+    )
+    import duckdb
+    con = duckdb.connect()
+    con.execute(
+        """
+        create or replace temp table t as
+        select * from (values
+          ('nar', null::varchar),
+          ('nar', '83'),
+          ('nar', '01')
+        ) as v(source, keibajo_code)
+        """
+    )
+    rows = con.execute(
+        f"select source, keibajo_code from t where {sql}"
+    ).fetchall()
+    keibajo_codes = [r[1] for r in rows]
+    assert None in keibajo_codes, "NULL keibajo_code NAR row must be included in NAR filter"
+    assert "83" not in keibajo_codes, "keibajo_code='83' (ban-ei) must be excluded from NAR filter"
+    assert "01" in keibajo_codes, "Non-ban-ei NAR row must be included"
+    con.close()
+
+
+def test_pedigree_score_is_null_when_all_components_missing() -> None:
+    """pedigree_score_for_race must be NULL (not 0) when all three pedigree components lack data."""
+    sql = subject.base_features_select_sql("jra")
+    assert "pedigree_score_for_race" in sql
+    # Dynamic divisor pattern: nullif(..., 0)::double should appear for pedigree score
+    assert "nullif(" in sql.lower(), "pedigree_score_for_race must use dynamic divisor via NULLIF"
+
+
+def test_pedigree_score_uses_available_component_count_as_divisor() -> None:
+    """When only 1 of 3 pedigree components has data, the score must equal that component's value.
+
+    Dividing by the fixed constant 3 would give sire_distance_win_rate / 3 ≈ 0.04
+    instead of the true score 0.12, systematically underestimating pedigree strength.
+    """
+    sql = subject.base_features_select_sql("jra")
+    # The fixed-divisor pattern (/ 3::double) must NOT appear in the pedigree score expression.
+    # Instead, the count of non-null components must be the divisor.
+    import re
+    # Extract the pedigree_score_for_race expression from the SQL
+    m = re.search(
+        r"([\s\S]+?)\s+as\s+pedigree_score_for_race",
+        sql,
+        re.IGNORECASE,
+    )
+    assert m is not None, "pedigree_score_for_race expression not found in SQL"
+    expr = m.group(1)
+    # Must NOT use the constant 3 as a bare divisor (fixed divisor)
+    assert f"/ {subject.PEDIGREE_COMPOSITE_DIVISOR}::" not in expr, (
+        "pedigree_score_for_race still uses fixed divisor — partial-data scores will be underestimated"
+    )
+
+
+def test_sire_running_style_stats_uses_corner_count_as_denominator() -> None:
+    """Nige/senkou/sashi/oikomi rates must divide by corner1_norm_count, not race_count.
+
+    race_count = count(*) includes races with NULL corner1_norm (no corner data recorded).
+    Dividing style counts by race_count inflates the denominator and systematically
+    underestimates running-style rates for sires whose offspring have incomplete corner data.
+    """
+    srs_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_running_style_stats"
+    )
+    accum = srs_spec["accum_metrics_select"]
+    # Each rate must use corner1_norm_count, not race_count, as denominator
+    for metric in ("nige", "senkou", "sashi", "oikomi"):
+        assert f"sum(m.{metric}_count)::double / nullif(sum(m.corner1_norm_count), 0)" in accum, (
+            f"sire_{metric}_rate_val uses race_count denominator — NULL-corner races inflate denominator"
+        )

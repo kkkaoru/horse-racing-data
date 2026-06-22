@@ -569,19 +569,19 @@ def test_write_partitioned_overwrites_existing_output(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def testo5_decode_sql_references_nvd_o5() -> None:
+def test_o5_decode_sql_references_nvd_o5() -> None:
     sql = subject.o5_decode_sql()
     assert "nvd_o5" in sql
     assert "odds_sanrenpuku" in sql
 
 
-def testo3_decode_sql_references_nvd_o3() -> None:
+def test_o3_decode_sql_references_nvd_o3() -> None:
     sql = subject.o3_decode_sql()
     assert "nvd_o3" in sql
     assert "odds_wide" in sql
 
 
-def testo2_decode_sql_references_nvd_o2() -> None:
+def test_o2_decode_sql_references_nvd_o2() -> None:
     sql = subject.o2_decode_sql()
     assert "nvd_o2" in sql
     assert "odds_umaren" in sql

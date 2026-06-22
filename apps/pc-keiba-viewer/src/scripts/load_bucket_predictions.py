@@ -177,8 +177,8 @@ def build_version_mismatch_check_sql(args: LoadArguments) -> str:
         f"select count(*) from read_parquet('{safe_glob}', hive_partitioning=1) "
         f"where category = '{safe_category}' "
         f"and cast(race_year as integer) between {args['year_from']} and {args['year_to']} "
-        f"and (finish_position_version <> '{safe_fp}' "
-        f"or running_style_feature_version <> '{safe_rs}')"
+        f"and (finish_position_version is null or finish_position_version <> '{safe_fp}' "
+        f"or running_style_feature_version is null or running_style_feature_version <> '{safe_rs}')"
     )
 
 
@@ -478,7 +478,8 @@ def main(argv: list[str] | None = None) -> None:
                 "running_style_feature_version": args["running_style_feature_version"],
             },
             ensure_ascii=False,
-        )
+        ),
+        file=sys.stderr,
     )
 
 

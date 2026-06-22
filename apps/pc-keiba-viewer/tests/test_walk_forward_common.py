@@ -444,6 +444,13 @@ def test_stratified_kfold_indices_raises_when_strata_missing():
     assert "bogus" in str(info.value)
 
 
+def test_stratified_kfold_indices_raises_when_strata_cols_empty():
+    df = _build_hpo_df()
+    with pytest.raises(ValueError) as info:
+        subject.stratified_kfold_indices(df, strata_cols=[], n_folds=2, seed=1)
+    assert "empty" in str(info.value).lower() or "strata_cols" in str(info.value).lower()
+
+
 def test_stratified_kfold_indices_raises_when_race_id_overlaps(
     monkeypatch: pytest.MonkeyPatch,
 ):

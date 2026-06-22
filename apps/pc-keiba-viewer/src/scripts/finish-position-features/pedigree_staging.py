@@ -25,7 +25,7 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
     Columns produced:
       ketto_toroku_bango  VARCHAR  — registration number
       sire_id             VARCHAR  — ketto_joho_01a (NULL when blank/missing)
-      damsire_id          VARCHAR  — ketto_joho_04a (NULL when blank/missing)
+      damsire_id          VARCHAR  — ketto_joho_05a (NULL when blank/missing)
     """
     con.execute(
         """
@@ -34,7 +34,7 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
           select
             ketto_toroku_bango,
             nullif(trim(ketto_joho_01a), '') as sire_id,
-            nullif(trim(ketto_joho_04a), '') as damsire_id,
+            nullif(trim(ketto_joho_05a), '') as damsire_id,
             1 as priority
           from pg.jvd_um
           where ketto_toroku_bango is not null
@@ -42,7 +42,7 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
           select
             ketto_toroku_bango,
             nullif(trim(ketto_joho_01a), '') as sire_id,
-            nullif(trim(ketto_joho_04a), '') as damsire_id,
+            nullif(trim(ketto_joho_05a), '') as damsire_id,
             2 as priority
           from pg.nvd_um
           where ketto_toroku_bango is not null

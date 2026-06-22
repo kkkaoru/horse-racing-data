@@ -4,6 +4,7 @@ unchanged from v7-lineage)."""
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from predict_lib.model_meta import (
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
+    _load_model_meta,
     architecture_for,
     build_r2_object_key,
     feature_count_for,
@@ -135,3 +137,136 @@ def test_member_model_file_name_catboost_is_model_json() -> None:
 
 def test_member_model_file_name_xgboost_is_model_json() -> None:
     assert member_model_file_name("iter12-nar-xgb-hpo-v8") == "model.json"
+
+
+# --- _load_model_meta error cases -------------------------------------------
+
+
+def test_load_model_meta_raises_file_not_found_when_missing(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match=r"model_meta\.json not found"):
+        _load_model_meta(tmp_path / "model_meta.json")
+
+
+def test_load_model_meta_raises_value_error_when_root_is_not_dict(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    p.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be a JSON object"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_model_versions_missing(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    p.write_text('{"feature_counts": {"jra": 244, "nar": 192, "ban-ei": 111}}', encoding="utf-8")
+    with pytest.raises(ValueError, match="model_versions"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_counts_missing(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    p.write_text(
+        '{"model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="feature_counts"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_category_version_missing(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2"},
+        "feature_counts": {"jra": 1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="ban-ei"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_category_count_missing(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 1, "nar": 2},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="ban-ei"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_model_version_is_empty_string(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_model_version_is_whitespace(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "   ", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_bool(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": True, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_zero(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": 0, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_load_model_meta_raises_value_error_when_feature_count_is_negative(
+    tmp_path: Path,
+) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {"jra": "v1", "nar": "v2", "ban-ei": "v3"},
+        "feature_counts": {"jra": -1, "nar": 2, "ban-ei": 3},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="jra"):
+        _load_model_meta(p)
+
+
+def test_resolve_category_nar() -> None:
+    assert resolve_category("nar") == "nar"

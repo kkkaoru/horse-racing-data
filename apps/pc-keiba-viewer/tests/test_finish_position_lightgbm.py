@@ -286,6 +286,84 @@ def test_resolve_relevance_tiers_unknown_preset_raises():
         subject.resolve_relevance_tiers("ultra_extreme")
 
 
+def test_resolve_relevance_tiers_graded_top6_covers_six_positions():
+    tiers = subject.resolve_relevance_tiers("graded_top6")
+    assert tiers == {1: 6, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1}
+
+
+def test_graded_top6_to_relevance_position_1():
+    tiers = subject.resolve_relevance_tiers("graded_top6")
+    assert subject.to_relevance(1, tiers) == 6
+
+
+def test_graded_top6_to_relevance_position_6():
+    tiers = subject.resolve_relevance_tiers("graded_top6")
+    assert subject.to_relevance(6, tiers) == 1
+
+
+def test_graded_top6_to_relevance_position_7_is_zero():
+    tiers = subject.resolve_relevance_tiers("graded_top6")
+    assert subject.to_relevance(7, tiers) == 0
+
+
+def test_build_label_array_graded_top6_assigns_descending_relevance():
+    tiers = subject.resolve_relevance_tiers("graded_top6")
+    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, 5, 6, 7]), "lambdarank", tiers)
+    assert labels.tolist() == [6, 5, 4, 3, 2, 1, 0]
+
+
+def test_distance_band_ranges_covers_all_five_bands():
+    assert set(subject.DISTANCE_BAND_RANGES.keys()) == {
+        "sprint",
+        "mile",
+        "intermediate",
+        "long",
+        "extended",
+    }
+
+
+def test_filter_by_distance_band_sprint_keeps_rows_below_1200():
+    df = pd.DataFrame({"kyori": [1000, 1200, 1400], "value": [1, 2, 3]})
+    result = subject.filter_by_distance_band(df, "sprint")
+    assert result["kyori"].tolist() == [1000]
+
+
+def test_filter_by_distance_band_mile_includes_1200_excludes_1600():
+    df = pd.DataFrame({"kyori": [1200, 1400, 1600], "value": [1, 2, 3]})
+    result = subject.filter_by_distance_band(df, "mile")
+    assert result["kyori"].tolist() == [1200, 1400]
+
+
+def test_filter_by_distance_band_intermediate_includes_1600_excludes_2000():
+    df = pd.DataFrame({"kyori": [1600, 1800, 2000], "value": [1, 2, 3]})
+    result = subject.filter_by_distance_band(df, "intermediate")
+    assert result["kyori"].tolist() == [1600, 1800]
+
+
+def test_filter_by_distance_band_long_includes_2000_excludes_2400():
+    df = pd.DataFrame({"kyori": [2000, 2200, 2400], "value": [1, 2, 3]})
+    result = subject.filter_by_distance_band(df, "long")
+    assert result["kyori"].tolist() == [2000, 2200]
+
+
+def test_filter_by_distance_band_extended_includes_2400_and_above():
+    df = pd.DataFrame({"kyori": [2400, 3000, 3200], "value": [1, 2, 3]})
+    result = subject.filter_by_distance_band(df, "extended")
+    assert result["kyori"].tolist() == [2400, 3000, 3200]
+
+
+def test_filter_by_distance_band_resets_index():
+    df = pd.DataFrame({"kyori": [1000, 1400, 1800]}, index=[10, 20, 30])
+    result = subject.filter_by_distance_band(df, "sprint")
+    assert result.index.tolist() == [0]
+
+
+def test_filter_by_distance_band_unknown_band_raises():
+    df = pd.DataFrame({"kyori": [1200]})
+    with pytest.raises(ValueError, match="Unknown distance band"):
+        subject.filter_by_distance_band(df, "ultramarathon")
+
+
 def test_build_label_array_for_lambdarank_uses_custom_tier():
     labels = subject.build_label_array(
         pd.Series([1, 2, 3, 4]), "lambdarank", {1: 5, 2: 7, 3: 9}
@@ -439,6 +517,28 @@ def test_score_dataset_returns_predictions_per_row():
     assert predictions["predicted_rank"].min() == 1
 
 
+def test_score_dataset_uses_booster_feature_names_not_df_columns():
+    df = make_synthetic_dataset()
+    bundle = subject.prepare_lgb_dataset(df)
+    booster, _ = subject.train_lambdarank(
+        bundle,
+        None,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 5,
+            "num_iterations": 20,
+            "num_leaves": 7,
+            "objective": "lambdarank",
+        },
+    )
+    df_with_extra = df.copy()
+    df_with_extra["should_not_be_used"] = 99.0
+    predictions = subject.score_dataset(booster, df_with_extra)
+    assert len(predictions) == len(df)
+    assert predictions["predicted_rank"].min() == 1
+
+
 def test_write_predictions_jsonl_writes_one_record_per_line(tmp_path: Path):
     predictions = pd.DataFrame(
         {
@@ -522,12 +622,25 @@ def test_split_walk_forward_uses_year_window():
         {
             "race_date": ["20191231", "20200101", "20201231", "20210101", "20210601", "20211231", "20220101"],
             "value": ["a", "b", "c", "d", "e", "f", "g"],
+            "finish_position": [1.0, 2.0, 1.0, 1.0, 2.0, 3.0, 1.0],
         }
     )
     fold = subject.split_walk_forward(df, "20160101", 2021)
     assert fold["valid_year"] == 2021
     assert fold["train_df"]["value"].tolist() == ["a", "b", "c"]
     assert fold["valid_df"]["value"].tolist() == ["d", "e", "f"]
+
+
+def test_split_walk_forward_excludes_nan_finish_position():
+    df = pd.DataFrame(
+        {
+            "race_date": ["20210101", "20210102", "20210103"],
+            "value": ["keep", "drop_nan", "keep2"],
+            "finish_position": [1.0, float("nan"), 2.0],
+        }
+    )
+    fold = subject.split_walk_forward(df, "20200101", 2021)
+    assert fold["valid_df"]["value"].tolist() == ["keep", "keep2"]
 
 
 def test_evaluate_predictions_computes_box_and_exact_hits():
@@ -550,6 +663,29 @@ def test_evaluate_predictions_computes_box_and_exact_hits():
     assert metrics["top1_accuracy"] == 0.5
     assert metrics["top3_box_accuracy"] == 1.0
     assert metrics["top3_exact_accuracy"] == 0.5
+    # ndcg_at_3 must now be present and between 0 and 1
+    assert 0.0 <= float(metrics["ndcg_at_3"]) <= 1.0
+
+
+def test_evaluate_predictions_ndcg_penalizes_missing_winner():
+    # ground_truth has 3 horses; predictions omits the winner (horse "a").
+    # After left join, "a" has NaN predicted_rank → NDCG < 1.0.
+    truth = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "finish_position": [1, 2, 3],
+    })
+    predictions = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["b", "c"],
+        "predicted_rank": [1, 2],
+    })
+    metrics = subject.evaluate_predictions(predictions, truth)
+    assert metrics["race_count"] == 1
+    assert float(metrics["ndcg_at_3"]) < 1.0
+    assert metrics["top1_accuracy"] == 0.0
+    assert metrics["top3_box_accuracy"] == 0.0
+    assert metrics["top3_exact_accuracy"] == 0.0
 
 
 def test_aggregate_fold_metrics_averages():
@@ -1088,3 +1224,28 @@ def test_main_dispatches_train_walk_forward_hpo_and_predict(
         ]
     )
     assert seen == ["train", "walk", "hpo", "predict"]
+
+
+def test_evaluate_fold_set_passes_relevance_tier_name_to_walk_forward_fold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """evaluate_fold_set must forward relevance_tier_name so HPO and final training use the same labels."""
+    df = make_walk_forward_dataset()
+    captured_tier: list[str | None] = []
+    original_fold = subject.run_walk_forward_fold
+
+    def capturing_fold(fold, params, **kwargs):
+        captured_tier.append(kwargs.get("relevance_tier_name"))
+        return original_fold(fold, params, **kwargs)
+
+    monkeypatch.setattr(subject, "run_walk_forward_fold", capturing_fold)
+    params: subject.TrainingParams = {
+        "lambda_l2": 0.1,
+        "learning_rate": 0.1,
+        "min_child_samples": 5,
+        "num_iterations": 3,
+        "num_leaves": 8,
+        "objective": subject.OBJECTIVE_LAMBDARANK,
+    }
+    subject.evaluate_fold_set(df, "20200101", [2021], params, relevance_tier_name="place_weighted")
+    assert captured_tier == ["place_weighted"]

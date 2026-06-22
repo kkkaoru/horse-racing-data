@@ -456,34 +456,6 @@ def stage_jockey_near_miss(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_race_internal(con: duckdb.DuckDBPyConnection) -> None:
-    """レース内 favorite dominance 指標を計算。"""
-    con.execute(
-        """
-        create or replace temp table race_favorite_dominance as
-        with ranked as (
-          select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-            tansho_odds,
-            row_number() over (
-              partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-              order by tansho_ninkijun asc nulls last
-            ) as ninki_rank
-          from race_history
-          where tansho_odds is not null and tansho_ninkijun is not null
-        ),
-        pivoted as (
-          select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-            max(case when ninki_rank = 1 then tansho_odds end) as odds_rank1,
-            max(case when ninki_rank = 2 then tansho_odds end) as odds_rank2
-          from ranked group by 1,2,3,4,5
-        )
-        select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-          odds_rank1 / nullif(odds_rank2, 0) as field_dominant_favorite_indicator
-        from pivoted
-        """
-    )
-
-
 def append_features_sql(input_glob: str) -> str:
     return f"""
     with base as (
@@ -499,6 +471,27 @@ def append_features_sql(input_glob: str) -> str:
         and rh.keibajo_code = b.keibajo_code
         and rh.race_bango = b.race_bango
         and rh.ketto_toroku_bango = b.ketto_toroku_bango
+    ),
+    fav_ranked as (
+      select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+        tansho_odds,
+        row_number() over (
+          partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+          order by tansho_ninkijun asc nulls last
+        ) as ninki_rank
+      from base
+      where tansho_odds is not null and tansho_ninkijun is not null
+    ),
+    fav_pivoted as (
+      select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+        max(case when ninki_rank = 1 then tansho_odds end) as odds_rank1,
+        max(case when ninki_rank = 2 then tansho_odds end) as odds_rank2
+      from fav_ranked group by 1,2,3,4,5
+    ),
+    race_favorite_dominance as (
+      select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+        odds_rank1 / nullif(odds_rank2, 0) as field_dominant_favorite_indicator
+      from fav_pivoted
     ),
     joined as (
       select
@@ -617,7 +610,6 @@ def main() -> None:
     stage_horse_pedigree_context(con)
     stage_horse_distance_grade(con)
     stage_jockey_near_miss(con)
-    stage_race_internal(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()
 

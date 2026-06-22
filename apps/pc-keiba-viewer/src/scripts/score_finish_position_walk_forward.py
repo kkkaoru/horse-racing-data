@@ -103,7 +103,7 @@ DEFAULT_XGB_NUM_ROUNDS: int = 450
 DEFAULT_XGB_MAX_DEPTH: int = 6
 DEFAULT_XGB_RELEVANCE_RANK1: int = 3
 DEFAULT_XGB_RELEVANCE_RANK2: int = 2
-DEFAULT_XGB_RELEVANCE_RANK3: int = 2
+DEFAULT_XGB_RELEVANCE_RANK3: int = 1
 
 DEFAULT_EARLY_STOPPING_ROUNDS: int = 30
 DEFAULT_SEED: int = 20260519
@@ -429,6 +429,7 @@ def default_write_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
         output_dir.as_posix(),
         partition_cols=["category", "race_year"],
         index=False,
+        existing_data_behavior="delete_matching",
     )
 
 
@@ -484,6 +485,13 @@ def load_calibration_map(path: Path | None) -> dict[str, list[list[float]]]:
         raise ValueError(
             f"calibration JSON must be a top-level object, got {type(parsed)!r}",
         )
+    for key, pairs in parsed.items():
+        xs = [float(p[0]) for p in pairs]
+        if not all(xs[i] <= xs[i + 1] for i in range(len(xs) - 1)):
+            raise ValueError(
+                f"calibration breakpoints for bucket {key!r} must be monotonically "
+                f"non-decreasing, got {xs!r}",
+            )
     return cast(dict[str, list[list[float]]], parsed)
 
 
@@ -522,7 +530,7 @@ def apply_calibration(
     out["predicted_score"] = [interp_calibrated(float(value), pairs) for value in scores_arr]
     out["predicted_rank"] = (
         out.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False)
+        .rank(method="first", ascending=False, na_option="bottom")
         .astype(int)
     )
     return out

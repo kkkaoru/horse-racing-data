@@ -272,8 +272,13 @@ def _default_psycopg_connect(pg_url: str) -> AbstractContextManager[PgConnection
 
 
 def _default_execute_values() -> Callable[..., None]:
-    module = importlib.import_module("psycopg.extras")
-    return module.execute_values
+    def _execute_values(
+        cursor: PgCursor, sql: str, args: list[tuple[object, ...]], *, template: str
+    ) -> None:
+        row_sql = sql.replace("VALUES %s", f"VALUES {template}")
+        cursor.executemany(row_sql, args)  # type: ignore[attr-defined]
+
+    return _execute_values
 
 
 def execute_upsert(
