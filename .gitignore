@@ -161,6 +161,9 @@ test-results/
 *.wasm
 *.xlsx
 
+# DuckDB feature registries derived from paid source data (local build artifacts)
+apps/pc-keiba-viewer/feature_registry*.duckdb*
+
 apps/**/tmp/**
 tmp/
 **/.tmp
