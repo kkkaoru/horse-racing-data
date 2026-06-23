@@ -1813,6 +1813,27 @@ def base_features_select_sql(category: str) -> str:
       wl.venue_precipitation_total,
       wl.venue_wind_speed_max,
       wl.venue_wind_gusts_max,
+      coalesce(wl.venue_precipitation_total, 0) * coalesce(hc.speed_index_avg_5, 0) as rain_x_speed_decay,
+      coalesce(wl.venue_wind_speed_max, 0) * coalesce(rsh.past_nige_rate_self, 0) as wind_x_front_runner,
+      coalesce(case when sks.race_count >= {PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue,
+      coalesce(case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance,
+      case
+        when rsh.past_nige_rate_self is null then null
+        else
+          coalesce(rsh.past_nige_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val else null end, 0) +
+          coalesce(rsh.past_senkou_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_senkou_rate_val else null end, 0) +
+          coalesce(rsh.past_sashi_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_sashi_rate_val else null end, 0) +
+          coalesce(rsh.past_oikomi_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_oikomi_rate_val else null end, 0)
+      end as sire_style_x_horse_style_match,
+      coalesce(wl.venue_wind_speed_max, 0) * (coalesce(t.shusso_tosu, 0)::double / {MAX_FIELD_SIZE}::double) as wind_x_field_size,
+      coalesce(wl.venue_precipitation_total, 0) * coalesce(
+        case
+          when left(coalesce(t.track_code, ''), 1) = '1' then
+            case t.babajotai_code_shiba when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end
+          else
+            case t.babajotai_code_dirt when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end
+        end, 0) as rain_x_track_condition,
+      (20.0 - least(20.0, greatest(0.0, coalesce(wl.venue_temperature, 20.0)))) * coalesce(hc.speed_index_avg_5, 0) as cold_x_speed_effect,
       case
         when left(coalesce(t.track_code, ''), 1) = '1' then
           case t.babajotai_code_shiba when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end

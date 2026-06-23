@@ -1739,3 +1739,99 @@ def test_run_resume_skips_recompute_on_second_pass(
     monkeypatch.setattr(subject, "stage_source", exploding_stage_source)
     second = subject.run(subject.parse_args(base_args))
     assert second["rows_written"] == first["rows_written"]
+
+
+def test_base_features_select_emits_weather_interaction_values(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    _write_venue_weather_db(
+        tmp_path / "venue_weather_2020.duckdb",
+        [
+            ("01", "2020-01-01", 10, 12.0, 2.0, 6.0, 10.0),
+            ("01", "2020-01-01", 15, 18.0, 4.0, 8.0, 13.0),
+        ],
+    )
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, tmp_path, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    base_sql = subject.base_features_select_sql("jra")
+    row = seeded_con.execute(
+        f"with final as ({base_sql}) "
+        "select rain_x_speed_decay, wind_x_field_size, cold_x_speed_effect, "
+        "rain_x_track_condition, speed_index_avg_5 from final "
+        "where ketto_toroku_bango = 'h001'"
+    ).fetchone()
+    assert row is not None
+    speed = row[4]
+    assert speed is not None
+    assert row[0] == pytest.approx(6.0 * speed)
+    assert row[1] == pytest.approx(8.0 * (10.0 / subject.MAX_FIELD_SIZE))
+    assert row[2] == pytest.approx((20.0 - 15.0) * speed)
+    assert row[3] == pytest.approx(0.0)
+
+
+def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    # Override pedigree stats so the min-races guard passes with known values.
+    # h001 links to sire s001 / keibajo '01' / kyori_band 4 / rs_bucket 0 / 202001.
+    seeded_con.execute(
+        "create or replace temp table sire_keibajo_stats as select * from (values "
+        f"('s001', '01', 202001, 0.4, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(sire, keibajo_code, stats_year_month, sire_keibajo_win_rate_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table sire_distance_stats as select * from (values "
+        f"('s001', 4, 202001, 0.5, 2.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(sire, kyori_band, stats_year_month, sire_distance_win_rate_val, "
+        "sire_avg_finish_at_distance_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table sire_running_style_stats as select * from (values "
+        f"('s001', 0, 202001, 0.2, 0.3, 0.4, 0.1, 0.5, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(sire, rs_bucket, stats_year_month, sire_nige_rate_val, sire_senkou_rate_val, "
+        "sire_sashi_rate_val, sire_oikomi_rate_val, sire_corner_1_norm_avg_val, race_count)"
+    )
+    # h001 has past_nige_rate_self=0.0 (not null) → dot product branch taken.
+    # h002 set to NULL nige rate → null-guard branch returns NULL.
+    seeded_con.execute(
+        "update horse_running_style_history set "
+        "past_nige_rate_self = 0.5, past_senkou_rate_self = 0.3, "
+        "past_sashi_rate_self = 0.1, past_oikomi_rate_self = 0.1 "
+        "where ketto_toroku_bango = 'h001'"
+    )
+    seeded_con.execute(
+        "update horse_running_style_history set "
+        "past_nige_rate_self = NULL, past_senkou_rate_self = NULL, "
+        "past_sashi_rate_self = NULL, past_oikomi_rate_self = NULL "
+        "where ketto_toroku_bango = 'h002'"
+    )
+    base_sql = subject.base_features_select_sql("jra")
+    rows = seeded_con.execute(
+        f"with final as ({base_sql}) "
+        "select ketto_toroku_bango, pedigree_venue_x_horse_venue, "
+        "pedigree_distance_x_horse_distance, sire_style_x_horse_style_match "
+        "from final where ketto_toroku_bango in ('h001', 'h002') "
+        "order by ketto_toroku_bango"
+    ).fetchall()
+    horse_with_style = rows[0]
+    horse_without_style = rows[1]
+    assert horse_with_style[0] == "h001"
+    assert horse_with_style[1] == pytest.approx(0.4 * 0.5)
+    assert horse_with_style[2] == pytest.approx(0.5 * 0.5)
+    assert horse_with_style[3] == pytest.approx(
+        0.5 * 0.2 + 0.3 * 0.3 + 0.1 * 0.4 + 0.1 * 0.1
+    )
+    assert horse_without_style[0] == "h002"
+    assert horse_without_style[3] is None

@@ -2819,3 +2819,51 @@ def test_checkpoint_stage_tables_partition_all_intermediate_tables() -> None:
         owned.extend(subject.CHECKPOINT_STAGE_TABLES.get(stage, ()))
     intermediate = [t for t in subject.SPILL_TABLES]
     assert sorted(t for t in owned if t in intermediate) == sorted(intermediate)
+
+
+# ---------------------------------------------------------------------------
+# Interaction features (weather x horse, pedigree x horse, sire-style x horse).
+# All eight must appear as computed aliases in base_features_select_sql().
+# ---------------------------------------------------------------------------
+
+
+def test_base_features_select_sql_includes_all_interaction_columns() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert "as rain_x_speed_decay" in sql
+    assert "as wind_x_front_runner" in sql
+    assert "as pedigree_venue_x_horse_venue" in sql
+    assert "as pedigree_distance_x_horse_distance" in sql
+    assert "as sire_style_x_horse_style_match" in sql
+    assert "as wind_x_field_size" in sql
+    assert "as rain_x_track_condition" in sql
+    assert "as cold_x_speed_effect" in sql
+
+
+def test_interaction_columns_flow_through_assemble_final_select() -> None:
+    sql = subject.assemble_final_select_from_temp_tables("jra")
+    assert "as rain_x_speed_decay" in sql
+    assert "as wind_x_front_runner" in sql
+    assert "as pedigree_venue_x_horse_venue" in sql
+    assert "as pedigree_distance_x_horse_distance" in sql
+    assert "as sire_style_x_horse_style_match" in sql
+    assert "as wind_x_field_size" in sql
+    assert "as rain_x_track_condition" in sql
+    assert "as cold_x_speed_effect" in sql
+
+
+def test_pedigree_interaction_columns_respect_min_races_guard() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert (
+        f"coalesce(case when sks.race_count >= {subject.PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue"
+        in sql
+    )
+    assert (
+        f"coalesce(case when sds.race_count >= {subject.PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance"
+        in sql
+    )
+
+
+def test_sire_style_match_returns_null_when_horse_style_unknown() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert "when rsh.past_nige_rate_self is null then null" in sql
+    assert f"srs.race_count >= {subject.PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val" in sql
