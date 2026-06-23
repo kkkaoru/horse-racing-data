@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@ducklings/workers": "1.5.3",
-    "hono": "4.12.25",
+    "hono": "4.12.27",
     "horse-racing-schema": "workspace:*"
   },
   "devDependencies": {
