@@ -336,13 +336,15 @@ def test_pedigree_monthly_stat_sql_reads_from_pedigree_rec_um():
     assert "kyori_band" in sql
 
 
-def test_pedigree_stat_specs_cover_five_tables():
+def test_pedigree_stat_specs_cover_seven_tables():
     table_names = [spec["table"] for spec in subject.PEDIGREE_STAT_SPECS]
     assert table_names == [
         "sire_distance_stats",
         "sire_track_stats",
         "damsire_distance_stats",
         "damsire_track_stats",
+        "sire_keibajo_stats",
+        "damsire_keibajo_stats",
         "sire_running_style_stats",
     ]
 
@@ -1795,3 +1797,121 @@ def test_sire_running_style_stats_uses_corner_count_as_denominator() -> None:
         assert f"sum(m.{metric}_count)::double / nullif(sum(m.corner1_norm_count), 0)" in accum, (
             f"sire_{metric}_rate_val uses race_count denominator — NULL-corner races inflate denominator"
         )
+
+
+# ---------------------------------------------------------------------------
+# sire_keibajo_stats / damsire_keibajo_stats — keibajo_code-bucketed pedigree
+# win rates (Signal4 venue-aware pedigree features)
+# ---------------------------------------------------------------------------
+
+
+def test_pedigree_stat_specs_includes_sire_keibajo_stats() -> None:
+    sks_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_keibajo_stats"
+    )
+    assert sks_spec["key_column"] == "ketto_joho_01b"
+    assert sks_spec["key_alias"] == "sire"
+    assert sks_spec["bucket_expr"] == "keibajo_code"
+    assert sks_spec["bucket_alias"] == "keibajo_code"
+    assert (
+        sks_spec["monthly_metrics_select"]
+        == "sum(case when finish_position = 1 then 1 else 0 end) as win_count"
+    )
+    assert (
+        sks_spec["accum_metrics_select"]
+        == "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_keibajo_win_rate_val"
+    )
+
+
+def test_pedigree_stat_specs_includes_damsire_keibajo_stats() -> None:
+    dks_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "damsire_keibajo_stats"
+    )
+    assert dks_spec["key_column"] == "ketto_joho_05b"
+    assert dks_spec["key_alias"] == "damsire"
+    assert dks_spec["bucket_expr"] == "keibajo_code"
+    assert dks_spec["bucket_alias"] == "keibajo_code"
+    assert (
+        dks_spec["monthly_metrics_select"]
+        == "sum(case when finish_position = 1 then 1 else 0 end) as win_count"
+    )
+    assert (
+        dks_spec["accum_metrics_select"]
+        == "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as damsire_keibajo_win_rate_val"
+    )
+
+
+def test_pedigree_monthly_stat_sql_sire_keibajo() -> None:
+    sks_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_keibajo_stats"
+    )
+    sql = subject.pedigree_monthly_stat_sql(sks_spec)
+    assert "create or replace temp table sire_keibajo_stats as" in sql
+    assert "ketto_joho_01b as sire" in sql
+    assert "keibajo_code as keibajo_code" in sql
+    assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
+    assert "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_keibajo_win_rate_val" in sql
+    assert "from pedigree_rec_um" in sql
+
+
+def test_pedigree_monthly_stat_sql_damsire_keibajo() -> None:
+    dks_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "damsire_keibajo_stats"
+    )
+    sql = subject.pedigree_monthly_stat_sql(dks_spec)
+    assert "create or replace temp table damsire_keibajo_stats as" in sql
+    assert "ketto_joho_05b as damsire" in sql
+    assert "keibajo_code as keibajo_code" in sql
+    assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
+    assert "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as damsire_keibajo_win_rate_val" in sql
+    assert "from pedigree_rec_um" in sql
+
+
+def test_base_features_select_sql_includes_sire_keibajo_win_rate() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert "sks.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate" in sql
+
+
+def test_base_features_select_sql_includes_damsire_keibajo_win_rate() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert "dks.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate" in sql
+
+
+# ---------------------------------------------------------------------------
+# Signal4 (additional coverage): PEDIGREE_STAT_TABLES registration,
+# target_keibajo_code projection, min-races guard, and join clauses.
+# ---------------------------------------------------------------------------
+
+
+def test_pedigree_stat_tables_includes_both_keibajo_stats() -> None:
+    assert "sire_keibajo_stats" in subject.PEDIGREE_STAT_TABLES
+    assert "damsire_keibajo_stats" in subject.PEDIGREE_STAT_TABLES
+
+
+def test_target_pedigree_sql_projects_target_keibajo_code() -> None:
+    sql = subject.target_pedigree_sql()
+    assert "t.keibajo_code as target_keibajo_code" in sql
+
+
+def test_base_features_select_sql_guards_keibajo_win_rate_by_min_races() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert (
+        f"case when sks.race_count >= {subject.PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate"
+        in sql
+    )
+    assert (
+        f"case when dks.race_count >= {subject.PEDIGREE_MIN_RACES} then dks.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate"
+        in sql
+    )
+
+
+def test_base_features_select_sql_joins_keibajo_stats_on_sire_and_keibajo() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert (
+        "left join sire_keibajo_stats sks on sks.sire = tp.target_sire and sks.keibajo_code = tp.target_keibajo_code"
+        in sql
+    )
+    assert (
+        "left join damsire_keibajo_stats dks on dks.damsire = tp.target_damsire and dks.keibajo_code = tp.target_keibajo_code"
+        in sql
+    )

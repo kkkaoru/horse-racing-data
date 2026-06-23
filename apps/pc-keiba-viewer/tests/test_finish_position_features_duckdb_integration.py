@@ -1121,3 +1121,228 @@ def test_heartbeat_supports_repeated_stage_changes():
     heartbeat.set_substage("step")
     heartbeat.stop()
     assert heartbeat.stage == "second"
+
+
+# ---------------------------------------------------------------------------
+# Signal4: sire_keibajo_stats / damsire_keibajo_stats — venue-bucketed
+# pedigree win rate computed in DuckDB end-to-end.
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
+    con = duckdb.connect(":memory:")
+    rows = [
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 3, 4.0, 1),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1),
+    ]
+    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    con.register("rec_keibajo_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu, finish_position,
+          cast(finish_norm as double) as finish_norm,
+          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, seibetsu_code
+        from rec_keibajo_df
+        """
+    )
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_pedigree_stats(con, "jra")
+    row = con.execute(
+        "select sire, keibajo_code, sire_keibajo_win_rate_val, race_count "
+        "from sire_keibajo_stats where stats_year_month = 202001"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "s001"
+    assert row[1] == "01"
+    assert row[2] == pytest.approx(0.4)
+    assert row[3] == 5
+
+
+def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
+    con = duckdb.connect(":memory:")
+    rows = [
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 3, 4.0, 1),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1),
+    ]
+    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    con.register("rec_damsire_keibajo_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu, finish_position,
+          cast(finish_norm as double) as finish_norm,
+          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, seibetsu_code
+        from rec_damsire_keibajo_df
+        """
+    )
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_pedigree_stats(con, "jra")
+    row = con.execute(
+        "select damsire, keibajo_code, damsire_keibajo_win_rate_val, race_count "
+        "from damsire_keibajo_stats where stats_year_month = 202001"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "d001"
+    assert row[1] == "01"
+    assert row[2] == pytest.approx(0.4)
+    assert row[3] == 5
+
+
+def test_keibajo_win_rate_null_when_race_count_below_min_races():
+    con = duckdb.connect(":memory:")
+    # Only 3 history races at keibajo 01 (< PEDIGREE_MIN_RACES=5) → final value NULL.
+    rows = [
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1),
+    ]
+    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    con.register("rec_below_min_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu, finish_position,
+          cast(finish_norm as double) as finish_norm,
+          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, seibetsu_code
+        from rec_below_min_df
+        """
+    )
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_se_lookup(con)
+    subject.stage_horse_history_derived(con, [2020], subject.Heartbeat(0.0, None))
+    subject.stage_partner_features(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_pedigree_stats(con, "jra")
+    subject.materialize_race_context(con)
+    subject.stage_track_bias(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_weather_lookup(con)
+    base_sql = subject.base_features_select_sql("jra")
+    row = con.execute(
+        f"with final as ({base_sql}) "
+        "select sire_keibajo_win_rate, damsire_keibajo_win_rate from final"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] is None
+
+
+def test_keibajo_win_rate_present_in_final_output_value():
+    con = duckdb.connect(":memory:")
+    # 5 history races at keibajo 01, 2 wins → win rate 0.4 surfaces in final output.
+    rows = [
+        ("jra", "20180101", "2018", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180201", "2018", "0201", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 1, 2.0, 1),
+        ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1),
+        ("jra", "20180401", "2018", "0401", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 3, 0.7, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 3, 4.0, 1),
+        ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1),
+        ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1),
+    ]
+    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    con.register("rec_value_df", df)
+    con.execute(
+        """
+        create or replace temp table rec as
+        select source, race_date,
+          strptime(race_date, '%Y%m%d')::date as race_dt,
+          kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban,
+          kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyori, track_code, grade_code, kyoso_joken_code,
+          shusso_tosu, finish_position,
+          cast(finish_norm as double) as finish_norm,
+          time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+          babajotai_code_shiba, babajotai_code_dirt,
+          tansho_ninkijun, tansho_odds, seibetsu_code
+        from rec_value_df
+        """
+    )
+    _seed_horse_masters(con)
+    _seed_weight_tables(con)
+    _seed_weather_tables(con)
+    subject.build_target_table(con, "jra", "20200101", "20201231")
+    subject.materialize_se_lookup(con)
+    subject.stage_horse_history_derived(con, [2020], subject.Heartbeat(0.0, None))
+    subject.stage_partner_features(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_pedigree_stats(con, "jra")
+    subject.materialize_race_context(con)
+    subject.stage_track_bias(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_weather_lookup(con)
+    base_sql = subject.base_features_select_sql("jra")
+    row = con.execute(
+        f"with final as ({base_sql}) "
+        "select sire_keibajo_win_rate, damsire_keibajo_win_rate from final"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(0.4)
+    assert row[1] == pytest.approx(0.4)
+
+
+def test_write_parquet_emits_keibajo_win_rate_columns(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    output_dir = tmp_path / "out"
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_weather_lookup(seeded_con)
+    subject.write_parquet(
+        seeded_con,
+        subject.assemble_final_select_from_temp_tables("jra"),
+        output_dir,
+        keep_existing=False,
+        force_clean=True,
+    )
+    reader = duckdb.connect(":memory:")
+    columns = [
+        row[0]
+        for row in reader.execute(
+            f"describe select * from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')"
+        ).fetchall()
+    ]
+    reader.close()
+    assert "sire_keibajo_win_rate" in columns
+    assert "damsire_keibajo_win_rate" in columns
