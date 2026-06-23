@@ -74,6 +74,7 @@ DEFAULT_N_TRIALS: Final[int] = 20
 DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
+MAX_INVERSE_PER_ROUND: Final[int] = 3
 
 
 class InverseResult(TypedDict):
@@ -256,13 +257,27 @@ class ContinuousLearner:
         )
 
     def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
-        """Try the inverse of each strongly negative trial, skipping ones already tried."""
+        """Try the inverse of each strongly negative trial, capped per round.
+
+        Each inverse trial spawns its own exploration whose new trials can also be
+        strongly negative, so an uncapped sweep blocks normal rounds. The cap bounds
+        the work to MAX_INVERSE_PER_ROUND inverse explorations before moving on.
+        """
         negative_trials = self._registry.list_strongly_negative_trials(
             STRONG_NEGATIVE_THRESHOLD_PP
         )
+        attempted = 0
         for trial in negative_trials:
+            if attempted >= MAX_INVERSE_PER_ROUND:
+                _logger.info(
+                    "inverse cap reached (%d) — continuing to next round",
+                    MAX_INVERSE_PER_ROUND,
+                )
+                break
             trial_id = trial["trial_id"]
             for approach in INVERSE_APPROACH_TYPES:
+                if attempted >= MAX_INVERSE_PER_ROUND:
+                    break
                 inverse_name = f"{trial_id}__{approach}"
                 if self._registry.has_inverse_been_tried(trial_id, inverse_name):
                     _logger.info(
@@ -280,6 +295,7 @@ class ContinuousLearner:
                     delta_pp=inverse_result["delta_pp"],
                     decision=inverse_result["decision"],
                 )
+                attempted += 1
 
     def _run_inverse_exploration(
         self, trial: FeatureEntry, approach: str, round_num: int, n_trials: int

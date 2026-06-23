@@ -215,7 +215,12 @@ def build_objective(
             df, selected, validation_years, train_start, params, backends,
         )
         trial_id = f"{study_name}_trial_{trial.number}"
-        definition = json.dumps({"features": selected, "trial": trial.number})
+        active_entry = registry.get_active_entry()
+        active_ndcg = active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+        delta_pp = (ndcg - active_ndcg) * 100
+        definition = json.dumps(
+            {"features": selected, "trial": trial.number, "delta_pp": delta_pp}
+        )
         promoted = registry.maybe_promote(trial_id, ndcg, selected, definition)
         trial.set_user_attr("promoted", promoted)
         return ndcg

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -538,6 +539,66 @@ def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> N
         assert mock_rfwb.call_count >= 1
         assert result == pytest.approx(0.75)
         assert registry.get_best_ndcg() == pytest.approx(0.75)
+
+
+def test_build_objective_records_delta_pp_in_definition_json() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            objective(trial)
+        recorded = registry.list_trials()[0]
+        payload = json.loads(recorded["definition_json"])
+    # No prior active entry → active_ndcg = 0.0 → delta_pp = 0.75 * 100.
+    assert payload["delta_pp"] == pytest.approx(75.0)
+
+
+def test_build_objective_records_negative_delta_pp_against_active_entry() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        active_id = registry.record_trial("seed", 0.80, ["feat_a"], "{}")
+        registry.activate(active_id)
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 1
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            objective(trial)
+        recorded = next(e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_1")
+        payload = json.loads(recorded["definition_json"])
+    # Active ndcg 0.80, trial ndcg 0.75 → delta_pp = (0.75 - 0.80) * 100 = -5.0.
+    assert payload["delta_pp"] == pytest.approx(-5.0)
 
 
 def test_build_objective_returns_zero_when_selected_below_min_features() -> None:

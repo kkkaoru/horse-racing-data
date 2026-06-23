@@ -1433,6 +1433,10 @@ def test_strong_negative_threshold_constant() -> None:
     assert subject.STRONG_NEGATIVE_THRESHOLD_PP == -1.0
 
 
+def test_max_inverse_per_round_constant() -> None:
+    assert subject.MAX_INVERSE_PER_ROUND == 3
+
+
 def test_inverse_approach_types_constant() -> None:
     from learning import feature_registry
 
@@ -1494,8 +1498,57 @@ def test_check_and_try_inverses_runs_new_inverse_for_each_approach() -> None:
         return_value={"delta_pp": {"ndcg_delta": 0.01}, "decision": "ADOPT"},
     ) as mock_run:
         learner._check_and_try_inverses(2, 20)
-    assert mock_run.call_count == 4
-    assert mock_registry.record_inverse_trial.call_count == 4
+    assert mock_run.call_count == subject.MAX_INVERSE_PER_ROUND
+    assert mock_registry.record_inverse_trial.call_count == subject.MAX_INVERSE_PER_ROUND
+
+
+def _make_negative_trials(count: int) -> list[FeatureEntry]:
+    return [
+        FeatureEntry(
+            id=i,
+            trial_id=f"neg-trial-{i}",
+            ndcg_at_3=0.40,
+            is_active=False,
+            feature_names=["feat_speed"],
+            definition_json="{}",
+            created_at="2026-01-01T00:00:00+00:00",
+        )
+        for i in range(count)
+    ]
+
+
+def test_check_and_try_inverses_caps_attempts_at_max_per_round() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = _make_negative_trials(10)
+    mock_registry.has_inverse_been_tried.return_value = False
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(
+        learner,
+        "_run_inverse_exploration",
+        return_value={"delta_pp": {"ndcg_delta": 0.01}, "decision": "ADOPT"},
+    ) as mock_run:
+        learner._check_and_try_inverses(0, 20)
+    assert mock_run.call_count == subject.MAX_INVERSE_PER_ROUND
+    assert mock_registry.record_inverse_trial.call_count == subject.MAX_INVERSE_PER_ROUND
+
+
+def test_check_and_try_inverses_logs_cap_reached_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.list_strongly_negative_trials.return_value = _make_negative_trials(10)
+    mock_registry.has_inverse_been_tried.return_value = False
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(
+        learner,
+        "_run_inverse_exploration",
+        return_value={"delta_pp": {"ndcg_delta": 0.01}, "decision": "ADOPT"},
+    ):
+        with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+            learner._check_and_try_inverses(0, 20)
+    assert any("inverse cap reached" in r.message for r in caplog.records)
 
 
 def test_check_and_try_inverses_records_inverse_name_and_decision() -> None:

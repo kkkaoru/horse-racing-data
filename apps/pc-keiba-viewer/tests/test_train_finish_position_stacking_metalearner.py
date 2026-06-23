@@ -603,27 +603,6 @@ def test_train_one_fold_feature_cols_derived_from_train_frame_not_full_dataset()
     dataset = _multiyear_dataset([2020, 2021, 2022, 2023])
     dataset.loc[dataset["race_year"] == 2023, "val_year_only_col"] = 1.0
 
-    fitted_columns: list[list[str]] = []
-
-    def capturing_ridge_factory(alpha: float, random_state: int) -> object:
-        base_model = subject.default_ridge_factory(alpha=alpha, random_state=random_state)
-
-        class CapturingRidge:
-            def fit(self, x: np.ndarray, y: np.ndarray) -> "CapturingRidge":
-                # We cannot recover column names from numpy arrays directly, so
-                # we capture via the meta "feature_columns" key instead.  Here
-                # we just delegate; the assertion is done on meta["feature_columns"].
-                base_model.fit(x, y)
-                return self
-
-            def predict(self, x: np.ndarray) -> np.ndarray:
-                return base_model.predict(x)
-
-            def get_params(self, deep: bool = True) -> dict[str, object]:
-                return base_model.get_params(deep=deep)
-
-        return CapturingRidge()
-
     # Capture the feature_cols by checking meta["feature_columns"] returned by
     # train_one_fold — that key is set from feature_cols directly after the fix.
     preds, meta = subject.train_one_fold(
@@ -634,7 +613,7 @@ def test_train_one_fold_feature_cols_derived_from_train_frame_not_full_dataset()
         alpha_grid=(1.0,),
         cv_folds=3,
         random_state=0,
-        ridge_factory=cast(subject.RidgeFactoryLike, capturing_ridge_factory),
+        ridge_factory=subject.default_ridge_factory,
         now=FIXED_NOW,
     )
     assert not preds.empty
@@ -647,7 +626,6 @@ def test_train_one_fold_feature_cols_derived_from_train_frame_not_full_dataset()
     )
     # Standard columns that exist in all years must still be present.
     assert "predicted_score" in feature_columns
-    del fitted_columns  # referenced only to silence unused-variable lint
 
 
 def test_resolve_fold_years_default_excludes_earliest_year() -> None:

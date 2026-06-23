@@ -44,6 +44,8 @@ META_COLUMNS: tuple[str, ...] = (
     "race_id",
     "race_year",
     "feature_schema_version",
+    "target_race_id",
+    "current_race_grade_letter",
 )
 LABEL_COLUMNS: tuple[str, ...] = (
     "finish_position",

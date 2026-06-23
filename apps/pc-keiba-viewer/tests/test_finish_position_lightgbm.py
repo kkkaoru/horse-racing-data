@@ -41,6 +41,8 @@ def test_resolve_feature_columns_excludes_meta_and_labels():
     columns = [
         "source",
         "race_id",
+        "target_race_id",
+        "current_race_grade_letter",
         "umaban",
         "finish_position",
         "finish_norm",
@@ -48,6 +50,8 @@ def test_resolve_feature_columns_excludes_meta_and_labels():
         "jockey_career_win_rate",
     ]
     feature_columns = subject.resolve_feature_columns(columns)
+    assert "target_race_id" not in feature_columns
+    assert "current_race_grade_letter" not in feature_columns
     assert feature_columns == ["speed_index_avg_5", "jockey_career_win_rate"]
 
 
