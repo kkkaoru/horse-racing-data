@@ -1115,24 +1115,39 @@ def pedigree_rec_um_subquery(category: str) -> str:
         )
     if category == "nar":
         return (
-            "select rec.*, um.ketto_joho_01b, um.ketto_joho_05b"
-            " from rec join nar_um um using (ketto_toroku_bango)"
+            "select rec.*,"
+            " coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b,"
+            " coalesce(um.ketto_joho_05b, nu.ketto_joho_05b) as ketto_joho_05b"
+            " from rec"
+            " left join nar_um um using (ketto_toroku_bango)"
+            " left join nar_nu nu using (ketto_toroku_bango)"
             " where rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
+            " and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null"
         )
     if category == "ban-ei":
         return (
-            "select rec.*, um.ketto_joho_01b, um.ketto_joho_05b"
-            " from rec join nar_um um using (ketto_toroku_bango)"
+            "select rec.*,"
+            " coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b,"
+            " coalesce(um.ketto_joho_05b, nu.ketto_joho_05b) as ketto_joho_05b"
+            " from rec"
+            " left join nar_um um using (ketto_toroku_bango)"
+            " left join nar_nu nu using (ketto_toroku_bango)"
             " where rec.source = 'nar' and rec.keibajo_code = '83'"
+            " and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null"
         )
     return (
         "select rec.*, um.ketto_joho_01b, um.ketto_joho_05b"
         " from rec join jra_um um using (ketto_toroku_bango)"
         " where rec.source = 'jra'"
         " union all"
-        " select rec.*, um.ketto_joho_01b, um.ketto_joho_05b"
-        " from rec join nar_um um using (ketto_toroku_bango)"
+        " select rec.*,"
+        " coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b,"
+        " coalesce(um.ketto_joho_05b, nu.ketto_joho_05b) as ketto_joho_05b"
+        " from rec"
+        " left join nar_um um using (ketto_toroku_bango)"
+        " left join nar_nu nu using (ketto_toroku_bango)"
         " where rec.source = 'nar'"
+        " and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null"
     )
 
 
@@ -1299,11 +1314,12 @@ def target_pedigree_sql() -> str:
       left(coalesce(t.track_code, ''), 1) as surface,
       t.keibajo_code as target_keibajo_code,
       0 as rs_bucket,
-      coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b) as target_sire,
-      coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b) as target_damsire
+      coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b, n_nu.ketto_joho_01b) as target_sire,
+      coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b, n_nu.ketto_joho_05b) as target_damsire
     from target t
     left join jra_um j_um on t.source = 'jra' and j_um.ketto_toroku_bango = t.ketto_toroku_bango
     left join nar_um n_um on t.source = 'nar' and n_um.ketto_toroku_bango = t.ketto_toroku_bango
+    left join nar_nu n_nu on t.source = 'nar' and n_nu.ketto_toroku_bango = t.ketto_toroku_bango
     """
 
 

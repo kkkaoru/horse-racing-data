@@ -91,10 +91,18 @@ def _seed_horse_masters(con: duckdb.DuckDBPyConnection) -> None:
         ],
         columns=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
     )
+    nar_nu = pd.DataFrame(
+        [
+            ("h004", "s004", "d004"),
+        ],
+        columns=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+    )
     con.register("jra_um_df", jra_um)
     con.register("nar_um_df", nar_um)
+    con.register("nar_nu_df", nar_nu)
     con.execute("create or replace temp table jra_um as select * from jra_um_df")
     con.execute("create or replace temp table nar_um as select * from nar_um_df")
+    con.execute("create or replace temp table nar_nu as select * from nar_nu_df")
 
 
 def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:

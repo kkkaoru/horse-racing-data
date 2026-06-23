@@ -393,7 +393,9 @@ def test_target_pedigree_sql_joins_both_horse_masters():
     sql = subject.target_pedigree_sql()
     assert "left join jra_um" in sql
     assert "left join nar_um" in sql
-    assert "coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b)" in sql
+    assert "left join nar_nu" in sql
+    assert "coalesce(j_um.ketto_joho_01b, n_um.ketto_joho_01b, n_nu.ketto_joho_01b)" in sql
+    assert "coalesce(j_um.ketto_joho_05b, n_um.ketto_joho_05b, n_nu.ketto_joho_05b)" in sql
 
 
 def test_target_months_sql_groups_distinct_year_months():
@@ -413,6 +415,30 @@ def test_pedigree_rec_um_subquery_returns_distinct_clauses_per_category():
         in subject.pedigree_rec_um_subquery("ban-ei")
     )
     assert "union all" in subject.pedigree_rec_um_subquery("all")
+
+
+def test_pedigree_rec_um_subquery_nar_joins_both_nar_masters():
+    sql = subject.pedigree_rec_um_subquery("nar")
+    assert "left join nar_um um using (ketto_toroku_bango)" in sql
+    assert "left join nar_nu nu using (ketto_toroku_bango)" in sql
+    assert "coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b" in sql
+    assert "coalesce(um.ketto_joho_05b, nu.ketto_joho_05b) as ketto_joho_05b" in sql
+    assert "and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null" in sql
+
+
+def test_pedigree_rec_um_subquery_banei_joins_both_nar_masters():
+    sql = subject.pedigree_rec_um_subquery("ban-ei")
+    assert "left join nar_um um using (ketto_toroku_bango)" in sql
+    assert "left join nar_nu nu using (ketto_toroku_bango)" in sql
+    assert "coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b" in sql
+    assert "and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null" in sql
+
+
+def test_pedigree_rec_um_subquery_all_joins_both_nar_masters():
+    sql = subject.pedigree_rec_um_subquery("all")
+    assert "left join nar_um um using (ketto_toroku_bango)" in sql
+    assert "left join nar_nu nu using (ketto_toroku_bango)" in sql
+    assert "coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) as ketto_joho_01b" in sql
 
 
 def test_race_context_cte_ranks_top_three_by_lowest_time_sa():
