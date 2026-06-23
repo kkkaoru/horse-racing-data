@@ -190,6 +190,37 @@ serve-blocked.
 
 ---
 
+## UPDATE 2026-06-23: nvd_nu Discovery — Root Cause Identified
+
+**The serve-coverage collapse is caused by using the wrong table.** The pipeline used
+`nvd_um` (JV-Data mirror, NAR coverage declining to ~22%) when it should also use
+**`nvd_nu`** (N-Data native 競走馬マスタ地方, 120,159 rows in local PG). `nvd_nu` has
+the same schema (`horseMasterColumns`) with `ketto_joho_01a` (sire) and `ketto_joho_05a`
+(damsire) columns. See `nvd-um-vs-nvd-nu-discovery.md` for full analysis.
+
+**Action:** Add `nvd_nu` as priority 3 in `pedigree_staging.py` and
+`finish_position_features_duckdb.py`, then re-run this coverage gate.
+
+### nvd_nu Coverage Verification (2026-06-23)
+
+| Year | Horses | nvd_nu% | nvd_um% | jvd_um% | nvd_nu-only |
+| ---: | -----: | ------: | ------: | ------: | ----------: |
+| 2020 | 13,846 |   100.0 |    98.6 |    62.7 |           0 |
+| 2021 | 14,361 |   100.0 |    98.3 |    62.3 |           0 |
+| 2022 | 14,542 |   100.0 |    98.0 |    61.3 |           0 |
+| 2023 | 15,110 |   100.0 |    81.8 |    60.7 |         725 |
+| 2024 | 15,265 |   100.0 |    50.4 |    59.6 |       2,631 |
+| 2025 | 15,576 |    99.9 |    29.3 |    58.7 |       4,230 |
+| 2026 | 11,991 |   100.0 |    20.7 |    57.2 |       3,861 |
+
+Recent 15 race days: **nvd_nu = 100.0% every day** (vs nvd_um median ~22%).
+nvd_nu sire population: 121,337/121,337 (100.0%).
+nvd_nu damsire population: 121,337/121,337 (100.0%).
+
+**Result: nvd_nu PASSES the ≥80% serve-coverage gate. Signal4 is UNBLOCKED.**
+
+---
+
 ## If nvd_um Coverage Is Resolved
 
 If `nvd_um` is backfilled or replaced with a higher-coverage N-Data source achieving ≥80%

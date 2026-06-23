@@ -863,6 +863,7 @@ def stage_source_tables(
         con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter
     )
     stage_um_table(con, "source.nar_um", "nar_um", "nvd_um")
+    stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu")
     stage_ra_table(
         con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter
     )
