@@ -29,6 +29,14 @@ const MAX_SAFE_RANK = Number.MAX_SAFE_INTEGER;
 // trimming D1 reads.
 const DISTINCT_FETCHED_AT_LIMIT = 150;
 
+// D1 caps bound variables per prepared statement well below the standard
+// SQLite 999 (~100 — exceeding it raises `D1_ERROR: too many SQL variables`).
+// The Phase-2 IN clause is chunked into sub-queries of this size and the
+// chunked aggregates are concatenated in worker code. 90 leaves headroom
+// while still letting the full DISTINCT_FETCHED_AT_LIMIT fan-out finish in
+// just two parallel sub-queries.
+const FETCHED_AT_IN_CHUNK_SIZE = 90;
+
 const ODDS_TREND_LIMITS: Record<OddsType, number> = {
   "3renpuku": 30,
   "3rentan": 30,
@@ -536,6 +544,28 @@ interface DistinctFetchedAtRow {
 const buildInPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(", ");
 
+// Splits an immutable list into fixed-size chunks (last chunk may be
+// smaller). Used to keep the Phase-2 IN clause under D1's bind-variable
+// cap (see FETCHED_AT_IN_CHUNK_SIZE).
+const chunkArray = <T>(items: readonly T[], size: number): T[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
+    items.slice(index * size, index * size + size),
+  );
+
+const aggregateArchiveRowsForFetchedAtChunk = async (
+  db: D1Database,
+  fetchedAtChunk: readonly string[],
+): Promise<AggregateArchiveRow[]> => {
+  const placeholders = buildInPlaceholders(fetchedAtChunk.length);
+  const result = await db
+    .prepare(
+      `select race_key, odds_type, fetched_at, json_group_array(json_object('combination', combination, 'odds', odds, 'min_odds', min_odds, 'max_odds', max_odds, 'average_odds', average_odds, 'rank', rank)) as snapshot_json from odds_snapshots where fetched_at in (${placeholders}) group by race_key, odds_type, fetched_at order by fetched_at asc`,
+    )
+    .bind(...fetchedAtChunk)
+    .all<AggregateArchiveRow>();
+  return result.results;
+};
+
 // Phase 1: pick the oldest `DISTINCT fetched_at` values that fall before the
 // cutoff. This walks `idx_odds_snapshots_fetched_at` as a covering index
 // (`SEARCH ... USING COVERING INDEX (fetched_at<?)`), so even with 16M+
@@ -558,7 +588,9 @@ export const listDistinctArchiveFetchedAtBeforeCutoff = async (
 // bounded list produced by Phase 1. SQLite uses
 // `idx_odds_snapshots_fetched_at (fetched_at=?)` per IN value, so the scan
 // touches only the ~200 rows per timestamp and the GROUP BY operates on a
-// tiny working set.
+// tiny working set. D1 caps bind variables per prepared statement
+// (~100, well below SQLite's 999), so the IN clause is chunked into
+// FETCHED_AT_IN_CHUNK_SIZE sub-queries dispatched in parallel.
 export const aggregateArchiveRowsForFetchedAtList = async (
   db: D1Database,
   fetchedAtList: string[],
@@ -566,14 +598,11 @@ export const aggregateArchiveRowsForFetchedAtList = async (
   if (fetchedAtList.length === 0) {
     return [];
   }
-  const placeholders = buildInPlaceholders(fetchedAtList.length);
-  const result = await db
-    .prepare(
-      `select race_key, odds_type, fetched_at, json_group_array(json_object('combination', combination, 'odds', odds, 'min_odds', min_odds, 'max_odds', max_odds, 'average_odds', average_odds, 'rank', rank)) as snapshot_json from odds_snapshots where fetched_at in (${placeholders}) group by race_key, odds_type, fetched_at order by fetched_at asc`,
-    )
-    .bind(...fetchedAtList)
-    .all<AggregateArchiveRow>();
-  return result.results;
+  const chunks = chunkArray(fetchedAtList, FETCHED_AT_IN_CHUNK_SIZE);
+  const groupedResults = await Promise.all(
+    chunks.map((chunk) => aggregateArchiveRowsForFetchedAtChunk(db, chunk)),
+  );
+  return groupedResults.flat();
 };
 
 // Two-phase archive lookup. The legacy single-query version

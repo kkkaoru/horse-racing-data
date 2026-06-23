@@ -899,3 +899,57 @@ it("listArchiveCandidatesBeforeCutoff honors caller limit when it is below the 1
   });
   expect(distinctBind).toHaveBeenCalledWith("2026-05-21T00:00:00.000Z", 25);
 });
+
+it("aggregateArchiveRowsForFetchedAtList splits 150 fetched_ats into two chunks (90 + 60) under D1 bind cap", async () => {
+  const fetchedAts = Array.from(
+    { length: 150 },
+    (_, index) => `2026-05-20T10:${String(index).padStart(2, "0")}:00+09:00`,
+  );
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await aggregateArchiveRowsForFetchedAtList(db, fetchedAts);
+  expect(prepare).toHaveBeenCalledTimes(2);
+  expect(bind).toHaveBeenCalledTimes(2);
+  expect(bind.mock.calls[0]?.length).toBe(90);
+  expect(bind.mock.calls[1]?.length).toBe(60);
+});
+
+it("aggregateArchiveRowsForFetchedAtList uses a single chunk when input length is at the chunk boundary (90)", async () => {
+  const fetchedAts = Array.from(
+    { length: 90 },
+    (_, index) => `2026-05-20T11:${String(index).padStart(2, "0")}:00+09:00`,
+  );
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await aggregateArchiveRowsForFetchedAtList(db, fetchedAts);
+  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(bind).toHaveBeenCalledTimes(1);
+  expect(bind.mock.calls[0]?.length).toBe(90);
+});
+
+it("aggregateArchiveRowsForFetchedAtList concatenates results from every chunk in order", async () => {
+  const fetchedAts = Array.from(
+    { length: 120 },
+    (_, index) => `2026-05-20T12:${String(index).padStart(2, "0")}:00+09:00`,
+  );
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "2026-05-20T12:00:00+09:00",
+        odds_type: "tansho",
+        race_key: "nar:20260520:42:01",
+        snapshot_json: "[]",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await aggregateArchiveRowsForFetchedAtList(db, fetchedAts);
+  expect(prepare).toHaveBeenCalledTimes(2);
+  expect(result.length).toBe(2);
+});
