@@ -95,6 +95,8 @@ DEFAULT_MIN_CHILD_SAMPLES = 20
 DEFAULT_LAMBDA_L2 = 0.0
 DEFAULT_NUM_ITERATIONS = 500
 DEFAULT_EARLY_STOPPING_ROUNDS = 50
+EXPLORATION_EARLY_STOPPING_ROUNDS = 20
+EXPLORATION_MAX_BIN = 127
 DEFAULT_VERBOSE_EVAL = 50
 HPO_NUM_ITERATIONS = 200
 HPO_NUM_LEAVES_MIN = 15
@@ -245,7 +247,7 @@ def filter_by_distance_band(df: pd.DataFrame, band: str) -> pd.DataFrame:
 
 
 def select_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
-    return df[feature_columns].copy()
+    return df[feature_columns]
 
 
 def detect_categorical_features(feature_columns: list[str]) -> list[str]:
@@ -327,7 +329,11 @@ def resolve_monotone_constraints(feature_columns: list[str]) -> list[int]:
 
 
 def build_lightgbm_params(
-    params: TrainingParams, feature_columns: list[str] | None = None
+    params: TrainingParams,
+    feature_columns: list[str] | None = None,
+    *,
+    exploration_mode: bool = False,
+    num_threads: int | None = None,
 ) -> dict[str, object]:
     base: dict[str, object] = {
         "boosting_type": "gbdt",
@@ -342,6 +348,11 @@ def build_lightgbm_params(
         if any(constraints):
             base["monotone_constraints"] = constraints
             base["monotone_constraints_method"] = "advanced"
+    if num_threads is not None:
+        base["num_threads"] = num_threads
+    if exploration_mode:
+        base["max_bin"] = EXPLORATION_MAX_BIN
+        base["feature_pre_filter"] = True
     if params["objective"] == OBJECTIVE_LAMBDARANK:
         return {**base, "objective": "lambdarank", "metric": "ndcg", "eval_at": [TOP3_K]}
     return {**base, "objective": "binary", "metric": "binary_logloss"}
@@ -351,20 +362,27 @@ def train_lambdarank(
     train_bundle: LgbDatasetBundle,
     valid_bundle: LgbDatasetBundle | None,
     params: TrainingParams,
+    *,
+    exploration_mode: bool = False,
 ) -> tuple["lgb.Booster", TrainingResult]:
     started = perf_counter()
-    lgb_params = build_lightgbm_params(params, train_bundle["feature_columns"])
+    lgb_params = build_lightgbm_params(
+        params, train_bundle["feature_columns"], exploration_mode=exploration_mode
+    )
     valid_sets: list[lgb.Dataset] = [train_bundle["dataset"]]
     valid_names: list[str] = ["train"]
     if valid_bundle is not None:
         valid_sets.append(valid_bundle["dataset"])
         valid_names.append("valid")
+    stopping_rounds = (
+        EXPLORATION_EARLY_STOPPING_ROUNDS if exploration_mode else DEFAULT_EARLY_STOPPING_ROUNDS
+    )
     callbacks: list[LightgbmCallback] = [cast(LightgbmCallback, lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL))]
     if valid_bundle is not None:
         callbacks.append(
             cast(
                 LightgbmCallback,
-                lgb.early_stopping(stopping_rounds=DEFAULT_EARLY_STOPPING_ROUNDS, first_metric_only=True),
+                lgb.early_stopping(stopping_rounds=stopping_rounds, first_metric_only=True),
             ),
         )
     booster = lgb.train(

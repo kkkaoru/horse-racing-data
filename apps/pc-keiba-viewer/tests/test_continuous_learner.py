@@ -1721,7 +1721,11 @@ def test_check_and_try_inverses_dedup_uses_full_inverse_name() -> None:
     ]
 
 
-def test_run_inverse_exploration_calls_run_exploration_with_half_trials() -> None:
+def test_inverse_n_trials_constant() -> None:
+    assert subject.INVERSE_N_TRIALS == 5
+
+
+def test_run_inverse_exploration_uses_inverse_n_trials_constant() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
             registry=reg,
@@ -1732,7 +1736,7 @@ def test_run_inverse_exploration_calls_run_exploration_with_half_trials() -> Non
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
         kwargs = mock_run.call_args.kwargs
-        assert kwargs["n_trials"] == 10
+        assert kwargs["n_trials"] == 5
         assert kwargs["registry"] is reg
         years = kwargs["validation_years"]
         assert len(years) == 2
@@ -1740,13 +1744,13 @@ def test_run_inverse_exploration_calls_run_exploration_with_half_trials() -> Non
         assert set(years).issubset({2021, 2022})
 
 
-def test_run_inverse_exploration_clamps_trials_to_minimum_three() -> None:
+def test_run_inverse_exploration_n_trials_ignores_caller_value() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_inverse_exploration(trial, "feature_negate", 1, 2)
-        assert mock_run.call_args.kwargs["n_trials"] == 3
+        assert mock_run.call_args.kwargs["n_trials"] == 5
 
 
 def test_run_inverse_exploration_study_name_includes_approach_and_trial() -> None:
@@ -2087,7 +2091,11 @@ def test_analyze_feature_enrichment_caps_candidates_to_max() -> None:
     assert len(passed_candidates) == subject.MAX_ENRICHMENT_FEATURES
 
 
-def test_run_enrichment_trial_calls_run_exploration_with_half_trials() -> None:
+def test_enrichment_n_trials_constant() -> None:
+    assert subject.ENRICHMENT_N_TRIALS == 5
+
+
+def test_run_enrichment_trial_uses_enrichment_n_trials_constant() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
             registry=reg,
@@ -2098,7 +2106,7 @@ def test_run_enrichment_trial_calls_run_exploration_with_half_trials() -> None:
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 2)
         kwargs = mock_run.call_args.kwargs
-        assert kwargs["n_trials"] == 10
+        assert kwargs["n_trials"] == 5
         assert kwargs["registry"] is reg
         years = kwargs["validation_years"]
         assert len(years) == 2
@@ -2136,9 +2144,9 @@ def test_run_enrichment_trial_validation_years_vary_across_rounds() -> None:
         assert years_round_0 != years_round_5
 
 
-def test_run_enrichment_trial_clamps_trials_to_minimum_five() -> None:
+def test_run_enrichment_trial_n_trials_ignores_per_round_value() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        learner = _make_learner(registry=reg, n_trials_per_round=4)
+        learner = _make_learner(registry=reg, n_trials_per_round=40)
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 0)
         assert mock_run.call_args.kwargs["n_trials"] == 5

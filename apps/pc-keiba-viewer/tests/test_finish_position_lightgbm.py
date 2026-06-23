@@ -104,6 +104,17 @@ def test_select_feature_frame_returns_only_features():
     assert list(frame.columns) == ["a", "c"]
 
 
+def test_select_feature_frame_returns_view_not_copy():
+    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+    frame = subject.select_feature_frame(df, ["a", "c"])
+    assert np.shares_memory(df["a"].to_numpy(), frame["a"].to_numpy())
+
+
+def test_exploration_constants_have_expected_values():
+    assert subject.EXPLORATION_EARLY_STOPPING_ROUNDS == 20
+    assert subject.EXPLORATION_MAX_BIN == 127
+
+
 def test_training_params_from_args_casts_to_expected_types():
     args = subject.parse_args(
         [
@@ -233,6 +244,66 @@ def test_build_lightgbm_params_without_known_monotone_features_omits_constraints
         feature_columns,
     )
     assert "monotone_constraints" not in lgb_params
+
+
+def test_build_lightgbm_params_exploration_mode_sets_max_bin_and_pre_filter():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        },
+        exploration_mode=True,
+    )
+    assert lgb_params["max_bin"] == 127
+    assert lgb_params["feature_pre_filter"] is True
+
+
+def test_build_lightgbm_params_default_omits_exploration_settings():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        }
+    )
+    assert "max_bin" not in lgb_params
+    assert "feature_pre_filter" not in lgb_params
+
+
+def test_build_lightgbm_params_sets_num_threads_when_provided():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        },
+        num_threads=7,
+    )
+    assert lgb_params["num_threads"] == 7
+
+
+def test_build_lightgbm_params_omits_num_threads_by_default():
+    lgb_params = subject.build_lightgbm_params(
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.05,
+            "min_child_samples": 20,
+            "num_iterations": 100,
+            "num_leaves": 63,
+            "objective": "lambdarank",
+        }
+    )
+    assert "num_threads" not in lgb_params
 
 
 def test_compute_sample_weights_none_returns_none():
@@ -472,6 +543,61 @@ def test_train_lambdarank_returns_booster_and_metadata():
     assert result["train_rows"] == len(df)
     assert result["valid_rows"] == 0
     assert result["best_iteration"] >= 1
+
+
+def test_train_lambdarank_exploration_mode_uses_short_early_stopping(monkeypatch: pytest.MonkeyPatch):
+    captured: list[int] = []
+    real_early_stopping = lgb.early_stopping
+
+    def capturing_early_stopping(stopping_rounds: int, first_metric_only: bool):
+        captured.append(stopping_rounds)
+        return real_early_stopping(stopping_rounds=stopping_rounds, first_metric_only=first_metric_only)
+
+    monkeypatch.setattr(lgb, "early_stopping", capturing_early_stopping)
+    train_bundle = subject.prepare_lgb_dataset(make_synthetic_dataset(seed=1))
+    valid_bundle = subject.prepare_lgb_dataset(make_synthetic_dataset(seed=2))
+    booster, _result = subject.train_lambdarank(
+        train_bundle,
+        valid_bundle,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 5,
+            "num_iterations": 10,
+            "num_leaves": 7,
+            "objective": "lambdarank",
+        },
+        exploration_mode=True,
+    )
+    assert booster is not None
+    assert captured == [20]
+
+
+def test_train_lambdarank_default_uses_full_early_stopping(monkeypatch: pytest.MonkeyPatch):
+    captured: list[int] = []
+    real_early_stopping = lgb.early_stopping
+
+    def capturing_early_stopping(stopping_rounds: int, first_metric_only: bool):
+        captured.append(stopping_rounds)
+        return real_early_stopping(stopping_rounds=stopping_rounds, first_metric_only=first_metric_only)
+
+    monkeypatch.setattr(lgb, "early_stopping", capturing_early_stopping)
+    train_bundle = subject.prepare_lgb_dataset(make_synthetic_dataset(seed=1))
+    valid_bundle = subject.prepare_lgb_dataset(make_synthetic_dataset(seed=2))
+    booster, _result = subject.train_lambdarank(
+        train_bundle,
+        valid_bundle,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 5,
+            "num_iterations": 10,
+            "num_leaves": 7,
+            "objective": "lambdarank",
+        },
+    )
+    assert booster is not None
+    assert captured == [50]
 
 
 def test_train_binary_top1_returns_booster_and_objective_in_result():

@@ -79,7 +79,9 @@ DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
 MAX_INVERSE_PER_ROUND: Final[int] = 3
+INVERSE_N_TRIALS: Final[int] = 5
 ENRICHMENT_THRESHOLD: Final[float] = 0.3
+ENRICHMENT_N_TRIALS: Final[int] = 5
 MAX_ENRICHMENT_FEATURES: Final[int] = 5
 
 
@@ -358,7 +360,7 @@ class ContinuousLearner:
             df=self._df,
             registry=self._registry,
             study_name=inverse_study_name,
-            n_trials=max(n_trials // 2, 3),
+            n_trials=INVERSE_N_TRIALS,
             validation_years=round_years,
             train_start=self._train_start,
             backends=self._backends,
@@ -425,7 +427,7 @@ class ContinuousLearner:
             df=self._df,
             registry=self._registry,
             study_name=study_name,
-            n_trials=max(self._n_trials // 2, 5),
+            n_trials=ENRICHMENT_N_TRIALS,
             validation_years=round_years,
             train_start=self._train_start,
             backends=self._backends,

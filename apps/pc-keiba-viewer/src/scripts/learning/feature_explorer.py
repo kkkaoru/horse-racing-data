@@ -193,7 +193,20 @@ def select_features(
     meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
     selected = [col for col, keep in feature_mask.items() if keep]
     keep_cols = [c for c in df.columns if c in meta_and_label or c in selected]
-    return df[keep_cols].copy()
+    return df[keep_cols]
+
+
+def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
+    """Select only the needed features from a pre-split fold."""
+    meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
+    keep_cols = [
+        c for c in fold["train_df"].columns if c in meta_and_label or c in feature_set
+    ]
+    return {
+        "train_df": fold["train_df"][keep_cols],
+        "valid_df": fold["valid_df"][keep_cols],
+        "valid_year": fold["valid_year"],
+    }
 
 
 def evaluate_feature_set(
@@ -204,7 +217,8 @@ def evaluate_feature_set(
     params: TrainingParams,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
 ) -> float:
-    feature_mask = {col: col in set(feature_names) for col in df.columns}
+    feature_set = set(feature_names)
+    feature_mask = {col: col in feature_set for col in df.columns}
     subset_df = select_features(df, feature_mask)
     ndcg_scores: list[float] = []
     for year in validation_years:
@@ -230,6 +244,12 @@ def build_objective(
     study_name: str,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
 ) -> Callable[[optuna.Trial], float]:
+    pre_split_folds: dict[int, FoldSplit] = {}
+    for year in validation_years:
+        fold = split_walk_forward(df, train_start, year)
+        if not fold["train_df"].empty and not fold["valid_df"].empty:
+            pre_split_folds[year] = fold
+
     def objective(trial: optuna.Trial) -> float:
         feature_mask = {
             col: trial.suggest_categorical(f"use_{col}", [True, False])
@@ -238,9 +258,15 @@ def build_objective(
         selected = [col for col, keep in feature_mask.items() if keep]
         if len(selected) < MIN_FEATURES:
             return 0.0
-        ndcg = evaluate_feature_set(
-            df, selected, validation_years, train_start, params, backends,
-        )
+        feature_set = set(selected)
+        ndcg_scores: list[float] = []
+        for fold in pre_split_folds.values():
+            fold_with_features = _select_fold_features(fold, feature_set)
+            for backend in backends:
+                score = run_fold_with_backend(fold_with_features, backend, params)
+                if score is not None:
+                    ndcg_scores.append(score)
+        ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
         trial_id = f"{study_name}_trial_{trial.number}"
         active_entry = registry.get_active_entry()
         active_ndcg = active_entry["ndcg_at_3"] if active_entry is not None else 0.0

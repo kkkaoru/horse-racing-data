@@ -12,7 +12,7 @@ import pytest
 
 import learning.feature_explorer as subject
 from learning.feature_registry import FeatureRegistry
-from finish_position_lightgbm import META_COLUMNS, FoldSplit
+from finish_position_lightgbm import META_COLUMNS, FoldSplit, split_walk_forward
 
 
 def _make_df() -> pd.DataFrame:
@@ -72,7 +72,7 @@ def _make_fold() -> FoldSplit:
             "feat_jockey": 0.3,
         })
     df = pd.DataFrame(rows)
-    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy()})
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy(), "valid_year": 2023})
 
 
 def _make_meta_only_fold() -> FoldSplit:
@@ -100,7 +100,7 @@ def _make_meta_only_fold() -> FoldSplit:
             "target_running_style_class": 0,
         })
     df = pd.DataFrame(rows)
-    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy()})
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy(), "valid_year": 2023})
 
 
 def _make_df_3years() -> pd.DataFrame:
@@ -393,12 +393,38 @@ def test_select_features_all_false_mask_returns_only_meta_label_cols() -> None:
     assert "race_id" in result.columns
 
 
-def test_select_features_returns_copy_not_view() -> None:
+def test_select_features_does_not_copy_shares_values_with_source() -> None:
     df = _make_df()
     mask = {"feat_speed": True, "feat_jockey": True}
     result = subject.select_features(df, mask)
-    result["feat_speed"] = 999.0
-    assert df["feat_speed"].iloc[0] != 999.0
+    assert result["feat_speed"].tolist() == df["feat_speed"].tolist()
+
+
+# --- _select_fold_features ---
+
+
+def test_select_fold_features_keeps_only_requested_feature_columns() -> None:
+    fold = _make_fold()
+    result = subject._select_fold_features(fold, {"feat_speed"})
+    assert "feat_speed" in result["train_df"].columns
+    assert "feat_jockey" not in result["train_df"].columns
+    assert "feat_speed" in result["valid_df"].columns
+    assert "feat_jockey" not in result["valid_df"].columns
+
+
+def test_select_fold_features_always_keeps_meta_and_label_columns() -> None:
+    fold = _make_fold()
+    result = subject._select_fold_features(fold, set())
+    assert "race_id" in result["train_df"].columns
+    assert "finish_position" in result["train_df"].columns
+    assert "ketto_toroku_bango" in result["train_df"].columns
+    assert "feat_speed" not in result["train_df"].columns
+
+
+def test_select_fold_features_preserves_valid_year() -> None:
+    fold = _make_fold()
+    result = subject._select_fold_features(fold, {"feat_speed"})
+    assert result["valid_year"] == 2023
 
 
 # --- evaluate_feature_set ---
@@ -539,6 +565,93 @@ def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> N
         assert mock_rfwb.call_count >= 1
         assert result == pytest.approx(0.75)
         assert registry.get_best_ndcg() == pytest.approx(0.75)
+
+
+def test_build_objective_pre_splits_folds_once_not_per_trial() -> None:
+    df = _make_df_3years()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    real_split = split_walk_forward
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.split_walk_forward",
+            side_effect=real_split,
+        ) as mock_split:
+            with patch(
+                "learning.feature_explorer.run_fold_with_backend",
+                return_value=0.75,
+            ):
+                objective = subject.build_objective(
+                    df,
+                    candidate_features,
+                    [2022, 2023],
+                    "20160101",
+                    params,
+                    registry,
+                    "test_study",
+                    backends=("lightgbm",),
+                )
+                # split_walk_forward runs once per validation year at build time.
+                assert mock_split.call_count == 2
+                for trial_number in range(3):
+                    trial = MagicMock()
+                    trial.number = trial_number
+                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                    objective(trial)
+        # Running 3 trials must not trigger any additional split_walk_forward calls.
+        assert mock_split.call_count == 2
+
+
+def test_build_objective_skips_none_backend_scores_in_trial() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            side_effect=[None, 0.80],
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm", "xgboost"),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            result = objective(trial)
+    assert result == pytest.approx(0.80)
+
+
+def test_build_objective_returns_zero_when_all_backend_scores_none() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=None,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            result = objective(trial)
+    assert result == pytest.approx(0.0)
 
 
 def test_build_objective_records_delta_pp_in_definition_json() -> None:
