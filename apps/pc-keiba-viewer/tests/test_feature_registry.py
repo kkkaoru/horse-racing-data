@@ -470,3 +470,63 @@ def test_record_inverse_trial_sync_skips_past_manual_ids() -> None:
             "orig-1", "orig-1__weight_invert", "weight_invert", {}, "ADOPT"
         )
         assert next_id == 51
+
+
+def test_compute_feature_enrichment_basic() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("top-1", 0.90, ["feat_top", "feat_shared"])
+        reg.record_trial("top-2", 0.80, ["feat_top", "feat_shared"])
+        reg.record_trial("bot-1", 0.20, ["feat_bottom", "feat_shared"])
+        reg.record_trial("bot-2", 0.10, ["feat_bottom", "feat_shared"])
+        result = reg.compute_feature_enrichment(top_k=2, bottom_k=2)
+        assert result == [("feat_top", 1.0), ("feat_bottom", -1.0)]
+
+
+def test_compute_feature_enrichment_empty_registry() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg.compute_feature_enrichment() == []
+
+
+def test_compute_feature_enrichment_threshold() -> None:
+    # feat_strong:   4/4 top, 0/4 bottom => score +1.0  (kept).
+    # feat_weakneg:  2/4 top, 4/4 bottom => score -0.5  (kept).
+    # feat_meh:      2/4 top, 1/4 bottom => score +0.25 (dropped, < 0.3).
+    # feat_balanced: 1/4 top, 1/4 bottom => score  0.0  (dropped).
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial(
+            "top-1", 0.95, ["feat_strong", "feat_meh", "feat_balanced", "feat_weakneg"]
+        )
+        reg.record_trial("top-2", 0.90, ["feat_strong", "feat_meh", "feat_weakneg"])
+        reg.record_trial("top-3", 0.85, ["feat_strong"])
+        reg.record_trial("top-4", 0.80, ["feat_strong"])
+        reg.record_trial("bot-1", 0.40, ["feat_meh", "feat_balanced", "feat_weakneg"])
+        reg.record_trial("bot-2", 0.30, ["feat_weakneg"])
+        reg.record_trial("bot-3", 0.20, ["feat_weakneg"])
+        reg.record_trial("bot-4", 0.10, ["feat_weakneg"])
+        result = reg.compute_feature_enrichment(top_k=4, bottom_k=4)
+        names = [name for name, _ in result]
+        assert names == ["feat_strong", "feat_weakneg"]
+
+
+def test_compute_feature_enrichment_sorted_descending() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("top-1", 0.95, ["feat_always", "feat_sometimes"])
+        reg.record_trial("top-2", 0.90, ["feat_always"])
+        reg.record_trial("bot-1", 0.20, ["feat_never"])
+        reg.record_trial("bot-2", 0.10, ["feat_never"])
+        result = reg.compute_feature_enrichment(top_k=2, bottom_k=2)
+        scores = [score for _, score in result]
+        assert scores == sorted(scores, reverse=True)
+
+
+def test_compute_feature_enrichment_handles_non_list_feature_json() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._con is not None
+        reg._con.execute(
+            "INSERT INTO feature_trials VALUES "
+            "(100, 'corrupt', 0.90, FALSE, '\"not-a-list\"', '{}', '2024-01-01')"
+        )
+        reg._sync_sequence_to_table("seq_feature_trials_id", "feature_trials")
+        reg.record_trial("normal", 0.10, ["feat_a", "feat_a"])
+        result = reg.compute_feature_enrichment(top_k=1, bottom_k=1)
+        assert result == [("feat_a", -1.0)]

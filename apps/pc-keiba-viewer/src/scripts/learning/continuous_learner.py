@@ -22,10 +22,14 @@ import pandas as pd
 
 from learning.feature_explorer import (
     DEFAULT_BACKENDS,
+    DEFAULT_PARAMS,
     DEFAULT_TRAIN_START,
     DEFAULT_VALIDATION_YEARS,
+    VALIDATION_YEAR_POOL,
     ModelBackend,
+    evaluate_feature_set,
     run_exploration,
+    select_round_validation_years,
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
@@ -75,6 +79,8 @@ DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
 MAX_INVERSE_PER_ROUND: Final[int] = 3
+ENRICHMENT_THRESHOLD: Final[float] = 0.3
+MAX_ENRICHMENT_FEATURES: Final[int] = 5
 
 
 class InverseResult(TypedDict):
@@ -161,6 +167,8 @@ class ContinuousLearner:
         docker_image_tag: str = DEFAULT_DOCKER_TAG,
         n_trials_per_round: int = DEFAULT_N_TRIALS,
         validation_years: list[int] | None = None,
+        validation_year_pool: list[int] | None = None,
+        blind_holdout_year: int | None = None,
         train_start: str = DEFAULT_TRAIN_START,
         deploy_threshold: float = DEFAULT_DEPLOY_THRESHOLD,
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
@@ -184,11 +192,30 @@ class ContinuousLearner:
         )
         if not self._validation_years:
             raise ValueError("validation_years must be a non-empty list of years")
+        self._validation_year_pool: list[int] = (
+            list(validation_year_pool)
+            if validation_year_pool is not None
+            else list(VALIDATION_YEAR_POOL)
+        )
+        self._blind_holdout_year: int = (
+            blind_holdout_year
+            if blind_holdout_year is not None
+            else self._derive_blind_holdout_year(df)
+        )
         self._train_start: str = train_start
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
         self._stop: bool = False
         self._load_controller: AdaptiveLoadController | None = load_controller
+
+    @staticmethod
+    def _derive_blind_holdout_year(df: pd.DataFrame) -> int:
+        """Latest year present in df; falls back to the pool max for an empty/year-less df."""
+        if "race_year" in df.columns and not df.empty:
+            years = pd.to_numeric(df["race_year"], errors="coerce").dropna()
+            if not years.empty:
+                return int(years.max())
+        return max(VALIDATION_YEAR_POOL)
 
     def request_stop(self) -> None:
         self._stop = True
@@ -226,6 +253,7 @@ class ContinuousLearner:
             self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
             self._check_and_try_inverses(round_num, actual_trials)
+            self._analyze_feature_enrichment(round_num)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
@@ -246,12 +274,21 @@ class ContinuousLearner:
 
     def _explore_round(self, round_num: int, n_trials: int) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
+        round_years = select_round_validation_years(
+            round_num, self._validation_year_pool, self._blind_holdout_year
+        )
+        _logger.info(
+            "round %d validation years: %s (blind holdout: %d)",
+            round_num,
+            round_years,
+            self._blind_holdout_year,
+        )
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=study_name,
             n_trials=n_trials,
-            validation_years=self._validation_years,
+            validation_years=round_years,
             train_start=self._train_start,
             backends=self._backends,
         )
@@ -300,26 +337,99 @@ class ContinuousLearner:
     def _run_inverse_exploration(
         self, trial: FeatureEntry, approach: str, round_num: int, n_trials: int
     ) -> InverseResult:
-        """Run one inverse approach and return its delta_pp and ADOPT/REJECT decision."""
+        """Run one inverse approach and return its delta_pp and ADOPT/REJECT decision.
+
+        The delta must reflect *this* inverse run's own gain, so it is measured as the
+        best NDCG produced by this study minus the active NDCG captured before the run.
+        Using the global best (``get_best_ndcg``) instead would report the same stale
+        value for every inverse trial in a round, since unrelated earlier trials and
+        any mid-run promotion would dominate.
+        """
         inverse_study_name = f"inv-{approach}-{trial['trial_id']}-r{round_num}"
         _logger.info(
             "inverse exploration: %s approach=%s", inverse_study_name, approach
+        )
+        pre_active = self._registry.get_active_entry()
+        pre_active_ndcg = pre_active["ndcg_at_3"] if pre_active is not None else 0.0
+        round_years = select_round_validation_years(
+            round_num, self._validation_year_pool, self._blind_holdout_year
         )
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=inverse_study_name,
             n_trials=max(n_trials // 2, 3),
-            validation_years=self._validation_years,
+            validation_years=round_years,
             train_start=self._train_start,
             backends=self._backends,
         )
-        best = self._registry.get_best_ndcg()
-        active = self._registry.get_active_entry()
-        active_ndcg = active["ndcg_at_3"] if active is not None else 0.0
-        delta = best - active_ndcg
+        best_from_study = self._registry.get_best_ndcg_for_study(inverse_study_name)
+        if best_from_study is None:
+            _logger.info(
+                "inverse exploration produced no scored trials: %s", inverse_study_name
+            )
+            return {"delta_pp": {"ndcg_delta": 0.0}, "decision": "REJECT"}
+        delta = best_from_study - pre_active_ndcg
         decision = "ADOPT" if delta > 0 else "REJECT"
         return {"delta_pp": {"ndcg_delta": delta}, "decision": decision}
+
+    def _analyze_feature_enrichment(self, round_num: int) -> None:
+        """Log enrichment analysis and run a targeted trial when promising features appear.
+
+        Features that recur in the top trials but not the bottom ones (high enrichment
+        score) are candidates the active set is missing. When such features exist that
+        are not already active, a follow-up exploration is launched to fold them in.
+        """
+        enriched = self._registry.compute_feature_enrichment()
+        if not enriched:
+            _logger.info(
+                "no enriched features found (threshold=%.1f)", ENRICHMENT_THRESHOLD
+            )
+            return
+        for name, score in enriched[:10]:
+            _logger.info("enriched feature: %s score=%.3f", name, score)
+        active = self._registry.get_active_entry()
+        if active is None:
+            return
+        active_features = set(active["feature_names"])
+        candidates = [
+            (name, score)
+            for name, score in enriched
+            if name not in active_features and score > 0
+        ]
+        if not candidates:
+            return
+        _logger.info(
+            "running enrichment trial with %d candidate features",
+            min(len(candidates), MAX_ENRICHMENT_FEATURES),
+        )
+        self._run_enrichment_trial(
+            active_features, candidates[:MAX_ENRICHMENT_FEATURES], round_num
+        )
+
+    def _run_enrichment_trial(
+        self,
+        active_features: set[str],
+        candidates: list[tuple[str, float]],
+        round_num: int,
+    ) -> None:
+        """Run exploration with active features + enriched candidates as the focus set."""
+        _ = active_features
+        enriched_names = [name for name, _ in candidates]
+        study_name = f"enrichment-r{round_num}-{'+'.join(enriched_names[:3])}"
+        round_years = select_round_validation_years(
+            round_num, self._validation_year_pool, self._blind_holdout_year
+        )
+        _logger.info("enrichment trial: adding %s to active set", enriched_names)
+        run_exploration(
+            df=self._df,
+            registry=self._registry,
+            study_name=study_name,
+            n_trials=max(self._n_trials // 2, 5),
+            validation_years=round_years,
+            train_start=self._train_start,
+            backends=self._backends,
+        )
 
     def _maybe_deploy(self) -> None:
         active = self._registry.get_active_entry()
@@ -344,7 +454,40 @@ class ContinuousLearner:
             deployed_ndcg,
             active["ndcg_at_3"],
         )
+        blind_ndcg = self._evaluate_blind_holdout(active)
+        blind_delta = blind_ndcg - deployed_ndcg
+        if blind_delta < self._deploy_threshold:
+            _logger.info(
+                "deploy skipped: blind holdout %d did not confirm  "
+                "blind ndcg: %.4f | deployed: %.4f | blind delta: %+.4f",
+                self._blind_holdout_year,
+                blind_ndcg,
+                deployed_ndcg,
+                blind_delta,
+            )
+            return
+        _logger.info(
+            "blind holdout %d confirmed (%.4f, delta %+.4f) — proceeding to deploy",
+            self._blind_holdout_year,
+            blind_ndcg,
+            blind_delta,
+        )
         self._deploy(active)
+
+    def _evaluate_blind_holdout(self, entry: FeatureEntry) -> float:
+        """NDCG@3 of the entry's feature set on the blind holdout year only.
+
+        This year never enters Optuna search, so it gives an unbiased read on
+        whether a round's winner truly generalises before we deploy it.
+        """
+        return evaluate_feature_set(
+            self._df,
+            entry["feature_names"],
+            [self._blind_holdout_year],
+            self._train_start,
+            DEFAULT_PARAMS,
+            self._backends,
+        )
 
     def _deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]

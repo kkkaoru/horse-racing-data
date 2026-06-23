@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 from collections.abc import Callable
 from typing import Final, Literal, TypedDict, cast
 
@@ -31,6 +32,8 @@ ModelBackend = Literal["lightgbm", "xgboost", "catboost"]
 
 DEFAULT_TRAIN_START: Final[str] = "20160101"
 DEFAULT_VALIDATION_YEARS: Final[list[int]] = [2023, 2024]
+VALIDATION_YEAR_POOL: Final[list[int]] = [2021, 2022, 2023, 2024, 2025]
+DEFAULT_VALIDATION_YEARS_PER_ROUND: Final[int] = 2
 MIN_FEATURES: Final[int] = 5
 DEFAULT_BACKENDS: Final[tuple[ModelBackend, ...]] = ("lightgbm", "xgboost", "catboost")
 
@@ -79,6 +82,30 @@ class ExplorationResult(TypedDict):
     ndcg_at_3: float
     feature_names: list[str]
     promoted: bool
+
+
+def select_round_validation_years(
+    round_num: int,
+    pool: list[int],
+    blind_holdout_year: int,
+    k: int = DEFAULT_VALIDATION_YEARS_PER_ROUND,
+) -> list[int]:
+    """Pick k validation years for one round, excluding the blind holdout year.
+
+    Seeded by round_num so each round is reproducible yet rounds differ, which
+    stops Optuna from overfitting a single fixed eval set (selection bias). The
+    blind holdout year is never returned, keeping it untouched for the final
+    promotion decision.
+    """
+    eligible = sorted(y for y in pool if y != blind_holdout_year)
+    if not eligible:
+        raise ValueError(
+            "validation year pool has no eligible years after excluding "
+            "the blind holdout year"
+        )
+    rng = random.Random(round_num)
+    count = min(k, len(eligible))
+    return sorted(rng.sample(eligible, count))
 
 
 def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:

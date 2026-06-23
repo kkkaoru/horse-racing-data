@@ -738,3 +738,59 @@ def test_run_exploration_reconstructs_feature_names_from_trial_params_not_candid
     assert "feat_speed" in feature_names
     assert "feat_old" in feature_names
     assert "feat_jockey" not in feature_names
+
+
+# --- select_round_validation_years ---
+
+
+def test_select_round_validation_years_excludes_blind_holdout() -> None:
+    result = subject.select_round_validation_years(
+        0, [2021, 2022, 2023, 2024, 2025], 2025
+    )
+    assert 2025 not in result
+    assert len(result) == 2
+    assert all(year in [2021, 2022, 2023, 2024] for year in result)
+
+
+def test_select_round_validation_years_is_deterministic_for_same_round() -> None:
+    first = subject.select_round_validation_years(
+        3, [2021, 2022, 2023, 2024, 2025], 2025
+    )
+    second = subject.select_round_validation_years(
+        3, [2021, 2022, 2023, 2024, 2025], 2025
+    )
+    assert first == second
+
+
+def test_select_round_validation_years_differs_across_rounds() -> None:
+    results = {
+        tuple(
+            subject.select_round_validation_years(
+                round_num, [2021, 2022, 2023, 2024, 2025], 2025
+            )
+        )
+        for round_num in range(10)
+    }
+    assert len(results) > 1
+
+
+def test_select_round_validation_years_returns_sorted() -> None:
+    result = subject.select_round_validation_years(
+        7, [2021, 2022, 2023, 2024, 2025], 2025
+    )
+    assert result == sorted(result)
+
+
+def test_select_round_validation_years_clamps_k_to_eligible_count() -> None:
+    result = subject.select_round_validation_years(0, [2021, 2022], 2022, k=2)
+    assert result == [2021]
+
+
+def test_select_round_validation_years_raises_when_no_eligible_years() -> None:
+    with pytest.raises(ValueError, match="no eligible years"):
+        subject.select_round_validation_years(0, [2025], 2025)
+
+
+def test_validation_year_pool_constant() -> None:
+    assert subject.VALIDATION_YEAR_POOL == [2021, 2022, 2023, 2024, 2025]
+    assert subject.DEFAULT_VALIDATION_YEARS_PER_ROUND == 2

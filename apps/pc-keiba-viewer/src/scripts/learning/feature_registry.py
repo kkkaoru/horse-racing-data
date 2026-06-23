@@ -11,6 +11,7 @@ import duckdb
 
 DEFAULT_DB_PATH: Final[Path] = Path("feature_registry.duckdb")
 NDCG_IMPROVEMENT_THRESHOLD: Final[float] = 0.005
+ENRICHMENT_SCORE_THRESHOLD: Final[float] = 0.3
 
 
 class FeatureEntry(TypedDict):
@@ -113,6 +114,22 @@ class FeatureRegistry:
         row = self._con.execute("SELECT MAX(ndcg_at_3) FROM feature_trials").fetchone()
         if row is None or row[0] is None:
             return 0.0
+        return float(row[0])
+
+    def get_best_ndcg_for_study(self, study_name: str) -> float | None:
+        """Return the best ndcg_at_3 among trials produced by one study, or None.
+
+        ``run_exploration`` records each trial as ``{study_name}_trial_{n}``, so a
+        prefix match isolates a single study's trials from the global pool. This lets
+        the caller measure the gain of one specific run instead of the all-time best.
+        """
+        assert self._con is not None
+        row = self._con.execute(
+            "SELECT MAX(ndcg_at_3) FROM feature_trials WHERE starts_with(trial_id, ?)",
+            [f"{study_name}_trial_"],
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
         return float(row[0])
 
     def get_active_entry(self) -> FeatureEntry | None:
@@ -270,6 +287,43 @@ class FeatureRegistry:
         tried = {str(row[0]) for row in rows}
         return [approach for approach in INVERSE_APPROACH_TYPES if approach not in tried]
 
+    def compute_feature_enrichment(
+        self, top_k: int = 20, bottom_k: int = 20
+    ) -> list[tuple[str, float]]:
+        """Return features sorted by (top_k_freq - bottom_k_freq) enrichment score.
+
+        Returns list of (feature_name, enrichment_score) where score is
+        (fraction in top_k) - (fraction in bottom_k), range [-1.0, 1.0].
+        Only returns features with |score| >= ENRICHMENT_SCORE_THRESHOLD.
+        """
+        assert self._con is not None
+        rows = self._con.execute(
+            "SELECT feature_names FROM feature_trials ORDER BY ndcg_at_3 DESC"
+        ).fetchall()
+        if not rows:
+            return []
+        feature_lists = [_feature_names_from_row(row) for row in rows]
+        top_lists = feature_lists[:top_k]
+        bottom_lists = feature_lists[-bottom_k:]
+        top_counts = _count_distinct_features(top_lists)
+        bottom_counts = _count_distinct_features(bottom_lists)
+        top_denom = float(len(top_lists))
+        bottom_denom = float(len(bottom_lists))
+        scored = [
+            (
+                name,
+                top_counts.get(name, 0) / top_denom
+                - bottom_counts.get(name, 0) / bottom_denom,
+            )
+            for name in top_counts.keys() | bottom_counts.keys()
+        ]
+        filtered = [
+            (name, score)
+            for name, score in scored
+            if abs(score) >= ENRICHMENT_SCORE_THRESHOLD
+        ]
+        return sorted(filtered, key=lambda pair: pair[1], reverse=True)
+
 
 INVERSE_APPROACH_TYPES: Final[tuple[str, ...]] = (
     "feature_negate",
@@ -290,6 +344,19 @@ def _min_delta_pp(definition_json: str) -> float:
         values = [float(v) for v in raw.values() if isinstance(v, (int, float)) and not isinstance(v, bool)]
         return min(values) if values else 0.0
     return 0.0
+
+
+def _feature_names_from_row(row: tuple[object, ...]) -> list[str]:
+    parsed = json.loads(str(row[0]))
+    return [str(name) for name in parsed] if isinstance(parsed, list) else []
+
+
+def _count_distinct_features(feature_lists: list[list[str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for names in feature_lists:
+        for name in set(names):
+            counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 def _row_to_entry(row: tuple[object, ...]) -> FeatureEntry:

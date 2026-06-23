@@ -72,6 +72,8 @@ def _make_learner(
     docker_image_tag: str = subject.DEFAULT_DOCKER_TAG,
     n_trials_per_round: int = subject.DEFAULT_N_TRIALS,
     validation_years: list[int] | None = None,
+    validation_year_pool: list[int] | None = None,
+    blind_holdout_year: int | None = None,
     train_start: str = "20160101",
     deploy_threshold: float = subject.DEFAULT_DEPLOY_THRESHOLD,
     load_controller: subject.AdaptiveLoadController | None = None,
@@ -87,6 +89,8 @@ def _make_learner(
         docker_image_tag=docker_image_tag,
         n_trials_per_round=n_trials_per_round,
         validation_years=validation_years,
+        validation_year_pool=validation_year_pool,
+        blind_holdout_year=blind_holdout_year,
         train_start=train_start,
         deploy_threshold=deploy_threshold,
         load_controller=load_controller,
@@ -165,6 +169,61 @@ def test_learner_initial_stop_flag_is_false() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         assert learner._stop is False
+
+
+def test_derive_blind_holdout_year_uses_max_year_from_df() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, df=_make_df())
+        assert learner._blind_holdout_year == 2024
+
+
+def test_blind_holdout_year_defaults_to_pool_max_for_empty_df() -> None:
+    from learning.feature_explorer import VALIDATION_YEAR_POOL
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, df=pd.DataFrame(), validation_years=[2024]
+        )
+        assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
+
+
+def test_blind_holdout_year_falls_back_when_no_race_year_column() -> None:
+    from learning.feature_explorer import VALIDATION_YEAR_POOL
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, df=pd.DataFrame({"other_col": [1, 2, 3]})
+        )
+        assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
+
+
+def test_blind_holdout_year_falls_back_when_race_year_all_nan() -> None:
+    from learning.feature_explorer import VALIDATION_YEAR_POOL
+
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            df=pd.DataFrame({"race_year": [None, None, None]}),
+        )
+        assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
+
+
+def test_blind_holdout_year_explicit_override_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, blind_holdout_year=2022)
+        assert learner._blind_holdout_year == 2022
+
+
+def test_validation_year_pool_defaults_when_none() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._validation_year_pool == [2021, 2022, 2023, 2024, 2025]
+
+
+def test_validation_year_pool_custom_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, validation_year_pool=[2020, 2021])
+        assert learner._validation_year_pool == [2020, 2021]
 
 
 # ---------------------------------------------------------------------------
@@ -259,14 +318,38 @@ def test_run_calls_maybe_deploy_after_each_explore() -> None:
 def test_explore_round_calls_run_exploration_with_registry_and_df() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         df = _make_df()
-        learner = _make_learner(registry=reg, df=df, validation_years=[2024])
+        learner = _make_learner(
+            registry=reg,
+            df=df,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._explore_round(0, n_trials=20)
             mock_run.assert_called_once()
             kwargs = mock_run.call_args.kwargs
             assert kwargs["registry"] is reg
             assert kwargs["df"] is df
-            assert kwargs["validation_years"] == [2024]
+            years = kwargs["validation_years"]
+            assert len(years) == 2
+            assert 2023 not in years
+            assert set(years).issubset({2021, 2022})
+            assert years == sorted(years)
+
+
+def test_explore_round_validation_years_vary_across_rounds() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023, 2024, 2025],
+            blind_holdout_year=2025,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+            years_round_0 = mock_run.call_args.kwargs["validation_years"]
+            learner._explore_round(5, n_trials=20)
+            years_round_5 = mock_run.call_args.kwargs["validation_years"]
+        assert years_round_0 != years_round_5
 
 
 def test_explore_round_study_name_includes_category_and_round() -> None:
@@ -318,7 +401,10 @@ def test_maybe_deploy_deploys_when_above_threshold() -> None:
         reg.activate(1)
         # deployed_ndcg = 0.0, active = 0.80, threshold = 0.005 → 0.80 > 0.005 → deploy
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
-        with patch.object(learner, "_deploy") as mock_deploy:
+        with (
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
             learner._maybe_deploy()
             mock_deploy.assert_called_once()
             entry = mock_deploy.call_args.args[0]
@@ -332,9 +418,54 @@ def test_maybe_deploy_deploys_when_delta_equals_threshold() -> None:
         reg.record_deployment(0.50, 1)
         # delta = 0.005 == threshold → deploys (strict < comparison)
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
-        with patch.object(learner, "_deploy") as mock_deploy:
+        with (
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.505),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
             learner._maybe_deploy()
             mock_deploy.assert_called_once()
+
+
+def test_maybe_deploy_skips_when_blind_holdout_not_confirmed() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        # active 0.80 vs deployed 0.0 passes first gate, but blind 0.0 fails it
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.0),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            learner._maybe_deploy()
+            mock_deploy.assert_not_called()
+
+
+def test_maybe_deploy_deploys_when_blind_holdout_confirms() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        # active 0.80, deployed 0.0, blind 0.79 → blind delta 0.79 >= threshold
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.79),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            learner._maybe_deploy()
+            mock_deploy.assert_called_once()
+
+
+def test_evaluate_blind_holdout_calls_evaluate_feature_set_with_holdout_year() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, blind_holdout_year=2025)
+        entry = _make_entry(feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.evaluate_feature_set",
+            return_value=0.5,
+        ) as mock_eval:
+            result = learner._evaluate_blind_holdout(entry)
+        assert result == pytest.approx(0.5)
+        assert mock_eval.call_args.args[1] == ["feat_speed"]
+        assert mock_eval.call_args.args[2] == [2025]
 
 
 # ---------------------------------------------------------------------------
@@ -1592,14 +1723,21 @@ def test_check_and_try_inverses_dedup_uses_full_inverse_name() -> None:
 
 def test_run_inverse_exploration_calls_run_exploration_with_half_trials() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        learner = _make_learner(registry=reg, validation_years=[2024])
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
         kwargs = mock_run.call_args.kwargs
         assert kwargs["n_trials"] == 10
         assert kwargs["registry"] is reg
-        assert kwargs["validation_years"] == [2024]
+        years = kwargs["validation_years"]
+        assert len(years) == 2
+        assert 2023 not in years
+        assert set(years).issubset({2021, 2022})
 
 
 def test_run_inverse_exploration_clamps_trials_to_minimum_three() -> None:
@@ -1620,22 +1758,85 @@ def test_run_inverse_exploration_study_name_includes_approach_and_trial() -> Non
         assert mock_run.call_args.kwargs["study_name"] == "inv-weight_invert-trial-x-r3"
 
 
-def test_run_inverse_exploration_returns_adopt_when_best_beats_active() -> None:
+def _record_study_trial(
+    reg: FeatureRegistry, ndcg: float
+) -> Callable[..., None]:
+    """Build a run_exploration side-effect that records one trial for the run's study.
+
+    The real run_exploration writes trials named ``{study_name}_trial_{n}``; mocking it
+    out means get_best_ndcg_for_study would find nothing, so the side-effect inserts a
+    matching trial to simulate the run producing that score.
+    """
+
+    def _side_effect(*_: object, **kwargs: object) -> None:
+        study_name = cast(str, kwargs["study_name"])
+        reg.record_trial(f"{study_name}_trial_0", ndcg, ["feat_speed"])
+
+    return _side_effect
+
+
+def test_run_inverse_exploration_returns_adopt_when_study_best_beats_pre_active() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("active", 0.50, ["feat_speed"])
         reg.activate(1)
-        reg.record_trial("better", 0.60, ["feat_speed"])
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
-        with patch("learning.continuous_learner.run_exploration"):
+        with patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.60),
+        ):
             result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
         assert result["decision"] == "ADOPT"
         assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.10)}
 
 
-def test_run_inverse_exploration_returns_reject_when_best_not_better() -> None:
+def test_run_inverse_exploration_returns_reject_when_study_best_below_pre_active() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("active", 0.60, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.45),
+        ):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "REJECT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(-0.15)}
+
+
+def test_run_inverse_exploration_rejects_when_study_best_equals_pre_active() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.60, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.60),
+        ):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "REJECT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.0)}
+
+
+def test_run_inverse_exploration_uses_zero_pre_active_when_none_active() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("inactive", 0.30, ["feat_speed"])
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.30),
+        ):
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        assert result["decision"] == "ADOPT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.30)}
+
+
+def test_run_inverse_exploration_rejects_when_study_produced_no_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.50, ["feat_speed"])
         reg.activate(1)
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
@@ -1645,15 +1846,59 @@ def test_run_inverse_exploration_returns_reject_when_best_not_better() -> None:
         assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.0)}
 
 
-def test_run_inverse_exploration_uses_zero_active_when_none_active() -> None:
+def test_run_inverse_exploration_ignores_other_studies_and_global_best() -> None:
+    # A pre-existing high-NDCG trial from a DIFFERENT study must not leak into the
+    # delta: the gain is measured only from this inverse run's own trials.
     with FeatureRegistry(Path(":memory:")) as reg:
-        reg.record_trial("inactive", 0.30, ["feat_speed"])
+        reg.record_trial("active", 0.50, ["feat_speed"])
+        reg.activate(1)
+        reg.record_trial("inv-other-trial-x-r0_trial_0", 0.95, ["feat_speed"])
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
-        with patch("learning.continuous_learner.run_exploration"):
+        with patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.52),
+        ):
             result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
         assert result["decision"] == "ADOPT"
-        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.30)}
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.02)}
+
+
+def test_inverse_trials_get_distinct_per_trial_deltas() -> None:
+    # The core bug: every inverse trial reported the SAME delta. With the fix each
+    # inverse run's delta reflects its own study's best minus the pre-run active.
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.50, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        study_scores = {
+            "feature_negate": 0.55,
+            "weight_invert": 0.48,
+            "window_invert": 0.61,
+        }
+
+        def _side_effect(*_: object, **kwargs: object) -> None:
+            study_name = cast(str, kwargs["study_name"])
+            approach = study_name.split("-")[1]
+            reg.record_trial(
+                f"{study_name}_trial_0", study_scores[approach], ["feat_speed"]
+            )
+
+        deltas: list[float] = []
+        with patch(
+            "learning.continuous_learner.run_exploration", side_effect=_side_effect
+        ):
+            for approach in study_scores:
+                outcome = learner._run_inverse_exploration(trial, approach, 0, 20)
+                deltas.append(outcome["delta_pp"]["ndcg_delta"])
+
+        assert deltas == [
+            pytest.approx(0.05),
+            pytest.approx(-0.02),
+            pytest.approx(0.11),
+        ]
+        assert len(set(deltas)) == 3
 
 
 def test_run_calls_check_inverses_after_each_round() -> None:
@@ -1690,8 +1935,224 @@ def test_run_passes_actual_trials_to_check_inverses() -> None:
             patch.object(learner, "_explore_round"),
             patch.object(learner, "_maybe_deploy"),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment"),
         ):
             learner.run(max_rounds=1)
         mock_check.assert_called_once_with(0, 15)
+
+
+# ---------------------------------------------------------------------------
+# _analyze_feature_enrichment / _run_enrichment_trial
+# ---------------------------------------------------------------------------
+
+
+def test_enrichment_constants() -> None:
+    assert subject.ENRICHMENT_THRESHOLD == 0.3
+    assert subject.MAX_ENRICHMENT_FEATURES == 5
+
+
+def test_run_calls_analyze_enrichment_after_inverses() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        order: list[str] = []
+        with (
+            patch.object(
+                learner,
+                "_explore_round",
+                side_effect=lambda *a, **kw: order.append("explore"),
+            ),
+            patch.object(
+                learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
+            ),
+            patch.object(
+                learner,
+                "_check_and_try_inverses",
+                side_effect=lambda *a, **kw: order.append("inverse"),
+            ),
+            patch.object(
+                learner,
+                "_analyze_feature_enrichment",
+                side_effect=lambda *a, **kw: order.append("enrich"),
+            ),
+        ):
+            learner.run(max_rounds=1)
+        assert order == ["explore", "deploy", "inverse", "enrich"]
+
+
+def test_run_passes_round_num_to_analyze_enrichment() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_enrich.assert_called_once_with(0)
+
+
+def test_analyze_feature_enrichment_logs_nothing_found_when_empty(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = []
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+            learner._analyze_feature_enrichment(0)
+    assert any("no enriched features found" in r.message for r in caplog.records)
+    mock_trial.assert_not_called()
+
+
+def test_analyze_feature_enrichment_logs_candidates(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_new", 0.8)]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial"):
+        with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+            learner._analyze_feature_enrichment(0)
+    assert any(
+        "enriched feature: feat_new score=0.800" in r.message for r in caplog.records
+    )
+
+
+def test_analyze_feature_enrichment_runs_trial_when_candidates_found() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_new", 0.8)]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(4)
+    mock_trial.assert_called_once_with({"feat_speed"}, [("feat_new", 0.8)], 4)
+
+
+def test_analyze_feature_enrichment_skips_trial_when_no_active_entry() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_new", 0.8)]
+    mock_registry.get_active_entry.return_value = None
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    mock_trial.assert_not_called()
+
+
+def test_analyze_feature_enrichment_skips_features_already_active() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_speed", 0.8)]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    mock_trial.assert_not_called()
+
+
+def test_analyze_feature_enrichment_skips_negative_scores() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_bad", -0.8)]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    mock_trial.assert_not_called()
+
+
+def test_analyze_feature_enrichment_caps_candidates_to_max() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [
+        (f"feat_new_{i}", 0.9 - i * 0.05) for i in range(8)
+    ]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    passed_candidates = mock_trial.call_args.args[1]
+    assert len(passed_candidates) == subject.MAX_ENRICHMENT_FEATURES
+
+
+def test_run_enrichment_trial_calls_run_exploration_with_half_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            n_trials_per_round=20,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 2)
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["n_trials"] == 10
+        assert kwargs["registry"] is reg
+        years = kwargs["validation_years"]
+        assert len(years) == 2
+        assert 2023 not in years
+        assert set(years).issubset({2021, 2022})
+
+
+def test_run_enrichment_trial_uses_rotating_validation_years() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_x"}, [("feat_y", 1.0)], 2)
+        years = mock_run.call_args.kwargs["validation_years"]
+        assert len(years) == 2
+        assert 2023 not in years
+        assert set(years).issubset({2021, 2022})
+
+
+def test_run_enrichment_trial_validation_years_vary_across_rounds() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023, 2024, 2025],
+            blind_holdout_year=2025,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_x"}, [("feat_y", 1.0)], 0)
+            years_round_0 = mock_run.call_args.kwargs["validation_years"]
+            learner._run_enrichment_trial({"feat_x"}, [("feat_y", 1.0)], 5)
+            years_round_5 = mock_run.call_args.kwargs["validation_years"]
+        assert years_round_0 != years_round_5
+
+
+def test_run_enrichment_trial_clamps_trials_to_minimum_five() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=4)
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 0)
+        assert mock_run.call_args.kwargs["n_trials"] == 5
+
+
+def test_run_enrichment_trial_study_name_includes_round_and_features() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial(
+                {"feat_speed"},
+                [("feat_a", 0.8), ("feat_b", 0.7), ("feat_c", 0.6), ("feat_d", 0.5)],
+                3,
+            )
+        assert mock_run.call_args.kwargs["study_name"] == "enrichment-r3-feat_a+feat_b+feat_c"
 
 
