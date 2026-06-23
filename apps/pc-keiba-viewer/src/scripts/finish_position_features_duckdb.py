@@ -1859,7 +1859,7 @@ def write_parquet(
 ) -> None:
     prepare_output_dir(output_dir, keep_existing, force_clean)
     year_rows = con.execute(
-        f"select distinct race_year from ({final_query}) order by race_year"
+        "select distinct race_year from target order by race_year"
     ).fetchall()
     for row in year_rows:
         year = int(row[0])
