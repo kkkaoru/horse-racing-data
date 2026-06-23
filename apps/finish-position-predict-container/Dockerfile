@@ -8,7 +8,7 @@
 # image_build_context set to the repo root, COPYing the viewer pipeline scripts
 # in. The wrangler.jsonc in apps/finish-position-cron references this Dockerfile.
 
-FROM python:3.12-slim AS base
+FROM python:3.14-slim AS base
 
 # uv for fast, reproducible dependency install (bun/uv only; no pip-by-hand).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
