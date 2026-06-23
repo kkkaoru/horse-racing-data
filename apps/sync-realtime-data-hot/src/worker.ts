@@ -20,6 +20,11 @@ import {
 } from "./gates/r2-archive";
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
 import { jsonResponse } from "./http";
+import {
+  ARCHIVE_LAST_SUCCESS_KV_KEY,
+  CLOSING_BACKFILL_LAST_RUN_KV_KEY,
+  buildHealthReport,
+} from "./monitor/health";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { readCachedOdds, writeCachedOdds } from "./odds-cache";
 import {
@@ -407,6 +412,19 @@ export const handleCronHealth = async (env: Env, request: Request): Promise<Resp
   });
 };
 
+const AGGREGATE_HEALTH_OK_STATUS = 200;
+const AGGREGATE_HEALTH_DEGRADED_STATUS = 503;
+
+export const handleHealth = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const report = await buildHealthReport(env, new Date());
+  return jsonResponse(report, {
+    status: report.ok ? AGGREGATE_HEALTH_OK_STATUS : AGGREGATE_HEALTH_DEGRADED_STATUS,
+  });
+};
+
 export const handleFetchRequest = async (env: Env, request: Request): Promise<Response> => {
   const url = new URL(request.url);
   if (url.pathname === "/") {
@@ -429,6 +447,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "GET" && url.pathname === "/api/internal/cron-health") {
     return handleCronHealth(env, request);
+  }
+  if (request.method === "GET" && url.pathname === "/api/internal/health") {
+    return handleHealth(env, request);
   }
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-today") {
     return handleRunPopulateToday(env, request);
@@ -589,6 +610,23 @@ const isRejected = (outcome: PromiseSettledResult<unknown>): outcome is PromiseR
   outcome.status === "rejected";
 
 const BACKFILL_FAILURE_SAMPLE_LIMIT = 3;
+// 26h TTL = closing-backfill threshold (25h) + 1h safety margin so a brief
+// KV lookup miss right around the daily cron boundary does not erase the
+// last-run record before the next tick writes it back.
+const CLOSING_BACKFILL_LAST_RUN_TTL_SECONDS = 26 * 60 * 60;
+// 48h TTL on the archive last-success key keeps the health endpoint able to
+// distinguish "ageing past threshold" (still has a value) from "never wrote"
+// (key missing entirely). The 24h threshold + 24h grace is comfortable.
+const ARCHIVE_LAST_SUCCESS_TTL_SECONDS = 48 * 60 * 60;
+
+const writeClosingBackfillLastRun = async (
+  env: Env,
+  payload: { at: string; status: string; candidates: number; failures: number },
+): Promise<void> => {
+  await env.ODDS_HOT_KV.put(CLOSING_BACKFILL_LAST_RUN_KV_KEY, JSON.stringify(payload), {
+    expirationTtl: CLOSING_BACKFILL_LAST_RUN_TTL_SECONDS,
+  }).catch(() => undefined);
+};
 
 export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<void> => {
   const today = getTodayJst(now);
@@ -601,10 +639,11 @@ export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<
     candidates.map((raceKey) => fetchAndStoreOdds(env, raceKey, now)),
   );
   const failures = outcomes.filter(isRejected).map(formatBackfillFailure);
+  const status = failures.length === 0 ? "ok" : "warn";
   await logFetch(
     env.REALTIME_HOT_DB,
     "scheduled-closing-backfill",
-    failures.length === 0 ? "ok" : "warn",
+    status,
     null,
     JSON.stringify({
       candidates: candidates.length,
@@ -612,6 +651,12 @@ export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<
       sampleFailures: failures.slice(0, BACKFILL_FAILURE_SAMPLE_LIMIT),
     }),
   );
+  await writeClosingBackfillLastRun(env, {
+    at: now.toISOString(),
+    candidates: candidates.length,
+    failures: failures.length,
+    status,
+  });
 };
 
 const formatArchiveFailure = (outcome: PromiseRejectedResult): string => String(outcome.reason);
@@ -645,6 +690,12 @@ const logArchiveNoCandidates = async (env: Env): Promise<void> => {
   );
 };
 
+const writeArchiveLastSuccess = async (env: Env, now: Date): Promise<void> => {
+  await env.ODDS_HOT_KV.put(ARCHIVE_LAST_SUCCESS_KV_KEY, now.toISOString(), {
+    expirationTtl: ARCHIVE_LAST_SUCCESS_TTL_SECONDS,
+  }).catch(() => undefined);
+};
+
 export const runScheduledArchive = async (env: Env, now: Date): Promise<ArchiveRunSummary> => {
   const cutoff = computeArchiveCutoffIso(env, now);
   const candidates = await listArchiveCandidatesBeforeCutoff(env.REALTIME_HOT_DB, {
@@ -653,6 +704,10 @@ export const runScheduledArchive = async (env: Env, now: Date): Promise<ArchiveR
   });
   if (candidates.length === 0) {
     await logArchiveNoCandidates(env);
+    // A "no candidates" tick is the happy path for a drained backlog — refresh
+    // the last-success timestamp so the health endpoint does not start firing
+    // 503 simply because there has been nothing to archive for >24h.
+    await writeArchiveLastSuccess(env, now);
     return { candidates: 0, failed: 0, sampleFailures: [], uploaded: 0 };
   }
   // `Promise.allSettled` so a single R2 reject does not block sibling writes
@@ -670,6 +725,9 @@ export const runScheduledArchive = async (env: Env, now: Date): Promise<ArchiveR
   );
   const summary = summarizeArchiveOutcomes(candidates.length, outcomes);
   await logArchiveSummary(env, summary);
+  if (summary.failed === 0) {
+    await writeArchiveLastSuccess(env, now);
+  }
   return summary;
 };
 

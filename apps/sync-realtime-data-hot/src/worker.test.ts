@@ -30,6 +30,7 @@ import worker, {
   groupRowsForFinalBackup,
   handleCronHealth,
   handleFetchRequest,
+  handleHealth,
   handleGetMigrationState,
   handleGetOdds,
   handleImportOddsChunk,
@@ -2735,4 +2736,216 @@ it("default worker fetch does not block the HTTP response on the piggyback work"
   expect(waitUntil).toHaveBeenCalledTimes(1);
   expect(pendingResolverRef.resolver).not.toBeNull();
   pendingResolverRef.resolver?.(null);
+});
+
+it("runScheduledArchive writes cron:archive:last-success to KV when summary.failed is 0", async () => {
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      archiveCandidates: {
+        results: [
+          {
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            snapshot_json: "[]",
+          },
+        ],
+      },
+      archiveDistinctFetchedAt: { results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }] },
+    }),
+  });
+  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(true);
+});
+
+it("runScheduledArchive does NOT write cron:archive:last-success when summary.failed > 0", async () => {
+  const failingR2 = {
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () => null),
+    head: vi.fn(async () => null),
+    list: vi.fn(async () => ({ objects: [] })),
+    put: vi.fn().mockRejectedValue(new Error("r2 exploded")),
+  } as unknown as R2Bucket;
+  const env = buildEnv({
+    ODDS_ARCHIVE: failingR2,
+    REALTIME_HOT_DB: buildDb({
+      archiveCandidates: {
+        results: [
+          {
+            fetched_at: "2026-05-20T10:00:00+09:00",
+            odds_type: "tansho",
+            race_key: "nar:20260520:42:01",
+            snapshot_json: "[]",
+          },
+        ],
+      },
+      archiveDistinctFetchedAt: { results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }] },
+    }),
+  });
+  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(false);
+});
+
+it("runScheduledArchive writes cron:archive:last-success on the no-candidates path", async () => {
+  const env = buildEnv();
+  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(true);
+});
+
+it("runScheduledArchive tolerates a KV put failure on the success write", async () => {
+  const failingKv = {
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () => null),
+    put: vi.fn().mockRejectedValue(new Error("kv exploded")),
+  } as unknown as KVNamespace;
+  const env = buildEnv({ ODDS_HOT_KV: failingKv });
+  const summary = await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
+  expect(summary.candidates).toBe(0);
+});
+
+it("runScheduledClosingBackfill writes cron:closing-backfill:last-run JSON with ok status", async () => {
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({ results: [{ race_key: "nar:20260624:42:01" }] })),
+        })),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce(null);
+  await runScheduledClosingBackfill(env, new Date("2026-06-24T13:30:00Z"));
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  const lastRunCall = kvPut.mock.calls.find(([key]) => key === "cron:closing-backfill:last-run");
+  expect(lastRunCall).not.toBeUndefined();
+  const payload = JSON.parse(String(lastRunCall?.[1]));
+  expect(payload.status).toBe("ok");
+  expect(payload.candidates).toBe(1);
+  expect(payload.failures).toBe(0);
+});
+
+it("runScheduledClosingBackfill writes cron:closing-backfill:last-run JSON with warn status on rejection", async () => {
+  const prepareMock = vi.fn((sql: string) => {
+    const lowered = sql.toLowerCase();
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      return {
+        bind: vi.fn(() => ({
+          all: vi.fn(async () => ({ results: [{ race_key: "nar:20260624:42:01" }] })),
+        })),
+      };
+    }
+    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
+  });
+  const env = buildEnv({
+    REALTIME_HOT_DB: {
+      batch: vi.fn(async () => []),
+      prepare: prepareMock,
+    } as unknown as D1Database,
+  });
+  vi.mocked(fetchAndStoreOdds).mockRejectedValueOnce(new Error("scrape boom"));
+  await runScheduledClosingBackfill(env, new Date("2026-06-24T13:30:00Z"));
+  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
+  const lastRunCall = kvPut.mock.calls.find(([key]) => key === "cron:closing-backfill:last-run");
+  expect(lastRunCall).not.toBeUndefined();
+  const payload = JSON.parse(String(lastRunCall?.[1]));
+  expect(payload.status).toBe("warn");
+  expect(payload.failures).toBe(1);
+});
+
+it("runScheduledClosingBackfill tolerates a KV put rejection on the last-run write", async () => {
+  const failingKv = {
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () => null),
+    put: vi.fn().mockRejectedValue(new Error("kv exploded")),
+  } as unknown as KVNamespace;
+  const env = buildEnv({ ODDS_HOT_KV: failingKv });
+  await runScheduledClosingBackfill(env, new Date("2026-06-24T13:30:00Z"));
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleHealth returns 401 when the request lacks the internal token", async () => {
+  const response = await handleHealth(buildEnv(), new Request("https://x/api/internal/health"));
+  expect(response.status).toBe(401);
+  expect(await response.json()).toStrictEqual({ error: "unauthorized" });
+});
+
+it("handleHealth returns 503 when any check fails (default env has no heartbeat KV)", async () => {
+  const response = await handleHealth(
+    buildEnv(),
+    new Request("https://x/api/internal/health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(503);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(false);
+});
+
+it("handleHealth returns 200 when all six checks are ok", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T22:30:00Z"));
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({ stateCount: 48 }),
+  });
+  const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
+  kvGet.mockImplementation(async (key: string) => {
+    if (key === "cron:heartbeat:scheduled") return "2026-06-23T22:29:30.000Z";
+    if (key === "cron:archive:last-success") return "2026-06-23T20:00:00.000Z";
+    if (key === "cron:closing-backfill:last-run") {
+      return JSON.stringify({
+        at: "2026-06-23T13:30:00.000Z",
+        candidates: 0,
+        failures: 0,
+        status: "ok",
+      });
+    }
+    if (key === "expected-race-count:20260624") return "48";
+    return null;
+  });
+  const response = await handleHealth(
+    env,
+    new Request("https://x/api/internal/health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+  vi.useRealTimers();
+});
+
+it("handleFetchRequest routes GET /api/internal/health to handleHealth and enforces the token gate", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/health"),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleFetchRequest routes GET /api/internal/health with valid token", async () => {
+  const env = buildEnv();
+  const response = await handleFetchRequest(
+    env,
+    new Request("https://x/api/internal/health", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+    }),
+  );
+  expect(response.status).toBe(503);
 });
