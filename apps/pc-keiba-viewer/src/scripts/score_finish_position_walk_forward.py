@@ -78,9 +78,9 @@ CATEGORY_NO_CAT_FEATURES: dict[str, bool] = {
 }
 
 EXPECTED_FEATURE_COUNT: dict[str, int] = {
-    CATEGORY_JRA: 226,
-    CATEGORY_NAR: 126,
-    CATEGORY_BANEI: 111,
+    CATEGORY_JRA: 138,
+    CATEGORY_NAR: 138,
+    CATEGORY_BANEI: 138,
 }
 
 CATEGORY_MODEL_VERSION: dict[str, str] = {

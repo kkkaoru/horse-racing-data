@@ -80,7 +80,7 @@ def _make_fake_deps(predictions: pd.DataFrame, df: pd.DataFrame) -> FakeDeps:
     xgb_trainer = MagicMock(return_value=predictions)
     deps: subject.ScoreFoldDeps = {
         "parquet_reader": MagicMock(return_value=df),
-        "catboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(226)]),
+        "catboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(138)]),
         "xgboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(126)]),
         "catboost_trainer": cb_trainer,
         "xgboost_trainer": xgb_trainer,
@@ -251,24 +251,24 @@ def test_resolve_fold_years_raises_when_to_before_from():
     assert "must be >=" in str(info.value)
 
 
-def test_assert_feature_count_passes_on_exact_226_for_jra():
-    subject.assert_feature_count("jra", [f"f{i}" for i in range(226)])
+def test_assert_feature_count_passes_on_exact_138_for_jra():
+    subject.assert_feature_count("jra", [f"f{i}" for i in range(138)])
 
 
 def test_assert_feature_count_raises_on_wrong_count_for_jra():
     with pytest.raises(ValueError) as info:
-        subject.assert_feature_count("jra", [f"f{i}" for i in range(225)])
-    assert "expected 226 features but resolved 225" in str(info.value)
+        subject.assert_feature_count("jra", [f"f{i}" for i in range(137)])
+    assert "expected 138 features but resolved 137" in str(info.value)
 
 
 def test_assert_feature_count_raises_on_wrong_count_for_nar():
     with pytest.raises(ValueError) as info:
-        subject.assert_feature_count("nar", [f"f{i}" for i in range(125)])
-    assert "expected 126 features but resolved 125" in str(info.value)
+        subject.assert_feature_count("nar", [f"f{i}" for i in range(137)])
+    assert "expected 138 features but resolved 137" in str(info.value)
 
 
-def test_assert_feature_count_passes_on_exact_111_for_banei():
-    subject.assert_feature_count("banei", [f"f{i}" for i in range(111)])
+def test_assert_feature_count_passes_on_exact_138_for_banei():
+    subject.assert_feature_count("banei", [f"f{i}" for i in range(138)])
 
 
 def test_resolve_feature_columns_for_category_uses_xgboost_resolver_for_nar():
@@ -476,7 +476,7 @@ def test_score_fold_skips_when_no_train_rows(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         subject, "build_fold_train_valid", MagicMock(return_value=(pd.DataFrame(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(226)], args, 2024, fake.deps)
+    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps)
     assert result == {"fold_year": 2024, "skipped": True, "rows": 0}
     fake.write_parquet.assert_not_called()
     fake.write_jsonl.assert_not_called()
@@ -488,7 +488,7 @@ def test_score_fold_skips_when_no_valid_rows(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         subject, "build_fold_train_valid", MagicMock(return_value=(_feature_df(), pd.DataFrame())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(226)], args, 2025, fake.deps)
+    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2025, fake.deps)
     assert result == {"fold_year": 2025, "skipped": True, "rows": 0}
 
 
@@ -502,7 +502,7 @@ def test_score_fold_trains_writes_parquet_and_jsonl_for_jra(
         "build_fold_train_valid",
         MagicMock(return_value=(_feature_df(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(226)], args, 2024, fake.deps)
+    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps)
     assert result == {"fold_year": 2024, "skipped": False, "rows": 2}
     fake.cb_trainer.assert_called_once()
     fake.xgb_trainer.assert_not_called()
@@ -549,7 +549,7 @@ def test_run_resolves_features_asserts_parity_and_iterates_folds(
     assert result["category"] == "jra"
     assert result["model_version"] == "jra-v7-lineage-wf-21y"
     assert result["fold_count"] == 2
-    assert result["feature_count"] == 226
+    assert result["feature_count"] == 138
 
 
 def test_run_raises_when_feature_parity_guard_fails(tmp_path: Path):
@@ -558,7 +558,7 @@ def test_run_raises_when_feature_parity_guard_fails(tmp_path: Path):
     fake.deps["catboost_resolver"] = MagicMock(return_value=[f"f{i}" for i in range(100)])
     with pytest.raises(ValueError) as info:
         subject.run(args, fake.deps)
-    assert "expected 226 features but resolved 100" in str(info.value)
+    assert "expected 138 features but resolved 100" in str(info.value)
 
 
 def test_default_train_catboost_fold_unwraps_valid_predictions(monkeypatch: pytest.MonkeyPatch):
@@ -601,7 +601,7 @@ def test_main_runs_and_prints_json(
             "model_version": "jra-cb-v7-lineage-wf-21y",
             "fold_count": 2,
             "folds": [],
-            "feature_count": 226,
+            "feature_count": 138,
         },
     )
     monkeypatch.setattr(subject, "run", fake_run)
@@ -628,7 +628,7 @@ def test_main_runs_and_prints_json(
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["category"] == "jra"
     assert payload["model_version"] == "jra-cb-v7-lineage-wf-21y"
-    assert payload["feature_count"] == 226
+    assert payload["feature_count"] == 138
 
 
 def test_build_fold_train_valid_filters_by_prior_year_end(monkeypatch: pytest.MonkeyPatch):
