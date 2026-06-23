@@ -1858,13 +1858,18 @@ def write_parquet(
     force_clean: bool,
 ) -> None:
     prepare_output_dir(output_dir, keep_existing, force_clean)
-    con.execute(
-        f"""
-        copy ({final_query})
-        to '{output_dir.as_posix()}'
-        (format parquet, partition_by (race_year), overwrite_or_ignore true)
-        """
-    )
+    year_rows = con.execute(
+        f"select distinct race_year from ({final_query}) order by race_year"
+    ).fetchall()
+    for row in year_rows:
+        year = int(row[0])
+        con.execute(
+            f"""
+            copy (select * from ({final_query}) where race_year = {year})
+            to '{output_dir.as_posix()}'
+            (format parquet, partition_by (race_year), overwrite_or_ignore true)
+            """
+        )
 
 
 class BuildResult(TypedDict):
