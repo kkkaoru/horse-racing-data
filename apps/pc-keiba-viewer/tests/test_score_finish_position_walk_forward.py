@@ -39,6 +39,8 @@ def _base_args(tmp_path: Path, category: str) -> subject.WalkForwardArguments:
         "seed": 20260519,
         "iteration_id": 0,
         "calibration_path": None,
+        "focus_features": None,
+        "exclude_features": None,
     }
 
 
@@ -79,7 +81,7 @@ def _make_fake_deps(predictions: pd.DataFrame, df: pd.DataFrame) -> FakeDeps:
     deps: subject.ScoreFoldDeps = {
         "parquet_reader": MagicMock(return_value=df),
         "catboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(226)]),
-        "xgboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(175)]),
+        "xgboost_resolver": MagicMock(return_value=[f"f{i}" for i in range(126)]),
         "catboost_trainer": cb_trainer,
         "xgboost_trainer": xgb_trainer,
         "write_parquet": write_parquet,
@@ -261,8 +263,8 @@ def test_assert_feature_count_raises_on_wrong_count_for_jra():
 
 def test_assert_feature_count_raises_on_wrong_count_for_nar():
     with pytest.raises(ValueError) as info:
-        subject.assert_feature_count("nar", [f"f{i}" for i in range(174)])
-    assert "expected 175 features but resolved 174" in str(info.value)
+        subject.assert_feature_count("nar", [f"f{i}" for i in range(125)])
+    assert "expected 126 features but resolved 125" in str(info.value)
 
 
 def test_assert_feature_count_passes_on_exact_111_for_banei():
@@ -526,7 +528,7 @@ def test_score_fold_uses_xgboost_trainer_for_nar(
         "build_fold_train_valid",
         MagicMock(return_value=(_feature_df(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(175)], args, 2024, fake.deps)
+    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(126)], args, 2024, fake.deps)
     assert result == {"fold_year": 2024, "skipped": False, "rows": 2}
     fake.xgb_trainer.assert_called_once()
     fake.cb_trainer.assert_not_called()
@@ -815,6 +817,167 @@ def test_apply_calibration_returns_input_when_bucket_pairs_empty():
 
 def test_interp_calibrated_returns_score_when_pairs_empty():
     assert subject.interp_calibrated(0.5, []) == 0.5
+
+
+def test_filter_features_by_patterns_focus_only():
+    cols = ["venue_temp", "venue_humidity", "sire_win_rate", "legacy_speed"]
+    result = subject.filter_features_by_patterns(cols, "venue_*", None)
+    assert result == ["venue_temp", "venue_humidity"]
+
+
+def test_filter_features_by_patterns_exclude_only():
+    cols = ["venue_temp", "legacy_speed", "legacy_pace", "sire_win_rate"]
+    result = subject.filter_features_by_patterns(cols, None, "legacy_*")
+    assert result == ["venue_temp", "sire_win_rate"]
+
+
+def test_filter_features_by_patterns_focus_and_exclude():
+    cols = ["venue_temp", "venue_legacy_flag", "sire_win_rate", "legacy_speed"]
+    result = subject.filter_features_by_patterns(cols, "venue_*", "*legacy*")
+    assert result == ["venue_temp"]
+
+
+def test_filter_features_by_patterns_no_match_returns_empty():
+    cols = ["sire_win_rate", "legacy_speed", "odds_rank"]
+    result = subject.filter_features_by_patterns(cols, "venue_*", None)
+    assert result == []
+
+
+def test_filter_features_by_patterns_none_returns_all():
+    cols = ["venue_temp", "sire_win_rate", "legacy_speed"]
+    result = subject.filter_features_by_patterns(cols, None, None)
+    assert result == ["venue_temp", "sire_win_rate", "legacy_speed"]
+
+
+def test_filter_features_by_patterns_multiple_patterns():
+    cols = ["venue_temp", "sire_win_rate", "legacy_speed", "odds_rank"]
+    result = subject.filter_features_by_patterns(cols, "venue_*,sire_*", None)
+    assert result == ["venue_temp", "sire_win_rate"]
+
+
+def test_parse_args_accepts_focus_and_exclude_features():
+    args = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+        "--focus-features",
+        "venue_*,sire_*",
+        "--exclude-features",
+        "legacy_*",
+    ])
+    assert args.focus_features == "venue_*,sire_*"
+    assert args.exclude_features == "legacy_*"
+
+
+def test_normalize_arguments_propagates_focus_and_exclude_features():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+        "--focus-features",
+        "venue_*",
+        "--exclude-features",
+        "odds_*",
+    ])
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["focus_features"] == "venue_*"
+    assert normalized["exclude_features"] == "odds_*"
+
+
+def test_normalize_arguments_defaults_focus_and_exclude_to_none():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "jra",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--train-start-date",
+        "20060101",
+        "--output-parquet-root",
+        "tmp/p",
+        "--output-jsonl-dir",
+        "tmp/j",
+    ])
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["focus_features"] is None
+    assert normalized["exclude_features"] is None
+
+
+def test_run_applies_feature_filter_and_skips_parity_when_focus_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path, "jra")
+    args["focus_features"] = "f1*"
+    df = _feature_df()
+    fake = _make_fake_deps(_predictions_frame(), df)
+    fake.deps["catboost_resolver"] = MagicMock(return_value=["f1", "f10", "f2", "f3"])
+    monkeypatch.setattr(
+        subject,
+        "build_fold_train_valid",
+        MagicMock(return_value=(df, df)),
+    )
+    result = subject.run(args, fake.deps)
+    assert result["feature_count"] == 2
+    cb_call = fake.cb_trainer.call_args
+    assert cb_call.args[2] == ["f1", "f10"]
+
+
+def test_run_applies_exclude_filter_and_skips_parity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path, "jra")
+    args["exclude_features"] = "legacy_*"
+    df = _feature_df()
+    fake = _make_fake_deps(_predictions_frame(), df)
+    fake.deps["catboost_resolver"] = MagicMock(return_value=["venue_temp", "legacy_speed"])
+    monkeypatch.setattr(
+        subject,
+        "build_fold_train_valid",
+        MagicMock(return_value=(df, df)),
+    )
+    result = subject.run(args, fake.deps)
+    assert result["feature_count"] == 1
+
+
+def test_run_raises_when_no_features_remain_after_filtering(tmp_path: Path):
+    args = _base_args(tmp_path, "jra")
+    args["focus_features"] = "nonexistent_*"
+    fake = _make_fake_deps(_predictions_frame(), _feature_df())
+    fake.deps["catboost_resolver"] = MagicMock(return_value=["venue_temp", "sire_rate"])
+    with pytest.raises(ValueError) as info:
+        subject.run(args, fake.deps)
+    assert "No features remaining after filtering" in str(info.value)
 
 
 def test_apply_calibration_assigns_bottom_rank_to_nan_score():

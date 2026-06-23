@@ -29,6 +29,7 @@ Run with: ``uv run python src/scripts/score_finish_position_walk_forward.py ...`
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 from pathlib import Path
 from typing import Protocol, TypedDict, cast
@@ -78,7 +79,7 @@ CATEGORY_NO_CAT_FEATURES: dict[str, bool] = {
 
 EXPECTED_FEATURE_COUNT: dict[str, int] = {
     CATEGORY_JRA: 226,
-    CATEGORY_NAR: 175,
+    CATEGORY_NAR: 126,
     CATEGORY_BANEI: 111,
 }
 
@@ -159,6 +160,8 @@ class WalkForwardArguments(TypedDict):
     seed: int
     iteration_id: int
     calibration_path: Path | None
+    focus_features: str | None
+    exclude_features: str | None
 
 
 class ParquetReaderLike(Protocol):
@@ -224,6 +227,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument("--iteration-id", type=int, default=0)
     parser.add_argument("--calibration-path", type=Path, default=None)
+    parser.add_argument(
+        "--focus-features",
+        type=str,
+        default=None,
+        help="Comma-separated feature name patterns (glob) to include. "
+        "Only matching features are used for training. "
+        "Example: 'venue_*,sire_*' to focus on weather and sire features.",
+    )
+    parser.add_argument(
+        "--exclude-features",
+        type=str,
+        default=None,
+        help="Comma-separated feature name patterns (glob) to exclude from training. "
+        "Example: 'legacy_*,odds_*' to remove legacy and odds features.",
+    )
     return parser
 
 
@@ -278,6 +296,12 @@ def normalize_arguments(args: argparse.Namespace) -> WalkForwardArguments:
         "calibration_path": (
             Path(args.calibration_path) if args.calibration_path is not None else None
         ),
+        "focus_features": (
+            cast(str, args.focus_features) if args.focus_features is not None else None
+        ),
+        "exclude_features": (
+            cast(str, args.exclude_features) if args.exclude_features is not None else None
+        ),
     }
 
 
@@ -288,6 +312,27 @@ def resolve_fold_years(args: WalkForwardArguments) -> list[int]:
             f"--year-to ({args['year_to']}) must be >= --year-from ({args['year_from']}).",
         )
     return list(range(args["year_from"], args["year_to"] + 1))
+
+
+def filter_features_by_patterns(
+    feature_cols: list[str],
+    focus_patterns: str | None,
+    exclude_patterns: str | None,
+) -> list[str]:
+    """Filter feature columns by include/exclude glob patterns.
+
+    If focus_patterns is set, only features matching at least one pattern are kept.
+    If exclude_patterns is set, features matching any pattern are removed.
+    focus_patterns is applied first, then exclude_patterns.
+    """
+    result = feature_cols
+    if focus_patterns is not None:
+        patterns = [p.strip() for p in focus_patterns.split(",")]
+        result = [f for f in result if any(fnmatch.fnmatch(f, pat) for pat in patterns)]
+    if exclude_patterns is not None:
+        patterns = [p.strip() for p in exclude_patterns.split(",")]
+        result = [f for f in result if not any(fnmatch.fnmatch(f, pat) for pat in patterns)]
+    return result
 
 
 def assert_feature_count(category: str, feature_cols: list[str]) -> None:
@@ -574,7 +619,17 @@ def run(args: WalkForwardArguments, deps: ScoreFoldDeps) -> dict[str, object]:
         catboost_resolver=deps["catboost_resolver"],
         xgboost_resolver=deps["xgboost_resolver"],
     )
-    assert_feature_count(args["category"], feature_cols)
+    filters_active = args["focus_features"] is not None or args["exclude_features"] is not None
+    if filters_active:
+        feature_cols = filter_features_by_patterns(
+            feature_cols,
+            args["focus_features"],
+            args["exclude_features"],
+        )
+        if len(feature_cols) == 0:
+            raise ValueError("No features remaining after filtering")
+    else:
+        assert_feature_count(args["category"], feature_cols)
     fold_years = resolve_fold_years(args)
     folds = [score_fold(df, feature_cols, args, valid_year, deps) for valid_year in fold_years]
     return {

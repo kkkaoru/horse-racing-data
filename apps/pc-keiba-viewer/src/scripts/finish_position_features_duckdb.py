@@ -14,6 +14,7 @@ Run with:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import resource
@@ -21,6 +22,7 @@ import shutil
 import sys
 import threading
 from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
@@ -81,6 +83,11 @@ SEASON_AUTUMN = 2
 SEASON_WINTER = 3
 NEWCOMER_RACE_JOKEN_CODE = "000"
 UMABAN_NORM_MIN_FIELD = 2
+
+# Race-hour window (inclusive) used to aggregate the per-venue hourly weather
+# into a single daily value that overlaps actual race times.
+VENUE_WEATHER_RACE_HOUR_MIN = 9
+VENUE_WEATHER_RACE_HOUR_MAX = 17
 
 # Empirical training-set medians for popularity_score and odds_score (derived
 # from feat-jra-v7-final / feat-nar-v7-baba training parquets, finish_position
@@ -239,6 +246,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-existing-output", action="store_true")
     parser.add_argument("--force-clean-output", action="store_true")
     parser.add_argument("--temp-dir", type=Path, default=None)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume from the last checkpoint in --temp-dir/table_spill: stages "
+            "whose spilled parquet is intact AND whose SQL fingerprint matches "
+            "are restored as views instead of recomputed."
+        ),
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help=(
+            "Like --resume, but additionally cascade-invalidates downstream "
+            "stages whenever an upstream stage must re-run, so changed SQL "
+            "propagates correctly."
+        ),
+    )
+    parser.add_argument(
+        "--venue-weather-dir",
+        type=Path,
+        default=None,
+        dest="venue_weather_dir",
+        help=(
+            "Directory containing venue_weather_YYYY.duckdb files "
+            "(apps/venue-weather/data). When provided, per-venue hourly "
+            "temperature / precipitation / wind from the build's years is "
+            "aggregated over race hours (9-17) and LEFT JOINed into the "
+            "weather features. Absent -> the venue weather columns are NULL."
+        ),
+    )
     parser.add_argument(
         "--allow-empty-targets",
         action="store_true",
@@ -1572,6 +1610,87 @@ def materialize_legacy_features(con: duckdb.DuckDBPyConnection) -> None:
     materialize_temp_table(con, "legacy_features", "legacy_features", cte_text, "legacy_features")
 
 
+def venue_weather_empty_agg_sql() -> str:
+    """Empty venue_weather_agg with the schema the LEFT JOIN expects.
+
+    Used when --venue-weather-dir is not provided so the join still resolves and
+    the venue weather columns are simply NULL for every row."""
+    return """
+    create or replace temp table venue_weather_agg (
+      keibajo_code varchar,
+      weather_date date,
+      venue_temperature double,
+      venue_precipitation_total double,
+      venue_wind_speed_max double,
+      venue_wind_gusts_max double
+    )
+    """
+
+
+def venue_weather_files_for_years(venue_weather_dir: Path, years: list[int]) -> list[tuple[int, Path]]:
+    """Return (year, path) for each build year that has a venue_weather_YYYY.duckdb."""
+    found: list[tuple[int, Path]] = []
+    for year in years:
+        candidate = venue_weather_dir / f"venue_weather_{year:04d}.duckdb"
+        if candidate.exists():
+            found.append((year, candidate))
+    return found
+
+
+def materialize_venue_weather(
+    con: duckdb.DuckDBPyConnection,
+    venue_weather_dir: Path | None,
+    years: list[int],
+) -> None:
+    """Build venue_weather_agg: per (keibajo_code, weather_date) summary of the
+    open-meteo hourly weather over race hours, ATTACHed from the per-year
+    venue_weather_YYYY.duckdb files. When the dir / files are absent the table is
+    created empty so the downstream LEFT JOIN still resolves to NULL columns."""
+    log_event("weather.venue_weather", "start", 0.0)
+    started = perf_counter()
+    files = (
+        venue_weather_files_for_years(venue_weather_dir, years)
+        if venue_weather_dir is not None
+        else []
+    )
+    if not files:
+        con.execute(venue_weather_empty_agg_sql())
+        log_event("weather.venue_weather", "done", perf_counter() - started, 0)
+        return
+    aliases: list[str] = []
+    union_parts: list[str] = []
+    for year, path in files:
+        alias = f"vw_{year:04d}"
+        con.execute(f"attach '{path.as_posix()}' as {alias} (read_only)")
+        aliases.append(alias)
+        union_parts.append(
+            "select keibajo_code, weather_date, weather_hour, "
+            f"temperature, precipitation, wind_speed, wind_gusts from {alias}.venue_weather"
+        )
+    con.execute(
+        "create or replace temp table venue_weather_raw as " + " union all ".join(union_parts)
+    )
+    for alias in aliases:
+        con.execute(f"detach {alias}")
+    con.execute(
+        f"""
+        create or replace temp table venue_weather_agg as
+        select keibajo_code, weather_date,
+          avg(temperature) as venue_temperature,
+          sum(precipitation) as venue_precipitation_total,
+          max(wind_speed) as venue_wind_speed_max,
+          max(wind_gusts) as venue_wind_gusts_max
+        from venue_weather_raw
+        where weather_hour between {VENUE_WEATHER_RACE_HOUR_MIN} and {VENUE_WEATHER_RACE_HOUR_MAX}
+        group by keibajo_code, weather_date
+        """
+    )
+    con.execute("drop table if exists venue_weather_raw")
+    agg_row = con.execute("select count(*) from venue_weather_agg").fetchone()
+    agg_rows = int(agg_row[0]) if agg_row is not None else 0
+    log_event("weather.venue_weather", "done", perf_counter() - started, agg_rows)
+
+
 def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
     log_event("weather.weather_lookup", "start", 0.0)
     started = perf_counter()
@@ -1580,12 +1699,18 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
         create or replace temp table weather_lookup as
         select t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
           coalesce(jr.tenko_code, nr.tenko_code) as tenko_code,
-          nr.kyoso_joken_meisho as nar_kyoso_joken_meisho
+          nr.kyoso_joken_meisho as nar_kyoso_joken_meisho,
+          vw.venue_temperature,
+          vw.venue_precipitation_total,
+          vw.venue_wind_speed_max,
+          vw.venue_wind_gusts_max
         from target t
         left join jra_ra jr on t.source='jra' and jr.kaisai_nen=t.kaisai_nen and jr.kaisai_tsukihi=t.kaisai_tsukihi
           and jr.keibajo_code=t.keibajo_code and jr.race_bango=t.race_bango
         left join nar_ra nr on t.source='nar' and nr.kaisai_nen=t.kaisai_nen and nr.kaisai_tsukihi=t.kaisai_tsukihi
           and nr.keibajo_code=t.keibajo_code and nr.race_bango=t.race_bango
+        left join venue_weather_agg vw on vw.keibajo_code = t.keibajo_code
+          and vw.weather_date = cast(t.kaisai_nen || '-' || substr(t.kaisai_tsukihi, 1, 2) || '-' || substr(t.kaisai_tsukihi, 3, 2) as date)
         """
     )
     log_event("weather.weather_lookup", "done", perf_counter() - started)
@@ -1684,6 +1809,10 @@ def base_features_select_sql(category: str) -> str:
         when '3' then 0.7::double when '4' then 0.7::double
         when '5' then 1.0::double when '6' then 1.0::double
         else null end as weather_normalized,
+      wl.venue_temperature,
+      wl.venue_precipitation_total,
+      wl.venue_wind_speed_max,
+      wl.venue_wind_gusts_max,
       case
         when left(coalesce(t.track_code, ''), 1) = '1' then
           case t.babajotai_code_shiba when '1' then 0::double when '2' then 0.3::double when '3' then 0.6::double when '4' then 1.0::double else null end
@@ -2297,6 +2426,30 @@ def stage_target(con: duckdb.DuckDBPyConnection, category: str, from_date: str, 
     return target_rows
 
 
+def _shrink_se_table_to_target_horses(con: duckdb.DuckDBPyConnection, table: str) -> int:
+    """Replace ``table`` with its target-horse subset, then index it.
+
+    Works whether ``table`` is a temp table (fresh run) or a parquet-backed view
+    (restored from a SOURCE checkpoint): the filtered rows are staged into a
+    scratch temp table, the original object is dropped via ``drop_view_or_table``
+    (``create or replace temp table`` cannot replace a view), and the scratch is
+    renamed in. Returns the resulting row count."""
+    scratch = f"_{table}_shrunk"
+    con.execute(
+        f"create or replace temp table {scratch} as "
+        f"select * from {table} "
+        "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
+    )
+    drop_view_or_table(con, table)
+    con.execute(f"alter table {scratch} rename to {table}")
+    con.execute(
+        f"create index {table}_jk_idx on {table} "
+        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+    row = con.execute(f"select count(*) from {table}").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def shrink_se_tables_to_target_horses(con: duckdb.DuckDBPyConnection) -> None:
     """Restrict jra_se / nar_se to bataiju lookup rows for target horses only.
 
@@ -2313,28 +2466,8 @@ def shrink_se_tables_to_target_horses(con: duckdb.DuckDBPyConnection) -> None:
     )
     horse_count_row = con.execute("select count(*) from _target_horse_ids").fetchone()
     horse_count = int(horse_count_row[0]) if horse_count_row is not None else 0
-    con.execute(
-        "create or replace temp table jra_se as "
-        "select * from jra_se "
-        "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
-    )
-    con.execute(
-        "create index jra_se_jk_idx on jra_se "
-        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
-    )
-    jra_row = con.execute("select count(*) from jra_se").fetchone()
-    jra_rows = int(jra_row[0]) if jra_row is not None else 0
-    con.execute(
-        "create or replace temp table nar_se as "
-        "select * from nar_se "
-        "where ketto_toroku_bango in (select ketto_toroku_bango from _target_horse_ids)"
-    )
-    con.execute(
-        "create index nar_se_jk_idx on nar_se "
-        "(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
-    )
-    nar_row = con.execute("select count(*) from nar_se").fetchone()
-    nar_rows = int(nar_row[0]) if nar_row is not None else 0
+    jra_rows = _shrink_se_table_to_target_horses(con, "jra_se")
+    nar_rows = _shrink_se_table_to_target_horses(con, "nar_se")
     elapsed = perf_counter() - started
     print(
         json.dumps(
@@ -2384,6 +2517,540 @@ def resolve_output_rows(args: argparse.Namespace, target_rows: int) -> int:
     return count_output_rows(args.output_dir)
 
 
+# Reference list of every temp table that is spilled to parquet before the final
+# JOIN. Spilling happens progressively (per stage) in run() so peak memory stays
+# low; the per-stage groups below partition this list by the stage that produces
+# them. `target`, `weight_agg`, `recent_form` and `legacy_features` are spilled
+# last because `target` is read by almost every stage and the other three are
+# only consumed by the final JOIN but created in the first stage.
+SPILL_TABLES: tuple[str, ...] = (
+    "target",
+    "horse_career",
+    "jockey_career",
+    "trainer_career",
+    "target_pedigree",
+    "sire_distance_stats",
+    "sire_track_stats",
+    "damsire_distance_stats",
+    "damsire_track_stats",
+    "sire_running_style_stats",
+    "sire_keibajo_stats",
+    "damsire_keibajo_stats",
+    "race_field_aggregates",
+    "race_top3_speed",
+    "track_bias",
+    "weight_agg",
+    "recent_form",
+    "legacy_features",
+    "weather_lookup",
+    "horse_running_style_history",
+)
+
+# Per-stage spill groups: tables each stage produces that are only needed by the
+# final JOIN (or by a spill-as-view downstream). Spilling these right after their
+# stage keeps memory bounded. `horse_career` is also read by materialize_race_context
+# but, once spilled, is served as a parquet-backed view so that read still works.
+# `jockey_career` / `trainer_career` are produced by stage_partner_features (not
+# stage_horse_history_derived), so they spill in the partner group.
+SPILL_AFTER_HORSE_HISTORY: tuple[str, ...] = ("horse_career",)
+SPILL_AFTER_PARTNER: tuple[str, ...] = (
+    "jockey_career",
+    "trainer_career",
+    "horse_running_style_history",
+)
+SPILL_AFTER_PEDIGREE: tuple[str, ...] = (
+    "target_pedigree",
+    "sire_distance_stats",
+    "sire_track_stats",
+    "damsire_distance_stats",
+    "damsire_track_stats",
+    "sire_running_style_stats",
+    "sire_keibajo_stats",
+    "damsire_keibajo_stats",
+)
+SPILL_AFTER_RACE_CONTEXT: tuple[str, ...] = (
+    "race_field_aggregates",
+    "race_top3_speed",
+)
+SPILL_AFTER_TRACK_BIAS: tuple[str, ...] = ("track_bias",)
+SPILL_AFTER_WEATHER: tuple[str, ...] = ("weather_lookup",)
+SPILL_BEFORE_PARQUET: tuple[str, ...] = (
+    "target",
+    "weight_agg",
+    "recent_form",
+    "legacy_features",
+)
+
+
+def spill_temp_tables_to_disk(
+    con: duckdb.DuckDBPyConnection,
+    temp_dir: Path | None,
+    tables: tuple[str, ...] = SPILL_TABLES,
+) -> None:
+    """Free working memory by spilling the given temp tables to parquet and
+    replacing them with views. The view names match the original table names so
+    queries reading them (the final SELECT, downstream stages) are unchanged.
+
+    Called progressively after each stage so peak memory stays low instead of
+    accumulating every temp table until a single end-of-run spill."""
+    spill_dir = Path(temp_dir.as_posix() if temp_dir is not None else "/tmp/duckdb-spill") / "table_spill"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    for spill_table in tables:
+        parquet_path = (spill_dir / f"{spill_table}.parquet").as_posix()
+        con.execute(f"copy {spill_table} to '{parquet_path}' (format parquet)")
+        con.execute(f"drop table {spill_table}")
+        con.execute(
+            f"create or replace view {spill_table} as select * from read_parquet('{parquet_path}')"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Resumable / incremental checkpointing
+# ---------------------------------------------------------------------------
+#
+# After each pipeline stage, the tables it produces are already spilled to
+# parquet in {temp_dir}/table_spill/ (see spill_temp_tables_to_disk). The
+# checkpoint manifest records, per stage, which parquet files were written, how
+# many rows each held and a SHA-256 of the SQL that produced them. A subsequent
+# --resume / --incremental run can then skip a stage and re-attach its parquet
+# as views, provided the SQL fingerprint still matches and every file is intact.
+
+# Logical checkpoint stages, in dependency order. SOURCE is the root; the
+# horse-history .. weather stages each depend only on SOURCE (plus TARGET);
+# PARQUET_WRITE depends on every other stage.
+CHECKPOINT_SOURCE = "source"
+CHECKPOINT_TARGET = "target"
+CHECKPOINT_HORSE_HISTORY = "horse_history_derived"
+CHECKPOINT_PARTNER = "partner_features"
+CHECKPOINT_PEDIGREE = "pedigree"
+CHECKPOINT_RACE_CONTEXT = "race_context"
+CHECKPOINT_TRACK_BIAS = "track_bias"
+CHECKPOINT_WEATHER = "weather_lookup"
+CHECKPOINT_PARQUET_WRITE = "parquet_write"
+
+CHECKPOINT_STAGE_ORDER: tuple[str, ...] = (
+    CHECKPOINT_SOURCE,
+    CHECKPOINT_TARGET,
+    CHECKPOINT_HORSE_HISTORY,
+    CHECKPOINT_PARTNER,
+    CHECKPOINT_PEDIGREE,
+    CHECKPOINT_RACE_CONTEXT,
+    CHECKPOINT_TRACK_BIAS,
+    CHECKPOINT_WEATHER,
+    CHECKPOINT_PARQUET_WRITE,
+)
+
+# Source tables spilled (and restored) for the SOURCE checkpoint. These are the
+# raw PG-backed temp tables every downstream stage reads. `target` is spilled by
+# the TARGET checkpoint, not here, because it is produced by a later stage.
+SOURCE_SPILL_TABLES: tuple[str, ...] = (
+    "rec",
+    "nar_se",
+    "nar_um",
+    "nar_nu",
+    "nar_ra",
+    "jra_se",
+    "jra_um",
+    "jra_ra",
+)
+
+CHECKPOINT_VERSION = 1
+CHECKPOINT_STATUS_DONE = "done"
+
+# Tables each checkpoint stage OWNS — i.e. produces and is responsible for
+# spilling + recording. Ownership is by producer, so a restored stage re-attaches
+# exactly the parquet it wrote. In checkpoint mode these are spilled right after
+# the producing stage (instead of the memory-tuned interleaved order used on a
+# plain run) so each checkpoint is self-contained and independently restorable.
+# `weight_agg` / `recent_form` / `legacy_features` are produced by
+# stage_horse_history_derived; `horse_running_style_history` likewise. The plain
+# (non-checkpoint) run spills them later for memory reasons, but for resume they
+# belong to the stage that built them.
+CHECKPOINT_STAGE_TABLES: dict[str, tuple[str, ...]] = {
+    CHECKPOINT_SOURCE: SOURCE_SPILL_TABLES,
+    CHECKPOINT_TARGET: ("target",),
+    CHECKPOINT_HORSE_HISTORY: (
+        "horse_career",
+        "weight_agg",
+        "recent_form",
+        "legacy_features",
+        "horse_running_style_history",
+    ),
+    CHECKPOINT_PARTNER: ("jockey_career", "trainer_career"),
+    CHECKPOINT_PEDIGREE: (
+        "target_pedigree",
+        "sire_distance_stats",
+        "sire_track_stats",
+        "damsire_distance_stats",
+        "damsire_track_stats",
+        "sire_running_style_stats",
+        "sire_keibajo_stats",
+        "damsire_keibajo_stats",
+    ),
+    CHECKPOINT_RACE_CONTEXT: ("race_field_aggregates", "race_top3_speed"),
+    CHECKPOINT_TRACK_BIAS: ("track_bias",),
+    CHECKPOINT_WEATHER: ("weather_lookup",),
+}
+
+
+@dataclass
+class StageCheckpoint:
+    status: str
+    tables: list[str]
+    row_counts: dict[str, int]
+    query_hash: str
+    timestamp: float
+
+
+@dataclass
+class CheckpointManifest:
+    version: int = CHECKPOINT_VERSION
+    category: str = ""
+    from_date: str = ""
+    to_date: str = ""
+    stages: dict[str, StageCheckpoint] = field(default_factory=dict)
+
+    @staticmethod
+    def path(temp_dir: Path) -> Path:
+        return temp_dir / "table_spill" / "checkpoint.json"
+
+    @classmethod
+    def load(cls, temp_dir: Path) -> CheckpointManifest | None:
+        manifest_path = cls.path(temp_dir)
+        if not manifest_path.exists():
+            return None
+        try:
+            raw = json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        stages_raw = raw.get("stages", {})
+        stages: dict[str, StageCheckpoint] = {}
+        if isinstance(stages_raw, dict):
+            for stage_name, payload in stages_raw.items():
+                if isinstance(payload, dict):
+                    stages[str(stage_name)] = StageCheckpoint(
+                        status=str(payload.get("status", "")),
+                        tables=[str(t) for t in payload.get("tables", [])],
+                        row_counts={
+                            str(k): int(v)
+                            for k, v in dict(payload.get("row_counts", {})).items()
+                        },
+                        query_hash=str(payload.get("query_hash", "")),
+                        timestamp=float(payload.get("timestamp", 0.0)),
+                    )
+        return cls(
+            version=int(raw.get("version", CHECKPOINT_VERSION)),
+            category=str(raw.get("category", "")),
+            from_date=str(raw.get("from_date", "")),
+            to_date=str(raw.get("to_date", "")),
+            stages=stages,
+        )
+
+    def save(self, temp_dir: Path) -> None:
+        manifest_path = self.path(temp_dir)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+        tmp_path.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2))
+        tmp_path.replace(manifest_path)
+
+    def mark_done(
+        self,
+        stage_name: str,
+        tables: list[str],
+        row_counts: dict[str, int],
+        query_hash: str,
+        temp_dir: Path,
+    ) -> None:
+        self.stages[stage_name] = StageCheckpoint(
+            status=CHECKPOINT_STATUS_DONE,
+            tables=tables,
+            row_counts=row_counts,
+            query_hash=query_hash,
+            timestamp=datetime.now(timezone.utc).timestamp(),
+        )
+        self.save(temp_dir)
+
+    def invalidate(self, stage_name: str, temp_dir: Path) -> None:
+        if stage_name in self.stages:
+            del self.stages[stage_name]
+            self.save(temp_dir)
+
+    def is_stage_valid(self, stage_name: str, current_hash: str, spill_dir: Path) -> bool:
+        checkpoint = self.stages.get(stage_name)
+        if checkpoint is None:
+            return False
+        if checkpoint.status != CHECKPOINT_STATUS_DONE:
+            return False
+        if checkpoint.query_hash != current_hash:
+            return False
+        return all((spill_dir / table).exists() for table in checkpoint.tables)
+
+
+def _stage_sql_fingerprint(
+    stage_name: str,
+    category: str,
+    venue_weather_dir: Path | None,
+) -> str:
+    """Concatenate the SQL each stage would generate, as a change fingerprint.
+
+    A stage's fingerprint changes whenever any SQL builder feeding it changes, so
+    a checkpoint produced by older SQL is correctly invalidated on the next run.
+    """
+    if stage_name == CHECKPOINT_SOURCE:
+        return build_rec_select_sql(category, "00000000", "99999999")
+    if stage_name == CHECKPOINT_TARGET:
+        return build_target_fingerprint(category)
+    if stage_name == CHECKPOINT_HORSE_HISTORY:
+        parts = [HORSE_HISTORY_BASE_SELECT, HORSE_HISTORY_BASE_FROM]
+        parts.extend(spec["cte_builder"]("true") for spec in build_per_year_specs(category))
+        return "\n".join(parts)
+    if stage_name == CHECKPOINT_PARTNER:
+        return jockey_cte() + trainer_cte()
+    if stage_name == CHECKPOINT_PEDIGREE:
+        parts = [
+            target_pedigree_sql(),
+            target_months_sql(),
+            pedigree_rec_um_sql(category),
+        ]
+        parts.extend(pedigree_monthly_stat_sql(spec) for spec in PEDIGREE_STAT_SPECS)
+        return "\n".join(parts)
+    if stage_name == CHECKPOINT_RACE_CONTEXT:
+        return race_context_cte()
+    if stage_name == CHECKPOINT_TRACK_BIAS:
+        return track_bias_cte()
+    if stage_name == CHECKPOINT_WEATHER:
+        venue_indicator = "venue" if venue_weather_dir is not None else "no-venue"
+        return f"weather_lookup::v1::{venue_indicator}"
+    if stage_name == CHECKPOINT_PARQUET_WRITE:
+        return assemble_final_select_from_temp_tables(category)
+    return stage_name
+
+
+def build_target_fingerprint(category: str) -> str:
+    """SQL fingerprint for the TARGET stage (build_target_table parameters)."""
+    return category_source_filter(category, "rec") + "||" + category_expression(category)
+
+
+def compute_stage_hash(
+    stage_name: str,
+    category: str,
+    from_date: str,
+    to_date: str,
+    years: list[int],
+    extra: str = "",
+) -> str:
+    fingerprint = _stage_sql_fingerprint(
+        stage_name,
+        category,
+        Path(extra) if extra != "" else None,
+    )
+    parts = [
+        stage_name,
+        category,
+        from_date,
+        to_date,
+        ",".join(str(year) for year in years),
+        extra,
+        fingerprint,
+    ]
+    return hashlib.sha256(" ".join(parts).encode("utf-8")).hexdigest()
+
+
+def restore_stage_from_spill(
+    con: duckdb.DuckDBPyConnection,
+    stage_name: str,
+    checkpoint: StageCheckpoint,
+    spill_dir: Path,
+) -> bool:
+    """Re-attach a stage's spilled parquet files as views.
+
+    Returns False (and leaves any partially created views in place) if any
+    parquet file is missing or unreadable, so the caller falls back to running
+    the stage fresh.
+    """
+    log_event(f"checkpoint.restore.{stage_name}", "start", 0.0)
+    started = perf_counter()
+    for table in checkpoint.tables:
+        parquet_path = spill_dir / table
+        if not parquet_path.exists():
+            log_event(f"checkpoint.restore.{stage_name}", "miss", perf_counter() - started)
+            return False
+        view_name = parquet_path.stem
+        try:
+            con.execute(
+                f"create or replace view {view_name} as "
+                f"select * from read_parquet('{parquet_path.as_posix()}')"
+            )
+        except duckdb.Error:
+            log_event(f"checkpoint.restore.{stage_name}", "error", perf_counter() - started)
+            return False
+    log_event(f"checkpoint.restore.{stage_name}", "done", perf_counter() - started)
+    return True
+
+
+def spilled_table_files(spill_dir: Path, tables: tuple[str, ...]) -> list[str]:
+    """Parquet filenames (e.g. ['target.parquet']) for the given spill tables."""
+    return [f"{table}.parquet" for table in tables]
+
+
+def spilled_row_counts(con: duckdb.DuckDBPyConnection, tables: tuple[str, ...]) -> dict[str, int]:
+    """Row count of each (already-spilled, view-backed) table for the manifest."""
+    counts: dict[str, int] = {}
+    for table in tables:
+        row = con.execute(f"select count(*) from {table}").fetchone()
+        counts[f"{table}.parquet"] = int(row[0]) if row is not None else 0
+    return counts
+
+
+def drop_view_or_table(con: duckdb.DuckDBPyConnection, name: str) -> None:
+    """Drop ``name`` whether it is a temp table (fresh run) or a view (restored).
+
+    A table restored from a checkpoint is a parquet-backed view, so the plain
+    ``drop table`` used on a fresh run would fail. DuckDB's ``drop view if
+    exists`` / ``drop table if exists`` still raise a type-mismatch error when
+    the object exists but is the other kind, so the catalog is consulted first
+    and only the matching ``drop`` is issued."""
+    rows = con.execute(
+        "select table_type from information_schema.tables where table_name = ?",
+        [name],
+    ).fetchall()
+    types = {str(row[0]) for row in rows}
+    if "VIEW" in types:
+        con.execute(f"drop view if exists {name}")
+    if "BASE TABLE" in types or "LOCAL TEMPORARY" in types:
+        con.execute(f"drop table if exists {name}")
+
+
+def extract_years_from_target(con: duckdb.DuckDBPyConnection) -> list[int]:
+    """Distinct race years from the (possibly restored-as-view) target relation."""
+    return get_target_years(con)
+
+
+def target_rows_from_target(con: duckdb.DuckDBPyConnection) -> int:
+    """Row count of the target relation, whether it is a temp table or a view."""
+    row = con.execute("select count(*) from target").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+@dataclass
+class CheckpointController:
+    """Drives per-stage skip / restore / record decisions for run().
+
+    Holds the manifest, the spill directory and the build parameters needed to
+    compute per-stage hashes. ``active`` is False when neither --resume nor
+    --incremental was passed, in which case every method is a no-op and run()
+    behaves exactly as before.
+    """
+
+    active: bool
+    incremental: bool
+    manifest: CheckpointManifest
+    temp_dir: Path
+    spill_dir: Path
+    category: str
+    from_date: str
+    to_date: str
+    venue_weather_extra: str
+
+    def stage_hash(self, stage_name: str, years: list[int]) -> str:
+        return compute_stage_hash(
+            stage_name,
+            self.category,
+            self.from_date,
+            self.to_date,
+            years,
+            self.venue_weather_extra,
+        )
+
+    def should_skip(self, stage_name: str, years: list[int]) -> bool:
+        if not self.active:
+            return False
+        return self.manifest.is_stage_valid(
+            stage_name, self.stage_hash(stage_name, years), self.spill_dir
+        )
+
+    def try_restore(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        stage_name: str,
+        years: list[int],
+    ) -> bool:
+        if not self.should_skip(stage_name, years):
+            return False
+        checkpoint = self.manifest.stages[stage_name]
+        if restore_stage_from_spill(con, stage_name, checkpoint, self.spill_dir):
+            return True
+        self.manifest.invalidate(stage_name, self.temp_dir)
+        return False
+
+    def spill_and_record(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        stage_name: str,
+        years: list[int],
+    ) -> None:
+        """Spill the stage's owned tables to parquet, then record the checkpoint.
+
+        No-op when checkpointing is inactive, so a plain run keeps its original
+        memory-tuned spill ordering untouched.
+        """
+        if not self.active:
+            return
+        tables = CHECKPOINT_STAGE_TABLES[stage_name]
+        spill_temp_tables_to_disk(con, self.temp_dir, tables)
+        self.manifest.mark_done(
+            stage_name,
+            spilled_table_files(self.spill_dir, tables),
+            spilled_row_counts(con, tables),
+            self.stage_hash(stage_name, years),
+            self.temp_dir,
+        )
+
+    def cascade_invalidate_from(self, stage_name: str) -> None:
+        """Drop downstream checkpoints once a stage is known to re-run.
+
+        Only meaningful in incremental mode: if an upstream stage's SQL changed
+        it has been re-run, so every later stage's cached output is stale and
+        must not be restored even if its own hash still matches.
+        """
+        if not self.incremental:
+            return
+        try:
+            start = CHECKPOINT_STAGE_ORDER.index(stage_name)
+        except ValueError:
+            return
+        for downstream in CHECKPOINT_STAGE_ORDER[start + 1 :]:
+            self.manifest.invalidate(downstream, self.temp_dir)
+
+
+def make_checkpoint_controller(args: argparse.Namespace) -> CheckpointController:
+    active = bool(getattr(args, "resume", False) or getattr(args, "incremental", False))
+    temp_dir = args.temp_dir if args.temp_dir is not None else Path("/tmp/duckdb-spill")
+    spill_dir = temp_dir / "table_spill"
+    loaded = CheckpointManifest.load(temp_dir) if active else None
+    from_date, to_date = resolve_date_range(args)
+    manifest = loaded if loaded is not None else CheckpointManifest()
+    manifest.category = args.category
+    manifest.from_date = from_date
+    manifest.to_date = to_date
+    venue_extra = (
+        args.venue_weather_dir.as_posix() if args.venue_weather_dir is not None else ""
+    )
+    return CheckpointController(
+        active=active,
+        incremental=bool(getattr(args, "incremental", False)),
+        manifest=manifest,
+        temp_dir=temp_dir,
+        spill_dir=spill_dir,
+        category=args.category,
+        from_date=from_date,
+        to_date=to_date,
+        venue_weather_extra=venue_extra,
+    )
+
+
 def stage_parquet_write(
     con: duckdb.DuckDBPyConnection,
     category: str,
@@ -2422,10 +3089,168 @@ def resolve_upcoming_window(args: argparse.Namespace, from_date: str, to_date: s
     return from_date, to_date
 
 
+def run_stage_source(
+    con: duckdb.DuckDBPyConnection,
+    args: argparse.Namespace,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    pg_url: str,
+    from_date: str,
+    to_date: str,
+    upcoming_window: tuple[str, str] | None,
+) -> list[int]:
+    """Run (or restore) the source + target stages and return target years.
+
+    Source and target are coupled because ``years`` is derived from ``target``.
+    On restore both are re-attached as views and ``years`` is read back off the
+    restored ``target`` view (extract_years_from_target).
+    """
+    heartbeat.set_stage("source.stage")
+    if controller.try_restore(con, CHECKPOINT_SOURCE, []) and controller.try_restore(
+        con, CHECKPOINT_TARGET, []
+    ):
+        years = extract_years_from_target(con)
+        log_event("checkpoint.source.restored", "done", 0.0, len(years))
+        return years
+    controller.cascade_invalidate_from(CHECKPOINT_SOURCE)
+    stage_source(
+        con, pg_url, from_date, to_date, args.category, upcoming_window, args.realtime_odds
+    )
+    controller.spill_and_record(con, CHECKPOINT_SOURCE, [])
+    heartbeat.set_stage("target.build")
+    stage_target(con, args.category, from_date, to_date)
+    years = get_target_years(con)
+    # SOURCE / TARGET hashes are computed with years=[] because ``years`` is
+    # derived FROM target — it is an output, not an input, so it must not feed
+    # the hash that the restore-time check (which has no years yet) recomputes.
+    controller.spill_and_record(con, CHECKPOINT_TARGET, [])
+    return years
+
+
+def run_stage_horse_history(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    category: str,
+    temp_dir: Path | None,
+) -> None:
+    heartbeat.set_stage("horse_history_derived")
+    if controller.try_restore(con, CHECKPOINT_HORSE_HISTORY, years):
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_HORSE_HISTORY)
+    stage_horse_history_derived(con, years, heartbeat, category)
+    for t in ("horse_history_base", "se_lookup", "target_current_bataiju", "jra_se", "nar_se"):
+        drop_view_or_table(con, t)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_HORSE_HISTORY, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_HORSE_HISTORY)
+
+
+def run_stage_partner(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    temp_dir: Path | None,
+) -> None:
+    if controller.try_restore(con, CHECKPOINT_PARTNER, years):
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_PARTNER)
+    stage_partner_features(con, years, heartbeat)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_PARTNER, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_PARTNER)
+
+
+def run_stage_pedigree(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    category: str,
+    temp_dir: Path | None,
+) -> None:
+    heartbeat.set_stage("pedigree")
+    if controller.try_restore(con, CHECKPOINT_PEDIGREE, years):
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_PEDIGREE)
+    materialize_pedigree_stats(con, category)
+    for t in ("pedigree_rec_um", "target_months", "jra_um", "nar_um"):
+        drop_view_or_table(con, t)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_PEDIGREE, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_PEDIGREE)
+
+
+def run_stage_race_context(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    temp_dir: Path | None,
+) -> None:
+    heartbeat.set_stage("race_context")
+    if controller.try_restore(con, CHECKPOINT_RACE_CONTEXT, years):
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_RACE_CONTEXT)
+    materialize_race_context(con)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_RACE_CONTEXT, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_RACE_CONTEXT)
+
+
+def run_stage_track_bias(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    temp_dir: Path | None,
+) -> None:
+    if controller.try_restore(con, CHECKPOINT_TRACK_BIAS, years):
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_TRACK_BIAS)
+    stage_track_bias(con, years, heartbeat)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_TRACK_BIAS, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_TRACK_BIAS)
+
+
+def run_stage_weather(
+    con: duckdb.DuckDBPyConnection,
+    controller: CheckpointController,
+    heartbeat: Heartbeat,
+    years: list[int],
+    venue_weather_dir: Path | None,
+    temp_dir: Path | None,
+) -> None:
+    heartbeat.set_stage("weather_lookup")
+    if controller.try_restore(con, CHECKPOINT_WEATHER, years):
+        for t in ("rec", "jra_ra", "nar_ra"):
+            drop_view_or_table(con, t)
+        return
+    controller.cascade_invalidate_from(CHECKPOINT_WEATHER)
+    materialize_venue_weather(con, venue_weather_dir, years)
+    materialize_weather_lookup(con)
+    con.execute("drop table if exists venue_weather_agg")
+    for t in ("rec", "jra_ra", "nar_ra"):
+        drop_view_or_table(con, t)
+    if controller.active:
+        controller.spill_and_record(con, CHECKPOINT_WEATHER, years)
+    else:
+        spill_temp_tables_to_disk(con, temp_dir, SPILL_AFTER_WEATHER)
+
+
 def run(args: argparse.Namespace) -> BuildResult:
     pg_url = resolve_pg_url(args.pg_url)
     from_date, to_date = resolve_date_range(args)
     upcoming_window = resolve_upcoming_window(args, from_date, to_date)
+    controller = make_checkpoint_controller(args)
     overall_started = perf_counter()
     log_event("run", "start", 0.0)
     heartbeat = Heartbeat(args.heartbeat_interval, args.status_file)
@@ -2433,34 +3258,26 @@ def run(args: argparse.Namespace) -> BuildResult:
     con = duckdb.connect(":memory:")
     try:
         configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
-        heartbeat.set_stage("source.stage")
-        stage_source(
-            con,
-            pg_url,
-            from_date,
-            to_date,
-            args.category,
-            upcoming_window,
-            args.realtime_odds,
+        years = run_stage_source(
+            con, args, controller, heartbeat, pg_url, from_date, to_date, upcoming_window
         )
-        heartbeat.set_stage("target.build")
-        target_rows = stage_target(con, args.category, from_date, to_date)
-        years = get_target_years(con)
         log_event("target.years", "done", 0.0, len(years))
         if not years:
             prepare_output_dir(args.output_dir, args.keep_existing_output, args.force_clean_output)
             log_event("run", "skip", perf_counter() - overall_started, 0)
             return build_empty_result(args.output_dir, perf_counter() - overall_started)
-        heartbeat.set_stage("horse_history_derived")
-        stage_horse_history_derived(con, years, heartbeat, args.category)
-        stage_partner_features(con, years, heartbeat)
-        heartbeat.set_stage("pedigree")
-        materialize_pedigree_stats(con, args.category)
-        heartbeat.set_stage("race_context")
-        materialize_race_context(con)
-        stage_track_bias(con, years, heartbeat)
-        heartbeat.set_stage("weather_lookup")
-        materialize_weather_lookup(con)
+        run_stage_horse_history(con, controller, heartbeat, years, args.category, args.temp_dir)
+        run_stage_partner(con, controller, heartbeat, years, args.temp_dir)
+        run_stage_pedigree(con, controller, heartbeat, years, args.category, args.temp_dir)
+        run_stage_race_context(con, controller, heartbeat, years, args.temp_dir)
+        run_stage_track_bias(con, controller, heartbeat, years, args.temp_dir)
+        run_stage_weather(
+            con, controller, heartbeat, years, args.venue_weather_dir, args.temp_dir
+        )
+        target_rows = target_rows_from_target(con)
+        if not controller.active:
+            heartbeat.set_stage("spill")
+            spill_temp_tables_to_disk(con, args.temp_dir, SPILL_BEFORE_PARQUET)
         heartbeat.set_stage("parquet.write")
         stage_parquet_write(
             con,

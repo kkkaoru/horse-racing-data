@@ -613,6 +613,7 @@ def test_materialize_race_context_builds_aggregates(seeded_con: duckdb.DuckDBPyC
 
 
 def test_materialize_weather_lookup_joins_jra_ra(seeded_con: duckdb.DuckDBPyConnection):
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     row = seeded_con.execute(
         "select tenko_code from weather_lookup where ketto_toroku_bango = 'h001'"
@@ -628,12 +629,132 @@ def test_materialize_weather_lookup_projects_nar_kyoso_joken_meisho_column():
     _seed_weight_tables(con)
     _seed_weather_tables(con)
     subject.build_target_table(con, "nar", "20200101", "20201231")
+    subject.materialize_venue_weather(con, None, [2020])
     subject.materialize_weather_lookup(con)
     row = con.execute(
         "select nar_kyoso_joken_meisho from weather_lookup where ketto_toroku_bango = 'h003'"
     ).fetchone()
     assert row is not None
     assert row[0] == "「　　　Ｃ２　」"
+
+
+def _write_venue_weather_db(path: Path, rows: list[tuple[object, ...]]) -> None:
+    src = duckdb.connect(str(path))
+    src.execute(
+        "create table venue_weather ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, "
+        "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+    )
+    src.executemany(
+        "insert into venue_weather values (?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    src.close()
+
+
+def test_materialize_weather_lookup_left_joins_venue_weather(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    _write_venue_weather_db(
+        tmp_path / "venue_weather_2020.duckdb",
+        [
+            ("01", "2020-01-01", 8, 99.0, 99.0, 99.0, 99.0),
+            ("01", "2020-01-01", 10, 10.0, 1.0, 5.0, 9.0),
+            ("01", "2020-01-01", 14, 20.0, 3.0, 7.0, 12.0),
+        ],
+    )
+    subject.materialize_venue_weather(seeded_con, tmp_path, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    row = seeded_con.execute(
+        "select venue_temperature, venue_precipitation_total, "
+        "venue_wind_speed_max, venue_wind_gusts_max from weather_lookup "
+        "where ketto_toroku_bango = 'h001'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(15.0)
+    assert row[1] == pytest.approx(4.0)
+    assert row[2] == pytest.approx(7.0)
+    assert row[3] == pytest.approx(12.0)
+
+
+def test_materialize_weather_lookup_venue_columns_null_when_no_venue_data(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.materialize_venue_weather(seeded_con, None, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    row = seeded_con.execute(
+        "select venue_temperature, venue_precipitation_total, "
+        "venue_wind_speed_max, venue_wind_gusts_max from weather_lookup "
+        "where ketto_toroku_bango = 'h001'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] is None
+    assert row[2] is None
+    assert row[3] is None
+
+
+def test_base_features_select_emits_venue_weather_value(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    _write_venue_weather_db(
+        tmp_path / "venue_weather_2020.duckdb",
+        [
+            ("01", "2020-01-01", 10, 12.0, 2.0, 6.0, 10.0),
+            ("01", "2020-01-01", 15, 18.0, 4.0, 8.0, 13.0),
+        ],
+    )
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, tmp_path, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    base_sql = subject.base_features_select_sql("jra")
+    row = seeded_con.execute(
+        f"with final as ({base_sql}) "
+        "select venue_temperature, venue_precipitation_total, "
+        "venue_wind_speed_max, venue_wind_gusts_max from final "
+        "where ketto_toroku_bango = 'h001'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(15.0)
+    assert row[1] == pytest.approx(6.0)
+    assert row[2] == pytest.approx(8.0)
+    assert row[3] == pytest.approx(13.0)
+
+
+def test_write_parquet_emits_venue_weather_columns(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    output_dir = tmp_path / "out"
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
+    subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
+    subject.materialize_weather_lookup(seeded_con)
+    subject.write_parquet(
+        seeded_con,
+        subject.assemble_final_select_from_temp_tables("jra"),
+        output_dir,
+        keep_existing=False,
+        force_clean=True,
+    )
+    reader = duckdb.connect(":memory:")
+    columns = [
+        row[0]
+        for row in reader.execute(
+            f"describe select * from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')"
+        ).fetchall()
+    ]
+    reader.close()
+    assert "venue_temperature" in columns
+    assert "venue_precipitation_total" in columns
+    assert "venue_wind_speed_max" in columns
+    assert "venue_wind_gusts_max" in columns
 
 
 def test_stage_partner_features_creates_jockey_and_trainer(seeded_con: duckdb.DuckDBPyConnection):
@@ -768,6 +889,7 @@ def test_write_parquet_cleans_output_dir(seeded_con: duckdb.DuckDBPyConnection, 
     subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     subject.write_parquet(
         seeded_con,
@@ -790,6 +912,7 @@ def test_write_parquet_emits_nar_subclass_column(
     subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     subject.write_parquet(
         seeded_con,
@@ -818,6 +941,7 @@ def test_write_parquet_emits_kyoso_joken_code_column(
     subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     subject.write_parquet(
         seeded_con,
@@ -846,6 +970,7 @@ def test_count_output_rows_counts_written_parquet(
     subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     subject.write_parquet(
         seeded_con,
@@ -1050,6 +1175,55 @@ def test_run_full_pipeline_with_seeded_sources(
     result = subject.run(args)
     assert result["rows_written"] == 2
     assert (tmp_path / "out").exists()
+
+
+def test_run_full_pipeline_with_venue_weather_dir_populates_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+        _seed_rec(con)
+        _seed_horse_masters(con)
+        _seed_weight_tables(con)
+        _seed_weather_tables(con)
+
+    vw_dir = tmp_path / "venue-weather"
+    vw_dir.mkdir()
+    _write_venue_weather_db(
+        vw_dir / "venue_weather_2020.duckdb",
+        [
+            ("01", "2020-01-01", 10, 14.0, 2.0, 6.0, 11.0),
+            ("01", "2020-01-01", 16, 16.0, 4.0, 8.0, 13.0),
+        ],
+    )
+    monkeypatch.setattr(subject, "stage_source", fake_stage_source)
+    args = subject.parse_args(
+        [
+            "--category",
+            "jra",
+            "--from-date",
+            "20200101",
+            "--to-date",
+            "20201231",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--heartbeat-interval",
+            "0",
+            "--venue-weather-dir",
+            str(vw_dir),
+        ]
+    )
+    result = subject.run(args)
+    assert result["rows_written"] == 2
+    reader = duckdb.connect(":memory:")
+    row = reader.execute(
+        f"select venue_temperature, venue_precipitation_total from "
+        f"read_parquet('{(tmp_path / 'out').as_posix()}/race_year=*/*.parquet') "
+        "where ketto_toroku_bango = 'h001'"
+    ).fetchone()
+    reader.close()
+    assert row is not None
+    assert row[0] == pytest.approx(15.0)
+    assert row[1] == pytest.approx(6.0)
 
 
 def test_assemble_final_select_emits_race_internal_rank_values(
@@ -1257,6 +1431,7 @@ def test_keibajo_win_rate_null_when_race_count_below_min_races():
     subject.materialize_pedigree_stats(con, "jra")
     subject.materialize_race_context(con)
     subject.stage_track_bias(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_venue_weather(con, None, [2020])
     subject.materialize_weather_lookup(con)
     base_sql = subject.base_features_select_sql("jra")
     row = con.execute(
@@ -1308,6 +1483,7 @@ def test_keibajo_win_rate_present_in_final_output_value():
     subject.materialize_pedigree_stats(con, "jra")
     subject.materialize_race_context(con)
     subject.stage_track_bias(con, [2020], subject.Heartbeat(0.0, None))
+    subject.materialize_venue_weather(con, None, [2020])
     subject.materialize_weather_lookup(con)
     base_sql = subject.base_features_select_sql("jra")
     row = con.execute(
@@ -1328,6 +1504,7 @@ def test_write_parquet_emits_keibajo_win_rate_columns(
     subject.materialize_pedigree_stats(seeded_con, "jra")
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
     subject.materialize_weather_lookup(seeded_con)
     subject.write_parquet(
         seeded_con,
@@ -1346,3 +1523,219 @@ def test_write_parquet_emits_keibajo_win_rate_columns(
     reader.close()
     assert "sire_keibajo_win_rate" in columns
     assert "damsire_keibajo_win_rate" in columns
+
+
+def _active_controller(tmp_path: Path, incremental: bool = False) -> subject.CheckpointController:
+    return subject.CheckpointController(
+        active=True,
+        incremental=incremental,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+
+
+def test_run_stage_horse_history_active_spills_and_records(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_horse_history(
+        seeded_con, controller, _silent_heartbeat(), [2020], "jra", tmp_path
+    )
+    manifest = subject.CheckpointManifest.load(tmp_path)
+    assert manifest is not None
+    assert manifest.stages["horse_history_derived"].tables == [
+        "horse_career.parquet",
+        "weight_agg.parquet",
+        "recent_form.parquet",
+        "legacy_features.parquet",
+        "horse_running_style_history.parquet",
+    ]
+    view_type = seeded_con.execute(
+        "select table_type from information_schema.tables where table_name = 'horse_career'"
+    ).fetchone()
+    assert view_type == ("VIEW",)
+
+
+def test_run_stage_horse_history_active_restores_from_checkpoint(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_horse_history(
+        seeded_con, controller, _silent_heartbeat(), [2020], "jra", tmp_path
+    )
+    expected = seeded_con.execute("select count(*) from horse_career").fetchone()
+    fresh_con = duckdb.connect(":memory:")
+    restored_controller = _active_controller(tmp_path)
+    restored_controller.manifest = cast(
+        subject.CheckpointManifest, subject.CheckpointManifest.load(tmp_path)
+    )
+    subject.run_stage_horse_history(
+        fresh_con, restored_controller, _silent_heartbeat(), [2020], "jra", tmp_path
+    )
+    restored = fresh_con.execute("select count(*) from horse_career").fetchone()
+    fresh_con.close()
+    assert restored == expected
+
+
+def test_run_stage_partner_active_spills_and_records(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat(), "jra")
+    controller = _active_controller(tmp_path)
+    subject.run_stage_partner(seeded_con, controller, _silent_heartbeat(), [2020], tmp_path)
+    manifest = subject.CheckpointManifest.load(tmp_path)
+    assert manifest is not None
+    assert manifest.stages["partner_features"].tables == [
+        "jockey_career.parquet",
+        "trainer_career.parquet",
+    ]
+
+
+def test_run_stage_partner_active_restores_from_checkpoint(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat(), "jra")
+    controller = _active_controller(tmp_path)
+    subject.run_stage_partner(seeded_con, controller, _silent_heartbeat(), [2020], tmp_path)
+    fresh_con = duckdb.connect(":memory:")
+    restored_controller = _active_controller(tmp_path)
+    restored_controller.manifest = cast(
+        subject.CheckpointManifest, subject.CheckpointManifest.load(tmp_path)
+    )
+    subject.run_stage_partner(
+        fresh_con, restored_controller, _silent_heartbeat(), [2020], tmp_path
+    )
+    jockey_rows = fresh_con.execute(
+        "select table_type from information_schema.tables where table_name = 'jockey_career'"
+    ).fetchone()
+    fresh_con.close()
+    assert jockey_rows == ("VIEW",)
+
+
+def test_run_stage_pedigree_active_spills_and_records(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_pedigree(
+        seeded_con, controller, _silent_heartbeat(), [2020], "jra", tmp_path
+    )
+    manifest = subject.CheckpointManifest.load(tmp_path)
+    assert manifest is not None
+    assert "target_pedigree.parquet" in manifest.stages["pedigree"].tables
+
+
+def test_run_stage_race_context_active_records_then_restores(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat(), "jra")
+    controller = _active_controller(tmp_path)
+    subject.run_stage_race_context(seeded_con, controller, _silent_heartbeat(), [2020], tmp_path)
+    fresh_con = duckdb.connect(":memory:")
+    restored_controller = _active_controller(tmp_path)
+    restored_controller.manifest = cast(
+        subject.CheckpointManifest, subject.CheckpointManifest.load(tmp_path)
+    )
+    subject.run_stage_race_context(
+        fresh_con, restored_controller, _silent_heartbeat(), [2020], tmp_path
+    )
+    aggregates = fresh_con.execute(
+        "select table_type from information_schema.tables where table_name = 'race_field_aggregates'"
+    ).fetchone()
+    fresh_con.close()
+    assert aggregates == ("VIEW",)
+
+
+def test_run_stage_track_bias_active_spills_and_records(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_track_bias(seeded_con, controller, _silent_heartbeat(), [2020], tmp_path)
+    manifest = subject.CheckpointManifest.load(tmp_path)
+    assert manifest is not None
+    assert manifest.stages["track_bias"].tables == ["track_bias.parquet"]
+
+
+def test_run_stage_weather_active_spills_and_records(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_weather(
+        seeded_con, controller, _silent_heartbeat(), [2020], None, tmp_path
+    )
+    manifest = subject.CheckpointManifest.load(tmp_path)
+    assert manifest is not None
+    assert manifest.stages["weather_lookup"].tables == ["weather_lookup.parquet"]
+
+
+def test_run_stage_weather_active_restore_drops_rec_view(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+) -> None:
+    controller = _active_controller(tmp_path)
+    subject.run_stage_weather(
+        seeded_con, controller, _silent_heartbeat(), [2020], None, tmp_path
+    )
+    fresh_con = duckdb.connect(":memory:")
+    fresh_con.execute("create table rec as select 1 as x")
+    restored_controller = _active_controller(tmp_path)
+    restored_controller.manifest = cast(
+        subject.CheckpointManifest, subject.CheckpointManifest.load(tmp_path)
+    )
+    subject.run_stage_weather(
+        fresh_con, restored_controller, _silent_heartbeat(), [2020], None, tmp_path
+    )
+    rec_present = fresh_con.execute(
+        "select count(*) from information_schema.tables where table_name = 'rec'"
+    ).fetchone()
+    weather_type = fresh_con.execute(
+        "select table_type from information_schema.tables where table_name = 'weather_lookup'"
+    ).fetchone()
+    fresh_con.close()
+    assert rec_present == (0,)
+    assert weather_type == ("VIEW",)
+
+
+def test_run_resume_skips_recompute_on_second_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+        _seed_rec(con)
+        _seed_horse_masters(con)
+        _seed_weight_tables(con)
+        _seed_weather_tables(con)
+        con.execute(
+            "create or replace temp table nar_nu as "
+            "select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from nar_um"
+        )
+
+    monkeypatch.setattr(subject, "stage_source", fake_stage_source)
+    base_args = [
+        "--category",
+        "jra",
+        "--from-date",
+        "20200101",
+        "--to-date",
+        "20201231",
+        "--output-dir",
+        str(tmp_path / "out"),
+        "--temp-dir",
+        str(tmp_path / "tmp"),
+        "--skip-count",
+        "--resume",
+    ]
+    first = subject.run(subject.parse_args(base_args))
+    assert first["rows_written"] > 0
+    manifest = subject.CheckpointManifest.load(tmp_path / "tmp")
+    assert manifest is not None
+    assert "weather_lookup" in manifest.stages
+
+    def exploding_stage_source(_con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+        raise AssertionError("source stage must not run again on resume")
+
+    monkeypatch.setattr(subject, "stage_source", exploding_stage_source)
+    second = subject.run(subject.parse_args(base_args))
+    assert second["rows_written"] == first["rows_written"]

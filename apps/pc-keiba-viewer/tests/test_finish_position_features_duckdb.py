@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
@@ -1915,3 +1916,906 @@ def test_base_features_select_sql_joins_keibajo_stats_on_sire_and_keibajo() -> N
         "left join damsire_keibajo_stats dks on dks.damsire = tp.target_damsire and dks.keibajo_code = tp.target_keibajo_code"
         in sql
     )
+
+
+def test_spill_tables_lists_all_final_join_temp_tables() -> None:
+    assert subject.SPILL_TABLES == (
+        "target",
+        "horse_career",
+        "jockey_career",
+        "trainer_career",
+        "target_pedigree",
+        "sire_distance_stats",
+        "sire_track_stats",
+        "damsire_distance_stats",
+        "damsire_track_stats",
+        "sire_running_style_stats",
+        "sire_keibajo_stats",
+        "damsire_keibajo_stats",
+        "race_field_aggregates",
+        "race_top3_speed",
+        "track_bias",
+        "weight_agg",
+        "recent_form",
+        "legacy_features",
+        "weather_lookup",
+        "horse_running_style_history",
+    )
+
+
+def test_spill_temp_tables_to_disk_replaces_tables_with_views_preserving_data(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    for spill_table in subject.SPILL_TABLES:
+        con.execute(f"create table {spill_table} as select 1 as k, '{spill_table}' as label")
+    subject.spill_temp_tables_to_disk(con, tmp_path)
+    table_rows = con.execute(
+        "select table_name from information_schema.tables where table_type = 'BASE TABLE'"
+    ).fetchall()
+    assert table_rows == []
+    view_rows = con.execute(
+        "select table_name from information_schema.tables where table_type = 'VIEW' order by table_name"
+    ).fetchall()
+    view_names = sorted(r[0] for r in view_rows)
+    assert view_names == sorted(subject.SPILL_TABLES)
+    track_bias_data = con.execute("select k, label from track_bias").fetchall()
+    assert track_bias_data == [(1, "track_bias")]
+
+
+def test_spill_temp_tables_to_disk_writes_parquet_into_temp_dir_subfolder(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    for spill_table in subject.SPILL_TABLES:
+        con.execute(f"create table {spill_table} as select 42 as v")
+    subject.spill_temp_tables_to_disk(con, tmp_path)
+    written = sorted(p.name for p in (tmp_path / "table_spill").glob("*.parquet"))
+    assert written == sorted(f"{t}.parquet" for t in subject.SPILL_TABLES)
+
+
+def test_spill_temp_tables_to_disk_defaults_to_tmp_when_temp_dir_none(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    monkeypatch.setattr(subject, "Path", lambda _: tmp_path)
+    con = duckdb.connect()
+    for spill_table in subject.SPILL_TABLES:
+        con.execute(f"create table {spill_table} as select 1 as v")
+    subject.spill_temp_tables_to_disk(con, None)
+    written = sorted(p.name for p in (tmp_path / "table_spill").glob("*.parquet"))
+    assert written == sorted(f"{t}.parquet" for t in subject.SPILL_TABLES)
+
+
+def test_parse_args_supports_venue_weather_dir(tmp_path: Path) -> None:
+    args = subject.parse_args(["--venue-weather-dir", str(tmp_path / "vw")])
+    assert args.venue_weather_dir == tmp_path / "vw"
+
+
+def test_parse_args_venue_weather_dir_defaults_to_none() -> None:
+    args = subject.parse_args([])
+    assert args.venue_weather_dir is None
+
+
+def test_venue_weather_files_for_years_only_returns_existing(tmp_path: Path) -> None:
+    (tmp_path / "venue_weather_2020.duckdb").write_text("x")
+    (tmp_path / "venue_weather_2022.duckdb").write_text("x")
+    found = subject.venue_weather_files_for_years(tmp_path, [2020, 2021, 2022])
+    assert found == [
+        (2020, tmp_path / "venue_weather_2020.duckdb"),
+        (2022, tmp_path / "venue_weather_2022.duckdb"),
+    ]
+
+
+def test_venue_weather_empty_agg_sql_has_expected_columns() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(subject.venue_weather_empty_agg_sql())
+    columns = [
+        row[0] for row in con.execute("describe venue_weather_agg").fetchall()
+    ]
+    assert columns == [
+        "keibajo_code",
+        "weather_date",
+        "venue_temperature",
+        "venue_precipitation_total",
+        "venue_wind_speed_max",
+        "venue_wind_gusts_max",
+    ]
+
+
+def test_materialize_venue_weather_creates_empty_agg_when_dir_none() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    subject.materialize_venue_weather(con, None, [2020])
+    row = con.execute("select count(*) from venue_weather_agg").fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+def test_materialize_venue_weather_creates_empty_agg_when_no_matching_files(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    subject.materialize_venue_weather(con, tmp_path, [2099])
+    row = con.execute("select count(*) from venue_weather_agg").fetchone()
+    assert row is not None
+    assert row[0] == 0
+
+
+def test_materialize_venue_weather_aggregates_race_hours_from_attached_db(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    src_path = tmp_path / "venue_weather_2020.duckdb"
+    src = duckdb.connect(str(src_path))
+    src.execute(
+        "create table venue_weather ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, "
+        "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+    )
+    src.execute(
+        "insert into venue_weather values "
+        "('01', date '2020-01-01', 8, 100.0, 100.0, 100.0, 100.0), "
+        "('01', date '2020-01-01', 10, 10.0, 1.0, 5.0, 9.0), "
+        "('01', date '2020-01-01', 12, 20.0, 2.0, 7.0, 11.0)"
+    )
+    src.close()
+    con = duckdb.connect(":memory:")
+    subject.materialize_venue_weather(con, tmp_path, [2020])
+    row = con.execute(
+        "select venue_temperature, venue_precipitation_total, "
+        "venue_wind_speed_max, venue_wind_gusts_max from venue_weather_agg "
+        "where keibajo_code = '01' and weather_date = date '2020-01-01'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == pytest.approx(15.0)
+    assert row[1] == pytest.approx(3.0)
+    assert row[2] == pytest.approx(7.0)
+    assert row[3] == pytest.approx(11.0)
+
+
+def test_materialize_venue_weather_detaches_so_source_db_is_not_locked(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    src_path = tmp_path / "venue_weather_2020.duckdb"
+    src = duckdb.connect(str(src_path))
+    src.execute(
+        "create table venue_weather ("
+        "keibajo_code varchar, weather_date date, weather_hour integer, "
+        "temperature double, precipitation double, wind_speed double, wind_gusts double)"
+    )
+    src.execute(
+        "insert into venue_weather values ('01', date '2020-01-01', 10, 10.0, 1.0, 5.0, 9.0)"
+    )
+    src.close()
+    con = duckdb.connect(":memory:")
+    subject.materialize_venue_weather(con, tmp_path, [2020])
+    attached = con.execute(
+        "select database_name from duckdb_databases() where database_name like 'vw_%'"
+    ).fetchall()
+    assert attached == []
+
+
+def test_spill_groups_partition_spill_tables_without_gaps_or_duplicates() -> None:
+    groups = (
+        subject.SPILL_AFTER_HORSE_HISTORY
+        + subject.SPILL_AFTER_PARTNER
+        + subject.SPILL_AFTER_PEDIGREE
+        + subject.SPILL_AFTER_RACE_CONTEXT
+        + subject.SPILL_AFTER_TRACK_BIAS
+        + subject.SPILL_AFTER_WEATHER
+        + subject.SPILL_BEFORE_PARQUET
+    )
+    assert sorted(groups) == sorted(subject.SPILL_TABLES)
+    assert len(groups) == len(set(groups))
+
+
+def test_spill_before_parquet_keeps_target_until_the_end() -> None:
+    assert subject.SPILL_BEFORE_PARQUET == (
+        "target",
+        "weight_agg",
+        "recent_form",
+        "legacy_features",
+    )
+
+
+def test_spill_temp_tables_to_disk_only_spills_requested_subset(
+    tmp_path: Path,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table horse_career as select 1 as k")
+    con.execute("create table target as select 2 as k")
+    subject.spill_temp_tables_to_disk(con, tmp_path, ("horse_career",))
+    base_tables = con.execute(
+        "select table_name from information_schema.tables "
+        "where table_type = 'BASE TABLE' order by table_name"
+    ).fetchall()
+    views = con.execute(
+        "select table_name from information_schema.tables "
+        "where table_type = 'VIEW' order by table_name"
+    ).fetchall()
+    assert [r[0] for r in base_tables] == ["target"]
+    assert [r[0] for r in views] == ["horse_career"]
+    written = sorted(p.name for p in (tmp_path / "table_spill").glob("*.parquet"))
+    assert written == ["horse_career.parquet"]
+
+
+def test_parse_args_resume_and_incremental_default_false() -> None:
+    args = subject.parse_args([])
+    assert args.resume is False
+    assert args.incremental is False
+
+
+def test_parse_args_supports_resume_flag() -> None:
+    args = subject.parse_args(["--resume"])
+    assert args.resume is True
+    assert args.incremental is False
+
+
+def test_parse_args_supports_incremental_flag() -> None:
+    args = subject.parse_args(["--incremental"])
+    assert args.resume is False
+    assert args.incremental is True
+
+
+def test_checkpoint_manifest_path_is_under_table_spill(tmp_path: Path) -> None:
+    assert subject.CheckpointManifest.path(tmp_path) == tmp_path / "table_spill" / "checkpoint.json"
+
+
+def test_checkpoint_manifest_load_returns_none_when_missing(tmp_path: Path) -> None:
+    assert subject.CheckpointManifest.load(tmp_path) is None
+
+
+def test_checkpoint_manifest_load_returns_none_on_corrupt_json(tmp_path: Path) -> None:
+    manifest_path = subject.CheckpointManifest.path(tmp_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("{not valid json")
+    assert subject.CheckpointManifest.load(tmp_path) is None
+
+
+def test_checkpoint_manifest_load_returns_none_when_top_level_not_dict(tmp_path: Path) -> None:
+    manifest_path = subject.CheckpointManifest.path(tmp_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text("[1, 2, 3]")
+    assert subject.CheckpointManifest.load(tmp_path) is None
+
+
+def test_checkpoint_manifest_save_then_load_round_trips(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest(category="jra", from_date="20200101", to_date="20201231")
+    manifest.stages["source"] = subject.StageCheckpoint(
+        status="done",
+        tables=["rec.parquet"],
+        row_counts={"rec.parquet": 7},
+        query_hash="abc",
+        timestamp=12.5,
+    )
+    manifest.save(tmp_path)
+    loaded = subject.CheckpointManifest.load(tmp_path)
+    assert loaded is not None
+    assert loaded.category == "jra"
+    assert loaded.from_date == "20200101"
+    assert loaded.stages["source"].tables == ["rec.parquet"]
+    assert loaded.stages["source"].row_counts == {"rec.parquet": 7}
+    assert loaded.stages["source"].query_hash == "abc"
+
+
+def test_checkpoint_manifest_save_is_atomic_no_tmp_left_behind(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest(category="nar")
+    manifest.save(tmp_path)
+    leftovers = sorted(p.name for p in (tmp_path / "table_spill").glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_checkpoint_manifest_load_ignores_non_dict_stages(tmp_path: Path) -> None:
+    manifest_path = subject.CheckpointManifest.path(tmp_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"version": 1, "stages": ["not", "a", "dict"]}))
+    loaded = subject.CheckpointManifest.load(tmp_path)
+    assert loaded is not None
+    assert loaded.stages == {}
+
+
+def test_checkpoint_manifest_load_skips_non_dict_stage_payload(tmp_path: Path) -> None:
+    manifest_path = subject.CheckpointManifest.path(tmp_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"version": 1, "stages": {"source": "bogus", "target": {"status": "done"}}})
+    )
+    loaded = subject.CheckpointManifest.load(tmp_path)
+    assert loaded is not None
+    assert "source" not in loaded.stages
+    assert loaded.stages["target"].status == "done"
+
+
+def test_checkpoint_manifest_mark_done_writes_stage_and_persists(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    manifest.mark_done("source", ["rec.parquet"], {"rec.parquet": 3}, "hash1", tmp_path)
+    reloaded = subject.CheckpointManifest.load(tmp_path)
+    assert reloaded is not None
+    assert reloaded.stages["source"].status == "done"
+    assert reloaded.stages["source"].query_hash == "hash1"
+
+
+def test_checkpoint_manifest_invalidate_removes_stage_and_persists(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    manifest.mark_done("source", ["rec.parquet"], {"rec.parquet": 3}, "hash1", tmp_path)
+    manifest.invalidate("source", tmp_path)
+    reloaded = subject.CheckpointManifest.load(tmp_path)
+    assert reloaded is not None
+    assert "source" not in reloaded.stages
+
+
+def test_checkpoint_manifest_invalidate_absent_stage_is_noop(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    manifest.invalidate("never_recorded", tmp_path)
+    assert subject.CheckpointManifest.load(tmp_path) is None
+
+
+def test_is_stage_valid_false_when_stage_absent(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    assert manifest.is_stage_valid("source", "hash1", tmp_path) is False
+
+
+def test_is_stage_valid_false_when_status_not_done(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    manifest.stages["source"] = subject.StageCheckpoint(
+        status="pending", tables=[], row_counts={}, query_hash="hash1", timestamp=1.0
+    )
+    assert manifest.is_stage_valid("source", "hash1", tmp_path) is False
+
+
+def test_is_stage_valid_false_when_hash_mismatch(tmp_path: Path) -> None:
+    (tmp_path / "rec.parquet").write_text("x")
+    manifest = subject.CheckpointManifest()
+    manifest.stages["source"] = subject.StageCheckpoint(
+        status="done", tables=["rec.parquet"], row_counts={}, query_hash="old", timestamp=1.0
+    )
+    assert manifest.is_stage_valid("source", "new", tmp_path) is False
+
+
+def test_is_stage_valid_false_when_parquet_missing(tmp_path: Path) -> None:
+    manifest = subject.CheckpointManifest()
+    manifest.stages["source"] = subject.StageCheckpoint(
+        status="done", tables=["rec.parquet"], row_counts={}, query_hash="hash1", timestamp=1.0
+    )
+    assert manifest.is_stage_valid("source", "hash1", tmp_path) is False
+
+
+def test_is_stage_valid_true_when_done_hash_matches_files_present(tmp_path: Path) -> None:
+    (tmp_path / "rec.parquet").write_text("x")
+    (tmp_path / "jra_se.parquet").write_text("x")
+    manifest = subject.CheckpointManifest()
+    manifest.stages["source"] = subject.StageCheckpoint(
+        status="done",
+        tables=["rec.parquet", "jra_se.parquet"],
+        row_counts={},
+        query_hash="hash1",
+        timestamp=1.0,
+    )
+    assert manifest.is_stage_valid("source", "hash1", tmp_path) is True
+
+
+def test_build_target_fingerprint_differs_by_category() -> None:
+    jra = subject.build_target_fingerprint("jra")
+    nar = subject.build_target_fingerprint("nar")
+    assert jra != nar
+
+
+def test_compute_stage_hash_is_deterministic() -> None:
+    first = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
+    second = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
+    assert first == second
+
+
+def test_compute_stage_hash_changes_with_category() -> None:
+    jra = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
+    nar = subject.compute_stage_hash("source", "nar", "20200101", "20201231", [2020])
+    assert jra != nar
+
+
+def test_compute_stage_hash_changes_with_years() -> None:
+    one = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
+    two = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020, 2021])
+    assert one != two
+
+
+def test_compute_stage_hash_changes_with_date_window() -> None:
+    early = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
+    late = subject.compute_stage_hash("source", "jra", "20210101", "20211231", [2020])
+    assert early != late
+
+
+def test_compute_stage_hash_changes_with_extra() -> None:
+    without = subject.compute_stage_hash("weather_lookup", "jra", "20200101", "20201231", [2020])
+    with_dir = subject.compute_stage_hash(
+        "weather_lookup", "jra", "20200101", "20201231", [2020], "/vw"
+    )
+    assert without != with_dir
+
+
+def test_compute_stage_hash_differs_per_stage() -> None:
+    source = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
+    target = subject.compute_stage_hash("target", "jra", "20200101", "20201231", [2020])
+    pedigree = subject.compute_stage_hash("pedigree", "jra", "20200101", "20201231", [2020])
+    assert len({source, target, pedigree}) == 3
+
+
+def test_stage_sql_fingerprint_covers_every_known_stage() -> None:
+    seen = {
+        subject._stage_sql_fingerprint(stage, "jra", None)
+        for stage in subject.CHECKPOINT_STAGE_ORDER
+    }
+    assert len(seen) == len(subject.CHECKPOINT_STAGE_ORDER)
+
+
+def test_stage_sql_fingerprint_unknown_stage_returns_name() -> None:
+    assert subject._stage_sql_fingerprint("mystery_stage", "jra", None) == "mystery_stage"
+
+
+def test_stage_sql_fingerprint_horse_history_includes_base_select() -> None:
+    fingerprint = subject._stage_sql_fingerprint("horse_history_derived", "jra", None)
+    assert subject.HORSE_HISTORY_BASE_SELECT in fingerprint
+
+
+def test_stage_sql_fingerprint_partner_includes_jockey_and_trainer() -> None:
+    fingerprint = subject._stage_sql_fingerprint("partner_features", "jra", None)
+    assert "jockey_career" in fingerprint
+    assert "trainer_career" in fingerprint
+
+
+def test_stage_sql_fingerprint_pedigree_includes_target_pedigree() -> None:
+    fingerprint = subject._stage_sql_fingerprint("pedigree", "jra", None)
+    assert "target_pedigree" in fingerprint
+
+
+def test_stage_sql_fingerprint_weather_reflects_venue_presence() -> None:
+    without = subject._stage_sql_fingerprint("weather_lookup", "jra", None)
+    with_dir = subject._stage_sql_fingerprint("weather_lookup", "jra", Path("/vw"))
+    assert without != with_dir
+
+
+def test_spilled_table_files_appends_parquet_suffix() -> None:
+    assert subject.spilled_table_files(Path("/tmp"), ("target", "rec")) == [
+        "target.parquet",
+        "rec.parquet",
+    ]
+
+
+def test_spilled_row_counts_reports_per_table_counts() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table target as select * from (values (1), (2), (3)) t(x)")
+    con.execute("create table rec as select * from (values (1)) t(x)")
+    counts = subject.spilled_row_counts(con, ("target", "rec"))
+    assert counts == {"target.parquet": 3, "rec.parquet": 1}
+
+
+def test_restore_stage_from_spill_creates_views_and_returns_true(tmp_path: Path) -> None:
+    import duckdb
+
+    writer = duckdb.connect()
+    writer.execute("create table horse_career as select 11 as k")
+    parquet_path = (tmp_path / "horse_career.parquet").as_posix()
+    writer.execute(f"copy horse_career to '{parquet_path}' (format parquet)")
+    writer.close()
+    con = duckdb.connect()
+    checkpoint = subject.StageCheckpoint(
+        status="done",
+        tables=["horse_career.parquet"],
+        row_counts={"horse_career.parquet": 1},
+        query_hash="h",
+        timestamp=1.0,
+    )
+    restored = subject.restore_stage_from_spill(con, "horse_history_derived", checkpoint, tmp_path)
+    assert restored is True
+    row = con.execute("select k from horse_career").fetchone()
+    assert row == (11,)
+
+
+def test_restore_stage_from_spill_returns_false_when_file_missing(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    checkpoint = subject.StageCheckpoint(
+        status="done",
+        tables=["absent.parquet"],
+        row_counts={},
+        query_hash="h",
+        timestamp=1.0,
+    )
+    assert subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+
+
+def test_restore_stage_from_spill_returns_false_when_parquet_unreadable(tmp_path: Path) -> None:
+    import duckdb
+
+    bad_path = tmp_path / "horse_career.parquet"
+    bad_path.write_text("this is not parquet")
+    con = duckdb.connect()
+    checkpoint = subject.StageCheckpoint(
+        status="done",
+        tables=["horse_career.parquet"],
+        row_counts={},
+        query_hash="h",
+        timestamp=1.0,
+    )
+    assert subject.restore_stage_from_spill(con, "source", checkpoint, tmp_path) is False
+
+
+def test_drop_view_or_table_drops_a_view() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create view target as select 1 as x")
+    subject.drop_view_or_table(con, "target")
+    remaining = con.execute(
+        "select count(*) from information_schema.tables where table_name = 'target'"
+    ).fetchone()
+    assert remaining == (0,)
+
+
+def test_drop_view_or_table_drops_a_base_table() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table jra_se as select 1 as x")
+    subject.drop_view_or_table(con, "jra_se")
+    remaining = con.execute(
+        "select count(*) from information_schema.tables where table_name = 'jra_se'"
+    ).fetchone()
+    assert remaining == (0,)
+
+
+def test_drop_view_or_table_drops_a_temp_table() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create temp table horse_history_base as select 1 as x")
+    subject.drop_view_or_table(con, "horse_history_base")
+    remaining = con.execute(
+        "select count(*) from information_schema.tables where table_name = 'horse_history_base'"
+    ).fetchone()
+    assert remaining == (0,)
+
+
+def test_drop_view_or_table_noop_when_absent() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    subject.drop_view_or_table(con, "never_created")
+    remaining = con.execute(
+        "select count(*) from information_schema.tables where table_name = 'never_created'"
+    ).fetchone()
+    assert remaining == (0,)
+
+
+def test_target_rows_from_target_counts_rows() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table target as select * from (values (1), (2)) t(x)")
+    assert subject.target_rows_from_target(con) == 2
+
+
+def test_extract_years_from_target_reads_distinct_race_years() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create table target as select * from (values (2020), (2020), (2021)) t(race_year)"
+    )
+    assert subject.extract_years_from_target(con) == [2020, 2021]
+
+
+def test_controller_should_skip_false_when_inactive(tmp_path: Path) -> None:
+    controller = subject.CheckpointController(
+        active=False,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.manifest.stages["source"] = subject.StageCheckpoint(
+        status="done", tables=[], row_counts={}, query_hash="ignored", timestamp=1.0
+    )
+    assert controller.should_skip("source", []) is False
+
+
+def test_controller_should_skip_true_when_valid(tmp_path: Path) -> None:
+    spill_dir = tmp_path / "table_spill"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    (spill_dir / "target.parquet").write_text("x")
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=spill_dir,
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    valid_hash = controller.stage_hash("target", [2020])
+    controller.manifest.stages["target"] = subject.StageCheckpoint(
+        status="done",
+        tables=["target.parquet"],
+        row_counts={"target.parquet": 1},
+        query_hash=valid_hash,
+        timestamp=1.0,
+    )
+    assert controller.should_skip("target", [2020]) is True
+
+
+def test_controller_spill_and_record_is_noop_when_inactive(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table target as select 1 as x")
+    controller = subject.CheckpointController(
+        active=False,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.spill_and_record(con, "target", [2020])
+    assert subject.CheckpointManifest.load(tmp_path) is None
+    base_tables = con.execute(
+        "select count(*) from information_schema.tables "
+        "where table_name = 'target' and table_type = 'BASE TABLE'"
+    ).fetchone()
+    assert base_tables == (1,)
+
+
+def test_controller_spill_and_record_spills_and_writes_manifest(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create table target as select * from (values (1), (2)) t(x)")
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.spill_and_record(con, "target", [2020])
+    reloaded = subject.CheckpointManifest.load(tmp_path)
+    assert reloaded is not None
+    assert reloaded.stages["target"].tables == ["target.parquet"]
+    assert reloaded.stages["target"].row_counts == {"target.parquet": 2}
+    view_rows = con.execute(
+        "select table_type from information_schema.tables where table_name = 'target'"
+    ).fetchone()
+    assert view_rows == ("VIEW",)
+
+
+def test_controller_try_restore_false_when_skip_false(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    assert controller.try_restore(con, "target", [2020]) is False
+
+
+def test_controller_try_restore_true_when_spill_present(tmp_path: Path) -> None:
+    import duckdb
+
+    spill_dir = tmp_path / "table_spill"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    writer = duckdb.connect()
+    writer.execute("create table target as select 5 as race_year")
+    writer.execute(f"copy target to '{(spill_dir / 'target.parquet').as_posix()}' (format parquet)")
+    writer.close()
+    con = duckdb.connect()
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=spill_dir,
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    valid_hash = controller.stage_hash("target", [2020])
+    controller.manifest.stages["target"] = subject.StageCheckpoint(
+        status="done",
+        tables=["target.parquet"],
+        row_counts={"target.parquet": 1},
+        query_hash=valid_hash,
+        timestamp=1.0,
+    )
+    assert controller.try_restore(con, "target", [2020]) is True
+    row = con.execute("select race_year from target").fetchone()
+    assert row == (5,)
+
+
+def test_controller_try_restore_invalidates_when_file_vanished(tmp_path: Path) -> None:
+    import duckdb
+
+    spill_dir = tmp_path / "table_spill"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect()
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=spill_dir,
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    valid_hash = controller.stage_hash("target", [2020])
+    controller.manifest.stages["target"] = subject.StageCheckpoint(
+        status="done",
+        tables=["target.parquet"],
+        row_counts={"target.parquet": 1},
+        query_hash=valid_hash,
+        timestamp=1.0,
+    )
+    monkey_patched = pytest.MonkeyPatch()
+    monkey_patched.setattr(controller.manifest, "is_stage_valid", lambda *_a, **_k: True)
+    assert controller.try_restore(con, "target", [2020]) is False
+    monkey_patched.undo()
+    assert "target" not in controller.manifest.stages
+
+
+def test_controller_cascade_invalidate_noop_when_not_incremental(tmp_path: Path) -> None:
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=False,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.manifest.stages["pedigree"] = subject.StageCheckpoint(
+        status="done", tables=[], row_counts={}, query_hash="h", timestamp=1.0
+    )
+    controller.cascade_invalidate_from("source")
+    assert "pedigree" in controller.manifest.stages
+
+
+def test_controller_cascade_invalidate_drops_downstream_when_incremental(tmp_path: Path) -> None:
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=True,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.manifest.stages["source"] = subject.StageCheckpoint(
+        status="done", tables=[], row_counts={}, query_hash="h", timestamp=1.0
+    )
+    controller.manifest.stages["pedigree"] = subject.StageCheckpoint(
+        status="done", tables=[], row_counts={}, query_hash="h", timestamp=1.0
+    )
+    controller.cascade_invalidate_from("target")
+    assert "source" in controller.manifest.stages
+    assert "pedigree" not in controller.manifest.stages
+
+
+def test_controller_cascade_invalidate_unknown_stage_is_noop(tmp_path: Path) -> None:
+    controller = subject.CheckpointController(
+        active=True,
+        incremental=True,
+        manifest=subject.CheckpointManifest(),
+        temp_dir=tmp_path,
+        spill_dir=tmp_path / "table_spill",
+        category="jra",
+        from_date="20200101",
+        to_date="20201231",
+        venue_weather_extra="",
+    )
+    controller.manifest.stages["pedigree"] = subject.StageCheckpoint(
+        status="done", tables=[], row_counts={}, query_hash="h", timestamp=1.0
+    )
+    controller.cascade_invalidate_from("not_a_real_stage")
+    assert "pedigree" in controller.manifest.stages
+
+
+def test_make_checkpoint_controller_inactive_without_flags(tmp_path: Path) -> None:
+    args = subject.parse_args(["--temp-dir", str(tmp_path)])
+    controller = subject.make_checkpoint_controller(args)
+    assert controller.active is False
+    assert controller.incremental is False
+
+
+def test_make_checkpoint_controller_active_with_resume(tmp_path: Path) -> None:
+    args = subject.parse_args(["--resume", "--temp-dir", str(tmp_path)])
+    controller = subject.make_checkpoint_controller(args)
+    assert controller.active is True
+    assert controller.incremental is False
+    assert controller.temp_dir == tmp_path
+
+
+def test_make_checkpoint_controller_active_with_incremental(tmp_path: Path) -> None:
+    args = subject.parse_args(["--incremental", "--temp-dir", str(tmp_path)])
+    controller = subject.make_checkpoint_controller(args)
+    assert controller.active is True
+    assert controller.incremental is True
+
+
+def test_make_checkpoint_controller_defaults_temp_dir_when_none() -> None:
+    args = subject.parse_args(["--resume"])
+    controller = subject.make_checkpoint_controller(args)
+    assert controller.temp_dir == Path("/tmp/duckdb-spill")
+
+
+def test_make_checkpoint_controller_loads_existing_manifest(tmp_path: Path) -> None:
+    seed = subject.CheckpointManifest(category="old")
+    seed.stages["source"] = subject.StageCheckpoint(
+        status="done", tables=["rec.parquet"], row_counts={}, query_hash="h", timestamp=1.0
+    )
+    seed.save(tmp_path)
+    args = subject.parse_args(["--resume", "--category", "jra", "--temp-dir", str(tmp_path)])
+    controller = subject.make_checkpoint_controller(args)
+    assert "source" in controller.manifest.stages
+    assert controller.manifest.category == "jra"
+
+
+def test_make_checkpoint_controller_records_venue_weather_extra(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        ["--resume", "--temp-dir", str(tmp_path), "--venue-weather-dir", str(tmp_path / "vw")]
+    )
+    controller = subject.make_checkpoint_controller(args)
+    assert controller.venue_weather_extra == (tmp_path / "vw").as_posix()
+
+
+def test_checkpoint_stage_tables_partition_all_intermediate_tables() -> None:
+    owned: list[str] = []
+    for stage in subject.CHECKPOINT_STAGE_ORDER:
+        owned.extend(subject.CHECKPOINT_STAGE_TABLES.get(stage, ()))
+    intermediate = [t for t in subject.SPILL_TABLES]
+    assert sorted(t for t in owned if t in intermediate) == sorted(intermediate)
