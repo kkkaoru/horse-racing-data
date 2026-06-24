@@ -14,7 +14,15 @@ import type {
   RaceTrendDailyTrackRow,
 } from "horse-racing-realtime/race-trend-daily-track-types";
 
-const DO_ENDPOINT = "https://internal/race-trend-daily-track";
+// Service-binding internal endpoint. `https://internal` is a sentinel host
+// (only the pathname / query reach the bound `sync-realtime-data` worker), and
+// the pathname MUST be `/internal/race-trend-daily-track` to match the
+// `raceTrendDailyTrackQueryFromRequest` route gate in worker.ts. The previous
+// `https://internal/race-trend-daily-track` rendered pathname
+// `/race-trend-daily-track` (no `/internal/` prefix), the worker returned 404,
+// and every viewer DO call silently demoted to the D1 legacy fallback — which
+// hid the DO-primary cache contract for today-sibling finish positions.
+const DO_ENDPOINT = "https://internal/internal/race-trend-daily-track";
 const DO_RESPONSE_HEADER = "X-Race-Trend-DO";
 const DO_HIT_HEADER_VALUE = "hit";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-trend-do-cache/";

@@ -123,7 +123,7 @@ it("fetchRaceTrendDailyTrack returns hit when DO header is hit and rows are popu
   ]);
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock).toHaveBeenCalledWith(
-    "https://internal/race-trend-daily-track?source=jra&ymd=20260530&keibajo=05&beforeRaceBango=03",
+    "https://internal/internal/race-trend-daily-track?source=jra&ymd=20260530&keibajo=05&beforeRaceBango=03",
   );
 });
 
@@ -286,6 +286,26 @@ it("fetchRaceTrendDailyTrack short-circuits to the cached value on the second ca
     },
   ]);
   expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("fetchRaceTrendDailyTrack targets the worker /internal/race-trend-daily-track pathname (matches raceTrendDailyTrackQueryFromRequest gate)", async () => {
+  const fetchMock = vi.fn<ServiceFetch>(async () =>
+    Promise.resolve(buildHitResponse([buildRow("01")])),
+  );
+  await fetchRaceTrendDailyTrack(
+    { REALTIME_DATA: { fetch: fetchMock } },
+    {
+      beforeRaceBango: "05",
+      keibajoCode: "50",
+      source: "nar",
+      targetYmd: "20260624",
+    },
+  );
+  const firstCallInput = fetchMock.mock.calls[0]?.[0];
+  if (typeof firstCallInput !== "string") {
+    throw new Error("expected service binding fetch to be invoked with a string URL");
+  }
+  expect(new URL(firstCallInput).pathname).toBe("/internal/race-trend-daily-track");
 });
 
 it("fetchRaceTrendDailyTrack reissues the service binding fetch when keibajoCode differs (cache key is venue-scoped)", async () => {
