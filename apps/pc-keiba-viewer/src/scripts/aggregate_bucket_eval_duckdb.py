@@ -83,6 +83,9 @@ BUCKET_INSERT_COLUMNS: tuple[str, ...] = (
     "place1_hit_sum",
     "place2_hit_sum",
     "place3_hit_sum",
+    "place4_hit_sum",
+    "place5_hit_sum",
+    "place6_hit_sum",
     "top3_box_hit_sum",
     "top3_exact_hit_sum",
     "top3_winner_capture_sum",
@@ -166,6 +169,9 @@ SUBGROUP_INSERT_COLUMNS: tuple[str, ...] = (
     "place1_hit_sum",
     "place2_hit_sum",
     "place3_hit_sum",
+    "place4_hit_sum",
+    "place5_hit_sum",
+    "place6_hit_sum",
     "top3_box_hit_sum",
     "top3_exact_hit_sum",
     "top3_winner_capture_sum",
@@ -341,6 +347,22 @@ SUBGROUP_DIMENSION_NAMES: tuple[str, ...] = (
     "venue",
 )
 
+# Multi-dimensional cross-tabulation subgroups. Each tuple is a combination of base
+# subgroup dimensions whose per-race values are concatenated with a U+00D7 (×) separator
+# into a single compound (subgroup_dimension, subgroup_value) pair (e.g.
+# "class_code×season_band" / "010×spring"). The cross rows write into the SAME subgroup
+# table so the metric math reuses SHARED_METRIC_SELECT_FIELDS verbatim.
+CROSS_SUBGROUP_DIMENSIONS: tuple[tuple[str, ...], ...] = (
+    ("class_code", "season_band"),
+    ("class_code", "surface"),
+    ("class_code", "distance_band"),
+    ("class_code", "season_band", "surface"),
+    ("class_code", "season_band", "distance_band"),
+)
+
+# U+00D7 multiplication sign — joins the cross dimension names and values.
+CROSS_DIMENSION_SEPARATOR = "×"
+
 
 def build_distance_band_case_sql(kyori_column: str) -> str:
     """distance_band CASE, mirroring classify_distance_band: NULL→NULL, <=1400 sprint,
@@ -510,6 +532,9 @@ def build_shared_cte_prefix(args: AggregateArgs) -> str:
              max(case when predicted_rank = 1 and finish_position = 1 then 1 else 0 end) place1_hit,
              max(case when predicted_rank = 2 and finish_position = 2 then 1 else 0 end) place2_hit,
              max(case when predicted_rank = 3 and finish_position = 3 then 1 else 0 end) place3_hit,
+             max(case when predicted_rank = 4 and finish_position = 4 then 1 else 0 end) place4_hit,
+             max(case when predicted_rank = 5 and finish_position = 5 then 1 else 0 end) place5_hit,
+             max(case when predicted_rank = 6 and finish_position = 6 then 1 else 0 end) place6_hit,
              max(case when predicted_rank <= 3 and finish_position = 1 then 1 else 0 end) top3_winner_capture_hit,
              max(case when predicted_rank <= 5 and finish_position = 1 then 1 else 0 end) top5_winner_capture_hit,
              sum(case when predicted_rank <= 3 and finish_position <= 3 then 1.0 else 0.0 end) / 3.0 top3_place_relation_val,
@@ -551,7 +576,7 @@ def build_shared_cte_prefix(args: AggregateArgs) -> str:
     )"""
 
 
-# The 15 metric SELECT fields (race_count + 14 sums), reused VERBATIM by both the bucket
+# The 18 metric SELECT fields (race_count + 17 sums), reused VERBATIM by both the bucket
 # and subgroup aggregates so the math can never drift. Aliases pr/pp/nd are bound by the
 # shared per_race / pair_per_race / ndcg_per_race CTEs in build_shared_cte_prefix.
 SHARED_METRIC_SELECT_FIELDS = """count(*) race_count,
@@ -560,6 +585,9 @@ SHARED_METRIC_SELECT_FIELDS = """count(*) race_count,
       coalesce(sum(cast(pr.place1_hit as double)), 0) place1_hit_sum,
       coalesce(sum(cast(pr.place2_hit as double)), 0) place2_hit_sum,
       coalesce(sum(cast(pr.place3_hit as double)), 0) place3_hit_sum,
+      coalesce(sum(cast(pr.place4_hit as double)), 0) place4_hit_sum,
+      coalesce(sum(cast(pr.place5_hit as double)), 0) place5_hit_sum,
+      coalesce(sum(cast(pr.place6_hit as double)), 0) place6_hit_sum,
       coalesce(sum(cast(pr.top3_box_hit as double)), 0) top3_box_hit_sum,
       coalesce(sum(cast(pr.top3_exact_hit as double)), 0) top3_exact_hit_sum,
       coalesce(sum(cast(pr.top3_winner_capture_hit as double)), 0) top3_winner_capture_sum,
@@ -579,9 +607,9 @@ SHARED_METRIC_JOIN_TAIL = """join per_race pr using (source, kaisai_nen, kaisai_
 def build_bucket_aggregate_sql(args: AggregateArgs) -> str:
     """DuckDB bucket aggregate, byte-equivalent in semantics to buildBucketAggregateSql.
 
-    The first 24 SELECT fields (9 bucket dims + the 15 shared metrics) are unchanged; the
-    4 subgroup columns (distance_band, field_size_band, season_band, class_code) are APPENDED
-    after the 15th metric so compute_global_rollup's positional indices 0-23 are untouched.
+    The first 27 SELECT fields (9 bucket dims + the 18 shared metrics) are followed by the
+    4 subgroup columns (distance_band, field_size_band, season_band, class_code) APPENDED
+    after the 18th metric so compute_global_rollup's positional indices 0-26 stay aligned.
 
     Only distance_band and class_code are single-valued at the existing bucket grain (kyori
     and kyoso_joken_code are already in the GROUP BY), so they are emitted via ``any_value``
@@ -673,6 +701,63 @@ def build_subgroup_aggregate_sql(args: AggregateArgs) -> str:
   """
 
 
+def build_cross_subgroup_aggregate_sql(args: AggregateArgs) -> str:
+    """DuckDB cross-tabulation subgroup aggregate (multi-dimensional subgroup rollups).
+
+    For each combination in CROSS_SUBGROUP_DIMENSIONS, concatenates the per-race base
+    subgroup values with a U+00D7 (×) separator into one compound
+    (subgroup_dimension, subgroup_value) pair (e.g. "class_code×season_band" /
+    "010×spring"), drops races where any component band is NULL, and rolls up the IDENTICAL
+    18 metric expressions as build_subgroup_aggregate_sql (both reuse build_shared_cte_prefix
+    / SHARED_METRIC_SELECT_FIELDS), so the metric math is byte-identical. The result has the
+    same 21-field shape (source, subgroup_dimension, subgroup_value, 18 metrics) as
+    build_subgroup_aggregate_sql, so build_subgroup_upsert_row / the subgroup upsert path
+    accept these rows unchanged. Cross rows write into the SAME subgroup table.
+    """
+    is_banei = args["category"] == CATEGORY_BAN_EI
+    class_code_expr = (
+        "null::text" if is_banei else f"nullif(trim(d.kyoso_joken_code, {ASCII_SPACE_TRIM_CHARS}), '')"
+    )
+    distance_band_expr = build_distance_band_case_sql("d.kyori")
+    field_size_band_expr = build_field_size_band_case_sql("d.shusso_tosu")
+    season_band_expr = build_season_band_case_sql("d.kaisai_tsukihi")
+    surface_expr = build_surface_case_sql("d.track_code")
+    dim_exprs = {
+        "class_code": class_code_expr,
+        "season_band": season_band_expr,
+        "surface": surface_expr,
+        "distance_band": distance_band_expr,
+        "field_size_band": field_size_band_expr,
+        "venue": "d.keibajo_code",
+    }
+    cross_queries: list[str] = []
+    for combo in CROSS_SUBGROUP_DIMENSIONS:
+        dimension_name = CROSS_DIMENSION_SEPARATOR.join(combo)
+        val_parts = f" || '{CROSS_DIMENSION_SEPARATOR}' || ".join(dim_exprs[name] for name in combo)
+        null_checks = " and ".join(f"({dim_exprs[name]}) is not null" for name in combo)
+        cross_queries.append(
+            f"""      select d.source, d.kaisai_nen, d.kaisai_tsukihi, d.keibajo_code, d.race_bango,
+             '{dimension_name}' as cross_dimension,
+             {val_parts} as cross_value
+      from race_dims d
+      where {null_checks}"""
+        )
+    cross_union = "\n      union all\n".join(cross_queries)
+    return f"""{build_shared_cte_prefix(args)},
+    race_cross_subgroups as (
+{cross_union}
+    )
+    select
+      d.source,
+      d.cross_dimension as subgroup_dimension,
+      d.cross_value as subgroup_value,
+      {SHARED_METRIC_SELECT_FIELDS}
+    from race_cross_subgroups d
+    {SHARED_METRIC_JOIN_TAIL}
+    group by d.source, d.cross_dimension, d.cross_value
+  """
+
+
 def build_bucket_evaluations_ddl() -> str:
     """CREATE TABLE/INDEX IF NOT EXISTS for the per-bucket table (DDL only)."""
     unique_cols = ", ".join(BUCKET_CONFLICT_COLUMNS)
@@ -704,6 +789,9 @@ def build_bucket_evaluations_ddl() -> str:
       place1_hit_sum                numeric not null,
       place2_hit_sum                numeric not null,
       place3_hit_sum                numeric not null,
+      place4_hit_sum                numeric not null,
+      place5_hit_sum                numeric not null,
+      place6_hit_sum                numeric not null,
       top3_box_hit_sum              numeric not null,
       top3_exact_hit_sum            numeric not null,
       top3_winner_capture_sum       numeric not null,
@@ -730,6 +818,9 @@ def build_bucket_evaluations_ddl() -> str:
     alter table {BUCKET_TABLE} add column if not exists field_size_band text;
     alter table {BUCKET_TABLE} add column if not exists season_band text;
     alter table {BUCKET_TABLE} add column if not exists class_code text;
+    alter table {BUCKET_TABLE} add column if not exists place4_hit_sum numeric;
+    alter table {BUCKET_TABLE} add column if not exists place5_hit_sum numeric;
+    alter table {BUCKET_TABLE} add column if not exists place6_hit_sum numeric;
   """
 
 
@@ -836,6 +927,9 @@ def build_subgroup_evaluations_ddl() -> str:
       place1_hit_sum          numeric not null,
       place2_hit_sum          numeric not null,
       place3_hit_sum          numeric not null,
+      place4_hit_sum          numeric not null,
+      place5_hit_sum          numeric not null,
+      place6_hit_sum          numeric not null,
       top3_box_hit_sum        numeric not null,
       top3_exact_hit_sum      numeric not null,
       top3_winner_capture_sum numeric not null,
@@ -851,6 +945,9 @@ def build_subgroup_evaluations_ddl() -> str:
       on {SUBGROUP_TABLE} ({unique_cols});
     create index if not exists {SUBGROUP_TABLE}_lookup
       on {SUBGROUP_TABLE} ({lookup_cols});
+    alter table {SUBGROUP_TABLE} add column if not exists place4_hit_sum numeric;
+    alter table {SUBGROUP_TABLE} add column if not exists place5_hit_sum numeric;
+    alter table {SUBGROUP_TABLE} add column if not exists place6_hit_sum numeric;
   """
 
 
@@ -910,8 +1007,8 @@ def build_bucket_upsert_row(
     """Prepend the version / window dimensions to a DuckDB aggregate row.
 
     ``aggregate_row`` is exactly the column order of build_bucket_aggregate_sql:
-    9 bucket dims + 15 metrics + 4 appended subgroup columns = 28 fields. The upsert tuple
-    is 34 fields (6 prepended version/window dims + 28).
+    9 bucket dims + 18 metrics + 4 appended subgroup columns = 31 fields. The upsert tuple
+    is 37 fields (6 prepended version/window dims + 31).
     """
     return (
         model_version,
@@ -935,8 +1032,8 @@ def build_subgroup_upsert_row(
     """Prepend the model-version / window dimensions to a DuckDB subgroup aggregate row.
 
     ``aggregate_row`` is exactly the column order of build_subgroup_aggregate_sql:
-    (source, subgroup_dimension, subgroup_value, 15 metrics) = 18 fields. The upsert tuple
-    is 22 fields (4 prepended dims + 18), matching SUBGROUP_INSERT_COLUMNS; evaluated_at is
+    (source, subgroup_dimension, subgroup_value, 18 metrics) = 21 fields. The upsert tuple
+    is 25 fields (4 prepended dims + 21), matching SUBGROUP_INSERT_COLUMNS; evaluated_at is
     supplied inline via now() in build_subgroup_upsert_sql.
     """
     return (
@@ -952,7 +1049,9 @@ def compute_global_rollup(rows: list[tuple[object, ...]]) -> GlobalRollup:
     """Roll the per-bucket sums up to one global row, matching buildGlobalRollupSql.
 
     Indices into the aggregate row: race_count=9, prediction_count=10,
-    top1_hit_sum=11 .. ndcg_at_3_race_count=23 (see build_bucket_aggregate_sql).
+    top1_hit_sum=11 .. ndcg_at_3_race_count=26 (see build_bucket_aggregate_sql).
+    The place4/5/6_hit_sum columns occupy indices 15-17 (after place3 at 14), shifting
+    top3_box .. ndcg_at_3_race_count up by 3 (top3_box=18 .. ndcg_at_3_race_count=26).
     """
     race_count = sum(coerce_int(row[9]) for row in rows)
     prediction_count = sum(coerce_int(row[10]) for row in rows)
@@ -960,15 +1059,15 @@ def compute_global_rollup(rows: list[tuple[object, ...]]) -> GlobalRollup:
     place1 = sum(coerce_float(row[12]) for row in rows)
     place2 = sum(coerce_float(row[13]) for row in rows)
     place3 = sum(coerce_float(row[14]) for row in rows)
-    top3_box = sum(coerce_float(row[15]) for row in rows)
-    top3_exact = sum(coerce_float(row[16]) for row in rows)
-    top3_winner = sum(coerce_float(row[17]) for row in rows)
-    top5_winner = sum(coerce_float(row[18]) for row in rows)
-    top3_place_rel = sum(coerce_float(row[19]) for row in rows)
-    pair_sum = sum(coerce_float(row[20]) for row in rows)
-    pair_count = sum(coerce_int(row[21]) for row in rows)
-    ndcg_sum = sum(coerce_float(row[22]) for row in rows)
-    ndcg_count = sum(coerce_int(row[23]) for row in rows)
+    top3_box = sum(coerce_float(row[18]) for row in rows)
+    top3_exact = sum(coerce_float(row[19]) for row in rows)
+    top3_winner = sum(coerce_float(row[20]) for row in rows)
+    top5_winner = sum(coerce_float(row[21]) for row in rows)
+    top3_place_rel = sum(coerce_float(row[22]) for row in rows)
+    pair_sum = sum(coerce_float(row[23]) for row in rows)
+    pair_count = sum(coerce_int(row[24]) for row in rows)
+    ndcg_sum = sum(coerce_float(row[25]) for row in rows)
+    ndcg_count = sum(coerce_int(row[26]) for row in rows)
 
     def per_race(value: float) -> float | None:
         return value / race_count if race_count > 0 else None
@@ -1132,6 +1231,31 @@ def aggregate_subgroup_category_year(
     return list(duck.execute(sql).fetchall())
 
 
+def aggregate_cross_subgroup_category_year(
+    duck: DuckdbConnection,
+    *,
+    predictions_glob: str,
+    model_version: str,
+    category: str,
+    year: int,
+    running_style_feature_version: str,
+    finish_position_version: str,
+) -> list[tuple[object, ...]]:
+    from_date, to_date = build_year_window(year)
+    sql = build_cross_subgroup_aggregate_sql(
+        to_aggregate_args(
+            predictions_glob=predictions_glob,
+            model_version=model_version,
+            category=category,
+            from_date=from_date,
+            to_date=to_date,
+            running_style_feature_version=running_style_feature_version,
+            finish_position_version=finish_position_version,
+        )
+    )
+    return list(duck.execute(sql).fetchall())
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="aggregate_bucket_eval_duckdb")
     parser.add_argument("--predictions-glob", type=str, required=True)
@@ -1145,6 +1269,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--model-version-banei", type=str, default=DEFAULT_MODEL_VERSIONS[CATEGORY_BAN_EI]
     )
     parser.add_argument("--threads", type=int, default=15)
+    parser.add_argument("--include-cross-subgroups", action="store_true", default=False)
     return parser.parse_args(argv)
 
 
@@ -1211,6 +1336,8 @@ def collect_category(
     duck: DuckdbConnection,
     args: argparse.Namespace,
     category: str,
+    *,
+    include_cross_subgroups: bool = False,
 ) -> CategoryCollection:
     meta = resolve_category_meta(category)
     model_version = resolve_model_version(args, category)
@@ -1260,6 +1387,26 @@ def collect_category(
             )
             for row in subgroup_rows
         )
+        if include_cross_subgroups:
+            cross_rows = aggregate_cross_subgroup_category_year(
+                duck,
+                predictions_glob=str(args.predictions_glob),
+                model_version=model_version,
+                category=category,
+                year=year,
+                running_style_feature_version=str(args.running_style_feature_version),
+                finish_position_version=str(args.finish_position_version),
+            )
+            subgroup_upsert_rows.extend(
+                build_subgroup_upsert_row(
+                    aggregate_row=row,
+                    model_version=model_version,
+                    category=category,
+                    window_from=from_date,
+                    window_to=to_date,
+                )
+                for row in cross_rows
+            )
     plan_from, plan_to = build_plan_window(meta["years"])
     rollup = compute_global_rollup(all_aggregate_rows)
     global_row = build_global_upsert_row(
@@ -1284,12 +1431,15 @@ def run_aggregation(
 ) -> AggregateResult:
     duck = connect_duckdb(str(args.local_pg_url), int(args.threads))
     categories = (CATEGORY_JRA, CATEGORY_NAR, CATEGORY_BAN_EI)
+    include_cross_subgroups = bool(args.include_cross_subgroups)
     bucket_rows: list[tuple[object, ...]] = []
     subgroup_rows: list[tuple[object, ...]] = []
     global_rows: list[tuple[object, ...]] = []
     try:
         for category in categories:
-            collection = collect_category(duck, args, category)
+            collection = collect_category(
+                duck, args, category, include_cross_subgroups=include_cross_subgroups
+            )
             bucket_rows.extend(collection["bucket_rows"])
             subgroup_rows.extend(collection["subgroup_rows"])
             global_rows.append(collection["global_row"])

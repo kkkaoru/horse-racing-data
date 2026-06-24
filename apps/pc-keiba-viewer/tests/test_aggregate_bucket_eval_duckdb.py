@@ -167,11 +167,12 @@ def test_build_bucket_upsert_sql_sets_metric_columns_only():
     assert "evaluated_at = now()" in sql
 
 
-def test_build_bucket_upsert_sql_has_thirty_placeholders_plus_now():
-    # 30 -> 34: the 4 appended subgroup columns (distance_band, field_size_band,
-    # season_band, class_code) joined BUCKET_INSERT_COLUMNS, adding 4 placeholders.
+def test_build_bucket_upsert_sql_has_thirtyseven_placeholders_plus_now():
+    # 34 -> 37: the 3 new place4/5/6_hit_sum columns joined BUCKET_INSERT_COLUMNS, adding
+    # 3 placeholders on top of the 34 prior columns (which already included the 4 appended
+    # subgroup columns distance_band, field_size_band, season_band, class_code).
     sql = subject.build_bucket_upsert_sql()
-    assert "values (" + ", ".join(["%s"] * 34) + ", now())" in sql
+    assert "values (" + ", ".join(["%s"] * 37) + ", now())" in sql
 
 
 def test_build_global_upsert_sql_sets_accuracy_columns_only():
@@ -188,9 +189,9 @@ def test_build_global_upsert_sql_has_seventeen_placeholders_plus_now():
 
 
 def test_build_bucket_upsert_row_prepends_version_and_window_dims():
-    # aggregate_row grew 24 -> 28 (9 bucket dims + 15 metrics + 4 appended subgroup
-    # columns) and the upsert tuple grew 30 -> 34 (6 prepended version/window dims + 28).
-    aggregate_row = tuple(range(28))
+    # aggregate_row grew 28 -> 31 (9 bucket dims + 18 metrics + 4 appended subgroup
+    # columns) and the upsert tuple grew 34 -> 37 (6 prepended version/window dims + 31).
+    aggregate_row = tuple(range(31))
     row = subject.build_bucket_upsert_row(
         aggregate_row=aggregate_row,
         model_version="m",
@@ -207,16 +208,20 @@ def test_build_bucket_upsert_row_prepends_version_and_window_dims():
     assert row[4] == "20200101"
     assert row[5] == "20201231"
     assert row[6] == 0
-    # row[30..33] are the 4 appended subgroup columns from the aggregate row tail
-    # (aggregate indices 24..27 -> distance_band, field_size_band, season_band, class_code).
-    assert row[30] == 24
-    assert row[31] == 25
-    assert row[32] == 26
+    # row[33..36] are the 4 appended subgroup columns from the aggregate row tail
+    # (aggregate indices 27..30 -> distance_band, field_size_band, season_band, class_code).
     assert row[33] == 27
-    assert len(row) == 34
+    assert row[34] == 28
+    assert row[35] == 29
+    assert row[36] == 30
+    assert len(row) == 37
 
 
 def test_compute_global_rollup_divides_sums_by_race_count():
+    # Index map (post place4/5/6): dims 0-8, race_count=9, prediction_count=10, top1=11,
+    # place1=12, place2=13, place3=14, place4=15, place5=16, place6=17, top3_box=18,
+    # top3_exact=19, top3_winner=20, top5_winner=21, top3_place_rel=22, pair_sum=23,
+    # pair_count=24, ndcg_sum=25, ndcg_count=26.
     aggregate_row = (
         "nar",
         "83",
@@ -233,6 +238,9 @@ def test_compute_global_rollup_divides_sums_by_race_count():
         5.0,
         2.0,
         1.0,
+        9.0,
+        8.0,
+        7.0,
         3.0,
         0.5,
         7.0,
@@ -427,9 +435,11 @@ def test_upsert_global_rows_runs_single_batch_and_commits():
 
 
 def _bucket_or_subgroup_fetchall(sql: str) -> MagicMock:
-    # collect_category / run_aggregation call duck.execute twice per (category, year):
-    # once for the bucket aggregate, once for the subgroup aggregate. The subgroup query
-    # uniquely contains "subgroup_dimension". Return a correctly-shaped row for each.
+    # collect_category / run_aggregation call duck.execute twice per (category, year) by
+    # default: once for the bucket aggregate, once for the subgroup aggregate. The subgroup
+    # query uniquely contains "subgroup_dimension". Return a correctly-shaped row for each.
+    # subgroup row = 3 dims + 18 metrics = 21 fields; bucket row = 9 dims + 18 metrics + 4
+    # appended subgroup columns = 31 fields.
     result = MagicMock()
     if "subgroup_dimension" in sql:
         result.fetchall.return_value = [
@@ -439,6 +449,9 @@ def _bucket_or_subgroup_fetchall(sql: str) -> MagicMock:
                 "sprint",
                 3,
                 30,
+                1.0,
+                1.0,
+                1.0,
                 1.0,
                 1.0,
                 1.0,
@@ -458,7 +471,7 @@ def _bucket_or_subgroup_fetchall(sql: str) -> MagicMock:
     result.fetchall.return_value = [
         tuple(
             [0] * 9
-            + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3]
+            + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3]
             + ["sprint", None, None, "010"]
         )
     ]
@@ -516,7 +529,7 @@ def test_collect_category_subgroup_rows_prepend_model_window_dims():
     assert first_subgroup[4] == "nar"
     assert first_subgroup[5] == "distance_band"
     assert first_subgroup[6] == "sprint"
-    assert len(first_subgroup) == 22
+    assert len(first_subgroup) == 25
 
 
 def test_run_aggregation_collects_upserts_and_closes_connections():
@@ -973,9 +986,9 @@ def test_build_subgroup_evaluations_ddl_has_no_running_style_columns():
     assert "finish_position_version" not in ddl
 
 
-def test_build_subgroup_upsert_sql_has_twentytwo_placeholders_plus_now():
+def test_build_subgroup_upsert_sql_has_twentyfive_placeholders_plus_now():
     sql = subject.build_subgroup_upsert_sql()
-    assert "values (" + ", ".join(["%s"] * 22) + ", now())" in sql
+    assert "values (" + ", ".join(["%s"] * 25) + ", now())" in sql
 
 
 def test_build_subgroup_upsert_sql_conflict_on_seven_key_columns():
@@ -996,7 +1009,7 @@ def test_build_subgroup_upsert_sql_sets_metrics_not_key_columns():
 
 
 def test_build_subgroup_upsert_row_prepends_model_and_window_dims():
-    aggregate_row = ("nar", "distance_band", "sprint") + tuple(range(15))
+    aggregate_row = ("nar", "distance_band", "sprint") + tuple(range(18))
     row = subject.build_subgroup_upsert_row(
         aggregate_row=aggregate_row,
         model_version="m",
@@ -1012,11 +1025,11 @@ def test_build_subgroup_upsert_row_prepends_model_and_window_dims():
     assert row[5] == "distance_band"
     assert row[6] == "sprint"
     assert row[7] == 0
-    assert len(row) == 22
+    assert len(row) == 25
 
 
-def test_subgroup_insert_columns_count_is_twentytwo():
-    assert len(subject.SUBGROUP_INSERT_COLUMNS) == 22
+def test_subgroup_insert_columns_count_is_twentyfive():
+    assert len(subject.SUBGROUP_INSERT_COLUMNS) == 25
 
 
 def test_subgroup_conflict_columns_are_seven_keys():
@@ -1081,3 +1094,392 @@ def test_main_prints_json_summary(capsys: pytest.CaptureFixture[str], monkeypatc
     )
     captured = capsys.readouterr()
     assert '"bucket_rows": 7' in captured.out
+
+
+def test_per_race_cte_contains_place4_place5_place6_hits():
+    sql = subject.build_bucket_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "max(case when predicted_rank = 4 and finish_position = 4 then 1 else 0 end) place4_hit" in sql
+    assert "max(case when predicted_rank = 5 and finish_position = 5 then 1 else 0 end) place5_hit" in sql
+    assert "max(case when predicted_rank = 6 and finish_position = 6 then 1 else 0 end) place6_hit" in sql
+
+
+def test_shared_metric_select_fields_sum_place4_place5_place6():
+    assert "coalesce(sum(cast(pr.place4_hit as double)), 0) place4_hit_sum" in subject.SHARED_METRIC_SELECT_FIELDS
+    assert "coalesce(sum(cast(pr.place5_hit as double)), 0) place5_hit_sum" in subject.SHARED_METRIC_SELECT_FIELDS
+    assert "coalesce(sum(cast(pr.place6_hit as double)), 0) place6_hit_sum" in subject.SHARED_METRIC_SELECT_FIELDS
+
+
+def test_bucket_insert_columns_include_place4_place5_place6():
+    assert "place4_hit_sum" in subject.BUCKET_INSERT_COLUMNS
+    assert "place5_hit_sum" in subject.BUCKET_INSERT_COLUMNS
+    assert "place6_hit_sum" in subject.BUCKET_INSERT_COLUMNS
+
+
+def test_subgroup_insert_columns_include_place4_place5_place6():
+    assert "place4_hit_sum" in subject.SUBGROUP_INSERT_COLUMNS
+    assert "place5_hit_sum" in subject.SUBGROUP_INSERT_COLUMNS
+    assert "place6_hit_sum" in subject.SUBGROUP_INSERT_COLUMNS
+
+
+def test_bucket_conflict_columns_have_no_place_metric_sums():
+    assert "place4_hit_sum" not in subject.BUCKET_CONFLICT_COLUMNS
+    assert "place3_hit_sum" not in subject.BUCKET_CONFLICT_COLUMNS
+
+
+def test_subgroup_conflict_columns_have_no_place_metric_sums():
+    assert "place4_hit_sum" not in subject.SUBGROUP_CONFLICT_COLUMNS
+    assert "place3_hit_sum" not in subject.SUBGROUP_CONFLICT_COLUMNS
+
+
+def test_build_bucket_evaluations_ddl_has_place4_place5_place6_columns():
+    ddl = subject.build_bucket_evaluations_ddl()
+    assert "place4_hit_sum                numeric not null" in ddl
+    assert "place5_hit_sum                numeric not null" in ddl
+    assert "place6_hit_sum                numeric not null" in ddl
+    assert "add column if not exists place4_hit_sum numeric;" in ddl
+    assert "add column if not exists place5_hit_sum numeric;" in ddl
+    assert "add column if not exists place6_hit_sum numeric;" in ddl
+
+
+def test_build_subgroup_evaluations_ddl_has_place4_place5_place6_columns():
+    ddl = subject.build_subgroup_evaluations_ddl()
+    assert "place4_hit_sum          numeric not null" in ddl
+    assert "place5_hit_sum          numeric not null" in ddl
+    assert "place6_hit_sum          numeric not null" in ddl
+    assert "add column if not exists place4_hit_sum numeric;" in ddl
+    assert "add column if not exists place5_hit_sum numeric;" in ddl
+    assert "add column if not exists place6_hit_sum numeric;" in ddl
+
+
+def test_cross_subgroup_dimensions_match_expected_combinations():
+    assert subject.CROSS_SUBGROUP_DIMENSIONS == (
+        ("class_code", "season_band"),
+        ("class_code", "surface"),
+        ("class_code", "distance_band"),
+        ("class_code", "season_band", "surface"),
+        ("class_code", "season_band", "distance_band"),
+    )
+
+
+def test_build_cross_subgroup_aggregate_sql_jra_uses_trimmed_joken_and_compound_name():
+    sql = subject.build_cross_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "'class_code×season_band' as cross_dimension" in sql
+    assert "nullif(trim(d.kyoso_joken_code, ' '), '')" in sql
+    assert "d.cross_dimension as subgroup_dimension" in sql
+    assert "d.cross_value as subgroup_value" in sql
+
+
+def test_build_cross_subgroup_aggregate_sql_uses_multiplication_separator_in_value():
+    sql = subject.build_cross_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert " || '×' || " in sql
+
+
+def test_build_cross_subgroup_aggregate_sql_drops_null_components_with_is_not_null():
+    sql = subject.build_cross_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="jra-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_JRA,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert ") is not null" in sql
+    assert "where " in sql
+
+
+def test_build_cross_subgroup_aggregate_sql_reuses_shared_metric_fields_and_race_dims():
+    sql = subject.build_cross_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="nar-xgb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_NAR,
+            from_date="20200101",
+            to_date="20201231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert subject.SHARED_METRIC_SELECT_FIELDS in sql
+    assert "from race_dims d" in sql
+    assert "group by d.source, d.cross_dimension, d.cross_value" in sql
+
+
+def test_build_cross_subgroup_aggregate_sql_banei_class_code_is_null_text():
+    sql = subject.build_cross_subgroup_aggregate_sql(
+        subject.to_aggregate_args(
+            predictions_glob="g.parquet",
+            model_version="banei-cb-v7-lineage-wf-21y",
+            category=subject.CATEGORY_BAN_EI,
+            from_date="20080101",
+            to_date="20081231",
+            running_style_feature_version="v3",
+            finish_position_version="v1",
+        )
+    )
+    assert "(null::text) is not null" in sql
+    assert "null::text || '×' || " in sql
+
+
+def test_aggregate_cross_subgroup_category_year_executes_year_window_sql():
+    duck = MagicMock()
+    duck.execute.return_value.fetchall.return_value = [("nar", "class_code×season_band", "010×spring")]
+    rows = subject.aggregate_cross_subgroup_category_year(
+        duck,
+        predictions_glob="g.parquet",
+        model_version="nar-xgb-v7-lineage-wf-21y",
+        category=subject.CATEGORY_NAR,
+        year=2020,
+        running_style_feature_version="v3",
+        finish_position_version="v1",
+    )
+    assert rows == [("nar", "class_code×season_band", "010×spring")]
+    executed_sql = duck.execute.call_args.args[0]
+    assert "rec.race_date between '20200101' and '20201231'" in executed_sql
+    assert "race_cross_subgroups" in executed_sql
+
+
+def _bucket_subgroup_or_cross_fetchall(sql: str) -> MagicMock:
+    # With --include-cross-subgroups, collect_category calls duck.execute THREE times per
+    # (category, year): bucket, subgroup, cross. The cross query uniquely contains the
+    # "race_cross_subgroups" CTE; the plain subgroup query has "subgroup_dimension" but not
+    # "race_cross_subgroups". Return a correctly-shaped row for each (subgroup/cross row =
+    # 21 fields; bucket row = 31 fields).
+    result = MagicMock()
+    if "race_cross_subgroups" in sql:
+        result.fetchall.return_value = [
+            (
+                "nar",
+                "class_code×season_band",
+                "010×spring",
+                3,
+                30,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                9.0,
+                12,
+                2.0,
+                3,
+            )
+        ]
+        return result
+    if "subgroup_dimension" in sql:
+        result.fetchall.return_value = [
+            (
+                "nar",
+                "distance_band",
+                "sprint",
+                3,
+                30,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                1.0,
+                9.0,
+                12,
+                2.0,
+                3,
+            )
+        ]
+        return result
+    result.fetchall.return_value = [
+        tuple(
+            [0] * 9
+            + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3]
+            + ["sprint", None, None, "010"]
+        )
+    ]
+    return result
+
+
+def test_parse_args_include_cross_subgroups_defaults_to_false():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+        ]
+    )
+    assert namespace.include_cross_subgroups is False
+
+
+def test_parse_args_include_cross_subgroups_flag_sets_true():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+            "--include-cross-subgroups",
+        ]
+    )
+    assert namespace.include_cross_subgroups is True
+
+
+def test_collect_category_without_cross_calls_execute_twice_per_year():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+        ]
+    )
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_or_subgroup_fetchall(sql)
+    subject.collect_category(duck, namespace, subject.CATEGORY_BAN_EI)
+    assert duck.execute.call_count == len(subject.BAN_EI_YEARS) * 2
+
+
+def test_collect_category_with_cross_calls_execute_thrice_per_year():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+            "--include-cross-subgroups",
+        ]
+    )
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_subgroup_or_cross_fetchall(sql)
+    collection = subject.collect_category(
+        duck, namespace, subject.CATEGORY_BAN_EI, include_cross_subgroups=True
+    )
+    assert duck.execute.call_count == len(subject.BAN_EI_YEARS) * 3
+    assert len(collection["subgroup_rows"]) == len(subject.BAN_EI_YEARS) * 2
+
+
+def test_collect_category_with_cross_emits_compound_dimension_rows():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+            "--include-cross-subgroups",
+        ]
+    )
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_subgroup_or_cross_fetchall(sql)
+    collection = subject.collect_category(
+        duck, namespace, subject.CATEGORY_BAN_EI, include_cross_subgroups=True
+    )
+    cross_row = collection["subgroup_rows"][1]
+    assert cross_row[5] == "class_code×season_band"
+    assert cross_row[6] == "010×spring"
+    assert len(cross_row) == 25
+
+
+def test_run_aggregation_with_cross_subgroups_collects_extra_subgroup_rows():
+    namespace = subject.parse_args(
+        [
+            "--predictions-glob",
+            "g",
+            "--local-pg-url",
+            "l",
+            "--neon-url",
+            "n",
+            "--running-style-feature-version",
+            "v3",
+            "--finish-position-version",
+            "v1",
+            "--include-cross-subgroups",
+        ]
+    )
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_subgroup_or_cross_fetchall(sql)
+    pg = MagicMock()
+    pg_cursor = MagicMock()
+    pg.cursor.return_value.__enter__.return_value = pg_cursor
+    result = subject.run_aggregation(
+        namespace,
+        connect_duckdb=lambda _url, _threads: duck,
+        connect_pg=lambda _url: pg,
+    )
+    total_years = len(subject.JRA_YEARS) + len(subject.NAR_YEARS) + len(subject.BAN_EI_YEARS)
+    assert result["subgroup_rows"] == total_years * 2
+    assert result["bucket_rows"] == total_years
+    assert duck.close.call_count == 1
+    assert pg.close.call_count == 1
