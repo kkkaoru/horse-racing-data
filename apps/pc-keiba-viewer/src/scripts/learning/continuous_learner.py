@@ -678,7 +678,7 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging()
 
     df = pd.read_parquet(str(args.features_parquet))
-    scripts_dir = Path(__file__).parent
+    scripts_dir = Path(__file__).parent.parent
 
     load_controller = AdaptiveLoadController(
         base_n_trials=int(args.n_trials),

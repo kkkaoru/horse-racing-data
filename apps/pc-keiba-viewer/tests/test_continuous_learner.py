@@ -685,6 +685,53 @@ def test_train_production_model_uses_max_validation_year_for_fold(
         assert result == tmp_path / "models" / "jra" / "iter0" / "fold-2024"
 
 
+def test_training_scripts_exist_under_module_parent_dir() -> None:
+    module_dir = Path(subject.__file__).parent.parent
+    assert (module_dir / "train_finish_position_catboost_walk_forward.py").is_file()
+    assert (module_dir / "train_finish_position_xgboost_walk_forward.py").is_file()
+
+
+def test_main_resolves_training_script_to_existing_file(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+
+    captured_scripts_dir: list[Path] = []
+    original_init = cast("Callable[..., None]", subject.ContinuousLearner.__init__)
+
+    def capturing_init(
+        self: subject.ContinuousLearner, *args: object, **kwargs: object
+    ) -> None:
+        original_init(self, *args, **kwargs)
+        captured_scripts_dir.append(cast("Path", kwargs["scripts_dir"]))
+
+    with (
+        patch.object(subject.ContinuousLearner, "__init__", capturing_init),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    scripts_dir = captured_scripts_dir[0]
+    script_name = subject._TRAINING_SCRIPT["jra"]
+    assert (scripts_dir / script_name).is_file()
+
+
 # ---------------------------------------------------------------------------
 # _stage_model
 # ---------------------------------------------------------------------------
