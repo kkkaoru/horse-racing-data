@@ -322,6 +322,14 @@ def test_build_fold_namespace_propagates_objective_and_truncation(tmp_path: Path
     assert ns.lambdarank_truncation_level == 5
 
 
+def test_build_fold_namespace_sets_presorted_true(tmp_path: Path):
+    """run() sorts the full dataset once, so each fold passes presorted=True to
+    let default_fold_trainer skip its redundant per-fold sort_values."""
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.presorted is True
+
+
 def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     args = _base_args(tmp_path)
     args["resume_from_checkpoint"] = True
@@ -408,6 +416,30 @@ def test_run_iterates_folds_and_applies_hpo(
     result = subject.run(args, deps)
     assert result["fold_count"] == 2
     assert result["objective"] == "lambdarank"
+
+
+def test_run_sorts_full_dataset_once_before_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """run() must sort the loaded frame by (race_id, umaban) exactly once so the
+    per-fold trainer can run with presorted=True; the feature resolver therefore
+    sees the sorted frame, not the raw load order."""
+    args = _base_args(tmp_path)
+    unsorted = pd.DataFrame({
+        "race_id": ["r2", "r1", "r2", "r1"],
+        "race_date": ["20240519", "20240512", "20240519", "20240512"],
+        "race_year": [2024, 2024, 2024, 2024],
+        "ketto_toroku_bango": ["c", "a", "d", "b"],
+        "umaban": [1, 1, 2, 2],
+        "finish_position": [1.0, 1.0, 2.0, 2.0],
+        "feature_a": [0.3, 0.1, 0.4, 0.2],
+    })
+    deps = _make_fake_deps(unsorted)
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (unsorted, unsorted))
+    subject.run(args, deps)
+    seen = cast(MagicMock, deps["feature_resolver"]).call_args.args[0]
+    assert seen["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
+    assert seen["umaban"].tolist() == [1, 2, 1, 2]
 
 
 def test_run_reads_bucket_parquet_when_path_set(
@@ -594,6 +626,38 @@ def test_make_to_relevance_returns_zero_for_none():
 def test_build_group_sizes_returns_per_race_count():
     df = pd.DataFrame({"race_id": ["r1", "r1", "r1", "r2", "r2"]})
     assert subject.build_group_sizes(df) == [3, 2]
+
+
+def test_sort_train_valid_for_grouping_sorts_when_not_presorted():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
+    args = argparse.Namespace(presorted=False)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r1", "r2"]
+    assert out_train["umaban"].tolist() == [1.0, 2.0, 1.0]
+    assert out_valid["race_id"].tolist() == ["r3", "r4"]
+
+
+def test_sort_train_valid_for_grouping_skips_sort_when_presorted():
+    train_df = pd.DataFrame(
+        {"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]}, index=[5, 9],
+    )
+    valid_df = pd.DataFrame(
+        {"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]}, index=[7, 3],
+    )
+    args = argparse.Namespace(presorted=True)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r2", "r1"]
+    assert out_train.index.tolist() == [0, 1]
+    assert out_valid.index.tolist() == [0, 1]
+
+
+def test_sort_train_valid_for_grouping_defaults_to_sorting_when_attr_absent():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
+    args = argparse.Namespace()
+    out_train, _ = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r2"]
 
 
 def test_default_fold_trainer_invokes_lightgbm_train(monkeypatch: pytest.MonkeyPatch):

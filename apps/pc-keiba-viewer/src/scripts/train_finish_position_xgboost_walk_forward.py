@@ -319,6 +319,7 @@ def build_fold_namespace(
         relevance_rank2=2,
         relevance_rank3=1,
         objective=args["objective"],
+        presorted=True,
     )
     if args["objective"] == OBJECTIVE_NDCG:
         ns.lambdarank_pair_method = LAMBDARANK_PAIR_METHOD
@@ -417,7 +418,7 @@ def filter_feature_cols(
 def run(args: TrainXgboostArgs, deps: TrainDeps) -> dict[str, object]:
     hpo_params = load_hpo_params(args["hpo_params_path"])
     merged_args = apply_hpo_params(args, hpo_params)
-    df = deps["parquet_reader"](merged_args["features_parquet"])
+    df = wfc_common.sort_full_dataset(deps["parquet_reader"](merged_args["features_parquet"]))
     feature_cols = filter_feature_cols(
         deps["feature_resolver"](df),
         merged_args["focus_features"],

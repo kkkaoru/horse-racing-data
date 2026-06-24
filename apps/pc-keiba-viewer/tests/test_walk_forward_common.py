@@ -470,3 +470,43 @@ def test_stratified_kfold_indices_raises_when_race_id_overlaps(
             df, strata_cols=["keibajo_code"], n_folds=2, seed=1,
         )
     assert "overlap" in str(info.value)
+
+
+def test_sort_full_dataset_orders_by_race_id_and_umaban():
+    df = pd.DataFrame({
+        "race_id": ["r2", "r1", "r2", "r1"],
+        "umaban": [2, 1, 1, 2],
+        "value": [10, 20, 30, 40],
+    })
+    out = subject.sort_full_dataset(df)
+    assert out["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
+    assert out["umaban"].tolist() == [1, 2, 1, 2]
+    assert out.index.tolist() == [0, 1, 2, 3]
+
+
+def test_sort_full_dataset_mask_of_sorted_frame_stays_sorted():
+    """The whole optimization hinges on this: a boolean mask of a sorted frame
+    must remain sorted by (race_id, umaban) with contiguous race groups, so each
+    walk-forward fold slice needs no further sorting."""
+    df = pd.DataFrame({
+        "race_id": ["r3", "r1", "r2", "r1", "r3", "r2"],
+        "umaban": [1, 2, 1, 1, 2, 2],
+        "keep": [True, True, False, True, True, False],
+    })
+    out = subject.sort_full_dataset(df)
+    sliced = out[out["keep"]]
+    assert sliced["race_id"].tolist() == ["r1", "r1", "r3", "r3"]
+    assert sliced["umaban"].tolist() == [1, 2, 1, 2]
+
+
+def test_sort_full_dataset_falls_back_when_sort_keys_missing():
+    df = pd.DataFrame({"other": [3, 1, 2]}, index=[7, 8, 9])
+    out = subject.sort_full_dataset(df)
+    assert out["other"].tolist() == [3, 1, 2]
+    assert out.index.tolist() == [0, 1, 2]
+
+
+def test_sort_full_dataset_sorts_by_race_id_only_when_umaban_missing():
+    df = pd.DataFrame({"race_id": ["r2", "r1", "r2"], "value": [1, 2, 3]})
+    out = subject.sort_full_dataset(df)
+    assert out["race_id"].tolist() == ["r1", "r2", "r2"]

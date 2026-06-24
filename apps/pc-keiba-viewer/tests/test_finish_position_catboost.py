@@ -206,6 +206,38 @@ def test_race_group_ids_returns_integer_codes():
     assert codes[0] != codes[2]
 
 
+def test_sort_train_valid_for_grouping_sorts_when_not_presorted():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
+    args = argparse.Namespace(presorted=False)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r1", "r2"]
+    assert out_train["umaban"].tolist() == [1.0, 2.0, 1.0]
+    assert out_valid["race_id"].tolist() == ["r3", "r4"]
+
+
+def test_sort_train_valid_for_grouping_skips_sort_when_presorted():
+    train_df = pd.DataFrame(
+        {"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]}, index=[5, 9],
+    )
+    valid_df = pd.DataFrame(
+        {"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]}, index=[7, 3],
+    )
+    args = argparse.Namespace(presorted=True)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r2", "r1"]
+    assert out_train.index.tolist() == [0, 1]
+    assert out_valid.index.tolist() == [0, 1]
+
+
+def test_sort_train_valid_for_grouping_defaults_to_sorting_when_attr_absent():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
+    args = argparse.Namespace()
+    out_train, _ = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r2"]
+
+
 # ---------------------------------------------------------------------------
 # _cb_top1_hit
 # ---------------------------------------------------------------------------
@@ -724,6 +756,53 @@ def test_train_catboost_ranker_returns_metrics_and_predictions(
     metrics = cast(dict[str, float], result["metrics"])
     assert "top1_accuracy" in metrics
     assert "top3_box_accuracy" in metrics
+
+
+def test_train_catboost_ranker_presorted_matches_unsorted_labels_and_groups(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """presorted=True on an already-sorted frame must produce the same Pool labels
+    and race group_ids as presorted=False on the shuffled frame, proving the
+    fast-path only skips redundant work and never changes training inputs."""
+    sorted_df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.1, 0.2, 0.3, 0.4],
+    })
+    shuffled_df = sorted_df.iloc[[2, 0, 3, 1]].reset_index(drop=True)
+    valid_df = pd.DataFrame({
+        "race_id": ["r3", "r3"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.5, 0.6],
+    })
+
+    pool_calls: list[dict[str, object]] = []
+
+    def fake_pool(**kwargs: object) -> MagicMock:
+        pool_calls.append({"label": kwargs.get("label"), "group_id": kwargs.get("group_id")})
+        return MagicMock()
+
+    fake_model = MagicMock()
+    fake_model.predict.return_value = np.array([0.9, 0.5])
+    fake_model.get_best_iteration.return_value = 3
+    fake_model.tree_count_ = 3
+    monkeypatch.setattr(subject, "CatBoost", MagicMock(return_value=fake_model))
+    monkeypatch.setattr(subject, "Pool", fake_pool)
+
+    subject.train_catboost_ranker(
+        shuffled_df, valid_df, ["feature_a"], _make_args(presorted=False, no_cat_features=True),
+    )
+    subject.train_catboost_ranker(
+        sorted_df, valid_df, ["feature_a"], _make_args(presorted=True, no_cat_features=True),
+    )
+    np.testing.assert_array_equal(
+        cast(np.ndarray, pool_calls[0]["label"]), cast(np.ndarray, pool_calls[2]["label"]),
+    )
+    np.testing.assert_array_equal(
+        cast(np.ndarray, pool_calls[0]["group_id"]), cast(np.ndarray, pool_calls[2]["group_id"]),
+    )
 
 
 def test_train_catboost_ranker_caps_thread_count_at_six(

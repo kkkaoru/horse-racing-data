@@ -35,6 +35,7 @@ __all__ = [
     "resolve_feature_columns",
     "resolve_projection_columns",
     "run_walk_forward",
+    "sort_train_valid_for_grouping",
     "top1_hit",
     "top3_box_hit",
     "top3_exact_hit",
@@ -173,14 +174,35 @@ def build_group_sizes(df: pd.DataFrame) -> list[int]:
     return df.groupby("race_id", sort=False).size().tolist()
 
 
+def sort_train_valid_for_grouping(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Order rows so race groups are contiguous before building DMatrices.
+
+    ``build_group_sizes`` relies on ``groupby(..., sort=False)`` seeing every
+    race's rows back-to-back, so the frame must be sorted by ``(race_id, umaban)``.
+    When the walk-forward caller already sorted the full dataset once (passing
+    ``presorted=True``), each fold slice is still sorted, so we only need a cheap
+    ``reset_index`` for positional alignment instead of re-sorting the cumulative
+    train window every fold.
+    """
+    if getattr(args, "presorted", False):
+        return train_df.reset_index(drop=True), valid_df.reset_index(drop=True)
+    return (
+        train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+        valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+    )
+
+
 def train_xgboost_ranker(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
 ) -> tuple[xgb.Booster, dict[str, object]]:
-    train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
-    valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
     to_relevance = make_to_relevance(
         int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )

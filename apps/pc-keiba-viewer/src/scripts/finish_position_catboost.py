@@ -184,6 +184,28 @@ def race_group_ids(df: pd.DataFrame) -> np.ndarray:
     return df["race_id"].astype("category").cat.codes.to_numpy()
 
 
+def sort_train_valid_for_grouping(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Order rows so race groups are contiguous before building Pools.
+
+    CatBoost's ``Pool(group_id=...)`` requires every race's rows to be
+    contiguous, which the ``(race_id, umaban)`` sort guarantees. When the
+    walk-forward caller already sorted the full dataset once (passing
+    ``presorted=True``), each fold slice is still sorted, so we only need a cheap
+    ``reset_index`` for positional alignment instead of re-sorting the cumulative
+    train window every fold.
+    """
+    if getattr(args, "presorted", False):
+        return train_df.reset_index(drop=True), valid_df.reset_index(drop=True)
+    return (
+        train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+        valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+    )
+
+
 def prepare_feature_matrix(
     df: pd.DataFrame, feature_cols: list[str], cat_indices: list[int],
 ) -> pd.DataFrame:
@@ -203,8 +225,7 @@ def train_catboost_ranker(
     feature_cols: list[str],
     args: argparse.Namespace,
 ) -> dict[str, object]:
-    train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
-    valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
     to_relevance = make_to_relevance(
         int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )

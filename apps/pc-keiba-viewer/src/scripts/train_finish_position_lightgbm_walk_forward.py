@@ -315,6 +315,7 @@ def build_fold_namespace(
         lambdarank_truncation_level=args["lambdarank_truncation_level"],
         early_stopping_rounds=DEFAULT_EARLY_STOPPING_ROUNDS,
         seed=resolve_fold_random_seed(fold_year),
+        presorted=True,
     )
 
 
@@ -333,6 +334,28 @@ def build_group_sizes(df: pd.DataFrame) -> list[int]:
     return df.groupby("race_id", sort=False).size().tolist()
 
 
+def sort_train_valid_for_grouping(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Order rows so race groups are contiguous before building Datasets.
+
+    ``build_group_sizes`` relies on ``groupby(..., sort=False)`` seeing every
+    race's rows back-to-back, so the frame must be sorted by ``(race_id, umaban)``.
+    When the walk-forward caller already sorted the full dataset once (passing
+    ``presorted=True``), each fold slice is still sorted, so we only need a cheap
+    ``reset_index`` for positional alignment instead of re-sorting the cumulative
+    train window every fold.
+    """
+    if getattr(args, "presorted", False):
+        return train_df.reset_index(drop=True), valid_df.reset_index(drop=True)
+    return (
+        train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+        valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+    )
+
+
 def default_fold_trainer(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
@@ -345,8 +368,7 @@ def default_fold_trainer(
     """
     import lightgbm as lgb
 
-    train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
-    valid_df = valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
     to_relevance = make_to_relevance()
     train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
     valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
@@ -469,7 +491,7 @@ def resolve_fold_years(args: TrainLightgbmArgs) -> list[int]:
 def run(args: TrainLightgbmArgs, deps: TrainDeps) -> dict[str, object]:
     hpo_params = load_hpo_params(args["hpo_params_path"])
     merged_args = apply_hpo_params(args, hpo_params)
-    df = deps["parquet_reader"](merged_args["features_parquet"])
+    df = wfc_common.sort_full_dataset(deps["parquet_reader"](merged_args["features_parquet"]))
     feature_cols = deps["feature_resolver"](df)
     bucket_df = (
         deps["bucket_reader"](merged_args["bucket_membership_parquet"])

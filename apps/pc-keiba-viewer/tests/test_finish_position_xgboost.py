@@ -189,6 +189,38 @@ def test_build_group_sizes_single_race():
     assert subject.build_group_sizes(df) == [2]
 
 
+def test_sort_train_valid_for_grouping_sorts_when_not_presorted():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
+    args = argparse.Namespace(presorted=False)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r1", "r2"]
+    assert out_train["umaban"].tolist() == [1.0, 2.0, 1.0]
+    assert out_valid["race_id"].tolist() == ["r3", "r4"]
+
+
+def test_sort_train_valid_for_grouping_skips_sort_when_presorted():
+    train_df = pd.DataFrame(
+        {"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]}, index=[5, 9],
+    )
+    valid_df = pd.DataFrame(
+        {"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]}, index=[7, 3],
+    )
+    args = argparse.Namespace(presorted=True)
+    out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r2", "r1"]
+    assert out_train.index.tolist() == [0, 1]
+    assert out_valid.index.tolist() == [0, 1]
+
+
+def test_sort_train_valid_for_grouping_defaults_to_sorting_when_attr_absent():
+    train_df = pd.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
+    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
+    args = argparse.Namespace()
+    out_train, _ = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
+    assert out_train["race_id"].tolist() == ["r1", "r2"]
+
+
 # ---------------------------------------------------------------------------
 # _top1_hit
 # ---------------------------------------------------------------------------
@@ -724,6 +756,51 @@ def test_train_xgboost_ranker_returns_metrics_and_booster(
     assert "top1_accuracy" in metrics
     assert "top3_box_accuracy" in metrics
     assert "top3_exact_accuracy" in metrics
+
+
+def test_train_xgboost_ranker_presorted_matches_unsorted_labels_and_groups(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """presorted=True on an already-sorted frame must produce the same DMatrix
+    labels and race group sizes as presorted=False on the shuffled frame, proving
+    the fast-path only skips redundant work and never changes training inputs."""
+    sorted_df = pd.DataFrame({
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.1, 0.2, 0.3, 0.4],
+    })
+    shuffled_df = sorted_df.iloc[[2, 0, 3, 1]].reset_index(drop=True)
+    valid_df = pd.DataFrame({
+        "race_id": ["r3", "r3"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.5, 0.6],
+    })
+
+    labels: list[object] = []
+    groups: list[object] = []
+
+    class FakeDMatrix:
+        def __init__(self, data: object, label: object = None, weight: object = None) -> None:
+            labels.append(label)
+
+        def set_group(self, group: object) -> None:
+            groups.append(group)
+
+    fake_booster = _make_mock_booster()
+    fake_booster.predict.return_value = np.array([0.9, 0.5])
+    monkeypatch.setattr(subject.xgb, "DMatrix", FakeDMatrix)
+    monkeypatch.setattr(subject.xgb, "train", MagicMock(return_value=fake_booster))
+
+    subject.train_xgboost_ranker(
+        shuffled_df, valid_df, ["feature_a"], _make_args(presorted=False),
+    )
+    subject.train_xgboost_ranker(
+        sorted_df, valid_df, ["feature_a"], _make_args(presorted=True),
+    )
+    np.testing.assert_array_equal(cast(np.ndarray, labels[0]), cast(np.ndarray, labels[2]))
+    assert groups[0] == groups[2]
 
 
 def test_train_xgboost_ranker_passes_sample_weight_to_dmatrix(

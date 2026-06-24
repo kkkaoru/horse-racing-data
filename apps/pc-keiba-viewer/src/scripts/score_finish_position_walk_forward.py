@@ -38,6 +38,7 @@ import pandas as pd
 
 import finish_position_catboost as cb_walk
 import finish_position_xgboost as xgb_walk
+import walk_forward_common as wfc_common
 
 CATEGORY_JRA: str = "jra"
 CATEGORY_NAR: str = "nar"
@@ -384,6 +385,7 @@ def build_fold_namespace_args(args: WalkForwardArguments, valid_year: int) -> ar
         early_stopping_rounds=args["early_stopping_rounds"],
         seed=args["seed"],
         no_cat_features=CATEGORY_NO_CAT_FEATURES[args["category"]],
+        presorted=True,
     )
 
 
@@ -612,7 +614,7 @@ def build_jsonl_filename(args: WalkForwardArguments, valid_year: int) -> str:
 
 
 def run(args: WalkForwardArguments, deps: ScoreFoldDeps) -> dict[str, object]:
-    df = deps["parquet_reader"](args["features_parquet"])
+    df = wfc_common.sort_full_dataset(deps["parquet_reader"](args["features_parquet"]))
     feature_cols = resolve_feature_columns_for_category(
         df,
         args["category"],

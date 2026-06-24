@@ -364,6 +364,14 @@ def test_build_fold_namespace_propagates_none_bagging_temperature(tmp_path: Path
     assert ns.random_strength is None
 
 
+def test_build_fold_namespace_sets_presorted_true(tmp_path: Path):
+    """run() sorts the full dataset once, so each fold passes presorted=True to
+    let train_catboost_ranker skip its redundant per-fold sort_values."""
+    args = _base_args(tmp_path)
+    ns = subject.build_fold_namespace(args, 2025, [2024, 2025])
+    assert ns.presorted is True
+
+
 def test_build_fold_namespace_sets_no_cat_features_false(tmp_path: Path):
     """no_cat_features=False in the namespace must be consistent with
     default_feature_resolver using use_cat_features=True so that
@@ -604,6 +612,30 @@ def test_run_applies_hpo_overrides_and_iterates_folds(
     assert result["fold_count"] == 2
     assert result["iteration_id"] == 1
     cast(MagicMock, deps["parquet_reader"]).assert_called_once()
+
+
+def test_run_sorts_full_dataset_once_before_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """run() must sort the loaded frame by (race_id, umaban) exactly once so the
+    per-fold trainer can run with presorted=True; the feature resolver therefore
+    sees the sorted frame, not the raw load order."""
+    args = _base_args(tmp_path)
+    unsorted = pd.DataFrame({
+        "race_id": ["r2", "r1", "r2", "r1"],
+        "race_date": ["20240519", "20240512", "20240519", "20240512"],
+        "race_year": [2024, 2024, 2024, 2024],
+        "ketto_toroku_bango": ["c", "a", "d", "b"],
+        "umaban": [1, 1, 2, 2],
+        "finish_position": [1.0, 1.0, 2.0, 2.0],
+        "feature_a": [0.3, 0.1, 0.4, 0.2],
+    })
+    deps = _make_fake_deps(unsorted)
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (unsorted, unsorted))
+    subject.run(args, deps)
+    seen = cast(MagicMock, deps["feature_resolver"]).call_args.args[0]
+    assert seen["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
+    assert seen["umaban"].tolist() == [1, 2, 1, 2]
 
 
 def test_run_reads_bucket_parquet_when_set(

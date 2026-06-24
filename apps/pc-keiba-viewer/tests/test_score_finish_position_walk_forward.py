@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -313,6 +314,14 @@ def test_build_fold_namespace_args_keeps_cat_features_enabled_for_nar():
     assert ns.max_depth == 6
 
 
+def test_build_fold_namespace_args_sets_presorted_true():
+    """run() sorts the full dataset once, so every fold passes presorted=True to
+    let the reused catboost/xgboost rankers skip their per-fold sort_values."""
+    args = _base_args(Path("/tmp"), "jra")
+    ns = subject.build_fold_namespace_args(args, 2025)
+    assert ns.presorted is True
+
+
 def test_resolve_fold_trainer_dispatches_xgboost_for_nar():
     cb_trainer = MagicMock()
     xgb_trainer = MagicMock()
@@ -558,6 +567,42 @@ def test_run_resolves_features_asserts_parity_and_iterates_folds(
     assert result["model_version"] == "jra-v7-lineage-wf-21y"
     assert result["fold_count"] == 2
     assert result["feature_count"] == 138
+
+
+def test_run_sorts_full_dataset_once_before_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """run() must sort the loaded frame by (race_id, umaban) exactly once so each
+    fold passes presorted=True to the reused rankers; the feature resolver
+    therefore sees the sorted frame, not the raw load order."""
+    args = _base_args(tmp_path, "jra")
+    unsorted = pd.DataFrame({
+        "race_id": [
+            "jra:2024:0512:05:11",
+            "jra:2024:0512:05:10",
+            "jra:2024:0512:05:11",
+            "jra:2024:0512:05:10",
+        ],
+        "race_date": ["20240512", "20240512", "20240512", "20240512"],
+        "ketto_toroku_bango": ["d", "a", "c", "b"],
+        "umaban": [2, 1, 1, 2],
+        "finish_position": [2.0, 1.0, 1.0, 2.0],
+    })
+    fake = _make_fake_deps(_predictions_frame(), unsorted)
+    monkeypatch.setattr(
+        subject,
+        "build_fold_train_valid",
+        MagicMock(return_value=(unsorted, unsorted)),
+    )
+    subject.run(args, fake.deps)
+    seen = cast(MagicMock, fake.deps["catboost_resolver"]).call_args.args[0]
+    assert seen["race_id"].tolist() == [
+        "jra:2024:0512:05:10",
+        "jra:2024:0512:05:10",
+        "jra:2024:0512:05:11",
+        "jra:2024:0512:05:11",
+    ]
+    assert seen["umaban"].tolist() == [1, 2, 1, 2]
 
 
 def test_run_loads_calibration_map_once_across_folds(

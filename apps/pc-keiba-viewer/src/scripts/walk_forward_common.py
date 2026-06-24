@@ -56,6 +56,28 @@ METADATA_FILENAME: Final[str] = "metadata.json"
 METADATA_FOLD_KEY: Final[str] = "fold_year"
 METADATA_STATUS_KEY: Final[str] = "status"
 HPO_MIN_FOLDS: Final[int] = 2
+GROUP_SORT_KEYS: Final[tuple[str, str]] = ("race_id", "umaban")
+
+
+def sort_full_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort the whole frame once by ``(race_id, umaban)`` with a fresh index.
+
+    Walk-forward folds each train on a cumulative date window, so every fold's
+    train/valid slice is a boolean-masked subset of this frame. A boolean mask
+    preserves relative row order, so a slice of an already-sorted frame is itself
+    sorted by ``(race_id, umaban)`` and has contiguous race groups -- exactly the
+    layout the per-fold rankers re-derive with their own ``sort_values``. Sorting
+    once here lets the rankers skip that redundant per-fold sort (see
+    ``presorted`` in the CatBoost / XGBoost trainers) without changing results.
+
+    ``umaban`` may be absent in unit fixtures; fall back to ``race_id`` only so
+    grouping stays contiguous. ``mergesort`` keeps the sort stable, matching the
+    rankers' default stable ``sort_values``.
+    """
+    keys = [c for c in GROUP_SORT_KEYS if c in df.columns]
+    if not keys:
+        return df.reset_index(drop=True)
+    return df.sort_values(list(keys), kind="mergesort").reset_index(drop=True)
 
 
 def should_skip_fold(
