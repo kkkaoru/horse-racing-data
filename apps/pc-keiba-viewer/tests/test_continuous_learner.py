@@ -76,6 +76,9 @@ def _make_learner(
     blind_holdout_year: int | None = None,
     train_start: str = "20160101",
     deploy_threshold: float = subject.DEFAULT_DEPLOY_THRESHOLD,
+    docker_build: bool = False,
+    skip_inverse: bool = False,
+    skip_enrichment: bool = False,
     load_controller: subject.AdaptiveLoadController | None = None,
 ) -> subject.ContinuousLearner:
     return subject.ContinuousLearner(
@@ -93,6 +96,9 @@ def _make_learner(
         blind_holdout_year=blind_holdout_year,
         train_start=train_start,
         deploy_threshold=deploy_threshold,
+        docker_build=docker_build,
+        skip_inverse=skip_inverse,
+        skip_enrichment=skip_enrichment,
         load_controller=load_controller,
     )
 
@@ -475,7 +481,7 @@ def test_evaluate_blind_holdout_calls_evaluate_feature_set_with_holdout_year() -
 
 def test_deploy_calls_pipeline_steps_in_correct_order() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        learner = _make_learner(registry=reg)
+        learner = _make_learner(registry=reg, docker_build=True)
         entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
         order: list[str] = []
 
@@ -1459,7 +1465,7 @@ def test_rollback_deploy_handles_write_error(tmp_path: Path) -> None:
 
 def test_deploy_rollback_when_docker_fails(tmp_path: Path) -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        learner = _make_learner(registry=reg)
+        learner = _make_learner(registry=reg, docker_build=True)
         entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
 
         staged_path = tmp_path / "staged"
@@ -2209,5 +2215,575 @@ def test_run_enrichment_trial_study_name_includes_round_and_features() -> None:
                 3,
             )
         assert mock_run.call_args.kwargs["study_name"] == "enrichment-r3-feat_a+feat_b+feat_c"
+
+
+# ---------------------------------------------------------------------------
+# docker_build flag (Change 2)
+# ---------------------------------------------------------------------------
+
+
+def test_deploy_skips_rebuild_docker_when_docker_build_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, docker_build=False)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+
+        with (
+            patch(
+                "learning.continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=Path("/tmp/staged")),
+            patch.object(learner, "_update_model_meta_json", return_value=None),
+            patch.object(learner, "_rebuild_docker") as mock_docker,
+        ):
+            learner._deploy(entry)
+
+        mock_docker.assert_not_called()
+
+
+def test_deploy_calls_rebuild_docker_when_docker_build_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, docker_build=True)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+
+        with (
+            patch(
+                "learning.continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=Path("/tmp/staged")),
+            patch.object(learner, "_update_model_meta_json", return_value=None),
+            patch.object(learner, "_rebuild_docker") as mock_docker,
+        ):
+            learner._deploy(entry)
+
+        mock_docker.assert_called_once()
+
+
+def test_docker_build_default_is_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._docker_build is False
+
+
+def test_docker_build_true_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, docker_build=True)
+        assert learner._docker_build is True
+
+
+# ---------------------------------------------------------------------------
+# _load_features_dataframe (Change 3)
+# ---------------------------------------------------------------------------
+
+
+def test_load_features_dataframe_single_file_reads_whole_file(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    result = subject._load_features_dataframe(parquet_path, "20160101")
+    assert "feat_speed" in result.columns
+    assert len(result) == len(_make_df())
+
+
+def test_load_features_dataframe_directory_filters_by_min_year(tmp_path: Path) -> None:
+    partition_dir = tmp_path / "partitioned"
+    partition_dir.mkdir()
+    expected_df = _make_df()
+    fake_dataset = MagicMock()
+    fake_table = MagicMock()
+    fake_table.to_pandas.return_value = expected_df
+    fake_dataset.read.return_value = fake_table
+    with patch(
+        "learning.continuous_learner.pq.ParquetDataset", return_value=fake_dataset
+    ) as mock_dataset:
+        result = subject._load_features_dataframe(partition_dir, "20130101")
+    assert result is expected_df
+    filters = mock_dataset.call_args.kwargs["filters"]
+    assert filters == [("race_year", ">=", 2012)]
+
+
+def test_load_features_dataframe_directory_uses_train_start_minus_one(
+    tmp_path: Path,
+) -> None:
+    partition_dir = tmp_path / "partitioned"
+    partition_dir.mkdir()
+    fake_dataset = MagicMock()
+    fake_table = MagicMock()
+    fake_table.to_pandas.return_value = _make_df()
+    fake_dataset.read.return_value = fake_table
+    with patch(
+        "learning.continuous_learner.pq.ParquetDataset", return_value=fake_dataset
+    ) as mock_dataset:
+        subject._load_features_dataframe(partition_dir, "20060101")
+    filters = mock_dataset.call_args.kwargs["filters"]
+    assert filters == [("race_year", ">=", 2005)]
+
+
+# ---------------------------------------------------------------------------
+# skip_inverse / skip_enrichment (Change 4)
+# ---------------------------------------------------------------------------
+
+
+def test_run_skips_check_inverses_when_skip_inverse_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, skip_inverse=True)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment"),
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_not_called()
+
+
+def test_run_skips_analyze_enrichment_when_skip_enrichment_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, skip_enrichment=True)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_enrich.assert_not_called()
+
+
+def test_run_still_calls_inverses_and_enrichment_by_default() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_called_once()
+        mock_enrich.assert_called_once()
+
+
+def test_skip_inverse_default_is_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._skip_inverse is False
+
+
+def test_skip_enrichment_default_is_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._skip_enrichment is False
+
+
+def test_skip_inverse_true_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, skip_inverse=True)
+        assert learner._skip_inverse is True
+
+
+def test_skip_enrichment_true_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, skip_enrichment=True)
+        assert learner._skip_enrichment is True
+
+
+# ---------------------------------------------------------------------------
+# _resolve_backends (Change 1)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_backends_returns_category_default_when_arg_none_jra() -> None:
+    assert subject._resolve_backends(None, "jra") == ("catboost",)
+
+
+def test_resolve_backends_returns_category_default_when_arg_none_nar() -> None:
+    assert subject._resolve_backends(None, "nar") == ("xgboost",)
+
+
+def test_resolve_backends_falls_back_to_default_for_unknown_category() -> None:
+    from learning.feature_explorer import DEFAULT_BACKENDS
+
+    assert subject._resolve_backends(None, "mystery") == DEFAULT_BACKENDS
+
+
+def test_resolve_backends_parses_csv_into_tuple() -> None:
+    assert subject._resolve_backends("catboost,xgboost", "jra") == (
+        "catboost",
+        "xgboost",
+    )
+
+
+def test_resolve_backends_strips_whitespace_from_tokens() -> None:
+    assert subject._resolve_backends(" lightgbm , catboost ", "nar") == (
+        "lightgbm",
+        "catboost",
+    )
+
+
+def test_resolve_backends_raises_for_unknown_token() -> None:
+    with pytest.raises(ValueError, match="Unknown backend"):
+        subject._resolve_backends("catboost,bogus", "jra")
+
+
+# ---------------------------------------------------------------------------
+# _CATEGORY_TRAIN_START (Change 5)
+# ---------------------------------------------------------------------------
+
+
+def test_category_train_start_jra() -> None:
+    assert subject._CATEGORY_TRAIN_START["jra"] == "20130101"
+
+
+def test_category_train_start_nar() -> None:
+    assert subject._CATEGORY_TRAIN_START["nar"] == "20060101"
+
+
+def test_category_train_start_banei() -> None:
+    assert subject._CATEGORY_TRAIN_START["ban-ei"] == "20110101"
+
+
+# ---------------------------------------------------------------------------
+# main() resolution of train_start and backends (Changes 1 & 5)
+# ---------------------------------------------------------------------------
+
+
+def _capture_learner_kwargs(
+    captured: dict[str, object],
+) -> Callable[..., None]:
+    original_init = cast("Callable[..., None]", subject.ContinuousLearner.__init__)
+
+    def capturing_init(
+        self: subject.ContinuousLearner, *args: object, **kwargs: object
+    ) -> None:
+        original_init(self, *args, **kwargs)
+        captured.update(kwargs)
+
+    return capturing_init
+
+
+def test_main_resolves_train_start_for_jra_when_omitted(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["train_start"] == "20130101"
+
+
+def test_main_resolves_train_start_for_nar_when_omitted(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "nar",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["train_start"] == "20060101"
+
+
+def test_main_resolves_train_start_for_banei_when_omitted(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "ban-ei",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["train_start"] == "20110101"
+
+
+def test_main_train_start_arg_overrides_category_default(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--train-start",
+                "20180101",
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["train_start"] == "20180101"
+
+
+def test_main_resolves_backends_for_jra_when_omitted(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["backends"] == ("catboost",)
+
+
+def test_main_backends_arg_overrides_category_default(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--backends",
+                "catboost,xgboost",
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["backends"] == ("catboost", "xgboost")
+
+
+def test_main_forwards_docker_build_and_skip_flags(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--docker-build",
+                "--skip-inverse",
+                "--skip-enrichment",
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["docker_build"] is True
+    assert captured["skip_inverse"] is True
+    assert captured["skip_enrichment"] is True
+
+
+def test_main_docker_build_and_skip_flags_default_false(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["docker_build"] is False
+    assert captured["skip_inverse"] is False
+    assert captured["skip_enrichment"] is False
+
+
+# ---------------------------------------------------------------------------
+# _load_features_dataframe — real Hive-partitioned dir end-to-end
+# ---------------------------------------------------------------------------
+
+
+def test_load_features_dataframe_partitioned_dir_reads_only_recent_years(
+    tmp_path: Path,
+) -> None:
+    year_dir_2013 = tmp_path / "race_year=2013"
+    year_dir_2013.mkdir()
+    _make_df().drop(columns=["race_year"]).to_parquet(
+        year_dir_2013 / "part-0.parquet", index=False
+    )
+    year_dir_2014 = tmp_path / "race_year=2014"
+    year_dir_2014.mkdir()
+    _make_df().drop(columns=["race_year"]).to_parquet(
+        year_dir_2014 / "part-0.parquet", index=False
+    )
+    year_dir_2015 = tmp_path / "race_year=2015"
+    year_dir_2015.mkdir()
+    _make_df().drop(columns=["race_year"]).to_parquet(
+        year_dir_2015 / "part-0.parquet", index=False
+    )
+    df = subject._load_features_dataframe(tmp_path, "20150101")
+    assert not df.empty
+    assert set(df["race_year"].unique()) == {2014, 2015}
 
 

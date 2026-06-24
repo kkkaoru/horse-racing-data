@@ -16,11 +16,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Final, TypedDict
+from typing import Final, TypedDict, cast, get_args
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from learning.feature_explorer import (
+    CATEGORY_BACKENDS,
     DEFAULT_BACKENDS,
     DEFAULT_PARAMS,
     DEFAULT_TRAIN_START,
@@ -72,6 +74,12 @@ _TRAINING_SCRIPT: Final[dict[str, str]] = {
     "ban-ei": "train_finish_position_catboost_walk_forward.py",
 }
 
+_CATEGORY_TRAIN_START: Final[dict[str, str]] = {
+    "jra": "20130101",
+    "nar": "20060101",
+    "ban-ei": "20110101",
+}
+
 DEFAULT_DOCKER_TAG: Final[str] = "finish-position-predict-local:split2"
 DEFAULT_DEPLOY_THRESHOLD: Final[float] = 0.005
 DEFAULT_N_TRIALS: Final[int] = 20
@@ -95,6 +103,22 @@ _CONTAINER_MODELS_ROOT: Final[str] = (
 _MODEL_META_JSON_PATH: Final[str] = (
     "apps/finish-position-predict-container/src/predict_lib/model_meta.json"
 )
+
+
+def _load_features_dataframe(parquet_path: Path, train_start: str) -> pd.DataFrame:
+    """Read features, pruning Hive-partitioned year dirs older than the train window.
+
+    A directory path is treated as a ``race_year=YYYY/`` partitioned dataset and only
+    partitions at or after ``train_start`` (minus one year of warm-up history) are
+    read, which avoids loading decades of unused rows. A single file is read whole.
+    """
+    if parquet_path.is_dir():
+        min_year = int(train_start[:4]) - 1
+        dataset = pq.ParquetDataset(
+            str(parquet_path), filters=[("race_year", ">=", min_year)]
+        )
+        return dataset.read().to_pandas()
+    return pd.read_parquet(str(parquet_path))
 
 
 def write_filtered_parquet(
@@ -174,6 +198,9 @@ class ContinuousLearner:
         train_start: str = DEFAULT_TRAIN_START,
         deploy_threshold: float = DEFAULT_DEPLOY_THRESHOLD,
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+        docker_build: bool = False,
+        skip_inverse: bool = False,
+        skip_enrichment: bool = False,
         load_controller: AdaptiveLoadController | None = None,
     ) -> None:
         if category not in _TRAINING_SCRIPT:
@@ -207,6 +234,9 @@ class ContinuousLearner:
         self._train_start: str = train_start
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
+        self._docker_build: bool = docker_build
+        self._skip_inverse: bool = skip_inverse
+        self._skip_enrichment: bool = skip_enrichment
         self._stop: bool = False
         self._load_controller: AdaptiveLoadController | None = load_controller
 
@@ -254,8 +284,10 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
-            self._check_and_try_inverses(round_num, actual_trials)
-            self._analyze_feature_enrichment(round_num)
+            if not self._skip_inverse:
+                self._check_and_try_inverses(round_num, actual_trials)
+            if not self._skip_enrichment:
+                self._analyze_feature_enrichment(round_num)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed
@@ -516,8 +548,9 @@ class ContinuousLearner:
                 staged_dest = self._stage_model(model_dir, feature_names, model_version)
             _logger.info("│  [4/5] updating model_meta.json ...")
             prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
-            _logger.info("│  [5/5] rebuilding Docker image ...")
-            self._rebuild_docker()
+            if self._docker_build:
+                _logger.info("│  [5/5] rebuilding Docker image ...")
+                self._rebuild_docker()
             self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         except Exception:
             _logger.error("│  deploy failed — rolling back staged artifacts")
@@ -647,6 +680,24 @@ class ContinuousLearner:
             _logger.error("│    [rollback] failed to restore model_meta.json: %s", exc)
 
 
+def _resolve_backends(
+    backends_arg: str | None, category: str
+) -> tuple[ModelBackend, ...]:
+    """Parse a --backends CSV into validated ModelBackend tokens, or fall back per category."""
+    if backends_arg is None:
+        return CATEGORY_BACKENDS.get(category, DEFAULT_BACKENDS)
+    allowed = get_args(ModelBackend)
+    resolved: list[ModelBackend] = []
+    for token in backends_arg.split(","):
+        name = token.strip()
+        if name not in allowed:
+            raise ValueError(
+                f"Unknown backend {name!r}. Valid backends: {sorted(allowed)}"
+            )
+        resolved.append(cast("ModelBackend", name))
+    return tuple(resolved)
+
+
 def _setup_signal_handler(learner: ContinuousLearner) -> None:
     def _handler(signum: int, _frame: object) -> None:
         _ = signum
@@ -674,10 +725,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-rounds", type=int, default=None)
     parser.add_argument("--min-trials", type=int, default=5)
     parser.add_argument("--max-trials", type=int, default=50)
+    parser.add_argument("--backends", type=str, default=None)
+    parser.add_argument("--train-start", type=str, default=None)
+    parser.add_argument("--docker-build", action="store_true")
+    parser.add_argument("--skip-inverse", action="store_true")
+    parser.add_argument("--skip-enrichment", action="store_true")
     args = parser.parse_args(argv)
     setup_logging()
 
-    df = pd.read_parquet(str(args.features_parquet))
+    category = str(args.category)
+    train_start = (
+        str(args.train_start)
+        if args.train_start is not None
+        else _CATEGORY_TRAIN_START.get(category, DEFAULT_TRAIN_START)
+    )
+    df = _load_features_dataframe(args.features_parquet, train_start)
+    backends = _resolve_backends(args.backends, category)
     scripts_dir = Path(__file__).parent.parent
 
     load_controller = AdaptiveLoadController(
@@ -690,12 +753,17 @@ def main(argv: list[str] | None = None) -> None:
         learner = ContinuousLearner(
             registry=registry,
             df=df,
-            category=str(args.category),
+            category=category,
             repo_root=args.repo_root,
             scripts_dir=scripts_dir,
             docker_image_tag=str(args.docker_tag),
             n_trials_per_round=int(args.n_trials),
+            train_start=train_start,
             deploy_threshold=float(args.deploy_threshold),
+            backends=backends,
+            docker_build=bool(args.docker_build),
+            skip_inverse=bool(args.skip_inverse),
+            skip_enrichment=bool(args.skip_enrichment),
             load_controller=load_controller,
         )
         _setup_signal_handler(learner)

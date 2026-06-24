@@ -40,6 +40,11 @@ VALIDATION_YEAR_POOL: Final[list[int]] = [2021, 2022, 2023, 2024, 2025]
 DEFAULT_VALIDATION_YEARS_PER_ROUND: Final[int] = 2
 MIN_FEATURES: Final[int] = 5
 DEFAULT_BACKENDS: Final[tuple[ModelBackend, ...]] = ("lightgbm", "xgboost", "catboost")
+CATEGORY_BACKENDS: Final[dict[str, tuple[ModelBackend, ...]]] = {
+    "jra": ("catboost",),
+    "nar": ("xgboost",),
+    "ban-ei": ("catboost",),
+}
 
 DEFAULT_PARAMS: Final[TrainingParams] = {
     "lambda_l2": 1.0,

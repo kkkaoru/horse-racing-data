@@ -959,3 +959,18 @@ def test_select_round_validation_years_raises_when_no_eligible_years() -> None:
 def test_validation_year_pool_constant() -> None:
     assert subject.VALIDATION_YEAR_POOL == [2021, 2022, 2023, 2024, 2025]
     assert subject.DEFAULT_VALIDATION_YEARS_PER_ROUND == 2
+
+
+# --- CATEGORY_BACKENDS ---
+
+
+def test_category_backends_jra_maps_to_catboost_only() -> None:
+    assert subject.CATEGORY_BACKENDS["jra"] == ("catboost",)
+
+
+def test_category_backends_nar_maps_to_xgboost_only() -> None:
+    assert subject.CATEGORY_BACKENDS["nar"] == ("xgboost",)
+
+
+def test_category_backends_banei_maps_to_catboost_only() -> None:
+    assert subject.CATEGORY_BACKENDS["ban-ei"] == ("catboost",)

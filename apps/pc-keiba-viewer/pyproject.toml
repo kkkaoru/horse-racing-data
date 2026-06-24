@@ -60,6 +60,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
+parallel = true
 omit = ["src/scripts/finish_position_transformer/__main__.py"]
 
 [tool.coverage.report]
