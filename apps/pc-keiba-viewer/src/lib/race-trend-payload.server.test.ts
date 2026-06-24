@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   buildPast14WindowForTargetMock: vi.fn<(...args: never[]) => unknown>(),
   fetchRaceTrendDailyTrackMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceDetailMock: vi.fn<(...args: never[]) => unknown>(),
+  getLatestTanshoOddsFromHotD1Mock: vi.fn<(...args: never[]) => unknown>(),
   getRaceRunnersMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceRunningStylesWithCacheMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendPast14StarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../db/d1-trend-queries.server", () => ({
   buildPast14WindowForTarget: mocks.buildPast14WindowForTargetMock,
+  getLatestTanshoOddsFromHotD1: mocks.getLatestTanshoOddsFromHotD1Mock,
   getRaceTrendPast14StarterRows: mocks.getRaceTrendPast14StarterRowsMock,
   getRaceTrendRunningStylesFromD1: mocks.getRaceTrendRunningStylesFromD1Mock,
   getRaceTrendTodayRunningStylesFromD1: mocks.getRaceTrendTodayRunningStylesFromD1Mock,
@@ -49,6 +51,7 @@ vi.mock("./running-style-cache.server", () => ({
 const {
   buildPast14WindowForTargetMock,
   fetchRaceTrendDailyTrackMock,
+  getLatestTanshoOddsFromHotD1Mock,
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceRunningStylesWithCacheMock,
@@ -184,6 +187,7 @@ const buildOptions = () => ({
 beforeEach(() => {
   buildPast14WindowForTargetMock.mockReset();
   fetchRaceTrendDailyTrackMock.mockReset();
+  getLatestTanshoOddsFromHotD1Mock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceRunningStylesWithCacheMock.mockReset();
@@ -195,6 +199,7 @@ beforeEach(() => {
   safeGetCloudflareEnvMock.mockReset();
   safeGetCloudflareEnvMock.mockResolvedValue(null);
   buildPast14WindowForTargetMock.mockReturnValue({ endYmd: "20260528", startYmd: "20260515" });
+  getLatestTanshoOddsFromHotD1Mock.mockResolvedValue(new Map());
   getRaceRunningStylesWithCacheMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([]);

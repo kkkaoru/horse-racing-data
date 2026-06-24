@@ -81,3 +81,67 @@ export const mergeTodaySiblingRunnerData = (
     return entry ? mergeRowWithEntry(row, entry) : row;
   });
 };
+
+// Tansho-odds enrichment mirrors the wakuban / trainer merge above but for
+// the (race-trend DO) → viewer path. The DO state never carries
+// tanshoOdds / tanshoPopularity because its self-pull SQL lives in
+// REALTIME_DB while live odds land in REALTIME_HOT_DB (separate D1 binding).
+// The viewer holds both bindings, so it enriches the do-hit rows in-place.
+// Numeric inputs match the storage format produced by `toStarterRow` in the
+// legacy D1 path: tanshoOddsTenth is the odds value * 10 padded to width 4,
+// tanshoPopularity is the rank padded to width 2 — so the renderer can treat
+// DO-hit and legacy rows identically.
+export interface TanshoOddsEnrichmentEntry {
+  raceKey: string;
+  umaban: string;
+  tanshoOddsTenth: number | null;
+  tanshoPopularity: number | null;
+}
+
+const TANSHO_ODDS_WIDTH = 4;
+const TANSHO_POPULARITY_WIDTH = 2;
+
+const padNumericString = (value: number | null, width: number): string | null =>
+  value === null ? null : String(value).padStart(width, "0");
+
+const buildOddsKey = (raceKey: string, umaban: string): string =>
+  `${raceKey}:${normalizeUmabanForKey(umaban)}`;
+
+const buildStarterRaceKey = (row: RaceTrendStarterRow): string =>
+  [row.source, row.kaisaiNen, row.kaisaiTsukihi, row.keibajoCode, row.raceBango].join(":");
+
+const pickTanshoString = (
+  current: string | null,
+  incoming: number | null,
+  width: number,
+): string | null => {
+  if (current !== null && current !== "") return current;
+  return padNumericString(incoming, width);
+};
+
+export const mergeTanshoOddsEnrichment = (
+  rows: ReadonlyArray<RaceTrendStarterRow>,
+  entries: ReadonlyArray<TanshoOddsEnrichmentEntry>,
+): RaceTrendStarterRow[] => {
+  if (entries.length === 0) return rows.slice();
+  const lookup = new Map<string, TanshoOddsEnrichmentEntry>();
+  for (const entry of entries) {
+    lookup.set(buildOddsKey(entry.raceKey, entry.umaban), entry);
+  }
+  return rows.map((row) => {
+    const umaban = row.umaban;
+    if (umaban === null || umaban === "") return row;
+    const key = buildOddsKey(buildStarterRaceKey(row), umaban);
+    const odds = lookup.get(key);
+    if (!odds) return row;
+    return {
+      ...row,
+      tanshoOdds: pickTanshoString(row.tanshoOdds, odds.tanshoOddsTenth, TANSHO_ODDS_WIDTH),
+      tanshoPopularity: pickTanshoString(
+        row.tanshoPopularity,
+        odds.tanshoPopularity,
+        TANSHO_POPULARITY_WIDTH,
+      ),
+    };
+  });
+};

@@ -11,6 +11,7 @@ import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily
 
 import {
   buildPast14WindowForTarget,
+  getLatestTanshoOddsFromHotD1,
   getRaceTrendPast14StarterRows,
   getRaceTrendRunningStylesFromD1,
   getRaceTrendTodayRunningStylesFromD1,
@@ -41,7 +42,9 @@ import type {
 } from "./race-types";
 import { getRaceRunningStylesWithCache } from "./running-style-cache.server";
 import {
+  mergeTanshoOddsEnrichment,
   mergeTodaySiblingRunnerData,
+  type TanshoOddsEnrichmentEntry,
   type TodaySiblingRunnerEntry,
 } from "./today-sibling-runner-merge";
 
@@ -121,6 +124,35 @@ const safeLegacyTodayPromise = (
 const safeSiblingRunnerEntriesPromise = (
   promise: Promise<TodaySiblingRunnerEntry[]>,
 ): Promise<TodaySiblingRunnerEntry[]> => promise.catch(() => []);
+
+// Tansho odds live in REALTIME_HOT_DB (separate D1 binding) — the
+// race-trend DO cannot join across databases so the do-hit starter rows
+// arrive with tanshoOdds / tanshoPopularity null. Fetch the same map the
+// legacy do-miss path uses and translate it into the merge format. A
+// missing binding (preview deploy) or a query failure surfaces as an
+// empty array so the trend section degrades to "-" rather than 500.
+const ODDS_TENTH_MULTIPLIER = 10;
+
+const buildTanshoEnrichmentEntries = (
+  oddsMap: Map<string, Map<string, { odds: number | null; rank: number | null }>>,
+): TanshoOddsEnrichmentEntry[] => {
+  const entries: TanshoOddsEnrichmentEntry[] = [];
+  for (const [raceKey, perHorse] of oddsMap) {
+    for (const [umaban, odds] of perHorse) {
+      entries.push({
+        raceKey,
+        tanshoOddsTenth: odds.odds === null ? null : Math.round(odds.odds * ODDS_TENTH_MULTIPLIER),
+        tanshoPopularity: odds.rank,
+        umaban,
+      });
+    }
+  }
+  return entries;
+};
+
+const safeTanshoEnrichmentPromise = (
+  promise: Promise<TanshoOddsEnrichmentEntry[]>,
+): Promise<TanshoOddsEnrichmentEntry[]> => promise.catch(() => []);
 
 const toCurrentRunningStyles = (
   rows: ReadonlyArray<{ horseNumber: number; predictedLabel: RaceTrendRunningStyle }>,
@@ -248,9 +280,27 @@ export const buildRaceTrendRawPayloadForRace = async ({
             year: race.kaisaiNen,
           }),
         );
-  const todaySiblingRows = mergeTodaySiblingRunnerData(
+  const todaySiblingRowsWithRunner = mergeTodaySiblingRunnerData(
     todaySiblingRowsFromSnapshots,
     siblingRunnerEntries,
+  );
+  // Tansho enrichment: only the do-hit path needs it because the legacy
+  // do-miss path already returns starter rows with tanshoOdds /
+  // tanshoPopularity populated by getRaceTrendTodayStarterRows. Skipping the
+  // hot-DB round-trip on do-miss avoids the duplicate query without
+  // changing the rendered output.
+  const tanshoEnrichmentEntries =
+    sourceHeader === "do-hit" && todaySiblingRowsWithRunner.length > 0
+      ? await safeTanshoEnrichmentPromise(
+          getLatestTanshoOddsFromHotD1({
+            env: env ?? null,
+            raceKeys: Array.from(new Set(todaySiblingRowsWithRunner.map(starterRaceKey))),
+          }).then((map) => buildTanshoEnrichmentEntries(map)),
+        )
+      : [];
+  const todaySiblingRows = mergeTanshoOddsEnrichment(
+    todaySiblingRowsWithRunner,
+    tanshoEnrichmentEntries,
   );
   const starterRows = mergeStarterRows(past14Rows, todaySiblingRows);
   const currentRunningStyles = await currentRunningStylesPromise;

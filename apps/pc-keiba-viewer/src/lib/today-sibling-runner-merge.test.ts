@@ -4,7 +4,9 @@ import { expect, it } from "vitest";
 
 import {
   buildTodaySiblingRunnerLookup,
+  mergeTanshoOddsEnrichment,
   mergeTodaySiblingRunnerData,
+  type TanshoOddsEnrichmentEntry,
   type TodaySiblingRunnerEntry,
 } from "./today-sibling-runner-merge";
 
@@ -209,4 +211,85 @@ it("mergeTodaySiblingRunnerData supports multiple rows across races", () => {
   expect(merged[0]?.chokyoshiName).toBe("A");
   expect(merged[1]?.wakuban).toBe("2");
   expect(merged[1]?.chokyoshiName).toBe("B");
+});
+
+it("mergeTanshoOddsEnrichment returns rows unchanged when entries is empty", () => {
+  const row = buildRow({ raceBango: "01", umaban: "01" });
+  const merged = mergeTanshoOddsEnrichment([row], []);
+  expect(merged).toStrictEqual([row]);
+});
+
+it("mergeTanshoOddsEnrichment populates tanshoOdds + tanshoPopularity by raceKey + umaban", () => {
+  const row = buildRow({ raceBango: "01", umaban: "01" });
+  const entries: TanshoOddsEnrichmentEntry[] = [
+    {
+      raceKey: "jra:2026:0607:05:01",
+      tanshoOddsTenth: 42,
+      tanshoPopularity: 3,
+      umaban: "1",
+    },
+  ];
+  const merged = mergeTanshoOddsEnrichment([row], entries);
+  expect(merged[0]?.tanshoOdds).toBe("0042");
+  expect(merged[0]?.tanshoPopularity).toBe("03");
+});
+
+it("mergeTanshoOddsEnrichment leaves rows untouched when the umaban does not match", () => {
+  const row = buildRow({ raceBango: "01", umaban: "07" });
+  const entries: TanshoOddsEnrichmentEntry[] = [
+    {
+      raceKey: "jra:2026:0607:05:01",
+      tanshoOddsTenth: 42,
+      tanshoPopularity: 3,
+      umaban: "1",
+    },
+  ];
+  const merged = mergeTanshoOddsEnrichment([row], entries);
+  expect(merged[0]?.tanshoOdds).toBe(null);
+  expect(merged[0]?.tanshoPopularity).toBe(null);
+});
+
+it("mergeTanshoOddsEnrichment preserves an already-populated tanshoOdds", () => {
+  const row = buildRow({ raceBango: "01", tanshoOdds: "0099", umaban: "01" });
+  const entries: TanshoOddsEnrichmentEntry[] = [
+    {
+      raceKey: "jra:2026:0607:05:01",
+      tanshoOddsTenth: 42,
+      tanshoPopularity: 3,
+      umaban: "1",
+    },
+  ];
+  const merged = mergeTanshoOddsEnrichment([row], entries);
+  expect(merged[0]?.tanshoOdds).toBe("0099");
+  expect(merged[0]?.tanshoPopularity).toBe("03");
+});
+
+it("mergeTanshoOddsEnrichment treats null tanshoOddsTenth as a no-op for that field", () => {
+  const row = buildRow({ raceBango: "01", umaban: "01" });
+  const entries: TanshoOddsEnrichmentEntry[] = [
+    {
+      raceKey: "jra:2026:0607:05:01",
+      tanshoOddsTenth: null,
+      tanshoPopularity: 5,
+      umaban: "1",
+    },
+  ];
+  const merged = mergeTanshoOddsEnrichment([row], entries);
+  expect(merged[0]?.tanshoOdds).toBe(null);
+  expect(merged[0]?.tanshoPopularity).toBe("05");
+});
+
+it("mergeTanshoOddsEnrichment skips rows whose umaban is null or empty", () => {
+  const row = buildRow({ raceBango: "01", umaban: null });
+  const entries: TanshoOddsEnrichmentEntry[] = [
+    {
+      raceKey: "jra:2026:0607:05:01",
+      tanshoOddsTenth: 42,
+      tanshoPopularity: 3,
+      umaban: "1",
+    },
+  ];
+  const merged = mergeTanshoOddsEnrichment([row], entries);
+  expect(merged[0]?.tanshoOdds).toBe(null);
+  expect(merged[0]?.tanshoPopularity).toBe(null);
 });
