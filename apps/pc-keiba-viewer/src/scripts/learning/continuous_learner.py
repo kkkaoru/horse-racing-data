@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -114,21 +115,39 @@ _CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
 DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
 
 
+def _load_partitioned_features(glob_pattern: str, min_year: int) -> pl.DataFrame:
+    """Load Hive-partitioned parquet, tolerating per-year column dtype drift.
+
+    The fast path is a single lazy ``scan_parquet`` over the glob so the ``race_year``
+    predicate is pushed into Hive partition pruning. Year partitions written at
+    different times can disagree on a column's dtype (e.g. ``umaban`` is ``Int32`` in
+    some years and ``Float64`` in others), which makes that unified scan raise
+    ``SchemaError``. On that error each file is scanned independently and concatenated
+    with ``diagonal_relaxed`` so mismatched numeric columns are promoted to a common
+    supertype; pruning and dtype promotion are both preserved.
+    """
+    predicate = pl.col("race_year") >= min_year
+    try:
+        return (
+            pl.scan_parquet(glob_pattern, hive_partitioning=True).filter(predicate).collect()
+        )
+    except pl.exceptions.SchemaError:
+        files = sorted(glob.glob(glob_pattern, recursive=True))
+        scans = [pl.scan_parquet(f, hive_partitioning=True) for f in files]
+        return pl.concat(scans, how="diagonal_relaxed").filter(predicate).collect()
+
+
 def _load_features_dataframe(parquet_path: Path, train_start: str) -> pl.DataFrame:
     """Read features, pruning Hive-partitioned year dirs older than the train window.
 
     A directory path is treated as a ``race_year=YYYY/`` partitioned dataset and only
     partitions at or after ``train_start`` (minus one year of warm-up history) are
-    read, which avoids loading decades of unused rows. The lazy ``scan_parquet`` pushes
-    the ``race_year`` predicate into the Hive partition pruning so older year dirs are
-    never opened. A single file is read whole.
+    read, which avoids loading decades of unused rows. A single file is read whole.
     """
     if parquet_path.is_dir():
         min_year = int(train_start[:4]) - 1
-        return (
-            pl.scan_parquet(str(parquet_path / "**" / "*.parquet"), hive_partitioning=True)
-            .filter(pl.col("race_year") >= min_year)
-            .collect()
+        return _load_partitioned_features(
+            str(parquet_path / "**" / "*.parquet"), min_year
         )
     return pl.read_parquet(str(parquet_path))
 
@@ -136,12 +155,25 @@ def _load_features_dataframe(parquet_path: Path, train_start: str) -> pl.DataFra
 def write_filtered_parquet(
     df: pl.DataFrame, feature_names: list[str], output_dir: Path
 ) -> Path:
-    keep = set(META_COLUMNS) | _LABEL_COLS | set(feature_names)
+    """Write the selected columns as a ``race_year=YYYY/`` Hive-partitioned dataset.
+
+    The production training scripts read features with ``load_parquet_dir``, which globs
+    for ``race_year=*/*.parquet``; a flat file is not discoverable that way. ``race_year``
+    is always retained even when it is not a selected feature so each partition can be
+    keyed by it. The returned path is the dataset directory, which is what the caller
+    passes to the training script.
+    """
+    keep = set(META_COLUMNS) | _LABEL_COLS | set(feature_names) | {"race_year"}
     cols = [c for c in df.columns if c in keep]
+    filtered = df.select(cols)
     output_dir.mkdir(parents=True, exist_ok=True)
-    out = output_dir / "features.parquet"
-    df.select(cols).write_parquet(out)
-    return out
+    for year in sorted(filtered["race_year"].unique().to_list()):
+        year_dir = output_dir / f"race_year={year}"
+        year_dir.mkdir(parents=True, exist_ok=True)
+        filtered.filter(pl.col("race_year") == year).write_parquet(
+            year_dir / "part-0.parquet"
+        )
+    return output_dir
 
 
 class AdaptiveLoadController:

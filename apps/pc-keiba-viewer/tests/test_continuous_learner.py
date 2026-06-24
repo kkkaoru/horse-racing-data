@@ -113,7 +113,7 @@ def _make_learner(
 def test_write_filtered_parquet_keeps_feature_and_meta_cols(tmp_path: Path) -> None:
     df = _make_df()
     out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
-    result = pl.read_parquet(out)
+    result = pl.read_parquet(sorted(out.glob("race_year=*/*.parquet")))
     assert "feat_speed" in result.columns
     assert "race_id" in result.columns
     assert "finish_position" in result.columns
@@ -122,7 +122,7 @@ def test_write_filtered_parquet_keeps_feature_and_meta_cols(tmp_path: Path) -> N
 def test_write_filtered_parquet_excludes_non_selected_features(tmp_path: Path) -> None:
     df = _make_df()
     out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
-    result = pl.read_parquet(out)
+    result = pl.read_parquet(sorted(out.glob("race_year=*/*.parquet")))
     assert "feat_jockey" not in result.columns
 
 
@@ -134,11 +134,33 @@ def test_write_filtered_parquet_creates_directory_if_missing(tmp_path: Path) -> 
     assert output_dir.exists()
 
 
-def test_write_filtered_parquet_returns_path_to_parquet(tmp_path: Path) -> None:
+def test_write_filtered_parquet_returns_dataset_directory(tmp_path: Path) -> None:
     df = _make_df()
     out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
-    assert out.name == "features.parquet"
-    assert out.exists()
+    assert out == tmp_path / "out"
+    assert out.is_dir()
+
+
+def test_write_filtered_parquet_is_hive_partitioned_by_year(tmp_path: Path) -> None:
+    df = _make_df()
+    out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
+    partitions = sorted(p.name for p in out.glob("race_year=*") if p.is_dir())
+    assert partitions == ["race_year=2023", "race_year=2024"]
+
+
+def test_write_filtered_parquet_partition_holds_only_its_year(tmp_path: Path) -> None:
+    df = _make_df()
+    out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
+    part = pl.read_parquet(out / "race_year=2023" / "part-0.parquet")
+    assert part["race_year"].unique().to_list() == [2023]
+    assert part.height == 12
+
+
+def test_write_filtered_parquet_keeps_race_year_when_not_a_feature(tmp_path: Path) -> None:
+    df = _make_df()
+    out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
+    result = pl.read_parquet(sorted(out.glob("race_year=*/*.parquet")))
+    assert "race_year" in result.columns
 
 
 # ---------------------------------------------------------------------------
@@ -2520,6 +2542,45 @@ def test_load_features_dataframe_directory_uses_train_start_minus_one(
     _write_year_partition(partition_dir, 2006)
     result = subject._load_features_dataframe(partition_dir, "20060101")
     assert set(result["race_year"].unique().to_list()) == {2005, 2006}
+
+
+def test_load_features_dataframe_directory_promotes_mismatched_umaban_dtype(
+    tmp_path: Path,
+) -> None:
+    partition_dir = tmp_path / "partitioned"
+    int_year_dir = partition_dir / "race_year=2013"
+    int_year_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {"umaban": pl.Series([1, 2], dtype=pl.Int32), "feat_speed": [0.1, 0.2]}
+    ).write_parquet(int_year_dir / "part-0.parquet")
+    float_year_dir = partition_dir / "race_year=2014"
+    float_year_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {"umaban": pl.Series([3.0, 4.0], dtype=pl.Float64), "feat_speed": [0.3, 0.4]}
+    ).write_parquet(float_year_dir / "part-0.parquet")
+    result = subject._load_features_dataframe(partition_dir, "20140101")
+    assert result["umaban"].dtype == pl.Float64
+    assert set(result["race_year"].unique().to_list()) == {2013, 2014}
+
+
+def test_load_features_dataframe_directory_prunes_old_years_on_dtype_mismatch(
+    tmp_path: Path,
+) -> None:
+    partition_dir = tmp_path / "partitioned"
+    old_year_dir = partition_dir / "race_year=2011"
+    old_year_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {"umaban": pl.Series([1, 2], dtype=pl.Int32), "feat_speed": [0.1, 0.2]}
+    ).write_parquet(old_year_dir / "part-0.parquet")
+    recent_year_dir = partition_dir / "race_year=2013"
+    recent_year_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {"umaban": pl.Series([3.0, 4.0], dtype=pl.Float64), "feat_speed": [0.3, 0.4]}
+    ).write_parquet(recent_year_dir / "part-0.parquet")
+    # train_start 20130101 → min_year = 2012, so the 2011 partition is pruned even
+    # though the SchemaError fallback path scans every file before filtering.
+    result = subject._load_features_dataframe(partition_dir, "20130101")
+    assert set(result["race_year"].unique().to_list()) == {2013}
 
 
 # ---------------------------------------------------------------------------
