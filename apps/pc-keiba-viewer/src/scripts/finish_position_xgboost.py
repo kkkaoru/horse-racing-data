@@ -55,6 +55,7 @@ DEFAULT_LEARNING_RATE = 0.05
 DEFAULT_MAX_DEPTH = 8
 DEFAULT_MIN_CHILD_WEIGHT = 30
 DEFAULT_LAMBDA = 1.0
+DEFAULT_NTHREAD = 6
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -71,6 +72,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     walk.add_argument("--max-depth", type=int, default=DEFAULT_MAX_DEPTH)
     walk.add_argument("--min-child-weight", type=int, default=DEFAULT_MIN_CHILD_WEIGHT)
     walk.add_argument("--reg-lambda", type=float, default=DEFAULT_LAMBDA)
+    walk.add_argument("--nthread", type=int, default=DEFAULT_NTHREAD,
+                      help="XGBoost thread count (HARD cap 6 per memory budget rule)")
     walk.add_argument("--early-stopping-rounds", type=int, default=30)
     walk.add_argument("--seed", type=int, default=20260519)
     walk.add_argument("--train-end-date", type=str, default=None,
@@ -86,10 +89,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_parquet_dir(path: Path) -> pd.DataFrame:
+def _extract_year(path: Path) -> int:
+    for parent in path.parents:
+        if parent.name.startswith("race_year="):
+            return int(parent.name.split("=")[1])
+    return 9999
+
+
+def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
         raise ValueError(f"no parquet files found under {path}")
+    if year_max is not None:
+        parts = [p for p in parts if _extract_year(p) <= year_max]
+        if not parts:
+            raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 
@@ -159,6 +173,7 @@ def train_xgboost_ranker(
         "subsample": getattr(args, "subsample", 1.0),
         "colsample_bytree": getattr(args, "colsample_bytree", 1.0),
         "tree_method": "hist",
+        "nthread": min(int(getattr(args, "nthread", DEFAULT_NTHREAD)), DEFAULT_NTHREAD),
         "seed": args.seed,
         "verbosity": 1,
     }

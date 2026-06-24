@@ -76,10 +76,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_parquet_dir(path: Path) -> pd.DataFrame:
+def _extract_year(path: Path) -> int:
+    for parent in path.parents:
+        if parent.name.startswith("race_year="):
+            return int(parent.name.split("=")[1])
+    return 9999
+
+
+def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
         raise ValueError(f"no parquet files found under {path}")
+    if year_max is not None:
+        parts = [p for p in parts if _extract_year(p) <= year_max]
+        if not parts:
+            raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
 
 

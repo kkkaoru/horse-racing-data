@@ -565,6 +565,43 @@ def test_load_parquet_dir_raises_on_empty_directory(tmp_path: Path):
         subject.load_parquet_dir(tmp_path)
 
 
+def test_load_parquet_dir_year_max_filters_out_later_years(tmp_path: Path):
+    older = tmp_path / "race_year=2022"
+    older.mkdir(parents=True)
+    newer = tmp_path / "race_year=2024"
+    newer.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1, 2]})), older / "part.parquet")
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [9, 9]})), newer / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, year_max=2022)
+    assert sorted(result["x"].tolist()) == [1, 2]
+
+
+def test_load_parquet_dir_year_max_keeps_boundary_year(tmp_path: Path):
+    boundary = tmp_path / "race_year=2024"
+    boundary.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [5, 6]})), boundary / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, year_max=2024)
+    assert sorted(result["x"].tolist()) == [5, 6]
+
+
+def test_load_parquet_dir_year_max_raises_when_all_filtered(tmp_path: Path):
+    newer = tmp_path / "race_year=2025"
+    newer.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1]})), newer / "part.parquet")
+    with pytest.raises(ValueError, match="for year_max=2020"):
+        subject.load_parquet_dir(tmp_path, year_max=2020)
+
+
+def test_extract_year_reads_partition_directory_name(tmp_path: Path):
+    part = tmp_path / "race_year=2023" / "part-0.parquet"
+    assert subject._extract_year(part) == 2023
+
+
+def test_extract_year_returns_fallback_when_no_partition(tmp_path: Path):
+    part = tmp_path / "no-partition" / "part-0.parquet"
+    assert subject._extract_year(part) == 9999
+
+
 # ---------------------------------------------------------------------------
 # train_catboost_ranker (with CatBoost mocked out)
 # ---------------------------------------------------------------------------

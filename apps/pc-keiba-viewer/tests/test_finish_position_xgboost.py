@@ -59,6 +59,7 @@ def _make_args(**overrides: object) -> argparse.Namespace:
         early_stopping_rounds=5,
         seed=42,
         objective="pairwise",
+        nthread=6,
     )
     for k, v in overrides.items():
         setattr(ns, k, v)
@@ -348,6 +349,43 @@ def test_load_parquet_dir_raises_on_empty_directory(tmp_path: Path):
         subject.load_parquet_dir(tmp_path)
 
 
+def test_load_parquet_dir_year_max_filters_out_later_years(tmp_path: Path):
+    older = tmp_path / "race_year=2022"
+    older.mkdir(parents=True)
+    newer = tmp_path / "race_year=2024"
+    newer.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1, 2]})), older / "part.parquet")
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [9, 9]})), newer / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, year_max=2022)
+    assert sorted(result["x"].tolist()) == [1, 2]
+
+
+def test_load_parquet_dir_year_max_keeps_boundary_year(tmp_path: Path):
+    boundary = tmp_path / "race_year=2024"
+    boundary.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [5, 6]})), boundary / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, year_max=2024)
+    assert sorted(result["x"].tolist()) == [5, 6]
+
+
+def test_load_parquet_dir_year_max_raises_when_all_filtered(tmp_path: Path):
+    newer = tmp_path / "race_year=2025"
+    newer.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1]})), newer / "part.parquet")
+    with pytest.raises(ValueError, match="for year_max=2020"):
+        subject.load_parquet_dir(tmp_path, year_max=2020)
+
+
+def test_extract_year_reads_partition_directory_name(tmp_path: Path):
+    part = tmp_path / "race_year=2023" / "part-0.parquet"
+    assert subject._extract_year(part) == 2023
+
+
+def test_extract_year_returns_fallback_when_no_partition(tmp_path: Path):
+    part = tmp_path / "no-partition" / "part-0.parquet"
+    assert subject._extract_year(part) == 9999
+
+
 # ---------------------------------------------------------------------------
 # OOT fence: train_end must be day BEFORE validation_from_date
 # ---------------------------------------------------------------------------
@@ -536,6 +574,18 @@ def test_parse_args_walk_forward_defaults():
     assert args.validation_from_date is None
     assert args.num_rounds == 500
     assert args.seed == 20260519
+    assert args.nthread == 6
+
+
+def test_parse_args_walk_forward_accepts_nthread_override():
+    args = subject.parse_args([
+        "walk-forward",
+        "--csv", "tmp/feat",
+        "--output-report", "tmp/report.json",
+        "--output-predictions-dir", "tmp/preds",
+        "--nthread", "4",
+    ])
+    assert args.nthread == 4
 
 
 def test_parse_args_oot_flags_are_accepted():
@@ -718,6 +768,147 @@ def test_train_xgboost_ranker_uses_ndcg_objective_when_specified(
     subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
 
     assert captured_params[0]["objective"] == "rank:ndcg"
+
+
+def test_train_xgboost_ranker_sets_nthread_to_six(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+
+    captured_params: list[dict[str, object]] = []
+
+    class FakeDMatrix:
+        def __init__(self, data: object, label: object = None, weight: object = None) -> None:
+            pass
+
+        def set_group(self, groups: object) -> None:
+            pass
+
+    fake_booster = _make_mock_booster()
+    fake_booster.predict.return_value = np.array([0.9, 0.5])
+
+    def fake_train(
+        params: dict[str, object], dtrain: object, **kwargs: object
+    ) -> MagicMock:
+        captured_params.append(params)
+        return fake_booster
+
+    monkeypatch.setattr(subject.xgb, "DMatrix", FakeDMatrix)
+    monkeypatch.setattr(subject.xgb, "train", fake_train)
+
+    args = _make_args(nthread=6)
+    subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
+
+    assert captured_params[0]["nthread"] == 6
+
+
+def test_train_xgboost_ranker_clamps_nthread_above_six(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+
+    captured_params: list[dict[str, object]] = []
+
+    class FakeDMatrix:
+        def __init__(self, data: object, label: object = None, weight: object = None) -> None:
+            pass
+
+        def set_group(self, groups: object) -> None:
+            pass
+
+    fake_booster = _make_mock_booster()
+    fake_booster.predict.return_value = np.array([0.9, 0.5])
+
+    def fake_train(
+        params: dict[str, object], dtrain: object, **kwargs: object
+    ) -> MagicMock:
+        captured_params.append(params)
+        return fake_booster
+
+    monkeypatch.setattr(subject.xgb, "DMatrix", FakeDMatrix)
+    monkeypatch.setattr(subject.xgb, "train", fake_train)
+
+    args = _make_args(nthread=16)
+    subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
+
+    assert captured_params[0]["nthread"] == 6
+
+
+def test_train_xgboost_ranker_defaults_nthread_when_arg_absent(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pd.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+
+    captured_params: list[dict[str, object]] = []
+
+    class FakeDMatrix:
+        def __init__(self, data: object, label: object = None, weight: object = None) -> None:
+            pass
+
+        def set_group(self, groups: object) -> None:
+            pass
+
+    fake_booster = _make_mock_booster()
+    fake_booster.predict.return_value = np.array([0.9, 0.5])
+
+    def fake_train(
+        params: dict[str, object], dtrain: object, **kwargs: object
+    ) -> MagicMock:
+        captured_params.append(params)
+        return fake_booster
+
+    monkeypatch.setattr(subject.xgb, "DMatrix", FakeDMatrix)
+    monkeypatch.setattr(subject.xgb, "train", fake_train)
+
+    args = argparse.Namespace(
+        relevance_rank1=3,
+        relevance_rank2=2,
+        relevance_rank3=1,
+        num_rounds=10,
+        learning_rate=0.05,
+        max_depth=3,
+        min_child_weight=5,
+        reg_lambda=1.0,
+        early_stopping_rounds=5,
+        seed=42,
+        objective="pairwise",
+    )
+    subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
+
+    assert captured_params[0]["nthread"] == 6
 
 
 def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
