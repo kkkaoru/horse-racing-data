@@ -2713,6 +2713,14 @@ const formatHassoJikokuFromRaceStart = (raceStartAtJst: string): string | null =
   return `${raceStartAtJst.slice(11, 13)}${raceStartAtJst.slice(14, 16)}`;
 };
 
+// Build a push-row whose starter list covers the FULL field (one row per
+// entry), not just the horses present in the result HTML. The previous
+// 3-result push permanently shrank race-trend DO state from 12 entries to
+// 3 result rows for any partial-result NAR card; the field-level DO merge
+// (mergeStarterRowLists) further preserves bataiju / odds / popularity the
+// alarm self-pull had already populated. Horses with a result row pick up
+// finishPosition + sohaTime; horses without one stay at finishPosition=0 so
+// the viewer still renders the row with "-" until the next push fills it in.
 const buildRaceTrendDailyTrackRow = ({
   entries,
   fetchedAt,
@@ -2720,30 +2728,33 @@ const buildRaceTrendDailyTrackRow = ({
   race,
   results,
 }: BuildRaceTrendRowArgs): RaceTrendDailyTrackRow => {
-  const entryByHorseNumber = new Map(entries.map((entry) => [entry.horseNumber, entry]));
-  const starterRows = results.map((result) => {
-    const entry = entryByHorseNumber.get(result.horseNumber);
+  const resultByHorseNumber = new Map(results.map((result) => [result.horseNumber, result]));
+  const starterRows = entries.map((entry) => {
+    const result = resultByHorseNumber.get(entry.horseNumber);
+    const finishPosition = result
+      ? Number.parseInt(result.finishPosition.replace(/\s+/gu, ""), 10) || 0
+      : 0;
     return {
-      bamei: entry?.horseName ?? result.horseName,
+      bamei: entry.horseName,
       bataiju: null,
       corner1: null,
       corner2: null,
       corner3: null,
       corner4: null,
-      finishPosition: Number.parseInt(result.finishPosition.replace(/\s+/gu, ""), 10) || 0,
+      finishPosition,
       hassoJikoku: formatHassoJikokuFromRaceStart(race.raceStartAtJst),
-      jockeyName: entry?.jockeyName ?? null,
+      jockeyName: entry.jockeyName,
       kaisaiNen: race.kaisaiNen,
       kaisaiTsukihi: race.kaisaiTsukihi,
       keibajoCode: race.keibajoCode,
       raceBango: race.raceBango,
       raceName: race.raceName,
       runnerCount: null,
-      sohaTime: result.time,
+      sohaTime: result?.time ?? null,
       source: race.source,
       tanshoOdds: null,
       tanshoPopularity: null,
-      umaban: result.horseNumber,
+      umaban: entry.horseNumber,
       wakuban: null,
       zogenFugo: null,
       zogenSa: null,

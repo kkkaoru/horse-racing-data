@@ -12,6 +12,7 @@ import type {
   RaceTrendDailyTrackRow,
   RaceTrendDailyTrackSource,
   RaceTrendDailyTrackState,
+  RaceTrendStarterRow,
 } from "horse-racing-realtime/race-trend-daily-track-types";
 import { deriveWakubanString } from "horse-racing-realtime/wakuban";
 import type { Env } from "../types";
@@ -508,7 +509,17 @@ interface ShouldOverwriteArgs {
   incoming: RaceTrendDailyTrackRow;
 }
 
-// Monotonic merge precedence (most → least significant):
+interface MergeStarterArgs {
+  current: RaceTrendStarterRow;
+  incoming: RaceTrendStarterRow;
+}
+
+interface MergeStarterRowListsArgs {
+  current: ReadonlyArray<RaceTrendStarterRow>;
+  incoming: ReadonlyArray<RaceTrendStarterRow>;
+}
+
+// Monotonic row-level merge precedence (most → least significant):
 // 1. Empty slot: always accept.
 // 2. Strictly newer `fetchedAt`: accept the newer snapshot.
 // 3. Equal `fetchedAt`: accept only if the incoming row carries equal or
@@ -526,6 +537,83 @@ const shouldOverwriteExistingRow = ({ current, incoming }: ShouldOverwriteArgs):
   return true;
 };
 
+// Per-starter non-null preservation. The result-fetch push payload arrives
+// with bataiju / tanshoOdds / tanshoPopularity / zogen always null because
+// `fetchAndStoreResults` only reads the result HTML (no weight + odds + entry
+// snapshot join). Without a field-level merge the push would stomp the
+// already-populated values the alarm-driven self-pull pulled from D1's
+// snapshot tables, leaving the viewer's race-trend with permanently blank
+// odds / weight columns. `finishPosition` uses pickFinishPosition semantics
+// (positive > 0 wins) so a partial push cannot demote a confirmed result.
+const pickNonEmptyString = (a: string | null, b: string | null): string | null =>
+  b !== null && b !== "" ? b : a;
+
+const pickFinishPosition = (a: number, b: number): number => (b > 0 ? b : a);
+
+const mergeStarterRow = ({ current, incoming }: MergeStarterArgs): RaceTrendStarterRow => ({
+  ...incoming,
+  bamei: pickNonEmptyString(current.bamei, incoming.bamei),
+  bataiju: pickNonEmptyString(current.bataiju, incoming.bataiju),
+  chokyoshiName: pickNonEmptyString(current.chokyoshiName ?? null, incoming.chokyoshiName ?? null),
+  corner1: pickNonEmptyString(current.corner1, incoming.corner1),
+  corner2: pickNonEmptyString(current.corner2, incoming.corner2),
+  corner3: pickNonEmptyString(current.corner3, incoming.corner3),
+  corner4: pickNonEmptyString(current.corner4, incoming.corner4),
+  finishPosition: pickFinishPosition(current.finishPosition, incoming.finishPosition),
+  hassoJikoku: pickNonEmptyString(current.hassoJikoku, incoming.hassoJikoku),
+  jockeyName: pickNonEmptyString(current.jockeyName, incoming.jockeyName),
+  raceName: pickNonEmptyString(current.raceName, incoming.raceName),
+  runnerCount: pickNonEmptyString(current.runnerCount, incoming.runnerCount),
+  sohaTime: pickNonEmptyString(current.sohaTime, incoming.sohaTime),
+  tanshoOdds: pickNonEmptyString(current.tanshoOdds, incoming.tanshoOdds),
+  tanshoPopularity: pickNonEmptyString(current.tanshoPopularity, incoming.tanshoPopularity),
+  wakuban: pickNonEmptyString(current.wakuban, incoming.wakuban),
+  zogenFugo: pickNonEmptyString(current.zogenFugo, incoming.zogenFugo),
+  zogenSa: pickNonEmptyString(current.zogenSa, incoming.zogenSa),
+});
+
+// Union by umaban: keep every starter row from current that is not in
+// incoming (so a 3-result push cannot shrink a 12-entry self-pulled card),
+// merge field-by-field for matching umaban (so finishPosition gets through
+// without stomping bataiju), and add brand-new umaban rows from incoming
+// (so an entry-only self-pull that later gains a stray push row still
+// surfaces every starter). umaban is the natural unique key per race —
+// duplicates within one list would already be a D1 invariant violation.
+const mergeStarterRowLists = ({
+  current,
+  incoming,
+}: MergeStarterRowListsArgs): RaceTrendStarterRow[] => {
+  const currentByUmaban = new Map(current.map((row) => [row.umaban, row]));
+  const mergedFromIncoming = incoming.map((incomingRow) => {
+    const matched = currentByUmaban.get(incomingRow.umaban);
+    if (!matched) return incomingRow;
+    currentByUmaban.delete(incomingRow.umaban);
+    return mergeStarterRow({ current: matched, incoming: incomingRow });
+  });
+  return [...mergedFromIncoming, ...currentByUmaban.values()];
+};
+
+// Field-level row merge: the row metadata (raceBango / raceKey / fetchedAt /
+// finishedAt / isComplete / runningStyles) follows the per-row monotonic rule
+// (newer-or-equally-complete wins) and the starter rows then merge per-umaban
+// so push-and-self-pull never clobber non-null odds / weight that the other
+// side already learned.
+const mergeRowFields = (
+  current: RaceTrendDailyTrackRow,
+  incoming: RaceTrendDailyTrackRow,
+): RaceTrendDailyTrackRow => ({
+  fetchedAt: incoming.fetchedAt,
+  finishedAt: incoming.finishedAt ?? current.finishedAt,
+  isComplete: incoming.isComplete || current.isComplete,
+  raceBango: incoming.raceBango,
+  raceKey: incoming.raceKey,
+  runningStyles: incoming.runningStyles.length > 0 ? incoming.runningStyles : current.runningStyles,
+  starterRows: mergeStarterRowLists({
+    current: current.starterRows,
+    incoming: incoming.starterRows,
+  }),
+});
+
 const mergeIncomingRow = ({
   existing,
   incoming,
@@ -535,7 +623,8 @@ const mergeIncomingRow = ({
   const baseRaces = existing ? { ...existing.races } : {};
   const currentRow = baseRaces[incoming.raceBango];
   const shouldOverwrite = shouldOverwriteExistingRow({ current: currentRow, incoming });
-  const nextRaces = shouldOverwrite ? { ...baseRaces, [incoming.raceBango]: incoming } : baseRaces;
+  const nextRow = shouldOverwrite && currentRow ? mergeRowFields(currentRow, incoming) : incoming;
+  const nextRaces = shouldOverwrite ? { ...baseRaces, [incoming.raceBango]: nextRow } : baseRaces;
   return {
     keibajoCode: parsed.keibajoCode,
     races: nextRaces,
@@ -823,6 +912,9 @@ export const __testables = {
   computeNextAlarmDelayMs,
   isRawSnapshotRow,
   mergeIncomingRow,
+  mergeRowFields,
+  mergeStarterRow,
+  mergeStarterRowLists,
   selectRaces,
   shouldOverwriteExistingRow,
 };

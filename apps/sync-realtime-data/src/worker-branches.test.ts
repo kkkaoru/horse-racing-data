@@ -1813,3 +1813,66 @@ it("fetch-results force-completes NAR partial after RESULT_FETCH_GIVE_UP_HOURS e
   );
   expect(recordPartialResultFetch).toHaveBeenCalledTimes(0);
 });
+
+// Bug B regression: when entries contain umaban 1..4 but results contain
+// only umaban 1, 2, 3, the push payload to RACE_TREND_DAILY_TRACK_DO must
+// still carry all 4 starter rows (the missing horse rendered with
+// finishPosition=0) so the viewer's race-trend section keeps the unranked
+// runner row. Pre-fix the push was built from results only and shrank to
+// 3 rows, which the field-level DO merge could only partly recover by
+// keeping prior alarm-self-pull state.
+it("fetch-results pushes one starter row per entry, including unranked horses", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, insertRaceResultSnapshot } = await import("./storage");
+  const {
+    fetchRacePage,
+    parseRaceEntries,
+    parseRaceResults,
+    parseRaceEntryHorseNumbers,
+    parseRaceResultExcludedHorseNumbers,
+  } = await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    buildRaceEntry({ horseName: "EntryA", horseNumber: "1", jockeyName: "JockeyA" }),
+    buildRaceEntry({ horseName: "EntryB", horseNumber: "2", jockeyName: "JockeyB" }),
+    buildRaceEntry({ horseName: "EntryC", horseNumber: "3", jockeyName: "JockeyC" }),
+    buildRaceEntry({ horseName: "EntryD", horseNumber: "4", jockeyName: "JockeyD" }),
+  ]);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue(["1", "2", "3", "4"]);
+  vi.mocked(parseRaceResultExcludedHorseNumbers).mockReturnValue([]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    buildRaceResult({ finishPosition: "1", horseNumber: "1", time: "1:25.0" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2", time: "1:25.4" }),
+    buildRaceResult({ finishPosition: "3", horseNumber: "3", time: "1:25.6" }),
+  ]);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(3);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    }),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+  const body = stubFetch.mock.calls[0]![1]!.body;
+  if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+  const parsed = JSON.parse(body) as {
+    starterRows: Array<{ finishPosition: number; sohaTime: string | null; umaban: string }>;
+  };
+  expect(parsed.starterRows.map((row) => row.umaban)).toStrictEqual(["1", "2", "3", "4"]);
+  expect(parsed.starterRows.map((row) => row.finishPosition)).toStrictEqual([1, 2, 3, 0]);
+  expect(parsed.starterRows.map((row) => row.sohaTime)).toStrictEqual([
+    "1:25.0",
+    "1:25.4",
+    "1:25.6",
+    null,
+  ]);
+});

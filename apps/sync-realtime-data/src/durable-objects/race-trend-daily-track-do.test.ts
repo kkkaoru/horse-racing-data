@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi, type Mock } from "vitest";
 import type {
   RaceTrendDailyTrackRow,
   RaceTrendDailyTrackState,
+  RaceTrendStarterRow,
 } from "horse-racing-realtime/race-trend-daily-track-types";
 import type { Env } from "../types";
 import {
@@ -1596,4 +1597,529 @@ it("__testables.buildRowsFromSnapshotResults derives wakuban for every entry-onl
     "8",
     "8",
   ]);
+});
+
+// Bug A — preserve non-null bataiju from existing row when the incoming
+// result-fetch push payload arrives with bataiju=null. Same shape covers
+// tanshoOdds, tanshoPopularity, zogenFugo, zogenSa (the result push always
+// nulls these because the result HTML carries no weight / odds).
+it("__testables.mergeStarterRow keeps current bataiju when incoming bataiju is null", () => {
+  const merged = __testables.mergeStarterRow({
+    current: {
+      bamei: "Horse",
+      bataiju: "452",
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 0,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: "4.2",
+      tanshoPopularity: "3",
+      umaban: "1",
+      wakuban: "1",
+      zogenFugo: "+",
+      zogenSa: "2",
+    },
+    incoming: {
+      bamei: "Horse",
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 1,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: "1:34.2",
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+  });
+  expect(merged.bataiju).toBe("452");
+  expect(merged.tanshoOdds).toBe("4.2");
+  expect(merged.tanshoPopularity).toBe("3");
+  expect(merged.zogenFugo).toBe("+");
+  expect(merged.zogenSa).toBe("2");
+  expect(merged.finishPosition).toBe(1);
+  expect(merged.sohaTime).toBe("1:34.2");
+  expect(merged.wakuban).toBe("1");
+});
+
+it("__testables.mergeStarterRow prefers incoming bataiju when current bataiju is null", () => {
+  const merged = __testables.mergeStarterRow({
+    current: {
+      bamei: "Horse",
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 0,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+    incoming: {
+      bamei: "Horse",
+      bataiju: "460",
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 0,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: "5.6",
+      tanshoPopularity: "4",
+      umaban: "1",
+      wakuban: "1",
+      zogenFugo: "-",
+      zogenSa: "4",
+    },
+  });
+  expect(merged.bataiju).toBe("460");
+  expect(merged.tanshoOdds).toBe("5.6");
+  expect(merged.tanshoPopularity).toBe("4");
+  expect(merged.zogenFugo).toBe("-");
+  expect(merged.zogenSa).toBe("4");
+});
+
+it("__testables.mergeStarterRow keeps positive current finishPosition when incoming is zero", () => {
+  const merged = __testables.mergeStarterRow({
+    current: {
+      bamei: "Horse",
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 2,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+    incoming: {
+      bamei: "Horse",
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 0,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+  });
+  expect(merged.finishPosition).toBe(2);
+});
+
+it("__testables.mergeStarterRow preserves current chokyoshiName when incoming omits it", () => {
+  const merged = __testables.mergeStarterRow({
+    current: {
+      bamei: "Horse",
+      bataiju: null,
+      chokyoshiName: "Trainer",
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 0,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: null,
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+    incoming: {
+      bamei: "Horse",
+      bataiju: null,
+      corner1: null,
+      corner2: null,
+      corner3: null,
+      corner4: null,
+      finishPosition: 1,
+      hassoJikoku: "1100",
+      jockeyName: "Jockey",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0531",
+      keibajoCode: "06",
+      raceBango: "03",
+      raceName: "TestRace",
+      runnerCount: null,
+      sohaTime: "1:34.2",
+      source: "jra",
+      tanshoOdds: null,
+      tanshoPopularity: null,
+      umaban: "1",
+      wakuban: null,
+      zogenFugo: null,
+      zogenSa: null,
+    },
+  });
+  expect(merged.chokyoshiName).toBe("Trainer");
+});
+
+// Bug B — when current has 3 starter rows from alarm-self-pull and incoming
+// push has 1 result row, the union must preserve all 3 entries while still
+// merging finishPosition into the matching umaban.
+it("__testables.mergeStarterRowLists keeps current umaban rows missing from incoming", () => {
+  const buildStarter1 = (): RaceTrendStarterRow => ({
+    bamei: "Horse",
+    bataiju: "452",
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    finishPosition: 0,
+    hassoJikoku: "1100",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceName: "TestRace",
+    runnerCount: null,
+    sohaTime: null,
+    source: "jra",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    umaban: "1",
+    wakuban: null,
+    zogenFugo: null,
+    zogenSa: null,
+  });
+  const buildStarter2 = (): RaceTrendStarterRow => ({
+    bamei: "Horse",
+    bataiju: "458",
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    finishPosition: 0,
+    hassoJikoku: "1100",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceName: "TestRace",
+    runnerCount: null,
+    sohaTime: null,
+    source: "jra",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    umaban: "2",
+    wakuban: null,
+    zogenFugo: null,
+    zogenSa: null,
+  });
+  const buildStarter3 = (): RaceTrendStarterRow => ({
+    bamei: "Horse",
+    bataiju: "470",
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    finishPosition: 0,
+    hassoJikoku: "1100",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceName: "TestRace",
+    runnerCount: null,
+    sohaTime: null,
+    source: "jra",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    umaban: "3",
+    wakuban: null,
+    zogenFugo: null,
+    zogenSa: null,
+  });
+  const buildPush1 = (): RaceTrendStarterRow => ({
+    bamei: "Horse",
+    bataiju: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    finishPosition: 1,
+    hassoJikoku: "1100",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceName: "TestRace",
+    runnerCount: null,
+    sohaTime: "1:34.2",
+    source: "jra",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    umaban: "1",
+    wakuban: null,
+    zogenFugo: null,
+    zogenSa: null,
+  });
+  const merged = __testables.mergeStarterRowLists({
+    current: [buildStarter1(), buildStarter2(), buildStarter3()],
+    incoming: [buildPush1()],
+  });
+  expect(merged).toHaveLength(3);
+  const byUmaban = new Map(merged.map((row) => [row.umaban, row]));
+  expect(byUmaban.get("1")!.bataiju).toBe("452");
+  expect(byUmaban.get("1")!.finishPosition).toBe(1);
+  expect(byUmaban.get("2")!.bataiju).toBe("458");
+  expect(byUmaban.get("3")!.bataiju).toBe("470");
+});
+
+it("__testables.mergeStarterRowLists adds incoming umaban rows not present in current", () => {
+  const buildStarter = (umabanArg: string): RaceTrendStarterRow => ({
+    bamei: "Horse",
+    bataiju: null,
+    corner1: null,
+    corner2: null,
+    corner3: null,
+    corner4: null,
+    finishPosition: 0,
+    hassoJikoku: "1100",
+    jockeyName: "Jockey",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0531",
+    keibajoCode: "06",
+    raceBango: "03",
+    raceName: "TestRace",
+    runnerCount: null,
+    sohaTime: null,
+    source: "jra",
+    tanshoOdds: null,
+    tanshoPopularity: null,
+    umaban: umabanArg,
+    wakuban: null,
+    zogenFugo: null,
+    zogenSa: null,
+  });
+  const merged = __testables.mergeStarterRowLists({
+    current: [buildStarter("1")],
+    incoming: [buildStarter("2"), buildStarter("3")],
+  });
+  expect(
+    merged.map((row) => row.umaban ?? "").toSorted((a, b) => a.localeCompare(b)),
+  ).toStrictEqual(["1", "2", "3"]);
+});
+
+it("__testables.mergeRowFields preserves current isComplete=true when incoming arrives with isComplete=false", () => {
+  const merged = __testables.mergeRowFields(
+    { ...JRA_ROW, fetchedAt: "2026-05-31T11:00:00+09:00", isComplete: true },
+    { ...JRA_ROW, fetchedAt: "2026-05-31T11:05:00+09:00", isComplete: false },
+  );
+  expect(merged.isComplete).toBe(true);
+  expect(merged.fetchedAt).toBe("2026-05-31T11:05:00+09:00");
+});
+
+it("__testables.mergeRowFields keeps current finishedAt when incoming finishedAt is null", () => {
+  const merged = __testables.mergeRowFields(
+    { ...JRA_ROW, finishedAt: "2026-05-31T11:00:00+09:00" },
+    { ...JRA_ROW, finishedAt: null },
+  );
+  expect(merged.finishedAt).toBe("2026-05-31T11:00:00+09:00");
+});
+
+it("__testables.mergeRowFields keeps current runningStyles when incoming runningStyles is empty", () => {
+  const merged = __testables.mergeRowFields(
+    {
+      ...JRA_ROW,
+      runningStyles: [{ horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0531:06:03" }],
+    },
+    { ...JRA_ROW, runningStyles: [] },
+  );
+  expect(merged.runningStyles).toStrictEqual([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0531:06:03" },
+  ]);
+});
+
+// End-to-end: simulate the production flow. (1) alarm self-pull seeds the
+// DO with a starter row carrying bataiju + tanshoOdds + tanshoPopularity.
+// (2) the result-fetch push lands with the same umaban set but bataiju /
+// odds / popularity all null and finishPosition set. The merged state must
+// keep bataiju / odds / popularity AND adopt finishPosition.
+it("POST /push preserves existing bataiju when incoming row has finishPosition but null bataiju", async () => {
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  const seedRow: RaceTrendDailyTrackRow = {
+    fetchedAt: "2026-05-31T11:00:00+09:00",
+    finishedAt: null,
+    isComplete: false,
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    runningStyles: [],
+    starterRows: [
+      {
+        bamei: "Horse",
+        bataiju: "452",
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        finishPosition: 0,
+        hassoJikoku: "1100",
+        jockeyName: "Jockey",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0531",
+        keibajoCode: "06",
+        raceBango: "03",
+        raceName: "TestRace",
+        runnerCount: null,
+        sohaTime: null,
+        source: "jra",
+        tanshoOdds: "4.2",
+        tanshoPopularity: "3",
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: "+",
+        zogenSa: "2",
+      },
+    ],
+  };
+  const pushRow: RaceTrendDailyTrackRow = {
+    fetchedAt: "2026-05-31T11:05:00+09:00",
+    finishedAt: "2026-05-31T11:05:00+09:00",
+    isComplete: true,
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    runningStyles: [],
+    starterRows: [
+      {
+        bamei: "Horse",
+        bataiju: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        finishPosition: 1,
+        hassoJikoku: "1100",
+        jockeyName: "Jockey",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0531",
+        keibajoCode: "06",
+        raceBango: "03",
+        raceName: "TestRace",
+        runnerCount: null,
+        sohaTime: "1:34.2",
+        source: "jra",
+        tanshoOdds: null,
+        tanshoPopularity: null,
+        umaban: "1",
+        wakuban: null,
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  };
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(seedRow),
+      method: "POST",
+    }),
+  );
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(pushRow),
+      method: "POST",
+    }),
+  );
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/races?beforeRaceBango=99"),
+  );
+  const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
+  const starter = payload.races[0]!.starterRows[0]!;
+  expect(starter.bataiju).toBe("452");
+  expect(starter.tanshoOdds).toBe("4.2");
+  expect(starter.tanshoPopularity).toBe("3");
+  expect(starter.zogenFugo).toBe("+");
+  expect(starter.zogenSa).toBe("2");
+  expect(starter.finishPosition).toBe(1);
+  expect(starter.sohaTime).toBe("1:34.2");
 });
