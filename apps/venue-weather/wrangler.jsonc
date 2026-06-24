@@ -31,4 +31,10 @@
       "database_id": "175ccd72-01d9-4f45-bb6c-a424fb647745",
     },
   ],
+  "kv_namespaces": [
+    {
+      "binding": "WEATHER_KV",
+      "id": "c2679fd8eb584369af67ab9b6282fea0",
+    },
+  ],
 }

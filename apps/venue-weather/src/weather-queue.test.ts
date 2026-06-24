@@ -24,9 +24,11 @@ import { upsertVenueWeather } from "./weather-d1";
 
 const mockDb = {} as unknown as D1Database;
 const mockSendBatch = vi.fn().mockResolvedValue(undefined);
+const mockKvDelete = vi.fn().mockResolvedValue(undefined);
 const mockEnv = {
   WEATHER_DB: mockDb,
   WEATHER_JOBS: { sendBatch: mockSendBatch },
+  WEATHER_KV: { delete: mockKvDelete },
 } as unknown as import("./types").Env;
 
 beforeEach(() => {
@@ -41,6 +43,14 @@ it("processWeatherJob skips unknown keibajo_code", async () => {
   expect(consoleSpy).toHaveBeenCalledWith("Unknown keibajo_code: 99");
   expect(fetchVenueWeather).not.toHaveBeenCalled();
   expect(upsertVenueWeather).not.toHaveBeenCalled();
+  expect(mockKvDelete).not.toHaveBeenCalled();
+});
+
+it("processWeatherJob invalidates KV after upsert", async () => {
+  await processWeatherJob({ type: "forecast", keibajoCode: "05", raceDate: "2026-06-22" }, mockEnv);
+
+  expect(upsertVenueWeather).toHaveBeenCalledTimes(1);
+  expect(mockKvDelete).toHaveBeenCalledWith("weather:2026-06-22");
 });
 
 it("processWeatherJob calls fetchVenueWeather and upsertVenueWeather for known venue", async () => {

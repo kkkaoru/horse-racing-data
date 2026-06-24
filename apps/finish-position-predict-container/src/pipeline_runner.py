@@ -215,19 +215,30 @@ def build_upcoming_feature_rows(
     A realtime-odds fetch is attempted before the base build; on failure (HTTP
     error, timeout, empty response) the fetch is skipped gracefully and the
     build falls back to the existing NULL-odds path so the prediction always
-    completes even when the hot worker is unavailable.
+    completes even when the hot worker is unavailable. A venue-weather fetch is
+    attempted alongside it (materialized as a DuckDB sidecar directory) and
+    falls back to the NULL-weather path with the same graceful semantics when
+    the venue-weather worker is unavailable.
     """
     import pandas as pd
 
     from realtime_odds_fetcher import fetch_realtime_odds_parquet  # bundled in image
+    from weather_fetcher import fetch_venue_weather_dir  # bundled in image
 
     final_dir = _final_parquet_dir(category)
     race_keys = _query_upcoming_race_keys(database_url, target_date, days_ahead, category)
     realtime_odds_path = fetch_realtime_odds_parquet(
         category, target_date, WORK_DIR, race_keys
     )
+    venue_weather_dir = fetch_venue_weather_dir(target_date, WORK_DIR)
     built = build_pipeline(
-        category, target_date, days_ahead, database_url, final_dir, realtime_odds_path
+        category,
+        target_date,
+        days_ahead,
+        database_url,
+        final_dir,
+        realtime_odds_path,
+        venue_weather_dir,
     )
     if not built:
         return {}
@@ -258,6 +269,7 @@ def build_pipeline(
     database_url: str,
     final_dir: Path,
     realtime_odds_path: Path | None = None,
+    venue_weather_dir: Path | None = None,
 ) -> bool:
     """Run the DuckDB base build then each v7 layer into ``final_dir``.
 
@@ -267,7 +279,9 @@ def build_pipeline(
 
     When ``realtime_odds_path`` is provided it is forwarded to the DuckDB base
     build via ``--realtime-odds`` so real-time tansho odds from the hot worker
-    flow into ``odds_score`` / ``popularity_score``.
+    flow into ``odds_score`` / ``popularity_score``. When ``venue_weather_dir``
+    is provided it is forwarded via ``--venue-weather-dir`` so the per-year
+    ``venue_weather_{year}.duckdb`` files supply hourly weather features.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     base_dir = WORK_DIR / f"feat-{category}-base"
@@ -280,6 +294,7 @@ def build_pipeline(
             database_url,
             base_dir,
             realtime_odds_path,
+            venue_weather_dir,
         )
     )
     if not has_parquet_output(base_dir):

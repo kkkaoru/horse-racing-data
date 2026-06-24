@@ -134,6 +134,7 @@ export class FinishPositionPredictContainer extends Container<Env> {
       R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
       R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
       R2_BUCKET: this.env.R2_BUCKET ?? EMPTY_ENV_VALUE,
+      VENUE_WEATHER_URL: this.env.VENUE_WEATHER_URL ?? EMPTY_ENV_VALUE,
     };
     const response = await this.containerFetch(request);
     return proxyParquetFromNdjson(response, this.env);

@@ -106,3 +106,17 @@ def test_has_parquet_output_true_when_partitioned_parquet_exists(tmp_path: Path)
     partition.mkdir(parents=True)
     (partition / "data.parquet").write_bytes(b"PAR1")
     assert has_parquet_output(base) is True
+
+
+def test_build_pipeline_signature_accepts_venue_weather_dir():
+    import inspect
+
+    from pipeline_runner import build_pipeline
+
+    assert "venue_weather_dir" in inspect.signature(build_pipeline).parameters
+
+
+def test_fetch_venue_weather_dir_is_importable_from_weather_fetcher():
+    from weather_fetcher import fetch_venue_weather_dir
+
+    assert callable(fetch_venue_weather_dir)

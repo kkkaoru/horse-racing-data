@@ -675,3 +675,42 @@ def test_kohan3f_going_script_is_not_in_layer_chain_nar() -> None:
 def test_kohan3f_going_script_is_not_in_layer_chain_ban_ei() -> None:
     chain = layer_chain_for("ban-ei")
     assert KOHAN3F_GOING_SCRIPT not in chain
+
+
+# ---------------------------------------------------------------------------
+# build_base_argv — venue-weather optional arg
+# ---------------------------------------------------------------------------
+
+
+def test_build_base_argv_without_venue_weather_omits_flag() -> None:
+    argv = build_base_argv(BUILDER, "nar", "20260624", 0, URL, Path("/tmp/base"))
+    assert "--venue-weather-dir" not in argv
+
+
+def test_build_base_argv_with_venue_weather_dir_appends_flag() -> None:
+    argv = build_base_argv(
+        BUILDER, "nar", "20260624", 0, URL, Path("/tmp/base"),
+        venue_weather_dir=Path("/tmp/predict-upcoming/venue-weather"),
+    )
+    assert "--venue-weather-dir" in argv
+    assert argv[argv.index("--venue-weather-dir") + 1] == (
+        "/tmp/predict-upcoming/venue-weather"
+    )
+
+
+def test_build_base_argv_venue_weather_none_same_as_omitted() -> None:
+    argv_implicit = build_base_argv(BUILDER, "jra", "20260624", 0, URL, Path("/tmp/base"))
+    argv_explicit_none = build_base_argv(
+        BUILDER, "jra", "20260624", 0, URL, Path("/tmp/base"), venue_weather_dir=None
+    )
+    assert argv_implicit == argv_explicit_none
+
+
+def test_build_base_argv_with_both_realtime_odds_and_venue_weather() -> None:
+    argv = build_base_argv(
+        BUILDER, "jra", "20260624", 0, URL, Path("/tmp/base"),
+        realtime_odds_path=Path("/tmp/predict-upcoming/realtime-odds-jra.parquet"),
+        venue_weather_dir=Path("/tmp/predict-upcoming/venue-weather"),
+    )
+    assert "--realtime-odds" in argv
+    assert "--venue-weather-dir" in argv

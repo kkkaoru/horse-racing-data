@@ -23,6 +23,17 @@ export interface VenueCoord {
   lon: number;
 }
 
+export interface WeatherCacheRow {
+  keibajo_code: string;
+  race_date: string;
+  weather_hour: number;
+  temperature: number | null;
+  precipitation: number | null;
+  wind_speed: number | null;
+  wind_gusts: number | null;
+  weather_type: number | null;
+}
+
 export interface UpsertParams {
   db: D1Database;
   keibajoCode: string;
@@ -36,4 +47,5 @@ export interface UpsertParams {
 export interface Env {
   WEATHER_DB: D1Database;
   WEATHER_JOBS: Queue<WeatherJob>;
+  WEATHER_KV: KVNamespace;
 }

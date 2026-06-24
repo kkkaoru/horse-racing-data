@@ -226,6 +226,7 @@ def build_base_argv(
     database_url: str,
     output_dir: Path,
     realtime_odds_path: Path | None = None,
+    venue_weather_dir: Path | None = None,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
@@ -238,6 +239,11 @@ def build_base_argv(
     hot worker) over the nvd_se / jvd_se fallback for UPCOMING races, reviving
     ``odds_score`` / ``popularity_score`` at inference time. Absent → the
     builder falls back to the current NULL-odds path unchanged.
+
+    When ``venue_weather_dir`` is provided the ``--venue-weather-dir`` flag is
+    appended so the DuckDB builder probes the per-year
+    ``venue_weather_{year}.duckdb`` files in that directory for hourly weather.
+    Absent → the builder falls back to the current NULL-weather path unchanged.
     """
     argv = [
         PYTHON_BIN,
@@ -256,6 +262,8 @@ def build_base_argv(
     ]
     if realtime_odds_path is not None:
         argv += ["--realtime-odds", str(realtime_odds_path)]
+    if venue_weather_dir is not None:
+        argv += ["--venue-weather-dir", str(venue_weather_dir)]
     return argv
 
 

@@ -99,6 +99,9 @@
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
     "R2_BUCKET": "pc-keiba-features-archive",
+    // venue-weather Worker base URL, forwarded into the container env so the
+    // Python prediction path can fetch venue weather data over HTTP.
+    "VENUE_WEATHER_URL": "https://venue-weather.kaoru.workers.dev",
   },
   "queues": {
     "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],

@@ -42,6 +42,10 @@ export interface Env {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET?: string;
+  // venue-weather Worker base URL forwarded into the container env so the Python
+  // prediction path can fetch venue weather data over HTTP. Plain var; optional
+  // so existing callers/tests need not set it.
+  VENUE_WEATHER_URL?: string;
 }
 
 export type CronAuditStatus = "started" | "success" | "error";

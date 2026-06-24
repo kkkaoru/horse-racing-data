@@ -1,6 +1,7 @@
 // Run with bun.
 import { fetchVenueWeather } from "./weather-api";
 import { upsertVenueWeather } from "./weather-d1";
+import { deleteWeatherFromKv } from "./weather-kv";
 import { VENUE_COORDS } from "./venue-coords";
 import type { Env, WeatherJob } from "./types";
 
@@ -25,6 +26,8 @@ export const processWeatherJob = async (job: WeatherJob, env: Env): Promise<void
     rows,
     fetchedAt,
   });
+  // Invalidate KV cache so the next read reflects the fresh D1 data
+  await deleteWeatherFromKv(env.WEATHER_KV, job.raceDate);
 };
 
 export const handleWeatherBatch = async (
