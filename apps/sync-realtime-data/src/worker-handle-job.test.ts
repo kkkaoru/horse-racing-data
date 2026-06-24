@@ -726,6 +726,128 @@ it("handleJob fetch-weights with NAR race source + debaUrl runs fetchOdds + inse
   );
 });
 
+// Bug B regression: fetch-weights pushes an entry-only row to the
+// race-trend DO so a viewer hitting the next race in the venue card sees
+// the pre-result sibling row immediately, without waiting for either the
+// 60s alarm self-pull or the first result fetch. Pre-fix race 10 of a
+// venue was invisible to the viewer between its entry-fetch lead time and
+// its first result-fetch push.
+it("handleJob fetch-weights pushes the entry-only row to RACE_TREND_DAILY_TRACK_DO when entries parsed", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource } = await import("./storage");
+  const { parseRaceEntries } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "10",
+    raceKey: "nar:2026:0512:55:10",
+    raceName: "EntryPush",
+    raceStartAtJst: "2026-05-12T18:15:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    { horseName: "EntryA", horseNumber: "1", jockeyName: "JockeyA", status: null },
+    { horseName: "EntryB", horseNumber: "2", jockeyName: "JockeyB", status: null },
+    { horseName: "EntryC", horseNumber: "3", jockeyName: "JockeyC", status: null },
+  ]);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName } as never,
+    }),
+    { raceKey: "nar:2026:0512:55:10", type: "fetch-weights" },
+  );
+  expect(idFromName).toHaveBeenCalledWith("nar:20260512:55");
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+  expect(stubFetch.mock.calls[0]![0]).toBe("https://race-trend-daily-track-do/push");
+  const body = stubFetch.mock.calls[0]![1]!.body;
+  if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+  const parsed = JSON.parse(body) as {
+    isComplete: boolean;
+    raceBango: string;
+    raceKey: string;
+    starterRows: Array<{ finishPosition: number; umaban: string }>;
+  };
+  expect(parsed.raceBango).toBe("10");
+  expect(parsed.raceKey).toBe("nar:2026:0512:55:10");
+  expect(parsed.isComplete).toBe(false);
+  expect(parsed.starterRows.map((row) => row.umaban)).toStrictEqual(["1", "2", "3"]);
+  expect(parsed.starterRows.map((row) => row.finishPosition)).toStrictEqual([0, 0, 0]);
+});
+
+// Defensive: with zero parsed entries (NAR entry HTML parse failure), the
+// DO push must NOT fire because an empty starter row list would not help
+// the viewer surface a sibling row and would waste a DO write.
+it("handleJob fetch-weights skips the entry-only DO push when parseRaceEntries returns []", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource } = await import("./storage");
+  const { parseRaceEntries } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValue({
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "10",
+    raceKey: "nar:2026:0512:55:10",
+    raceName: "EntryEmpty",
+    raceStartAtJst: "2026-05-12T18:15:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseRaceEntries).mockReturnValue([]);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName } as never,
+    }),
+    { raceKey: "nar:2026:0512:55:10", type: "fetch-weights" },
+  );
+  expect(stubFetch).toHaveBeenCalledTimes(0);
+});
+
 it("handleJob discover-urls exercises upsertDiscoveredUrls with NAR + JRA race rows", async () => {
   const { handleJob } = await import("./worker");
   const { fetchNarRacesByDate, fetchJraRacesByDate } = await import("./postgres");

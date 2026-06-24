@@ -2644,6 +2644,26 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
       ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(html), latestOdds?.latest)
       : parseRaceEntries(html);
   await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
+  // Entry-only push so the race-trend DO knows about the venue's pre-race
+  // siblings without waiting for either the alarm self-pull (60s cadence)
+  // or the first result-fetch push. Before this a viewer hitting race 11R
+  // between race 10R's start and race 10R's first result fetch saw a
+  // sibling list of 1R-9R only — the DO had no row for 10R yet, so the
+  // viewer's "today sibling rows" filter dropped it. Field-level merge in
+  // the DO preserves any odds / weight a later push or self-pull lands.
+  if (entries.length > 0) {
+    await pushResultsToRaceTrendDO(
+      env,
+      buildRaceTrendDailyTrackRow({
+        entries,
+        fetchedAt,
+        isComplete: false,
+        race,
+        results: [],
+      }),
+      race,
+    );
+  }
   let weights = race.source === "jra" ? parseJraHorseWeights(html) : parseHorseWeights(html);
   if (race.source === "nar" && weights.length === 0) {
     const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
