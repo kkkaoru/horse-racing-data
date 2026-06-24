@@ -2635,9 +2635,12 @@ def stage_track_bias(
     years: list[int],
     heartbeat: Heartbeat,
 ) -> None:
+    # The 5-day lookback window is selective enough that a single pass fits in
+    # memory, so unlike jockey/trainer career this stage skips the per-year loop.
+    del years
     heartbeat.set_stage("track_bias")
-    materialize_temp_table_by_year(
-        con, "track_bias", "track_bias", track_bias_cte, "track_bias", years, heartbeat,
+    materialize_temp_table(
+        con, "track_bias", "track_bias", track_bias_cte("true"), "track_bias",
     )
 
 
