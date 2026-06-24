@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import optuna
 import pandas as pd
 import pytest
 
@@ -613,6 +614,7 @@ def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> N
             trial = MagicMock()
             trial.number = 0
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
             result = objective(trial)
         assert mock_rfwb.call_count >= 1
         assert result == pytest.approx(0.75)
@@ -649,6 +651,7 @@ def test_build_objective_pre_splits_folds_once_not_per_trial() -> None:
                     trial = MagicMock()
                     trial.number = trial_number
                     trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                    trial.should_prune.return_value = False
                     objective(trial)
         # Running 3 trials must not trigger any additional split_walk_forward calls.
         assert mock_split.call_count == 2
@@ -676,6 +679,7 @@ def test_build_objective_skips_none_backend_scores_in_trial() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
             result = objective(trial)
     assert result == pytest.approx(0.80)
 
@@ -702,6 +706,7 @@ def test_build_objective_returns_zero_when_all_backend_scores_none() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
             result = objective(trial)
     assert result == pytest.approx(0.0)
 
@@ -728,6 +733,7 @@ def test_build_objective_records_delta_pp_in_definition_json() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
             objective(trial)
         recorded = registry.list_trials()[0]
         payload = json.loads(recorded["definition_json"])
@@ -759,11 +765,160 @@ def test_build_objective_records_negative_delta_pp_against_active_entry() -> Non
             trial = MagicMock()
             trial.number = 1
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
             objective(trial)
         recorded = next(e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_1")
         payload = json.loads(recorded["definition_json"])
     # Active ndcg 0.80, trial ndcg 0.75 → delta_pp = (0.75 - 0.80) * 100 = -5.0.
     assert payload["delta_pp"] == pytest.approx(-5.0)
+
+
+def test_build_objective_reports_intermediate_value_per_fold() -> None:
+    df = _make_df_3years()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    df = df.rename(
+        columns={
+            "feat_speed": "feat_a",
+            "feat_jockey": "feat_b",
+        }
+    ).assign(feat_c=0.1, feat_d=0.2, feat_e=0.4, feat_f=0.5)
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.70,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2022, 2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.should_prune.return_value = False
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            objective(trial)
+    assert trial.report.call_count == 2
+    assert trial.report.call_args_list[0].args == (0.70, 0)
+    assert trial.report.call_args_list[1].args == (0.70, 1)
+
+
+def test_build_objective_raises_trial_pruned_when_should_prune_true() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.20,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.should_prune.return_value = True
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            with pytest.raises(optuna.TrialPruned):
+                objective(trial)
+
+
+def test_build_objective_does_not_report_when_fold_has_no_scores() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=None,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.should_prune.return_value = False
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            result = objective(trial)
+    trial.report.assert_not_called()
+    assert result == pytest.approx(0.0)
+
+
+def test_run_exploration_creates_study_with_median_pruner() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ) as mock_create:
+            subject.run_exploration(df, registry, n_trials=1)
+    pruner = mock_create.call_args.kwargs["pruner"]
+    assert isinstance(pruner, optuna.pruners.MedianPruner)
+
+
+def test_run_exploration_prunes_clearly_bad_later_trial() -> None:
+    """A real study must mark at least one later trial PRUNED when its first-fold
+    intermediate value is far below the median of completed startup trials.
+
+    n_startup_trials=3 keeps trials 0-2 unpruned; from trial 3 onward a low
+    first-fold report triggers pruning. Feature selection is forced to all-True so
+    every trial reaches the fold loop regardless of the sampler.
+    """
+    df = _make_df_3years()
+    params = subject.DEFAULT_PARAMS
+    df = df.rename(
+        columns={"feat_speed": "feat_a", "feat_jockey": "feat_b"}
+    ).assign(feat_c=0.1, feat_d=0.2, feat_e=0.4, feat_f=0.5)
+    call_count = {"n": 0}
+
+    def fold_score(*_args: object, **_kwargs: object) -> float:
+        call_count["n"] += 1
+        return 0.90 if call_count["n"] <= 6 else 0.05
+
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch.object(
+                optuna.Trial, "suggest_categorical", return_value=True
+            ),
+            patch(
+                "learning.feature_explorer.run_fold_with_backend",
+                side_effect=fold_score,
+            ),
+        ):
+            results = subject.run_exploration(
+                df,
+                registry,
+                n_trials=6,
+                validation_years=[2022, 2023],
+                train_start="20160101",
+                params=params,
+                study_name="prune_study",
+                backends=("lightgbm",),
+            )
+    high_score_trials = [r for r in results if r["ndcg_at_3"] > 0.5]
+    low_score_trials = [r for r in results if r["ndcg_at_3"] <= 0.5]
+    assert len(high_score_trials) == 3
+    assert len(low_score_trials) <= 3
 
 
 def test_build_objective_returns_zero_when_selected_below_min_features() -> None:
@@ -974,3 +1129,129 @@ def test_category_backends_nar_maps_to_xgboost_only() -> None:
 
 def test_category_backends_banei_maps_to_catboost_only() -> None:
     assert subject.CATEGORY_BACKENDS["ban-ei"] == ("catboost",)
+
+
+# --- predict_fold_with_backend ---
+
+
+def test_predict_fold_with_backend_lightgbm_returns_merged_predictions() -> None:
+    fold = _make_fold()
+    preds_df = pd.DataFrame({
+        "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
+        "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+        "predicted_rank": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.run_walk_forward_fold",
+        return_value=(MagicMock(), preds_df, {"ndcg_at_3": 0.8}),
+    ) as mock_wf:
+        result = subject.predict_fold_with_backend(fold, "lightgbm", subject.DEFAULT_PARAMS)
+    assert result is not None
+    assert "predicted_rank" in result.columns
+    assert "finish_position" in result.columns
+    assert len(result) == 4
+    mock_wf.assert_called_once()
+
+
+def test_predict_fold_with_backend_xgboost_returns_valid_predictions() -> None:
+    fold = _make_fold()
+    valid_preds = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(MagicMock(), {"valid_predictions": valid_preds}),
+    ) as mock_xgb:
+        result = subject.predict_fold_with_backend(fold, "xgboost", subject.DEFAULT_PARAMS)
+    assert result is not None
+    assert "predicted_rank" in result.columns
+    mock_xgb.assert_called_once()
+
+
+def test_predict_fold_with_backend_xgboost_returns_none_when_no_numeric_features() -> None:
+    fold = _make_meta_only_fold()
+    result = subject.predict_fold_with_backend(fold, "xgboost", subject.DEFAULT_PARAMS)
+    assert result is None
+
+
+def test_predict_fold_with_backend_catboost_returns_valid_predictions() -> None:
+    fold = _make_fold()
+    valid_preds = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        result = subject.predict_fold_with_backend(fold, "catboost", subject.DEFAULT_PARAMS)
+    assert result is not None
+    assert "predicted_rank" in result.columns
+    mock_cb.assert_called_once()
+
+
+def test_predict_fold_with_backend_catboost_returns_none_when_no_feature_cols() -> None:
+    fold = _make_meta_only_fold()
+    result = subject.predict_fold_with_backend(fold, "catboost", subject.DEFAULT_PARAMS)
+    assert result is None
+
+
+def test_predict_fold_with_backend_dispatches_to_lightgbm_helper() -> None:
+    fold = _make_fold()
+    sentinel = pd.DataFrame({"predicted_rank": [1]})
+    with patch(
+        "learning.feature_explorer._predict_fold_lightgbm",
+        return_value=sentinel,
+    ) as mock_lgb:
+        result = subject.predict_fold_with_backend(fold, "lightgbm", subject.DEFAULT_PARAMS)
+    assert result is sentinel
+    mock_lgb.assert_called_once()
+
+
+def test_predict_fold_with_backend_dispatches_to_xgboost_helper() -> None:
+    fold = _make_fold()
+    sentinel = pd.DataFrame({"predicted_rank": [2]})
+    with patch(
+        "learning.feature_explorer._predict_fold_xgboost",
+        return_value=sentinel,
+    ) as mock_xgb:
+        result = subject.predict_fold_with_backend(fold, "xgboost", subject.DEFAULT_PARAMS)
+    assert result is sentinel
+    mock_xgb.assert_called_once()
+
+
+def test_predict_fold_with_backend_dispatches_to_catboost_helper() -> None:
+    fold = _make_fold()
+    sentinel = pd.DataFrame({"predicted_rank": [3]})
+    with patch(
+        "learning.feature_explorer._predict_fold_catboost",
+        return_value=sentinel,
+    ) as mock_cb:
+        result = subject.predict_fold_with_backend(fold, "catboost", subject.DEFAULT_PARAMS)
+    assert result is sentinel
+    mock_cb.assert_called_once()
+
+
+# --- select_fold_features (public alias) ---
+
+
+def test_select_fold_features_public_alias_keeps_requested_feature_columns() -> None:
+    fold = _make_fold()
+    result = subject.select_fold_features(fold, {"feat_speed"})
+    assert "feat_speed" in result["train_df"].columns
+    assert "feat_jockey" not in result["train_df"].columns
+    assert result["valid_year"] == 2023
+
+
+def test_select_fold_features_public_alias_matches_private_function() -> None:
+    fold = _make_fold()
+    public_result = subject.select_fold_features(fold, {"feat_speed"})
+    private_result = subject._select_fold_features(fold, {"feat_speed"})
+    assert list(public_result["train_df"].columns) == list(private_result["train_df"].columns)
+    assert list(public_result["valid_df"].columns) == list(private_result["valid_df"].columns)
+    assert public_result["valid_year"] == private_result["valid_year"]

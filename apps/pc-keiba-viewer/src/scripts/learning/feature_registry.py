@@ -142,6 +142,20 @@ class FeatureRegistry:
             return None
         return _row_to_entry(row)
 
+    def is_saturated(self, lookback: int = 50) -> bool:
+        """True when none of the last `lookback` trials beat the active entry."""
+        assert self._con is not None
+        active = self.get_active_entry()
+        if active is None:
+            return False
+        active_ndcg = active["ndcg_at_3"]
+        row = self._con.execute(
+            "SELECT COUNT(*) FROM (SELECT ndcg_at_3 FROM feature_trials ORDER BY id DESC LIMIT ?) "
+            "WHERE ndcg_at_3 > ?",
+            [lookback, active_ndcg],
+        ).fetchone()
+        return row is not None and int(row[0]) == 0
+
     def record_trial(
         self,
         trial_id: str,

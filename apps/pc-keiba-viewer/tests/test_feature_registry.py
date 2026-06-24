@@ -519,6 +519,51 @@ def test_compute_feature_enrichment_sorted_descending() -> None:
         assert scores == sorted(scores, reverse=True)
 
 
+def test_is_saturated_false_when_no_active_entry() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.40, ["feat_a"])
+        reg.record_trial("t2", 0.50, ["feat_b"])
+        assert reg.is_saturated(lookback=50) is False
+
+
+def test_is_saturated_true_when_last_n_trials_all_below_active() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.80, ["feat_a"])
+        reg.activate(active_id)
+        reg.record_trial("t1", 0.40, ["feat_b"])
+        reg.record_trial("t2", 0.50, ["feat_c"])
+        reg.record_trial("t3", 0.79, ["feat_d"])
+        assert reg.is_saturated(lookback=50) is True
+
+
+def test_is_saturated_false_when_recent_trial_exceeds_active() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.60, ["feat_a"])
+        reg.activate(active_id)
+        reg.record_trial("t1", 0.40, ["feat_b"])
+        reg.record_trial("t2", 0.85, ["feat_c"])
+        assert reg.is_saturated(lookback=50) is False
+
+
+def test_is_saturated_ignores_better_trial_outside_lookback_window() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        # A trial beating active sits older than the lookback window.
+        reg.record_trial("old-winner", 0.95, ["feat_old"])
+        active_id = reg.record_trial("active", 0.60, ["feat_a"])
+        reg.activate(active_id)
+        reg.record_trial("t1", 0.40, ["feat_b"])
+        reg.record_trial("t2", 0.50, ["feat_c"])
+        assert reg.is_saturated(lookback=2) is True
+
+
+def test_is_saturated_equal_to_active_does_not_count_as_improvement() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.70, ["feat_a"])
+        reg.activate(active_id)
+        reg.record_trial("tie", 0.70, ["feat_b"])
+        assert reg.is_saturated(lookback=50) is True
+
+
 def test_compute_feature_enrichment_handles_non_list_feature_json() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         assert reg._con is not None

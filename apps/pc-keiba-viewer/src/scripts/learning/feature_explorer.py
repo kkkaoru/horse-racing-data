@@ -207,6 +207,58 @@ def run_fold_with_backend(
     return _run_fold_catboost(fold)
 
 
+def _predict_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> pd.DataFrame:
+    _, predictions, _ = run_walk_forward_fold(fold, params)
+    return fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+        predictions,
+        on=["race_id", "ketto_toroku_bango"],
+        how="left",
+    )
+
+
+def _predict_fold_xgboost(fold: FoldSplit) -> pd.DataFrame | None:
+    feature_cols = _xgb_numeric_features(fold["train_df"], list(fold["train_df"].columns))
+    if not feature_cols:
+        return None
+    _, result = train_xgboost_ranker(
+        fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
+    )
+    return cast(pd.DataFrame, result["valid_predictions"])
+
+
+def _predict_fold_catboost(fold: FoldSplit) -> pd.DataFrame | None:
+    excluded = set(META_COLUMNS) | _LABEL_COLS
+    feature_cols = [
+        c
+        for c in fold["train_df"].columns
+        if c not in excluded and _is_model_safe_feature(fold["train_df"], c)
+    ]
+    if not feature_cols:
+        return None
+    result = train_catboost_ranker(
+        fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
+    )
+    return cast(pd.DataFrame, result["valid_predictions"])
+
+
+def predict_fold_with_backend(
+    fold: FoldSplit,
+    backend: ModelBackend,
+    lgb_params: TrainingParams,
+) -> pd.DataFrame | None:
+    """Train one fold and return its valid predictions with a ``predicted_rank`` column.
+
+    Mirrors :func:`run_fold_with_backend` but yields the per-row prediction frame
+    (race_id, ketto_toroku_bango, predicted_rank, finish_position) instead of a scalar
+    NDCG, so callers can break the score down by subgroup.
+    """
+    if backend == "lightgbm":
+        return _predict_fold_lightgbm(fold, lgb_params)
+    if backend == "xgboost":
+        return _predict_fold_xgboost(fold)
+    return _predict_fold_catboost(fold)
+
+
 def select_features(
     df: pd.DataFrame,
     feature_mask: dict[str, bool],
@@ -231,6 +283,11 @@ def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
         "valid_df": fold["valid_df"][keep_cols],
         "valid_year": fold["valid_year"],
     }
+
+
+def select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
+    """Public alias for :func:`_select_fold_features` used by external callers."""
+    return _select_fold_features(fold, feature_set)
 
 
 def evaluate_feature_set(
@@ -284,12 +341,19 @@ def build_objective(
             return 0.0
         feature_set = set(selected)
         ndcg_scores: list[float] = []
-        for fold in pre_split_folds.values():
+        for step, fold in enumerate(pre_split_folds.values()):
             fold_with_features = _select_fold_features(fold, feature_set)
+            fold_scores: list[float] = []
             for backend in backends:
                 score = run_fold_with_backend(fold_with_features, backend, params)
                 if score is not None:
-                    ndcg_scores.append(score)
+                    fold_scores.append(score)
+            if fold_scores:
+                ndcg_scores.extend(fold_scores)
+                intermediate = sum(ndcg_scores) / len(ndcg_scores)
+                trial.report(intermediate, step)
+                if trial.should_prune():
+                    raise optuna.TrialPruned()
         ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
         trial_id = f"{study_name}_trial_{trial.number}"
         active_entry = registry.get_active_entry()
@@ -333,6 +397,7 @@ def run_exploration(
         study_name=study_name,
         storage=storage,
         load_if_exists=True,
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=0),
     )
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     results: list[ExplorationResult] = []

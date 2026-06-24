@@ -80,6 +80,7 @@ def _make_learner(
     skip_inverse: bool = False,
     skip_enrichment: bool = False,
     load_controller: subject.AdaptiveLoadController | None = None,
+    auto_tune: bool = True,
 ) -> subject.ContinuousLearner:
     return subject.ContinuousLearner(
         registry=registry
@@ -100,6 +101,7 @@ def _make_learner(
         skip_inverse=skip_inverse,
         skip_enrichment=skip_enrichment,
         load_controller=load_controller,
+        auto_tune=auto_tune,
     )
 
 
@@ -396,7 +398,10 @@ def test_maybe_deploy_does_not_deploy_when_below_threshold() -> None:
         reg.record_deployment(0.497, 1)
         # active = 0.50, deployed = 0.497, delta = 0.003 < threshold 0.005 → skip
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
-        with patch.object(learner, "_deploy") as mock_deploy:
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
             learner._maybe_deploy()
             mock_deploy.assert_not_called()
 
@@ -408,6 +413,7 @@ def test_maybe_deploy_deploys_when_above_threshold() -> None:
         # deployed_ndcg = 0.0, active = 0.80, threshold = 0.005 → 0.80 > 0.005 → deploy
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with (
+            patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
@@ -425,6 +431,7 @@ def test_maybe_deploy_deploys_when_delta_equals_threshold() -> None:
         # delta = 0.005 == threshold → deploys (strict < comparison)
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with (
+            patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.505),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
@@ -439,6 +446,7 @@ def test_maybe_deploy_skips_when_blind_holdout_not_confirmed() -> None:
         # active 0.80 vs deployed 0.0 passes first gate, but blind 0.0 fails it
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with (
+            patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.0),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
@@ -453,11 +461,25 @@ def test_maybe_deploy_deploys_when_blind_holdout_confirms() -> None:
         # active 0.80, deployed 0.0, blind 0.79 → blind delta 0.79 >= threshold
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with (
+            patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.79),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
             learner._maybe_deploy()
             mock_deploy.assert_called_once()
+
+
+def test_maybe_deploy_skips_when_registry_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=True),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            learner._maybe_deploy()
+            mock_deploy.assert_not_called()
 
 
 def test_evaluate_blind_holdout_calls_evaluate_feature_set_with_holdout_year() -> None:
@@ -2787,3 +2809,765 @@ def test_load_features_dataframe_partitioned_dir_reads_only_recent_years(
     assert set(df["race_year"].unique()) == {2014, 2015}
 
 
+# ---------------------------------------------------------------------------
+# _deploy_cf_container / --cf-deploy
+# ---------------------------------------------------------------------------
+
+
+def test_cf_deploy_default_is_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._cf_deploy is False
+
+
+def test_cf_deploy_true_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+        )
+        assert learner._cf_deploy is True
+
+
+def test_deploy_cf_container_runs_wrangler_deploy_in_container_dir() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+        )
+        with patch("subprocess.run") as mock_run:
+            learner._deploy_cf_container()
+        cmd = mock_run.call_args.args[0]
+        assert cmd == ["bunx", "wrangler", "deploy"]
+        assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-predict-container"
+        assert mock_run.call_args.kwargs["check"] is True
+        assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_CF_DEPLOY_TIMEOUT_S
+
+
+def test_deploy_calls_cf_container_when_cf_deploy_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+        )
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+        with (
+            patch(
+                "learning.continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=Path("/tmp/staged")),
+            patch.object(learner, "_update_model_meta_json", return_value=None),
+            patch.object(learner, "_deploy_cf_container") as mock_cf,
+        ):
+            learner._deploy(entry)
+        mock_cf.assert_called_once()
+
+
+def test_deploy_skips_cf_container_when_cf_deploy_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        entry = _make_entry(ndcg=0.75, feature_names=["feat_speed"])
+        with (
+            patch(
+                "learning.continuous_learner.write_filtered_parquet",
+                return_value=Path("/tmp/f.parquet"),
+            ),
+            patch.object(
+                learner, "_train_production_model", return_value=Path("/tmp/model")
+            ),
+            patch.object(learner, "_stage_model", return_value=Path("/tmp/staged")),
+            patch.object(learner, "_update_model_meta_json", return_value=None),
+            patch.object(learner, "_rebuild_docker"),
+            patch.object(learner, "_deploy_cf_container") as mock_cf,
+        ):
+            learner._deploy(entry)
+        mock_cf.assert_not_called()
+
+
+def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--cf-deploy",
+                "--log-subgroup",
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["cf_deploy"] is True
+    assert captured["log_subgroup"] is True
+
+
+def test_main_cf_deploy_and_log_subgroup_default_false(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["cf_deploy"] is False
+    assert captured["log_subgroup"] is False
+
+
+# ---------------------------------------------------------------------------
+# _log_subgroup_diagnostics / _collect_active_predictions / --log-subgroup
+# ---------------------------------------------------------------------------
+
+
+def test_log_subgroup_default_is_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._log_subgroup is False
+
+
+def test_log_subgroup_true_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        assert learner._log_subgroup is True
+
+
+def test_run_calls_log_subgroup_when_enabled() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=1)
+        mock_log.assert_called_once_with()
+
+
+def test_run_skips_log_subgroup_when_disabled() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=1)
+        mock_log.assert_not_called()
+
+
+def test_log_subgroup_diagnostics_skips_when_no_active_entry() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = None
+    learner = _make_learner(registry=mock_registry)
+    with patch.object(learner, "_collect_active_predictions") as mock_collect:
+        learner._log_subgroup_diagnostics()
+    mock_collect.assert_not_called()
+
+
+def test_log_subgroup_diagnostics_skips_when_no_predictions() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    empty = pd.DataFrame(columns=["race_id", "ketto_toroku_bango", "predicted_rank"])
+    with (
+        patch.object(learner, "_collect_active_predictions", return_value=empty),
+        patch(
+            "learning.continuous_learner.compute_subgroup_diagnostics"
+        ) as mock_compute,
+    ):
+        learner._log_subgroup_diagnostics()
+    mock_compute.assert_not_called()
+
+
+def test_log_subgroup_diagnostics_logs_each_subgroup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    preds = pd.DataFrame(
+        {
+            "race_id": ["r1"],
+            "ketto_toroku_bango": ["horse_000"],
+            "predicted_rank": [1],
+        }
+    )
+    metrics = [
+        {
+            "subgroup": "jra_turf_mile",
+            "race_count": 12,
+            "ndcg_at_3": 0.61,
+            "top1_accuracy": 0.5,
+            "top3_box_accuracy": 0.25,
+        }
+    ]
+    with (
+        patch.object(learner, "_collect_active_predictions", return_value=preds),
+        patch(
+            "learning.continuous_learner.compute_subgroup_diagnostics",
+            return_value=metrics,
+        ),
+    ):
+        with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+            learner._log_subgroup_diagnostics()
+    assert any("jra_turf_mile" in r.message for r in caplog.records)
+
+
+def test_log_subgroup_diagnostics_handles_empty_metrics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    preds = pd.DataFrame(
+        {
+            "race_id": ["r1"],
+            "ketto_toroku_bango": ["horse_000"],
+            "predicted_rank": [1],
+        }
+    )
+    with (
+        patch.object(learner, "_collect_active_predictions", return_value=preds),
+        patch(
+            "learning.continuous_learner.compute_subgroup_diagnostics",
+            return_value=[],
+        ),
+    ):
+        with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+            learner._log_subgroup_diagnostics()
+    assert any("no subgroups to report" in r.message for r in caplog.records)
+
+
+def _make_df_3years() -> pd.DataFrame:
+    rows = []
+    for year in [2022, 2023, 2024]:
+        for race in range(3):
+            for horse in range(4):
+                rows.append(
+                    {
+                        "source": "jra",
+                        "race_date": f"{year}0601",
+                        "kaisai_nen": str(year),
+                        "kaisai_tsukihi": "0601",
+                        "keibajo_code": "10",
+                        "race_bango": f"{race:02d}",
+                        "ketto_toroku_bango": f"horse_{horse:03d}",
+                        "umaban": horse + 1,
+                        "category": "jra",
+                        "race_id": f"{year}_race_{race:02d}",
+                        "race_year": year,
+                        "feature_schema_version": "1",
+                        "finish_position": horse + 1,
+                        "finish_norm": 0.5,
+                        "target_corner_1_norm": 0.5,
+                        "target_corner_3_norm": 0.5,
+                        "target_corner_4_norm": 0.5,
+                        "target_running_style_class": 0,
+                        "feat_speed": float(horse),
+                        "feat_jockey": 0.3,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_collect_active_predictions_stacks_fold_predictions() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            df=_make_df_3years(),
+            validation_years=[2023, 2024],
+            train_start="20220101",
+        )
+        preds = pd.DataFrame(
+            {
+                "race_id": ["r1", "r1"],
+                "ketto_toroku_bango": ["a", "b"],
+                "predicted_rank": [1, 2],
+                "finish_position": [1, 2],
+            }
+        )
+        with patch(
+            "learning.continuous_learner.predict_fold_with_backend",
+            return_value=preds,
+        ) as mock_predict:
+            result = learner._collect_active_predictions(["feat_speed"])
+        assert list(result.columns) == ["race_id", "ketto_toroku_bango", "predicted_rank"]
+        assert len(result) == 12
+        assert mock_predict.call_count == 6
+
+
+def test_collect_active_predictions_skips_none_predictions() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            df=_make_df_3years(),
+            validation_years=[2023],
+            train_start="20220101",
+        )
+        with patch(
+            "learning.continuous_learner.predict_fold_with_backend",
+            return_value=None,
+        ):
+            result = learner._collect_active_predictions(["feat_speed"])
+        assert result.empty
+        assert list(result.columns) == ["race_id", "ketto_toroku_bango", "predicted_rank"]
+
+
+def test_collect_active_predictions_skips_empty_folds() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, validation_years=[1990], train_start="19890101"
+        )
+        with patch(
+            "learning.continuous_learner.predict_fold_with_backend"
+        ) as mock_predict:
+            result = learner._collect_active_predictions(["feat_speed"])
+        assert result.empty
+        mock_predict.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _auto_tune_resources / --auto-tune / --no-auto-tune
+# ---------------------------------------------------------------------------
+
+
+def test_auto_tune_nthread_constants() -> None:
+    assert subject._MIN_NTHREAD == 2
+    assert subject._MAX_NTHREAD == 6
+    assert subject._MIN_FREE_MEM_GB == 8.0
+
+
+def test_auto_tune_resources_returns_min_when_load_high() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        fake = MagicMock()
+        fake.cpu_count.return_value = 8
+        fake.getloadavg.return_value = (8.0, 0, 0)
+        fake.virtual_memory.return_value = MagicMock(available=32 * 1024**3)
+        with patch.object(subject, "_psutil", fake):
+            result = learner._auto_tune_resources()
+        assert result == subject._MIN_NTHREAD
+
+
+def test_auto_tune_resources_returns_above_min_when_load_low() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        fake = MagicMock()
+        fake.cpu_count.return_value = 15
+        fake.getloadavg.return_value = (1.0, 0, 0)
+        fake.virtual_memory.return_value = MagicMock(available=40 * 1024**3)
+        with patch.object(subject, "_psutil", fake):
+            result = learner._auto_tune_resources()
+        assert subject._MIN_NTHREAD < result <= subject._MAX_NTHREAD
+
+
+def test_auto_tune_resources_returns_min_when_free_mem_low() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        fake = MagicMock()
+        fake.cpu_count.return_value = 15
+        fake.getloadavg.return_value = (1.0, 0, 0)
+        fake.virtual_memory.return_value = MagicMock(available=4 * 1024**3)
+        with patch.object(subject, "_psutil", fake):
+            result = learner._auto_tune_resources()
+        assert result == subject._MIN_NTHREAD
+
+
+def test_auto_tune_resources_returns_max_when_psutil_missing() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch.object(subject, "_psutil", None):
+            result = learner._auto_tune_resources()
+        assert result == subject._MAX_NTHREAD
+
+
+def test_auto_tune_resources_clamps_idle_fraction_to_zero_when_overloaded() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        fake = MagicMock()
+        fake.cpu_count.return_value = 4
+        fake.getloadavg.return_value = (10.0, 0, 0)
+        fake.virtual_memory.return_value = MagicMock(available=32 * 1024**3)
+        with patch.object(subject, "_psutil", fake):
+            result = learner._auto_tune_resources()
+        assert result == subject._MIN_NTHREAD
+
+
+def test_auto_tune_resources_uses_eight_when_cpu_count_none() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        fake = MagicMock()
+        fake.cpu_count.return_value = None
+        fake.getloadavg.return_value = (1.0, 0, 0)
+        fake.virtual_memory.return_value = MagicMock(available=32 * 1024**3)
+        with patch.object(subject, "_psutil", fake):
+            result = learner._auto_tune_resources()
+        assert subject._MIN_NTHREAD <= result <= subject._MAX_NTHREAD
+
+
+def test_run_does_not_auto_tune_when_disabled() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, auto_tune=False)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_auto_tune_resources") as mock_tune,
+        ):
+            learner.run(max_rounds=1)
+        mock_tune.assert_not_called()
+
+
+def test_run_auto_tunes_once_per_round_when_enabled() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, auto_tune=True)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(
+                learner, "_auto_tune_resources", return_value=4
+            ) as mock_tune,
+        ):
+            learner.run(max_rounds=1)
+        mock_tune.assert_called_once()
+
+
+def test_auto_tune_default_is_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._auto_tune is True
+
+
+def test_auto_tune_false_is_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, auto_tune=False)
+        assert learner._auto_tune is False
+
+
+def test_main_no_auto_tune_flag_disables_auto_tune(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+
+    with (
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_auto_tune_resources") as mock_tune,
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--no-auto-tune",
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    mock_tune.assert_not_called()
+
+
+def test_main_default_enables_auto_tune(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+
+    with (
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(
+            subject.ContinuousLearner, "_auto_tune_resources", return_value=4
+        ) as mock_tune,
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert mock_tune.call_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# feature_explorer.predict_fold_with_backend / select_fold_features
+# ---------------------------------------------------------------------------
+
+
+def _make_explorer_fold() -> object:
+    rows = []
+    for i in range(4):
+        rows.append(
+            {
+                "source": "jra",
+                "race_date": "20220601",
+                "kaisai_nen": "2022",
+                "kaisai_tsukihi": "0601",
+                "keibajo_code": "10",
+                "race_bango": "01",
+                "ketto_toroku_bango": f"horse_{i:03d}",
+                "umaban": i + 1,
+                "category": "jra",
+                "race_id": "2022_race_01",
+                "race_year": 2022,
+                "feature_schema_version": "1",
+                "finish_position": i + 1,
+                "finish_norm": 0.5,
+                "target_corner_1_norm": 0.5,
+                "target_corner_3_norm": 0.5,
+                "target_corner_4_norm": 0.5,
+                "target_running_style_class": 0,
+                "feat_speed": float(i),
+                "feat_jockey": 0.3,
+            }
+        )
+    fold_df = pd.DataFrame(rows)
+    return {"train_df": fold_df, "valid_df": fold_df.copy(), "valid_year": 2023}
+
+
+def _make_explorer_meta_only_fold() -> object:
+    rows = []
+    for i in range(4):
+        rows.append(
+            {
+                "source": "jra",
+                "race_date": "20220601",
+                "kaisai_nen": "2022",
+                "kaisai_tsukihi": "0601",
+                "keibajo_code": "10",
+                "race_bango": "01",
+                "ketto_toroku_bango": f"horse_{i:03d}",
+                "umaban": i + 1,
+                "category": "jra",
+                "race_id": "2022_race_01",
+                "race_year": 2022,
+                "feature_schema_version": "1",
+                "finish_position": i + 1,
+                "finish_norm": 0.5,
+                "target_corner_1_norm": 0.5,
+                "target_corner_3_norm": 0.5,
+                "target_corner_4_norm": 0.5,
+                "target_running_style_class": 0,
+            }
+        )
+    fold_df = pd.DataFrame(rows)
+    return {"train_df": fold_df, "valid_df": fold_df.copy(), "valid_year": 2023}
+
+
+def test_predict_fold_with_backend_lightgbm_returns_predictions_with_finish_position() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_fold())
+    preds_df = pd.DataFrame(
+        {
+            "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
+            "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+            "predicted_rank": [1, 2, 3, 4],
+        }
+    )
+    with patch(
+        "learning.feature_explorer.run_walk_forward_fold",
+        return_value=(MagicMock(), preds_df, {"ndcg_at_3": 0.8}),
+    ) as mock_fold:
+        result = explorer.predict_fold_with_backend(
+            fold, "lightgbm", explorer.DEFAULT_PARAMS
+        )
+    assert result is not None
+    assert "predicted_rank" in result.columns
+    assert "finish_position" in result.columns
+    mock_fold.assert_called_once()
+
+
+def test_predict_fold_with_backend_xgboost_returns_valid_predictions() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_fold())
+    valid_preds = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1", "r1", "r1"],
+            "ketto_toroku_bango": ["a", "b", "c", "d"],
+            "predicted_rank": [1, 2, 3, 4],
+            "finish_position": [1, 2, 3, 4],
+        }
+    )
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(MagicMock(), {"valid_predictions": valid_preds}),
+    ) as mock_xgb:
+        result = explorer.predict_fold_with_backend(
+            fold, "xgboost", explorer.DEFAULT_PARAMS
+        )
+    assert result is valid_preds
+    mock_xgb.assert_called_once()
+
+
+def test_predict_fold_with_backend_catboost_returns_valid_predictions() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_fold())
+    valid_preds = pd.DataFrame(
+        {
+            "race_id": ["r1", "r1", "r1", "r1"],
+            "ketto_toroku_bango": ["a", "b", "c", "d"],
+            "predicted_rank": [1, 2, 3, 4],
+            "finish_position": [1, 2, 3, 4],
+        }
+    )
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        result = explorer.predict_fold_with_backend(
+            fold, "catboost", explorer.DEFAULT_PARAMS
+        )
+    assert result is valid_preds
+    mock_cb.assert_called_once()
+
+
+def test_predict_fold_with_backend_xgboost_returns_none_when_no_numeric_features() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_meta_only_fold())
+    result = explorer.predict_fold_with_backend(
+        fold, "xgboost", explorer.DEFAULT_PARAMS
+    )
+    assert result is None
+
+
+def test_predict_fold_with_backend_catboost_returns_none_when_no_feature_cols() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_meta_only_fold())
+    result = explorer.predict_fold_with_backend(
+        fold, "catboost", explorer.DEFAULT_PARAMS
+    )
+    assert result is None
+
+
+def test_select_fold_features_public_alias_keeps_requested_columns() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_fold())
+    result = explorer.select_fold_features(fold, {"feat_speed"})
+    assert "feat_speed" in result["train_df"].columns
+    assert "feat_jockey" not in result["train_df"].columns
+
+
+def test_select_fold_features_public_alias_preserves_valid_year() -> None:
+    import learning.feature_explorer as explorer
+    from finish_position_lightgbm import FoldSplit
+
+    fold = cast("FoldSplit", _make_explorer_fold())
+    result = explorer.select_fold_features(fold, {"feat_speed"})
+    assert result["valid_year"] == 2023

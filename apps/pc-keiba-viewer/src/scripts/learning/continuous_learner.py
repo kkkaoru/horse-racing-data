@@ -30,11 +30,14 @@ from learning.feature_explorer import (
     VALIDATION_YEAR_POOL,
     ModelBackend,
     evaluate_feature_set,
+    predict_fold_with_backend,
     run_exploration,
+    select_fold_features,
     select_round_validation_years,
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
-from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS
+from learning.subgroup_diagnostics import compute_subgroup_diagnostics
+from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS, split_walk_forward
 from walk_forward_common import atomic_write_metadata
 
 _psutil: ModuleType | None
@@ -91,6 +94,11 @@ INVERSE_N_TRIALS: Final[int] = 5
 ENRICHMENT_THRESHOLD: Final[float] = 0.3
 ENRICHMENT_N_TRIALS: Final[int] = 5
 MAX_ENRICHMENT_FEATURES: Final[int] = 5
+SATURATION_LOOKBACK: Final[int] = 50
+
+_MIN_NTHREAD: Final[int] = 2
+_MAX_NTHREAD: Final[int] = 6
+_MIN_FREE_MEM_GB: Final[float] = 8.0
 
 
 class InverseResult(TypedDict):
@@ -103,6 +111,8 @@ _CONTAINER_MODELS_ROOT: Final[str] = (
 _MODEL_META_JSON_PATH: Final[str] = (
     "apps/finish-position-predict-container/src/predict_lib/model_meta.json"
 )
+_CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
+DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
 
 
 def _load_features_dataframe(parquet_path: Path, train_start: str) -> pd.DataFrame:
@@ -199,9 +209,12 @@ class ContinuousLearner:
         deploy_threshold: float = DEFAULT_DEPLOY_THRESHOLD,
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
         docker_build: bool = False,
+        cf_deploy: bool = False,
+        log_subgroup: bool = False,
         skip_inverse: bool = False,
         skip_enrichment: bool = False,
         load_controller: AdaptiveLoadController | None = None,
+        auto_tune: bool = True,
     ) -> None:
         if category not in _TRAINING_SCRIPT:
             raise ValueError(
@@ -235,10 +248,13 @@ class ContinuousLearner:
         self._deploy_threshold: float = deploy_threshold
         self._backends: tuple[ModelBackend, ...] = backends
         self._docker_build: bool = docker_build
+        self._cf_deploy: bool = cf_deploy
+        self._log_subgroup: bool = log_subgroup
         self._skip_inverse: bool = skip_inverse
         self._skip_enrichment: bool = skip_enrichment
         self._stop: bool = False
         self._load_controller: AdaptiveLoadController | None = load_controller
+        self._auto_tune: bool = auto_tune
 
     @staticmethod
     def _derive_blind_holdout_year(df: pd.DataFrame) -> int:
@@ -251,6 +267,34 @@ class ContinuousLearner:
 
     def request_stop(self) -> None:
         self._stop = True
+
+    def _auto_tune_resources(self) -> int:
+        """Return optimal nthread based on current system state.
+
+        Respects hard ceilings (nthread <= _MAX_NTHREAD) and ensures a
+        free-memory buffer of at least _MIN_FREE_MEM_GB.
+        """
+        if _psutil is None:
+            return _MAX_NTHREAD
+        cpu_count = _psutil.cpu_count(logical=True) or 8
+        load_avg_1m = _psutil.getloadavg()[0]
+        cpu_idle_fraction = max(0.0, 1.0 - load_avg_1m / cpu_count)
+        mem = _psutil.virtual_memory()
+        free_gb = mem.available / (1024**3)
+        optimal_threads = max(
+            _MIN_NTHREAD,
+            min(_MAX_NTHREAD, int(cpu_count * cpu_idle_fraction * 0.5)),
+        )
+        if free_gb < _MIN_FREE_MEM_GB:
+            optimal_threads = _MIN_NTHREAD
+        _logger.info(
+            "resource auto-tune: load=%.1f/%d cores, free_mem=%.1fGB -> nthread=%d",
+            load_avg_1m,
+            cpu_count,
+            free_gb,
+            optimal_threads,
+        )
+        return optimal_threads
 
     def run(self, max_rounds: int | None = None) -> None:
         round_label = f"max {max_rounds} rounds" if max_rounds is not None else "unlimited"
@@ -265,6 +309,10 @@ class ContinuousLearner:
             if max_rounds is not None and round_num >= max_rounds:
                 _logger.info("reached max rounds (%d) — stopping", max_rounds)
                 break
+
+            if self._auto_tune:
+                nthread = self._auto_tune_resources()
+                _logger.info("round %d auto-tuned nthread: %d", round_num, nthread)
 
             actual_trials = self._n_trials
             sleep_secs = 0.0
@@ -284,6 +332,8 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             self._maybe_deploy()
+            if self._log_subgroup:
+                self._log_subgroup_diagnostics()
             if not self._skip_inverse:
                 self._check_and_try_inverses(round_num, actual_trials)
             if not self._skip_enrichment:
@@ -466,6 +516,12 @@ class ContinuousLearner:
         )
 
     def _maybe_deploy(self) -> None:
+        if self._registry.is_saturated(SATURATION_LOOKBACK):
+            _logger.info(
+                "deploy skipped: registry saturated (last %d trials showed no improvement)",
+                SATURATION_LOOKBACK,
+            )
+            return
         active = self._registry.get_active_entry()
         if active is None:
             _logger.debug("no active entry — skipping deploy")
@@ -523,6 +579,68 @@ class ContinuousLearner:
             self._backends,
         )
 
+    def _log_subgroup_diagnostics(self) -> None:
+        """Evaluate the active feature set per validation fold and log per-subgroup metrics.
+
+        Predictions come from re-training the active set on each fold; the ground-truth
+        side (incl. ``track_code`` / ``kyori`` used to derive subgroup keys) is taken
+        from the full ``self._df`` rather than the feature-filtered fold, so subgrouping
+        is unaffected by which features the active set happens to keep.
+        """
+        active = self._registry.get_active_entry()
+        if active is None:
+            _logger.info("subgroup diagnostics: no active entry — skipping")
+            return
+        feature_names = active["feature_names"]
+        predictions = self._collect_active_predictions(feature_names)
+        if predictions.empty:
+            _logger.info("subgroup diagnostics: no predictions produced — skipping")
+            return
+        metrics = compute_subgroup_diagnostics(predictions, self._df)
+        if not metrics:
+            _logger.info("subgroup diagnostics: no subgroups to report")
+            return
+        _logger.info(
+            "subgroup diagnostics (active set, %d features):", len(feature_names)
+        )
+        for m in metrics:
+            _logger.info(
+                "│  %-28s  races=%4d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                m["subgroup"],
+                m["race_count"],
+                m["ndcg_at_3"],
+                m["top1_accuracy"],
+                m["top3_box_accuracy"],
+            )
+
+    def _collect_active_predictions(self, feature_names: list[str]) -> pd.DataFrame:
+        """Train the active feature set on each validation fold and stack predictions.
+
+        Returns a frame of (race_id, ketto_toroku_bango, predicted_rank) over all
+        validation years; an empty frame when no fold yields predictions.
+        """
+        feature_set = set(feature_names)
+        frames: list[pd.DataFrame] = []
+        for year in self._validation_years:
+            fold = split_walk_forward(self._df, self._train_start, year)
+            if fold["train_df"].empty or fold["valid_df"].empty:
+                continue
+            fold_filtered = select_fold_features(fold, feature_set)
+            for backend in self._backends:
+                preds = predict_fold_with_backend(
+                    fold_filtered, backend, DEFAULT_PARAMS
+                )
+                if preds is None:
+                    continue
+                frames.append(
+                    preds[["race_id", "ketto_toroku_bango", "predicted_rank"]]
+                )
+        if not frames:
+            return pd.DataFrame(
+                columns=["race_id", "ketto_toroku_bango", "predicted_rank"]
+            )
+        return pd.concat(frames, ignore_index=True)
+
     def _deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]
         model_version = self._make_model_version()
@@ -551,6 +669,9 @@ class ContinuousLearner:
             if self._docker_build:
                 _logger.info("│  [5/5] rebuilding Docker image ...")
                 self._rebuild_docker()
+            if self._cf_deploy:
+                _logger.info("│  [5/5] deploying to Cloudflare Container ...")
+                self._deploy_cf_container()
             self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
         except Exception:
             _logger.error("│  deploy failed — rolling back staged artifacts")
@@ -659,6 +780,17 @@ class ContinuousLearner:
         )
         _logger.info("│    Docker build succeeded")
 
+    def _deploy_cf_container(self) -> None:
+        container_dir = self._repo_root / _CONTAINER_APP_DIR
+        _logger.info("│    deploying from: %s", container_dir)
+        subprocess.run(
+            ["bunx", "wrangler", "deploy"],
+            cwd=str(container_dir),
+            check=True,
+            timeout=DEFAULT_CF_DEPLOY_TIMEOUT_S,
+        )
+        _logger.info("│    CF Container deploy succeeded")
+
     def _rollback_deploy(self, staged_dest: Path | None, prev_meta_content: str | None) -> None:
         """Remove staged artifacts and restore model_meta.json after a failed deploy."""
         if staged_dest is not None:
@@ -728,8 +860,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--backends", type=str, default=None)
     parser.add_argument("--train-start", type=str, default=None)
     parser.add_argument("--docker-build", action="store_true")
+    parser.add_argument("--cf-deploy", action="store_true")
+    parser.add_argument("--log-subgroup", action="store_true")
     parser.add_argument("--skip-inverse", action="store_true")
     parser.add_argument("--skip-enrichment", action="store_true")
+    parser.add_argument("--auto-tune", dest="auto_tune", action="store_true", default=True)
+    parser.add_argument("--no-auto-tune", dest="auto_tune", action="store_false")
     args = parser.parse_args(argv)
     setup_logging()
 
@@ -762,9 +898,12 @@ def main(argv: list[str] | None = None) -> None:
             deploy_threshold=float(args.deploy_threshold),
             backends=backends,
             docker_build=bool(args.docker_build),
+            cf_deploy=bool(args.cf_deploy),
+            log_subgroup=bool(args.log_subgroup),
             skip_inverse=bool(args.skip_inverse),
             skip_enrichment=bool(args.skip_enrichment),
             load_controller=load_controller,
+            auto_tune=bool(args.auto_tune),
         )
         _setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)
