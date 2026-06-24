@@ -47,6 +47,7 @@ DEFAULT_ITERATIONS = 500
 DEFAULT_LEARNING_RATE = 0.05
 DEFAULT_DEPTH = 8
 DEFAULT_L2 = 3.0
+DEFAULT_THREAD_COUNT = 6
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -238,6 +239,7 @@ def train_catboost_ranker(
         "od_wait": args.early_stopping_rounds,
         "random_seed": args.seed,
         "task_type": "CPU",
+        "thread_count": DEFAULT_THREAD_COUNT,
         "verbose": 50,
     }
     bagging_temp = getattr(args, "bagging_temperature", None)
