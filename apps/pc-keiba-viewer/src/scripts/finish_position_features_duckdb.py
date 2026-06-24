@@ -424,7 +424,8 @@ def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
       babajotai_code_shiba, babajotai_code_dirt,
       tansho_ninkijun, tansho_odds,
       cast(null as int) as bataiju,
-      try_cast(nullif(trim(seibetsu_code), '') as int) as seibetsu_code
+      try_cast(nullif(trim(seibetsu_code), '') as int) as seibetsu_code,
+      try_cast(barei as int) as barei
     from pg.race_entry_corner_features
     where race_date between '{history_start}' and '{to_date}'
     """
@@ -466,7 +467,8 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
       try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
       try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
       try_cast(nullif(trim(se.bataiju), '') as int) as bataiju,
-      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code
+      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code,
+      try_cast(nullif(trim(se.barei), '') as int) as barei
     from pg.nvd_se se
 
     join pg.nvd_ra ra
@@ -552,7 +554,8 @@ def _rec_select_from_se_ra(
         rt.bataiju_realtime,
         try_cast(nullif(trim(se.bataiju), '') as int)
       ) as bataiju,
-      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code
+      try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code,
+      try_cast(nullif(trim(se.barei), '') as int) as barei
     from pg.{se_table} se
     join pg.{ra_table} ra
       on ra.kaisai_nen = se.kaisai_nen
@@ -954,6 +957,7 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
           cast(rec.tansho_odds as double) as tansho_odds,
           cast(rec.tansho_ninkijun as int) as tansho_ninkijun,
           rec.seibetsu_code,
+          rec.barei,
           case when rec.kaisai_tsukihi is null or length(rec.kaisai_tsukihi) < 2 then null
                else cast(substr(rec.kaisai_tsukihi, 1, 2) as int) end as kaisai_month,
           'v1' as feature_schema_version,
@@ -1921,6 +1925,7 @@ def base_features_select_sql(category: str) -> str:
       t.tansho_odds,
       t.tansho_ninkijun,
       t.seibetsu_code,
+      t.barei,
       wa.zogen_sa as zogen_sa,
       t.kaisai_month,
       t.source || ':' || t.kaisai_nen || ':' || t.kaisai_tsukihi || ':' || t.keibajo_code || ':' || t.race_bango as race_id
@@ -2024,18 +2029,31 @@ def write_parquet(
     force_clean: bool,
 ) -> None:
     prepare_output_dir(output_dir, keep_existing, force_clean)
+    # Materialize the windowed CTE result once. Filtering ``final_query`` per year
+    # in the COPY loop forces DuckDB to re-evaluate every CTE join and window
+    # function for each year (the ``race_year`` predicate cannot push below the
+    # window functions), pinning the full result set on every iteration and OOMing
+    # large builds (NAR: 2.89M rows). Staging to a flat temp table evaluates the
+    # CTEs once; the per-year COPY then reads a partition-pruned flat scan that the
+    # temp_directory can spill, so peak memory is bounded by a single year.
+    con.execute(f"create or replace temp table _parquet_staging as {final_query}")
     year_rows = con.execute(
-        "select distinct race_year from target order by race_year"
+        "select distinct race_year from _parquet_staging order by race_year"
     ).fetchall()
+    threads_row = con.execute("select current_setting('threads')").fetchone()
+    original_threads = int(threads_row[0]) if threads_row is not None else DEFAULT_THREADS
+    con.execute("set threads = 1")
     for row in year_rows:
         year = int(row[0])
         con.execute(
             f"""
-            copy (select * from ({final_query}) where race_year = {year})
+            copy (select * from _parquet_staging where race_year = {year})
             to '{output_dir.as_posix()}'
             (format parquet, partition_by (race_year), overwrite_or_ignore true)
             """
         )
+    con.execute(f"set threads = {original_threads}")
+    con.execute("drop table if exists _parquet_staging")
 
 
 class BuildResult(TypedDict):
