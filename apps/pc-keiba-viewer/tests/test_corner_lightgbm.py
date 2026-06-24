@@ -328,6 +328,7 @@ def test_main_writes_metrics_and_predictions(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("PC_KEIBA_CORNER_FAST_GRID", "1")
     monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
     monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
     monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
@@ -372,6 +373,7 @@ def test_main_uses_neural_predictions_when_models_available(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("PC_KEIBA_CORNER_FAST_GRID", "1")
     monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
     monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
     monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
@@ -421,6 +423,7 @@ def test_stacker_training_uses_pairwise_model_not_regression_values(
     tmp_path: Path,
 ) -> None:
     """Verify pairwise_prediction_column is set by apply_pairwise_model during stacker training."""
+    monkeypatch.setenv("PC_KEIBA_CORNER_FAST_GRID", "1")
     monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
     monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
     monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)

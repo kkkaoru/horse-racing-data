@@ -338,6 +338,40 @@ RANK_ENSEMBLE_TRIPLES = [
     (0.45, 0.4, 0.15),
     (0.4, 0.35, 0.25),
 ]
+FAST_GRID_REGRESSION_RANKER_ALPHAS = [0, 0.5, 1.0]
+FAST_GRID_RANK_PAIRWISE_ALPHAS = [0.1, 1.0]
+FAST_GRID_STRUCTURAL_BLEND_ALPHAS = [0.08, 0.4]
+FAST_GRID_NEURAL_BLEND_ALPHAS = [0.08, 0.4]
+FAST_GRID_RANK_ENSEMBLE_WEIGHTS = [0.08, 0.8]
+FAST_GRID_RANK_ENSEMBLE_TRIPLES = [(0.6, 0.3, 0.1)]
+
+
+def use_fast_alpha_grid() -> bool:
+    return os.environ.get("PC_KEIBA_CORNER_FAST_GRID", "").strip() != ""
+
+
+def regression_ranker_alphas() -> list[float]:
+    return FAST_GRID_REGRESSION_RANKER_ALPHAS if use_fast_alpha_grid() else REGRESSION_RANKER_ALPHAS
+
+
+def rank_pairwise_alphas() -> list[float]:
+    return FAST_GRID_RANK_PAIRWISE_ALPHAS if use_fast_alpha_grid() else RANK_PAIRWISE_ALPHAS
+
+
+def structural_blend_alphas() -> list[float]:
+    return FAST_GRID_STRUCTURAL_BLEND_ALPHAS if use_fast_alpha_grid() else STRUCTURAL_BLEND_ALPHAS
+
+
+def neural_blend_alphas() -> list[float]:
+    return FAST_GRID_NEURAL_BLEND_ALPHAS if use_fast_alpha_grid() else NEURAL_BLEND_ALPHAS
+
+
+def rank_ensemble_weights() -> list[float]:
+    return FAST_GRID_RANK_ENSEMBLE_WEIGHTS if use_fast_alpha_grid() else RANK_ENSEMBLE_WEIGHTS
+
+
+def rank_ensemble_triples() -> list[tuple[float, float, float]]:
+    return FAST_GRID_RANK_ENSEMBLE_TRIPLES if use_fast_alpha_grid() else RANK_ENSEMBLE_TRIPLES
 NEURAL_SEQUENCE_STATIC_COLUMNS = [
     "horse_number_norm",
     "popularity_norm",
@@ -1525,7 +1559,7 @@ def search_rank_pair_ensembles(
     best = current
     for left_index, left_name in enumerate(names):
         for right_name in names[left_index + 1 :]:
-            for weight in RANK_ENSEMBLE_WEIGHTS:
+            for weight in rank_ensemble_weights():
                 prediction = blended_prediction(candidates[left_name], candidates[right_name], weight)
                 score_key = f"rankmix_{left_name}_{right_name}_{weight}"
                 best = update_best_prediction(test, target_column, prediction, score_key, best, scores)
@@ -1557,7 +1591,7 @@ def search_rank_triple_ensembles(
     for left_index, left_name in enumerate(preferred_names):
         for middle_index, middle_name in enumerate(preferred_names[left_index + 1 :], left_index + 1):
             for right_name in preferred_names[middle_index + 1 :]:
-                for left_weight, middle_weight, right_weight in RANK_ENSEMBLE_TRIPLES:
+                for left_weight, middle_weight, right_weight in rank_ensemble_triples():
                     prediction = clipped_prediction(
                         candidates[left_name] * left_weight
                         + candidates[middle_name] * middle_weight
@@ -1635,7 +1669,7 @@ def choose_ensemble_prediction(
         transformer_column,
     )
 
-    for alpha in REGRESSION_RANKER_ALPHAS:
+    for alpha in regression_ranker_alphas():
         candidate = blended_prediction(test[regression_column], test[ranker_column], alpha)
         score = score_prediction(
             test,
@@ -1649,7 +1683,7 @@ def choose_ensemble_prediction(
             best_score = score
             best_prediction = candidate.copy()
 
-    for alpha in RANK_PAIRWISE_ALPHAS:
+    for alpha in rank_pairwise_alphas():
         candidate = blended_prediction(test[ranker_column], test[pairwise_column], alpha)
         score = score_prediction(
             test,
@@ -1671,7 +1705,7 @@ def choose_ensemble_prediction(
             best_alpha = 1.0
             best_score = score
             best_prediction = base_prediction.copy()
-        for alpha in STRUCTURAL_BLEND_ALPHAS:
+        for alpha in structural_blend_alphas():
             candidate = blended_prediction(test[regression_column], base_prediction, alpha)
             score = score_prediction(
                 test,
@@ -1685,7 +1719,7 @@ def choose_ensemble_prediction(
                 best_score = score
                 best_prediction = candidate.copy()
         if name in {"lstm", "transformer", "neural_average"}:
-            for alpha in NEURAL_BLEND_ALPHAS:
+            for alpha in neural_blend_alphas():
                 candidate = blended_prediction(test[regression_column], base_prediction, alpha)
                 score = score_prediction(
                     test,
