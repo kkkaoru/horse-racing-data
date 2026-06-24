@@ -22,12 +22,14 @@ import {
 } from "./race-trend-daily-track-do";
 
 type FakeStorageGetFn = (key: string) => Promise<RaceTrendDailyTrackState | undefined>;
+type FakeStorageGetAlarmFn = () => Promise<number | null>;
 type FakeStoragePutFn = (key: string, value: RaceTrendDailyTrackState) => Promise<void>;
 type FakeStorageSetAlarmFn = (at: number) => Promise<void>;
 type FakeBlockConcurrencyWhileFn = (callback: () => Promise<void>) => Promise<void>;
 
 interface FakeStorage {
   get: FakeStorageGetFn;
+  getAlarm: FakeStorageGetAlarmFn;
   put: FakeStoragePutFn;
   setAlarm: FakeStorageSetAlarmFn;
 }
@@ -42,6 +44,7 @@ interface FakeStateHandle {
   state: FakeState;
   storage: {
     get: Mock<FakeStorageGetFn>;
+    getAlarm: Mock<FakeStorageGetAlarmFn>;
     put: Mock<FakeStoragePutFn>;
     setAlarm: Mock<FakeStorageSetAlarmFn>;
   };
@@ -55,12 +58,13 @@ const buildFakeState = (initial: Map<string, RaceTrendDailyTrackState>): FakeSta
     initial.set(key, value);
   });
   const setAlarm = vi.fn(async (_at: number): Promise<void> => {});
+  const getAlarm = vi.fn(async (): Promise<number | null> => null);
   const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
-  const storage: FakeStorage = { get, put, setAlarm };
+  const storage: FakeStorage = { get, getAlarm, put, setAlarm };
   return {
     blockConcurrencyWhile,
     state: { blockConcurrencyWhile, storage },
-    storage: { get, put, setAlarm },
+    storage: { get, getAlarm, put, setAlarm },
   };
 };
 
@@ -92,6 +96,7 @@ interface FakeDurableObjectStateInput {
   storage: {
     delete: Mock;
     get: FakeStorageGetFn;
+    getAlarm: FakeStorageGetAlarmFn;
     list: Mock;
     put: FakeStoragePutFn;
     setAlarm: FakeStorageSetAlarmFn;
@@ -1014,7 +1019,14 @@ it("constructor hydrates state via blockConcurrencyWhile when storage has a pers
   const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
   const doState = buildFakeDurableObjectState({
     blockConcurrencyWhile,
-    storage: { delete: vi.fn(), get, list: vi.fn(), put, setAlarm },
+    storage: {
+      delete: vi.fn(),
+      get,
+      getAlarm: vi.fn(async () => null),
+      list: vi.fn(),
+      put,
+      setAlarm,
+    },
   });
   const cache = new RaceTrendDailyTrackDO(doState, buildEnv());
   await blockConcurrencyWhile.mock.results[0]!.value;
@@ -1033,7 +1045,14 @@ it("constructor leaves state null when storage has nothing persisted", async () 
   const blockConcurrencyWhile = vi.fn((callback: () => Promise<void>): Promise<void> => callback());
   const doState = buildFakeDurableObjectState({
     blockConcurrencyWhile,
-    storage: { delete: vi.fn(), get, list: vi.fn(), put, setAlarm },
+    storage: {
+      delete: vi.fn(),
+      get,
+      getAlarm: vi.fn(async () => null),
+      list: vi.fn(),
+      put,
+      setAlarm,
+    },
   });
   const cache = new RaceTrendDailyTrackDO(doState, buildEnv());
   await blockConcurrencyWhile.mock.results[0]!.value;
@@ -2122,4 +2141,36 @@ it("POST /push preserves existing bataiju when incoming row has finishPosition b
   expect(starter.zogenSa).toBe("2");
   expect(starter.finishPosition).toBe(1);
   expect(starter.sohaTime).toBe("1:34.2");
+});
+
+// Critical alarm self-pull bootstrap: handlePush schedules the alarm on
+// the very first push so the DO actually runs refreshFromD1 even when
+// /races never gets hit while state is empty. Without this, a DO populated
+// entirely by pushResultsToRaceTrendDO never refreshes from D1 — bataiju /
+// weight stays null because the push payload always nulls those columns.
+it("POST /push schedules the alarm tick when no alarm is currently set", async () => {
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(JRA_ROW),
+      method: "POST",
+    }),
+  );
+  expect(handle.storage.getAlarm).toHaveBeenCalledTimes(1);
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+});
+
+it("POST /push does not reschedule the alarm when one is already set", async () => {
+  const handle = buildFakeState(new Map());
+  handle.storage.getAlarm.mockResolvedValueOnce(1_700_000_000_000);
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(JRA_ROW),
+      method: "POST",
+    }),
+  );
+  expect(handle.storage.getAlarm).toHaveBeenCalledTimes(1);
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(0);
 });

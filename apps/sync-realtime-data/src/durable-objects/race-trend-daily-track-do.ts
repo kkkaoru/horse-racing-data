@@ -20,6 +20,7 @@ import { mergeJsonHeaders } from "../http";
 
 interface RaceTrendStorageLike {
   get: (key: string) => Promise<RaceTrendDailyTrackState | undefined>;
+  getAlarm: () => Promise<number | null>;
   put: (key: string, value: RaceTrendDailyTrackState) => Promise<void>;
   setAlarm: (at: number) => Promise<void>;
 }
@@ -689,6 +690,7 @@ export class RaceTrendDailyTrackDO {
       blockConcurrencyWhile: (callback) => state.blockConcurrencyWhile(callback),
       storage: {
         get: (key) => state.storage.get<RaceTrendDailyTrackState>(key),
+        getAlarm: () => state.storage.getAlarm(),
         put: (key, value) => state.storage.put<RaceTrendDailyTrackState>(key, value),
         setAlarm: (at) => state.storage.setAlarm(at),
       },
@@ -769,7 +771,19 @@ export class RaceTrendDailyTrackDO {
     this.state = next;
     this.parsed = context;
     await this.doState.storage.put(STORAGE_KEY, next);
+    // Ensure the alarm tick is scheduled even when the DO learns its context
+    // via /push rather than via a cold-start GET. Without this guard a DO
+    // populated entirely by pushResultsToRaceTrendDO never runs refreshFromD1
+    // and bataiju / weight stays whatever the pushes happened to carry
+    // (which the push payload always nulls — see worker.buildRaceTrendDailyTrackRow).
+    await this.ensureAlarmScheduled();
     return json({ ok: true });
+  }
+
+  private async ensureAlarmScheduled(): Promise<void> {
+    const existingAlarm = await this.doState.storage.getAlarm();
+    if (existingAlarm !== null) return;
+    await this.doState.storage.setAlarm(Date.now() + computeNextAlarmDelayMs(new Date()));
   }
 
   // GET /races cold-start contract:
