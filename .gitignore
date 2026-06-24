@@ -163,6 +163,7 @@ test-results/
 
 # DuckDB feature registries derived from paid source data (local build artifacts)
 apps/pc-keiba-viewer/feature_registry*.duckdb*
+apps/pc-keiba-viewer/trial_registry*.duckdb*
 
 apps/**/tmp/**
 tmp/
