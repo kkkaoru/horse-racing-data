@@ -263,6 +263,75 @@ def test_maybe_promote_compares_against_active_not_global_max() -> None:
         assert active["trial_id"] == "trial-new"
 
 
+def test_maybe_promote_uses_supplied_active_ndcg_for_decision() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.activate(1)
+        promoted = reg.maybe_promote(
+            "trial-2", 0.62, ["feat_b"], threshold=0.01, active_ndcg=0.6
+        )
+        assert promoted is True
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "trial-2"
+
+
+def test_maybe_promote_supplied_active_ndcg_overrides_db_active() -> None:
+    # A supplied active_ndcg of 0.99 makes 0.62 fail the threshold even though the
+    # real DB active is only 0.5; this proves the param is authoritative over the DB.
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.activate(1)
+        promoted = reg.maybe_promote(
+            "trial-2", 0.62, ["feat_b"], threshold=0.01, active_ndcg=0.99
+        )
+        assert promoted is False
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "trial-1"
+
+
+def test_maybe_promote_supplied_active_ndcg_skips_internal_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.activate(1)
+        calls: list[int] = []
+        real_current_active = reg._current_active_ndcg
+        def counting_current_active() -> float:
+            calls.append(1)
+            return real_current_active()
+        monkeypatch.setattr(reg, "_current_active_ndcg", counting_current_active)
+        reg.maybe_promote(
+            "trial-2", 0.62, ["feat_b"], threshold=0.01, active_ndcg=0.5
+        )
+        assert calls == []
+
+
+def test_maybe_promote_without_active_ndcg_queries_internal_active() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.5, ["feat_a"])
+        reg.activate(1)
+        promoted = reg.maybe_promote("trial-2", 0.62, ["feat_b"], threshold=0.01)
+        assert promoted is True
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "trial-2"
+
+
+def test_current_active_ndcg_returns_zero_on_empty_registry() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._current_active_ndcg() == 0.0
+
+
+def test_current_active_ndcg_returns_active_entry_ndcg() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("trial-1", 0.73, ["feat_a"])
+        reg.activate(1)
+        assert reg._current_active_ndcg() == 0.73
+
+
 def test_maybe_promote_rolls_back_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         def broken_record_trial(*args: object, **kwargs: object) -> int:
@@ -403,6 +472,89 @@ def test_list_strongly_negative_trials_empty_when_none_negative() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("positive", 0.7, ["f"], '{"delta_pp": 0.5}')
         assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_strongly_negative_trials_excludes_dict_min_above_threshold() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("dict-above", 0.4, ["f"], '{"delta_pp": {"a": -0.5, "b": 0.1}}')
+        assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_strongly_negative_trials_excludes_non_dict_root_for_negative_threshold() -> (
+    None
+):
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("array-root", 0.4, ["f"], "[1, 2, 3]")
+        assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_strongly_negative_trials_excludes_bool_scalar_for_negative_threshold() -> (
+    None
+):
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("bool-delta", 0.4, ["f"], '{"delta_pp": true}')
+        assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_strongly_negative_trials_includes_dict_with_bool_ignored() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("dict-bool", 0.4, ["f"], '{"delta_pp": {"flag": true, "score": -2.0}}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        assert len(result) == 1
+        assert result[0]["trial_id"] == "dict-bool"
+
+
+def test_list_strongly_negative_trials_excludes_empty_dict_delta() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("dict-empty", 0.4, ["f"], '{"delta_pp": {}}')
+        assert reg.list_strongly_negative_trials(-1.0) == []
+
+
+def test_list_strongly_negative_trials_zero_fallback_kept_for_positive_threshold() -> (
+    None
+):
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("no-delta", 0.4, ["f"], '{"features": ["f"]}')
+        result = reg.list_strongly_negative_trials(0.0)
+        assert len(result) == 1
+        assert result[0]["trial_id"] == "no-delta"
+
+
+def test_list_strongly_negative_trials_mix_returns_ascending_ids_and_exact_set() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        id_scalar = reg.record_trial("scalar-neg", 0.4, ["f"], '{"delta_pp": -1.5}')
+        reg.record_trial("scalar-mild", 0.4, ["f"], '{"delta_pp": -0.3}')
+        id_dict = reg.record_trial(
+            "dict-neg", 0.4, ["f"], '{"delta_pp": {"top1": 0.2, "place2": -1.3}}'
+        )
+        reg.record_trial("no-delta", 0.4, ["f"], '{"features": ["f"]}')
+        id_at = reg.record_trial("at-threshold", 0.4, ["f"], '{"delta_pp": -1.0}')
+        result = reg.list_strongly_negative_trials(-1.0)
+        ids = [entry["id"] for entry in result]
+        assert ids == [id_scalar, id_dict, id_at]
+        assert ids == sorted(ids)
+
+
+def test_list_strongly_negative_trials_equivalent_to_full_scan_reference() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("a", 0.4, ["f"], '{"delta_pp": -1.5}')
+        reg.record_trial("b", 0.4, ["f"], '{"delta_pp": {"top1": 0.2, "place2": -1.3}}')
+        reg.record_trial("c", 0.4, ["f"], '{"delta_pp": {"a": -0.5, "b": 0.1}}')
+        reg.record_trial("d", 0.4, ["f"], '{"features": ["f"]}')
+        reg.record_trial("e", 0.4, ["f"], "[1, 2, 3]")
+        reg.record_trial("f", 0.4, ["f"], '{"delta_pp": -1.0}')
+        reg.record_trial("g", 0.4, ["f"], '{"delta_pp": true}')
+        assert reg._con is not None
+        all_rows = reg._con.execute(
+            "SELECT id, trial_id, ndcg_at_3, is_active, feature_names, definition_json, created_at "
+            "FROM feature_trials ORDER BY id"
+        ).fetchall()
+        reference = [
+            subject._row_to_entry(row)
+            for row in all_rows
+            if subject._min_delta_pp(str(row[5])) <= -1.0
+        ]
+        assert reg.list_strongly_negative_trials(-1.0) == reference
 
 
 def test_list_untried_inverses_returns_all_when_none_tried() -> None:

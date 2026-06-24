@@ -210,6 +210,7 @@ class ContinuousLearner:
         backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
         docker_build: bool = False,
         cf_deploy: bool = False,
+        cf_deploy_dir: Path | None = None,
         log_subgroup: bool = False,
         skip_inverse: bool = False,
         skip_enrichment: bool = False,
@@ -249,6 +250,7 @@ class ContinuousLearner:
         self._backends: tuple[ModelBackend, ...] = backends
         self._docker_build: bool = docker_build
         self._cf_deploy: bool = cf_deploy
+        self._cf_deploy_dir: Path | None = cf_deploy_dir
         self._log_subgroup: bool = log_subgroup
         self._skip_inverse: bool = skip_inverse
         self._skip_enrichment: bool = skip_enrichment
@@ -632,9 +634,14 @@ class ContinuousLearner:
                 )
                 if preds is None:
                     continue
+                # .copy() detaches the 3-column slice from the wide prediction
+                # frame so the full-width preds block is freed each iteration
+                # instead of being pinned alive by the slice until the final concat.
                 frames.append(
-                    preds[["race_id", "ketto_toroku_bango", "predicted_rank"]]
+                    preds[["race_id", "ketto_toroku_bango", "predicted_rank"]].copy()
                 )
+                del preds
+            del fold, fold_filtered
         if not frames:
             return pd.DataFrame(
                 columns=["race_id", "ketto_toroku_bango", "predicted_rank"]
@@ -781,7 +788,11 @@ class ContinuousLearner:
         _logger.info("│    Docker build succeeded")
 
     def _deploy_cf_container(self) -> None:
-        container_dir = self._repo_root / _CONTAINER_APP_DIR
+        container_dir = (
+            self._cf_deploy_dir
+            if self._cf_deploy_dir is not None
+            else self._repo_root / _CONTAINER_APP_DIR
+        )
         _logger.info("│    deploying from: %s", container_dir)
         subprocess.run(
             ["bunx", "wrangler", "deploy"],
@@ -861,6 +872,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--train-start", type=str, default=None)
     parser.add_argument("--docker-build", action="store_true")
     parser.add_argument("--cf-deploy", action="store_true")
+    parser.add_argument("--cf-deploy-dir", type=Path, default=None)
     parser.add_argument("--log-subgroup", action="store_true")
     parser.add_argument("--skip-inverse", action="store_true")
     parser.add_argument("--skip-enrichment", action="store_true")
@@ -899,6 +911,7 @@ def main(argv: list[str] | None = None) -> None:
             backends=backends,
             docker_build=bool(args.docker_build),
             cf_deploy=bool(args.cf_deploy),
+            cf_deploy_dir=args.cf_deploy_dir,
             log_subgroup=bool(args.log_subgroup),
             skip_inverse=bool(args.skip_inverse),
             skip_enrichment=bool(args.skip_enrichment),

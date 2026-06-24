@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -258,6 +259,63 @@ def test_ndcg_at_3_from_valid_df_nan_finish_position_excluded_from_dcg_slot() ->
     assert result == pytest.approx(1.0)
 
 
+# --- _dcg_at_3_from_positions (vectorized DCG@3) ---
+
+
+def test_dcg_at_3_from_positions_matches_reference_formula_perfect() -> None:
+    result = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0])
+    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3) + 1.0 / math.log2(4)
+    assert result == pytest.approx(expected)
+
+
+def test_dcg_at_3_from_positions_matches_reference_formula_mixed() -> None:
+    result = subject._dcg_at_3_from_positions([2.0, 1.0, 3.0])
+    expected = 2.0 / math.log2(2) + 3.0 / math.log2(3) + 1.0 / math.log2(4)
+    assert result == pytest.approx(expected)
+
+
+def test_dcg_at_3_from_positions_empty_returns_zero() -> None:
+    result = subject._dcg_at_3_from_positions([])
+    assert result == pytest.approx(0.0)
+
+
+def test_dcg_at_3_from_positions_only_uses_first_three() -> None:
+    short = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0])
+    long = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert short == pytest.approx(long)
+
+
+def test_dcg_at_3_from_positions_irrelevant_positions_contribute_zero() -> None:
+    result = subject._dcg_at_3_from_positions([4.0, 5.0, 6.0])
+    assert result == pytest.approx(0.0)
+
+
+def test_dcg_at_3_from_positions_two_horses_uses_two_discounts() -> None:
+    result = subject._dcg_at_3_from_positions([1.0, 2.0])
+    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3)
+    assert result == pytest.approx(expected)
+
+
+# --- _dcg_at_3_from_positions_relevances (vectorized ideal DCG@3) ---
+
+
+def test_dcg_at_3_from_positions_relevances_matches_reference() -> None:
+    result = subject._dcg_at_3_from_positions_relevances([3.0, 2.0, 1.0])
+    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3) + 1.0 / math.log2(4)
+    assert result == pytest.approx(expected)
+
+
+def test_dcg_at_3_from_positions_relevances_empty_returns_zero() -> None:
+    result = subject._dcg_at_3_from_positions_relevances([])
+    assert result == pytest.approx(0.0)
+
+
+def test_dcg_at_3_from_positions_relevances_single_relevance() -> None:
+    result = subject._dcg_at_3_from_positions_relevances([3.0])
+    expected = 3.0 / math.log2(2)
+    assert result == pytest.approx(expected)
+
+
 # --- _xgb_numeric_features ---
 
 def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -> None:
@@ -283,6 +341,122 @@ def test_xgb_numeric_features_excludes_all_meta_columns() -> None:
     df = _make_df()
     result = subject._xgb_numeric_features(df, list(df.columns))
     assert not (set(result) & set(META_COLUMNS))
+
+
+def test_xgb_numeric_features_preserves_feature_names_order() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1"],
+        "feat_b": [2.0],
+        "feat_a": [1.0],
+        "feat_c": [3.0],
+    })
+    result = subject._xgb_numeric_features(df, ["feat_c", "feat_a", "feat_b"])
+    assert result == ["feat_c", "feat_a", "feat_b"]
+
+
+def test_xgb_numeric_features_twice_same_df_returns_identical_result() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1"],
+        "feat_numeric": [1.0],
+        "feat_string": ["abc"],
+        "finish_position": [1],
+    })
+    first = subject._xgb_numeric_features(df, list(df.columns))
+    second = subject._xgb_numeric_features(df, list(df.columns))
+    assert first == ["feat_numeric"]
+    assert second == ["feat_numeric"]
+
+
+def test_xgb_numeric_features_caches_dtype_check_on_second_call() -> None:
+    df = pd.DataFrame({
+        "race_id": ["r1"],
+        "feat_numeric": [1.0],
+        "feat_string": ["abc"],
+        "finish_position": [1],
+    })
+    subject._XGB_NUMERIC_CACHE.pop(id(df), None)
+    real_is_numeric = pd.api.types.is_numeric_dtype
+    counter = MagicMock(side_effect=real_is_numeric)
+    with patch("learning.feature_explorer.pd.api.types.is_numeric_dtype", counter):
+        subject._xgb_numeric_features(df, list(df.columns))
+        calls_after_first = counter.call_count
+        subject._xgb_numeric_features(df, list(df.columns))
+        calls_after_second = counter.call_count
+    assert calls_after_first > 0
+    assert calls_after_second == calls_after_first
+
+
+def test_xgb_numeric_features_different_schema_is_cache_miss_and_classified() -> None:
+    df_a = pd.DataFrame({"race_id": ["r1"], "feat_numeric": [1.0]})
+    df_b = pd.DataFrame({"race_id": ["r1"], "feat_other": ["x"], "feat_num2": [2.0]})
+    result_a = subject._xgb_numeric_features(df_a, list(df_a.columns))
+    result_b = subject._xgb_numeric_features(df_b, list(df_b.columns))
+    assert result_a == ["feat_numeric"]
+    assert result_b == ["feat_num2"]
+
+
+def test_xgb_numeric_features_reclassifies_when_id_reused_with_new_dtypes() -> None:
+    df = pd.DataFrame({"race_id": ["r1"], "feat_x": [1.0]})
+    first = subject._xgb_numeric_features(df, list(df.columns))
+    df["feat_x"] = df["feat_x"].astype(str)
+    second = subject._xgb_numeric_features(df, list(df.columns))
+    assert first == ["feat_x"]
+    assert second == []
+
+
+# --- _is_model_safe_feature ---
+
+
+def test_is_model_safe_feature_numeric_column_is_safe() -> None:
+    df = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    assert subject._is_model_safe_feature(df, "feat_numeric") is True
+
+
+def test_is_model_safe_feature_non_numeric_non_categorical_is_unsafe() -> None:
+    df = pd.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
+    assert subject._is_model_safe_feature(df, "nar_subclass") is False
+
+
+def test_is_model_safe_feature_categorical_str_column_is_safe() -> None:
+    df = pd.DataFrame({"track_code": ["1"], "feat_numeric": [1.0]})
+    assert subject._is_model_safe_feature(df, "track_code") is True
+
+
+def test_is_model_safe_feature_twice_same_df_returns_identical_result() -> None:
+    df = pd.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
+    first = subject._is_model_safe_feature(df, "feat_numeric")
+    second = subject._is_model_safe_feature(df, "feat_numeric")
+    assert first is True
+    assert second is True
+
+
+def test_is_model_safe_feature_caches_dtype_check_on_second_call() -> None:
+    df = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    subject._MODEL_SAFE_CACHE.pop(id(df), None)
+    real_is_numeric = pd.api.types.is_numeric_dtype
+    counter = MagicMock(side_effect=real_is_numeric)
+    with patch("learning.feature_explorer.pd.api.types.is_numeric_dtype", counter):
+        subject._is_model_safe_feature(df, "feat_numeric")
+        calls_after_first = counter.call_count
+        subject._is_model_safe_feature(df, "feat_string")
+        calls_after_second = counter.call_count
+    assert calls_after_first > 0
+    assert calls_after_second == calls_after_first
+
+
+def test_is_model_safe_feature_different_schema_is_cache_miss_and_classified() -> None:
+    df_a = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    df_b = pd.DataFrame({"feat_other": ["x"], "feat_num2": [2.0]})
+    safe_a = subject._is_model_safe_feature(df_a, "feat_string")
+    safe_b = subject._is_model_safe_feature(df_b, "feat_num2")
+    assert safe_a is False
+    assert safe_b is True
+
+
+def test_model_safe_columns_returns_frozenset_of_safe_columns() -> None:
+    df = pd.DataFrame({"feat_numeric": [1.0], "track_code": ["1"], "nar_subclass": ["A"]})
+    result = subject._model_safe_columns(df)
+    assert result == frozenset({"feat_numeric", "track_code"})
 
 
 # --- run_fold_with_backend ---

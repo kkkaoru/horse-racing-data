@@ -3184,6 +3184,35 @@ def test_collect_active_predictions_stacks_fold_predictions() -> None:
         assert mock_predict.call_count == 6
 
 
+def test_collect_active_predictions_returns_frame_decoupled_from_wide_preds() -> None:
+    # The slim 3-column result must not share a numpy block with the wide
+    # prediction frame, so the full-width preds can be released each iteration.
+    # Mutating the original wide frame after collection must not alter the result.
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            df=_make_df_3years(),
+            validation_years=[2023],
+            train_start="20220101",
+        )
+        wide = pd.DataFrame(
+            {
+                "race_id": ["r1", "r1"],
+                "ketto_toroku_bango": ["a", "b"],
+                "predicted_rank": [1, 2],
+                "finish_position": [1, 2],
+            }
+        )
+        with patch(
+            "learning.continuous_learner.predict_fold_with_backend",
+            return_value=wide,
+        ):
+            result = learner._collect_active_predictions(["feat_speed"])
+        wide.loc[0, "predicted_rank"] = 999
+        assert 999 not in result["predicted_rank"].tolist()
+        assert set(result["predicted_rank"].tolist()) == {1, 2}
+
+
 def test_collect_active_predictions_skips_none_predictions() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
@@ -3571,3 +3600,147 @@ def test_select_fold_features_public_alias_preserves_valid_year() -> None:
     fold = cast("FoldSplit", _make_explorer_fold())
     result = explorer.select_fold_features(fold, {"feat_speed"})
     assert result["valid_year"] == 2023
+
+
+# ---------------------------------------------------------------------------
+# cf_deploy_dir — configurable wrangler deploy directory
+# ---------------------------------------------------------------------------
+
+
+def test_cf_deploy_dir_default_is_none() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+        )
+        assert learner._cf_deploy_dir is None
+
+
+def test_cf_deploy_dir_is_stored_when_provided() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+            cf_deploy_dir=Path("/repo/apps/finish-position-cron"),
+        )
+        assert learner._cf_deploy_dir == Path("/repo/apps/finish-position-cron")
+
+
+def test_deploy_cf_container_uses_cf_deploy_dir_when_set() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+            cf_deploy_dir=Path("/repo/apps/finish-position-cron"),
+        )
+        with patch("subprocess.run") as mock_run:
+            learner._deploy_cf_container()
+        cmd = mock_run.call_args.args[0]
+        assert cmd == ["bunx", "wrangler", "deploy"]
+        assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-cron"
+        assert mock_run.call_args.kwargs["check"] is True
+        assert mock_run.call_args.kwargs["timeout"] == subject.DEFAULT_CF_DEPLOY_TIMEOUT_S
+
+
+def test_deploy_cf_container_falls_back_to_container_app_dir_when_dir_none() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            cf_deploy=True,
+            cf_deploy_dir=None,
+        )
+        with patch("subprocess.run") as mock_run:
+            learner._deploy_cf_container()
+        assert (
+            mock_run.call_args.kwargs["cwd"]
+            == "/repo/apps/finish-position-predict-container"
+        )
+
+
+def test_main_forwards_cf_deploy_dir(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    deploy_dir = tmp_path / "apps" / "finish-position-cron"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--cf-deploy",
+                "--cf-deploy-dir",
+                str(deploy_dir),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["cf_deploy_dir"] == deploy_dir
+
+
+def test_main_cf_deploy_dir_default_is_none(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().to_parquet(parquet_path, index=False)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner,
+            "__init__",
+            _capture_learner_kwargs(captured),
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["cf_deploy_dir"] is None

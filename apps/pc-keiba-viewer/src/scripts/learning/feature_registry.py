@@ -186,6 +186,11 @@ class FeatureRegistry:
             "UPDATE feature_trials SET is_active = (id = ?)", [entry_id]
         )
 
+    def _current_active_ndcg(self) -> float:
+        """NDCG of the active entry, or 0.0 when none is active."""
+        active_entry = self.get_active_entry()
+        return active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+
     def maybe_promote(
         self,
         trial_id: str,
@@ -193,14 +198,25 @@ class FeatureRegistry:
         feature_names: list[str],
         definition_json: str = "{}",
         threshold: float = NDCG_IMPROVEMENT_THRESHOLD,
+        active_ndcg: float | None = None,
     ) -> bool:
+        """Record the trial and activate it when it beats the active entry by ``threshold``.
+
+        Callers that already hold the active NDCG (e.g. the per-trial Optuna objective,
+        which reads it to compute ``delta_pp``) can pass it as ``active_ndcg`` to skip the
+        redundant ``get_active_entry()`` SELECT this method would otherwise run. Passing
+        ``None`` queries it here, preserving the original single-argument behaviour. The
+        value is read with no intervening writes from this connection, so a caller-supplied
+        ``active_ndcg`` is identical to the one this method would fetch.
+        """
         assert self._con is not None
         self._con.begin()
         try:
-            active_entry = self.get_active_entry()
-            active_ndcg = active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+            resolved_active_ndcg = (
+                self._current_active_ndcg() if active_ndcg is None else active_ndcg
+            )
             entry_id = self.record_trial(trial_id, ndcg_at_3, feature_names, definition_json)
-            promoted = ndcg_at_3 > active_ndcg + threshold
+            promoted = ndcg_at_3 > resolved_active_ndcg + threshold
             if promoted:
                 self.activate(entry_id)
             self._con.commit()
@@ -281,10 +297,19 @@ class FeatureRegistry:
     def list_strongly_negative_trials(
         self, threshold_pp: float = -1.0
     ) -> list[FeatureEntry]:
+        """Trials whose ``_min_delta_pp(definition_json) <= threshold_pp``.
+
+        Called once per learning round, so the table is not fully materialized:
+        a DuckDB JSON pre-filter (:func:`_STRONGLY_NEGATIVE_SQL`) drops rows whose
+        scalar ``delta_pp`` is unambiguously above ``threshold_pp`` and rows that
+        evaluate to ``0.0`` when ``threshold_pp`` is below zero. The pre-filter is a
+        SUPERSET of the qualifying rows (dict-deltas and every ambiguous case fall
+        through), so the exact :func:`_min_delta_pp` check below stays authoritative
+        and the output is byte-identical to scanning the whole table.
+        """
         assert self._con is not None
         rows = self._con.execute(
-            "SELECT id, trial_id, ndcg_at_3, is_active, feature_names, definition_json, created_at "
-            "FROM feature_trials ORDER BY id"
+            _STRONGLY_NEGATIVE_SQL, [threshold_pp, threshold_pp]
         ).fetchall()
         return [
             entry
@@ -344,6 +369,25 @@ INVERSE_APPROACH_TYPES: Final[tuple[str, ...]] = (
     "weight_invert",
     "window_invert",
     "anti_correlation",
+)
+
+# Pre-filter for ``list_strongly_negative_trials``. Keeps a SUPERSET of the rows
+# that ``_min_delta_pp`` would qualify, so the Python check stays authoritative:
+#   - ``$.delta_pp`` is a JSON object -> dict path, MIN decided in Python.
+#   - ``$.delta_pp`` is a non-bool scalar number <= threshold -> scalar path.
+#   - every other shape evaluates to 0.0 in Python and is kept iff 0.0 <= threshold.
+# Both ``?`` placeholders bind ``threshold_pp``; ``ORDER BY id`` preserves order.
+_STRONGLY_NEGATIVE_SQL: Final[str] = (
+    "SELECT id, trial_id, ndcg_at_3, is_active, feature_names, definition_json, created_at "
+    "FROM feature_trials "
+    "WHERE json_type(json_extract(definition_json, '$.delta_pp')) = 'OBJECT' "
+    "OR ("
+    "json_type(json_extract(definition_json, '$.delta_pp')) <> 'BOOLEAN' "
+    "AND TRY_CAST(json_extract(definition_json, '$.delta_pp') AS DOUBLE) IS NOT NULL "
+    "AND TRY_CAST(json_extract(definition_json, '$.delta_pp') AS DOUBLE) <= ?"
+    ") "
+    "OR (0.0 <= ?) "
+    "ORDER BY id"
 )
 
 

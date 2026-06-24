@@ -39,6 +39,15 @@ DEFAULT_VALIDATION_YEARS: Final[list[int]] = [2023, 2024]
 VALIDATION_YEAR_POOL: Final[list[int]] = [2021, 2022, 2023, 2024, 2025]
 DEFAULT_VALIDATION_YEARS_PER_ROUND: Final[int] = 2
 MIN_FEATURES: Final[int] = 5
+# Random startup trials before TPE begins modelling. With a tiny per-round trial
+# budget a large startup count would degenerate the search to pure random sampling,
+# so it is kept small and capped below the round's n_trials at study-build time.
+TPE_N_STARTUP_TRIALS: Final[int] = 5
+# Sampler seed keeps a round's feature-selection draws reproducible across reruns.
+SAMPLER_SEED: Final[int] = 42
+# How many of the registry's best prior trials to feed back into a resumed study so
+# TPE models the known-good region instead of relearning it from random draws.
+DEFAULT_WARM_START_TOP_K: Final[int] = 20
 DEFAULT_BACKENDS: Final[tuple[ModelBackend, ...]] = ("lightgbm", "xgboost", "catboost")
 CATEGORY_BACKENDS: Final[dict[str, tuple[ModelBackend, ...]]] = {
     "jra": ("catboost",),
@@ -89,9 +98,74 @@ _ALLOWED_CATEGORICAL: Final[frozenset[str]] = frozenset(CATEGORICAL_FEATURE_COLU
 
 _RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
 
+# DCG@3 position discounts 1/log2(rank+1) for ranks 1, 2, 3 — constant per race,
+# so precompute once instead of recomputing log2 per element on every race.
+_DISCOUNT_AT_3: Final[tuple[float, float, float]] = (
+    1.0 / math.log2(2),
+    1.0 / math.log2(3),
+    1.0 / math.log2(4),
+)
+
+
+_DtypeSignature = tuple[tuple[str, str], ...]
+
+# Per-dataframe memo of the model-safe column set. ``build_objective`` pre-splits
+# folds once and reuses the SAME train/valid frames across every trial of a round,
+# so the (id(df), dtypes) key hits on every trial after the first, turning a hot
+# per-(trial x fold x column) ``is_numeric_dtype`` scan into a single classification.
+_MODEL_SAFE_CACHE: dict[int, tuple[_DtypeSignature, frozenset[str]]] = {}
+_XGB_NUMERIC_CACHE: dict[int, tuple[_DtypeSignature, frozenset[str]]] = {}
+
+
+def _dtype_signature(df: pd.DataFrame) -> _DtypeSignature:
+    return tuple(zip(df.columns, (str(dt) for dt in df.dtypes), strict=True))
+
+
+def _model_safe_columns(df: pd.DataFrame) -> frozenset[str]:
+    """Cached frozenset of columns that are model-safe for the given dataframe.
+
+    A column is model-safe iff it is an allowed categorical (kept regardless of
+    dtype) or has a numeric dtype — identical to the inline check it replaces. The
+    cache is keyed by ``id(df)`` plus the dtypes signature so a reused id whose
+    schema changed (after GC) is treated as a miss and reclassified.
+    """
+    signature = _dtype_signature(df)
+    cached = _MODEL_SAFE_CACHE.get(id(df))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    safe = frozenset(
+        col
+        for col in df.columns
+        if col in _ALLOWED_CATEGORICAL or pd.api.types.is_numeric_dtype(df[col])
+    )
+    _MODEL_SAFE_CACHE[id(df)] = (signature, safe)
+    return safe
+
+
+def _numeric_columns(df: pd.DataFrame) -> frozenset[str]:
+    """Cached frozenset of numeric, non-meta/label columns for the given dataframe.
+
+    Identical classification to the inline scan it replaces (a column qualifies
+    iff it is not a meta/label column and has a numeric dtype); only the order is
+    dropped here — callers re-impose ``feature_names`` order by filtering against
+    this set. Keyed by ``id(df)`` plus dtypes signature like the model-safe cache.
+    """
+    signature = _dtype_signature(df)
+    cached = _XGB_NUMERIC_CACHE.get(id(df))
+    if cached is not None and cached[0] == signature:
+        return cached[1]
+    excluded = set(META_COLUMNS) | _LABEL_COLS
+    numeric = frozenset(
+        col
+        for col in df.columns
+        if col not in excluded and pd.api.types.is_numeric_dtype(df[col])
+    )
+    _XGB_NUMERIC_CACHE[id(df)] = (signature, numeric)
+    return numeric
+
 
 def _is_model_safe_feature(df: pd.DataFrame, col: str) -> bool:
-    return col in _ALLOWED_CATEGORICAL or pd.api.types.is_numeric_dtype(df[col])
+    return col in _model_safe_columns(df)
 
 
 class ExplorationResult(TypedDict):
@@ -125,37 +199,36 @@ def select_round_validation_years(
     return sorted(rng.sample(eligible, count))
 
 
+def _dcg_at_3_from_positions_relevances(relevances: list[float]) -> float:
+    return sum(rel * disc for rel, disc in zip(relevances, _DISCOUNT_AT_3))
+
+
+def _dcg_at_3_from_positions(finish_positions: list[float]) -> float:
+    return sum(
+        _RELEVANCE_MAP.get(int(fp), 0.0) * disc
+        for fp, disc in zip(finish_positions, _DISCOUNT_AT_3)
+    )
+
+
 def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
     ndcg_scores: list[float] = []
     for _, group in valid_df.groupby("race_id"):
         valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
         sorted_group = valid_group.sort_values("predicted_rank")
-        dcg = sum(
-            _RELEVANCE_MAP.get(int(finish_pos), 0.0) / math.log2(rank_idx + 1)
-            for rank_idx, finish_pos in enumerate(
-                sorted_group["finish_position"].tolist()[:3], start=1
-            )
-        )
+        dcg = _dcg_at_3_from_positions(sorted_group["finish_position"].tolist())
         ideal_relevances = sorted(
             (_RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
             reverse=True,
         )[:3]
-        ideal_dcg = sum(
-            rel / math.log2(i + 2)
-            for i, rel in enumerate(ideal_relevances)
-            if rel > 0.0
-        )
+        ideal_dcg = _dcg_at_3_from_positions_relevances(ideal_relevances)
         if ideal_dcg > 0.0:
             ndcg_scores.append(dcg / ideal_dcg)
     return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
 
 
 def _xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[str]:
-    excluded = set(META_COLUMNS) | _LABEL_COLS
-    return [
-        c for c in feature_names
-        if c not in excluded and pd.api.types.is_numeric_dtype(df[c])
-    ]
+    numeric = _numeric_columns(df)
+    return [c for c in feature_names if c in numeric]
 
 
 def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:

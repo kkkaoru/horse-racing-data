@@ -186,6 +186,28 @@ def test_dcg_at_3_only_uses_first_three_positions():
     assert abs(dcg_short - dcg_long) < 1e-9
 
 
+def test_dcg_at_3_two_positions_uses_two_discount_slots():
+    dcg = subject._dcg_at_3([1, 2])
+    expected = 3.0 / np.log2(2) + 2.0 / np.log2(3)
+    assert abs(dcg - expected) < 1e-9
+
+
+def test_ideal_dcg_at_3_matches_reference_formula():
+    result = subject._ideal_dcg_at_3([3.0, 2.0, 1.0])
+    expected = 3.0 / np.log2(2) + 2.0 / np.log2(3) + 1.0 / np.log2(4)
+    assert abs(result - expected) < 1e-9
+
+
+def test_ideal_dcg_at_3_empty_returns_zero():
+    assert subject._ideal_dcg_at_3([]) == 0.0
+
+
+def test_ideal_dcg_at_3_single_relevance_uses_first_discount():
+    result = subject._ideal_dcg_at_3([3.0])
+    expected = 3.0 / np.log2(2)
+    assert abs(result - expected) < 1e-9
+
+
 def test_compute_race_ndcg_perfect_returns_one():
     group = pd.DataFrame({
         "race_id": ["r1"] * 5,
@@ -767,3 +789,56 @@ def test_compute_subgroup_diagnostics_penalizes_unpredicted_winner_via_left_join
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
     assert results[0]["ndcg_at_3"] < 1.0
+
+
+def test_compute_subgroup_diagnostics_does_not_mutate_input_frames():
+    # The internal `_subgroup` column is added to the merge result, never to the
+    # caller's frames; dropping the defensive `.copy()` must not leak columns back.
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 2},
+    ])
+    subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert list(ground_truth.columns) == [
+        "race_id", "ketto_toroku_bango", "finish_position",
+        "source", "keibajo_code", "track_code", "kyori",
+    ]
+    assert list(predictions.columns) == ["race_id", "ketto_toroku_bango", "predicted_rank"]
+
+
+def test_compute_subgroup_diagnostics_perfect_prediction_scores_one():
+    # End-to-end sanity after removing the redundant copy: a perfectly ranked
+    # single-subgroup race still yields NDCG=1.0 and top1/top3 accuracy 1.0.
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 2},
+        {"race_id": "r1", "ketto_toroku_bango": "c", "predicted_rank": 3},
+    ])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert results[0]["ndcg_at_3"] == 1.0
+    assert results[0]["top1_accuracy"] == 1.0
+    assert results[0]["top3_box_accuracy"] == 1.0
