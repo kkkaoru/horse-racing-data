@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import TypedDict, final
+from typing import TextIO, TypedDict, final
 
 import duckdb
 
@@ -237,6 +237,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--memory-limit", type=str, default=DEFAULT_MEMORY_LIMIT)
     parser.add_argument("--status-file", type=Path, default=None)
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help=(
+            "Path to append structured JSON progress logs (log_event + "
+            "heartbeat). Opened in append mode with line buffering so "
+            "background builds (run via &) can be tailed in real time. "
+            "Output is still written to stdout as well."
+        ),
+    )
     parser.add_argument(
         "--heartbeat-interval",
         type=non_negative_float,
@@ -823,7 +834,7 @@ def create_empty_realtime_odds_stub(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _log_source_config(category: str, history_start: str, from_date: str, to_date: str) -> None:
-    print(
+    emit_log_line(
         json.dumps(
             {
                 "stage": "source.config",
@@ -834,8 +845,7 @@ def _log_source_config(category: str, history_start: str, from_date: str, to_dat
                 "to_date": to_date,
             },
             ensure_ascii=False,
-        ),
-        flush=True,
+        )
     )
 
 
@@ -1282,6 +1292,27 @@ def pedigree_rec_um_sql(category: str) -> str:
     """
 
 
+def pedigree_stat_base_columns(spec: PedigreeStatSpec) -> list[str]:
+    aliases = [
+        fragment.rsplit(" as ", 1)[1].strip()
+        for fragment in spec["monthly_metrics_select"].split(",")
+    ]
+    return [*aliases, "race_count"]
+
+
+def pedigree_stat_cumulative_select(spec: PedigreeStatSpec) -> str:
+    return ",\n        ".join(
+        f"sum(m.{col}) over w as cum_{col}" for col in pedigree_stat_base_columns(spec)
+    )
+
+
+def pedigree_stat_accum_from_cumulative(spec: PedigreeStatSpec) -> str:
+    accum = spec["accum_metrics_select"]
+    for col in pedigree_stat_base_columns(spec):
+        accum = accum.replace(f"sum(m.{col})", f"c.cum_{col}")
+    return accum
+
+
 def pedigree_monthly_stat_sql(spec: PedigreeStatSpec) -> str:
     return f"""
     create or replace temp table {spec["table"]} as
@@ -1296,16 +1327,35 @@ def pedigree_monthly_stat_sql(spec: PedigreeStatSpec) -> str:
       where finish_position is not null
         and {spec["key_column"]} is not null and trim({spec["key_column"]}) <> ''
       group by 1, 2, 3
+    ),
+    cumulative as (
+      select
+        race_year_month,
+        {spec["key_alias"]},
+        {spec["bucket_alias"]},
+        {pedigree_stat_cumulative_select(spec)}
+      from monthly m
+      window w as (
+        partition by {spec["key_alias"]}, {spec["bucket_alias"]}
+        order by race_year_month
+        rows between unbounded preceding and current row
+      )
+    ),
+    stat_keys as (
+      select distinct {spec["key_alias"]}, {spec["bucket_alias"]} from cumulative
     )
     select
       tm.stats_year_month,
-      m.{spec["key_alias"]},
-      m.{spec["bucket_alias"]},
-      {spec["accum_metrics_select"]},
-      sum(m.race_count) as race_count
+      k.{spec["key_alias"]},
+      k.{spec["bucket_alias"]},
+      {pedigree_stat_accum_from_cumulative(spec)},
+      c.cum_race_count as race_count
     from target_months tm
-    join monthly m on m.race_year_month < tm.stats_year_month
-    group by tm.stats_year_month, m.{spec["key_alias"]}, m.{spec["bucket_alias"]}
+    cross join stat_keys k
+    asof join cumulative c
+      on c.{spec["key_alias"]} = k.{spec["key_alias"]}
+      and c.{spec["bucket_alias"]} = k.{spec["bucket_alias"]}
+      and c.race_year_month < tm.stats_year_month
     """
 
 
@@ -2062,6 +2112,32 @@ class BuildResult(TypedDict):
     rows_written: int
 
 
+_log_file: TextIO | None = None
+
+
+def set_log_file(path: Path | None) -> None:
+    global _log_file
+    if path is None:
+        _log_file = None
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _log_file = path.open("a", encoding="utf-8", buffering=1)
+
+
+def close_log_file() -> None:
+    global _log_file
+    if _log_file is not None:
+        _log_file.close()
+        _log_file = None
+
+
+def emit_log_line(line: str) -> None:
+    print(line, flush=True)
+    if _log_file is not None:
+        _log_file.write(line + "\n")
+        _log_file.flush()
+
+
 def log_event(stage: str, status: str, elapsed_seconds: float, rows: int | None = None) -> None:
     payload: dict[str, object] = {
         "stage": stage,
@@ -2071,7 +2147,7 @@ def log_event(stage: str, status: str, elapsed_seconds: float, rows: int | None 
     }
     if rows is not None:
         payload["rows"] = rows
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    emit_log_line(json.dumps(payload, ensure_ascii=False))
 
 
 def materialize_temp_table(
@@ -2179,7 +2255,7 @@ class Heartbeat:
             "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         }
         payload.update(stats)
-        print(json.dumps(payload, ensure_ascii=False), flush=True)
+        emit_log_line(json.dumps(payload, ensure_ascii=False))
         write_status_atomic(self.status_path, payload)
 
 
@@ -2524,7 +2600,7 @@ def shrink_se_tables_to_target_horses(con: duckdb.DuckDBPyConnection) -> None:
     jra_rows = _shrink_se_table_to_target_horses(con, "jra_se")
     nar_rows = _shrink_se_table_to_target_horses(con, "nar_se")
     elapsed = perf_counter() - started
-    print(
+    emit_log_line(
         json.dumps(
             {
                 "stage": "target.shrink_se",
@@ -2535,8 +2611,7 @@ def shrink_se_tables_to_target_horses(con: duckdb.DuckDBPyConnection) -> None:
                 "nar_se_rows": nar_rows,
             },
             ensure_ascii=False,
-        ),
-        flush=True,
+        )
     )
 
 
@@ -3307,6 +3382,7 @@ def run(args: argparse.Namespace) -> BuildResult:
     upcoming_window = resolve_upcoming_window(args, from_date, to_date)
     controller = make_checkpoint_controller(args)
     overall_started = perf_counter()
+    set_log_file(args.log_file)
     log_event("run", "start", 0.0)
     heartbeat = Heartbeat(args.heartbeat_interval, args.status_file)
     heartbeat.start()
@@ -3353,6 +3429,7 @@ def run(args: argparse.Namespace) -> BuildResult:
     finally:
         heartbeat.stop()
         con.close()
+        close_log_file()
 
 
 def main(argv: list[str] | None = None) -> None:

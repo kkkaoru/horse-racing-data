@@ -613,6 +613,138 @@ def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
     assert row[0] == pytest.approx(0.0)
 
 
+def _legacy_pedigree_monthly_stat_sql(spec: subject.PedigreeStatSpec) -> str:
+    return f"""
+    create or replace temp table {spec["table"]}_legacy as
+    with monthly as (
+      select
+        race_year_month,
+        {spec["key_column"]} as {spec["key_alias"]},
+        {spec["bucket_expr"]} as {spec["bucket_alias"]},
+        {spec["monthly_metrics_select"]},
+        count(*) as race_count
+      from pedigree_rec_um
+      where finish_position is not null
+        and {spec["key_column"]} is not null and trim({spec["key_column"]}) <> ''
+      group by 1, 2, 3
+    )
+    select
+      tm.stats_year_month,
+      m.{spec["key_alias"]},
+      m.{spec["bucket_alias"]},
+      {spec["accum_metrics_select"]},
+      sum(m.race_count) as race_count
+    from target_months tm
+    join monthly m on m.race_year_month < tm.stats_year_month
+    group by tm.stats_year_month, m.{spec["key_alias"]}, m.{spec["bucket_alias"]}
+    """
+
+
+def _seed_pedigree_rec_um_for_parity(con: duckdb.DuckDBPyConnection) -> None:
+    rows: list[tuple[object, ...]] = []
+    sires = ["s001", "s002", "s003"]
+    damsires = ["d001", "d002", None]
+    months = [201801, 201806, 201901, 201906, 202001, 202006]
+    kyoris = [1200, 1600, 2000]
+    tracks = ["10", "20"]
+    keibajos = ["01", "06"]
+    counter = 0
+    for sire in sires:
+        for damsire in damsires:
+            for ym in months:
+                kyori = kyoris[counter % len(kyoris)]
+                track = tracks[counter % len(tracks)]
+                keibajo = keibajos[counter % len(keibajos)]
+                finish_position = [1, 2, 3, None][counter % 4]
+                finish_norm = None if finish_position is None else round((counter % 5) / 5.0, 3)
+                corner1 = None if counter % 7 == 0 else round((counter % 4) / 4.0, 3)
+                rows.append(
+                    (
+                        "jra",
+                        ym,
+                        kyori,
+                        track,
+                        finish_position,
+                        finish_norm,
+                        keibajo,
+                        sire,
+                        damsire,
+                        corner1,
+                    )
+                )
+                counter += 1
+    df = pd.DataFrame(
+        rows,
+        columns=[
+            "source",
+            "race_year_month",
+            "kyori",
+            "track_code",
+            "finish_position",
+            "finish_norm",
+            "keibajo_code",
+            "ketto_joho_01b",
+            "ketto_joho_05b",
+            "corner1_norm",
+        ],
+    )
+    con.register("pedigree_parity_df", df)
+    con.execute(
+        """
+        create or replace temp table pedigree_rec_um as
+        select source, race_year_month, kyori, track_code, finish_position,
+          cast(finish_norm as double) as finish_norm, keibajo_code,
+          ketto_joho_01b, ketto_joho_05b, cast(corner1_norm as double) as corner1_norm
+        from pedigree_parity_df
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table target_months as
+        select distinct race_year_month as stats_year_month from pedigree_rec_um
+        union select 202201 order by 1
+        """
+    )
+
+
+def test_pedigree_monthly_stat_sql_matches_legacy_quadratic_join():
+    con = duckdb.connect(":memory:")
+    con.execute("set threads=4")
+    con.execute("set memory_limit='6GB'")
+    _seed_pedigree_rec_um_for_parity(con)
+    for spec in subject.PEDIGREE_STAT_SPECS:
+        con.execute(_legacy_pedigree_monthly_stat_sql(spec))
+        con.execute(subject.pedigree_monthly_stat_sql(spec))
+        order = f"stats_year_month, {spec['key_alias']}, {spec['bucket_alias']}"
+        legacy = con.execute(
+            f"select * from {spec['table']}_legacy order by {order}"
+        ).fetchall()
+        optimized = con.execute(
+            f"select * from {spec['table']} order by {order}"
+        ).fetchall()
+        assert len(legacy) == len(optimized)
+        for legacy_row, optimized_row in zip(legacy, optimized, strict=True):
+            assert len(legacy_row) == len(optimized_row)
+            for legacy_value, optimized_value in zip(legacy_row, optimized_row, strict=True):
+                if isinstance(legacy_value, float) and isinstance(optimized_value, float):
+                    assert optimized_value == pytest.approx(legacy_value)
+                else:
+                    assert optimized_value == legacy_value
+
+
+def test_pedigree_monthly_stat_sql_preserves_strictly_prior_boundary():
+    con = duckdb.connect(":memory:")
+    con.execute("set threads=4")
+    con.execute("set memory_limit='6GB'")
+    _seed_pedigree_rec_um_for_parity(con)
+    con.execute(subject.pedigree_monthly_stat_sql(subject.PEDIGREE_STAT_SPECS[1]))
+    leak = con.execute(
+        "select count(*) from sire_track_stats where stats_year_month = 201801"
+    ).fetchone()
+    assert leak is not None
+    assert leak[0] == 0
+
+
 def test_materialize_race_context_builds_aggregates(seeded_con: duckdb.DuckDBPyConnection):
     subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
     subject.materialize_race_context(seeded_con)

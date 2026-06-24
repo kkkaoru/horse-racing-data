@@ -321,12 +321,23 @@ def test_trainer_cte_filters_on_chokyoshimei_ryakusho():
     assert "trainer_career_win_rate" in cte
 
 
-def test_pedigree_monthly_stat_sql_includes_target_months_join():
+def test_pedigree_monthly_stat_sql_uses_asof_strictly_prior_month():
     spec = subject.PEDIGREE_STAT_SPECS[0]
     sql = subject.pedigree_monthly_stat_sql(spec)
-    assert "join monthly m on m.race_year_month < tm.stats_year_month" in sql
+    assert "asof join cumulative c" in sql
+    assert "c.race_year_month < tm.stats_year_month" in sql
+    assert "cross join stat_keys k" in sql
     assert "stats_year_month" in sql
     assert "race_year_month" in sql
+
+
+def test_pedigree_monthly_stat_sql_builds_cumulative_window_once():
+    spec = subject.PEDIGREE_STAT_SPECS[0]
+    sql = subject.pedigree_monthly_stat_sql(spec)
+    assert "rows between unbounded preceding and current row" in sql
+    assert "sum(m.win_count) over w as cum_win_count" in sql
+    assert "sum(m.race_count) over w as cum_race_count" in sql
+    assert "c.cum_race_count as race_count" in sql
 
 
 def test_pedigree_monthly_stat_sql_reads_from_pedigree_rec_um():
@@ -335,6 +346,36 @@ def test_pedigree_monthly_stat_sql_reads_from_pedigree_rec_um():
     assert "from pedigree_rec_um" in sql
     assert "ketto_joho_01b as sire" in sql
     assert "kyori_band" in sql
+
+
+def test_pedigree_stat_base_columns_extracts_aliases_plus_race_count():
+    spec = subject.PEDIGREE_STAT_SPECS[0]
+    assert subject.pedigree_stat_base_columns(spec) == [
+        "win_count",
+        "finish_norm_sum",
+        "finish_norm_count",
+        "race_count",
+    ]
+
+
+def test_pedigree_stat_base_columns_for_win_rate_spec():
+    spec = subject.PEDIGREE_STAT_SPECS[1]
+    assert subject.pedigree_stat_base_columns(spec) == ["win_count", "race_count"]
+
+
+def test_pedigree_stat_cumulative_select_emits_running_sums():
+    spec = subject.PEDIGREE_STAT_SPECS[1]
+    assert subject.pedigree_stat_cumulative_select(spec) == (
+        "sum(m.win_count) over w as cum_win_count,\n"
+        "        sum(m.race_count) over w as cum_race_count"
+    )
+
+
+def test_pedigree_stat_accum_from_cumulative_rewrites_sum_to_cum():
+    spec = subject.PEDIGREE_STAT_SPECS[1]
+    assert subject.pedigree_stat_accum_from_cumulative(spec) == (
+        "c.cum_win_count::double / nullif(c.cum_race_count, 0) as sire_track_win_rate_val"
+    )
 
 
 def test_pedigree_stat_specs_cover_seven_tables():
@@ -354,14 +395,14 @@ def test_sire_distance_stats_uses_finish_norm_count_in_denominator():
     spec = subject.PEDIGREE_STAT_SPECS[0]
     sql = subject.pedigree_monthly_stat_sql(spec)
     assert "count(finish_norm) as finish_norm_count" in sql
-    assert "nullif(sum(m.finish_norm_count), 0)" in sql
+    assert "nullif(c.cum_finish_norm_count, 0)" in sql
 
 
 def test_damsire_track_stats_uses_finish_norm_count_in_denominator():
     spec = subject.PEDIGREE_STAT_SPECS[3]
     sql = subject.pedigree_monthly_stat_sql(spec)
     assert "count(finish_norm) as finish_norm_count" in sql
-    assert "nullif(sum(m.finish_norm_count), 0)" in sql
+    assert "nullif(c.cum_finish_norm_count, 0)" in sql
 
 
 def test_win_rate_specs_still_use_race_count_in_denominator():
@@ -370,8 +411,8 @@ def test_win_rate_specs_still_use_race_count_in_denominator():
     sire_track_sql = subject.pedigree_monthly_stat_sql(sire_track)
     damsire_distance_sql = subject.pedigree_monthly_stat_sql(damsire_distance)
     assert "sire_track_win_rate_val" in sire_track_sql
-    assert "nullif(sum(m.race_count), 0) as sire_track_win_rate_val" in sire_track_sql
-    assert "nullif(sum(m.race_count), 0) as dam_sire_distance_win_rate_val" in damsire_distance_sql
+    assert "nullif(c.cum_race_count, 0) as sire_track_win_rate_val" in sire_track_sql
+    assert "nullif(c.cum_race_count, 0) as dam_sire_distance_win_rate_val" in damsire_distance_sql
 
 
 def test_pedigree_rec_um_sql_projects_required_columns():
@@ -1877,7 +1918,7 @@ def test_pedigree_monthly_stat_sql_sire_keibajo() -> None:
     assert "ketto_joho_01b as sire" in sql
     assert "keibajo_code as keibajo_code" in sql
     assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
-    assert "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_keibajo_win_rate_val" in sql
+    assert "c.cum_win_count::double / nullif(c.cum_race_count, 0) as sire_keibajo_win_rate_val" in sql
     assert "from pedigree_rec_um" in sql
 
 
@@ -1890,7 +1931,7 @@ def test_pedigree_monthly_stat_sql_damsire_keibajo() -> None:
     assert "ketto_joho_05b as damsire" in sql
     assert "keibajo_code as keibajo_code" in sql
     assert "sum(case when finish_position = 1 then 1 else 0 end) as win_count" in sql
-    assert "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as damsire_keibajo_win_rate_val" in sql
+    assert "c.cum_win_count::double / nullif(c.cum_race_count, 0) as damsire_keibajo_win_rate_val" in sql
     assert "from pedigree_rec_um" in sql
 
 
@@ -2893,3 +2934,100 @@ def test_sire_style_match_returns_null_when_horse_style_unknown() -> None:
     sql = subject.base_features_select_sql("jra")
     assert "when rsh.past_nige_rate_self is null then null" in sql
     assert f"srs.race_count >= {subject.PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val" in sql
+
+
+def test_parse_args_log_file_defaults_none() -> None:
+    args = subject.parse_args([])
+    assert args.log_file is None
+
+
+def test_parse_args_log_file_sets_path(tmp_path: Path) -> None:
+    args = subject.parse_args(["--log-file", str(tmp_path / "build.log")])
+    assert args.log_file == tmp_path / "build.log"
+
+
+def test_set_log_file_none_clears_handle() -> None:
+    try:
+        subject.set_log_file(None)
+        assert subject._log_file is None
+    finally:
+        subject.close_log_file()
+
+
+def test_set_log_file_creates_parent_and_appends(tmp_path: Path) -> None:
+    log_path = tmp_path / "nested" / "build.log"
+    try:
+        subject.set_log_file(log_path)
+        subject.emit_log_line("first")
+        subject.close_log_file()
+        subject.set_log_file(log_path)
+        subject.emit_log_line("second")
+    finally:
+        subject.close_log_file()
+    assert log_path.read_text(encoding="utf-8") == "first\nsecond\n"
+
+
+def test_emit_log_line_writes_stdout_and_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_path = tmp_path / "build.log"
+    try:
+        subject.set_log_file(log_path)
+        subject.emit_log_line("hello")
+    finally:
+        subject.close_log_file()
+    assert capsys.readouterr().out == "hello\n"
+    assert log_path.read_text(encoding="utf-8") == "hello\n"
+
+
+def test_emit_log_line_writes_stdout_only_when_no_file(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    subject.close_log_file()
+    subject.emit_log_line("stdout-only")
+    assert capsys.readouterr().out == "stdout-only\n"
+
+
+def test_log_event_appends_json_to_log_file(tmp_path: Path) -> None:
+    log_path = tmp_path / "build.log"
+    try:
+        subject.set_log_file(log_path)
+        subject.log_event("source.stage", "done", 1.234, rows=42)
+    finally:
+        subject.close_log_file()
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["stage"] == "source.stage"
+    assert record["status"] == "done"
+    assert record["rows"] == 42
+    assert record["elapsed_seconds"] == 1.23
+
+
+def test_log_event_omits_rows_when_none(tmp_path: Path) -> None:
+    log_path = tmp_path / "build.log"
+    try:
+        subject.set_log_file(log_path)
+        subject.log_event("run", "start", 0.0)
+    finally:
+        subject.close_log_file()
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert "rows" not in record
+
+
+def test_heartbeat_emit_writes_to_log_file(tmp_path: Path) -> None:
+    log_path = tmp_path / "build.log"
+    try:
+        subject.set_log_file(log_path)
+        heartbeat = subject.Heartbeat(0.0, None)
+        heartbeat.set_stage("parquet.write")
+    finally:
+        subject.close_log_file()
+    lines = [line for line in log_path.read_text(encoding="utf-8").splitlines() if line]
+    record = json.loads(lines[-1])
+    assert record["type"] == "heartbeat"
+    assert record["stage"] == "parquet.write"
+
+
+def test_close_log_file_is_idempotent() -> None:
+    subject.close_log_file()
+    subject.close_log_file()
+    assert subject._log_file is None
