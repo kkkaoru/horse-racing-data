@@ -13,8 +13,12 @@ import optuna
 import pandas as pd
 
 from learning.feature_registry import FeatureRegistry
-from finish_position_catboost import train_catboost_ranker
+from finish_position_catboost import (
+    CATEGORICAL_FEATURE_NAMES as CB_CATEGORICAL_FEATURE_NAMES,
+    train_catboost_ranker,
+)
 from finish_position_lightgbm import (
+    CATEGORICAL_FEATURE_COLUMNS,
     LABEL_COLUMNS,
     META_COLUMNS,
     OBJECTIVE_LAMBDARANK,
@@ -74,7 +78,15 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
 
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
+_ALLOWED_CATEGORICAL: Final[frozenset[str]] = frozenset(CATEGORICAL_FEATURE_COLUMNS) | frozenset(
+    CB_CATEGORICAL_FEATURE_NAMES
+)
+
 _RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
+
+
+def _is_model_safe_feature(df: pd.DataFrame, col: str) -> bool:
+    return col in _ALLOWED_CATEGORICAL or pd.api.types.is_numeric_dtype(df[col])
 
 
 class ExplorationResult(TypedDict):
@@ -164,7 +176,11 @@ def _run_fold_xgboost(fold: FoldSplit) -> float | None:
 
 def _run_fold_catboost(fold: FoldSplit) -> float | None:
     excluded = set(META_COLUMNS) | _LABEL_COLS
-    feature_cols = [c for c in fold["train_df"].columns if c not in excluded]
+    feature_cols = [
+        c
+        for c in fold["train_df"].columns
+        if c not in excluded and _is_model_safe_feature(fold["train_df"], c)
+    ]
     if not feature_cols:
         return None
     result = train_catboost_ranker(
@@ -200,7 +216,10 @@ def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
     """Select only the needed features from a pre-split fold."""
     meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
     keep_cols = [
-        c for c in fold["train_df"].columns if c in meta_and_label or c in feature_set
+        c
+        for c in fold["train_df"].columns
+        if c in meta_and_label
+        or (c in feature_set and _is_model_safe_feature(fold["train_df"], c))
     ]
     return {
         "train_df": fold["train_df"][keep_cols],

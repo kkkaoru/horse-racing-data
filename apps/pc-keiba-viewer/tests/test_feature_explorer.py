@@ -357,6 +357,30 @@ def test_run_fold_with_backend_catboost_returns_none_when_no_feature_cols() -> N
     assert result is None
 
 
+def test_run_fold_with_backend_catboost_excludes_non_categorical_str_feature() -> None:
+    fold = _make_fold()
+    str_train = fold["train_df"].assign(nar_subclass="A")
+    str_valid = fold["valid_df"].assign(nar_subclass="A")
+    str_fold = cast(
+        "FoldSplit",
+        {"train_df": str_train, "valid_df": str_valid, "valid_year": 2023},
+    )
+    params = subject.DEFAULT_PARAMS
+    valid_preds = pd.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        subject.run_fold_with_backend(str_fold, "catboost", params)
+    feature_cols = mock_cb.call_args[0][2]
+    assert "nar_subclass" not in feature_cols
+    assert "feat_speed" in feature_cols
+
+
 # --- select_features ---
 
 def test_select_features_keeps_selected_feature_columns() -> None:
@@ -425,6 +449,34 @@ def test_select_fold_features_preserves_valid_year() -> None:
     fold = _make_fold()
     result = subject._select_fold_features(fold, {"feat_speed"})
     assert result["valid_year"] == 2023
+
+
+def test_select_fold_features_drops_non_categorical_str_feature() -> None:
+    fold = _make_fold()
+    str_train = fold["train_df"].assign(nar_subclass="A")
+    str_valid = fold["valid_df"].assign(nar_subclass="A")
+    str_fold = cast(
+        "FoldSplit",
+        {"train_df": str_train, "valid_df": str_valid, "valid_year": 2023},
+    )
+    result = subject._select_fold_features(str_fold, {"feat_speed", "nar_subclass"})
+    assert "nar_subclass" not in result["train_df"].columns
+    assert "nar_subclass" not in result["valid_df"].columns
+    assert "feat_speed" in result["train_df"].columns
+    assert "feat_speed" in result["valid_df"].columns
+
+
+def test_select_fold_features_keeps_known_categorical_str_feature() -> None:
+    fold = _make_fold()
+    cat_train = fold["train_df"].assign(track_code="1")
+    cat_valid = fold["valid_df"].assign(track_code="1")
+    cat_fold = cast(
+        "FoldSplit",
+        {"train_df": cat_train, "valid_df": cat_valid, "valid_year": 2023},
+    )
+    result = subject._select_fold_features(cat_fold, {"track_code"})
+    assert "track_code" in result["train_df"].columns
+    assert "track_code" in result["valid_df"].columns
 
 
 # --- evaluate_feature_set ---
