@@ -182,10 +182,10 @@ class AdaptiveLoadController:
         return self._base_n_trials, 0.0
 
     def _cpu_percent(self) -> float:
-        """psutil.cpu_percent(interval=0.5). Returns 0.0 if psutil not installed."""
+        """psutil.cpu_percent(interval=0.1). Returns 0.0 if psutil not installed."""
         if _psutil is None:
             return 0.0
-        return float(_psutil.cpu_percent(interval=0.5))
+        return float(_psutil.cpu_percent(interval=0.1))
 
     def _mem_percent(self) -> float:
         """psutil.virtual_memory().percent. Returns 0.0 if psutil not installed."""
@@ -338,12 +338,12 @@ class ContinuousLearner:
             _logger.info("─── round %s started (trials: %d) ───", progress, actual_trials)
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
-            self._maybe_deploy()
+            saturated = self._maybe_deploy()
             if self._log_subgroup:
                 self._log_subgroup_diagnostics()
-            if not self._skip_inverse:
+            if not saturated and not self._skip_inverse:
                 self._check_and_try_inverses(round_num, actual_trials)
-            if not self._skip_enrichment:
+            if not saturated and not self._skip_enrichment:
                 self._analyze_feature_enrichment(round_num)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
@@ -546,17 +546,23 @@ class ContinuousLearner:
             backends=self._backends,
         )
 
-    def _maybe_deploy(self) -> None:
+    def _maybe_deploy(self) -> bool:
+        """Deploy when the active entry beats the deployed one; return True if saturated.
+
+        A True return signals the round loop that the search space is exhausted, so the
+        per-round inverse and enrichment phases can be skipped — they cannot help once
+        the registry is saturated.
+        """
         if self._registry.is_saturated(SATURATION_LOOKBACK):
             _logger.info(
                 "deploy skipped: registry saturated (last %d trials showed no improvement)",
                 SATURATION_LOOKBACK,
             )
-            return
+            return True
         active = self._registry.get_active_entry()
         if active is None:
             _logger.debug("no active entry — skipping deploy")
-            return
+            return False
         deployed_ndcg = self._registry.get_deployed_ndcg()
         delta = active["ndcg_at_3"] - deployed_ndcg
         if delta < self._deploy_threshold:
@@ -568,7 +574,7 @@ class ContinuousLearner:
                 delta,
                 self._deploy_threshold - delta,
             )
-            return
+            return False
         _logger.info(
             "NDCG@3 improved by %+.4f (%.4f → %.4f) — triggering deploy",
             delta,
@@ -586,7 +592,7 @@ class ContinuousLearner:
                 deployed_ndcg,
                 blind_delta,
             )
-            return
+            return False
         _logger.info(
             "blind holdout %d confirmed (%.4f, delta %+.4f) — proceeding to deploy",
             self._blind_holdout_year,
@@ -594,6 +600,7 @@ class ContinuousLearner:
             blind_delta,
         )
         self._deploy(active)
+        return False
 
     def _evaluate_blind_holdout(self, entry: FeatureEntry) -> float:
         """NDCG@3 of the entry's feature set on the blind holdout year only.

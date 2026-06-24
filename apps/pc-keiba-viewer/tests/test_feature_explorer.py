@@ -266,60 +266,84 @@ def test_ndcg_at_3_from_valid_df_null_finish_position_excluded_from_dcg_slot() -
     assert result == pytest.approx(1.0)
 
 
-# --- _dcg_at_3_from_positions (vectorized DCG@3) ---
+def _ndcg_loop_reference(valid_df: pl.DataFrame) -> float:
+    """Original race-by-race loop kept verbatim as the behavioural oracle."""
+    relevance_map = {1: 3.0, 2: 2.0, 3: 1.0}
+    discounts = (1.0 / math.log2(2), 1.0 / math.log2(3), 1.0 / math.log2(4))
+    ndcg_scores: list[float] = []
+    for (_race_id,), group in valid_df.group_by("race_id", maintain_order=True):
+        valid_group = group.drop_nulls(subset=["predicted_rank", "finish_position"])
+        sorted_group = valid_group.sort("predicted_rank")
+        dcg = sum(
+            relevance_map.get(int(fp), 0.0) * disc
+            for fp, disc in zip(sorted_group["finish_position"].to_list(), discounts)
+        )
+        ideal_relevances = sorted(
+            (
+                relevance_map.get(int(fp), 0.0)
+                for fp in group["finish_position"].drop_nulls().to_list()
+            ),
+            reverse=True,
+        )[:3]
+        ideal_dcg = sum(rel * disc for rel, disc in zip(ideal_relevances, discounts))
+        if ideal_dcg > 0.0:
+            ndcg_scores.append(dcg / ideal_dcg)
+    return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
 
 
-def test_dcg_at_3_from_positions_matches_reference_formula_perfect() -> None:
-    result = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0])
-    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3) + 1.0 / math.log2(4)
+def test_ndcg_at_3_from_valid_df_matches_loop_reference_on_mixed_races() -> None:
+    # Mixed: normal races, a race with nulls in predicted_rank, a sub-3-horse race,
+    # and a race whose finishers are all outside the top 3 (ideal_dcg == 0 → skipped).
+    df = pl.DataFrame({
+        "race_id": [
+            "r_normal", "r_normal", "r_normal", "r_normal",
+            "r_null", "r_null", "r_null",
+            "r_small", "r_small",
+            "r_irrelevant", "r_irrelevant",
+        ],
+        "predicted_rank": [
+            2.0, 1.0, 4.0, 3.0,
+            None, 1.0, 2.0,
+            1.0, 2.0,
+            1.0, 2.0,
+        ],
+        "finish_position": [
+            1.0, 2.0, 3.0, 4.0,
+            1.0, 2.0, 3.0,
+            2.0, 1.0,
+            5.0, 6.0,
+        ],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    expected = _ndcg_loop_reference(df)
     assert result == pytest.approx(expected)
 
 
-def test_dcg_at_3_from_positions_matches_reference_formula_mixed() -> None:
-    result = subject._dcg_at_3_from_positions([2.0, 1.0, 3.0])
-    expected = 2.0 / math.log2(2) + 3.0 / math.log2(3) + 1.0 / math.log2(4)
-    assert result == pytest.approx(expected)
-
-
-def test_dcg_at_3_from_positions_empty_returns_zero() -> None:
-    result = subject._dcg_at_3_from_positions([])
+def test_ndcg_at_3_from_valid_df_empty_matches_loop_reference() -> None:
+    df = pl.DataFrame(
+        schema={
+            "race_id": pl.Utf8,
+            "predicted_rank": pl.Float64,
+            "finish_position": pl.Float64,
+        }
+    )
+    result = subject._ndcg_at_3_from_valid_df(df)
+    expected = _ndcg_loop_reference(df)
     assert result == pytest.approx(0.0)
-
-
-def test_dcg_at_3_from_positions_only_uses_first_three() -> None:
-    short = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0])
-    long = subject._dcg_at_3_from_positions([1.0, 2.0, 3.0, 4.0, 5.0])
-    assert short == pytest.approx(long)
-
-
-def test_dcg_at_3_from_positions_irrelevant_positions_contribute_zero() -> None:
-    result = subject._dcg_at_3_from_positions([4.0, 5.0, 6.0])
-    assert result == pytest.approx(0.0)
-
-
-def test_dcg_at_3_from_positions_two_horses_uses_two_discounts() -> None:
-    result = subject._dcg_at_3_from_positions([1.0, 2.0])
-    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3)
     assert result == pytest.approx(expected)
 
 
-# --- _dcg_at_3_from_positions_relevances (vectorized ideal DCG@3) ---
-
-
-def test_dcg_at_3_from_positions_relevances_matches_reference() -> None:
-    result = subject._dcg_at_3_from_positions_relevances([3.0, 2.0, 1.0])
-    expected = 3.0 / math.log2(2) + 2.0 / math.log2(3) + 1.0 / math.log2(4)
-    assert result == pytest.approx(expected)
-
-
-def test_dcg_at_3_from_positions_relevances_empty_returns_zero() -> None:
-    result = subject._dcg_at_3_from_positions_relevances([])
+def test_ndcg_at_3_from_valid_df_all_races_irrelevant_returns_zero() -> None:
+    # Every finisher is outside the top 3 → ideal_dcg == 0 for all races → no race
+    # contributes → mean over an empty set is 0.0 (matches the loop).
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "predicted_rank": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [4.0, 5.0, 6.0, 7.0],
+    })
+    result = subject._ndcg_at_3_from_valid_df(df)
+    expected = _ndcg_loop_reference(df)
     assert result == pytest.approx(0.0)
-
-
-def test_dcg_at_3_from_positions_relevances_single_relevance() -> None:
-    result = subject._dcg_at_3_from_positions_relevances([3.0])
-    expected = 3.0 / math.log2(2)
     assert result == pytest.approx(expected)
 
 

@@ -95,6 +95,8 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
 
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
+_EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | _LABEL_COLS
+
 _ALLOWED_CATEGORICAL: Final[frozenset[str]] = frozenset(CATEGORICAL_FEATURE_COLUMNS) | frozenset(
     CB_CATEGORICAL_FEATURE_NAMES
 )
@@ -158,12 +160,11 @@ def _numeric_columns(df: pl.DataFrame) -> frozenset[str]:
     cached = _XGB_NUMERIC_CACHE.get(id(df))
     if cached is not None and cached[0] == signature:
         return cached[1]
-    excluded = set(META_COLUMNS) | _LABEL_COLS
     schema = df.schema
     numeric = frozenset(
         col
         for col in df.columns
-        if col not in excluded and schema[col].is_numeric()
+        if col not in _EXCLUDED_COLS and schema[col].is_numeric()
     )
     _XGB_NUMERIC_CACHE[id(df)] = (signature, numeric)
     return numeric
@@ -204,34 +205,74 @@ def select_round_validation_years(
     return sorted(rng.sample(eligible, count))
 
 
-def _dcg_at_3_from_positions_relevances(relevances: list[float]) -> float:
-    return sum(rel * disc for rel, disc in zip(relevances, _DISCOUNT_AT_3))
+def _relevance_expr(fp: pl.Expr) -> pl.Expr:
+    """Map a finish-position column to DCG relevance (1->3, 2->2, 3->1, else 0)."""
+    return (
+        pl.when(fp == 1)
+        .then(_RELEVANCE_MAP[1])
+        .when(fp == 2)
+        .then(_RELEVANCE_MAP[2])
+        .when(fp == 3)
+        .then(_RELEVANCE_MAP[3])
+        .otherwise(0.0)
+    )
 
 
-def _dcg_at_3_from_positions(finish_positions: list[float]) -> float:
-    return sum(
-        _RELEVANCE_MAP.get(int(fp), 0.0) * disc
-        for fp, disc in zip(finish_positions, _DISCOUNT_AT_3)
+def _discount_expr(position: pl.Expr) -> pl.Expr:
+    """Map a 1-based slot position to its DCG@3 discount (positions > 3 -> 0)."""
+    return (
+        pl.when(position == 1)
+        .then(_DISCOUNT_AT_3[0])
+        .when(position == 2)
+        .then(_DISCOUNT_AT_3[1])
+        .when(position == 3)
+        .then(_DISCOUNT_AT_3[2])
+        .otherwise(0.0)
     )
 
 
 def _ndcg_at_3_from_valid_df(valid_df: pl.DataFrame) -> float:
-    ndcg_scores: list[float] = []
-    for (_race_id,), group in valid_df.group_by("race_id", maintain_order=True):
-        valid_group = group.drop_nulls(subset=["predicted_rank", "finish_position"])
-        sorted_group = valid_group.sort("predicted_rank")
-        dcg = _dcg_at_3_from_positions(sorted_group["finish_position"].to_list())
-        ideal_relevances = sorted(
-            (
-                _RELEVANCE_MAP.get(int(fp), 0.0)
-                for fp in group["finish_position"].drop_nulls().to_list()
-            ),
-            reverse=True,
-        )[:3]
-        ideal_dcg = _dcg_at_3_from_positions_relevances(ideal_relevances)
-        if ideal_dcg > 0.0:
-            ndcg_scores.append(dcg / ideal_dcg)
-    return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
+    if valid_df.is_empty():
+        return 0.0
+    # DCG: drop rows missing either field, rank predictions within each race (ordinal
+    # rank reproduces the stable predicted_rank sort), take the top 3 slots, weight the
+    # finish-position relevance by that slot's discount, and sum per race.
+    dcg = (
+        valid_df.drop_nulls(subset=["predicted_rank", "finish_position"])
+        .with_columns(
+            _slot=pl.col("predicted_rank").rank("ordinal").over("race_id")
+        )
+        .filter(pl.col("_slot") <= 3)
+        .with_columns(
+            _contrib=_relevance_expr(pl.col("finish_position"))
+            * _discount_expr(pl.col("_slot"))
+        )
+        .group_by("race_id")
+        .agg(pl.col("_contrib").sum().alias("dcg"))
+    )
+    # Ideal DCG: over every scored finisher in the race (predicted_rank may be null),
+    # rank relevances descending, take the top 3, weight by the same slot discounts.
+    ideal = (
+        valid_df.drop_nulls(subset=["finish_position"])
+        .with_columns(_rel=_relevance_expr(pl.col("finish_position")))
+        .with_columns(
+            _slot=pl.col("_rel").rank("ordinal", descending=True).over("race_id")
+        )
+        .filter(pl.col("_slot") <= 3)
+        .with_columns(_contrib=pl.col("_rel") * _discount_expr(pl.col("_slot")))
+        .group_by("race_id")
+        .agg(pl.col("_contrib").sum().alias("ideal_dcg"))
+    )
+    per_race = (
+        ideal.join(dcg, on="race_id", how="left")
+        .filter(pl.col("ideal_dcg") > 0.0)
+        .with_columns(
+            _ndcg=pl.col("dcg").fill_null(0.0) / pl.col("ideal_dcg")
+        )
+    )
+    if per_race.is_empty():
+        return 0.0
+    return cast(float, per_race["_ndcg"].mean())
 
 
 def _xgb_numeric_features(df: pl.DataFrame, feature_names: list[str]) -> list[str]:
@@ -263,11 +304,10 @@ def _run_fold_xgboost(fold: FoldSplit) -> float | None:
 
 
 def _run_fold_catboost(fold: FoldSplit) -> float | None:
-    excluded = set(META_COLUMNS) | _LABEL_COLS
     feature_cols = [
         c
         for c in fold["train_df"].columns
-        if c not in excluded and _is_model_safe_feature(fold["train_df"], c)
+        if c not in _EXCLUDED_COLS and _is_model_safe_feature(fold["train_df"], c)
     ]
     if not feature_cols:
         return None
@@ -312,11 +352,10 @@ def _predict_fold_xgboost(fold: FoldSplit) -> pl.DataFrame | None:
 
 
 def _predict_fold_catboost(fold: FoldSplit) -> pl.DataFrame | None:
-    excluded = set(META_COLUMNS) | _LABEL_COLS
     feature_cols = [
         c
         for c in fold["train_df"].columns
-        if c not in excluded and _is_model_safe_feature(fold["train_df"], c)
+        if c not in _EXCLUDED_COLS and _is_model_safe_feature(fold["train_df"], c)
     ]
     if not feature_cols:
         return None

@@ -858,3 +858,95 @@ def test_compute_subgroup_diagnostics_perfect_prediction_scores_one():
     assert results[0]["ndcg_at_3"] == 1.0
     assert results[0]["top1_accuracy"] == 1.0
     assert results[0]["top3_box_accuracy"] == 1.0
+
+
+def _reference_metrics(joined: pl.DataFrame) -> tuple[float, float, float]:
+    # Scalar per-race reference, mirroring the pre-vectorization loop body.
+    ndcg_scores: list[float] = []
+    top1_hits = 0
+    top3_hits = 0
+    race_count = 0
+    for (_race_id,), group in joined.group_by("race_id", maintain_order=True):
+        race_count += 1
+        ndcg_scores.append(subject.compute_race_ndcg(group))
+        if subject.compute_race_top1(group):
+            top1_hits += 1
+        if (
+            group["finish_position"].is_not_null().sum() >= 3
+            and group["predicted_rank"].is_not_null().sum() >= 3
+            and subject.compute_race_top3_box(group)
+        ):
+            top3_hits += 1
+    safe = max(race_count, 1)
+    ndcg = float(np.mean(ndcg_scores)) if ndcg_scores else 0.0
+    return ndcg, top1_hits / safe, top3_hits / safe
+
+
+def test_evaluate_subgroup_matches_scalar_reference_on_messy_multi_race():
+    joined = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r3"],
+        "ketto_toroku_bango": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"],
+        "predicted_rank": [1.0, 2.0, 3.0, None, 1.0, 2.0, None, 3.0, 1.0, 2.0, 4.0],
+        "finish_position": [2.0, 1.0, 3.0, 4.0, None, 1.0, 2.0, 1.0, 3.0, 2.0, 4.0],
+    })
+    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    result = subject.evaluate_subgroup(joined)
+    assert result["race_count"] == 3
+    assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["top1_accuracy"] == ref_top1
+    assert result["top3_box_accuracy"] == ref_top3
+
+
+def test_evaluate_subgroup_top1_tie_uses_first_in_stable_order():
+    # Two horses share predicted_rank=1; the first row (winner) must be the top1 pick.
+    joined = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 3.0],
+    })
+    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    result = subject.evaluate_subgroup(joined)
+    assert result["top1_accuracy"] == 1.0
+    assert result["top1_accuracy"] == ref_top1
+    assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["top3_box_accuracy"] == ref_top3
+
+
+def test_evaluate_subgroup_top3_box_tie_uses_stable_order():
+    # Predicted ranks tie at slot 3/4; finish positions also tie — the vectorized
+    # ordinal rank must select the same first-3 horse sets as the stable sort.
+    joined = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "ketto_toroku_bango": ["a", "b", "c", "d"],
+        "predicted_rank": [1.0, 2.0, 3.0, 3.0],
+        "finish_position": [1.0, 2.0, 3.0, 3.0],
+    })
+    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    result = subject.evaluate_subgroup(joined)
+    assert result["top3_box_accuracy"] == ref_top3
+    assert result["top1_accuracy"] == ref_top1
+    assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+
+
+def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():
+    df = pl.DataFrame([
+        {"source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1000},
+        {"source": "jra", "keibajo_code": "10", "track_code": "25", "kyori": 1600},
+        {"source": "jra", "keibajo_code": "10", "track_code": "99", "kyori": 2400},
+        {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1300},
+        {"source": "nar", "keibajo_code": "83", "track_code": "22", "kyori": 200},
+        {"source": "jra", "keibajo_code": "83", "track_code": "10", "kyori": 2100},
+    ])
+    expected = [
+        subject.make_subgroup_key(
+            subject.get_source_label(row["source"], row["keibajo_code"]),
+            subject.get_surface_label(
+                row["track_code"],
+                subject.get_source_label(row["source"], row["keibajo_code"]),
+            ),
+            subject.get_distance_band(int(row["kyori"])),
+        )
+        for row in df.iter_rows(named=True)
+    ]
+    assert subject.assign_subgroup_keys(df).to_list() == expected

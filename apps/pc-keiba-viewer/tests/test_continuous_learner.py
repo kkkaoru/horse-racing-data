@@ -562,6 +562,67 @@ def test_maybe_deploy_skips_when_registry_saturated() -> None:
             mock_deploy.assert_not_called()
 
 
+def test_maybe_deploy_returns_true_when_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        with patch.object(reg, "is_saturated", return_value=True):
+            result = learner._maybe_deploy()
+        assert result is True
+
+
+def test_maybe_deploy_returns_false_when_no_active_entry() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch.object(reg, "is_saturated", return_value=False):
+            result = learner._maybe_deploy()
+        assert result is False
+
+
+def test_maybe_deploy_returns_false_when_below_threshold() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.50, ["feat_speed"])
+        reg.activate(1)
+        reg.record_deployment(0.497, 1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_deploy"),
+        ):
+            result = learner._maybe_deploy()
+        assert result is False
+
+
+def test_maybe_deploy_returns_false_when_blind_holdout_not_confirmed() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.0),
+            patch.object(learner, "_deploy"),
+        ):
+            result = learner._maybe_deploy()
+        assert result is False
+
+
+def test_maybe_deploy_returns_false_after_successful_deploy() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            result = learner._maybe_deploy()
+        mock_deploy.assert_called_once()
+        assert result is False
+
+
 def test_evaluate_blind_holdout_calls_evaluate_feature_set_with_holdout_year() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg, blind_holdout_year=2025)
@@ -1367,6 +1428,15 @@ def test_adaptive_controller_cpu_percent_returns_float_when_psutil_available() -
     assert result == 42.5
 
 
+def test_adaptive_controller_cpu_percent_uses_short_interval() -> None:
+    ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent.return_value = 30.0
+    with patch.object(subject, "_psutil", fake_psutil):
+        ctrl._cpu_percent()
+    assert fake_psutil.cpu_percent.call_args.kwargs["interval"] == pytest.approx(0.1)
+
+
 def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
     with patch.object(subject, "_psutil", None):
@@ -2123,7 +2193,7 @@ def test_run_passes_actual_trials_to_check_inverses() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment"),
         ):
@@ -2174,7 +2244,7 @@ def test_run_passes_round_num_to_analyze_enrichment() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -2462,7 +2532,7 @@ def test_run_skips_check_inverses_when_skip_inverse_true() -> None:
         learner = _make_learner(registry=reg, skip_inverse=True)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment"),
         ):
@@ -2475,7 +2545,7 @@ def test_run_skips_analyze_enrichment_when_skip_enrichment_true() -> None:
         learner = _make_learner(registry=reg, skip_enrichment=True)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -2488,13 +2558,57 @@ def test_run_still_calls_inverses_and_enrichment_by_default() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
             learner.run(max_rounds=1)
         mock_check.assert_called_once()
         mock_enrich.assert_called_once()
+
+
+def test_run_skips_inverse_and_enrichment_when_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_not_called()
+        mock_enrich.assert_not_called()
+
+
+def test_run_runs_inverse_and_enrichment_when_not_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_called_once()
+        mock_enrich.assert_called_once()
+
+
+def test_run_skips_inverse_when_saturated_even_with_skip_flags_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, skip_inverse=False, skip_enrichment=False
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=1)
+        mock_check.assert_not_called()
+        mock_enrich.assert_not_called()
 
 
 def test_skip_inverse_default_is_false() -> None:
