@@ -50,7 +50,7 @@
       "name": "horse-racing-duckdb",
       "dependencies": {
         "@ducklings/workers": "1.5.3",
-        "hono": "4.12.25",
+        "hono": "4.12.27",
         "horse-racing-schema": "workspace:*",
       },
       "devDependencies": {
@@ -1257,7 +1257,7 @@
 
     "hasown": ["hasown@2.0.3", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg=="],
 
-    "hono": ["hono@4.12.25", "", {}, "sha512-2NFaIyNVgJmBs/ecmtGzlmluTFs5cHEWGTdu0t1HBwYzoGXOL5nUQBRMXsXWla5i4KkG//QMzVP88m1+I3fdAQ=="],
+    "hono": ["hono@4.12.27", "", {}, "sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q=="],
 
     "horse-racing-data-lake": ["horse-racing-data-lake@workspace:apps/horse-racing-data-lake"],
 
