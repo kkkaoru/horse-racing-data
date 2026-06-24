@@ -44,6 +44,157 @@ def test_parse_args_full_set():
     assert args.category == "jra"
     assert args.threads == 4
     assert args.memory_limit == "8GB"
+    assert args.resume is False
+    assert args.incremental is False
+    assert args.temp_dir is None
+
+
+def test_parse_args_resume_flag_sets_true():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+            "--resume",
+        ]
+    )
+    assert args.resume is True
+
+
+def test_parse_args_resume_flag_defaults_false():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+        ]
+    )
+    assert args.resume is False
+
+
+def test_parse_args_incremental_flag_sets_true():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+            "--incremental",
+        ]
+    )
+    assert args.incremental is True
+
+
+def test_parse_args_incremental_flag_defaults_false():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+        ]
+    )
+    assert args.incremental is False
+
+
+def test_parse_args_temp_dir_sets_path():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+            "--temp-dir",
+            "/some/path",
+        ]
+    )
+    assert args.temp_dir == Path("/some/path")
+
+
+def test_parse_args_temp_dir_defaults_none():
+    args = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run/v1",
+            "--output-dir",
+            "tmp/finish/v1/features",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+        ]
+    )
+    assert args.temp_dir is None
 
 
 def test_parse_args_defaults_threads_and_memory():
@@ -124,6 +275,102 @@ def test_normalize_arguments_converts_paths_and_ints():
     assert normalized["category"] == "ban-ei"
 
 
+def test_normalize_arguments_maps_checkpoint_options_when_set():
+    raw = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run",
+            "--output-dir",
+            "tmp/finish",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+            "--resume",
+            "--incremental",
+            "--temp-dir",
+            "/spill/here",
+        ]
+    )
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["resume"] is True
+    assert normalized["incremental"] is True
+    assert normalized["temp_dir"] == Path("/spill/here")
+
+
+def test_normalize_arguments_checkpoint_options_default_off():
+    raw = subject.parse_args(
+        [
+            "--pg-url",
+            "postgresql://u:p@h/db",
+            "--running-style-parquet",
+            "tmp/run",
+            "--output-dir",
+            "tmp/finish",
+            "--finish-position-version",
+            "v1",
+            "--running-style-feature-version",
+            "v1",
+            "--year-from",
+            "2020",
+            "--year-to",
+            "2024",
+            "--category",
+            "nar",
+        ]
+    )
+    normalized = subject.normalize_arguments(raw)
+    assert normalized["resume"] is False
+    assert normalized["incremental"] is False
+    assert normalized["temp_dir"] is None
+
+
+def test_resolve_temp_dir_returns_explicit_when_provided():
+    args: subject.PhaseAArguments = {
+        "pg_url": "postgresql://u:p@h/db",
+        "running_style_parquet": Path("tmp/run"),
+        "output_dir": Path("tmp/finish/features"),
+        "finish_position_version": "v1",
+        "running_style_feature_version": "v1",
+        "year_from": 2020,
+        "year_to": 2024,
+        "category": "nar",
+        "threads": 8,
+        "memory_limit": "16GB",
+        "resume": True,
+        "incremental": True,
+        "temp_dir": Path("/explicit/spill"),
+    }
+    assert subject.resolve_temp_dir(args) == Path("/explicit/spill")
+
+
+def test_resolve_temp_dir_returns_per_category_default_when_none():
+    args: subject.PhaseAArguments = {
+        "pg_url": "postgresql://u:p@h/db",
+        "running_style_parquet": Path("tmp/run"),
+        "output_dir": Path("tmp/finish/features"),
+        "finish_position_version": "v1",
+        "running_style_feature_version": "v1",
+        "year_from": 2020,
+        "year_to": 2024,
+        "category": "nar",
+        "threads": 8,
+        "memory_limit": "16GB",
+        "resume": False,
+        "incremental": False,
+        "temp_dir": None,
+    }
+    assert subject.resolve_temp_dir(args) == Path("tmp/finish/spill-nar")
+
+
 def test_assert_running_style_parquet_present_rejects_missing(tmp_path: Path):
     missing = tmp_path / "missing"
     with pytest.raises(FileNotFoundError) as info:
@@ -157,12 +404,16 @@ def test_build_feature_builder_args_sets_clean_output_and_dates():
         "category": "jra",
         "threads": 4,
         "memory_limit": "8GB",
+        "resume": False,
+        "incremental": False,
+        "temp_dir": None,
     }
     raw_dir = Path("tmp/finish/_raw-jra-2020-2024")
     builder = subject.build_feature_builder_args(args, raw_dir)
     assert builder.category == "jra"
     assert builder.from_date == "20200101"
     assert builder.to_date == "20241231"
+    assert builder.target_date is None
     assert builder.output_dir == raw_dir
     assert builder.pg_url == "postgresql://u:p@h/db"
     assert builder.threads == 4
@@ -170,8 +421,36 @@ def test_build_feature_builder_args_sets_clean_output_and_dates():
     assert builder.skip_count is False
     assert builder.keep_existing_output is False
     assert builder.force_clean_output is True
-    assert builder.temp_dir is None
+    assert builder.temp_dir == Path("tmp/finish/spill-jra")
     assert builder.status_file is None
+    assert builder.log_file is None
+    assert builder.resume is False
+    assert builder.incremental is False
+    assert builder.venue_weather_dir is None
+    assert builder.realtime_odds is None
+
+
+def test_build_feature_builder_args_passes_checkpoint_flags_and_explicit_temp_dir():
+    args: subject.PhaseAArguments = {
+        "pg_url": "postgresql://u:p@h/db",
+        "running_style_parquet": Path("tmp/run"),
+        "output_dir": Path("tmp/finish/features"),
+        "finish_position_version": "v1",
+        "running_style_feature_version": "v1",
+        "year_from": 2020,
+        "year_to": 2024,
+        "category": "nar",
+        "threads": 4,
+        "memory_limit": "8GB",
+        "resume": True,
+        "incremental": True,
+        "temp_dir": Path("/explicit/spill"),
+    }
+    raw_dir = Path("tmp/finish/_raw-nar-2020-2024")
+    builder = subject.build_feature_builder_args(args, raw_dir)
+    assert builder.resume is True
+    assert builder.incremental is True
+    assert builder.temp_dir == Path("/explicit/spill")
 
 
 def test_build_raw_output_dir_uses_category_and_years():
@@ -186,6 +465,9 @@ def test_build_raw_output_dir_uses_category_and_years():
         "category": "nar",
         "threads": 8,
         "memory_limit": "16GB",
+        "resume": False,
+        "incremental": False,
+        "temp_dir": None,
     }
     raw = subject.build_raw_output_dir(args)
     assert raw == Path("tmp/finish/v1/_raw-nar-2020-2024")
@@ -313,6 +595,9 @@ def test_run_phase_a_orchestrates_feature_build_and_postprocess(
         "category": "jra",
         "threads": 8,
         "memory_limit": "16GB",
+        "resume": False,
+        "incremental": False,
+        "temp_dir": None,
     }
     result = subject.run_phase_a(args)
     assert result["rows_written"] == 17
@@ -339,6 +624,9 @@ def test_run_phase_a_aborts_when_running_style_parquet_missing(tmp_path: Path):
         "category": "jra",
         "threads": 8,
         "memory_limit": "16GB",
+        "resume": False,
+        "incremental": False,
+        "temp_dir": None,
     }
     with pytest.raises(FileNotFoundError):
         subject.run_phase_a(args)

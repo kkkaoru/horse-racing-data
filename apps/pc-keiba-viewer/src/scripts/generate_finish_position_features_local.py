@@ -54,6 +54,9 @@ class PhaseAArguments(TypedDict):
     category: str
     threads: int
     memory_limit: str
+    resume: bool
+    incremental: bool
+    temp_dir: Path | None
 
 
 class PhaseAResult(TypedDict):
@@ -79,6 +82,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--category", type=str, choices=CATEGORY_CHOICES, required=True)
     parser.add_argument("--threads", type=int, default=DEFAULT_THREADS)
     parser.add_argument("--memory-limit", type=str, default=DEFAULT_MEMORY_LIMIT)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Pass --resume to the feature builder so unchanged stages restore "
+            "from the per-category checkpoint instead of recomputing."
+        ),
+    )
+    parser.add_argument(
+        "--incremental",
+        action="store_true",
+        help=(
+            "Pass --incremental to the feature builder (resume + cascade-invalidate "
+            "downstream stages when an upstream stage's SQL changed)."
+        ),
+    )
+    parser.add_argument(
+        "--temp-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Base temp/spill dir for the feature builder. When omitted, defaults "
+            "to a per-category subdir derived from --output-dir so each category "
+            "keeps its own checkpoint."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -94,6 +123,9 @@ def normalize_arguments(args: argparse.Namespace) -> PhaseAArguments:
         "category": args.category,
         "threads": int(args.threads),
         "memory_limit": args.memory_limit,
+        "resume": bool(args.resume),
+        "incremental": bool(args.incremental),
+        "temp_dir": Path(args.temp_dir) if args.temp_dir is not None else None,
     }
 
 
@@ -108,21 +140,34 @@ def sql_quote_literal(value: str) -> str:
     return value.replace(SINGLE_QUOTE, DOUBLED_SINGLE_QUOTE)
 
 
+def resolve_temp_dir(args: PhaseAArguments) -> Path:
+    explicit = args["temp_dir"]
+    if explicit is not None:
+        return explicit
+    return args["output_dir"].parent / f"spill-{args['category']}"
+
+
 def build_feature_builder_args(args: PhaseAArguments, raw_output_dir: Path) -> Namespace:
     return Namespace(
         category=args["category"],
         from_date=f"{args['year_from']:04d}0101",
         to_date=f"{args['year_to']:04d}1231",
+        target_date=None,
         output_dir=raw_output_dir,
         pg_url=args["pg_url"],
         threads=args["threads"],
         memory_limit=args["memory_limit"],
         status_file=None,
+        log_file=None,
         heartbeat_interval=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         skip_count=False,
         keep_existing_output=False,
         force_clean_output=True,
-        temp_dir=None,
+        temp_dir=resolve_temp_dir(args),
+        resume=args["resume"],
+        incremental=args["incremental"],
+        venue_weather_dir=None,
+        realtime_odds=None,
     )
 
 
