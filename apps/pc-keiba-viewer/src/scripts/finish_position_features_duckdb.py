@@ -54,6 +54,9 @@ HISTORY_LOOKBACK_YEARS = 10
 CONSECUTIVE_RACE_WINDOW_DAYS = 30
 JOCKEY_RECENT_DAYS = 60
 TRACK_BIAS_WINDOW_DAYS = 5
+# Target years processed per pass in materialize_temp_table_by_year. >1 cuts
+# full-rec rescans; kept small so the 10yr-lookback intermediate stays under 6GB.
+PARTNER_CAREER_YEAR_BATCH_SIZE = 2
 FRONT_CORNER_THRESHOLD = 0.33
 RIVAL_DISTANCE_THRESHOLD = 0.3
 MAX_FIELD_SIZE = 18
@@ -1689,6 +1692,7 @@ def venue_weather_empty_agg_sql() -> str:
     create or replace temp table venue_weather_agg (
       keibajo_code varchar,
       weather_date date,
+      weather_date_yyyymmdd varchar,
       venue_temperature double,
       venue_precipitation_total double,
       venue_wind_speed_max double,
@@ -1746,6 +1750,7 @@ def materialize_venue_weather(
         f"""
         create or replace temp table venue_weather_agg as
         select keibajo_code, weather_date,
+          strftime(weather_date, '%Y%m%d') as weather_date_yyyymmdd,
           avg(temperature) as venue_temperature,
           sum(precipitation) as venue_precipitation_total,
           max(wind_speed) as venue_wind_speed_max,
@@ -1780,7 +1785,7 @@ def materialize_weather_lookup(con: duckdb.DuckDBPyConnection) -> None:
         left join nar_ra nr on t.source='nar' and nr.kaisai_nen=t.kaisai_nen and nr.kaisai_tsukihi=t.kaisai_tsukihi
           and nr.keibajo_code=t.keibajo_code and nr.race_bango=t.race_bango
         left join venue_weather_agg vw on vw.keibajo_code = t.keibajo_code
-          and vw.weather_date = cast(t.kaisai_nen || '-' || substr(t.kaisai_tsukihi, 1, 2) || '-' || substr(t.kaisai_tsukihi, 3, 2) as date)
+          and vw.weather_date_yyyymmdd = t.kaisai_nen || t.kaisai_tsukihi
         """
     )
     log_event("weather.weather_lookup", "done", perf_counter() - started)
@@ -2264,6 +2269,26 @@ def get_target_years(con: duckdb.DuckDBPyConnection) -> list[int]:
     return [int(row[0]) for row in rows]
 
 
+def chunk_years(years: list[int], batch_size: int) -> list[list[int]]:
+    """Split a sorted distinct-years list into consecutive chunks of at most batch_size.
+
+    batch_size <= 0 is treated as 1 so a misconfiguration degrades to the original
+    one-year-per-pass behaviour instead of an empty/zero-step range.
+    """
+    step = batch_size if batch_size > 0 else 1
+    return [years[i : i + step] for i in range(0, len(years), step)]
+
+
+def year_in_filter(year_chunk: list[int]) -> str:
+    """SQL filter restricting target rows to the given years via an explicit IN list.
+
+    IN (not BETWEEN) so years absent from the distinct-years list are never pulled in,
+    which matters for gapped year lists and resumed/partial runs.
+    """
+    literals = ", ".join(f"'{year:04d}'" for year in year_chunk)
+    return f"t.kaisai_nen in ({literals})"
+
+
 def materialize_temp_table_by_year(
     con: duckdb.DuckDBPyConnection,
     stage: str,
@@ -2272,13 +2297,15 @@ def materialize_temp_table_by_year(
     final_cte: str,
     years: list[int],
     heartbeat: Heartbeat,
+    batch_size: int = 1,
 ) -> int:
     log_event(stage, "start", 0.0)
     overall_start = perf_counter()
-    for idx, year in enumerate(years):
-        heartbeat.set_substage(f"year={year}")
-        year_start = perf_counter()
-        filter_clause = f"t.kaisai_nen = '{year:04d}'"
+    for idx, year_chunk in enumerate(chunk_years(years, batch_size)):
+        label = "-".join(f"{year:04d}" for year in year_chunk)
+        heartbeat.set_substage(f"years={label}")
+        chunk_start = perf_counter()
+        filter_clause = year_in_filter(year_chunk)
         cte_text = cte_builder(filter_clause)
         if idx == 0:
             con.execute(
@@ -2288,7 +2315,7 @@ def materialize_temp_table_by_year(
             con.execute(
                 f"insert into {temp_name} with {cte_text} select * from {final_cte}"
             )
-        log_event(f"{stage}.year{year}", "done", perf_counter() - year_start)
+        log_event(f"{stage}.years{label}", "done", perf_counter() - chunk_start)
     row_result = con.execute(f"select count(*) from {temp_name}").fetchone()
     total_rows = int(row_result[0]) if row_result is not None else 0
     log_event(stage, "done", perf_counter() - overall_start, total_rows)
@@ -2623,10 +2650,12 @@ def stage_partner_features(
     heartbeat.set_stage("jockey_career")
     materialize_temp_table_by_year(
         con, "jockey_career", "jockey_career", jockey_cte, "jockey_career", years, heartbeat,
+        batch_size=PARTNER_CAREER_YEAR_BATCH_SIZE,
     )
     heartbeat.set_stage("trainer_career")
     materialize_temp_table_by_year(
         con, "trainer_career", "trainer_career", trainer_cte, "trainer_career", years, heartbeat,
+        batch_size=PARTNER_CAREER_YEAR_BATCH_SIZE,
     )
 
 

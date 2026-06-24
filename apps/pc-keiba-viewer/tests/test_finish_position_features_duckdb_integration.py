@@ -511,6 +511,22 @@ def test_materialize_temp_table_by_year_creates_then_inserts(seeded_con: duckdb.
     assert rows > 0
 
 
+def test_materialize_temp_table_by_year_batches_multiple_years(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    rows = subject.materialize_temp_table_by_year(
+        seeded_con,
+        "jockey_career",
+        "jockey_career",
+        subject.jockey_cte,
+        "jockey_career",
+        [2019, 2020, 2021],
+        _silent_heartbeat(),
+        batch_size=2,
+    )
+    assert rows > 0
+
+
 def test_stage_horse_history_derived_creates_four_tables(seeded_con: duckdb.DuckDBPyConnection):
     subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
     for table in ("horse_career", "recent_form", "weight_agg", "legacy_features"):
@@ -791,6 +807,24 @@ def _write_venue_weather_db(path: Path, rows: list[tuple[object, ...]]) -> None:
         rows,
     )
     src.close()
+
+
+def test_materialize_venue_weather_emits_yyyymmdd_join_key(
+    seeded_con: duckdb.DuckDBPyConnection, tmp_path: Path
+):
+    _write_venue_weather_db(
+        tmp_path / "venue_weather_2020.duckdb",
+        [
+            ("01", "2020-01-01", 10, 10.0, 1.0, 5.0, 9.0),
+        ],
+    )
+    subject.materialize_venue_weather(seeded_con, tmp_path, [2020])
+    row = seeded_con.execute(
+        "select weather_date_yyyymmdd from venue_weather_agg "
+        "where keibajo_code = '01' and weather_date = date '2020-01-01'"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "20200101"
 
 
 def test_materialize_weather_lookup_left_joins_venue_weather(

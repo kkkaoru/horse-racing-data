@@ -2080,6 +2080,38 @@ def test_venue_weather_files_for_years_only_returns_existing(tmp_path: Path) -> 
     ]
 
 
+def test_chunk_years_splits_into_batches() -> None:
+    assert subject.chunk_years([2018, 2019, 2020, 2021, 2022], 2) == [
+        [2018, 2019],
+        [2020, 2021],
+        [2022],
+    ]
+
+
+def test_chunk_years_batch_size_one_is_singletons() -> None:
+    assert subject.chunk_years([2019, 2020], 1) == [[2019], [2020]]
+
+
+def test_chunk_years_zero_batch_size_degrades_to_one() -> None:
+    assert subject.chunk_years([2019, 2020], 0) == [[2019], [2020]]
+
+
+def test_chunk_years_negative_batch_size_degrades_to_one() -> None:
+    assert subject.chunk_years([2019, 2020], -3) == [[2019], [2020]]
+
+
+def test_chunk_years_empty_list_returns_empty() -> None:
+    assert subject.chunk_years([], 2) == []
+
+
+def test_year_in_filter_builds_in_list() -> None:
+    assert subject.year_in_filter([2019, 2020]) == "t.kaisai_nen in ('2019', '2020')"
+
+
+def test_year_in_filter_single_year() -> None:
+    assert subject.year_in_filter([2020]) == "t.kaisai_nen in ('2020')"
+
+
 def test_venue_weather_empty_agg_sql_has_expected_columns() -> None:
     import duckdb
 
@@ -2091,6 +2123,7 @@ def test_venue_weather_empty_agg_sql_has_expected_columns() -> None:
     assert columns == [
         "keibajo_code",
         "weather_date",
+        "weather_date_yyyymmdd",
         "venue_temperature",
         "venue_precipitation_total",
         "venue_wind_speed_max",
