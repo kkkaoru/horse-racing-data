@@ -587,6 +587,7 @@ def score_fold(
     args: WalkForwardArguments,
     valid_year: int,
     deps: ScoreFoldDeps,
+    calibration_map: dict[str, list[list[float]]],
 ) -> dict[str, object]:
     train_df, valid_df = build_fold_train_valid(df, args, valid_year)
     if len(train_df) == 0 or len(valid_df) == 0:
@@ -598,7 +599,6 @@ def score_fold(
         xgboost_trainer=deps["xgboost_trainer"],
     )
     predictions = trainer(train_df, valid_df, feature_cols, fold_args)
-    calibration_map = load_calibration_map(args["calibration_path"])
     predictions = apply_calibration(predictions, calibration_map, args["category"])
     parquet_frame = to_parquet_frame(predictions, args, valid_year)
     deps["write_parquet"](parquet_frame, args["output_parquet_root"])
@@ -630,8 +630,12 @@ def run(args: WalkForwardArguments, deps: ScoreFoldDeps) -> dict[str, object]:
             raise ValueError("No features remaining after filtering")
     else:
         assert_feature_count(args["category"], feature_cols)
+    calibration_map = load_calibration_map(args["calibration_path"])
     fold_years = resolve_fold_years(args)
-    folds = [score_fold(df, feature_cols, args, valid_year, deps) for valid_year in fold_years]
+    folds = [
+        score_fold(df, feature_cols, args, valid_year, deps, calibration_map)
+        for valid_year in fold_years
+    ]
     return {
         "category": args["category"],
         "model_version": args["walk_forward_namespace"],

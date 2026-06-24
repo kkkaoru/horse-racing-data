@@ -476,7 +476,9 @@ def test_score_fold_skips_when_no_train_rows(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         subject, "build_fold_train_valid", MagicMock(return_value=(pd.DataFrame(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps)
+    result = subject.score_fold(
+        _feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps, {},
+    )
     assert result == {"fold_year": 2024, "skipped": True, "rows": 0}
     fake.write_parquet.assert_not_called()
     fake.write_jsonl.assert_not_called()
@@ -488,7 +490,9 @@ def test_score_fold_skips_when_no_valid_rows(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setattr(
         subject, "build_fold_train_valid", MagicMock(return_value=(_feature_df(), pd.DataFrame())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2025, fake.deps)
+    result = subject.score_fold(
+        _feature_df(), [f"f{i}" for i in range(138)], args, 2025, fake.deps, {},
+    )
     assert result == {"fold_year": 2025, "skipped": True, "rows": 0}
 
 
@@ -502,7 +506,9 @@ def test_score_fold_trains_writes_parquet_and_jsonl_for_jra(
         "build_fold_train_valid",
         MagicMock(return_value=(_feature_df(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps)
+    result = subject.score_fold(
+        _feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps, {},
+    )
     assert result == {"fold_year": 2024, "skipped": False, "rows": 2}
     fake.cb_trainer.assert_called_once()
     fake.xgb_trainer.assert_not_called()
@@ -528,7 +534,9 @@ def test_score_fold_uses_xgboost_trainer_for_nar(
         "build_fold_train_valid",
         MagicMock(return_value=(_feature_df(), _feature_df())),
     )
-    result = subject.score_fold(_feature_df(), [f"f{i}" for i in range(126)], args, 2024, fake.deps)
+    result = subject.score_fold(
+        _feature_df(), [f"f{i}" for i in range(126)], args, 2024, fake.deps, {},
+    )
     assert result == {"fold_year": 2024, "skipped": False, "rows": 2}
     fake.xgb_trainer.assert_called_once()
     fake.cb_trainer.assert_not_called()
@@ -550,6 +558,24 @@ def test_run_resolves_features_asserts_parity_and_iterates_folds(
     assert result["model_version"] == "jra-v7-lineage-wf-21y"
     assert result["fold_count"] == 2
     assert result["feature_count"] == 138
+
+
+def test_run_loads_calibration_map_once_across_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path, "jra")
+    df = _feature_df()
+    fake = _make_fake_deps(_predictions_frame(), df)
+    monkeypatch.setattr(
+        subject,
+        "build_fold_train_valid",
+        MagicMock(return_value=(df, df)),
+    )
+    load_spy = MagicMock(return_value={})
+    monkeypatch.setattr(subject, "load_calibration_map", load_spy)
+    result = subject.run(args, fake.deps)
+    assert result["fold_count"] == 2
+    load_spy.assert_called_once()
 
 
 def test_run_raises_when_feature_parity_guard_fails(tmp_path: Path):
