@@ -431,16 +431,93 @@ def test_build_default_deps_returns_callable_set():
     assert callable(deps["bucket_reader"])
 
 
-def test_default_parquet_reader_reads_partition_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-):
+def test_read_parquet_schema_names_returns_first_part_columns(tmp_path: Path):
     (tmp_path / "race_year=2024").mkdir(parents=True)
-    parquet_path = tmp_path / "race_year=2024" / "0.parquet"
-    parquet_path.write_text("placeholder", encoding="utf-8")
-    sentinel = pd.DataFrame({"x": [1]})
-    monkeypatch.setattr(pd, "read_parquet", MagicMock(return_value=sentinel))
+    df = pd.DataFrame({
+        "race_id": ["r1"],
+        "race_date": ["20240101"],
+        "finish_position": [1.0],
+        "feature_a": [0.1],
+    })
+    df.to_parquet(tmp_path / "race_year=2024" / "0.parquet")
+    assert subject.read_parquet_schema_names(tmp_path) == [
+        "race_id", "race_date", "finish_position", "feature_a",
+    ]
+
+
+def test_read_parquet_schema_names_raises_when_empty(tmp_path: Path):
+    with pytest.raises(ValueError, match="no parquet files found"):
+        subject.read_parquet_schema_names(tmp_path)
+
+
+def test_resolve_projection_columns_keeps_features_and_runtime():
+    schema_names = [
+        "race_id",
+        "race_date",
+        "race_year",
+        "umaban",
+        "ketto_toroku_bango",
+        "finish_position",
+        "source",
+        "bamei",
+        "finish_norm",
+        "feat_a",
+        "feat_b",
+    ]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert projection == [
+        "umaban",
+        "feat_a",
+        "feat_b",
+        "race_id",
+        "race_date",
+        "race_year",
+        "ketto_toroku_bango",
+        "finish_position",
+    ]
+
+
+def test_resolve_projection_columns_omits_runtime_absent_from_schema():
+    schema_names = ["source", "feat_a", "race_id"]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert projection == ["feat_a", "race_id"]
+
+
+def test_default_parquet_reader_projects_and_concats_years(tmp_path: Path):
+    columns = {
+        "race_id": ["r1", "r1"],
+        "race_date": ["20230101", "20230101"],
+        "race_year": [2023, 2023],
+        "umaban": [1, 2],
+        "ketto_toroku_bango": ["a", "b"],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+        "bamei": ["horse1", "horse2"],
+    }
+    (tmp_path / "race_year=2023").mkdir(parents=True)
+    pd.DataFrame(columns).to_parquet(tmp_path / "race_year=2023" / "0.parquet")
+    (tmp_path / "race_year=2024").mkdir(parents=True)
+    pd.DataFrame({
+        "race_id": ["r2", "r2"],
+        "race_date": ["20240101", "20240101"],
+        "race_year": [2024, 2024],
+        "umaban": [1, 2],
+        "ketto_toroku_bango": ["c", "d"],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+        "bamei": ["horse3", "horse4"],
+    }).to_parquet(tmp_path / "race_year=2024" / "0.parquet")
     out = subject.default_parquet_reader(tmp_path)
-    assert out["x"].tolist() == [1]
+    assert out.columns.tolist() == [
+        "umaban",
+        "feature_a",
+        "race_id",
+        "race_date",
+        "race_year",
+        "ketto_toroku_bango",
+        "finish_position",
+    ]
+    assert out["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
 
 
 def test_default_bucket_reader_uses_pandas_read_parquet(

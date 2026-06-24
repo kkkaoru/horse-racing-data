@@ -25,12 +25,15 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import xgboost as xgb
 
 __all__ = [
     "compute_fold_metrics",
     "make_to_relevance",
+    "read_parquet_schema_names",
     "resolve_feature_columns",
+    "resolve_projection_columns",
     "run_walk_forward",
     "top1_hit",
     "top3_box_hit",
@@ -46,6 +49,10 @@ META_COLUMNS = (
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
 LABEL_COLUMNS = ("finish_position", "finish_norm")
+REQUIRED_RUNTIME_COLUMNS = (
+    "race_id", "race_date", "umaban", "ketto_toroku_bango",
+    "finish_position", "sample_weight",
+)
 DEFAULT_RELEVANCE_RANK1 = 3
 DEFAULT_RELEVANCE_RANK2 = 2
 DEFAULT_RELEVANCE_RANK3 = 1
@@ -96,7 +103,9 @@ def _extract_year(path: Path) -> int:
     return 9999
 
 
-def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
+def load_parquet_dir(
+    path: Path, year_max: int | None = None, columns: list[str] | None = None,
+) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
         raise ValueError(f"no parquet files found under {path}")
@@ -104,7 +113,28 @@ def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
         parts = [p for p in parts if _extract_year(p) <= year_max]
         if not parts:
             raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
+    if columns is not None:
+        return pd.concat([pd.read_parquet(p, columns=columns) for p in parts], ignore_index=True)
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+
+
+def read_parquet_schema_names(path: Path) -> list[str]:
+    parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
+    return list(pq.read_schema(parts[0]).names)
+
+
+def resolve_projection_columns(schema_names: list[str]) -> list[str]:
+    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
+    schema_set = set(schema_names)
+    selected: list[str] = [c for c in schema_names if c not in excluded]
+    seen = set(selected)
+    for runtime in REQUIRED_RUNTIME_COLUMNS:
+        if runtime in schema_set and runtime not in seen:
+            selected.append(runtime)
+            seen.add(runtime)
+    return selected
 
 
 def resolve_feature_columns(df: pd.DataFrame) -> list[str]:
@@ -252,7 +282,9 @@ def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
 
 
 def run_walk_forward(args: argparse.Namespace) -> None:
-    df = load_parquet_dir(args.csv)
+    schema_names = read_parquet_schema_names(args.csv)
+    projection = resolve_projection_columns(schema_names)
+    df = load_parquet_dir(args.csv, columns=projection)
     feature_cols = resolve_feature_columns(df)
     folds: list[dict[str, object]] = []
     if args.validation_from_date and args.validation_to_date:

@@ -342,6 +342,10 @@ def test_run_walk_forward_oot_train_end_is_day_before_validation_from(
         return original_filter_range(df, start, end)
 
     monkeypatch.setattr(subject, "filter_range", fake_filter_range)
+    monkeypatch.setattr(
+        subject, "read_parquet_schema_names",
+        MagicMock(return_value=list(_small_df().columns)),
+    )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
         "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
@@ -379,6 +383,10 @@ def test_run_walk_forward_oot_uses_explicit_train_end_date_when_provided(
         return original_filter_range(df, start, end)
 
     monkeypatch.setattr(subject, "filter_range", fake_filter_range)
+    monkeypatch.setattr(
+        subject, "read_parquet_schema_names",
+        MagicMock(return_value=list(_small_df().columns)),
+    )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
         "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
@@ -417,6 +425,10 @@ def test_run_walk_forward_year_based_path(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
     df = _multi_year_df()
+    monkeypatch.setattr(
+        subject, "read_parquet_schema_names",
+        MagicMock(return_value=list(df.columns)),
+    )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=df))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
         "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
@@ -440,6 +452,10 @@ def test_run_walk_forward_year_based_path(
 def test_run_walk_forward_year_based_skips_empty_folds(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
+    monkeypatch.setattr(
+        subject, "read_parquet_schema_names",
+        MagicMock(return_value=list(_small_df().columns)),
+    )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     # Return empty df for train to trigger skip
     monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pd.DataFrame()))
@@ -460,6 +476,10 @@ def test_run_walk_forward_year_based_skips_empty_folds(
 def test_run_walk_forward_oot_skips_when_train_or_valid_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
+    monkeypatch.setattr(
+        subject, "read_parquet_schema_names",
+        MagicMock(return_value=list(_small_df().columns)),
+    )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pd.DataFrame()))
     args = _make_args(
@@ -600,6 +620,59 @@ def test_extract_year_reads_partition_directory_name(tmp_path: Path):
 def test_extract_year_returns_fallback_when_no_partition(tmp_path: Path):
     part = tmp_path / "no-partition" / "part-0.parquet"
     assert subject._extract_year(part) == 9999
+
+
+def test_load_parquet_dir_columns_projects_only_requested_columns(tmp_path: Path):
+    year_dir = tmp_path / "race_year=2023"
+    year_dir.mkdir(parents=True)
+    df = pd.DataFrame({"race_id": ["r1", "r2"], "feature_a": [0.1, 0.2], "bamei": ["H1", "H2"]})
+    pq.write_table(pa.Table.from_pandas(df), year_dir / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, columns=["race_id", "feature_a"])
+    assert result.columns.tolist() == ["race_id", "feature_a"]
+
+
+# ---------------------------------------------------------------------------
+# read_parquet_schema_names
+# ---------------------------------------------------------------------------
+
+def test_read_parquet_schema_names_returns_first_file_columns(tmp_path: Path):
+    year_dir = tmp_path / "race_year=2023"
+    year_dir.mkdir(parents=True)
+    df = pd.DataFrame({"race_id": ["r1"], "feature_a": [0.1], "finish_position": [1.0]})
+    pq.write_table(pa.Table.from_pandas(df), year_dir / "part.parquet")
+    names = subject.read_parquet_schema_names(tmp_path)
+    assert names == ["race_id", "feature_a", "finish_position"]
+
+
+def test_read_parquet_schema_names_raises_on_empty_directory(tmp_path: Path):
+    with pytest.raises(ValueError, match="no parquet files found"):
+        subject.read_parquet_schema_names(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# resolve_projection_columns
+# ---------------------------------------------------------------------------
+
+def test_resolve_projection_columns_keeps_features_runtime_and_categoricals():
+    schema_names = [
+        "source", "bamei", "finish_norm", "race_id", "finish_position",
+        "keibajo_code", "umaban", "feat_a",
+    ]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert "source" not in projection
+    assert "bamei" not in projection
+    assert "finish_norm" not in projection
+    assert "race_id" in projection
+    assert "finish_position" in projection
+    assert "keibajo_code" in projection
+    assert "umaban" in projection
+    assert "feat_a" in projection
+
+
+def test_resolve_projection_columns_omits_runtime_column_absent_from_schema():
+    schema_names = ["race_id", "race_date", "finish_position", "feat_a"]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert "sample_weight" not in projection
 
 
 # ---------------------------------------------------------------------------

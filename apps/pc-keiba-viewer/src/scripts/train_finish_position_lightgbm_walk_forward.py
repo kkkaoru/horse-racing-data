@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Final, Protocol, TypedDict, cast
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 import walk_forward_common as wfc_common
 
@@ -52,6 +53,10 @@ META_COLUMNS: Final[tuple[str, ...]] = (
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
 LABEL_COLUMNS: Final[tuple[str, ...]] = ("finish_position", "finish_norm")
+REQUIRED_RUNTIME_COLUMNS: Final[tuple[str, ...]] = (
+    "race_id", "race_date", "race_year", "umaban", "ketto_toroku_bango",
+    "finish_position", "sample_weight",
+)
 CATEGORICAL_FEATURE_NAMES: Final[tuple[str, ...]] = ("track_code", "grade_code")
 RELEVANCE_RANK1: Final[int] = 3
 RELEVANCE_RANK2: Final[int] = 2
@@ -487,9 +492,33 @@ def run(args: TrainLightgbmArgs, deps: TrainDeps) -> dict[str, object]:
     }
 
 
+def read_parquet_schema_names(path: Path) -> list[str]:
+    parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
+    return list(pq.read_schema(parts[0]).names)
+
+
+def resolve_projection_columns(schema_names: list[str]) -> list[str]:
+    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
+    schema_set = set(schema_names)
+    selected: list[str] = [c for c in schema_names if c not in excluded]
+    seen = set(selected)
+    for runtime in REQUIRED_RUNTIME_COLUMNS:
+        if runtime in schema_set and runtime not in seen:
+            selected.append(runtime)
+            seen.add(runtime)
+    return selected
+
+
 def default_parquet_reader(path: Path) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    if not parts:
+        return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+    projection = resolve_projection_columns(list(pq.read_schema(parts[0]).names))
+    return pd.concat(
+        [pd.read_parquet(p, columns=projection) for p in parts], ignore_index=True,
+    )
 
 
 def default_bucket_reader(path: Path) -> pd.DataFrame:

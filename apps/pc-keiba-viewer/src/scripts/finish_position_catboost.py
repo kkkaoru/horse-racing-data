@@ -26,6 +26,7 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from catboost import CatBoost, Pool  # pyright: ignore[reportMissingTypeStubs]
 
 META_COLUMNS = (
@@ -35,6 +36,10 @@ META_COLUMNS = (
 )
 LABEL_COLUMNS = ("finish_position", "finish_norm")
 CATEGORICAL_FEATURE_NAMES = ("keibajo_code", "track_code", "grade_code", "umaban")
+REQUIRED_RUNTIME_COLUMNS = (
+    "race_id", "race_date", "ketto_toroku_bango",
+    "finish_position", "sample_weight",
+)
 DEFAULT_RELEVANCE_RANK1 = 3
 DEFAULT_RELEVANCE_RANK2 = 2
 DEFAULT_RELEVANCE_RANK3 = 1
@@ -83,7 +88,9 @@ def _extract_year(path: Path) -> int:
     return 9999
 
 
-def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
+def load_parquet_dir(
+    path: Path, year_max: int | None = None, columns: list[str] | None = None,
+) -> pd.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
         raise ValueError(f"no parquet files found under {path}")
@@ -91,7 +98,29 @@ def load_parquet_dir(path: Path, year_max: int | None = None) -> pd.DataFrame:
         parts = [p for p in parts if _extract_year(p) <= year_max]
         if not parts:
             raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
+    if columns is not None:
+        return pd.concat([pd.read_parquet(p, columns=columns) for p in parts], ignore_index=True)
     return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+
+
+def read_parquet_schema_names(path: Path) -> list[str]:
+    parts = sorted(path.glob("race_year=*/*.parquet"))
+    if not parts:
+        raise ValueError(f"no parquet files found under {path}")
+    return list(pq.read_schema(parts[0]).names)
+
+
+def resolve_projection_columns(schema_names: list[str]) -> list[str]:
+    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
+    runtime = set(REQUIRED_RUNTIME_COLUMNS)
+    seen: set[str] = set()
+    projection: list[str] = []
+    for col in schema_names:
+        keep = col not in excluded or col in runtime
+        if keep and col not in seen:
+            seen.add(col)
+            projection.append(col)
+    return projection
 
 
 def resolve_feature_columns(df: pd.DataFrame, use_cat_features: bool = True) -> list[str]:
@@ -274,7 +303,9 @@ def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
 
 
 def run_walk_forward(args: argparse.Namespace) -> None:
-    df = load_parquet_dir(args.csv)
+    schema_names = read_parquet_schema_names(args.csv)
+    projection = resolve_projection_columns(schema_names)
+    df = load_parquet_dir(args.csv, columns=projection)
     use_cat = not getattr(args, "no_cat_features", False)
     feature_cols = resolve_feature_columns(df, use_cat_features=use_cat)
     folds: list[dict[str, object]] = []
