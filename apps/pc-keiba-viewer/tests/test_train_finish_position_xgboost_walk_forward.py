@@ -42,6 +42,8 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "resume_from_checkpoint": False,
         "fine_tune_final_folds": 0,
         "fine_tune_lr_divisor": 10,
+        "focus_features": None,
+        "exclude_features": None,
         "num_rounds": 450,
         "max_depth": 6,
         "min_child_weight": 30,
@@ -49,6 +51,7 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "subsample": 1.0,
         "colsample_bytree": 1.0,
         "learning_rate": 0.05,
+        "nthread": 6,
     }
 
 
@@ -227,6 +230,73 @@ def test_build_fold_namespace_includes_subsample_and_colsample_bytree(tmp_path: 
     ns = subject.build_fold_namespace(args, 2024, [2024])
     assert ns.subsample == pytest.approx(0.75)
     assert ns.colsample_bytree == pytest.approx(0.85)
+
+
+def test_build_fold_namespace_propagates_nthread(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["nthread"] = 4
+    ns = subject.build_fold_namespace(args, 2024, [2024])
+    assert ns.nthread == 4
+
+
+def test_parse_args_defaults_nthread_to_six():
+    args = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+    ])
+    assert args.nthread == 6
+
+
+def test_normalize_args_clamps_nthread_to_six():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+        "--nthread",
+        "16",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["nthread"] == 6
+
+
+def test_normalize_args_keeps_nthread_below_cap():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+        "--nthread",
+        "4",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["nthread"] == 4
 
 
 def test_resolve_fold_random_seed_offsets_by_year():
@@ -475,6 +545,65 @@ def test_resolve_fold_years_raises_when_to_before_from(tmp_path: Path):
     args["year_to"] = 2024
     with pytest.raises(ValueError):
         subject.resolve_fold_years(args)
+
+
+def test_filter_feature_cols_raises_when_both_focus_and_exclude():
+    with pytest.raises(ValueError) as info:
+        subject.filter_feature_cols(["a", "b"], ["a"], ["b"])
+    assert "mutually exclusive" in str(info.value)
+
+
+def test_filter_feature_cols_focus_keeps_only_listed():
+    resolved = ["barei", "seibetsu_code", "feature_x"]
+    out = subject.filter_feature_cols(resolved, ["barei", "seibetsu_code"], None)
+    assert out == ["barei", "seibetsu_code"]
+
+
+def test_filter_feature_cols_exclude_removes_listed():
+    resolved = ["barei", "seibetsu_code", "feature_x"]
+    out = subject.filter_feature_cols(resolved, None, ["barei"])
+    assert out == ["seibetsu_code", "feature_x"]
+
+
+def test_filter_feature_cols_focus_raises_for_unknown_feature():
+    with pytest.raises(ValueError) as info:
+        subject.filter_feature_cols(["barei"], ["barei", "nonexistent"], None)
+    assert "nonexistent" in str(info.value)
+
+
+def test_filter_feature_cols_returns_unchanged_when_neither_specified():
+    resolved = ["barei", "seibetsu_code", "feature_x"]
+    out = subject.filter_feature_cols(resolved, None, None)
+    assert out == ["barei", "seibetsu_code", "feature_x"]
+
+
+def test_normalize_args_splits_focus_features():
+    raw = subject.parse_args([
+        "--features-parquet", "tmp/feat",
+        "--category", "nar",
+        "--walk-forward-namespace", "ns",
+        "--year-from", "2024",
+        "--year-to", "2025",
+        "--model-root", "tmp/models",
+        "--focus-features", "barei, seibetsu_code",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["focus_features"] == ["barei", "seibetsu_code"]
+    assert normalized["exclude_features"] is None
+
+
+def test_run_applies_exclude_features_and_reports_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    args["exclude_features"] = ["feature_a"]
+    df = _feature_df()
+    deps = _make_fake_deps(df)
+    deps["feature_resolver"] = MagicMock(return_value=["feature_a", "feature_b"])
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    result = subject.run(args, deps)
+    assert result["feature_count"] == 1
+    assert result["exclude_features"] == ["feature_a"]
 
 
 def test_run_applies_hpo_overrides_and_iterates_folds(

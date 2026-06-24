@@ -37,6 +37,8 @@ RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
 METADATA_STATUS_SKIPPED: Final[str] = "skipped"
+# Mirrors finish_position_catboost so --focus-features never drops categorical features.
+CATEGORICAL_FEATURE_NAMES: Final[tuple[str, ...]] = ("keibajo_code", "track_code", "grade_code", "umaban")
 
 
 class TrainCatBoostArgs(TypedDict):
@@ -54,6 +56,8 @@ class TrainCatBoostArgs(TypedDict):
     resume_from_checkpoint: bool
     fine_tune_final_folds: int
     fine_tune_lr_divisor: int
+    focus_features: list[str] | None
+    exclude_features: list[str] | None
     iterations: int
     depth: int
     l2_leaf_reg: float
@@ -119,6 +123,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fine-tune-lr-divisor", type=int, default=DEFAULT_FINE_TUNE_LR_DIVISOR,
     )
+    parser.add_argument("--focus-features", type=str, default=None)
+    parser.add_argument("--exclude-features", type=str, default=None)
     parser.add_argument("--iterations", type=int, default=500)
     parser.add_argument("--depth", type=int, default=8)
     parser.add_argument("--l2-leaf-reg", type=float, default=3.0)
@@ -154,6 +160,14 @@ def normalize_args(args: argparse.Namespace) -> TrainCatBoostArgs:
         "resume_from_checkpoint": bool(cast(bool, args.resume_from_checkpoint)),
         "fine_tune_final_folds": int(cast(int, args.fine_tune_final_folds)),
         "fine_tune_lr_divisor": int(cast(int, args.fine_tune_lr_divisor)),
+        "focus_features": (
+            [f.strip() for f in cast(str, args.focus_features).split(",")]
+            if args.focus_features is not None else None
+        ),
+        "exclude_features": (
+            [f.strip() for f in cast(str, args.exclude_features).split(",")]
+            if args.exclude_features is not None else None
+        ),
         "iterations": int(cast(int, args.iterations)),
         "depth": int(cast(int, args.depth)),
         "l2_leaf_reg": float(cast(float, args.l2_leaf_reg)),
@@ -365,11 +379,35 @@ def resolve_fold_years(args: TrainCatBoostArgs) -> list[int]:
     return list(range(args["year_from"], args["year_to"] + 1))
 
 
+def filter_feature_cols(
+    feature_cols: list[str],
+    focus_features: list[str] | None,
+    exclude_features: list[str] | None,
+) -> list[str]:
+    if focus_features is not None and exclude_features is not None:
+        raise ValueError("--focus-features and --exclude-features are mutually exclusive")
+    if focus_features is not None:
+        focus_set = set(focus_features)
+        cat_names = set(CATEGORICAL_FEATURE_NAMES)
+        missing = focus_set - set(feature_cols) - cat_names
+        if missing:
+            raise ValueError(f"Focus features not found in data: {sorted(missing)}")
+        return [c for c in feature_cols if c in focus_set or c in cat_names]
+    if exclude_features is not None:
+        exclude_set = set(exclude_features)
+        return [c for c in feature_cols if c not in exclude_set]
+    return feature_cols
+
+
 def run(args: TrainCatBoostArgs, deps: TrainDeps) -> dict[str, object]:
     hpo_params = load_hpo_params(args["hpo_params_path"])
     merged_args = apply_hpo_params(args, hpo_params)
     df = deps["parquet_reader"](merged_args["features_parquet"])
-    feature_cols = deps["feature_resolver"](df)
+    feature_cols = filter_feature_cols(
+        deps["feature_resolver"](df),
+        merged_args["focus_features"],
+        merged_args["exclude_features"],
+    )
     bucket_df = (
         deps["bucket_reader"](merged_args["bucket_membership_parquet"])
         if merged_args["bucket_membership_parquet"] is not None else None
@@ -384,6 +422,9 @@ def run(args: TrainCatBoostArgs, deps: TrainDeps) -> dict[str, object]:
         "walk_forward_namespace": merged_args["walk_forward_namespace"],
         "iteration_id": merged_args["iteration_id"],
         "alpha_bucket_weight": merged_args["alpha_bucket_weight"],
+        "feature_count": len(feature_cols),
+        "focus_features": merged_args["focus_features"],
+        "exclude_features": merged_args["exclude_features"],
         "fold_count": len(folds),
         "folds": folds,
     }

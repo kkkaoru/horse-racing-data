@@ -36,6 +36,7 @@ DEFAULT_MIN_CHILD_WEIGHT: Final[int] = 30
 DEFAULT_LAMBDA: Final[float] = 1.0
 DEFAULT_SUBSAMPLE: Final[float] = 1.0
 DEFAULT_COLSAMPLE_BYTREE: Final[float] = 1.0
+DEFAULT_NTHREAD: Final[int] = 6
 RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
@@ -58,6 +59,8 @@ class TrainXgboostArgs(TypedDict):
     resume_from_checkpoint: bool
     fine_tune_final_folds: int
     fine_tune_lr_divisor: int
+    focus_features: list[str] | None
+    exclude_features: list[str] | None
     num_rounds: int
     max_depth: int
     min_child_weight: int
@@ -65,6 +68,7 @@ class TrainXgboostArgs(TypedDict):
     subsample: float
     colsample_bytree: float
     learning_rate: float
+    nthread: int
 
 
 class ParquetReaderLike(Protocol):
@@ -128,6 +132,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fine-tune-lr-divisor", type=int, default=DEFAULT_FINE_TUNE_LR_DIVISOR,
     )
+    parser.add_argument("--focus-features", type=str, default=None)
+    parser.add_argument("--exclude-features", type=str, default=None)
     parser.add_argument("--num-rounds", type=int, default=450)
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--min-child-weight", type=int, default=DEFAULT_MIN_CHILD_WEIGHT)
@@ -135,6 +141,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subsample", type=float, default=DEFAULT_SUBSAMPLE)
     parser.add_argument("--colsample-bytree", type=float, default=DEFAULT_COLSAMPLE_BYTREE)
     parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument("--nthread", type=int, default=DEFAULT_NTHREAD)
     return parser
 
 
@@ -165,6 +172,14 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "resume_from_checkpoint": bool(cast(bool, args.resume_from_checkpoint)),
         "fine_tune_final_folds": int(cast(int, args.fine_tune_final_folds)),
         "fine_tune_lr_divisor": int(cast(int, args.fine_tune_lr_divisor)),
+        "focus_features": (
+            [f.strip() for f in cast(str, args.focus_features).split(",")]
+            if args.focus_features is not None else None
+        ),
+        "exclude_features": (
+            [f.strip() for f in cast(str, args.exclude_features).split(",")]
+            if args.exclude_features is not None else None
+        ),
         "num_rounds": int(cast(int, args.num_rounds)),
         "max_depth": int(cast(int, args.max_depth)),
         "min_child_weight": int(cast(int, args.min_child_weight)),
@@ -172,6 +187,7 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "subsample": float(cast(float, args.subsample)),
         "colsample_bytree": float(cast(float, args.colsample_bytree)),
         "learning_rate": float(cast(float, args.learning_rate)),
+        "nthread": min(int(cast(int, args.nthread)), DEFAULT_NTHREAD),
     }
 
 
@@ -296,6 +312,7 @@ def build_fold_namespace(
         reg_lambda=args["reg_lambda"],
         subsample=args["subsample"],
         colsample_bytree=args["colsample_bytree"],
+        nthread=args["nthread"],
         early_stopping_rounds=30,
         seed=resolve_fold_random_seed(fold_year),
         relevance_rank1=3,
@@ -378,11 +395,34 @@ def resolve_fold_years(args: TrainXgboostArgs) -> list[int]:
     return list(range(args["year_from"], args["year_to"] + 1))
 
 
+def filter_feature_cols(
+    feature_cols: list[str],
+    focus_features: list[str] | None,
+    exclude_features: list[str] | None,
+) -> list[str]:
+    if focus_features is not None and exclude_features is not None:
+        raise ValueError("--focus-features and --exclude-features are mutually exclusive")
+    if focus_features is not None:
+        focus_set = set(focus_features)
+        missing = focus_set - set(feature_cols)
+        if missing:
+            raise ValueError(f"Focus features not found in data: {sorted(missing)}")
+        return [c for c in feature_cols if c in focus_set]
+    if exclude_features is not None:
+        exclude_set = set(exclude_features)
+        return [c for c in feature_cols if c not in exclude_set]
+    return feature_cols
+
+
 def run(args: TrainXgboostArgs, deps: TrainDeps) -> dict[str, object]:
     hpo_params = load_hpo_params(args["hpo_params_path"])
     merged_args = apply_hpo_params(args, hpo_params)
     df = deps["parquet_reader"](merged_args["features_parquet"])
-    feature_cols = deps["feature_resolver"](df)
+    feature_cols = filter_feature_cols(
+        deps["feature_resolver"](df),
+        merged_args["focus_features"],
+        merged_args["exclude_features"],
+    )
     bucket_df = (
         deps["bucket_reader"](merged_args["bucket_membership_parquet"])
         if merged_args["bucket_membership_parquet"] is not None else None
@@ -398,6 +438,9 @@ def run(args: TrainXgboostArgs, deps: TrainDeps) -> dict[str, object]:
         "iteration_id": merged_args["iteration_id"],
         "alpha_bucket_weight": merged_args["alpha_bucket_weight"],
         "objective": merged_args["objective"],
+        "feature_count": len(feature_cols),
+        "focus_features": merged_args["focus_features"],
+        "exclude_features": merged_args["exclude_features"],
         "fold_count": len(folds),
         "folds": folds,
     }

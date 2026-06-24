@@ -40,6 +40,8 @@ def _base_args(tmp_path: Path) -> subject.TrainCatBoostArgs:
         "resume_from_checkpoint": False,
         "fine_tune_final_folds": 0,
         "fine_tune_lr_divisor": 10,
+        "focus_features": None,
+        "exclude_features": None,
         "iterations": 500,
         "depth": 8,
         "l2_leaf_reg": 3.0,
@@ -522,6 +524,70 @@ def test_resolve_fold_years_raises_when_to_before_from(tmp_path: Path):
     args["year_to"] = 2024
     with pytest.raises(ValueError):
         subject.resolve_fold_years(args)
+
+
+def test_filter_feature_cols_raises_when_both_focus_and_exclude():
+    with pytest.raises(ValueError) as info:
+        subject.filter_feature_cols(["a", "b"], ["a"], ["b"])
+    assert "mutually exclusive" in str(info.value)
+
+
+def test_filter_feature_cols_focus_keeps_listed_plus_categorical():
+    resolved = ["barei", "seibetsu_code", "feature_x", "keibajo_code", "umaban"]
+    out = subject.filter_feature_cols(resolved, ["barei", "seibetsu_code"], None)
+    assert out == ["barei", "seibetsu_code", "keibajo_code", "umaban"]
+
+
+def test_filter_feature_cols_exclude_removes_listed():
+    resolved = ["barei", "seibetsu_code", "feature_x"]
+    out = subject.filter_feature_cols(resolved, None, ["barei"])
+    assert out == ["seibetsu_code", "feature_x"]
+
+
+def test_filter_feature_cols_focus_raises_for_unknown_feature():
+    with pytest.raises(ValueError) as info:
+        subject.filter_feature_cols(["barei"], ["barei", "nonexistent"], None)
+    assert "nonexistent" in str(info.value)
+
+
+def test_filter_feature_cols_focus_allows_categorical_not_in_resolved_without_error():
+    out = subject.filter_feature_cols(["barei"], ["barei", "keibajo_code"], None)
+    assert out == ["barei"]
+
+
+def test_filter_feature_cols_returns_unchanged_when_neither_specified():
+    resolved = ["barei", "seibetsu_code", "feature_x"]
+    out = subject.filter_feature_cols(resolved, None, None)
+    assert out == ["barei", "seibetsu_code", "feature_x"]
+
+
+def test_normalize_args_splits_focus_features():
+    raw = subject.parse_args([
+        "--features-parquet", "tmp/feat",
+        "--category", "jra",
+        "--walk-forward-namespace", "ns",
+        "--year-from", "2024",
+        "--year-to", "2025",
+        "--model-root", "tmp/models",
+        "--focus-features", "barei, seibetsu_code",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["focus_features"] == ["barei", "seibetsu_code"]
+    assert normalized["exclude_features"] is None
+
+
+def test_run_applies_exclude_features_and_reports_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    args["exclude_features"] = ["feature_a"]
+    df = _feature_df()
+    deps = _make_fake_deps(df, feature_cols=["feature_a", "feature_b"])
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    result = subject.run(args, deps)
+    assert result["feature_count"] == 1
+    assert result["exclude_features"] == ["feature_a"]
+    assert result["focus_features"] is None
 
 
 def test_run_applies_hpo_overrides_and_iterates_folds(
