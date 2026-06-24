@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import psutil
 from numpy.typing import NDArray
 from sklearn.model_selection import StratifiedKFold
@@ -59,25 +59,24 @@ HPO_MIN_FOLDS: Final[int] = 2
 GROUP_SORT_KEYS: Final[tuple[str, str]] = ("race_id", "umaban")
 
 
-def sort_full_dataset(df: pd.DataFrame) -> pd.DataFrame:
-    """Sort the whole frame once by ``(race_id, umaban)`` with a fresh index.
+def sort_full_dataset(df: pl.DataFrame) -> pl.DataFrame:
+    """Sort the whole frame once by ``(race_id, umaban)``.
 
     Walk-forward folds each train on a cumulative date window, so every fold's
     train/valid slice is a boolean-masked subset of this frame. A boolean mask
     preserves relative row order, so a slice of an already-sorted frame is itself
     sorted by ``(race_id, umaban)`` and has contiguous race groups -- exactly the
-    layout the per-fold rankers re-derive with their own ``sort_values``. Sorting
+    layout the per-fold rankers re-derive with their own ``sort``. Sorting
     once here lets the rankers skip that redundant per-fold sort (see
     ``presorted`` in the CatBoost / XGBoost trainers) without changing results.
 
     ``umaban`` may be absent in unit fixtures; fall back to ``race_id`` only so
-    grouping stays contiguous. ``mergesort`` keeps the sort stable, matching the
-    rankers' default stable ``sort_values``.
+    grouping stays contiguous. A stable sort matches the rankers' default.
     """
     keys = [c for c in GROUP_SORT_KEYS if c in df.columns]
     if not keys:
-        return df.reset_index(drop=True)
-    return df.sort_values(list(keys), kind="mergesort").reset_index(drop=True)
+        return df
+    return df.sort(keys, maintain_order=True)
 
 
 def should_skip_fold(
@@ -281,7 +280,7 @@ def compute_per_bucket_val_ndcg(
 
 
 def stratified_kfold_indices(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     strata_cols: list[str],
     n_folds: int,
     seed: int,
@@ -301,17 +300,17 @@ def stratified_kfold_indices(
     missing = [col for col in strata_cols if col not in df.columns]
     if missing:
         raise ValueError(f"strata_cols missing from df: {missing}")
-    race_lookup = df.drop_duplicates(subset=["race_id"]).reset_index(drop=True)
-    strata_series = race_lookup[strata_cols[0]].astype(str)
+    race_lookup = df.unique(subset=["race_id"], keep="first", maintain_order=True)
+    strata_series = race_lookup[strata_cols[0]].cast(pl.String)
     for col in strata_cols[1:]:
-        next_series = race_lookup[col].astype(str)
-        strata_series = strata_series.str.cat(next_series, sep="|")
+        next_series = race_lookup[col].cast(pl.String)
+        strata_series = strata_series + "|" + next_series
     splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
     race_ids = df["race_id"].to_numpy()
     race_to_positions: dict[str, list[int]] = {}
     for position, race_id in enumerate(race_ids.tolist()):
         race_to_positions.setdefault(str(race_id), []).append(position)
-    unique_races = race_lookup["race_id"].astype(str).to_numpy()
+    unique_races = race_lookup["race_id"].cast(pl.String).to_numpy()
     indices: list[tuple[IntArray, IntArray]] = []
     base_unique = np.arange(len(unique_races), dtype=np.int64)
     for train_race_pos, val_race_pos in splitter.split(

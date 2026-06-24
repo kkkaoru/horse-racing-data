@@ -27,7 +27,7 @@ from typing import Protocol
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from running_style_calibration import (
     RunningStyleCalibrators,
@@ -62,7 +62,7 @@ class BoosterLoaderLike(Protocol):
 
 
 class PandasReaderLike(Protocol):
-    def __call__(self, path: str) -> pd.DataFrame: ...
+    def __call__(self, path: str, /) -> pl.DataFrame: ...
 
 
 class PathExistsLike(Protocol):
@@ -105,48 +105,49 @@ def assert_artifact_exists(artifact_path: str, *, path_exists: PathExistsLike) -
     return artifact_path
 
 
-def select_race_key_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def select_race_key_frame(frame: pl.DataFrame) -> pl.DataFrame:
     present_columns = [column for column in RACE_KEY_COLUMNS if column in frame.columns]
-    return frame[present_columns].reset_index(drop=True)
+    return frame.select(present_columns)
 
 
-def build_probability_frame(probabilities: np.ndarray) -> pd.DataFrame:
-    return pd.DataFrame(
+def build_probability_frame(probabilities: np.ndarray) -> pl.DataFrame:
+    return pl.DataFrame(
         {column: probabilities[:, index] for index, column in enumerate(PROBABILITY_COLUMNS)},
     )
 
 
 def attach_version_columns(
-    frame: pd.DataFrame, *, feature_version: str, model_version: str,
-) -> pd.DataFrame:
-    frame[FEATURE_VERSION_COLUMN] = feature_version
-    frame[MODEL_VERSION_COLUMN] = model_version
-    return frame
+    frame: pl.DataFrame, *, feature_version: str, model_version: str,
+) -> pl.DataFrame:
+    return frame.with_columns([
+        pl.lit(feature_version).alias(FEATURE_VERSION_COLUMN),
+        pl.lit(model_version).alias(MODEL_VERSION_COLUMN),
+    ])
 
 
 def score_frame(
     *,
     booster: lgb.Booster,
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     feature_version: str,
     model_version: str,
     calibrators: RunningStyleCalibrators | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     feature_columns = resolve_feature_columns(list(frame.columns))
     probabilities = predict_softmax(booster, frame, feature_columns, detect_categorical_features(feature_columns))
     if calibrators is not None:
         probabilities = apply_calibration(probabilities, calibrators)
     race_keys = select_race_key_frame(frame)
     probability_frame = build_probability_frame(probabilities)
-    combined = pd.concat([race_keys, probability_frame], axis=1)
+    combined = pl.concat([race_keys, probability_frame], how="horizontal")
     return attach_version_columns(
         combined, feature_version=feature_version, model_version=model_version,
     )
 
 
-def write_logits_parquet(frame: pd.DataFrame, output_path: str) -> None:
+def write_logits_parquet(frame: pl.DataFrame, output_path: str) -> None:
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(output_path, index=False)
+    frame.write_parquet(output_path)
 
 
 def default_path_exists(path: str) -> bool:
@@ -192,7 +193,7 @@ def main(argv: list[str] | None = None) -> None:
     run(
         args,
         booster_loader=lgb.Booster,
-        pandas_reader=pd.read_parquet,
+        pandas_reader=pl.read_parquet,
         path_exists=default_path_exists,
     )
 

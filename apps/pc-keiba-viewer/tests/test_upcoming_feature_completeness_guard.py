@@ -6,7 +6,7 @@ market-signal and futan columns and asserts that the guard catches them — exac
 what would have caught the three historical bugs (odds/popularity, market-signal
 commit 5c3aa12, futan commit ebd4636).
 
-Minimal dependency surface: only pandas + the guard module.  No DuckDB, no PG,
+Minimal dependency surface: only polars + the guard module.  No DuckDB, no PG,
 no file I/O (except the parquet round-trip tests).
 """
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-import pandas as pd
+import polars as pl
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +48,7 @@ def _base_upcoming_race(
     race_date: str = "20260607",
     race_year: int = 2026,
     include_finish_position: bool = True,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Build a synthetic upcoming-race DataFrame (finish_position NULL).
 
     All MUST_BE_PRESENT_FEATURES are filled with sane non-null values; the
@@ -64,7 +64,7 @@ def _base_upcoming_race(
     odds_diff = [round((n / 2 - i) * 0.1, 4) for i in range(n)]
     futan = [round(54.0 + 2.0 * i, 1) for i in range(n)]
     past_futan = [round(54.0 + 1.0 * i, 1) for i in range(n)]
-    row_data = {
+    row_data: dict[str, object] = {
         "source": ["jra"] * n,
         "kaisai_nen": ["2026"] * n,
         "kaisai_tsukihi": ["0607"] * n,
@@ -102,19 +102,20 @@ def _base_upcoming_race(
     }
     if include_finish_position:
         row_data["finish_position"] = [None] * n
-    return pd.DataFrame(row_data)
+    return pl.DataFrame(row_data)
 
 
-def _clean_upcoming_df(num_horses: int = 3) -> pd.DataFrame:
+def _clean_upcoming_df(num_horses: int = 3) -> pl.DataFrame:
     """A fully-populated upcoming-race DataFrame that should pass all checks."""
     return _base_upcoming_race(num_horses=num_horses)
 
 
-def _historical_df(num_horses: int = 2) -> pd.DataFrame:
+def _historical_df(num_horses: int = 2) -> pl.DataFrame:
     """A historical DataFrame (finish_position NOT NULL) — guard should pass."""
     df = _base_upcoming_race(num_horses=num_horses)
-    df["finish_position"] = list(range(1, num_horses + 1))
-    return df
+    return df.with_columns(
+        pl.Series("finish_position", list(range(1, num_horses + 1)))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +183,9 @@ def test_violation_detail_repr_contains_fields() -> None:
 
 def test_null_market_signal_inverse_odds_implied_prob_is_caught() -> None:
     """Guard must catch all-NULL inverse_odds_implied_prob for upcoming rows."""
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "inverse_odds_implied_prob" in features_flagged
@@ -191,8 +193,9 @@ def test_null_market_signal_inverse_odds_implied_prob_is_caught() -> None:
 
 def test_null_market_signal_inverse_odds_market_share_is_caught() -> None:
     """Guard must catch all-NULL inverse_odds_market_share for upcoming rows."""
-    df = _base_upcoming_race()
-    df["inverse_odds_market_share"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_market_share")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "inverse_odds_market_share" in features_flagged
@@ -200,8 +203,9 @@ def test_null_market_signal_inverse_odds_market_share_is_caught() -> None:
 
 def test_null_market_signal_odds_score_diff_is_caught() -> None:
     """Guard must catch all-NULL odds_score_diff_from_race_avg for upcoming rows."""
-    df = _base_upcoming_race()
-    df["odds_score_diff_from_race_avg"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("odds_score_diff_from_race_avg")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "odds_score_diff_from_race_avg" in features_flagged
@@ -219,8 +223,7 @@ def test_null_market_signal_odds_score_diff_is_caught() -> None:
 
 def test_null_futan_juryo_is_caught() -> None:
     """Guard must catch all-NULL futan_juryo for upcoming rows."""
-    df = _base_upcoming_race()
-    df["futan_juryo"] = None
+    df = _base_upcoming_race().with_columns(pl.lit(None).alias("futan_juryo"))
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "futan_juryo" in features_flagged
@@ -228,8 +231,9 @@ def test_null_futan_juryo_is_caught() -> None:
 
 def test_null_futan_juryo_rank_in_race_is_caught() -> None:
     """Guard must catch all-NULL futan_juryo_rank_in_race for upcoming rows."""
-    df = _base_upcoming_race()
-    df["futan_juryo_rank_in_race"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("futan_juryo_rank_in_race")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "futan_juryo_rank_in_race" in features_flagged
@@ -237,8 +241,9 @@ def test_null_futan_juryo_rank_in_race_is_caught() -> None:
 
 def test_null_past_futan_juryo_avg5_is_caught() -> None:
     """Guard must catch all-NULL past_futan_juryo_avg5 for upcoming rows."""
-    df = _base_upcoming_race()
-    df["past_futan_juryo_avg5"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("past_futan_juryo_avg5")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = [v.feature for v in violations]
     assert "past_futan_juryo_avg5" in features_flagged
@@ -252,10 +257,11 @@ def test_null_past_futan_juryo_avg5_is_caught() -> None:
 
 def test_null_market_signal_and_futan_both_caught() -> None:
     """Guard catches violations from multiple broken layers in a single call."""
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
-    df["inverse_odds_market_share"] = None
-    df["futan_juryo"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob"),
+        pl.lit(None).alias("inverse_odds_market_share"),
+        pl.lit(None).alias("futan_juryo"),
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = {v.feature for v in violations}
     assert "inverse_odds_implied_prob" in features_flagged
@@ -270,7 +276,7 @@ def test_null_market_signal_and_futan_both_caught() -> None:
 
 def test_missing_column_is_caught() -> None:
     """A column not present at all in the DataFrame triggers a missing_column violation."""
-    df = _base_upcoming_race().drop(columns=["inverse_odds_implied_prob"])
+    df = _base_upcoming_race().drop("inverse_odds_implied_prob")
     violations = check_upcoming_feature_completeness(df)
     missing = [v for v in violations if v.violation_type == "missing_column"]
     features_flagged = {v.feature for v in missing}
@@ -279,7 +285,7 @@ def test_missing_column_is_caught() -> None:
 
 def test_missing_futan_column_is_caught() -> None:
     """A dropped futan_juryo column triggers a missing_column violation."""
-    df = _base_upcoming_race().drop(columns=["futan_juryo"])
+    df = _base_upcoming_race().drop("futan_juryo")
     violations = check_upcoming_feature_completeness(df)
     missing = [v for v in violations if v.violation_type == "missing_column"]
     assert any(v.feature == "futan_juryo" for v in missing)
@@ -292,8 +298,9 @@ def test_missing_futan_column_is_caught() -> None:
 
 def test_rank_all_equal_inverse_odds_rank_is_caught() -> None:
     """Guard must catch inverse_odds_rank_in_race all-equal=1 (bogus all-1 bug)."""
-    df = _base_upcoming_race(num_horses=3)
-    df["inverse_odds_rank_in_race"] = 1
+    df = _base_upcoming_race(num_horses=3).with_columns(
+        pl.lit(1).alias("inverse_odds_rank_in_race")
+    )
     violations = check_upcoming_feature_completeness(df)
     rank_violations = [v for v in violations if v.violation_type == "rank_all_equal"]
     features_flagged = {v.feature for v in rank_violations}
@@ -302,8 +309,9 @@ def test_rank_all_equal_inverse_odds_rank_is_caught() -> None:
 
 def test_rank_all_equal_popularity_rank_is_caught() -> None:
     """Guard must catch popularity_rank_in_race all-equal=1."""
-    df = _base_upcoming_race(num_horses=3)
-    df["popularity_rank_in_race"] = 1
+    df = _base_upcoming_race(num_horses=3).with_columns(
+        pl.lit(1).alias("popularity_rank_in_race")
+    )
     violations = check_upcoming_feature_completeness(df)
     rank_violations = [v for v in violations if v.violation_type == "rank_all_equal"]
     features_flagged = {v.feature for v in rank_violations}
@@ -312,8 +320,9 @@ def test_rank_all_equal_popularity_rank_is_caught() -> None:
 
 def test_rank_all_equal_futan_rank_is_caught() -> None:
     """Guard must catch futan_juryo_rank_in_race all-equal (same weight all horses)."""
-    df = _base_upcoming_race(num_horses=3)
-    df["futan_juryo_rank_in_race"] = 1
+    df = _base_upcoming_race(num_horses=3).with_columns(
+        pl.lit(1).alias("futan_juryo_rank_in_race")
+    )
     violations = check_upcoming_feature_completeness(df)
     rank_violations = [v for v in violations if v.violation_type == "rank_all_equal"]
     features_flagged = {v.feature for v in rank_violations}
@@ -352,22 +361,24 @@ def test_clean_multi_race_frame_passes() -> None:
     """Two races worth of upcoming rows with valid features — no violations."""
     df1 = _base_upcoming_race(num_horses=3)
     df2 = _base_upcoming_race(num_horses=2, race_date="20260608", race_year=2026)
-    df2["kaisai_tsukihi"] = "0608"
-    df2["race_bango"] = "12"
-    df2["ketto_toroku_bango"] = ["horse_x", "horse_y"]
-    df2["umaban"] = [1, 2]
-    df2["umaban_norm"] = [0.0, 1.0]
-    df2["odds_score"] = [0.5, 0.3]
-    df2["popularity_score"] = [0.4, 0.2]
-    df2["inverse_odds_implied_prob"] = [0.2, 0.1]
-    df2["inverse_odds_market_share"] = [0.67, 0.33]
-    df2["odds_score_diff_from_race_avg"] = [0.1, -0.1]
-    df2["inverse_odds_rank_in_race"] = [1, 2]
-    df2["popularity_rank_in_race"] = [1, 2]
-    df2["futan_juryo"] = [54.0, 56.0]
-    df2["futan_juryo_rank_in_race"] = [2, 1]
-    df2["past_futan_juryo_avg5"] = [54.0, 55.0]
-    df = pd.concat([df1, df2], ignore_index=True)
+    df2 = df2.with_columns(
+        pl.Series("kaisai_tsukihi", ["0608", "0608"]),
+        pl.Series("race_bango", ["12", "12"]),
+        pl.Series("ketto_toroku_bango", ["horse_x", "horse_y"]),
+        pl.Series("umaban", [1, 2]),
+        pl.Series("umaban_norm", [0.0, 1.0]),
+        pl.Series("odds_score", [0.5, 0.3]),
+        pl.Series("popularity_score", [0.4, 0.2]),
+        pl.Series("inverse_odds_implied_prob", [0.2, 0.1]),
+        pl.Series("inverse_odds_market_share", [0.67, 0.33]),
+        pl.Series("odds_score_diff_from_race_avg", [0.1, -0.1]),
+        pl.Series("inverse_odds_rank_in_race", [1, 2]),
+        pl.Series("popularity_rank_in_race", [1, 2]),
+        pl.Series("futan_juryo", [54.0, 56.0]),
+        pl.Series("futan_juryo_rank_in_race", [2, 1]),
+        pl.Series("past_futan_juryo_avg5", [54.0, 55.0]),
+    )
+    df = pl.concat([df1, df2])
     violations = check_upcoming_feature_completeness(df)
     assert violations == []
 
@@ -386,7 +397,9 @@ def test_historical_only_frame_passes() -> None:
 
 def test_empty_frame_passes() -> None:
     """Empty DataFrame must pass (0 rows → 0 upcoming rows → nothing to check)."""
-    df = pd.DataFrame(columns=list(MUST_BE_PRESENT_FEATURES) + ["finish_position"])
+    schema = {c: pl.Float64 for c in MUST_BE_PRESENT_FEATURES}
+    schema["finish_position"] = pl.Float64
+    df = pl.DataFrame(schema=schema)
     violations = check_upcoming_feature_completeness(df)
     assert violations == []
 
@@ -398,8 +411,9 @@ def test_empty_frame_passes() -> None:
 
 def test_no_finish_position_column_treats_all_as_upcoming() -> None:
     """When finish_position column is absent, guard conservatively checks all rows."""
-    df = _base_upcoming_race(include_finish_position=False)
-    df["inverse_odds_implied_prob"] = None
+    df = _base_upcoming_race(include_finish_position=False).with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob")
+    )
     violations = check_upcoming_feature_completeness(df)
     features_flagged = {v.feature for v in violations}
     assert "inverse_odds_implied_prob" in features_flagged
@@ -424,7 +438,7 @@ def test_null_rate_exactly_at_threshold_passes() -> None:
     df = _base_upcoming_race(num_horses=num_horses)
     # Set position 9 (last) to NULL — 9/10 non-null = exactly 90 %
     vals = [0.1] * 9 + [None]
-    df["inverse_odds_implied_prob"] = vals
+    df = df.with_columns(pl.Series("inverse_odds_implied_prob", vals))
     violations = check_upcoming_feature_completeness(df, null_rate_threshold=0.9)
     null_rate_violations = [v for v in violations if v.violation_type == "null_rate_below_threshold"]
     assert len(null_rate_violations) == 0
@@ -436,7 +450,7 @@ def test_null_rate_one_below_threshold_is_caught() -> None:
     num_horses = 9
     df = _base_upcoming_race(num_horses=num_horses)
     vals = [0.1] * 8 + [None]
-    df["inverse_odds_implied_prob"] = vals
+    df = df.with_columns(pl.Series("inverse_odds_implied_prob", vals))
     violations = check_upcoming_feature_completeness(df, null_rate_threshold=0.9)
     null_rate_violations = [
         v for v in violations
@@ -453,13 +467,17 @@ def test_null_rate_one_below_threshold_is_caught() -> None:
 def test_null_in_historical_rows_does_not_trigger_violation() -> None:
     """NULL in a must-present feature is only flagged for upcoming rows,
     not for historical rows where that feature may legitimately differ."""
-    df_upcoming = _base_upcoming_race(num_horses=3)
+    df_upcoming = _base_upcoming_race(num_horses=3).with_columns(
+        pl.col("finish_position").cast(pl.Int64)
+    )
     df_historical = _base_upcoming_race(num_horses=2)
-    df_historical["kaisai_tsukihi"] = "0601"
-    df_historical["finish_position"] = [1, 2]
-    # NULL futan only in historical rows
-    df_historical["futan_juryo"] = None
-    df = pd.concat([df_upcoming, df_historical], ignore_index=True)
+    df_historical = df_historical.with_columns(
+        pl.Series("kaisai_tsukihi", ["0601", "0601"]),
+        pl.Series("finish_position", [1, 2], dtype=pl.Int64),
+        # NULL futan only in historical rows
+        pl.lit(None).alias("futan_juryo"),
+    )
+    df = pl.concat([df_upcoming, df_historical])
     violations = check_upcoming_feature_completeness(df)
     null_rate_violations = [
         v for v in violations
@@ -475,31 +493,32 @@ def test_null_in_historical_rows_does_not_trigger_violation() -> None:
 
 def test_assert_raises_on_null_market_signal() -> None:
     """assert_upcoming_feature_completeness must raise on NULL inverse_odds_implied_prob."""
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob")
+    )
     with pytest.raises(UpcomingFeatureCompletenessError):
         assert_upcoming_feature_completeness(df)
 
 
 def test_assert_raises_on_null_futan() -> None:
     """assert_upcoming_feature_completeness must raise on NULL futan_juryo."""
-    df = _base_upcoming_race()
-    df["futan_juryo"] = None
+    df = _base_upcoming_race().with_columns(pl.lit(None).alias("futan_juryo"))
     with pytest.raises(UpcomingFeatureCompletenessError):
         assert_upcoming_feature_completeness(df)
 
 
 def test_assert_raises_on_missing_column() -> None:
     """assert_upcoming_feature_completeness must raise when a column is absent."""
-    df = _clean_upcoming_df().drop(columns=["inverse_odds_market_share"])
+    df = _clean_upcoming_df().drop("inverse_odds_market_share")
     with pytest.raises(UpcomingFeatureCompletenessError):
         assert_upcoming_feature_completeness(df)
 
 
 def test_assert_raises_on_rank_all_equal() -> None:
     """assert_upcoming_feature_completeness must raise on all-equal rank."""
-    df = _base_upcoming_race(num_horses=3)
-    df["inverse_odds_rank_in_race"] = 1
+    df = _base_upcoming_race(num_horses=3).with_columns(
+        pl.lit(1).alias("inverse_odds_rank_in_race")
+    )
     with pytest.raises(UpcomingFeatureCompletenessError):
         assert_upcoming_feature_completeness(df)
 
@@ -512,16 +531,16 @@ def test_assert_does_not_raise_on_clean_frame() -> None:
 
 def test_assert_raises_error_message_contains_feature_name() -> None:
     """The raised error message must contain the offending feature name."""
-    df = _base_upcoming_race()
-    df["futan_juryo"] = None
+    df = _base_upcoming_race().with_columns(pl.lit(None).alias("futan_juryo"))
     with pytest.raises(UpcomingFeatureCompletenessError, match="futan_juryo"):
         assert_upcoming_feature_completeness(df)
 
 
 def test_assert_logs_to_stderr_on_violation(capsys: pytest.CaptureFixture[str]) -> None:
     """Each violation must be logged to stderr before raising."""
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob")
+    )
     with pytest.raises(UpcomingFeatureCompletenessError):
         assert_upcoming_feature_completeness(df)
     captured = capsys.readouterr()
@@ -538,7 +557,7 @@ def test_custom_null_rate_threshold_stricter() -> None:
     """With threshold=1.0 even a single NULL is a violation."""
     df = _base_upcoming_race(num_horses=3)
     # Set 2 out of 3 non-null = 66.7 % — below threshold=1.0
-    df["futan_juryo"] = [54.0, None, 56.0]
+    df = df.with_columns(pl.Series("futan_juryo", [54.0, None, 56.0]))
     violations = check_upcoming_feature_completeness(df, null_rate_threshold=1.0)
     features_flagged = {v.feature for v in violations if v.violation_type == "null_rate_below_threshold"}
     assert "futan_juryo" in features_flagged
@@ -548,7 +567,7 @@ def test_custom_must_be_present_only_checks_specified_features() -> None:
     """Caller can narrow the check to a specific set of features."""
     df = _base_upcoming_race()
     # NULL all market-signal but specify only futan in must_be_present → no violation
-    df["inverse_odds_implied_prob"] = None
+    df = df.with_columns(pl.lit(None).alias("inverse_odds_implied_prob"))
     violations = check_upcoming_feature_completeness(
         df,
         must_be_present=["futan_juryo"],
@@ -559,8 +578,10 @@ def test_custom_must_be_present_only_checks_specified_features() -> None:
 def test_custom_upcoming_col_uses_correct_column() -> None:
     """Custom upcoming_col parameter is respected."""
     df = _base_upcoming_race(include_finish_position=False)
-    df["my_label"] = None  # treat as upcoming marker
-    df["inverse_odds_implied_prob"] = None
+    df = df.with_columns(
+        pl.lit(None).alias("my_label"),  # treat as upcoming marker
+        pl.lit(None).alias("inverse_odds_implied_prob"),
+    )
     violations = check_upcoming_feature_completeness(
         df,
         must_be_present=["inverse_odds_implied_prob"],
@@ -600,7 +621,7 @@ def test_main_returns_zero_for_clean_parquet(tmp_path: Path) -> None:
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
     df = _clean_upcoming_df()
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df.write_parquet(parquet_dir / "part-0.parquet")
     result = main(["--parquet-dir", str(parquet_dir)])
     assert result == 0
 
@@ -609,9 +630,8 @@ def test_main_returns_one_for_null_futan(tmp_path: Path) -> None:
     """main() returns 1 when futan_juryo is all-NULL for upcoming rows."""
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
-    df = _base_upcoming_race()
-    df["futan_juryo"] = None
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df = _base_upcoming_race().with_columns(pl.lit(None).alias("futan_juryo"))
+    df.write_parquet(parquet_dir / "part-0.parquet")
     result = main(["--parquet-dir", str(parquet_dir)])
     assert result == 1
 
@@ -620,10 +640,11 @@ def test_main_returns_one_for_null_market_signal(tmp_path: Path) -> None:
     """main() returns 1 when market-signal features are all-NULL for upcoming rows."""
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
-    df["inverse_odds_market_share"] = None
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob"),
+        pl.lit(None).alias("inverse_odds_market_share"),
+    )
+    df.write_parquet(parquet_dir / "part-0.parquet")
     result = main(["--parquet-dir", str(parquet_dir)])
     assert result == 1
 
@@ -635,7 +656,7 @@ def test_main_logs_ok_message_to_stderr_on_success(
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
     df = _clean_upcoming_df()
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df.write_parquet(parquet_dir / "part-0.parquet")
     main(["--parquet-dir", str(parquet_dir)])
     captured = capsys.readouterr()
     assert "OK" in captured.err
@@ -647,9 +668,8 @@ def test_main_logs_fail_message_to_stderr_on_violation(
     """main() logs a FAIL message to stderr when violations are found."""
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
-    df = _base_upcoming_race()
-    df["futan_juryo"] = None
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df = _base_upcoming_race().with_columns(pl.lit(None).alias("futan_juryo"))
+    df.write_parquet(parquet_dir / "part-0.parquet")
     main(["--parquet-dir", str(parquet_dir)])
     captured = capsys.readouterr()
     assert "FAIL" in captured.err
@@ -666,7 +686,7 @@ def test_check_parquet_dir_clean(tmp_path: Path) -> None:
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
     df = _clean_upcoming_df()
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df.write_parquet(parquet_dir / "part-0.parquet")
     violations = check_parquet_dir(parquet_dir)
     assert violations == []
 
@@ -675,9 +695,10 @@ def test_check_parquet_dir_null_market_signal(tmp_path: Path) -> None:
     """check_parquet_dir catches NULL inverse_odds_implied_prob."""
     parquet_dir = tmp_path / "features"
     parquet_dir.mkdir()
-    df = _base_upcoming_race()
-    df["inverse_odds_implied_prob"] = None
-    df.to_parquet(parquet_dir / "part-0.parquet", index=False)
+    df = _base_upcoming_race().with_columns(
+        pl.lit(None).alias("inverse_odds_implied_prob")
+    )
+    df.write_parquet(parquet_dir / "part-0.parquet")
     violations = check_parquet_dir(parquet_dir)
     features_flagged = {v.feature for v in violations}
     assert "inverse_odds_implied_prob" in features_flagged
@@ -691,11 +712,12 @@ def test_check_parquet_dir_null_market_signal(tmp_path: Path) -> None:
 def test_rank_check_skipped_when_rank_features_empty() -> None:
     """When rank_features=[] the outer if-guard short-circuits to return violations.
 
-    Exercises the branch 268->291 (if race_id_present and rank_present ...) where
+    Exercises the branch (if race_id_present and rank_present ...) where
     rank_present is empty so the condition is False and the block is skipped.
     """
-    df = _base_upcoming_race(num_horses=3)
-    df["inverse_odds_rank_in_race"] = 1  # would be caught if rank_features used
+    df = _base_upcoming_race(num_horses=3).with_columns(
+        pl.lit(1).alias("inverse_odds_rank_in_race")  # would be caught if rank_features used
+    )
     violations = check_upcoming_feature_completeness(df, rank_features=[])
     rank_violations = [v for v in violations if v.violation_type == "rank_all_equal"]
     assert len(rank_violations) == 0

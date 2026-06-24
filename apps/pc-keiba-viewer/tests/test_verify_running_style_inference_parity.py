@@ -10,7 +10,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import verify_running_style_inference_parity as subject
@@ -377,7 +377,7 @@ def test_fetch_prod_predictions_closes_connection_on_error() -> None:
 
 
 def test_assert_probability_sums_to_one_returns_true_when_within_tolerance() -> None:
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "p_nige": [0.4],
         "p_senkou": [0.3],
         "p_sashi": [0.2],
@@ -387,7 +387,7 @@ def test_assert_probability_sums_to_one_returns_true_when_within_tolerance() -> 
 
 
 def test_assert_probability_sums_to_one_returns_false_when_outside_tolerance() -> None:
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "p_nige": [0.5],
         "p_senkou": [0.3],
         "p_sashi": [0.2],
@@ -400,7 +400,7 @@ def test_smoke_mocked_booster_writes_probabilities_with_sums_to_one() -> None:
     booster = MagicMock()
     booster.predict.return_value = np.array([[0.5, 0.25, 0.15, 0.10]])
     probabilities = booster.predict(np.zeros((1, 5)))
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "p_nige": probabilities[:, 0],
         "p_senkou": probabilities[:, 1],
         "p_sashi": probabilities[:, 2],
@@ -410,7 +410,7 @@ def test_smoke_mocked_booster_writes_probabilities_with_sums_to_one() -> None:
 
 
 def test_tolerance_arithmetic_max_diff_per_class() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -423,7 +423,7 @@ def test_tolerance_arithmetic_max_diff_per_class() -> None:
         "p_oikomi": [0.099999999999],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -446,7 +446,7 @@ def test_tolerance_arithmetic_max_diff_per_class() -> None:
 
 
 def test_compute_max_diff_per_class_returns_zero_dict_when_no_overlap() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -459,7 +459,7 @@ def test_compute_max_diff_per_class_returns_zero_dict_when_no_overlap() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -479,7 +479,7 @@ def test_compute_max_diff_per_class_returns_zero_dict_when_no_overlap() -> None:
 
 
 def test_argmax_agreement_calculation_full_match() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -492,7 +492,7 @@ def test_argmax_agreement_calculation_full_match() -> None:
         "p_oikomi": [0.1, 0.1],
         "predicted_class": [0, 1],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -512,7 +512,7 @@ def test_argmax_agreement_calculation_full_match() -> None:
 
 
 def test_argmax_agreement_calculation_partial_match() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -525,7 +525,7 @@ def test_argmax_agreement_calculation_partial_match() -> None:
         "p_oikomi": [0.1, 0.1],
         "predicted_class": [0, 1],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -545,7 +545,7 @@ def test_argmax_agreement_calculation_partial_match() -> None:
 
 
 def test_compute_argmax_agreement_returns_one_when_no_overlap() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -558,7 +558,7 @@ def test_compute_argmax_agreement_returns_one_when_no_overlap() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -578,7 +578,7 @@ def test_compute_argmax_agreement_returns_one_when_no_overlap() -> None:
 
 
 def test_evaluate_parity_passes_when_zero_diff_and_full_agreement() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -591,7 +591,7 @@ def test_evaluate_parity_passes_when_zero_diff_and_full_agreement() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -613,7 +613,7 @@ def test_evaluate_parity_passes_when_zero_diff_and_full_agreement() -> None:
 
 
 def test_evaluate_parity_fails_when_argmax_disagrees() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -626,7 +626,7 @@ def test_evaluate_parity_fails_when_argmax_disagrees() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -646,7 +646,7 @@ def test_evaluate_parity_fails_when_argmax_disagrees() -> None:
 
 
 def test_evaluate_parity_fails_when_diff_exceeds_tolerance() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -659,7 +659,7 @@ def test_evaluate_parity_fails_when_diff_exceeds_tolerance() -> None:
         "p_oikomi": [0.099999],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -679,7 +679,7 @@ def test_evaluate_parity_fails_when_diff_exceeds_tolerance() -> None:
 
 
 def test_evaluate_parity_fails_when_no_overlap() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -692,7 +692,7 @@ def test_evaluate_parity_fails_when_no_overlap() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -776,7 +776,7 @@ def test_resolve_pg_dsn_raises_when_neither_provided(
 
 
 def test_collect_mismatches_returns_only_rows_above_threshold() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -789,7 +789,7 @@ def test_collect_mismatches_returns_only_rows_above_threshold() -> None:
         "p_oikomi": [0.1, 0.099999],
         "predicted_class": [0, 0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -807,11 +807,11 @@ def test_collect_mismatches_returns_only_rows_above_threshold() -> None:
         max_diff_threshold=1e-9,
     )
     assert len(mismatches) == 1
-    assert mismatches.iloc[0]["ketto_toroku_bango"] == "B"
+    assert mismatches[0, "ketto_toroku_bango"] == "B"
 
 
 def test_collect_mismatches_returns_empty_when_no_overlap() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -824,7 +824,7 @@ def test_collect_mismatches_returns_empty_when_no_overlap() -> None:
         "p_oikomi": [0.1],
         "predicted_class": [0],
     })
-    prod_frame = pd.DataFrame({
+    prod_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -930,8 +930,8 @@ def test_phase_3_writes_json_report_with_required_fields(tmp_path: Path) -> None
     )
     json_path, parquet_path = subject.write_phase_three_artifacts(
         report=report,
-        mismatches=pd.DataFrame(
-            columns=["source", "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "ketto_toroku_bango", "max_diff"],
+        mismatches=pl.DataFrame(
+            schema=["source", "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "ketto_toroku_bango", "max_diff"],
         ),
         report_dir=tmp_path.as_posix(),
     )
@@ -957,7 +957,7 @@ def test_phase_3_dumps_mismatches_parquet_when_diff_above_threshold(tmp_path: Pa
         mismatches_count=1,
         passed=False,
     )
-    mismatches = pd.DataFrame({
+    mismatches = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -971,7 +971,7 @@ def test_phase_3_dumps_mismatches_parquet_when_diff_above_threshold(tmp_path: Pa
     )
     assert parquet_path is not None
     assert parquet_path.is_file()
-    loaded = pd.read_parquet(parquet_path)
+    loaded = pl.read_parquet(parquet_path)
     assert len(loaded) == 1
     assert json_path.is_file()
 
@@ -990,8 +990,8 @@ def test_phase_3_no_mismatches_dump_when_diff_zero(tmp_path: Path) -> None:
     )
     json_path, parquet_path = subject.write_phase_three_artifacts(
         report=report,
-        mismatches=pd.DataFrame(
-            columns=["source", "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "ketto_toroku_bango", "max_diff"],
+        mismatches=pl.DataFrame(
+            schema=["source", "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango", "ketto_toroku_bango", "max_diff"],
         ),
         report_dir=tmp_path.as_posix(),
     )
@@ -1106,7 +1106,7 @@ def test_utc_now_iso_format_is_z_suffixed() -> None:
 
 
 def test_filter_features_by_race_keys_inner_joins_on_race_key() -> None:
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra", "jra", "jra"],
         "kaisai_nen": ["2026", "2026", "2026"],
         "kaisai_tsukihi": ["0103", "0103", "0203"],
@@ -1125,7 +1125,7 @@ def test_filter_features_by_race_keys_inner_joins_on_race_key() -> None:
 
 
 def test_filter_features_by_race_keys_returns_empty_when_no_sample() -> None:
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1137,8 +1137,8 @@ def test_filter_features_by_race_keys_returns_empty_when_no_sample() -> None:
     assert len(filtered) == 0
 
 
-def test_default_pandas_parquet_writer_calls_to_parquet(tmp_path: Path) -> None:
-    frame = pd.DataFrame({
+def test_default_parquet_writer_writes_parquet(tmp_path: Path) -> None:
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1146,13 +1146,13 @@ def test_default_pandas_parquet_writer_calls_to_parquet(tmp_path: Path) -> None:
         "race_bango": ["01"],
     })
     target = (tmp_path / "out.parquet").as_posix()
-    subject.default_pandas_parquet_writer(frame, target)
-    loaded = pd.read_parquet(target)
+    subject.default_parquet_writer(frame, target)
+    loaded = pl.read_parquet(target)
     assert len(loaded) == 1
 
 
 def test_derive_predicted_class_adds_argmax_when_missing() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1166,11 +1166,11 @@ def test_derive_predicted_class_adds_argmax_when_missing() -> None:
     })
     augmented = subject.derive_predicted_class(local_frame)
     assert "predicted_class" in augmented.columns
-    assert augmented["predicted_class"].iloc[0] == 0
+    assert augmented[0, "predicted_class"] == 0
 
 
 def test_derive_predicted_class_preserves_existing_column() -> None:
-    local_frame = pd.DataFrame({
+    local_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1184,7 +1184,7 @@ def test_derive_predicted_class_preserves_existing_column() -> None:
         "predicted_class": [99],
     })
     augmented = subject.derive_predicted_class(local_frame)
-    assert augmented["predicted_class"].iloc[0] == 99
+    assert augmented[0, "predicted_class"] == 99
 
 
 def test_coerce_phase_two_args_uses_explicit_pg_dsn() -> None:
@@ -1244,8 +1244,8 @@ def test_run_phase_one_returns_smoke_message() -> None:
         deps={
             "pg_connector": MagicMock(),
             "local_inference_runner": MagicMock(),
-            "pandas_reader": MagicMock(),
-            "pandas_writer": MagicMock(),
+            "parquet_reader": MagicMock(),
+            "parquet_writer": MagicMock(),
             "subprocess_runner": MagicMock(),
             "clock_iso": lambda: "20260531T000000Z",
         },
@@ -1267,7 +1267,7 @@ def test_run_phase_two_e2e_passes_when_local_matches_prod(tmp_path: Path) -> Non
         "--year", "2026",
         "--phase", "phase2",
     ])
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra", "jra"],
         "kaisai_nen": ["2026", "2025"],
         "kaisai_tsukihi": ["0103", "0103"],
@@ -1276,7 +1276,7 @@ def test_run_phase_two_e2e_passes_when_local_matches_prod(tmp_path: Path) -> Non
         "ketto_toroku_bango": ["A", "Z"],
         "career_win_rate": [0.1, 0.5],
     })
-    output_frame = pd.DataFrame({
+    output_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1300,16 +1300,16 @@ def test_run_phase_two_e2e_passes_when_local_matches_prod(tmp_path: Path) -> Non
     connections[0].cursor.return_value = sample_cursor
     connections[1].cursor.return_value = prod_cursor
     connector = MagicMock(side_effect=connections)
-    pandas_reader = MagicMock(side_effect=[features, output_frame])
-    pandas_writer = MagicMock()
+    parquet_reader = MagicMock(side_effect=[features, output_frame])
+    parquet_writer = MagicMock()
     local_runner = MagicMock()
     outcome = subject.run(
         args,
         deps={
             "pg_connector": connector,
             "local_inference_runner": local_runner,
-            "pandas_reader": pandas_reader,
-            "pandas_writer": pandas_writer,
+            "parquet_reader": parquet_reader,
+            "parquet_writer": parquet_writer,
             "subprocess_runner": MagicMock(),
             "clock_iso": lambda: "20260531T000000Z",
         },
@@ -1321,7 +1321,7 @@ def test_run_phase_two_e2e_passes_when_local_matches_prod(tmp_path: Path) -> Non
     local_runner.assert_called_once()
     assert local_runner.call_args.kwargs["model_flatbin"] == "/tmp/model.flatbin"
     assert local_runner.call_args.kwargs["category"] == "jra"
-    pandas_writer.assert_called_once()
+    parquet_writer.assert_called_once()
 
 
 def test_run_phase_two_fails_when_diff_exceeds_tolerance(tmp_path: Path) -> None:
@@ -1337,7 +1337,7 @@ def test_run_phase_two_fails_when_diff_exceeds_tolerance(tmp_path: Path) -> None
         "--year", "2026",
         "--phase", "phase2",
     ])
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1346,7 +1346,7 @@ def test_run_phase_two_fails_when_diff_exceeds_tolerance(tmp_path: Path) -> None
         "ketto_toroku_bango": ["A"],
         "career_win_rate": [0.1],
     })
-    output_frame = pd.DataFrame({
+    output_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1373,8 +1373,8 @@ def test_run_phase_two_fails_when_diff_exceeds_tolerance(tmp_path: Path) -> None
         deps={
             "pg_connector": connector,
             "local_inference_runner": MagicMock(),
-            "pandas_reader": MagicMock(side_effect=[features, output_frame]),
-            "pandas_writer": MagicMock(),
+            "parquet_reader": MagicMock(side_effect=[features, output_frame]),
+            "parquet_writer": MagicMock(),
             "subprocess_runner": MagicMock(),
             "clock_iso": lambda: "20260531T000000Z",
         },
@@ -1398,7 +1398,7 @@ def test_run_phase_three_writes_json_report_and_no_mismatches(tmp_path: Path) ->
         "--phase", "phase3",
         "--report-dir", tmp_path.as_posix(),
     ])
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1407,7 +1407,7 @@ def test_run_phase_three_writes_json_report_and_no_mismatches(tmp_path: Path) ->
         "ketto_toroku_bango": ["A"],
         "career_win_rate": [0.1],
     })
-    output_frame = pd.DataFrame({
+    output_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1439,8 +1439,8 @@ def test_run_phase_three_writes_json_report_and_no_mismatches(tmp_path: Path) ->
         deps={
             "pg_connector": connector,
             "local_inference_runner": MagicMock(),
-            "pandas_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
-            "pandas_writer": MagicMock(),
+            "parquet_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
+            "parquet_writer": MagicMock(),
             "subprocess_runner": MagicMock(),
             "clock_iso": lambda: "20260531T000000Z",
         },
@@ -1465,7 +1465,7 @@ def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: 
         "--phase", "phase3",
         "--report-dir", tmp_path.as_posix(),
     ])
-    features = pd.DataFrame({
+    features = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1474,7 +1474,7 @@ def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: 
         "ketto_toroku_bango": ["A"],
         "career_win_rate": [0.1],
     })
-    output_frame = pd.DataFrame({
+    output_frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2026"],
         "kaisai_tsukihi": ["0103"],
@@ -1506,8 +1506,8 @@ def test_run_phase_three_dumps_mismatches_when_diff_exceeds_threshold(tmp_path: 
         deps={
             "pg_connector": connector,
             "local_inference_runner": MagicMock(),
-            "pandas_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
-            "pandas_writer": MagicMock(),
+            "parquet_reader": MagicMock(side_effect=[features, output_frame, output_frame]),
+            "parquet_writer": MagicMock(),
             "subprocess_runner": MagicMock(),
             "clock_iso": lambda: "20260531T000000Z",
         },

@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
-import pandas as pd
+import numpy as np
+import polars as pl
 
 import per_class_ensemble_lib as lib
 
@@ -87,8 +88,8 @@ class OptimizeArgs:
 class CandidateBundle:
     model_version: str
     parquet_dir: Path
-    validation_df: pd.DataFrame  # normalized
-    holdout_df: pd.DataFrame  # normalized
+    validation_df: pl.DataFrame  # normalized
+    holdout_df: pl.DataFrame  # normalized
 
 
 @dataclass(frozen=True)
@@ -133,7 +134,7 @@ class StudyLike(Protocol):
 
 if TYPE_CHECKING:
     CreateStudyFn = Callable[[int], StudyLike]
-    LoadRaceMetaFn = Callable[[str], pd.DataFrame]
+    LoadRaceMetaFn = Callable[[str], pl.DataFrame]
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +221,7 @@ def derive_model_version(parquet_dir: Path) -> str:
     return parquet_dir.name
 
 
-def default_load_race_meta(pg_url: str) -> pd.DataFrame:
+def default_load_race_meta(pg_url: str) -> pl.DataFrame:
     """Load (race_id, kyoso_joken_code) via DuckDB postgres_scanner."""
     duckdb_module = importlib.import_module("duckdb")
     con = duckdb_module.connect(":memory:")
@@ -233,7 +234,7 @@ def default_load_race_meta(pg_url: str) -> pd.DataFrame:
         )
         df = con.execute(
             f"SELECT * FROM postgres_query('pg', $$ {PG_RACE_META_SQL} $$)",
-        ).fetchdf()
+        ).pl()
     finally:
         con.close()
     return df
@@ -256,8 +257,8 @@ def load_normalized_member(
     parquet_dir: Path,
     class_code: str,
     years: "Sequence[int]",
-    pg_class_map_df: pd.DataFrame,
-) -> pd.DataFrame:
+    pg_class_map_df: pl.DataFrame,
+) -> pl.DataFrame:
     """Load member predictions for ``years``, class-filter, normalize within race."""
     root = _resolve_predictions_root(parquet_dir)
     raw = lib.load_class_predictions(root, class_code, years, pg_class_map_df)
@@ -267,13 +268,13 @@ def load_normalized_member(
 def _load_one_candidate(
     parquet_dir: Path,
     args: OptimizeArgs,
-    pg_class_map_df: pd.DataFrame,
+    pg_class_map_df: pl.DataFrame,
 ) -> CandidateBundle | None:
     model_version = derive_model_version(parquet_dir)
     val_df = load_normalized_member(
         parquet_dir, args.class_code, args.validation_years, pg_class_map_df,
     )
-    if val_df.empty:
+    if val_df.is_empty():
         sys.stderr.write(
             f"[optimize-per-class-ensemble] candidate {model_version!r} has no "
             "validation rows for class — dropped from search\n",
@@ -291,7 +292,7 @@ def _load_one_candidate(
 
 
 def build_bundles(
-    args: OptimizeArgs, pg_class_map_df: pd.DataFrame,
+    args: OptimizeArgs, pg_class_map_df: pl.DataFrame,
 ) -> list[CandidateBundle]:
     """Build the (baseline-first) ordered list of candidate bundles.
 
@@ -358,12 +359,12 @@ def evaluate_weights(
         (b.validation_df if use_validation else b.holdout_df)
         for b in bundles
     ]
-    if any(m.empty for m in members):
+    if any(m.is_empty() for m in members):
         return 0.0, 0
     blended = lib.blend_normalized(members, weights)
-    if blended.empty:
+    if blended.is_empty():
         return 0.0, 0
-    n_races = int(blended["race_id"].nunique())
+    n_races = int(blended["race_id"].n_unique())
     return lib.compute_top1(blended), n_races
 
 
@@ -437,11 +438,17 @@ def make_decision(
 # ---------------------------------------------------------------------------
 
 
-def _spearman_rho(left: pd.Series, right: pd.Series) -> float:
-    joined = pd.concat({"a": left, "b": right}, axis=1).dropna()
-    if joined.shape[0] < 2:
+def _spearman_rho(left: pl.Series, right: pl.Series) -> float:
+    joined = pl.DataFrame({"a": left, "b": right}).drop_nulls()
+    if joined.height < 2:
         return float("nan")
-    return float(joined["a"].rank().corr(joined["b"].rank(), method="pearson"))
+    ranks = joined.select(
+        pl.col("a").rank().alias("ra"),
+        pl.col("b").rank().alias("rb"),
+    )
+    ra = ranks["ra"].to_numpy()
+    rb = ranks["rb"].to_numpy()
+    return float(np.corrcoef(ra, rb)[0, 1])
 
 
 def compute_pairwise_correlations(
@@ -457,19 +464,18 @@ def compute_pairwise_correlations(
         for j in range(i + 1, n):
             left = bundles[i].holdout_df
             right = bundles[j].holdout_df
-            merged = left.merge(
-                right[["race_id", "ketto_toroku_bango", "normalized_score"]],
+            merged = left.join(
+                right.select(["race_id", "ketto_toroku_bango", "normalized_score"]),
                 on=["race_id", "ketto_toroku_bango"],
                 how="inner",
-                suffixes=("_left", "_right"),
             )
-            if merged.empty:
+            if merged.is_empty():
                 out[f"{bundles[i].model_version}__{bundles[j].model_version}"] = (
                     float("nan")
                 )
                 continue
             rho = _spearman_rho(
-                merged["normalized_score_left"], merged["normalized_score_right"],
+                merged["normalized_score"], merged["normalized_score_right"],
             )
             out[f"{bundles[i].model_version}__{bundles[j].model_version}"] = rho
     return out
@@ -486,9 +492,9 @@ def build_manifest(
     result: OptimizationResult,
 ) -> dict[str, object]:
     val_races = int(
-        pd.concat([b.validation_df for b in bundles], ignore_index=True)[
-            "race_id"
-        ].nunique()
+        pl.concat(
+            [b.validation_df for b in bundles], how="vertical",
+        )["race_id"].n_unique()
     )
     members_payload: list[dict[str, object]] = []
     for idx, bundle in enumerate(bundles):

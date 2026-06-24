@@ -23,8 +23,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-import numpy as np
-import pandas as pd
+import polars as pl
 import xgboost as xgb
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,7 +38,7 @@ from finish_position_xgboost import (  # noqa: E402
     DEFAULT_RELEVANCE_RANK3,
     build_group_sizes,
     load_parquet_dir,
-    make_to_relevance,
+    relevance_labels,
     resolve_feature_columns,
 )
 
@@ -66,28 +65,26 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def slice_train(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    mask = (
-        (df["race_date"] >= start)
-        & (df["race_date"] <= end)
-        & df["finish_position"].notna()
-    )
-    return df[mask].sort_values(["race_id", "umaban"]).reset_index(drop=True)
+def slice_train(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
+    return df.filter(
+        (pl.col("race_date") >= start)
+        & (pl.col("race_date") <= end)
+        & pl.col("finish_position").is_not_null()
+    ).sort(["race_id", "umaban"])
 
 
-def slice_predict(df: pd.DataFrame, predict_date: str) -> pd.DataFrame:
-    mask = df["race_date"] == predict_date
-    return df[mask].sort_values(["race_id", "umaban"]).reset_index(drop=True)
+def slice_predict(df: pl.DataFrame, predict_date: str) -> pl.DataFrame:
+    return df.filter(pl.col("race_date") == predict_date).sort(["race_id", "umaban"])
 
 
-def train_booster(args: argparse.Namespace, train_df: pd.DataFrame, feature_cols: list[str]) -> xgb.Booster:
-    to_rel = make_to_relevance(
+def train_booster(args: argparse.Namespace, train_df: pl.DataFrame, feature_cols: list[str]) -> xgb.Booster:
+    labels = relevance_labels(
+        train_df,
         args.relevance_rank1,
         args.relevance_rank2,
         args.relevance_rank3,
     )
-    labels = train_df["finish_position"].map(to_rel).to_numpy(dtype=np.int32)
-    dtrain = xgb.DMatrix(train_df[feature_cols], label=labels)
+    dtrain = xgb.DMatrix(train_df.select(feature_cols), label=labels)
     dtrain.set_group(build_group_sizes(train_df))
     params = {
         "objective": "rank:pairwise",
@@ -103,17 +100,20 @@ def train_booster(args: argparse.Namespace, train_df: pd.DataFrame, feature_cols
     return xgb.train(params, dtrain, num_boost_round=args.num_rounds, verbose_eval=50)
 
 
-def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
+def write_predictions_jsonl(valid_df: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = valid_df[["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]]
+    rows = valid_df.select(
+        ["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]
+    )
     with output_path.open("w", encoding="utf-8") as fp:
-        for row in rows.itertuples(index=False):
+        for row in rows.iter_rows(named=True):
+            umaban = row["umaban"]
             fp.write(json.dumps({
-                "race_id": row.race_id,
-                "ketto_toroku_bango": row.ketto_toroku_bango,
-                "umaban": int(cast(float, row.umaban)) if pd.notna(cast(float, row.umaban)) else None,
-                "predicted_score": float(cast(float, row.predicted_score)),
-                "predicted_rank": int(cast(float, row.predicted_rank)),
+                "race_id": row["race_id"],
+                "ketto_toroku_bango": row["ketto_toroku_bango"],
+                "umaban": int(cast(float, umaban)) if umaban is not None else None,
+                "predicted_score": float(cast(float, row["predicted_score"])),
+                "predicted_rank": int(cast(float, row["predicted_rank"])),
             }) + "\n")
 
 
@@ -123,24 +123,26 @@ def main() -> None:
     feature_cols = resolve_feature_columns(df)
     train_df = slice_train(df, args.train_start_date, args.train_end_date)
     predict_df = slice_predict(df, args.predict_date)
-    if len(train_df) == 0:
+    if train_df.height == 0:
         raise SystemExit(f"train slice empty for {args.train_start_date}-{args.train_end_date}")
-    if len(predict_df) == 0:
+    if predict_df.height == 0:
         raise SystemExit(f"predict slice empty for {args.predict_date}")
     booster = train_booster(args, train_df, feature_cols)
-    dpredict = xgb.DMatrix(predict_df[feature_cols])
+    dpredict = xgb.DMatrix(predict_df.select(feature_cols))
     scores = booster.predict(dpredict)
-    predict_df = predict_df.assign(predicted_score=scores)
-    predict_df["predicted_rank"] = (
-        predict_df.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False)
-        .astype(int)
+    predict_df = predict_df.with_columns(pl.Series("predicted_score", scores))
+    predict_df = predict_df.with_columns(
+        pl.col("predicted_score")
+        .rank(method="ordinal", descending=True)
+        .over("race_id")
+        .cast(pl.Int64)
+        .alias("predicted_rank")
     )
     write_predictions_jsonl(predict_df, args.output_jsonl)
     print(json.dumps({
-        "train_rows": len(train_df),
-        "predict_rows": len(predict_df),
-        "predict_races": predict_df["race_id"].nunique(),
+        "train_rows": train_df.height,
+        "predict_rows": predict_df.height,
+        "predict_races": predict_df["race_id"].n_unique(),
         "output_jsonl": str(args.output_jsonl),
     }, ensure_ascii=False))
 

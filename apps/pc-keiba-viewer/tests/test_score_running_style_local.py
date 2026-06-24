@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import score_running_style_local as subject
@@ -135,7 +135,7 @@ def test_default_path_exists_false_for_missing_file(tmp_path: Path) -> None:
 
 
 def test_select_race_key_frame_returns_only_race_key_columns() -> None:
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -157,7 +157,7 @@ def test_select_race_key_frame_returns_only_race_key_columns() -> None:
 
 
 def test_select_race_key_frame_skips_missing_columns() -> None:
-    frame = pd.DataFrame({"source": ["jra"], "race_bango": ["01"]})
+    frame = pl.DataFrame({"source": ["jra"], "race_bango": ["01"]})
     result = subject.select_race_key_frame(frame)
     assert list(result.columns) == ["source", "race_bango"]
 
@@ -166,22 +166,22 @@ def test_build_probability_frame_writes_four_columns() -> None:
     probs = np.array([[0.4, 0.3, 0.2, 0.1], [0.1, 0.2, 0.3, 0.4]])
     result = subject.build_probability_frame(probs)
     assert list(result.columns) == ["p_nige", "p_senkou", "p_sashi", "p_oikomi"]
-    assert list(result["p_nige"]) == [0.4, 0.1]
-    assert list(result["p_oikomi"]) == [0.1, 0.4]
+    assert result["p_nige"].to_list() == [0.4, 0.1]
+    assert result["p_oikomi"].to_list() == [0.1, 0.4]
 
 
 def test_attach_version_columns_sets_metadata_columns() -> None:
-    frame = pd.DataFrame({"p_nige": [0.6]})
+    frame = pl.DataFrame({"p_nige": [0.6]})
     result = subject.attach_version_columns(
         frame, feature_version="v1", model_version="jra-running-style-lgbm-prod-v1.5",
     )
-    assert list(result["running_style_feature_version"]) == ["v1"]
-    assert list(result["model_version"]) == ["jra-running-style-lgbm-prod-v1.5"]
+    assert result["running_style_feature_version"].to_list() == ["v1"]
+    assert result["model_version"].to_list() == ["jra-running-style-lgbm-prod-v1.5"]
 
 
 def test_score_frame_writes_race_key_probability_and_version_columns() -> None:
     booster = MagicMock()
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -217,7 +217,7 @@ def test_score_frame_writes_race_key_probability_and_version_columns() -> None:
 
 def test_score_frame_omits_predicted_class_columns() -> None:
     booster = MagicMock()
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -241,15 +241,15 @@ def test_score_frame_omits_predicted_class_columns() -> None:
 
 def test_score_frame_with_empty_frame_returns_empty_output() -> None:
     booster = MagicMock()
-    frame = pd.DataFrame({
-        "source": pd.Series([], dtype="object"),
-        "kaisai_nen": pd.Series([], dtype="object"),
-        "kaisai_tsukihi": pd.Series([], dtype="object"),
-        "keibajo_code": pd.Series([], dtype="object"),
-        "race_bango": pd.Series([], dtype="object"),
-        "ketto_toroku_bango": pd.Series([], dtype="object"),
-        "umaban": pd.Series([], dtype="int64"),
-        "speed_index_avg_5": pd.Series([], dtype="float64"),
+    frame = pl.DataFrame(schema={
+        "source": pl.Utf8,
+        "kaisai_nen": pl.Utf8,
+        "kaisai_tsukihi": pl.Utf8,
+        "keibajo_code": pl.Utf8,
+        "race_bango": pl.Utf8,
+        "ketto_toroku_bango": pl.Utf8,
+        "umaban": pl.Int64,
+        "speed_index_avg_5": pl.Float64,
     })
     with patch.object(
         subject, "predict_softmax",
@@ -265,15 +265,15 @@ def test_score_frame_with_empty_frame_returns_empty_output() -> None:
 
 def test_write_logits_parquet_creates_parent_dir(tmp_path: Path) -> None:
     output_path = (tmp_path / "logits" / "category=jra" / "race_year=2006" / "data_0.parquet").as_posix()
-    frame = MagicMock(spec=pd.DataFrame)
+    frame = MagicMock(spec=pl.DataFrame)
     subject.write_logits_parquet(frame, output_path)
-    frame.to_parquet.assert_called_once_with(output_path, index=False)
+    frame.write_parquet.assert_called_once_with(output_path)
     assert (tmp_path / "logits" / "category=jra" / "race_year=2006").is_dir()
 
 
 def test_run_loads_artifact_from_convention_path_and_writes_logits() -> None:
     booster_loader = MagicMock(return_value=MagicMock())
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -344,7 +344,7 @@ def _make_calibrators() -> RunningStyleCalibrators:
 def test_score_frame_with_calibrators_applies_calibration() -> None:
     """score_frame with calibrators should pass probabilities through apply_calibration."""
     booster = MagicMock()
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -371,13 +371,13 @@ def test_score_frame_with_calibrators_applies_calibration() -> None:
                 calibrators=_make_calibrators(),
             )
     apply_mock.assert_called_once()
-    assert float(result["p_nige"].iloc[0]) == pytest.approx(0.6)
+    assert float(result["p_nige"][0]) == pytest.approx(0.6)
 
 
 def test_score_frame_without_calibrators_skips_calibration() -> None:
     """score_frame with calibrators=None must not call apply_calibration."""
     booster = MagicMock()
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -438,7 +438,7 @@ def testtry_load_calibrators_returns_calibrators_when_present(tmp_path: Path) ->
 def test_run_passes_calibrators_when_present(tmp_path: Path) -> None:
     """run() should attempt to load calibrators and pass them to score_frame."""
     booster_loader = MagicMock(return_value=MagicMock())
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -473,7 +473,7 @@ def test_run_passes_calibrators_when_present(tmp_path: Path) -> None:
 def test_run_passes_none_calibrators_when_absent() -> None:
     """run() should pass calibrators=None to score_frame when file does not exist."""
     booster_loader = MagicMock(return_value=MagicMock())
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -508,7 +508,7 @@ def test_run_passes_none_calibrators_when_absent() -> None:
 def test_score_frame_passes_detected_categoricals_to_predict_softmax() -> None:
     """score_frame must call detect_categorical_features and pass the result to predict_softmax."""
     booster = MagicMock()
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "source": ["jra"],
         "kaisai_nen": ["2024"],
         "kaisai_tsukihi": ["0101"],
@@ -535,7 +535,7 @@ def test_score_frame_passes_detected_categoricals_to_predict_softmax() -> None:
     assert called_categoricals == detected_cats
 
 
-def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
+def test_main_uses_lightgbm_booster_and_polars_read_parquet() -> None:
     fake_booster = MagicMock()
     argv = [
         "--features-parquet", "/tmp/feat.parquet",
@@ -544,13 +544,13 @@ def test_main_uses_lightgbm_booster_and_pandas_read_parquet() -> None:
         "--running-style-feature-version", "v1",
         "--category", "jra",
     ]
-    frame = pd.DataFrame({"x": [1]})
+    frame = pl.DataFrame({"x": [1]})
     with patch("lightgbm.Booster", return_value=fake_booster) as booster_mock:
         with patch.object(subject, "default_path_exists", return_value=True):
             with patch.object(subject, "try_load_calibrators", return_value=None):
                 with patch.object(subject, "score_frame", return_value=frame):
                     with patch.object(subject, "write_logits_parquet"):
-                        with patch.object(pd, "read_parquet", return_value=frame):
+                        with patch.object(pl, "read_parquet", return_value=frame):
                             subject.main(argv)
     invoked_path = booster_mock.call_args.kwargs["model_file"]
     assert invoked_path.endswith("tmp/models/jra-running-style-lgbm-prod-v1.5/model.txt")

@@ -27,7 +27,7 @@ import mlx.core as mx
 import mlx.nn as nn  # pyright: ignore[reportMissingTypeStubs]
 import mlx.optimizers as opt  # pyright: ignore[reportMissingTypeStubs]
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from finish_position_transformer.dataset import (
     MAX_RUNNERS,
@@ -109,41 +109,48 @@ def default_training_params() -> TrainingParams:
     }
 
 
-def _read_partitioned_parquet(child: Path) -> pd.DataFrame:
-    frame = pd.read_parquet(child)
+def _read_partitioned_parquet(child: Path) -> pl.DataFrame:
+    frame = pl.read_parquet(child)
     if "race_year" not in frame.columns:
         year_token = child.parent.name
         if year_token.startswith("race_year="):
-            frame["race_year"] = int(year_token.split("=", 1)[1])
+            frame = frame.with_columns(
+                pl.lit(int(year_token.split("=", 1)[1])).alias("race_year")
+            )
     return frame
 
 
-def load_dataset_parquet(path: Path) -> pd.DataFrame:
+def load_dataset_parquet(path: Path) -> pl.DataFrame:
     if path.is_dir():
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
-            return pd.concat(
-                [_read_partitioned_parquet(child) for child in partitioned], ignore_index=True
+            return pl.concat(
+                [_read_partitioned_parquet(child) for child in partitioned], how="diagonal_relaxed"
             )
         flat = sorted(path.glob("*.parquet"))
         if flat:
-            return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
+            return pl.concat(
+                [pl.read_parquet(child) for child in flat], how="diagonal_relaxed"
+            )
         raise ValueError(f"No parquet files found under {path}")
-    return pd.read_parquet(path)
+    return pl.read_parquet(path)
 
 
-def split_by_year(df: pd.DataFrame, train_start: str, valid_year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_start_date = pd.to_datetime(train_start)
-    race_date = pd.to_datetime(df["race_date"], format="%Y%m%d")
-    train_mask = (race_date >= train_start_date) & (df["race_year"] < valid_year)
-    valid_mask = df["race_year"] == valid_year
-    return df[train_mask].reset_index(drop=True), df[valid_mask].reset_index(drop=True)
+def split_by_year(df: pl.DataFrame, train_start: str, valid_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+    race_date = pl.col("race_date").str.to_datetime("%Y%m%d")
+    train_mask = (race_date >= pl.lit(train_start).str.to_datetime("%Y%m%d")) & (
+        pl.col("race_year") < valid_year
+    )
+    valid_mask = pl.col("race_year") == valid_year
+    return df.filter(train_mask), df.filter(valid_mask)
 
 
-def extract_running_style_targets(df: pd.DataFrame, race_ids: list[str]) -> np.ndarray:
-    by_race_dict: dict[str, pd.DataFrame] = {
+def extract_running_style_targets(df: pl.DataFrame, race_ids: list[str]) -> np.ndarray:
+    by_race_dict: dict[str, pl.DataFrame] = {
         str(race_id): df_part
-        for race_id, df_part in df.sort_values(["race_id", "umaban"]).groupby("race_id")
+        for (race_id,), df_part in df.sort(["race_id", "umaban"]).group_by(
+            ["race_id"], maintain_order=True
+        )
     }
     num_races = len(race_ids)
     targets = np.full((num_races, MAX_RUNNERS), PAD_TARGET_CLASS, dtype=np.int32)
@@ -151,10 +158,10 @@ def extract_running_style_targets(df: pd.DataFrame, race_ids: list[str]) -> np.n
         group = by_race_dict.get(race_id)
         if group is None:
             continue
-        for slot, raw in enumerate(group[TARGET_COLUMN].tolist()):
+        for slot, raw in enumerate(group[TARGET_COLUMN].to_list()):
             if slot >= MAX_RUNNERS:
                 break
-            if raw is None or pd.isna(raw):
+            if raw is None:
                 continue
             targets[race_idx, slot] = int(raw)
     return targets
@@ -318,8 +325,8 @@ def evaluate_validation_loss(
 
 
 def train_one_fold(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     params: TrainingParams,
 ) -> tuple[RunningStyleTransformer, NormalizationStats, np.ndarray, np.ndarray, RaceBatchArrays, int]:
     feature_columns = resolve_running_style_feature_columns(list(train_df.columns))
@@ -403,18 +410,38 @@ def _sanitize_float(value: float | None) -> float | None:
     return float(value)
 
 
+def _build_valid_lookup(
+    valid_df: pl.DataFrame,
+) -> dict[tuple[str, str], tuple[object, object, object]]:
+    lookup: dict[tuple[str, str], tuple[object, object, object]] = {}
+    for record in valid_df.select(
+        ["race_id", "ketto_toroku_bango", TARGET_COLUMN, "umaban", "race_year"]
+    ).iter_rows(named=True):
+        key = (str(record["race_id"]), str(record["ketto_toroku_bango"]))
+        if key in lookup:
+            continue
+        lookup[key] = (record[TARGET_COLUMN], record["umaban"], record["race_year"])
+    return lookup
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    return int(cast(float, value))
+
+
 def build_predictions_df(
-    valid_df: pd.DataFrame,
+    valid_df: pl.DataFrame,
     valid_arrays: RaceBatchArrays,
     probabilities: np.ndarray,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     race_ids = valid_arrays["race_ids"]
     mask = valid_arrays["mask"]
     ketto = valid_arrays["ketto_toroku_bango"]
-    valid_lookup = valid_df.set_index(["race_id", "ketto_toroku_bango"])[
-        [TARGET_COLUMN, "umaban", "race_year"]
-    ]
+    valid_lookup = _build_valid_lookup(valid_df)
     for race_idx, race_id in enumerate(race_ids):
         for slot in range(MAX_RUNNERS):
             if not mask[race_idx, slot]:
@@ -424,27 +451,17 @@ def build_predictions_df(
                 continue
             probs = probabilities[race_idx, slot]
             predicted_class = int(np.argmax(probs))
-            try:
-                row_raw = valid_lookup.loc[(race_id, horse_id)]
-            except KeyError:
+            found = valid_lookup.get((str(race_id), str(horse_id)))
+            if found is None:
                 continue
-            if isinstance(row_raw, pd.DataFrame):
-                row = row_raw.iloc[0]
-            else:
-                row = cast("pd.Series", row_raw)
-            target_raw = cast(float, row[TARGET_COLUMN])
-            target_value: int | None = None if pd.isna(target_raw) else int(target_raw)
-            umaban_raw = cast(float, row["umaban"])
-            umaban_value = None if pd.isna(umaban_raw) else int(umaban_raw)
-            race_year_raw = cast(float, row["race_year"])
-            race_year_value = None if pd.isna(race_year_raw) else int(race_year_raw)
+            target_raw, umaban_raw, race_year_raw = found
             rows.append(
                 {
                     "race_id": race_id,
                     "ketto_toroku_bango": horse_id,
-                    "umaban": umaban_value,
-                    "race_year": race_year_value,
-                    TARGET_COLUMN: target_value,
+                    "umaban": _optional_int(umaban_raw),
+                    "race_year": _optional_int(race_year_raw),
+                    TARGET_COLUMN: _optional_int(target_raw),
                     PROBABILITY_COLUMNS[0]: _sanitize_float(float(probs[0])),
                     PROBABILITY_COLUMNS[1]: _sanitize_float(float(probs[1])),
                     PROBABILITY_COLUMNS[2]: _sanitize_float(float(probs[2])),
@@ -453,25 +470,29 @@ def build_predictions_df(
                     "predicted_class": predicted_class,
                 }
             )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
-def compute_accuracy(predictions: pd.DataFrame) -> float:
-    labeled = predictions.dropna(subset=[TARGET_COLUMN])
+def compute_accuracy(predictions: pl.DataFrame) -> float:
+    labeled = predictions.drop_nulls(subset=[TARGET_COLUMN])
     if len(labeled) == 0:
         return float("nan")
-    correct = (labeled[TARGET_COLUMN].astype(int) == labeled["predicted_class"].astype(int)).sum()
+    target = labeled[TARGET_COLUMN].cast(pl.Int64)
+    predicted = labeled["predicted_class"].cast(pl.Int64)
+    correct = int((target == predicted).sum())
     return float(correct / len(labeled))
 
 
-def compute_macro_f1(predictions: pd.DataFrame) -> float:
-    labeled = predictions.dropna(subset=[TARGET_COLUMN])
+def compute_macro_f1(predictions: pl.DataFrame) -> float:
+    labeled = predictions.drop_nulls(subset=[TARGET_COLUMN])
     if len(labeled) == 0:
         return float("nan")
+    target = labeled[TARGET_COLUMN].cast(pl.Int64)
+    predicted = labeled["predicted_class"].cast(pl.Int64)
     f1_values: list[float] = []
     for class_idx in range(NUM_CLASSES):
-        actual_mask = labeled[TARGET_COLUMN].astype(int) == class_idx
-        predicted_mask = labeled["predicted_class"].astype(int) == class_idx
+        actual_mask = target == class_idx
+        predicted_mask = predicted == class_idx
         tp = int((actual_mask & predicted_mask).sum())
         predicted_count = int(predicted_mask.sum())
         actual_count = int(actual_mask.sum())
@@ -483,10 +504,10 @@ def compute_macro_f1(predictions: pd.DataFrame) -> float:
     return float(np.mean(f1_values)) if f1_values else float("nan")
 
 
-def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> None:
+def write_predictions_jsonl(predictions: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
-        for record in predictions.to_dict(orient="records"):
+        for record in predictions.iter_rows(named=True):
             sanitized: dict[str, object] = {}
             for key, value in record.items():
                 key_str = str(key)
@@ -535,7 +556,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
     params["seed"] = args.seed
     validation_years = parse_validation_years(args.validation_years)
     folds: list[FoldMetrics] = []
-    all_predictions: list[pd.DataFrame] = []
+    all_predictions: list[pl.DataFrame] = []
     for valid_year in validation_years:
         train_df, valid_df = split_by_year(df, args.train_start_date, valid_year)
         fold_started = perf_counter()
@@ -559,7 +580,7 @@ def run_walk_forward(args: argparse.Namespace) -> None:
             "fold": fold_metrics,
             "fold_elapsed_seconds": perf_counter() - fold_started,
         }))
-    combined = pd.concat(all_predictions, ignore_index=True)
+    combined = pl.concat(all_predictions, how="diagonal_relaxed")
     range_label = f"{validation_years[0]}-{validation_years[-1]}"
     output_jsonl = args.output_predictions_dir / f"{range_label}.jsonl"
     write_predictions_jsonl(combined, output_jsonl)

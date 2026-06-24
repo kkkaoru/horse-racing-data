@@ -14,7 +14,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import tune_finish_position_jra_cb as mod
@@ -45,7 +45,7 @@ def test_to_relevance_rank_other_returns_zero() -> None:
 
 
 def test_resolve_feature_columns_drops_meta_and_label() -> None:
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": ["r1"],
             "finish_position": [1.0],
@@ -57,7 +57,7 @@ def test_resolve_feature_columns_drops_meta_and_label() -> None:
 
 
 def test_resolve_feature_columns_drops_bool_and_object() -> None:
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "feature_a": [0.5],
             "is_flag": [True],
@@ -68,7 +68,7 @@ def test_resolve_feature_columns_drops_bool_and_object() -> None:
 
 
 def test_resolve_feature_columns_drops_extra_non_feature() -> None:
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "feature_a": [0.5],
             "target_race_id": ["r1"],
@@ -94,39 +94,39 @@ def test_load_year_parquet_empty_year_dir(tmp_path: Path) -> None:
 def test_load_year_parquet_single_file(tmp_path: Path) -> None:
     year_dir = tmp_path / "race_year=2024"
     year_dir.mkdir(parents=True)
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["h1", "h2"],
             "finish_position": [1.0, 2.0],
         },
     )
-    df.to_parquet(year_dir / "data_0.parquet", index=False)
+    df.write_parquet(year_dir / "data_0.parquet")
     loaded = mod.load_year_parquet(tmp_path, 2024)
     assert loaded is not None
-    assert int(loaded["race_year"].iloc[0]) == 2024
+    assert int(loaded["race_year"][0]) == 2024
     assert len(loaded) == 2
 
 
 def test_load_year_parquet_multi_file_concat(tmp_path: Path) -> None:
     year_dir = tmp_path / "race_year=2024"
     year_dir.mkdir(parents=True)
-    df1 = pd.DataFrame(
+    df1 = pl.DataFrame(
         {
             "race_id": ["r1"],
             "ketto_toroku_bango": ["h1"],
             "finish_position": [1.0],
         },
     )
-    df2 = pd.DataFrame(
+    df2 = pl.DataFrame(
         {
             "race_id": ["r2"],
             "ketto_toroku_bango": ["h2"],
             "finish_position": [1.0],
         },
     )
-    df1.to_parquet(year_dir / "data_0.parquet", index=False)
-    df2.to_parquet(year_dir / "data_1.parquet", index=False)
+    df1.write_parquet(year_dir / "data_0.parquet")
+    df2.write_parquet(year_dir / "data_1.parquet")
     loaded = mod.load_year_parquet(tmp_path, 2024)
     assert loaded is not None
     assert len(loaded) == 2
@@ -135,14 +135,14 @@ def test_load_year_parquet_multi_file_concat(tmp_path: Path) -> None:
 def test_load_year_parquet_dedups_duplicate_rows(tmp_path: Path) -> None:
     year_dir = tmp_path / "race_year=2024"
     year_dir.mkdir(parents=True)
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["h1", "h1"],
             "finish_position": [1.0, 1.0],
         },
     )
-    df.to_parquet(year_dir / "data_0.parquet", index=False)
+    df.write_parquet(year_dir / "data_0.parquet")
     loaded = mod.load_year_parquet(tmp_path, 2024)
     assert loaded is not None
     assert len(loaded) == 1
@@ -160,20 +160,20 @@ def test_load_bucket_year_empty_dir(tmp_path: Path) -> None:
 def test_load_bucket_year_returns_first_file(tmp_path: Path) -> None:
     year_dir = tmp_path / "category=jra" / "race_year=2024"
     year_dir.mkdir(parents=True)
-    df = pd.DataFrame({"race_id": ["r1"], "bucket_grade_code": ["A"]})
-    df.to_parquet(year_dir / "membership.parquet", index=False)
+    df = pl.DataFrame({"race_id": ["r1"], "bucket_grade_code": ["A"]})
+    df.write_parquet(year_dir / "membership.parquet")
     loaded = mod.load_bucket_year(tmp_path, 2024)
     assert loaded is not None
     assert list(loaded["bucket_grade_code"]) == ["A"]
 
 
 def test_build_group_sizes_single_race() -> None:
-    df = pd.DataFrame({"race_id": ["r1", "r1", "r1"]})
+    df = pl.DataFrame({"race_id": ["r1", "r1", "r1"]})
     assert mod.build_group_sizes(df) == [3]
 
 
 def test_build_group_sizes_multi_race() -> None:
-    df = pd.DataFrame({"race_id": ["r1", "r1", "r2"]})
+    df = pl.DataFrame({"race_id": ["r1", "r1", "r2"]})
     assert mod.build_group_sizes(df) == [2, 1]
 
 
@@ -264,14 +264,14 @@ def test_compute_worst_bucket_ndcg_with_support() -> None:
 
 
 def test_assert_no_race_overlap_clean() -> None:
-    train_df = pd.DataFrame({"race_id": ["r1", "r2"]})
-    valid_df = pd.DataFrame({"race_id": ["r3"]})
+    train_df = pl.DataFrame({"race_id": ["r1", "r2"]})
+    valid_df = pl.DataFrame({"race_id": ["r3"]})
     mod.assert_no_race_overlap(train_df, valid_df)
 
 
 def test_assert_no_race_overlap_raises() -> None:
-    train_df = pd.DataFrame({"race_id": ["r1", "r2"]})
-    valid_df = pd.DataFrame({"race_id": ["r2"]})
+    train_df = pl.DataFrame({"race_id": ["r1", "r2"]})
+    valid_df = pl.DataFrame({"race_id": ["r2"]})
     with pytest.raises(AssertionError):
         mod.assert_no_race_overlap(train_df, valid_df)
 
@@ -279,7 +279,7 @@ def test_assert_no_race_overlap_raises() -> None:
 def _write_year_parquet(root: Path, year: int, race_ids: list[str]) -> None:
     year_dir = root / f"race_year={year}"
     year_dir.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": race_ids,
             "ketto_toroku_bango": [f"h{i}" for i in range(len(race_ids))],
@@ -289,7 +289,7 @@ def _write_year_parquet(root: Path, year: int, race_ids: list[str]) -> None:
             "feature_b": [float(i) * 0.2 for i in range(len(race_ids))],
         },
     )
-    df.to_parquet(year_dir / "data_0.parquet", index=False)
+    df.write_parquet(year_dir / "data_0.parquet")
 
 
 def test_build_fold_frames_returns_correct_shape(tmp_path: Path) -> None:
@@ -333,9 +333,9 @@ def test_build_fold_frames_with_bucket(tmp_path: Path) -> None:
     _write_year_parquet(features_root, 2024, ["r2024a"])
     bucket_dir = bucket_root / "category=jra" / "race_year=2024"
     bucket_dir.mkdir(parents=True)
-    pd.DataFrame(
+    pl.DataFrame(
         {"race_id": ["r2024a"], "bucket_grade_code": ["A"]},
-    ).to_parquet(bucket_dir / "membership.parquet", index=False)
+    ).write_parquet(bucket_dir / "membership.parquet")
     frames = mod.build_fold_frames(
         features_root, bucket_root, (2023, 2024), 2024, ["feature_a", "feature_b"],
     )
@@ -351,7 +351,7 @@ def test_build_fold_frames_leave_one_year_out_includes_future_non_held_years(tmp
     frames = mod.build_fold_frames(
         features_root, None, (2023, 2024, 2025), 2023, ["feature_a"],
     )
-    train_race_ids = set(frames.train_df["race_id"].tolist())
+    train_race_ids = set(frames.train_df["race_id"].to_list())
     assert "r2023a" not in train_race_ids
     assert "r2024a" in train_race_ids
     assert "r2025a" in train_race_ids
@@ -362,7 +362,7 @@ def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> No
     # Train year only has feature_a; valid (held-out) year has feature_a + feature_new
     train_dir = features_root / "race_year=2023"
     train_dir.mkdir(parents=True)
-    pd.DataFrame(
+    pl.DataFrame(
         {
             "race_id": ["r2023a"],
             "ketto_toroku_bango": ["h0"],
@@ -370,10 +370,10 @@ def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> No
             "finish_position": [1.0],
             "feature_a": [0.1],
         },
-    ).to_parquet(train_dir / "data_0.parquet", index=False)
+    ).write_parquet(train_dir / "data_0.parquet")
     valid_dir = features_root / "race_year=2024"
     valid_dir.mkdir(parents=True)
-    pd.DataFrame(
+    pl.DataFrame(
         {
             "race_id": ["r2024a"],
             "ketto_toroku_bango": ["h1"],
@@ -382,7 +382,7 @@ def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> No
             "feature_a": [0.2],
             "feature_new": [0.3],
         },
-    ).to_parquet(valid_dir / "data_0.parquet", index=False)
+    ).write_parquet(valid_dir / "data_0.parquet")
     frames = mod.build_fold_frames(
         features_root, None, (2023, 2024), 2024, ["feature_a", "feature_new"],
     )
@@ -390,28 +390,28 @@ def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> No
 
 
 def test_attach_bucket_keys_no_bucket_returns_all_default() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1", "r1", "r2"]})
+    valid_df = pl.DataFrame({"race_id": ["r1", "r1", "r2"]})
     keys = mod.attach_bucket_keys(valid_df, None)
     assert keys == ["__all__", "__all__"]
 
 
 def test_attach_bucket_keys_bucket_missing_race_id() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1", "r1", "r2"]})
-    bucket_df = pd.DataFrame({"some_other_col": ["x"]})
+    valid_df = pl.DataFrame({"race_id": ["r1", "r1", "r2"]})
+    bucket_df = pl.DataFrame({"some_other_col": ["x"]})
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
     assert keys == ["__all__", "__all__"]
 
 
 def test_attach_bucket_keys_no_recognized_key_col() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1", "r2"]})
-    bucket_df = pd.DataFrame({"race_id": ["r1", "r2"], "irrelevant": ["x", "y"]})
+    valid_df = pl.DataFrame({"race_id": ["r1", "r2"]})
+    bucket_df = pl.DataFrame({"race_id": ["r1", "r2"], "irrelevant": ["x", "y"]})
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
     assert keys == ["__all__", "__all__"]
 
 
 def test_attach_bucket_keys_uses_bucket_grade_code() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1", "r2", "r3"]})
-    bucket_df = pd.DataFrame(
+    valid_df = pl.DataFrame({"race_id": ["r1", "r2", "r3"]})
+    bucket_df = pl.DataFrame(
         {"race_id": ["r1", "r2", "r3"], "bucket_grade_code": ["A", "B", "A"]},
     )
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
@@ -419,8 +419,8 @@ def test_attach_bucket_keys_uses_bucket_grade_code() -> None:
 
 
 def test_attach_bucket_keys_unknown_race_gets_unknown_key() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1", "r99"]})
-    bucket_df = pd.DataFrame(
+    valid_df = pl.DataFrame({"race_id": ["r1", "r99"]})
+    bucket_df = pl.DataFrame(
         {"race_id": ["r1"], "bucket_grade_code": ["A"]},
     )
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
@@ -428,8 +428,8 @@ def test_attach_bucket_keys_unknown_race_gets_unknown_key() -> None:
 
 
 def test_attach_bucket_keys_uses_grade_code_fallback() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1"]})
-    bucket_df = pd.DataFrame(
+    valid_df = pl.DataFrame({"race_id": ["r1"]})
+    bucket_df = pl.DataFrame(
         {"race_id": ["r1"], "grade_code": ["C"]},
     )
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
@@ -437,8 +437,8 @@ def test_attach_bucket_keys_uses_grade_code_fallback() -> None:
 
 
 def test_attach_bucket_keys_uses_kyoso_joken_code_fallback() -> None:
-    valid_df = pd.DataFrame({"race_id": ["r1"]})
-    bucket_df = pd.DataFrame(
+    valid_df = pl.DataFrame({"race_id": ["r1"]})
+    bucket_df = pl.DataFrame(
         {"race_id": ["r1"], "kyoso_joken_code": ["KJ"]},
     )
     keys = mod.attach_bucket_keys(valid_df, bucket_df)
@@ -493,14 +493,14 @@ def test_enforce_stability_floor_defaults_when_missing() -> None:
 
 
 def test_train_cb_fold_invokes_cb_and_returns_array() -> None:
-    train_df = pd.DataFrame(
+    train_df = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r2", "r2"],
             "finish_position": [1.0, 2.0, 1.0, 2.0],
             "feature_a": [0.1, 0.2, 0.3, 0.4],
         },
     )
-    valid_df = pd.DataFrame(
+    valid_df = pl.DataFrame(
         {
             "race_id": ["r3", "r3"],
             "finish_position": [1.0, 2.0],
@@ -529,14 +529,14 @@ def test_train_cb_fold_invokes_cb_and_returns_array() -> None:
 
 
 def test_evaluate_params_aggregates_across_folds() -> None:
-    valid_df_2024 = pd.DataFrame(
+    valid_df_2024 = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "finish_position": [1.0, 2.0],
             "feature_a": [0.5, 0.6],
         },
     )
-    train_df_2024 = pd.DataFrame(
+    train_df_2024 = pl.DataFrame(
         {
             "race_id": ["r99"],
             "finish_position": [1.0],
@@ -553,8 +553,8 @@ def test_evaluate_params_aggregates_across_folds() -> None:
         )
 
     def fake_train(
-        train: pd.DataFrame,
-        valid: pd.DataFrame,
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
         feats: list[str],
         p: Mapping[str, object],
         seed: int,
@@ -570,8 +570,8 @@ def test_evaluate_params_aggregates_across_folds() -> None:
 
 
 def test_evaluate_params_skips_fold_with_no_features() -> None:
-    train_df = pd.DataFrame({"race_id": ["r1"], "finish_position": [1.0]})
-    valid_df = pd.DataFrame({"race_id": ["r2"], "finish_position": [1.0]})
+    train_df = pl.DataFrame({"race_id": ["r1"], "finish_position": [1.0]})
+    valid_df = pl.DataFrame({"race_id": ["r2"], "finish_position": [1.0]})
 
     def fake_fold_frames(held_out: int, cols: list[str]) -> mod.FoldFrames:
         return mod.FoldFrames(
@@ -579,8 +579,8 @@ def test_evaluate_params_skips_fold_with_no_features() -> None:
         )
 
     def fake_train(
-        train: pd.DataFrame,
-        valid: pd.DataFrame,
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
         feats: list[str],
         p: Mapping[str, object],
         seed: int,
@@ -694,8 +694,8 @@ def test_run_study_writes_outputs(tmp_path: Path) -> None:
     )
 
     def fake_train(
-        train: pd.DataFrame,
-        valid: pd.DataFrame,
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
         feats: list[str],
         p: Mapping[str, object],
         seed: int,
@@ -742,13 +742,13 @@ def test_run_study_unions_feature_columns_across_all_cv_years(tmp_path: Path) ->
         }
         if has_feature_c:
             row["feature_c"] = [0.9, 1.0]
-        pd.DataFrame(row).to_parquet(year_dir / "data_0.parquet", index=False)
+        pl.DataFrame(row).write_parquet(year_dir / "data_0.parquet")
 
     discovered_cols: list[list[str]] = []
 
     def fake_train(
-        train: pd.DataFrame,
-        valid: pd.DataFrame,
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
         feats: list[str],
         p: Mapping[str, object],
         seed: int,
@@ -788,8 +788,8 @@ def test_main_returns_zero(tmp_path: Path) -> None:
     ]
 
     def fake_train(
-        train: pd.DataFrame,
-        valid: pd.DataFrame,
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
         feats: list[str],
         p: Mapping[str, object],
         seed: int,

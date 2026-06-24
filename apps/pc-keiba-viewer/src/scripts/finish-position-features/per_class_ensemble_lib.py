@@ -6,7 +6,7 @@ Used by:
 - eval-per-class-ensemble.py (manifest evaluator, future)
 
 All public functions are deterministic. Parquet reading is allowed for the
-``load_*`` helpers; everything else is pure pandas/numpy / Python.
+``load_*`` helpers; everything else is pure polars/numpy / Python.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -38,6 +38,7 @@ _RACE_ID_COL: Final[str] = "race_id"
 _HORSE_COL: Final[str] = "ketto_toroku_bango"
 _ACTUAL_COL: Final[str] = "actual_finish_position"
 _BLENDED_COL: Final[str] = "blended_score"
+_RANK_COL: Final[str] = "_within_rank"
 _TOPK_BOX_SIZE: Final[int] = 3
 _DEFAULT_BLENDED_PLACE_K_BOUNDS: Final[tuple[int, int]] = (1, 99)
 _PLACE_METRIC: Final[str] = "place"
@@ -50,21 +51,21 @@ def is_other_class(class_code: str) -> bool:
 
 
 def class_filter_mask(
-    kyoso_joken_codes: pd.Series, class_code: str,
-) -> pd.Series:
+    kyoso_joken_codes: pl.Series, class_code: str,
+) -> pl.Series:
     """Boolean mask selecting rows matching ``class_code``.
 
     For 'other': NOT IN ``KNOWN_CLASS_CODES``, also includes NaN/null.
     For a named class (e.g. '005'): exact string match.
     """
     if is_other_class(class_code):
-        is_known = kyoso_joken_codes.isin(KNOWN_CLASS_CODES)
-        is_null = kyoso_joken_codes.isna()
-        return cast(pd.Series, (~is_known) | is_null)
-    return cast(pd.Series, kyoso_joken_codes == class_code)
+        is_known = kyoso_joken_codes.is_in(list(KNOWN_CLASS_CODES))
+        is_null = kyoso_joken_codes.is_null()
+        return (~is_known) | is_null
+    return (kyoso_joken_codes == class_code).fill_null(False)
 
 
-def _read_year_parquet(parquet_root: Path, year: int) -> pd.DataFrame | None:
+def _read_year_parquet(parquet_root: Path, year: int) -> pl.DataFrame | None:
     """Read the (single-or-multi-file) parquet partition for ``year``.
 
     Returns None if no parquet files are found under ``race_year=<year>``.
@@ -75,18 +76,18 @@ def _read_year_parquet(parquet_root: Path, year: int) -> pd.DataFrame | None:
     files = sorted(glob.glob(str(year_dir / "*.parquet")))
     if not files:
         return None
-    parts = [pd.read_parquet(f) for f in files]
+    parts = [pl.read_parquet(f) for f in files]
     if len(parts) == 1:
         return parts[0]
-    return pd.concat(parts, ignore_index=True)
+    return pl.concat(parts, how="vertical")
 
 
 def load_class_predictions(
     parquet_root: Path,
     class_code: str,
     years: "Iterable[int]",
-    pg_class_map_df: pd.DataFrame,
-) -> pd.DataFrame:
+    pg_class_map_df: pl.DataFrame,
+) -> pl.DataFrame:
     """Load predictions for ``years``, filter to ``class_code``.
 
     ``parquet_root`` must point at a directory whose direct children are
@@ -101,25 +102,30 @@ def load_class_predictions(
     output_cols = [
         _RACE_ID_COL, _HORSE_COL, _PREDICTED_SCORE_COL, _ACTUAL_COL,
     ]
-    frames: list[pd.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     for year in years:
         chunk = _read_year_parquet(parquet_root, int(year))
-        if chunk is None or chunk.empty:
+        if chunk is None or chunk.is_empty():
             continue
         frames.append(chunk)
     if not frames:
-        return pd.DataFrame(columns=output_cols)
-    joined = pd.concat(frames, ignore_index=True)
-    keyed_map = pg_class_map_df[[_RACE_ID_COL, "kyoso_joken_code"]].drop_duplicates(
-        subset=[_RACE_ID_COL],
-    )
-    merged = joined.merge(keyed_map, on=_RACE_ID_COL, how="left")
+        return pl.DataFrame(schema={
+            _RACE_ID_COL: pl.Utf8,
+            _HORSE_COL: pl.Utf8,
+            _PREDICTED_SCORE_COL: pl.Float64,
+            _ACTUAL_COL: pl.Int64,
+        })
+    joined = pl.concat(frames, how="vertical")
+    keyed_map = pg_class_map_df.select(
+        [_RACE_ID_COL, "kyoso_joken_code"],
+    ).unique(subset=[_RACE_ID_COL], keep="first")
+    merged = joined.join(keyed_map, on=_RACE_ID_COL, how="left")
     mask = class_filter_mask(merged["kyoso_joken_code"], class_code)
-    filtered = merged[mask]
-    return filtered[output_cols].reset_index(drop=True)
+    filtered = merged.filter(mask)
+    return filtered.select(output_cols)
 
 
-def normalize_within_race(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_within_race(df: pl.DataFrame) -> pl.DataFrame:
     """Attach ``normalized_score`` to each row, ranked within race.
 
     Sort by ``predicted_score`` descending within race; tiebreak by
@@ -131,30 +137,27 @@ def normalize_within_race(df: pd.DataFrame) -> pd.DataFrame:
     callers should rejoin on ``(race_id, ketto_toroku_bango)`` if they need
     the original input order.
     """
-    if df.empty:
-        out = df.copy()
-        out[_NORMALIZED_SCORE_COL] = pd.Series([], dtype=np.float64)
-        return out
-    ordered = df.sort_values(
+    if df.is_empty():
+        return df.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias(_NORMALIZED_SCORE_COL),
+        )
+    ordered = df.sort(
         by=[_RACE_ID_COL, _PREDICTED_SCORE_COL, _HORSE_COL],
-        ascending=[True, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
-    grouped = ordered.groupby(_RACE_ID_COL, sort=False)
-    rank_idx = grouped.cumcount().to_numpy(dtype=np.float64)
-    race_size = grouped[_RACE_ID_COL].transform("size").to_numpy(dtype=np.float64)
-    denom = race_size - 1.0
-    safe_denom = np.where(denom > 0.0, denom, 1.0)
-    normalized = np.where(
-        race_size > _MIN_RACE_SIZE_FOR_RANK,
-        (denom - rank_idx) / safe_denom,
-        _SINGLE_RACE_SCORE,
+        descending=[False, True, False],
     )
-    ordered[_NORMALIZED_SCORE_COL] = normalized
-    return ordered
+    rank_idx = pl.int_range(0, pl.len()).over(_RACE_ID_COL)
+    race_size = pl.len().over(_RACE_ID_COL)
+    denom = race_size - 1
+    normalized = (
+        pl.when(race_size > _MIN_RACE_SIZE_FOR_RANK)
+        .then((denom - rank_idx) / denom)
+        .otherwise(_SINGLE_RACE_SCORE)
+        .cast(pl.Float64)
+    )
+    return ordered.with_columns(normalized.alias(_NORMALIZED_SCORE_COL))
 
 
-def _validate_blend_inputs(members: list[pd.DataFrame], weights: list[float]) -> None:
+def _validate_blend_inputs(members: list[pl.DataFrame], weights: list[float]) -> None:
     if not members:
         raise ValueError("blend_normalized requires at least one member")
     if len(members) != len(weights):
@@ -163,31 +166,31 @@ def _validate_blend_inputs(members: list[pd.DataFrame], weights: list[float]) ->
         )
 
 
-def _seed_first_member(first: pd.DataFrame, weight: float) -> pd.DataFrame:
-    seed = pd.DataFrame({
-        _RACE_ID_COL: first[_RACE_ID_COL].to_numpy(),
-        _HORSE_COL: first[_HORSE_COL].to_numpy(),
-        _NORMALIZED_SCORE_COL: weight * first[_NORMALIZED_SCORE_COL].to_numpy(),
-        _ACTUAL_COL: first[_ACTUAL_COL].to_numpy(),
-    })
-    return seed.rename(columns={_NORMALIZED_SCORE_COL: _BLENDED_COL})
+def _seed_first_member(first: pl.DataFrame, weight: float) -> pl.DataFrame:
+    return first.select([
+        pl.col(_RACE_ID_COL),
+        pl.col(_HORSE_COL),
+        (pl.col(_NORMALIZED_SCORE_COL) * weight).alias(_BLENDED_COL),
+        pl.col(_ACTUAL_COL),
+    ])
 
 
 def _fold_next_member(
-    acc: pd.DataFrame, member: pd.DataFrame, weight: float,
-) -> pd.DataFrame:
+    acc: pl.DataFrame, member: pl.DataFrame, weight: float,
+) -> pl.DataFrame:
     join_cols = [_RACE_ID_COL, _HORSE_COL]
-    member_slice = member[[*join_cols, _NORMALIZED_SCORE_COL]].rename(
-        columns={_NORMALIZED_SCORE_COL: "_member_norm"},
+    member_slice = member.select(
+        [*join_cols, pl.col(_NORMALIZED_SCORE_COL).alias("_member_norm")],
     )
-    merged = acc.merge(member_slice, on=join_cols, how="inner")
-    merged[_BLENDED_COL] = merged[_BLENDED_COL] + weight * merged["_member_norm"]
-    return merged.drop(columns=["_member_norm"])
+    merged = acc.join(member_slice, on=join_cols, how="inner")
+    return merged.with_columns(
+        (pl.col(_BLENDED_COL) + weight * pl.col("_member_norm")).alias(_BLENDED_COL),
+    ).drop("_member_norm")
 
 
 def blend_normalized(
-    members: list[pd.DataFrame], weights: list[float],
-) -> pd.DataFrame:
+    members: list[pl.DataFrame], weights: list[float],
+) -> pl.DataFrame:
     """Inner-join all normalized members on (race_id, ketto_toroku_bango).
 
     Each member must carry columns
@@ -199,70 +202,83 @@ def blend_normalized(
     acc = _seed_first_member(members[0], weights[0])
     for member, weight in zip(members[1:], weights[1:], strict=True):
         acc = _fold_next_member(acc, member, weight)
-    return acc.reset_index(drop=True)
+    return acc
 
 
-def _rank_blended_within_race(blended: pd.DataFrame) -> pd.DataFrame:
+def _rank_blended_within_race(blended: pl.DataFrame) -> pl.DataFrame:
     """Return ``blended`` sorted within each race by blended_score desc."""
-    return blended.sort_values(
+    return blended.sort(
         by=[_RACE_ID_COL, _BLENDED_COL, _HORSE_COL],
-        ascending=[True, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
+        descending=[False, True, False],
+    )
 
 
-def compute_top1(blended: pd.DataFrame) -> float:
+def compute_top1(blended: pl.DataFrame) -> float:
     """Fraction of races whose top-1 blended entry has ``actual==1``.
 
     Races with no rows are skipped from the denominator. A race whose top-1
     actual value is missing (NaN) contributes a miss.
     """
-    if blended.empty:
+    if blended.is_empty():
         return 0.0
     ranked = _rank_blended_within_race(blended)
-    top1 = ranked.groupby(_RACE_ID_COL, sort=False).head(1)
-    actual = pd.to_numeric(top1[_ACTUAL_COL], errors="coerce")
+    top1 = ranked.group_by(_RACE_ID_COL, maintain_order=True).head(1)
+    actual = top1.select(
+        pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+    )["_actual_num"]
     hits = int((actual == 1).sum())
-    total = int(top1.shape[0])
+    total = int(top1.height)
     return hits / float(total)
 
 
-def _compute_place_at_k(ranked: pd.DataFrame, k: int) -> float:
+def _compute_place_at_k(ranked: pl.DataFrame, k: int) -> float:
     """``place`` metric at depth ``k``: actual at position ``k`` equals ``k``."""
-    grouped = ranked.groupby(_RACE_ID_COL, sort=False)
-    head = grouped.head(k)
-    sizes = grouped.size()
-    eligible_races = sizes[sizes >= k].index.tolist()
+    sizes = ranked.group_by(_RACE_ID_COL, maintain_order=True).len()
+    eligible_races = sizes.filter(pl.col("len") >= k)[_RACE_ID_COL].to_list()
     if not eligible_races:
         return 0.0
-    eligible_head = head[head[_RACE_ID_COL].isin(eligible_races)]
-    kth_row = eligible_head.groupby(_RACE_ID_COL, sort=False).tail(1)
-    actual = pd.to_numeric(kth_row[_ACTUAL_COL], errors="coerce")
+    eligible_head = (
+        ranked.filter(pl.col(_RACE_ID_COL).is_in(eligible_races))
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .head(k)
+    )
+    kth_row = eligible_head.group_by(_RACE_ID_COL, maintain_order=True).tail(1)
+    actual = kth_row.select(
+        pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+    )["_actual_num"]
     hits = int((actual == k).sum())
     total = len(eligible_races)
     return hits / float(total)
 
 
-def _compute_box_top3(ranked: pd.DataFrame) -> float:
+def _compute_box_top3(ranked: pl.DataFrame) -> float:
     """``box_top3``: top-3 predicted rows are exactly the actual top-3 set."""
-    grouped = ranked.groupby(_RACE_ID_COL, sort=False)
-    sizes = grouped.size()
-    eligible_races = sizes[sizes >= _TOPK_BOX_SIZE].index.tolist()
+    sizes = ranked.group_by(_RACE_ID_COL, maintain_order=True).len()
+    eligible_races = sizes.filter(pl.col("len") >= _TOPK_BOX_SIZE)[_RACE_ID_COL].to_list()
     if not eligible_races:
         return 0.0
-    eligible = ranked[ranked[_RACE_ID_COL].isin(eligible_races)]
-    top3_actuals = eligible.groupby(_RACE_ID_COL, sort=False).head(_TOPK_BOX_SIZE)
-    actual_series = pd.to_numeric(top3_actuals[_ACTUAL_COL], errors="coerce")
-    top3_actuals = top3_actuals.assign(_actual_num=actual_series)
-    matched = top3_actuals.groupby(_RACE_ID_COL, sort=False)["_actual_num"].apply(
-        lambda values: set(int(v) for v in values.dropna()) == {1, 2, 3},
+    top3_actuals = (
+        ranked.filter(pl.col(_RACE_ID_COL).is_in(eligible_races))
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .head(_TOPK_BOX_SIZE)
+        .with_columns(
+            pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+        )
     )
-    hits = int(matched.sum())
+    hits = 0
+    for (_race_id,), race_rows in top3_actuals.group_by(
+        _RACE_ID_COL, maintain_order=True,
+    ):
+        actual_set = {
+            int(v) for v in race_rows["_actual_num"].to_list() if v is not None
+        }
+        if actual_set == {1, 2, 3}:
+            hits += 1
     total = len(eligible_races)
     return hits / float(total)
 
 
-def compute_topk_metric(blended: pd.DataFrame, k: int, metric: str) -> float:
+def compute_topk_metric(blended: pl.DataFrame, k: int, metric: str) -> float:
     """Compute one of the supported top-k metrics.
 
     ``metric == 'place'``: fraction of races whose predicted rank-``k`` entry has
@@ -271,7 +287,7 @@ def compute_topk_metric(blended: pd.DataFrame, k: int, metric: str) -> float:
     ``metric == 'box_top3'``: fraction of races whose top-3 predicted entries
     coincide (as a set, ignoring order) with the actual {1, 2, 3} podium.
     """
-    if blended.empty:
+    if blended.is_empty():
         return 0.0
     lo, hi = _DEFAULT_BLENDED_PLACE_K_BOUNDS
     if metric == _PLACE_METRIC and not (lo <= k <= hi):
@@ -360,23 +376,33 @@ def wilson_lower_bound(p: float, n: int, z: float = WILSON_Z_SCORE) -> float:
     return max(0.0, lower)
 
 
-def _assign_within_race_rank(df: pd.DataFrame, score_col: str) -> pd.DataFrame:
+def _assign_within_race_rank(df: pl.DataFrame, score_col: str) -> pl.DataFrame:
     """Attach ``_within_rank`` (1-based) per race, sorted by ``score_col`` desc.
 
     Tiebreak: ``ketto_toroku_bango`` ascending (matches ``_rank_blended_within_race``).
     Returns the DataFrame sorted race_id / score desc / horse asc with an added
     integer column ``_within_rank`` starting from 1 per race group.
     """
-    ordered = df.sort_values(
+    ordered = df.sort(
         by=[_RACE_ID_COL, score_col, _HORSE_COL],
-        ascending=[True, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
-    ordered["_within_rank"] = ordered.groupby(_RACE_ID_COL, sort=False).cumcount() + 1
-    return ordered
+        descending=[False, True, False],
+    )
+    return ordered.with_columns(
+        (pl.int_range(0, pl.len()).over(_RACE_ID_COL) + 1).alias(_RANK_COL),
+    )
 
 
-def compute_fukusho_2p(df: pd.DataFrame) -> float:
+def _per_race_counts(
+    all_races: pl.DataFrame, counted: pl.DataFrame, count_col: str,
+) -> pl.Series:
+    """Left-join per-race counts onto ``all_races`` (one row per race), 0-filled."""
+    joined = all_races.join(counted, on=_RACE_ID_COL, how="left")
+    return joined.select(
+        pl.col(count_col).fill_null(0),
+    )[count_col]
+
+
+def compute_fukusho_2p(df: pl.DataFrame) -> float:
     """Set-membership fukusho-2p: mean over races of (≥2 of predicted top-3 hit actual top-3).
 
     Per race: 1 if |predicted_top3 ∩ actual_top3| ≥ 2 else 0, where
@@ -391,25 +417,27 @@ def compute_fukusho_2p(df: pd.DataFrame) -> float:
 
     Returns 0.0 for empty DataFrame.
     """
-    if df.empty:
+    if df.is_empty():
         return 0.0
     ranked = _assign_within_race_rank(df, _BLENDED_COL)
     # Keep predicted top-3 rows per race
-    top3 = ranked[ranked["_within_rank"] <= _TOPK_BOX_SIZE].copy()
-    actual_num = pd.to_numeric(top3[_ACTUAL_COL], errors="coerce")
-    top3 = top3.assign(_actual_num=actual_num)
+    top3 = ranked.filter(pl.col(_RANK_COL) <= _TOPK_BOX_SIZE).with_columns(
+        pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+    )
     # Per race: count predicted top-3 that actually finished top-3
-    top3_hit = top3[top3["_actual_num"] <= _TOPK_BOX_SIZE]
-    fukusho_cnt = top3_hit.groupby(_RACE_ID_COL, sort=False).size()
-    # Races not in fukusho_cnt have count 0; reindex to all races
-    all_races = ranked[_RACE_ID_COL].unique()
-    fukusho_cnt = fukusho_cnt.reindex(all_races, fill_value=0)
-    hits = int((fukusho_cnt >= 2).sum())
-    total = len(all_races)
+    fukusho_cnt = (
+        top3.filter(pl.col("_actual_num") <= _TOPK_BOX_SIZE)
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .len()
+    )
+    all_races = ranked.select(_RACE_ID_COL).unique(maintain_order=True)
+    counts = _per_race_counts(all_races, fukusho_cnt, "len")
+    hits = int((counts >= 2).sum())
+    total = all_races.height
     return hits / float(total)
 
 
-def compute_rentai_hit(df: pd.DataFrame) -> float:
+def compute_rentai_hit(df: pl.DataFrame) -> float:
     """Set-membership rentai-hit: mean over races of (predicted top-2 == actual top-2 set).
 
     Per race: 1 if the predicted top-2 SET equals the actual top-2 set (both
@@ -421,37 +449,41 @@ def compute_rentai_hit(df: pd.DataFrame) -> float:
     Races with fewer than 2 finishers are included in the denominator and
     score 0. Returns 0.0 for empty DataFrame.
     """
-    if df.empty:
+    if df.is_empty():
         return 0.0
     ranked = _assign_within_race_rank(df, _BLENDED_COL)
-    all_races = ranked[_RACE_ID_COL].unique()
-    total = len(all_races)
+    all_races = ranked.select(_RACE_ID_COL).unique(maintain_order=True)
+    total = all_races.height
     # Predicted top-2 rows
-    top2 = ranked[ranked["_within_rank"] <= 2].copy()
-    actual_num_top2 = pd.to_numeric(top2[_ACTUAL_COL], errors="coerce")
-    top2 = top2.assign(_actual_num=actual_num_top2)
+    top2 = ranked.filter(pl.col(_RANK_COL) <= 2).with_columns(
+        pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+    )
     # Per race: count predicted top-2 rows with valid actual value
-    pred_top2_size = (
-        top2.dropna(subset=["_actual_num"])
-        .groupby(_RACE_ID_COL, sort=False)
-        .size()
-        .reindex(all_races, fill_value=0)
+    pred_top2_size = _per_race_counts(
+        all_races,
+        top2.drop_nulls(subset=["_actual_num"])
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .len(),
+        "len",
     )
     # Per race: count predicted top-2 rows whose actual finish ≤ 2
-    top2_in_actual = top2[top2["_actual_num"] <= 2]
-    pred_in_actual2_cnt = (
-        top2_in_actual.groupby(_RACE_ID_COL, sort=False)
-        .size()
-        .reindex(all_races, fill_value=0)
+    pred_in_actual2_cnt = _per_race_counts(
+        all_races,
+        top2.filter(pl.col("_actual_num") <= 2)
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .len(),
+        "len",
     )
     # Per race: count actual top-2 horses (actual_finish_position ≤ 2)
-    actual_num_all = pd.to_numeric(ranked[_ACTUAL_COL], errors="coerce")
-    ranked_with_actual = ranked.assign(_actual_num=actual_num_all)
-    actual_top2_cnt = (
-        ranked_with_actual[ranked_with_actual["_actual_num"] <= 2]
-        .groupby(_RACE_ID_COL, sort=False)
-        .size()
-        .reindex(all_races, fill_value=0)
+    ranked_with_actual = ranked.with_columns(
+        pl.col(_ACTUAL_COL).cast(pl.Float64, strict=False).alias("_actual_num"),
+    )
+    actual_top2_cnt = _per_race_counts(
+        all_races,
+        ranked_with_actual.filter(pl.col("_actual_num") <= 2)
+        .group_by(_RACE_ID_COL, maintain_order=True)
+        .len(),
+        "len",
     )
     # rentai_hit: pred_top2_size >= 2 AND pred_in_actual2_cnt == actual_top2_cnt
     hit_mask = (pred_top2_size >= 2) & (pred_in_actual2_cnt == actual_top2_cnt)

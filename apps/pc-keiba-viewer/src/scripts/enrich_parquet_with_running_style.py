@@ -23,7 +23,7 @@ from typing import cast
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 
 CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = (
     "track_code",
@@ -68,27 +68,25 @@ def load_model_artifacts(model_dir: Path) -> tuple[lgb.Booster, dict[str, object
     return booster, metadata
 
 
-def encode_categoricals(frame: pd.DataFrame, categorical_features: list[str]) -> pd.DataFrame:
-    for column in categorical_features:
-        if column in frame.columns:
-            frame[column] = frame[column].astype("category")
-    return frame
+def encode_categoricals(frame: pl.DataFrame, categorical_features: list[str]) -> pl.DataFrame:
+    present = [column for column in categorical_features if column in frame.columns]
+    return frame.with_columns(pl.col(column).cast(pl.Categorical) for column in present)
 
 
-def align_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
+def align_feature_frame(df: pl.DataFrame, feature_columns: list[str]) -> pl.DataFrame:
     missing = [column for column in feature_columns if column not in df.columns]
     if missing:
         raise ValueError(f"parquet missing feature columns: {missing[:5]}{'...' if len(missing) > 5 else ''}")
-    return df.loc[:, feature_columns].copy()
+    return df.select(feature_columns)
 
 
 def predict_probabilities(
     booster: lgb.Booster,
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
 ) -> np.ndarray:
-    encoded = encode_categoricals(frame.loc[:, feature_columns].copy(), categorical_features)
+    encoded = encode_categoricals(frame.select(feature_columns), categorical_features)
     return cast(np.ndarray, booster.predict(encoded, num_iteration=booster.best_iteration))
 
 
@@ -96,13 +94,13 @@ def build_probability_columns(probabilities: np.ndarray, prefix: str) -> dict[st
     return {f"{prefix}_{name}": probabilities[:, idx] for idx, name in enumerate(PROBABILITY_COLUMNS)}
 
 
-def write_partitioned_parquet(df: pd.DataFrame, output_dir: Path) -> None:
+def write_partitioned_parquet(df: pl.DataFrame, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_dir, partition_cols=["race_year"], index=False, engine="pyarrow")
+    df.write_parquet(output_dir, partition_by=["race_year"], mkdir=True)
 
 
-def load_partitioned_parquet(parquet_dir: Path) -> pd.DataFrame:
-    return pd.read_parquet(parquet_dir)
+def load_partitioned_parquet(parquet_dir: Path) -> pl.DataFrame:
+    return pl.read_parquet(parquet_dir)
 
 
 def run_enrichment(args: argparse.Namespace) -> dict[str, object]:
@@ -115,16 +113,19 @@ def run_enrichment(args: argparse.Namespace) -> dict[str, object]:
     ]
     aligned = align_feature_frame(df, feature_columns)
     probabilities = predict_probabilities(booster, aligned, feature_columns, categorical_features)
-    enriched = df.copy()
-    for column_name, column_values in build_probability_columns(probabilities, args.column_prefix).items():
-        enriched[column_name] = column_values
+    enriched = df.with_columns(
+        pl.Series(column_name, column_values)
+        for column_name, column_values in build_probability_columns(
+            probabilities, args.column_prefix
+        ).items()
+    )
     write_partitioned_parquet(enriched, args.output_dir)
     elapsed = perf_counter() - started
     return {
         "elapsed_seconds": elapsed,
         "model_version": str(metadata.get("model_version", "unknown")),
         "output_dir": str(args.output_dir),
-        "rows": int(len(enriched)),
+        "rows": int(enriched.height),
     }
 
 

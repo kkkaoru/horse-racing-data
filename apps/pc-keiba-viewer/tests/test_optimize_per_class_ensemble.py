@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
-import pandas as pd
+import polars as pl
 import pytest
 
 import optimize_per_class_ensemble as subject
@@ -30,18 +30,18 @@ def _write_predictions(
 ) -> None:
     year_dir = parquet_root / f"race_year={year}"
     year_dir.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": [race_id] * len(horses),
         "ketto_toroku_bango": horses,
         "predicted_score": scores,
         "actual_finish_position": actuals,
         "umaban": list(range(1, len(horses) + 1)),
     })
-    df.to_parquet(year_dir / "predictions.parquet", index=False)
+    df.write_parquet(year_dir / "predictions.parquet")
 
 
-def _make_pg_map(race_class_pairs: list[tuple[str, str]]) -> pd.DataFrame:
-    return pd.DataFrame({
+def _make_pg_map(race_class_pairs: list[tuple[str, str]]) -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": [p[0] for p in race_class_pairs],
         "kyoso_joken_code": [p[1] for p in race_class_pairs],
     })
@@ -112,8 +112,8 @@ def _make_stub_create_study(
     return factory
 
 
-def _make_pg_loader(map_df: pd.DataFrame) -> "Callable[[str], pd.DataFrame]":
-    def loader(_pg_url: str) -> pd.DataFrame:
+def _make_pg_loader(map_df: pl.DataFrame) -> "Callable[[str], pl.DataFrame]":
+    def loader(_pg_url: str) -> pl.DataFrame:
         return map_df
     return loader
 
@@ -202,7 +202,7 @@ def test_load_normalized_member_uses_hive_layout_when_present(tmp_path: Path):
     pg_map = _make_pg_map([("jra:2018:0101:01:01", "005")])
     out = subject.load_normalized_member(tmp_path, "005", [2018], pg_map)
     assert "normalized_score" in out.columns
-    assert out.shape[0] == 2
+    assert out.height == 2
 
 
 def test_load_normalized_member_uses_flat_layout_when_hive_missing(tmp_path: Path):
@@ -211,7 +211,7 @@ def test_load_normalized_member_uses_flat_layout_when_hive_missing(tmp_path: Pat
     )
     pg_map = _make_pg_map([("jra:2018:0101:01:01", "005")])
     out = subject.load_normalized_member(tmp_path, "005", [2018], pg_map)
-    assert out.shape[0] == 2
+    assert out.height == 2
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def test_build_bundles_baseline_first_and_relabeled(tmp_path: Path):
     )
     bundles = subject.build_bundles(args, pg_map)
     assert bundles[0].model_version == subject.BASELINE_VERSION
-    assert bundles[0].validation_df.shape[0] == 2
+    assert bundles[0].validation_df.height == 2
     assert bundles[1].model_version == "cand"
 
 
@@ -292,14 +292,14 @@ def test_build_bundles_raises_when_baseline_empty(tmp_path: Path):
 
 
 def _make_normalized_bundle(model_version: str) -> subject.CandidateBundle:
-    val = pd.DataFrame({
+    val = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "predicted_score": [1.0, 0.0, 1.0, 0.0],
         "normalized_score": [1.0, 0.0, 1.0, 0.0],
         "actual_finish_position": [1, 2, 1, 2],
     })
-    hold = pd.DataFrame({
+    hold = pl.DataFrame({
         "race_id": ["r3", "r3", "r4", "r4"],
         "ketto_toroku_bango": ["e", "f", "g", "h"],
         "predicted_score": [1.0, 0.0, 1.0, 0.0],
@@ -333,11 +333,11 @@ def test_run_optuna_search_returns_weights_and_value_from_stubbed_study():
 
 def test_evaluate_weights_returns_zero_when_any_member_empty():
     full = _make_normalized_bundle(subject.BASELINE_VERSION)
-    empty_val = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "ketto_toroku_bango": pd.Series([], dtype=str),
-        "normalized_score": pd.Series([], dtype=float),
-        "actual_finish_position": pd.Series([], dtype=int),
+    empty_val = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "normalized_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     empty_bundle = subject.CandidateBundle(
         model_version="empty",
@@ -352,13 +352,13 @@ def test_evaluate_weights_returns_zero_when_any_member_empty():
 
 def test_evaluate_weights_blend_empty_when_no_join(tmp_path: Path):
     # Two members with disjoint (race_id, horse) keys → inner join yields empty.
-    left = pd.DataFrame({
+    left = pl.DataFrame({
         "race_id": ["r1"], "ketto_toroku_bango": ["a"],
         "predicted_score": [1.0],
         "normalized_score": [1.0],
         "actual_finish_position": [1],
     })
-    right = pd.DataFrame({
+    right = pl.DataFrame({
         "race_id": ["r9"], "ketto_toroku_bango": ["x"],
         "predicted_score": [1.0],
         "normalized_score": [1.0],
@@ -406,8 +406,8 @@ def _make_bundles_with_holdout_top1(top1: float) -> list[subject.CandidateBundle
             "normalized_score": 0.0,
             "actual_finish_position": 3 - actuals_pos1[race_idx],
         })
-    holdout_df = pd.DataFrame(rows)
-    val_df = holdout_df.copy()
+    holdout_df = pl.DataFrame(rows)
+    val_df = holdout_df.clone()
     baseline = subject.CandidateBundle(
         model_version=subject.BASELINE_VERSION, parquet_dir=Path("/tmp/x"),
         validation_df=val_df, holdout_df=holdout_df,
@@ -474,13 +474,13 @@ def test_compute_pairwise_correlations_perfect_match():
 
 
 def test_compute_pairwise_correlations_empty_join_returns_nan():
-    left = pd.DataFrame({
+    left = pl.DataFrame({
         "race_id": ["r1"], "ketto_toroku_bango": ["a"],
         "predicted_score": [1.0],
         "normalized_score": [1.0],
         "actual_finish_position": [1],
     })
-    right = pd.DataFrame({
+    right = pl.DataFrame({
         "race_id": ["r9"], "ketto_toroku_bango": ["x"],
         "predicted_score": [1.0],
         "normalized_score": [1.0],
@@ -502,13 +502,13 @@ def test_compute_pairwise_correlations_empty_join_returns_nan():
 
 def test_compute_pairwise_correlations_single_row_join_returns_nan():
     # Only one common (race_id, horse) → spearman cannot compute → NaN.
-    left = pd.DataFrame({
+    left = pl.DataFrame({
         "race_id": ["r1"], "ketto_toroku_bango": ["a"],
         "predicted_score": [1.0],
         "normalized_score": [1.0],
         "actual_finish_position": [1],
     })
-    right = pd.DataFrame({
+    right = pl.DataFrame({
         "race_id": ["r1"], "ketto_toroku_bango": ["a"],
         "predicted_score": [0.5],
         "normalized_score": [0.5],
@@ -593,7 +593,7 @@ def test_write_json_creates_parent_dir(tmp_path: Path):
 
 def _setup_e2e_dirs(
     tmp_path: Path,
-) -> tuple[Path, Path, pd.DataFrame]:
+) -> tuple[Path, Path, pl.DataFrame]:
     """Create baseline + candidate parquet trees that produce 4 holdout races."""
     baseline = tmp_path / "iter14-jra-cb-pacestyle-course-v8"
     cand = tmp_path / "cand-A"
@@ -688,7 +688,7 @@ def test_default_load_race_meta_invokes_duckdb_postgres_attach(
 ):
     duckdb_con = MagicMock()
     fetch_result = MagicMock()
-    fetch_result.fetchdf.return_value = pd.DataFrame({
+    fetch_result.pl.return_value = pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01"],
         "kyoso_joken_code": ["005"],
     })
@@ -701,7 +701,7 @@ def test_default_load_race_meta_invokes_duckdb_postgres_attach(
         MagicMock(return_value=duckdb_module),
     )
     df = subject.default_load_race_meta("postgresql://u:p@h/db")
-    assert df.shape[0] == 1
+    assert df.height == 1
     duckdb_con.close.assert_called_once()
 
 

@@ -9,7 +9,7 @@ from typing import cast, override
 import lightgbm as lgb
 from lightgbm.basic import LightGBMError
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import corner_lightgbm as subject
@@ -26,11 +26,11 @@ class FakeRegressor:
     def __init__(self, **_kwargs: object) -> None:
         self.booster_ = FakeBooster()
 
-    def fit(self, _features: pd.DataFrame, _target: pd.Series, **_kwargs: object) -> FakeRegressor:
+    def fit(self, _features: object, _target: object, **_kwargs: object) -> FakeRegressor:
         return self
 
-    def predict(self, features: pd.DataFrame) -> np.ndarray:
-        return np.linspace(0.15, 0.85, len(features))
+    def predict(self, features: object) -> np.ndarray:
+        return np.linspace(0.15, 0.85, len(cast(pl.DataFrame, features)))
 
 
 class FakeRanker(FakeRegressor):
@@ -38,8 +38,8 @@ class FakeRanker(FakeRegressor):
 
 
 class FakeClassifier(FakeRegressor):
-    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
-        probabilities = np.linspace(0.25, 0.75, len(features))
+    def predict_proba(self, features: object) -> np.ndarray:
+        probabilities = np.linspace(0.25, 0.75, len(cast(pl.DataFrame, features)))
         return np.column_stack([1 - probabilities, probabilities])
 
 
@@ -54,14 +54,14 @@ class FakeGpuFallbackRegressor(FakeRegressor):
         return self
 
     @override
-    def fit(self, _features: pd.DataFrame, _target: pd.Series, **_kwargs: object) -> FakeGpuFallbackRegressor:
+    def fit(self, _features: object, _target: object, **_kwargs: object) -> FakeGpuFallbackRegressor:
         self.fit_calls += 1
         if self.fit_calls == 1:
             raise LightGBMError("GPU Tree Learner was not enabled in this build.")
         return self
 
 
-def make_model_frame() -> pd.DataFrame:
+def make_model_frame() -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     feature_columns = set(subject.FEATURE_COLUMNS)
     raw_columns = {
@@ -114,7 +114,7 @@ def make_model_frame() -> pd.DataFrame:
             for target_index, target_column in enumerate(subject.TARGET_COLUMNS):
                 row[target_column] = 0.2 * target_index + horse_offset * 0.1
             rows.append(row)
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def test_normalize_date() -> None:
@@ -123,13 +123,13 @@ def test_normalize_date() -> None:
 
 def test_load_dataset_adds_style_and_relative_features(tmp_path: Path) -> None:
     input_path = tmp_path / "dataset.csv"
-    make_model_frame().to_csv(input_path, index=False)
+    make_model_frame().write_csv(input_path)
 
     loaded = subject.load_dataset(str(input_path))
 
     assert "front_runner_score" in loaded.columns
     assert "horse_number_norm_race_rank" in loaded.columns
-    assert loaded["race_date"].tolist() == [
+    assert loaded["race_date"].to_list() == [
         "20250101",
         "20250101",
         "20250101",
@@ -143,33 +143,34 @@ def test_load_dataset_adds_style_and_relative_features(tmp_path: Path) -> None:
 
 def test_load_dataset_handles_optional_history_columns(tmp_path: Path) -> None:
     input_path = tmp_path / "dataset.csv"
-    frame = make_model_frame()
-    frame["horse_odds_avg"] = 12
-    frame["horse_odds_recent_avg"] = 13
-    frame["horse_odds_last"] = 14
-    frame["horse_kohan_3f_avg"] = 36
-    frame["horse_kohan_3f_recent_avg"] = 37
-    frame["horse_kohan_3f_last"] = 38
-    frame["horse_days_since_last_start"] = 30
-    frame.to_csv(input_path, index=False)
+    frame = make_model_frame().with_columns(
+        pl.lit(12).alias("horse_odds_avg"),
+        pl.lit(13).alias("horse_odds_recent_avg"),
+        pl.lit(14).alias("horse_odds_last"),
+        pl.lit(36).alias("horse_kohan_3f_avg"),
+        pl.lit(37).alias("horse_kohan_3f_recent_avg"),
+        pl.lit(38).alias("horse_kohan_3f_last"),
+        pl.lit(30).alias("horse_days_since_last_start"),
+    )
+    frame.write_csv(input_path)
 
     loaded = subject.load_dataset(str(input_path))
 
     assert loaded["horse_log_odds_avg"].gt(0).all()
     assert loaded["horse_kohan_3f_norm_recent_avg"].gt(0).all()
-    assert loaded["horse_days_since_last_start_norm"].between(0, 2).all()
+    assert loaded["horse_days_since_last_start_norm"].is_between(0, 2).all()
 
 
 def test_load_dataset_derives_vector_neighbor_features(tmp_path: Path) -> None:
     input_path = tmp_path / "dataset.csv"
-    frame = make_model_frame().drop(columns=subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
-    frame.to_csv(input_path, index=False)
+    frame = make_model_frame().drop(subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
+    frame.write_csv(input_path)
 
     loaded = subject.load_dataset(str(input_path))
-    future_rows = loaded[loaded["race_date"] == "20260101"]
+    future_rows = loaded.filter(pl.col("race_date") == "20260101")
 
     assert future_rows["vector_neighbor10_count"].gt(0).all()
-    assert future_rows["vector_neighbor10_corner1_avg"].between(0, 1).all()
+    assert future_rows["vector_neighbor10_corner1_avg"].is_between(0, 1).all()
 
 
 def test_load_dataset_derives_vector_neighbor_features_with_mlx(
@@ -181,15 +182,15 @@ def test_load_dataset_derives_vector_neighbor_features_with_mlx(
     except (ImportError, OSError):
         pytest.skip("MLX requires Apple Silicon/macOS")
     input_path = tmp_path / "dataset.csv"
-    frame = make_model_frame().drop(columns=subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
-    frame.to_csv(input_path, index=False)
+    frame = make_model_frame().drop(subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
+    frame.write_csv(input_path)
     monkeypatch.setenv("PC_KEIBA_VECTOR_BACKEND", "mlx")
 
     loaded = subject.load_dataset(str(input_path))
-    future_rows = loaded[loaded["race_date"] == "20260101"]
+    future_rows = loaded.filter(pl.col("race_date") == "20260101")
 
     assert future_rows["vector_neighbor10_count"].gt(0).all()
-    assert future_rows["vector_neighbor30_corner2_avg"].between(0, 1).all()
+    assert future_rows["vector_neighbor30_corner2_avg"].is_between(0, 1).all()
 
 
 def test_load_dataset_falls_back_when_mlx_is_missing(
@@ -197,8 +198,8 @@ def test_load_dataset_falls_back_when_mlx_is_missing(
     tmp_path: Path,
 ) -> None:
     input_path = tmp_path / "dataset.csv"
-    frame = make_model_frame().drop(columns=subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
-    frame.to_csv(input_path, index=False)
+    frame = make_model_frame().drop(subject.VECTOR_NEIGHBOR_FEATURE_COLUMNS)
+    frame.write_csv(input_path)
     def fake_import_mlx_core() -> object:
         raise ImportError("mlx.core")
 
@@ -211,14 +212,15 @@ def test_load_dataset_falls_back_when_mlx_is_missing(
 
 
 def test_race_order_score_and_ranker_target() -> None:
-    frame = make_model_frame()
-    frame["prediction"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
+    frame = make_model_frame().with_columns(
+        pl.Series("prediction", [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]),
+    )
 
     score = subject.race_order_score(frame, "corner1_norm", "prediction")
     rank_target = subject.ranker_target(frame, "corner1_norm")
 
     assert 0 <= score <= 1
-    assert rank_target.tolist() == [1, 0, 1, 0, 1, 0, 1, 0]
+    assert rank_target.to_list() == [1, 0, 1, 0, 1, 0, 1, 0]
 
 
 def test_pairwise_dataset_and_prediction() -> None:
@@ -230,9 +232,9 @@ def test_pairwise_dataset_and_prediction() -> None:
         "corner1_norm",
     )
 
-    assert pair_features.columns.tolist() == subject.PAIRWISE_FEATURE_COLUMNS
-    assert labels.tolist() == [1, 1, 1, 1]
-    assert prediction.between(0, 1).all()
+    assert pair_features.columns == subject.PAIRWISE_FEATURE_COLUMNS
+    assert labels.to_list() == [1, 1, 1, 1]
+    assert prediction.is_between(0, 1).all()
 
 
 def test_pairwise_helpers_handle_single_horse_race() -> None:
@@ -244,9 +246,9 @@ def test_pairwise_helpers_handle_single_horse_race() -> None:
         "corner1_norm",
     )
 
-    assert pair_features.empty
-    assert labels.empty
-    assert prediction.tolist() == [0.5]
+    assert pair_features.is_empty()
+    assert labels.is_empty()
+    assert prediction.to_list() == [0.5]
 
 
 def test_training_helpers_with_fake_lightgbm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -258,7 +260,7 @@ def test_training_helpers_with_fake_lightgbm(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         subject,
         "predict_neural_corner_model",
-        lambda _model, features: pd.Series(np.linspace(0.2, 0.8, len(features))),
+        lambda _model, features: pl.Series(np.linspace(0.2, 0.8, len(features))),
     )
     frame = make_model_frame()
 
@@ -306,10 +308,11 @@ def test_top_vector_neighbor_candidates_selects_closest() -> None:
 
 
 def test_choose_ensemble_prediction_returns_best_candidate() -> None:
-    frame = make_model_frame()
-    frame["regression_corner1_norm"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
-    frame["ranker_corner1_norm"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
-    frame["pairwise_corner1_norm"] = [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]
+    frame = make_model_frame().with_columns(
+        pl.Series("regression_corner1_norm", [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]),
+        pl.Series("ranker_corner1_norm", [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]),
+        pl.Series("pairwise_corner1_norm", [0.1, 0.2, 0.1, 0.2, 0.2, 0.1, 0.2, 0.1]),
+    )
 
     prediction, alpha, scores = subject.choose_ensemble_prediction(
         frame,
@@ -319,7 +322,7 @@ def test_choose_ensemble_prediction_returns_best_candidate() -> None:
         "pairwise_corner1_norm",
     )
 
-    assert prediction.between(0, 1).all()
+    assert prediction.is_between(0, 1).all()
     assert alpha >= 0
     assert "0" in scores
 
@@ -336,7 +339,7 @@ def test_main_writes_metrics_and_predictions(
     model_dir = tmp_path / "models"
     predictions_path = tmp_path / "predictions.csv"
     metrics_path = tmp_path / "metrics.json"
-    make_model_frame().to_csv(input_path, index=False)
+    make_model_frame().write_csv(input_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -362,10 +365,10 @@ def test_main_writes_metrics_and_predictions(
     subject.main()
 
     metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-    predictions = pd.read_csv(predictions_path)
+    predictions = pl.read_csv(predictions_path)
     assert metrics["train_rows"] == 4
     assert metrics["test_rows"] == 4
-    assert predictions["predicted_corner1_norm"].between(0, 1).all()
+    assert predictions["predicted_corner1_norm"].is_between(0, 1).all()
     assert (model_dir / "corner1_norm.txt").exists()
 
 
@@ -383,13 +386,13 @@ def test_main_uses_neural_predictions_when_models_available(
     monkeypatch.setattr(
         subject,
         "predict_neural_corner_model",
-        lambda _model, features: pd.Series(np.linspace(0.1, 0.9, len(features))),
+        lambda _model, features: pl.Series(np.linspace(0.1, 0.9, len(features))),
     )
     input_path = tmp_path / "dataset.csv"
     model_dir = tmp_path / "models"
     predictions_path = tmp_path / "predictions.csv"
     metrics_path = tmp_path / "metrics.json"
-    make_model_frame().to_csv(input_path, index=False)
+    make_model_frame().write_csv(input_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -414,8 +417,8 @@ def test_main_uses_neural_predictions_when_models_available(
 
     subject.main()
 
-    predictions = pd.read_csv(predictions_path)
-    assert predictions["predicted_corner1_norm"].between(0, 1).all()
+    predictions = pl.read_csv(predictions_path)
+    assert predictions["predicted_corner1_norm"].is_between(0, 1).all()
 
 
 def test_stacker_training_uses_pairwise_model_not_regression_values(
@@ -432,22 +435,22 @@ def test_stacker_training_uses_pairwise_model_not_regression_values(
     monkeypatch.setattr(
         subject,
         "predict_neural_corner_model",
-        lambda _model, features: pd.Series(np.linspace(0.2, 0.8, len(features))),
+        lambda _model, features: pl.Series(np.linspace(0.2, 0.8, len(features))),
     )
 
-    captured_stacking_frames: list[pd.DataFrame] = []
+    captured_stacking_frames: list[pl.DataFrame] = []
     original_train_stacking = subject.train_stacking_model
 
     def capturing_train_stacking(
-        train: pd.DataFrame, target_column: str, stacking_features: pd.DataFrame,
+        train: pl.DataFrame, target_column: str, stacking_features: pl.DataFrame,
     ) -> lgb.LGBMRegressor:
-        captured_stacking_frames.append(stacking_features.copy())
+        captured_stacking_frames.append(stacking_features.clone())
         return original_train_stacking(train, target_column, stacking_features)
 
     monkeypatch.setattr(subject, "train_stacking_model", capturing_train_stacking)
 
     input_path = tmp_path / "dataset.csv"
-    make_model_frame().to_csv(input_path, index=False)
+    make_model_frame().write_csv(input_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -469,8 +472,8 @@ def test_stacker_training_uses_pairwise_model_not_regression_values(
     assert len(captured_stacking_frames) > 0
     sf = captured_stacking_frames[0]
     # pairwise column must exist and must not equal the regression column
-    assert "pairwise" in sf.columns.str.cat()
-    assert "regression" in sf.columns.str.cat()
+    assert "pairwise" in "".join(sf.columns)
+    assert "regression" in "".join(sf.columns)
     pairwise_col = [c for c in sf.columns if c.startswith("pairwise")][0]
     regression_col = [c for c in sf.columns if c.startswith("regression")][0]
     # In-sample pairwise predictions from apply_pairwise_model differ from plain regression output

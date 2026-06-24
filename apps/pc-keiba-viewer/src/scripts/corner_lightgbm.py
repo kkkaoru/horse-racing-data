@@ -15,7 +15,7 @@ from typing import NotRequired, TypedDict, cast
 import lightgbm as lgb
 from lightgbm.basic import LightGBMError
 import numpy as np
-import pandas as pd
+import polars as pl
 from numpy.typing import NDArray
 from sklearn.neighbors import NearestNeighbors
 
@@ -413,93 +413,130 @@ def normalize_date(value: str) -> str:
     return value.replace("-", "")
 
 
-def add_style_features(df: pd.DataFrame) -> pd.DataFrame:
-    df["horse_early_avg"] = df[["horse_corner1_avg", "horse_corner2_avg"]].mean(axis=1)
-    df["horse_early_recent"] = df[["horse_corner1_recent_avg", "horse_corner2_recent_avg"]].mean(axis=1)
-    df["horse_early_last"] = df[["horse_corner1_last", "horse_corner2_last"]].mean(axis=1)
-    df["horse_late_avg"] = df[["horse_corner3_avg", "horse_corner4_avg"]].mean(axis=1)
-    df["horse_late_recent"] = df[["horse_corner3_recent_avg", "horse_corner4_recent_avg"]].mean(axis=1)
-    df["horse_late_last"] = df[["horse_corner3_last", "horse_corner4_last"]].mean(axis=1)
-    df["horse_pace_fade_avg"] = df["horse_late_avg"] - df["horse_early_avg"]
-    df["horse_pace_fade_recent"] = df["horse_late_recent"] - df["horse_early_recent"]
-    df["horse_pace_fade_last"] = df["horse_late_last"] - df["horse_early_last"]
-    df["front_runner_score"] = (1 - df["horse_early_recent"]).clip(0, 1)
-    df["stalker_score"] = (1 - (df["horse_early_recent"] - 0.33).abs() * 3).clip(0, 1)
-    df["closer_score"] = (df["horse_early_recent"] - df["horse_late_recent"]).clip(0, 1)
-    df["pace_consistency"] = (
-        1
-        - df[
-            [
-                "horse_corner1_avg",
-                "horse_corner2_avg",
-                "horse_corner3_avg",
-                "horse_corner4_avg",
-            ]
-        ].std(axis=1)
-    ).clip(0, 1)
-    df["inner_front_bias"] = ((1 - df["horse_number_norm"]) * df["front_runner_score"]).clip(0, 1)
-    df["outer_closer_bias"] = (df["horse_number_norm"] * df["closer_score"]).clip(0, 1)
-    df["early_history_blend"] = df[["horse_corner1_recent_avg", "horse_corner2_recent_avg"]].mean(axis=1)
-    df["late_history_blend"] = df[["horse_corner3_recent_avg", "horse_corner4_recent_avg"]].mean(axis=1)
-    return df
+def horizontal_sample_std(columns: list[str]) -> pl.Expr:
+    count = float(len(columns))
+    mean = pl.mean_horizontal(columns)
+    squared_deviations = pl.sum_horizontal(
+        [(pl.col(column) - mean).pow(2) for column in columns],
+    )
+    return (squared_deviations / (count - 1)).sqrt()
 
 
-def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
-    grouped = df.groupby("race_id", sort=False)
-    relative_features: dict[str, pd.Series] = {}
-    for column in RACE_RELATIVE_BASE_COLUMNS:
-        values = pd.to_numeric(df[column], errors="coerce").fillna(0)
-        group_mean = grouped[column].transform("mean")
-        group_std = grouped[column].transform("std").replace(0, np.nan)
-        sorted_prev = grouped[column].transform(lambda series: series.sort_values().shift(1).reindex(series.index))
-        sorted_next = grouped[column].transform(lambda series: series.sort_values().shift(-1).reindex(series.index))
-        relative_features[f"{column}_race_rank"] = grouped[column].rank(
-            method="average",
-            pct=True,
-            ascending=True,
-        ).fillna(0.5)
-        relative_features[f"{column}_race_centered"] = (values - group_mean).fillna(0)
-        relative_features[f"{column}_race_z"] = (
-            (values - group_mean) / group_std
-        ).replace([np.inf, -np.inf], np.nan).fillna(0)
-        relative_features[f"{column}_front_gap"] = (values - sorted_prev).fillna(0)
-        relative_features[f"{column}_back_gap"] = (sorted_next - values).fillna(0)
-    return pd.concat([df, pd.DataFrame(relative_features, index=df.index)], axis=1)
+def add_style_features(df: pl.DataFrame) -> pl.DataFrame:
+    df = df.with_columns(
+        pl.mean_horizontal(["horse_corner1_avg", "horse_corner2_avg"]).alias("horse_early_avg"),
+        pl.mean_horizontal(["horse_corner1_recent_avg", "horse_corner2_recent_avg"]).alias("horse_early_recent"),
+        pl.mean_horizontal(["horse_corner1_last", "horse_corner2_last"]).alias("horse_early_last"),
+        pl.mean_horizontal(["horse_corner3_avg", "horse_corner4_avg"]).alias("horse_late_avg"),
+        pl.mean_horizontal(["horse_corner3_recent_avg", "horse_corner4_recent_avg"]).alias("horse_late_recent"),
+        pl.mean_horizontal(["horse_corner3_last", "horse_corner4_last"]).alias("horse_late_last"),
+        pl.mean_horizontal(["horse_corner1_recent_avg", "horse_corner2_recent_avg"]).alias("early_history_blend"),
+        pl.mean_horizontal(["horse_corner3_recent_avg", "horse_corner4_recent_avg"]).alias("late_history_blend"),
+    )
+    df = df.with_columns(
+        (pl.col("horse_late_avg") - pl.col("horse_early_avg")).alias("horse_pace_fade_avg"),
+        (pl.col("horse_late_recent") - pl.col("horse_early_recent")).alias("horse_pace_fade_recent"),
+        (pl.col("horse_late_last") - pl.col("horse_early_last")).alias("horse_pace_fade_last"),
+        (1 - pl.col("horse_early_recent")).clip(0, 1).alias("front_runner_score"),
+        (1 - (pl.col("horse_early_recent") - 0.33).abs() * 3).clip(0, 1).alias("stalker_score"),
+        (pl.col("horse_early_recent") - pl.col("horse_late_recent")).clip(0, 1).alias("closer_score"),
+        (
+            1
+            - horizontal_sample_std(
+                [
+                    "horse_corner1_avg",
+                    "horse_corner2_avg",
+                    "horse_corner3_avg",
+                    "horse_corner4_avg",
+                ],
+            )
+        )
+        .clip(0, 1)
+        .alias("pace_consistency"),
+    )
+    return df.with_columns(
+        ((1 - pl.col("horse_number_norm")) * pl.col("front_runner_score")).clip(0, 1).alias("inner_front_bias"),
+        (pl.col("horse_number_norm") * pl.col("closer_score")).clip(0, 1).alias("outer_closer_bias"),
+    )
 
 
-def add_corner_history_rank_features(df: pd.DataFrame) -> pd.DataFrame:
-    grouped = df.groupby("race_id", sort=False)
-    rank_features = {
-        f"{column}_race_rank": grouped[column].rank(method="average", pct=True, ascending=True).fillna(0.5)
+def race_relative_feature_expressions(column: str) -> list[pl.Expr]:
+    raw = pl.col(column).cast(pl.Float64, strict=False)
+    values = raw.fill_null(0)
+    group_mean = raw.mean().over("race_id")
+    group_std = (
+        pl.when(raw.std().over("race_id") == 0)
+        .then(None)
+        .otherwise(raw.std().over("race_id"))
+    )
+    order = raw.arg_sort()
+    inverse_order = order.arg_sort()
+    sorted_prev = raw.gather(order).shift(1).gather(inverse_order).over("race_id")
+    sorted_next = raw.gather(order).shift(-1).gather(inverse_order).over("race_id")
+    race_rank = (raw.rank(method="average", descending=False) / pl.len()).over("race_id")
+    centered = values - group_mean
+    z_score = (values - group_mean) / group_std
+    return [
+        race_rank.fill_null(0.5).alias(f"{column}_race_rank"),
+        centered.fill_null(0).alias(f"{column}_race_centered"),
+        z_score.fill_nan(None).fill_null(0).alias(f"{column}_race_z"),
+        (values - sorted_prev).fill_null(0).alias(f"{column}_front_gap"),
+        (sorted_next - values).fill_null(0).alias(f"{column}_back_gap"),
+    ]
+
+
+def add_race_relative_features(df: pl.DataFrame) -> pl.DataFrame:
+    expressions = [
+        expression
+        for column in RACE_RELATIVE_BASE_COLUMNS
+        for expression in race_relative_feature_expressions(column)
+    ]
+    return df.with_columns(expressions)
+
+
+def add_corner_history_rank_features(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(
+        (
+            pl.col(column).cast(pl.Float64, strict=False).rank(method="average", descending=False)
+            / pl.len()
+        )
+        .over("race_id")
+        .fill_null(0.5)
+        .alias(f"{column}_race_rank")
         for column in CORNER_HISTORY_RANK_BASE_COLUMNS
-    }
-    return pd.concat([df, pd.DataFrame(rank_features, index=df.index)], axis=1)
+    )
 
 
-def should_build_vector_neighbor_features(df: pd.DataFrame) -> bool:
+def should_build_vector_neighbor_features(df: pl.DataFrame) -> bool:
     if any(column not in df.columns for column in VECTOR_NEIGHBOR_FEATURE_COLUMNS):
         return True
     count_columns = [f"vector_neighbor{k}_count" for k in VECTOR_NEIGHBOR_KS]
-    counts = df[count_columns].apply(pd.to_numeric, errors="coerce").fillna(0)
-    return bool(counts.to_numpy(dtype=float).sum() <= 0)
+    counts = df.select(
+        pl.col(column).cast(pl.Float64, strict=False).fill_null(0) for column in count_columns
+    )
+    return bool(counts.to_numpy().sum() <= 0)
 
 
-def build_vector_neighbor_input(df: pd.DataFrame) -> FloatArray:
-    track_surface = np.where(df["track_family"].to_numpy(dtype=float) == 1, 0.0, 1.0)
-    odds = np.maximum(df["tansho_odds"].to_numpy(dtype=float), 1.0)
+def numeric_numpy_column(df: pl.DataFrame, column: str) -> FloatArray:
+    return cast(FloatArray, df[column].cast(pl.Float64, strict=False).to_numpy().astype(float))
+
+
+def build_vector_neighbor_input(df: pl.DataFrame) -> FloatArray:
+    track_surface = np.where(numeric_numpy_column(df, "track_family") == 1, 0.0, 1.0)
+    odds = np.maximum(numeric_numpy_column(df, "tansho_odds"), 1.0)
     vector_input = np.column_stack(
         (
-            df["kyori"].to_numpy(dtype=float) / 3600,
-            df["shusso_tosu"].to_numpy(dtype=float) / 18,
-            df["horse_number_norm"].to_numpy(dtype=float),
-            df["popularity_norm"].to_numpy(dtype=float),
+            numeric_numpy_column(df, "kyori") / 3600,
+            numeric_numpy_column(df, "shusso_tosu") / 18,
+            numeric_numpy_column(df, "horse_number_norm"),
+            numeric_numpy_column(df, "popularity_norm"),
             np.log(odds) / VECTOR_NEIGHBOR_LOG_ODDS_DENOMINATOR,
             track_surface,
-            df["keibajo_code_num"].to_numpy(dtype=float) / 99,
-            df["race_bango_num"].to_numpy(dtype=float) / 12,
+            numeric_numpy_column(df, "keibajo_code_num") / 99,
+            numeric_numpy_column(df, "race_bango_num") / 12,
         ),
     )
-    return cast(FloatArray, vector_input)
+    return vector_input
 
 
 def race_date_to_ordinal(value: object) -> int:
@@ -512,9 +549,9 @@ def race_date_to_ordinal(value: object) -> int:
         return 0
 
 
-def mean_absolute_error(actual: pd.Series, predicted: pd.Series) -> float:
-    actual_values = np.asarray(actual, dtype=float)
-    predicted_values = np.asarray(predicted, dtype=float)
+def mean_absolute_error(actual: pl.Series, predicted: pl.Series) -> float:
+    actual_values = actual.cast(pl.Float64, strict=False).to_numpy().astype(float)
+    predicted_values = predicted.cast(pl.Float64, strict=False).to_numpy().astype(float)
     if actual_values.size == 0:
         return 0.0
     return float(np.mean(np.abs(actual_values - predicted_values)))
@@ -539,48 +576,64 @@ def should_fallback_to_cpu(error: LightGBMError) -> bool:
     return bool(lightgbm_device_params() and "GPU Tree Learner was not enabled" in str(error))
 
 
+def to_lgb_frame(features: pl.DataFrame) -> object:
+    # LightGBM's scikit-learn wrapper ingests pandas/numpy; convert polars at the
+    # boundary so its feature-name handling works. All corner features are numeric.
+    return features.to_pandas()
+
+
+def to_lgb_target(target: pl.Series) -> object:
+    return target.to_pandas()
+
+
 def fit_regressor_with_device_fallback(
     model: lgb.LGBMRegressor,
-    features: pd.DataFrame,
-    target: pd.Series,
+    features: pl.DataFrame,
+    target: pl.Series,
 ) -> None:
+    lgb_features = to_lgb_frame(features)
+    lgb_target = to_lgb_target(target)
     try:
-        model.fit(features, target)
+        model.fit(lgb_features, lgb_target)
     except LightGBMError as error:
         if should_fallback_to_cpu(error):
             model.set_params(device_type="cpu")
-            model.fit(features, target)
+            model.fit(lgb_features, lgb_target)
             return
         raise
 
 
 def fit_ranker_with_device_fallback(
     model: lgb.LGBMRanker,
-    features: pd.DataFrame,
-    target: pd.Series,
+    features: pl.DataFrame,
+    target: pl.Series,
     groups: FloatArray,
 ) -> None:
+    lgb_features = to_lgb_frame(features)
+    lgb_target = to_lgb_target(target)
     try:
-        model.fit(features, target, group=groups)
+        model.fit(lgb_features, lgb_target, group=groups)
     except LightGBMError as error:
         if should_fallback_to_cpu(error):
             model.set_params(device_type="cpu")
-            model.fit(features, target, group=groups)
+            model.fit(lgb_features, lgb_target, group=groups)
             return
         raise
 
 
 def fit_classifier_with_device_fallback(
     model: lgb.LGBMClassifier,
-    features: pd.DataFrame,
-    target: pd.Series,
+    features: pl.DataFrame,
+    target: pl.Series,
 ) -> None:
+    lgb_features = to_lgb_frame(features)
+    lgb_target = to_lgb_target(target)
     try:
-        model.fit(features, target)
+        model.fit(lgb_features, lgb_target)
     except LightGBMError as error:
         if should_fallback_to_cpu(error):
             model.set_params(device_type="cpu")
-            model.fit(features, target)
+            model.fit(lgb_features, lgb_target)
             return
         raise
 
@@ -693,14 +746,10 @@ def empty_vector_neighbor_output(length: int) -> dict[str, FloatArray]:
     }
 
 
-def build_vector_neighbor_frame(df: pd.DataFrame, output: dict[str, FloatArray]) -> pd.DataFrame:
-    vector_frame = pd.DataFrame(output, index=df.index)
-    return pd.concat(
-        [
-            df.drop(columns=[column for column in VECTOR_NEIGHBOR_FEATURE_COLUMNS if column in df.columns]),
-            vector_frame,
-        ],
-        axis=1,
+def build_vector_neighbor_frame(df: pl.DataFrame, output: dict[str, FloatArray]) -> pl.DataFrame:
+    df = df.drop([column for column in VECTOR_NEIGHBOR_FEATURE_COLUMNS if column in df.columns])
+    return df.with_columns(
+        pl.Series(column, output[column]) for column in VECTOR_NEIGHBOR_FEATURE_COLUMNS
     )
 
 
@@ -728,25 +777,35 @@ def _mlx_module_base() -> type:
 _MlxModuleBase: type = _mlx_module_base()
 
 
-def add_derived_vector_neighbor_features_sklearn(df: pd.DataFrame) -> pd.DataFrame:
-    output = empty_vector_neighbor_output(len(df))
-    vectors = build_vector_neighbor_input(df)
-    target_values = cast(
+def vector_neighbor_target_values(df: pl.DataFrame) -> FloatArray:
+    return cast(
         FloatArray,
-        df[TARGET_COLUMNS].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float),
+        df.select(
+            pl.col(column).cast(pl.Float64, strict=False) for column in TARGET_COLUMNS
+        ).to_numpy().astype(float),
     )
+
+
+def vector_neighbor_group_positions(df: pl.DataFrame, group_columns: list[str]) -> list[IntArray]:
+    indexed = df.with_row_index("__row_position")
+    return [
+        cast(IntArray, group["__row_position"].cast(pl.Int64).to_numpy().astype(np.int64))
+        for _key, group in indexed.group_by(group_columns, maintain_order=True)
+    ]
+
+
+def add_derived_vector_neighbor_features_sklearn(df: pl.DataFrame) -> pl.DataFrame:
+    output = empty_vector_neighbor_output(df.height)
+    vectors = build_vector_neighbor_input(df)
+    target_values = vector_neighbor_target_values(df)
     date_ordinals: IntArray = np.array(
-        [race_date_to_ordinal(value) for value in df["race_date"]],
+        [race_date_to_ordinal(value) for value in df["race_date"].to_list()],
         dtype=np.int64,
     )
-    kyori_values = cast(
-        FloatArray,
-        df["kyori"].to_numpy(dtype=float),
-    )
+    kyori_values = numeric_numpy_column(df, "kyori")
     group_columns = ["source", "keibajo_code", "track_family"]
 
-    for _, group in df.groupby(group_columns, sort=False):
-        positions = cast(IntArray, group.index.to_numpy(dtype=np.int64))
+    for positions in vector_neighbor_group_positions(df, group_columns):
         if len(positions) <= 1:
             continue
         neighbor_count = min(VECTOR_NEIGHBOR_QUERY_CANDIDATES, len(positions))
@@ -795,25 +854,21 @@ def add_derived_vector_neighbor_features_sklearn(df: pd.DataFrame) -> pd.DataFra
     return build_vector_neighbor_frame(df, output)
 
 
-def add_derived_vector_neighbor_features_mlx(df: pd.DataFrame) -> pd.DataFrame:
+def add_derived_vector_neighbor_features_mlx(df: pl.DataFrame) -> pl.DataFrame:
     mx = import_mlx_core()
     mx_array = getattr(mx, "array")
     mx_sum = getattr(mx, "sum")
-    output = empty_vector_neighbor_output(len(df))
+    output = empty_vector_neighbor_output(df.height)
     vectors = build_vector_neighbor_input(df).astype(np.float32)
-    target_values = cast(
-        FloatArray,
-        df[TARGET_COLUMNS].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float),
-    )
+    target_values = vector_neighbor_target_values(df)
     date_ordinals: IntArray = np.array(
-        [race_date_to_ordinal(value) for value in df["race_date"]],
+        [race_date_to_ordinal(value) for value in df["race_date"].to_list()],
         dtype=np.int64,
     )
-    kyori_values = cast(FloatArray, df["kyori"].to_numpy(dtype=float))
+    kyori_values = numeric_numpy_column(df, "kyori")
     group_columns = ["source", "keibajo_code", "track_family"]
 
-    for _, group in df.groupby(group_columns, sort=False):
-        positions = cast(IntArray, group.index.to_numpy(dtype=np.int64))
+    for positions in vector_neighbor_group_positions(df, group_columns):
         if len(positions) <= 1:
             continue
         sorted_positions = positions[np.argsort(date_ordinals[positions])]
@@ -867,7 +922,7 @@ def add_derived_vector_neighbor_features_mlx(df: pd.DataFrame) -> pd.DataFrame:
     return build_vector_neighbor_frame(df, output)
 
 
-def add_derived_vector_neighbor_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_derived_vector_neighbor_features(df: pl.DataFrame) -> pl.DataFrame:
     if not should_build_vector_neighbor_features(df):
         return df
     if vector_neighbor_backend_name() == "mlx":
@@ -896,7 +951,7 @@ def feature_cache_path(input_path: str) -> Path:
         input_path,
         "tmp/corner-lightgbm-feature-cache",
         FEATURE_CACHE_VERSION,
-        ".pkl",
+        ".parquet",
     )
 
 
@@ -922,18 +977,18 @@ def cache_path_for_input(
             ],
         ).encode("utf-8"),
     ).hexdigest()[:24]
-    cache_env_name = "PC_KEIBA_FEATURE_CACHE_DIR" if suffix == ".pkl" else "PC_KEIBA_VECTOR_CACHE_DIR"
+    cache_env_name = "PC_KEIBA_VECTOR_CACHE_DIR" if suffix == ".npy" else "PC_KEIBA_FEATURE_CACHE_DIR"
     cache_dir = Path(os.environ.get(cache_env_name, default_cache_dir))
     return cache_dir / f"{digest}{suffix}"
 
 
-def add_cached_vector_neighbor_features(df: pd.DataFrame, input_path: str) -> pd.DataFrame:
+def add_cached_vector_neighbor_features(df: pl.DataFrame, input_path: str) -> pl.DataFrame:
     if not should_build_vector_neighbor_features(df):
         return df
     cache_path = vector_neighbor_cache_path(input_path)
     if cache_path.exists():
         cached = np.load(cache_path)
-        if cached.shape == (len(df), len(VECTOR_NEIGHBOR_FEATURE_COLUMNS)):
+        if cached.shape == (df.height, len(VECTOR_NEIGHBOR_FEATURE_COLUMNS)):
             output = {
                 column: cast(FloatArray, cached[:, column_index])
                 for column_index, column in enumerate(VECTOR_NEIGHBOR_FEATURE_COLUMNS)
@@ -943,112 +998,134 @@ def add_cached_vector_neighbor_features(df: pd.DataFrame, input_path: str) -> pd
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(
         str(cache_path),
-        df[VECTOR_NEIGHBOR_FEATURE_COLUMNS].to_numpy(dtype=float),
+        df.select(VECTOR_NEIGHBOR_FEATURE_COLUMNS).to_numpy().astype(float),
     )
     return df
 
 
-def numeric_column_or_default(df: pd.DataFrame, column: str, default: float) -> pd.Series:
+def numeric_column_or_default(df: pl.DataFrame, column: str, default: float) -> pl.Series:
     if column not in df.columns:
-        return pd.Series(default, index=df.index)
-    return pd.to_numeric(df[column], errors="coerce").fillna(default)
+        return pl.Series(column, [default] * df.height, dtype=pl.Float64)
+    return df[column].cast(pl.Float64, strict=False).fill_null(default)
 
 
-def log_numeric_column_or_default(df: pd.DataFrame, source_column: str, default: float) -> pd.Series:
+def log_numeric_column_or_default(df: pl.DataFrame, source_column: str, default: float) -> pl.Series:
     values = numeric_column_or_default(df, source_column, default)
-    return pd.Series(np.log(np.maximum(values, 1)), index=df.index)
+    return pl.Series(source_column, np.log(np.maximum(values.to_numpy().astype(float), 1)))
 
 
 def normalized_numeric_column_or_default(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     source_column: str,
     default: float,
     denominator: float,
-) -> pd.Series:
+) -> pl.Series:
     return numeric_column_or_default(df, source_column, default) / denominator
 
 
-def add_code_features(df: pd.DataFrame) -> pd.DataFrame:
-    for source_column, target_column in CODE_FEATURE_COLUMNS.items():
-        df[target_column] = numeric_column_or_default(df, source_column, 0)
-    return df
+def add_code_features(df: pl.DataFrame) -> pl.DataFrame:
+    return df.with_columns(
+        numeric_column_or_default(df, source_column, 0).alias(target_column)
+        for source_column, target_column in CODE_FEATURE_COLUMNS.items()
+    )
 
 
-def add_optional_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    for column, default in RAW_NUMERIC_DEFAULTS.items():
-        df[column] = numeric_column_or_default(df, column, default)
-    for source_column in ODDS_HISTORY_COLUMNS:
-        target_column = source_column.replace("horse_odds", "horse_log_odds")
-        df[target_column] = log_numeric_column_or_default(df, source_column, 10)
-    for source_column in THREE_F_HISTORY_COLUMNS:
-        target_column = source_column.replace("horse_kohan_3f", "horse_kohan_3f_norm")
-        df[target_column] = normalized_numeric_column_or_default(df, source_column, 0, 60)
-    df["horse_days_since_last_start_norm"] = (
+def add_optional_derived_features(df: pl.DataFrame) -> pl.DataFrame:
+    df = df.with_columns(
+        numeric_column_or_default(df, column, default).alias(column)
+        for column, default in RAW_NUMERIC_DEFAULTS.items()
+    )
+    df = df.with_columns(
+        log_numeric_column_or_default(df, source_column, 10).alias(
+            source_column.replace("horse_odds", "horse_log_odds"),
+        )
+        for source_column in ODDS_HISTORY_COLUMNS
+    )
+    df = df.with_columns(
+        normalized_numeric_column_or_default(df, source_column, 0, 60).alias(
+            source_column.replace("horse_kohan_3f", "horse_kohan_3f_norm"),
+        )
+        for source_column in THREE_F_HISTORY_COLUMNS
+    )
+    return df.with_columns(
         normalized_numeric_column_or_default(df, "horse_days_since_last_start", 365, 365)
-    ).clip(0, 2)
-    return df
+        .clip(0, 2)
+        .alias("horse_days_since_last_start_norm"),
+    )
 
 
-def load_dataset(path: str) -> pd.DataFrame:
+def load_dataset(path: str) -> pl.DataFrame:
     cache_path = feature_cache_path(path)
     if cache_path.exists():
-        return cast(pd.DataFrame, pd.read_pickle(cache_path))
-    df = pd.read_csv(path, dtype={"race_date": str, "race_id": str, "horse_key": str})
-    df = df.reset_index(drop=True)
-    df["keibajo_code_num"] = pd.to_numeric(df["keibajo_code"], errors="coerce").fillna(0)
-    df["race_bango_num"] = pd.to_numeric(df["race_bango"], errors="coerce").fillna(0)
-    df["track_code_num"] = pd.to_numeric(df["track_code"], errors="coerce").fillna(0)
-    df["track_family"] = (
-        df["track_code"].fillna("").astype(str).str.slice(0, 1).replace("", "0").astype(float)
+        return pl.read_parquet(cache_path)
+    df = pl.read_csv(
+        path,
+        schema_overrides={"race_date": pl.Utf8, "race_id": pl.Utf8, "horse_key": pl.Utf8},
+    )
+    df = df.with_columns(
+        df["keibajo_code"].cast(pl.Float64, strict=False).fill_null(0).alias("keibajo_code_num"),
+        df["race_bango"].cast(pl.Float64, strict=False).fill_null(0).alias("race_bango_num"),
+        df["track_code"].cast(pl.Float64, strict=False).fill_null(0).alias("track_code_num"),
+        df["track_code"]
+        .cast(pl.Utf8)
+        .fill_null("")
+        .str.slice(0, 1)
+        .replace("", "0")
+        .cast(pl.Float64)
+        .alias("track_family"),
     )
     df = add_code_features(df)
-    df["kyori"] = pd.to_numeric(df["kyori"], errors="coerce").fillna(0)
-    df["shusso_tosu"] = pd.to_numeric(df["shusso_tosu"], errors="coerce").fillna(0)
-    df["umaban"] = pd.to_numeric(df["umaban"], errors="coerce").fillna(0)
-    df = add_optional_derived_features(df)
-    df["horse_number_norm"] = df["umaban"] / df["shusso_tosu"].replace(0, np.nan)
-    df["horse_number_norm"] = df["horse_number_norm"].fillna(0)
-    df["tansho_ninkijun"] = pd.to_numeric(df["tansho_ninkijun"], errors="coerce").fillna(
-        df["shusso_tosu"]
+    df = df.with_columns(
+        df["kyori"].cast(pl.Float64, strict=False).fill_null(0).alias("kyori"),
+        df["shusso_tosu"].cast(pl.Float64, strict=False).fill_null(0).alias("shusso_tosu"),
+        df["umaban"].cast(pl.Float64, strict=False).fill_null(0).alias("umaban"),
     )
-    df["popularity_norm"] = df["tansho_ninkijun"] / df["shusso_tosu"].replace(0, np.nan)
-    df["popularity_norm"] = df["popularity_norm"].fillna(1)
-    df["tansho_odds"] = pd.to_numeric(df["tansho_odds"], errors="coerce").fillna(10)
-    df["log_tansho_odds"] = np.log(np.maximum(df["tansho_odds"], 1))
+    df = add_optional_derived_features(df)
+    nonzero_shusso = pl.when(pl.col("shusso_tosu") == 0).then(None).otherwise(pl.col("shusso_tosu"))
+    df = df.with_columns(
+        (pl.col("umaban") / nonzero_shusso).fill_null(0).alias("horse_number_norm"),
+        pl.col("tansho_ninkijun")
+        .cast(pl.Float64, strict=False)
+        .fill_null(pl.col("shusso_tosu"))
+        .alias("tansho_ninkijun"),
+        pl.col("tansho_odds").cast(pl.Float64, strict=False).fill_null(10).alias("tansho_odds"),
+    )
+    df = df.with_columns(
+        (pl.col("tansho_ninkijun") / nonzero_shusso).fill_null(1).alias("popularity_norm"),
+        pl.max_horizontal(pl.col("tansho_odds"), pl.lit(1.0)).log().alias("log_tansho_odds"),
+    )
     missing_history_columns = [column for column in HISTORY_COLUMNS if column not in df.columns]
     if missing_history_columns:
-        df = pd.concat(
-            [
-                df,
-                pd.DataFrame(0, index=df.index, columns=missing_history_columns),
-            ],
-            axis=1,
+        df = df.with_columns(
+            pl.lit(0, dtype=pl.Int64).alias(column) for column in missing_history_columns
         )
-    for column in HISTORY_COLUMNS:
-        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0)
-    for column in TARGET_COLUMNS:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+    df = df.with_columns(
+        pl.col(column).cast(pl.Float64, strict=False).fill_null(0).alias(column)
+        for column in HISTORY_COLUMNS
+    )
+    df = df.with_columns(
+        pl.col(column).cast(pl.Float64, strict=False).alias(column) for column in TARGET_COLUMNS
+    )
     df = add_cached_vector_neighbor_features(df, path)
-    df = df.copy()
     df = add_style_features(df)
     df = add_corner_history_rank_features(df)
     df = add_race_relative_features(df)
-    df = df.dropna(subset=["race_id", "race_date", *TARGET_COLUMNS])
+    df = df.drop_nulls(subset=["race_id", "race_date", *TARGET_COLUMNS])
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_pickle(cache_path)
+    df.write_parquet(cache_path)
     return df
 
 
-def race_order_score(df: pd.DataFrame, target_column: str, prediction_column: str) -> float:
+def race_order_score(df: pl.DataFrame, target_column: str, prediction_column: str) -> float:
     scores: list[float] = []
-    for _, race in df.groupby("race_id", sort=False):
+    for _key, race in df.group_by("race_id", maintain_order=True):
         ordered_actual = cast(
             list[str],
-            race.sort_values([target_column, "umaban"])["horse_key"].tolist(),
+            race.sort([target_column, "umaban"])["horse_key"].to_list(),
         )
         ordered_predicted = cast(
             list[str],
-            race.sort_values([prediction_column, "umaban"])["horse_key"].tolist(),
+            race.sort([prediction_column, "umaban"])["horse_key"].to_list(),
         )
         predicted_positions = {horse_key: index + 1 for index, horse_key in enumerate(ordered_predicted)}
         errors = [
@@ -1063,13 +1140,17 @@ def race_order_score(df: pd.DataFrame, target_column: str, prediction_column: st
     return float(np.mean(scores)) if scores else 0.0
 
 
-def ranker_target(train: pd.DataFrame, target_column: str) -> pd.Series:
-    actual_rank = train.groupby("race_id", sort=False)[target_column].rank(method="first", ascending=True)
-    group_size = train.groupby("race_id", sort=False)["horse_key"].transform("count")
-    return (group_size - actual_rank).clip(lower=0).astype(int)
+def ranker_target(train: pl.DataFrame, target_column: str) -> pl.Series:
+    actual_rank = pl.col(target_column).rank(method="ordinal", descending=False).over("race_id")
+    group_size = pl.col("horse_key").count().over("race_id")
+    return (
+        train.select(
+            (group_size - actual_rank).clip(lower_bound=0).cast(pl.Int64).alias("ranker_target"),
+        )["ranker_target"]
+    )
 
 
-def train_model(train: pd.DataFrame, target_column: str) -> lgb.LGBMRegressor:
+def train_model(train: pl.DataFrame, target_column: str) -> lgb.LGBMRegressor:
     model = lgb.LGBMRegressor(
         objective="regression",
         n_estimators=650,
@@ -1085,13 +1166,13 @@ def train_model(train: pd.DataFrame, target_column: str) -> lgb.LGBMRegressor:
         verbosity=-1,
     )
     set_lightgbm_device_params(model)
-    fit_regressor_with_device_fallback(model, train[FEATURE_COLUMNS], train[target_column])
+    fit_regressor_with_device_fallback(model, train.select(FEATURE_COLUMNS), train[target_column])
     return model
 
 
-def train_ranker(train: pd.DataFrame, target_column: str) -> lgb.LGBMRanker:
-    ordered_train = train.sort_values(["race_id", "umaban"]).copy()
-    groups = ordered_train.groupby("race_id", sort=False).size().to_numpy()
+def train_ranker(train: pl.DataFrame, target_column: str) -> lgb.LGBMRanker:
+    ordered_train = train.sort(["race_id", "umaban"], maintain_order=True)
+    groups = ordered_train.group_by("race_id", maintain_order=True).len()["len"].to_numpy()
     model = lgb.LGBMRanker(
         objective="lambdarank",
         n_estimators=420,
@@ -1109,36 +1190,58 @@ def train_ranker(train: pd.DataFrame, target_column: str) -> lgb.LGBMRanker:
     set_lightgbm_device_params(model)
     fit_ranker_with_device_fallback(
         model,
-        ordered_train[FEATURE_COLUMNS],
+        ordered_train.select(FEATURE_COLUMNS),
         ranker_target(ordered_train, target_column),
         groups.astype(np.float64),
     )
     return model
 
 
-def build_pairwise_dataset(df: pd.DataFrame, target_column: str) -> tuple[pd.DataFrame, pd.Series]:
-    feature_blocks: list[pd.DataFrame] = []
-    labels: list[pd.Series] = []
-    for _, race in df.groupby("race_id", sort=False):
-        race = race.loc[:, ~race.columns.duplicated()].reset_index(drop=True)
-        size = len(race)
-        if size <= 1:
+def empty_pairwise_dataset() -> tuple[pl.DataFrame, pl.Series]:
+    empty_frame = pl.DataFrame(
+        schema={column: pl.Float64 for column in PAIRWISE_FEATURE_COLUMNS},
+    )
+    return empty_frame, pl.Series("label", [], dtype=pl.Int64)
+
+
+def pairwise_block(race: pl.DataFrame, target_column: str) -> tuple[FloatArray, IntArray] | None:
+    size = race.height
+    if size <= 1:
+        return None
+    left_indices, right_indices = np.triu_indices(size, k=1)
+    base_matrix = race.select(
+        pl.col(column).cast(pl.Float64, strict=False) for column in PAIRWISE_BASE_COLUMNS
+    ).to_numpy().astype(float)
+    diff = base_matrix[left_indices] - base_matrix[right_indices]
+    features = cast(FloatArray, np.column_stack([diff, np.abs(diff)]))
+    target_values = race[target_column].cast(pl.Float64, strict=False).to_numpy().astype(float)
+    labels: IntArray = (target_values[left_indices] < target_values[right_indices]).astype(np.int64)
+    return features, labels
+
+
+def build_pairwise_dataset(df: pl.DataFrame, target_column: str) -> tuple[pl.DataFrame, pl.Series]:
+    feature_blocks: list[FloatArray] = []
+    label_blocks: list[IntArray] = []
+    for _key, race in df.group_by("race_id", maintain_order=True):
+        block = pairwise_block(race, target_column)
+        if block is None:
             continue
-        left_indices, right_indices = np.triu_indices(size, k=1)
-        left = race.iloc[left_indices].reset_index(drop=True)
-        right = race.iloc[right_indices].reset_index(drop=True)
-        diff = left[PAIRWISE_BASE_COLUMNS].reset_index(drop=True) - right[PAIRWISE_BASE_COLUMNS].reset_index(drop=True)
-        diff.columns = [f"{column}_diff" for column in PAIRWISE_BASE_COLUMNS]
-        abs_diff = diff.abs()
-        abs_diff.columns = [f"{column}_abs_diff" for column in PAIRWISE_BASE_COLUMNS]
-        feature_blocks.append(pd.concat([diff, abs_diff], axis=1))
-        labels.append((left[target_column].reset_index(drop=True) < right[target_column].reset_index(drop=True)).astype(int))
+        features, labels = block
+        feature_blocks.append(features)
+        label_blocks.append(labels)
     if not feature_blocks:
-        return pd.DataFrame(columns=PAIRWISE_FEATURE_COLUMNS), pd.Series(dtype=int)
-    return pd.concat(feature_blocks, ignore_index=True), pd.concat(labels, ignore_index=True)
+        return empty_pairwise_dataset()
+    stacked_features = np.vstack(feature_blocks)
+    pair_features = pl.DataFrame(
+        {
+            column: stacked_features[:, column_index]
+            for column_index, column in enumerate(PAIRWISE_FEATURE_COLUMNS)
+        },
+    )
+    return pair_features, pl.Series("label", np.concatenate(label_blocks))
 
 
-def train_pairwise_model(train: pd.DataFrame, target_column: str) -> lgb.LGBMClassifier:
+def train_pairwise_model(train: pl.DataFrame, target_column: str) -> lgb.LGBMClassifier:
     pair_features, labels = build_pairwise_dataset(train, target_column)
     model = lgb.LGBMClassifier(
         objective="binary",
@@ -1155,14 +1258,14 @@ def train_pairwise_model(train: pd.DataFrame, target_column: str) -> lgb.LGBMCla
         verbosity=-1,
     )
     set_lightgbm_device_params(model)
-    fit_classifier_with_device_fallback(model, pair_features[PAIRWISE_FEATURE_COLUMNS], labels)
+    fit_classifier_with_device_fallback(model, pair_features.select(PAIRWISE_FEATURE_COLUMNS), labels)
     return model
 
 
 def train_stacking_model(
-    train: pd.DataFrame,
+    train: pl.DataFrame,
     target_column: str,
-    stacking_features: pd.DataFrame,
+    stacking_features: pl.DataFrame,
 ) -> lgb.LGBMRegressor:
     model = lgb.LGBMRegressor(
         objective="regression",
@@ -1183,32 +1286,42 @@ def train_stacking_model(
     return model
 
 
-def neural_sequence_tensor(df: pd.DataFrame) -> FloatArray:
-    working = df.copy()
-    working["__original_index"] = np.arange(len(working))
-    working["__date_ordinal"] = [race_date_to_ordinal(value) for value in working["race_date"]]
-    working["kyori"] = pd.to_numeric(working["kyori"], errors="coerce").fillna(0)
-    working = working.sort_values(["horse_key", "__date_ordinal", "race_id"], kind="mergesort")
-    unique_working = working.loc[:, ~working.columns.duplicated()]
-    numeric_history = pd.DataFrame(
-        {column: unique_working[column] if column in unique_working.columns else 0 for column in NEURAL_HISTORY_COLUMNS},
-        index=working.index,
-    ).apply(pd.to_numeric, errors="coerce").fillna(0)
-    static_values = working[NEURAL_SEQUENCE_STATIC_COLUMNS].to_numpy(dtype=np.float32)
+def numeric_history_expression(df: pl.DataFrame, column: str) -> pl.Expr:
+    if column in df.columns:
+        return pl.col(column).cast(pl.Float64, strict=False).fill_null(0).alias(column)
+    return pl.lit(0.0).alias(column)
+
+
+def neural_sequence_tensor(df: pl.DataFrame) -> FloatArray:
+    working = df.with_columns(
+        pl.Series("__date_ordinal", [race_date_to_ordinal(value) for value in df["race_date"].to_list()]),
+        pl.col("kyori").cast(pl.Float64, strict=False).fill_null(0).alias("kyori"),
+    ).with_columns(
+        numeric_history_expression(df, column).alias(f"__history_{column}")
+        for column in NEURAL_HISTORY_COLUMNS
+    )
+    working = working.with_row_index("__original_index")
+    working = working.sort(["horse_key", "__date_ordinal", "race_id"], maintain_order=True)
+    history_columns = [f"__history_{column}" for column in NEURAL_HISTORY_COLUMNS]
+    static_values = working.select(
+        pl.col(column).cast(pl.Float64, strict=False) for column in NEURAL_SEQUENCE_STATIC_COLUMNS
+    ).to_numpy().astype(np.float32)
     sequences = np.zeros(
-        (len(working), NEURAL_HISTORY_LAGS, len(NEURAL_HISTORY_COLUMNS) + len(NEURAL_SEQUENCE_STATIC_COLUMNS) + 2),
+        (working.height, NEURAL_HISTORY_LAGS, len(NEURAL_HISTORY_COLUMNS) + len(NEURAL_SEQUENCE_STATIC_COLUMNS) + 2),
         dtype=np.float32,
     )
-    grouped_history = numeric_history.groupby(working["horse_key"], sort=False)
-    grouped_dates = working["__date_ordinal"].groupby(working["horse_key"], sort=False)
-    grouped_distances = working["kyori"].groupby(working["horse_key"], sort=False)
-    current_dates = working["__date_ordinal"].to_numpy(dtype=float)
-    current_distances = working["kyori"].to_numpy(dtype=float)
+    current_dates = working["__date_ordinal"].cast(pl.Float64).to_numpy().astype(float)
+    current_distances = working["kyori"].to_numpy().astype(float)
     for lag in range(1, NEURAL_HISTORY_LAGS + 1):
         lag_index = lag - 1
-        shifted_history = grouped_history.shift(lag).fillna(0).to_numpy(dtype=np.float32)
-        shifted_dates = grouped_dates.shift(lag).fillna(0).to_numpy(dtype=float)
-        shifted_distances = grouped_distances.shift(lag).to_numpy(dtype=float)
+        shifted = working.select(
+            *[pl.col(column).shift(lag).over("horse_key").fill_null(0).alias(column) for column in history_columns],
+            pl.col("__date_ordinal").shift(lag).over("horse_key").fill_null(0).alias("__shifted_date"),
+            pl.col("kyori").shift(lag).over("horse_key").alias("__shifted_distance"),
+        )
+        shifted_history = shifted.select(history_columns).to_numpy().astype(np.float32)
+        shifted_dates = shifted["__shifted_date"].cast(pl.Float64).to_numpy().astype(float)
+        shifted_distances = shifted["__shifted_distance"].to_numpy().astype(float)
         shifted_distances = np.where(np.isfinite(shifted_distances), shifted_distances, current_distances)
         days_since = np.clip((current_dates - shifted_dates) / 365, 0, 10).astype(np.float32)
         distance_delta = np.clip((current_distances - shifted_distances) / 1000, -3, 3).astype(np.float32)
@@ -1221,7 +1334,7 @@ def neural_sequence_tensor(df: pd.DataFrame) -> FloatArray:
             ],
             axis=1,
         )
-    inverse_order = np.argsort(working["__original_index"].to_numpy(dtype=np.int64))
+    inverse_order = np.argsort(working["__original_index"].cast(pl.Int64).to_numpy().astype(np.int64))
     return cast(FloatArray, sequences[inverse_order])
 
 
@@ -1259,14 +1372,14 @@ class CornerTransformerModel(_MlxModuleBase):  # pragma: no cover
 def train_neural_corner_model(
     model,
     train_sequences: FloatArray,
-    target: pd.Series,
+    target: pl.Series,
     epochs: int,
 ) -> object:  # pragma: no cover
     mx = import_mlx_core()
     nn = import_mlx_nn()
     optimizers = import_mlx_optimizers()
     optimizer = optimizers.Adam(learning_rate=0.002)  # ty: ignore[unresolved-attribute]
-    target_values = target.to_numpy(dtype=np.float32)
+    target_values = target.to_numpy().astype(np.float32)
     batch_size = 4096
 
     def loss_fn(model_arg, batch_x, batch_y):
@@ -1286,95 +1399,105 @@ def train_neural_corner_model(
     return model
 
 
-def predict_neural_corner_model(model, sequences: FloatArray) -> pd.Series:  # pragma: no cover
+def predict_neural_corner_model(model, sequences: FloatArray) -> pl.Series:  # pragma: no cover
     mx = import_mlx_core()
     predictions: list[np.ndarray] = []
     for start in range(0, len(sequences), 8192):
         batch = mx.array(sequences[start : start + 8192])  # ty: ignore[unresolved-attribute]
         predictions.append(np.asarray(model(batch), dtype=float))
-    return clipped_prediction(pd.Series(np.concatenate(predictions)))
+    return clipped_prediction(pl.Series(np.concatenate(predictions)))
 
 
-def train_lstm_model(train_sequences: FloatArray, target: pd.Series) -> object:  # pragma: no cover
+def train_lstm_model(train_sequences: FloatArray, target: pl.Series) -> object:  # pragma: no cover
     return train_neural_corner_model(CornerLstmModel(train_sequences.shape[2], 32), train_sequences, target, 2)
 
 
-def train_transformer_model(train_sequences: FloatArray, target: pd.Series) -> object:  # pragma: no cover
+def train_transformer_model(train_sequences: FloatArray, target: pl.Series) -> object:  # pragma: no cover
     return train_neural_corner_model(CornerTransformerModel(train_sequences.shape[2], 32), train_sequences, target, 2)
 
 
-def apply_pairwise_model(test: pd.DataFrame, model: lgb.LGBMClassifier, target_column: str) -> pd.Series:
-    score_values = {int(index): 0.0 for index in test.index}
-    for _, race in test.groupby("race_id", sort=False):
-        race = race.loc[:, ~race.columns.duplicated()].reset_index()
-        size = len(race)
+def apply_pairwise_model(test: pl.DataFrame, model: lgb.LGBMClassifier, target_column: str) -> pl.Series:
+    score_values = np.zeros(test.height, dtype=float)
+    indexed = test.with_row_index("__row_position")
+    for _key, race in indexed.group_by("race_id", maintain_order=True):
+        size = race.height
         if size <= 1:
             continue
+        positions = race["__row_position"].cast(pl.Int64).to_numpy().astype(np.int64)
         left_indices, right_indices = np.triu_indices(size, k=1)
-        left = race.iloc[left_indices].reset_index(drop=True)
-        right = race.iloc[right_indices].reset_index(drop=True)
-        diff = left[PAIRWISE_BASE_COLUMNS].reset_index(drop=True) - right[PAIRWISE_BASE_COLUMNS].reset_index(drop=True)
-        diff.columns = [f"{column}_diff" for column in PAIRWISE_BASE_COLUMNS]
-        abs_diff = diff.abs()
-        abs_diff.columns = [f"{column}_abs_diff" for column in PAIRWISE_BASE_COLUMNS]
-        pair_features = pd.concat([diff, abs_diff], axis=1)
+        base_matrix = race.select(
+            pl.col(column).cast(pl.Float64, strict=False) for column in PAIRWISE_BASE_COLUMNS
+        ).to_numpy().astype(float)
+        diff = base_matrix[left_indices] - base_matrix[right_indices]
+        pair_features = pl.DataFrame(
+            {
+                column: cast(FloatArray, np.column_stack([diff, np.abs(diff)]))[:, column_index]
+                for column_index, column in enumerate(PAIRWISE_FEATURE_COLUMNS)
+            },
+        )
         probabilities = np.asarray(
-            model.predict_proba(pair_features[PAIRWISE_FEATURE_COLUMNS]),
+            model.predict_proba(to_lgb_frame(pair_features.select(PAIRWISE_FEATURE_COLUMNS))),
             dtype=float,
         )[:, 1]
         for pair_index, probability in enumerate(probabilities):
-            left_index = int(left["index"].iloc[pair_index])
-            right_index = int(right["index"].iloc[pair_index])
-            score_values[left_index] += float(probability)
-            score_values[right_index] += 1 - float(probability)
-    scores = pd.Series(score_values, index=test.index, dtype=float)
-    return (
-        1
-        - scores
-        / test.groupby("race_id", sort=False)["horse_key"].transform("count").sub(1).replace(0, np.nan)
-    ).fillna(0.5)
+            score_values[positions[left_indices[pair_index]]] += float(probability)
+            score_values[positions[right_indices[pair_index]]] += 1 - float(probability)
+    group_size = test.select(
+        pl.col("horse_key").count().over("race_id").alias("group_size"),
+    )["group_size"].to_numpy().astype(float)
+    denominator = np.where(group_size - 1 == 0, np.nan, group_size - 1)
+    result = 1 - score_values / denominator
+    return pl.Series("pairwise", np.where(np.isnan(result), 0.5, result))
 
 
-def normalized_rank_prediction(df: pd.DataFrame, score_column: str) -> pd.Series:
-    rank = df.groupby("race_id", sort=False)[score_column].rank(method="first", ascending=False)
-    group_size = df.groupby("race_id", sort=False)[score_column].transform("count")
-    return ((rank - 1) / (group_size - 1).replace(0, np.nan)).fillna(0.5)
+def normalized_rank_prediction(df: pl.DataFrame, score_column: str) -> pl.Series:
+    rank = pl.col(score_column).rank(method="ordinal", descending=True).over("race_id")
+    group_size = pl.col(score_column).count().over("race_id")
+    denominator = pl.when(group_size - 1 == 0).then(None).otherwise(group_size - 1)
+    return df.select(
+        ((rank - 1) / denominator).fill_null(0.5).alias("normalized_rank"),
+    )["normalized_rank"]
 
 
-def normalized_position_rank_prediction(df: pd.DataFrame, values: pd.Series) -> pd.Series:
-    scratch_column = "__position_rank_source"
-    df[scratch_column] = values
-    try:
-        rank = df.groupby("race_id", sort=False)[scratch_column].rank(method="first", ascending=True)
-        group_size = df.groupby("race_id", sort=False)[scratch_column].transform("count")
-        return ((rank - 1) / (group_size - 1).replace(0, np.nan)).fillna(0.5)
-    finally:
-        del df[scratch_column]
+def normalized_position_rank_prediction(df: pl.DataFrame, values: pl.Series) -> pl.Series:
+    scoped = df.select(pl.col("race_id")).with_columns(values.alias("__position_rank_source"))
+    rank = pl.col("__position_rank_source").rank(method="ordinal", descending=False).over("race_id")
+    group_size = pl.col("__position_rank_source").count().over("race_id")
+    denominator = pl.when(group_size - 1 == 0).then(None).otherwise(group_size - 1)
+    return scoped.select(
+        ((rank - 1) / denominator).fill_null(0.5).alias("normalized_position_rank"),
+    )["normalized_position_rank"]
 
 
-def clipped_prediction(values: pd.Series) -> pd.Series:
-    return pd.Series(np.clip(np.asarray(values, dtype=float), 0, 1), index=values.index)
+def clipped_prediction(values: pl.Series) -> pl.Series:
+    return pl.Series(values.name, np.clip(values.to_numpy().astype(float), 0, 1))
 
 
-def blended_prediction(base: pd.Series, overlay: pd.Series, alpha: float) -> pd.Series:
+def fill_null_with_fallback(values: pl.Series, fallback: pl.Series) -> pl.Series:
+    value_array = values.cast(pl.Float64, strict=False).to_numpy().astype(float)
+    fallback_array = fallback.cast(pl.Float64, strict=False).to_numpy().astype(float)
+    return pl.Series(values.name, np.where(np.isnan(value_array), fallback_array, value_array))
+
+
+def blended_prediction(base: pl.Series, overlay: pl.Series, alpha: float) -> pl.Series:
     return clipped_prediction(base * (1 - alpha) + overlay * alpha)
 
 
-def column_or_prediction_fallback(df: pd.DataFrame, column: str, fallback_column: str) -> pd.Series:
+def column_or_prediction_fallback(df: pl.DataFrame, column: str, fallback_column: str) -> pl.Series:
     if column in df.columns:
         return df[column]
     return df[fallback_column]
 
 
 def stacking_feature_frame(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     target_column: str,
     regression_column: str,
     ranker_column: str,
     pairwise_column: str,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     structural_candidates = structural_candidate_predictions(df, target_column, regression_column, pairwise_column)
-    features = {
+    features: dict[str, pl.Series] = {
         "regression": df[regression_column],
         "ranker": df[ranker_column],
         "pairwise": df[pairwise_column],
@@ -1389,18 +1512,29 @@ def stacking_feature_frame(
     for name, prediction in structural_candidates.items():
         features[name] = prediction
         features[f"{name}_rank"] = normalized_position_rank_prediction(df, prediction)
-    return pd.DataFrame(features, index=df.index).replace([np.inf, -np.inf], np.nan).fillna(0.5)
+    stacking_frame = pl.DataFrame(
+        {name: series.rename(name) for name, series in features.items()},
+    )
+    return stacking_frame.with_columns(
+        pl.when(pl.col(column).cast(pl.Float64, strict=False).is_infinite())
+        .then(None)
+        .otherwise(pl.col(column).cast(pl.Float64, strict=False))
+        .fill_nan(None)
+        .fill_null(0.5)
+        .alias(column)
+        for column in stacking_frame.columns
+    )
 
 
 def structural_candidate_predictions(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
     regression_column: str,
     pairwise_column: str,
     stacked_column: str | None = None,
     lstm_column: str | None = None,
     transformer_column: str | None = None,
-) -> dict[str, pd.Series]:
+) -> dict[str, pl.Series]:
     corner_name = target_column.replace("_norm", "")
     horse_recent = column_or_prediction_fallback(test, f"horse_{corner_name}_recent_avg", regression_column)
     horse_avg = column_or_prediction_fallback(test, f"horse_{corner_name}_avg", regression_column)
@@ -1458,11 +1592,11 @@ def structural_candidate_predictions(
 
 def corner_weighted_structural_candidates(
     target_column: str,
-    test: pd.DataFrame,
-    horse_recent: pd.Series,
-    horse_avg: pd.Series,
-    horse_last: pd.Series,
-) -> dict[str, pd.Series]:
+    test: pl.DataFrame,
+    horse_recent: pl.Series,
+    horse_avg: pl.Series,
+    horse_last: pl.Series,
+) -> dict[str, pl.Series]:
     front_style = clipped_prediction(1 - test["front_runner_score"])
     stalker_style = clipped_prediction(1 - test["stalker_score"])
     late_style = test["horse_late_recent"]
@@ -1506,39 +1640,36 @@ def corner_weighted_structural_candidates(
 
 
 def score_prediction(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
-    prediction: pd.Series,
+    prediction: pl.Series,
     scratch_column: str,
 ) -> float:
-    test[scratch_column] = prediction
-    try:
-        return race_order_score(test, target_column, scratch_column)
-    finally:
-        del test[scratch_column]
+    scored = test.with_columns(prediction.alias(scratch_column))
+    return race_order_score(scored, target_column, scratch_column)
 
 
 def update_best_prediction(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
-    candidate: pd.Series,
+    candidate: pl.Series,
     score_key: str,
-    current: tuple[float, float, pd.Series],
+    current: tuple[float, float, pl.Series],
     scores: dict[str, float],
-) -> tuple[float, float, pd.Series]:
+) -> tuple[float, float, pl.Series]:
     score = score_prediction(test, target_column, candidate, f"candidate_{target_column}_{score_key}")
     scores[score_key] = score
     if score <= current[1]:
         return current
-    return -1.0, score, candidate.copy()
+    return -1.0, score, candidate.clone()
 
 
 def rank_candidate_predictions(
-    test: pd.DataFrame,
-    structural_candidates: dict[str, pd.Series],
+    test: pl.DataFrame,
+    structural_candidates: dict[str, pl.Series],
     regression_column: str,
     ranker_column: str,
-) -> dict[str, pd.Series]:
+) -> dict[str, pl.Series]:
     candidates = {
         "regression_rank": normalized_position_rank_prediction(test, test[regression_column]),
         "ranker_rank": clipped_prediction(test[ranker_column]),
@@ -1549,12 +1680,12 @@ def rank_candidate_predictions(
 
 
 def search_rank_pair_ensembles(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
-    candidates: dict[str, pd.Series],
-    current: tuple[float, float, pd.Series],
+    candidates: dict[str, pl.Series],
+    current: tuple[float, float, pl.Series],
     scores: dict[str, float],
-) -> tuple[float, float, pd.Series]:
+) -> tuple[float, float, pl.Series]:
     names = list(candidates)
     best = current
     for left_index, left_name in enumerate(names):
@@ -1567,12 +1698,12 @@ def search_rank_pair_ensembles(
 
 
 def search_rank_triple_ensembles(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
-    candidates: dict[str, pd.Series],
-    current: tuple[float, float, pd.Series],
+    candidates: dict[str, pl.Series],
+    current: tuple[float, float, pl.Series],
     scores: dict[str, float],
-) -> tuple[float, float, pd.Series]:
+) -> tuple[float, float, pl.Series]:
     preferred_names = [
         name
         for name in [
@@ -1606,14 +1737,14 @@ def search_rank_triple_ensembles(
 
 
 def search_rank_ensembles(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
-    structural_candidates: dict[str, pd.Series],
+    structural_candidates: dict[str, pl.Series],
     regression_column: str,
     ranker_column: str,
-    current: tuple[float, float, pd.Series],
+    current: tuple[float, float, pl.Series],
     scores: dict[str, float],
-) -> tuple[float, float, pd.Series]:
+) -> tuple[float, float, pl.Series]:
     candidates = rank_candidate_predictions(test, structural_candidates, regression_column, ranker_column)
     best = current
     for name, prediction in candidates.items():
@@ -1622,7 +1753,7 @@ def search_rank_ensembles(
     return search_rank_triple_ensembles(test, target_column, candidates, best, scores)
 
 
-def majority_vote_prediction(test: pd.DataFrame, candidates: dict[str, pd.Series]) -> pd.Series:
+def majority_vote_prediction(test: pl.DataFrame, candidates: dict[str, pl.Series]) -> pl.Series:
     vote_names = [
         name
         for name in [
@@ -1637,16 +1768,16 @@ def majority_vote_prediction(test: pd.DataFrame, candidates: dict[str, pd.Series
         ]
         if name in candidates
     ]
-    vote_sum = pd.Series(0.0, index=test.index)
-    for name in vote_names:
-        vote_sum += normalized_position_rank_prediction(test, candidates[name])
     if not vote_names:
-        return pd.Series(0.5, index=test.index)
-    return clipped_prediction(vote_sum / len(vote_names))
+        return pl.Series("majority_vote", np.full(test.height, 0.5, dtype=float))
+    vote_sum = np.zeros(test.height, dtype=float)
+    for name in vote_names:
+        vote_sum = vote_sum + normalized_position_rank_prediction(test, candidates[name]).to_numpy().astype(float)
+    return clipped_prediction(pl.Series("majority_vote", vote_sum / len(vote_names)))
 
 
 def choose_ensemble_prediction(
-    test: pd.DataFrame,
+    test: pl.DataFrame,
     target_column: str,
     regression_column: str,
     ranker_column: str,
@@ -1654,7 +1785,7 @@ def choose_ensemble_prediction(
     stacked_column: str | None = None,
     lstm_column: str | None = None,
     transformer_column: str | None = None,
-) -> tuple[pd.Series, float, dict[str, float]]:
+) -> tuple[pl.Series, float, dict[str, float]]:
     scores: dict[str, float] = {}
     best_alpha = -1.0
     best_score = -1.0
@@ -1681,7 +1812,7 @@ def choose_ensemble_prediction(
         if score > best_score:
             best_alpha = alpha
             best_score = score
-            best_prediction = candidate.copy()
+            best_prediction = candidate.clone()
 
     for alpha in rank_pairwise_alphas():
         candidate = blended_prediction(test[ranker_column], test[pairwise_column], alpha)
@@ -1695,16 +1826,18 @@ def choose_ensemble_prediction(
         if score > best_score:
             best_alpha = alpha
             best_score = score
-            best_prediction = candidate.copy()
+            best_prediction = candidate.clone()
 
     for name, structural_prediction in structural_candidates.items():
-        base_prediction = clipped_prediction(structural_prediction.fillna(test[regression_column]))
+        base_prediction = clipped_prediction(
+            fill_null_with_fallback(structural_prediction, test[regression_column]),
+        )
         score = score_prediction(test, target_column, base_prediction, f"structural_{target_column}_{name}")
         scores[name] = score
         if score > best_score:
             best_alpha = 1.0
             best_score = score
-            best_prediction = base_prediction.copy()
+            best_prediction = base_prediction.clone()
         for alpha in structural_blend_alphas():
             candidate = blended_prediction(test[regression_column], base_prediction, alpha)
             score = score_prediction(
@@ -1717,7 +1850,7 @@ def choose_ensemble_prediction(
             if score > best_score:
                 best_alpha = alpha
                 best_score = score
-                best_prediction = candidate.copy()
+                best_prediction = candidate.clone()
         if name in {"lstm", "transformer", "neural_average"}:
             for alpha in neural_blend_alphas():
                 candidate = blended_prediction(test[regression_column], base_prediction, alpha)
@@ -1731,7 +1864,7 @@ def choose_ensemble_prediction(
                 if score > best_score:
                     best_alpha = alpha
                     best_score = score
-                    best_prediction = candidate.copy()
+                    best_prediction = candidate.clone()
     best_alpha, best_score, best_prediction = search_rank_ensembles(
         test,
         target_column,
@@ -1765,11 +1898,11 @@ def main() -> None:
     test_to_date = normalize_date(args.test_to_date)
     train_mask = df["race_date"] <= train_to_date
     test_mask = (df["race_date"] >= test_from_date) & (df["race_date"] <= test_to_date)
-    train_positions = np.flatnonzero(train_mask.to_numpy(dtype=bool))
-    test_positions = np.flatnonzero(test_mask.to_numpy(dtype=bool))
-    train = df[train_mask].copy()
-    test = df[test_mask].copy()
-    if train.empty or test.empty:
+    train_positions = np.flatnonzero(train_mask.to_numpy())
+    test_positions = np.flatnonzero(test_mask.to_numpy())
+    train = df.filter(train_mask)
+    test = df.filter(test_mask)
+    if train.is_empty() or test.is_empty():
         raise SystemExit("train or test dataset is empty")
     all_sequences = neural_sequence_tensor(df)
     train_sequences = all_sequences[train_positions]
@@ -1781,9 +1914,9 @@ def main() -> None:
         "features": FEATURE_COLUMNS,
         "pairwise_features": PAIRWISE_FEATURE_COLUMNS,
         "test_from_date": test_from_date,
-        "test_rows": int(len(test)),
+        "test_rows": test.height,
         "test_to_date": test_to_date,
-        "train_rows": int(len(train)),
+        "train_rows": train.height,
         "train_to_date": train_to_date,
         "timing": {
             "dataset_load_seconds": load_seconds,
@@ -1806,14 +1939,26 @@ def main() -> None:
         stacked_prediction_column = f"stacked_{target_column}"
         lstm_prediction_column = f"lstm_{target_column}"
         transformer_prediction_column = f"transformer_{target_column}"
-        train[regression_column] = np.clip(
-            np.asarray(model.predict(train[FEATURE_COLUMNS]), dtype=float),
-            0,
-            1,
+        train = train.with_columns(
+            pl.Series(
+                regression_column,
+                np.clip(
+                    np.asarray(model.predict(to_lgb_frame(train.select(FEATURE_COLUMNS))), dtype=float),
+                    0,
+                    1,
+                ),
+            ),
+            pl.Series(
+                ranker_score_column,
+                np.asarray(ranker.predict(to_lgb_frame(train.select(FEATURE_COLUMNS))), dtype=float),
+            ),
         )
-        train[ranker_score_column] = np.asarray(ranker.predict(train[FEATURE_COLUMNS]), dtype=float)
-        train[ranker_prediction_column] = normalized_rank_prediction(train, ranker_score_column)
-        train[pairwise_prediction_column] = apply_pairwise_model(train, pairwise_model, target_column)
+        train = train.with_columns(
+            normalized_rank_prediction(train, ranker_score_column).alias(ranker_prediction_column),
+        )
+        train = train.with_columns(
+            apply_pairwise_model(train, pairwise_model, target_column).alias(pairwise_prediction_column),
+        )
         stacker = train_stacking_model(
             train,
             target_column,
@@ -1829,29 +1974,48 @@ def main() -> None:
         ranker.booster_.save_model(str(model_dir / f"{target_column}.ranker.txt"))
         pairwise_model.booster_.save_model(str(model_dir / f"{target_column}.pairwise.txt"))
         stacker.booster_.save_model(str(model_dir / f"{target_column}.stacker.txt"))
-        test[regression_column] = np.clip(
-            np.asarray(model.predict(test[FEATURE_COLUMNS]), dtype=float),
-            0,
-            1,
-        )
-        test[ranker_score_column] = np.asarray(ranker.predict(test[FEATURE_COLUMNS]), dtype=float)
-        test[ranker_prediction_column] = normalized_rank_prediction(test, ranker_score_column)
-        test[pairwise_prediction_column] = apply_pairwise_model(test, pairwise_model, target_column)
-        test[stacked_prediction_column] = np.clip(
-            np.asarray(
-                stacker.predict(
-                    stacking_feature_frame(
-                        test,
-                        target_column,
-                        regression_column,
-                        ranker_prediction_column,
-                        pairwise_prediction_column,
-                    ),
+        test = test.with_columns(
+            pl.Series(
+                regression_column,
+                np.clip(
+                    np.asarray(model.predict(to_lgb_frame(test.select(FEATURE_COLUMNS))), dtype=float),
+                    0,
+                    1,
                 ),
-                dtype=float,
             ),
-            0,
-            1,
+            pl.Series(
+                ranker_score_column,
+                np.asarray(ranker.predict(to_lgb_frame(test.select(FEATURE_COLUMNS))), dtype=float),
+            ),
+        )
+        test = test.with_columns(
+            normalized_rank_prediction(test, ranker_score_column).alias(ranker_prediction_column),
+        )
+        test = test.with_columns(
+            apply_pairwise_model(test, pairwise_model, target_column).alias(pairwise_prediction_column),
+        )
+        test = test.with_columns(
+            pl.Series(
+                stacked_prediction_column,
+                np.clip(
+                    np.asarray(
+                        stacker.predict(
+                            to_lgb_frame(
+                                stacking_feature_frame(
+                                    test,
+                                    target_column,
+                                    regression_column,
+                                    ranker_prediction_column,
+                                    pairwise_prediction_column,
+                                ),
+                            ),
+                        ),
+                        dtype=float,
+                    ),
+                    0,
+                    1,
+                ),
+            ),
         )
         # Train MLX neural models when available; skip gracefully on non-Apple-Silicon.
         # Each model is guarded independently so a partial failure doesn't silently
@@ -1865,7 +2029,12 @@ def main() -> None:
         except (ImportError, OSError, RuntimeError, AttributeError):
             _lstm_model = None
         if _lstm_model is not None:
-            test[lstm_prediction_column] = predict_neural_corner_model(_lstm_model, test_sequences).to_numpy(dtype=float)
+            test = test.with_columns(
+                pl.Series(
+                    lstm_prediction_column,
+                    np.asarray(predict_neural_corner_model(_lstm_model, test_sequences).to_numpy(), dtype=float),
+                ),
+            )
             _lstm_col = lstm_prediction_column
         else:
             _lstm_col = None
@@ -1874,10 +2043,15 @@ def main() -> None:
         except (ImportError, OSError, RuntimeError, AttributeError):
             _transformer_model = None
         if _transformer_model is not None:
-            test[transformer_prediction_column] = predict_neural_corner_model(
-                _transformer_model,
-                test_sequences,
-            ).to_numpy(dtype=float)
+            test = test.with_columns(
+                pl.Series(
+                    transformer_prediction_column,
+                    np.asarray(
+                        predict_neural_corner_model(_transformer_model, test_sequences).to_numpy(),
+                        dtype=float,
+                    ),
+                ),
+            )
             _transformer_col = transformer_prediction_column
         else:
             _transformer_col = None
@@ -1891,7 +2065,7 @@ def main() -> None:
             _lstm_col,
             _transformer_col,
         )
-        test[prediction_column] = prediction
+        test = test.with_columns(prediction.alias(prediction_column))
         metrics[target_column] = {
             "mae": float(mean_absolute_error(test[target_column], test[prediction_column])),
             "ranker_alpha": alpha,
@@ -1916,7 +2090,7 @@ def main() -> None:
         *prediction_columns,
     ]
     Path(args.predictions_output).parent.mkdir(parents=True, exist_ok=True)
-    test[output_columns].to_csv(args.predictions_output, index=False)
+    test.select(output_columns).write_csv(args.predictions_output)
     Path(args.metrics_output).parent.mkdir(parents=True, exist_ok=True)
     cast(dict[str, object], metrics["timing"])["total_seconds"] = perf_counter() - total_started_at
     Path(args.metrics_output).write_text(json.dumps(metrics, ensure_ascii=False, indent=2), "utf-8")

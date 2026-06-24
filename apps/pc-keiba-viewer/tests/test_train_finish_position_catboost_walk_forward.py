@@ -6,14 +6,14 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
-import pandas as pd
+import polars as pl
 import pytest
 
 import train_finish_position_catboost_walk_forward as subject
 
 
-def _feature_df() -> pd.DataFrame:
-    return pd.DataFrame({
+def _feature_df() -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "race_date": ["20240512", "20240512", "20240519", "20240519"],
         "race_year": [2024, 2024, 2024, 2024],
@@ -52,9 +52,9 @@ def _base_args(tmp_path: Path) -> subject.TrainCatBoostArgs:
 
 
 def _make_fake_deps(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_cols: list[str] | None = None,
-    bucket_df: pd.DataFrame | None = None,
+    bucket_df: pl.DataFrame | None = None,
 ) -> subject.TrainDeps:
     return {
         "parquet_reader": MagicMock(return_value=df),
@@ -66,7 +66,7 @@ def _make_fake_deps(
                 "best_iteration": 100,
             },
         ),
-        "bucket_reader": MagicMock(return_value=bucket_df if bucket_df is not None else pd.DataFrame()),
+        "bucket_reader": MagicMock(return_value=bucket_df if bucket_df is not None else pl.DataFrame()),
     }
 
 
@@ -268,18 +268,18 @@ def test_merge_bucket_weights_returns_train_unchanged_when_no_bucket_df():
 
 def test_merge_bucket_weights_joins_score_column():
     train_df = _feature_df()
-    bucket_df = pd.DataFrame({
+    bucket_df = pl.DataFrame({
         "race_id": ["r1", "r2"],
         "is_weak_bucket_score": [1.0, 0.0],
     })
     out = subject.merge_bucket_weights_into_train(train_df, bucket_df)
     assert "is_weak_bucket_score" in out.columns
-    assert out["is_weak_bucket_score"].tolist() == [1.0, 1.0, 0.0, 0.0]
+    assert out["is_weak_bucket_score"].to_list() == [1.0, 1.0, 0.0, 0.0]
 
 
 def test_merge_bucket_weights_raises_when_race_id_missing():
     train_df = _feature_df()
-    bucket_df = pd.DataFrame({"is_weak_bucket_score": [1.0]})
+    bucket_df = pl.DataFrame({"is_weak_bucket_score": [1.0]})
     with pytest.raises(ValueError) as info:
         subject.merge_bucket_weights_into_train(train_df, bucket_df)
     assert "race_id" in str(info.value)
@@ -287,7 +287,7 @@ def test_merge_bucket_weights_raises_when_race_id_missing():
 
 def test_merge_bucket_weights_raises_when_score_missing():
     train_df = _feature_df()
-    bucket_df = pd.DataFrame({"race_id": ["r1"]})
+    bucket_df = pl.DataFrame({"race_id": ["r1"]})
     with pytest.raises(ValueError) as info:
         subject.merge_bucket_weights_into_train(train_df, bucket_df)
     assert "is_weak_bucket_score" in str(info.value)
@@ -296,7 +296,7 @@ def test_merge_bucket_weights_raises_when_score_missing():
 def test_merge_bucket_weights_deduplicates_bucket_df_by_race_id():
     """Duplicate race_ids in bucket_df must not multiply training rows."""
     train_df = _feature_df()  # 4 rows: 2 horses × 2 races
-    bucket_df = pd.DataFrame({
+    bucket_df = pl.DataFrame({
         "race_id": ["r1", "r1", "r2"],  # r1 appears twice
         "is_weak_bucket_score": [1.0, 0.5, 0.0],
     })
@@ -308,25 +308,25 @@ def test_attach_sample_weights_uses_time_decay_only_when_no_bucket_column():
     train_df = _feature_df()
     out = subject.attach_sample_weights(train_df, alpha=0.5)
     assert "sample_weight" in out.columns
-    assert all(0.5 <= w <= 1.0 for w in out["sample_weight"].tolist())
+    assert all(0.5 <= w <= 1.0 for w in out["sample_weight"].to_list())
 
 
 def test_attach_sample_weights_combines_with_bucket_scores_when_alpha_gt_zero():
-    train_df = _feature_df().assign(is_weak_bucket_score=[1.0, 1.0, 0.0, 0.0])
+    train_df = _feature_df().with_columns(pl.Series("is_weak_bucket_score", [1.0, 1.0, 0.0, 0.0]))
     out = subject.attach_sample_weights(train_df, alpha=0.5)
-    weights = out["sample_weight"].tolist()
+    weights = out["sample_weight"].to_list()
     assert weights[0] > weights[2]
 
 
 def test_attach_sample_weights_uses_time_only_when_alpha_is_zero_even_with_buckets():
-    train_df = _feature_df().assign(is_weak_bucket_score=[1.0, 1.0, 0.0, 0.0])
+    train_df = _feature_df().with_columns(pl.Series("is_weak_bucket_score", [1.0, 1.0, 0.0, 0.0]))
     out = subject.attach_sample_weights(train_df, alpha=0.0)
-    weights = out["sample_weight"].tolist()
+    weights = out["sample_weight"].to_list()
     assert weights[0] == weights[2]
 
 
 def test_attach_sample_weights_raises_when_race_year_missing():
-    train_df = _feature_df().drop(columns=["race_year"])
+    train_df = _feature_df().drop("race_year")
     with pytest.raises(ValueError) as info:
         subject.attach_sample_weights(train_df, alpha=0.0)
     assert "race_year" in str(info.value)
@@ -407,7 +407,7 @@ def test_train_fold_skips_empty_and_writes_skip_metadata(
     monkeypatch.setattr(
         subject,
         "split_train_valid",
-        lambda *_args, **_kw: (pd.DataFrame(), pd.DataFrame()),
+        lambda *_args, **_kw: (pl.DataFrame(), pl.DataFrame()),
     )
     out = subject.train_fold(_feature_df(), ["feature_a"], args, 2024, [2024], deps, None)
     assert out["status"] == "skipped"
@@ -443,7 +443,7 @@ def test_train_fold_passes_bucket_df_through(
     args = _base_args(tmp_path)
     args["alpha_bucket_weight"] = 0.5
     df = _feature_df()
-    bucket_df = pd.DataFrame({
+    bucket_df = pl.DataFrame({
         "race_id": ["r1", "r2"],
         "is_weak_bucket_score": [1.0, 0.0],
     })
@@ -621,7 +621,7 @@ def test_run_sorts_full_dataset_once_before_folds(
     per-fold trainer can run with presorted=True; the feature resolver therefore
     sees the sorted frame, not the raw load order."""
     args = _base_args(tmp_path)
-    unsorted = pd.DataFrame({
+    unsorted = pl.DataFrame({
         "race_id": ["r2", "r1", "r2", "r1"],
         "race_date": ["20240519", "20240512", "20240519", "20240512"],
         "race_year": [2024, 2024, 2024, 2024],
@@ -634,8 +634,8 @@ def test_run_sorts_full_dataset_once_before_folds(
     monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (unsorted, unsorted))
     subject.run(args, deps)
     seen = cast(MagicMock, deps["feature_resolver"]).call_args.args[0]
-    assert seen["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
-    assert seen["umaban"].tolist() == [1, 2, 1, 2]
+    assert seen["race_id"].to_list() == ["r1", "r1", "r2", "r2"]
+    assert seen["umaban"].to_list() == [1, 2, 1, 2]
 
 
 def test_run_reads_bucket_parquet_when_set(
@@ -644,7 +644,7 @@ def test_run_reads_bucket_parquet_when_set(
     args = _base_args(tmp_path)
     args["bucket_membership_parquet"] = tmp_path / "buckets"
     df = _feature_df()
-    bucket_df = pd.DataFrame({"race_id": ["r1"], "is_weak_bucket_score": [0.5]})
+    bucket_df = pl.DataFrame({"race_id": ["r1"], "is_weak_bucket_score": [0.5]})
     deps = _make_fake_deps(df, bucket_df=bucket_df)
     monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
     subject.run(args, deps)
@@ -664,7 +664,7 @@ def test_default_parquet_reader_delegates_to_finish_position_catboost(
 ):
     import finish_position_catboost as cb_walk
 
-    sentinel = pd.DataFrame({"x": [1]})
+    sentinel = pl.DataFrame({"x": [1]})
     loader = MagicMock(return_value=sentinel)
     monkeypatch.setattr(cb_walk, "load_parquet_dir", loader)
     out = subject.default_parquet_reader(tmp_path)
@@ -677,7 +677,7 @@ def test_default_feature_resolver_delegates_with_cat_features(monkeypatch: pytes
 
     resolver = MagicMock(return_value=["x"])
     monkeypatch.setattr(cb_walk, "resolve_feature_columns", resolver)
-    out = subject.default_feature_resolver(pd.DataFrame({"x": [1]}))
+    out = subject.default_feature_resolver(pl.DataFrame({"x": [1]}))
     assert out == ["x"]
     resolver.assert_called_once()
     _, kwargs = resolver.call_args
@@ -687,21 +687,21 @@ def test_default_feature_resolver_delegates_with_cat_features(monkeypatch: pytes
 def test_default_fold_trainer_calls_train_catboost_ranker(monkeypatch: pytest.MonkeyPatch):
     import finish_position_catboost as cb_walk
 
-    expected = {"valid_predictions": pd.DataFrame(), "metrics": {}, "best_iteration": 1}
+    expected = {"valid_predictions": pl.DataFrame(), "metrics": {}, "best_iteration": 1}
     trainer = MagicMock(return_value=expected)
     monkeypatch.setattr(cb_walk, "train_catboost_ranker", trainer)
     out = subject.default_fold_trainer(
-        pd.DataFrame(), pd.DataFrame(), ["x"], argparse.Namespace(),
+        pl.DataFrame(), pl.DataFrame(), ["x"], argparse.Namespace(),
     )
     assert out is expected
     trainer.assert_called_once()
 
 
-def test_default_bucket_reader_calls_pandas_read_parquet(
+def test_default_bucket_reader_calls_polars_read_parquet(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
-    sentinel = pd.DataFrame({"x": [1]})
-    monkeypatch.setattr(pd, "read_parquet", MagicMock(return_value=sentinel))
+    sentinel = pl.DataFrame({"x": [1]})
+    monkeypatch.setattr(pl, "read_parquet", MagicMock(return_value=sentinel))
     out = subject.default_bucket_reader(tmp_path)
     assert out is sentinel
 
@@ -733,12 +733,12 @@ def test_main_prints_json(
 
 
 def test_split_train_valid_filters_dates_and_labels():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_date": ["20230101", "20230515", "20240101", "20250101"],
         "race_id": ["r1", "r2", "r3", "r4"],
         "umaban": [1, 1, 1, 1],
         "finish_position": [1.0, 2.0, 1.0, None],
     })
     train_df, valid_df = subject.split_train_valid(df, "20220101", 2024)
-    assert train_df["race_id"].tolist() == ["r1", "r2"]
-    assert valid_df["race_id"].tolist() == ["r3"]
+    assert train_df["race_id"].to_list() == ["r1", "r2"]
+    assert valid_df["race_id"].to_list() == ["r3"]

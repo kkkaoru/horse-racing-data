@@ -7,9 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import numpy as np
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+import polars as pl
 import pytest
 
 import finish_position_catboost as subject
@@ -19,8 +17,8 @@ import finish_position_catboost as subject
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _small_df() -> pd.DataFrame:
-    return pd.DataFrame({
+def _small_df() -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "race_date": ["20230101", "20230101", "20230201", "20230201"],
         "race_year": [2023, 2023, 2023, 2023],
@@ -66,6 +64,13 @@ def _make_args(**overrides: object) -> argparse.Namespace:
     return ns
 
 
+def _predicted_small_df() -> pl.DataFrame:
+    return _small_df().with_columns(
+        pl.lit(0.5).alias("predicted_score"),
+        pl.lit(1).alias("predicted_rank"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # subtract_one_day
 # ---------------------------------------------------------------------------
@@ -91,23 +96,23 @@ def test_subtract_one_day_year_boundary():
 # ---------------------------------------------------------------------------
 
 def test_filter_range_excludes_rows_outside_range():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_date": ["20230101", "20230601", "20231231"],
         "race_id": ["r1", "r2", "r3"],
         "finish_position": [1.0, 2.0, 3.0],
     })
     out = subject.filter_range(df, "20230101", "20230601")
-    assert out["race_id"].tolist() == ["r1", "r2"]
+    assert out["race_id"].to_list() == ["r1", "r2"]
 
 
 def test_filter_range_excludes_nan_finish_position():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_date": ["20230101", "20230101"],
         "race_id": ["r1", "r2"],
-        "finish_position": [1.0, float("nan")],
+        "finish_position": [1.0, None],
     })
     out = subject.filter_range(df, "20230101", "20231231")
-    assert out["race_id"].tolist() == ["r1"]
+    assert out["race_id"].to_list() == ["r1"]
 
 
 # ---------------------------------------------------------------------------
@@ -115,23 +120,23 @@ def test_filter_range_excludes_nan_finish_position():
 # ---------------------------------------------------------------------------
 
 def test_filter_year_keeps_only_target_year():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_date": ["20231201", "20240101", "20240601"],
         "race_id": ["r1", "r2", "r3"],
         "finish_position": [1.0, 1.0, 2.0],
     })
     out = subject.filter_year(df, 2024)
-    assert out["race_id"].tolist() == ["r2", "r3"]
+    assert out["race_id"].to_list() == ["r2", "r3"]
 
 
 def test_filter_year_excludes_nan_finish_position():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_date": ["20240101", "20240101"],
         "race_id": ["r1", "r2"],
-        "finish_position": [1.0, float("nan")],
+        "finish_position": [1.0, None],
     })
     out = subject.filter_year(df, 2024)
-    assert out["race_id"].tolist() == ["r1"]
+    assert out["race_id"].to_list() == ["r1"]
 
 
 # ---------------------------------------------------------------------------
@@ -194,56 +199,62 @@ def test_make_to_relevance_handles_nan():
 
 
 # ---------------------------------------------------------------------------
+# relevance_labels
+# ---------------------------------------------------------------------------
+
+def test_relevance_labels_maps_ranks_and_zeroes_others():
+    df = pl.DataFrame({"finish_position": [1.0, 2.0, 3.0, 4.0, None]})
+    labels = subject.relevance_labels(df, 3, 2, 1)
+    assert labels.tolist() == [3, 2, 1, 0, 0]
+    assert labels.dtype == np.int32
+
+
+# ---------------------------------------------------------------------------
 # race_group_ids
 # ---------------------------------------------------------------------------
 
 def test_race_group_ids_returns_integer_codes():
-    df = pd.DataFrame({"race_id": ["r1", "r1", "r2", "r2"]})
+    df = pl.DataFrame({"race_id": ["r1", "r1", "r2", "r2"]})
     codes = subject.race_group_ids(df)
-    assert codes.dtype in (np.int8, np.int16, np.int32, np.int64)
+    assert codes.dtype in (np.uint8, np.uint16, np.uint32, np.int8, np.int16, np.int32, np.int64)
     assert codes[0] == codes[1]
     assert codes[2] == codes[3]
     assert codes[0] != codes[2]
 
 
 def test_sort_train_valid_for_grouping_sorts_when_not_presorted():
-    train_df = pd.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
-    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
+    train_df = pl.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
+    valid_df = pl.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
     args = argparse.Namespace(presorted=False)
     out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
-    assert out_train["race_id"].tolist() == ["r1", "r1", "r2"]
-    assert out_train["umaban"].tolist() == [1.0, 2.0, 1.0]
-    assert out_valid["race_id"].tolist() == ["r3", "r4"]
+    assert out_train["race_id"].to_list() == ["r1", "r1", "r2"]
+    assert out_train["umaban"].to_list() == [1.0, 2.0, 1.0]
+    assert out_valid["race_id"].to_list() == ["r3", "r4"]
 
 
 def test_sort_train_valid_for_grouping_skips_sort_when_presorted():
-    train_df = pd.DataFrame(
-        {"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]}, index=[5, 9],
-    )
-    valid_df = pd.DataFrame(
-        {"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]}, index=[7, 3],
-    )
+    train_df = pl.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
+    valid_df = pl.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
     args = argparse.Namespace(presorted=True)
     out_train, out_valid = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
-    assert out_train["race_id"].tolist() == ["r2", "r1"]
-    assert out_train.index.tolist() == [0, 1]
-    assert out_valid.index.tolist() == [0, 1]
+    assert out_train["race_id"].to_list() == ["r2", "r1"]
+    assert out_valid["race_id"].to_list() == ["r4", "r3"]
 
 
 def test_sort_train_valid_for_grouping_defaults_to_sorting_when_attr_absent():
-    train_df = pd.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
-    valid_df = pd.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
+    train_df = pl.DataFrame({"race_id": ["r2", "r1"], "umaban": [1.0, 1.0]})
+    valid_df = pl.DataFrame({"race_id": ["r4", "r3"], "umaban": [1.0, 1.0]})
     args = argparse.Namespace()
     out_train, _ = subject.sort_train_valid_for_grouping(train_df, valid_df, args)
-    assert out_train["race_id"].tolist() == ["r1", "r2"]
+    assert out_train["race_id"].to_list() == ["r1", "r2"]
 
 
 # ---------------------------------------------------------------------------
-# _cb_top1_hit
+# cb_top1_hit
 # ---------------------------------------------------------------------------
 
 def test_cb_top1_hit_returns_one_when_predicted_rank1_finished_first():
-    g = pd.DataFrame({
+    g = pl.DataFrame({
         "predicted_rank": [1, 2, 3],
         "finish_position": [1.0, 2.0, 3.0],
     })
@@ -251,7 +262,7 @@ def test_cb_top1_hit_returns_one_when_predicted_rank1_finished_first():
 
 
 def test_cb_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
-    g = pd.DataFrame({
+    g = pl.DataFrame({
         "predicted_rank": [1, 2, 3],
         "finish_position": [2.0, 1.0, 3.0],
     })
@@ -259,11 +270,11 @@ def test_cb_top1_hit_returns_zero_when_predicted_rank1_did_not_finish_first():
 
 
 # ---------------------------------------------------------------------------
-# _cb_top3_box_hit
+# cb_top3_box_hit
 # ---------------------------------------------------------------------------
 
 def test_cb_top3_box_hit_returns_one_when_all_three_finish_in_top3():
-    g = pd.DataFrame({
+    g = pl.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 3.0, 2.0, 4.0],
     })
@@ -271,7 +282,7 @@ def test_cb_top3_box_hit_returns_one_when_all_three_finish_in_top3():
 
 
 def test_cb_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3():
-    g = pd.DataFrame({
+    g = pl.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1.0, 2.0, 4.0, 3.0],
     })
@@ -281,9 +292,9 @@ def test_cb_top3_box_hit_returns_zero_when_one_of_top3_does_not_finish_in_top3()
 def test_cb_top3_box_hit_returns_zero_when_nan_finish_position_in_top3_predicted():
     # A scratched horse (NaN) among the top-3 predicted means we can't confirm
     # a full 3-horse box — returning 0 is correct strict behavior.
-    g = pd.DataFrame({
+    g = pl.DataFrame({
         "predicted_rank": [1, 2, 3, 4],
-        "finish_position": [1.0, float("nan"), 3.0, 2.0],
+        "finish_position": [1.0, None, 3.0, 2.0],
     })
     assert subject.cb_top3_box_hit(g) == 0
 
@@ -293,7 +304,7 @@ def test_cb_top3_box_hit_returns_zero_when_nan_finish_position_in_top3_predicted
 # ---------------------------------------------------------------------------
 
 def test_compute_fold_metrics_returns_expected_keys():
-    valid_df = pd.DataFrame({
+    valid_df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3],
         "predicted_score": [0.9, 0.5, 0.3],
@@ -308,12 +319,14 @@ def test_compute_fold_metrics_returns_expected_keys():
 
 
 def test_compute_fold_metrics_with_empty_df_returns_zeros():
-    valid_df = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "predicted_rank": pd.Series([], dtype=int),
-        "predicted_score": pd.Series([], dtype=float),
-        "finish_position": pd.Series([], dtype=float),
-    })
+    valid_df = pl.DataFrame(
+        schema={
+            "race_id": pl.String,
+            "predicted_rank": pl.Int64,
+            "predicted_score": pl.Float64,
+            "finish_position": pl.Float64,
+        },
+    )
     metrics = subject.compute_fold_metrics(valid_df)
     assert metrics["top1_accuracy"] == 0.0
     assert metrics["top3_box_accuracy"] == 0.0
@@ -325,7 +338,7 @@ def test_compute_fold_metrics_with_empty_df_returns_zeros():
 # ---------------------------------------------------------------------------
 
 def test_write_predictions_jsonl_writes_one_line_per_row(tmp_path: Path):
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["a", "b"],
         "umaban": [1.0, 2.0],
@@ -343,7 +356,7 @@ def test_write_predictions_jsonl_writes_one_line_per_row(tmp_path: Path):
 
 
 def test_write_predictions_jsonl_writes_null_for_nan_umaban(tmp_path: Path):
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "ketto_toroku_bango": ["a"],
         "umaban": [float("nan")],
@@ -369,7 +382,7 @@ def test_run_walk_forward_oot_train_end_is_day_before_validation_from(
     captured_ends: list[str] = []
     original_filter_range = subject.filter_range
 
-    def fake_filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    def fake_filter_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
         captured_ends.append(end)
         return original_filter_range(df, start, end)
 
@@ -380,7 +393,7 @@ def test_run_walk_forward_oot_train_end_is_day_before_validation_from(
     )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
-        "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
+        "valid_predictions": _predicted_small_df(),
         "metrics": {"race_count": 1, "valid_rows": 2, "top1_accuracy": 0.5, "top3_box_accuracy": 0.5},
         "best_iteration": 10,
     }))
@@ -410,7 +423,7 @@ def test_run_walk_forward_oot_uses_explicit_train_end_date_when_provided(
     captured_ends: list[str] = []
     original_filter_range = subject.filter_range
 
-    def fake_filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    def fake_filter_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
         captured_ends.append(end)
         return original_filter_range(df, start, end)
 
@@ -421,7 +434,7 @@ def test_run_walk_forward_oot_uses_explicit_train_end_date_when_provided(
     )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
-        "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
+        "valid_predictions": _predicted_small_df(),
         "metrics": {"race_count": 1, "valid_rows": 2, "top1_accuracy": 0.5, "top3_box_accuracy": 0.5},
         "best_iteration": 10,
     }))
@@ -444,13 +457,14 @@ def test_run_walk_forward_oot_uses_explicit_train_end_date_when_provided(
 # run_walk_forward year-based path
 # ---------------------------------------------------------------------------
 
-def _multi_year_df() -> pd.DataFrame:
+def _multi_year_df() -> pl.DataFrame:
     """DataFrame that spans 2022 and 2023 so year-based walk-forward has non-empty splits."""
     base = _small_df()
-    older = base.copy()
-    older["race_date"] = ["20220101", "20220101", "20220201", "20220201"]
-    older["race_year"] = [2022, 2022, 2022, 2022]
-    return pd.concat([older, base], ignore_index=True)
+    older = base.with_columns(
+        pl.Series("race_date", ["20220101", "20220101", "20220201", "20220201"]),
+        pl.Series("race_year", [2022, 2022, 2022, 2022]),
+    )
+    return pl.concat([older, base])
 
 
 def test_run_walk_forward_year_based_path(
@@ -463,7 +477,7 @@ def test_run_walk_forward_year_based_path(
     )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=df))
     monkeypatch.setattr(subject, "train_catboost_ranker", MagicMock(return_value={
-        "valid_predictions": _small_df().assign(predicted_score=0.5, predicted_rank=1),
+        "valid_predictions": _predicted_small_df(),
         "metrics": {"race_count": 1, "valid_rows": 2, "top1_accuracy": 0.5, "top3_box_accuracy": 0.5},
         "best_iteration": 10,
     }))
@@ -490,7 +504,7 @@ def test_run_walk_forward_year_based_skips_empty_folds(
     )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
     # Return empty df for train to trigger skip
-    monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pd.DataFrame()))
+    monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pl.DataFrame()))
     args = _make_args(
         csv=tmp_path / "feat",
         validation_from_date=None,
@@ -513,7 +527,7 @@ def test_run_walk_forward_oot_skips_when_train_or_valid_empty(
         MagicMock(return_value=list(_small_df().columns)),
     )
     monkeypatch.setattr(subject, "load_parquet_dir", MagicMock(return_value=_small_df()))
-    monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pd.DataFrame()))
+    monkeypatch.setattr(subject, "filter_range", MagicMock(return_value=pl.DataFrame()))
     args = _make_args(
         csv=tmp_path / "feat",
         validation_from_date="20230201",
@@ -565,36 +579,36 @@ def test_parse_args_oot_flags_are_accepted():
 
 
 # ---------------------------------------------------------------------------
-# _prepare_feature_matrix
+# prepare_feature_matrix
 # ---------------------------------------------------------------------------
 
 def test_prepare_feature_matrix_converts_numeric_to_float32():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "feature_a": [1, 2, 3],
         "keibajo_code": ["01", "02", None],
     })
     feature_cols = ["feature_a", "keibajo_code"]
     cat_indices = [1]
     out = subject.prepare_feature_matrix(df, feature_cols, cat_indices)
-    assert out["feature_a"].dtype == np.float32
+    assert out["feature_a"].dtype == pl.Float32
 
 
 def test_prepare_feature_matrix_fills_cat_nan_with_missing_sentinel():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "feature_a": [1.0, 2.0],
         "keibajo_code": ["01", None],
     })
     feature_cols = ["feature_a", "keibajo_code"]
     cat_indices = [1]
     out = subject.prepare_feature_matrix(df, feature_cols, cat_indices)
-    assert out["keibajo_code"].tolist() == ["01", "__missing__"]
+    assert out["keibajo_code"].to_list() == ["01", "__missing__"]
 
 
 def test_prepare_feature_matrix_no_cat_indices_only_float():
-    df = pd.DataFrame({"feature_a": [1.0, 2.0], "feature_b": [3.0, 4.0]})
+    df = pl.DataFrame({"feature_a": [1.0, 2.0], "feature_b": [3.0, 4.0]})
     out = subject.prepare_feature_matrix(df, ["feature_a", "feature_b"], [])
-    assert out["feature_a"].dtype == np.float32
-    assert out["feature_b"].dtype == np.float32
+    assert out["feature_a"].dtype == pl.Float32
+    assert out["feature_b"].dtype == pl.Float32
 
 
 # ---------------------------------------------------------------------------
@@ -604,12 +618,10 @@ def test_prepare_feature_matrix_no_cat_indices_only_float():
 def test_load_parquet_dir_reads_and_concatenates_parquet_files(tmp_path: Path):
     year_dir = tmp_path / "race_year=2023"
     year_dir.mkdir(parents=True)
-    df1 = pd.DataFrame({"x": [1, 2]})
-    df2 = pd.DataFrame({"x": [3, 4]})
-    pq.write_table(pa.Table.from_pandas(df1), year_dir / "part1.parquet")
-    pq.write_table(pa.Table.from_pandas(df2), year_dir / "part2.parquet")
+    pl.DataFrame({"x": [1, 2]}).write_parquet(year_dir / "part1.parquet")
+    pl.DataFrame({"x": [3, 4]}).write_parquet(year_dir / "part2.parquet")
     result = subject.load_parquet_dir(tmp_path)
-    assert sorted(result["x"].tolist()) == [1, 2, 3, 4]
+    assert sorted(result["x"].to_list()) == [1, 2, 3, 4]
 
 
 def test_load_parquet_dir_raises_on_empty_directory(tmp_path: Path):
@@ -622,24 +634,24 @@ def test_load_parquet_dir_year_max_filters_out_later_years(tmp_path: Path):
     older.mkdir(parents=True)
     newer = tmp_path / "race_year=2024"
     newer.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1, 2]})), older / "part.parquet")
-    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [9, 9]})), newer / "part.parquet")
+    pl.DataFrame({"x": [1, 2]}).write_parquet(older / "part.parquet")
+    pl.DataFrame({"x": [9, 9]}).write_parquet(newer / "part.parquet")
     result = subject.load_parquet_dir(tmp_path, year_max=2022)
-    assert sorted(result["x"].tolist()) == [1, 2]
+    assert sorted(result["x"].to_list()) == [1, 2]
 
 
 def test_load_parquet_dir_year_max_keeps_boundary_year(tmp_path: Path):
     boundary = tmp_path / "race_year=2024"
     boundary.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [5, 6]})), boundary / "part.parquet")
+    pl.DataFrame({"x": [5, 6]}).write_parquet(boundary / "part.parquet")
     result = subject.load_parquet_dir(tmp_path, year_max=2024)
-    assert sorted(result["x"].tolist()) == [5, 6]
+    assert sorted(result["x"].to_list()) == [5, 6]
 
 
 def test_load_parquet_dir_year_max_raises_when_all_filtered(tmp_path: Path):
     newer = tmp_path / "race_year=2025"
     newer.mkdir(parents=True)
-    pq.write_table(pa.Table.from_pandas(pd.DataFrame({"x": [1]})), newer / "part.parquet")
+    pl.DataFrame({"x": [1]}).write_parquet(newer / "part.parquet")
     with pytest.raises(ValueError, match="for year_max=2020"):
         subject.load_parquet_dir(tmp_path, year_max=2020)
 
@@ -657,10 +669,11 @@ def test_extract_year_returns_fallback_when_no_partition(tmp_path: Path):
 def test_load_parquet_dir_columns_projects_only_requested_columns(tmp_path: Path):
     year_dir = tmp_path / "race_year=2023"
     year_dir.mkdir(parents=True)
-    df = pd.DataFrame({"race_id": ["r1", "r2"], "feature_a": [0.1, 0.2], "bamei": ["H1", "H2"]})
-    pq.write_table(pa.Table.from_pandas(df), year_dir / "part.parquet")
+    pl.DataFrame({"race_id": ["r1", "r2"], "feature_a": [0.1, 0.2], "bamei": ["H1", "H2"]}).write_parquet(
+        year_dir / "part.parquet"
+    )
     result = subject.load_parquet_dir(tmp_path, columns=["race_id", "feature_a"])
-    assert result.columns.tolist() == ["race_id", "feature_a"]
+    assert result.columns == ["race_id", "feature_a"]
 
 
 # ---------------------------------------------------------------------------
@@ -670,8 +683,9 @@ def test_load_parquet_dir_columns_projects_only_requested_columns(tmp_path: Path
 def test_read_parquet_schema_names_returns_first_file_columns(tmp_path: Path):
     year_dir = tmp_path / "race_year=2023"
     year_dir.mkdir(parents=True)
-    df = pd.DataFrame({"race_id": ["r1"], "feature_a": [0.1], "finish_position": [1.0]})
-    pq.write_table(pa.Table.from_pandas(df), year_dir / "part.parquet")
+    pl.DataFrame({"race_id": ["r1"], "feature_a": [0.1], "finish_position": [1.0]}).write_parquet(
+        year_dir / "part.parquet"
+    )
     names = subject.read_parquet_schema_names(tmp_path)
     assert names == ["race_id", "feature_a", "finish_position"]
 
@@ -714,13 +728,13 @@ def test_resolve_projection_columns_omits_runtime_column_absent_from_schema():
 def test_train_catboost_ranker_returns_metrics_and_predictions(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    train_df = pd.DataFrame({
+    train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
         "feature_a": [0.1, 0.2],
     })
-    valid_df = pd.DataFrame({
+    valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
@@ -764,14 +778,14 @@ def test_train_catboost_ranker_presorted_matches_unsorted_labels_and_groups(
     """presorted=True on an already-sorted frame must produce the same Pool labels
     and race group_ids as presorted=False on the shuffled frame, proving the
     fast-path only skips redundant work and never changes training inputs."""
-    sorted_df = pd.DataFrame({
+    sorted_df = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "umaban": [1.0, 2.0, 1.0, 2.0],
         "finish_position": [1.0, 2.0, 2.0, 1.0],
         "feature_a": [0.1, 0.2, 0.3, 0.4],
     })
-    shuffled_df = sorted_df.iloc[[2, 0, 3, 1]].reset_index(drop=True)
-    valid_df = pd.DataFrame({
+    shuffled_df = sorted_df[[2, 0, 3, 1]]
+    valid_df = pl.DataFrame({
         "race_id": ["r3", "r3"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
@@ -809,13 +823,13 @@ def test_train_catboost_ranker_caps_thread_count_at_six(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """thread_count must be 6 to respect the nthread<=6 memory-budget hard rule."""
-    train_df = pd.DataFrame({
+    train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
         "feature_a": [0.1, 0.2],
     })
-    valid_df = pd.DataFrame({
+    valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
@@ -837,14 +851,13 @@ def test_train_catboost_ranker_caps_thread_count_at_six(
 def test_train_catboost_ranker_uses_no_cat_features_when_flag_set(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    train_df = pd.DataFrame({
+    train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
         "feature_a": [0.1, 0.2],
     })
-    valid_df = train_df.copy()
-    valid_df["race_id"] = ["r2", "r2"]
+    valid_df = train_df.with_columns(pl.Series("race_id", ["r2", "r2"]))
 
     fake_model = MagicMock()
     fake_model.predict.return_value = np.array([0.9, 0.5])
@@ -864,13 +877,13 @@ def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """get_best_iteration() returning 0 must not fall back to tree_count_ (falsy-zero bug)."""
-    train_df = pd.DataFrame({
+    train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
         "feature_a": [0.1, 0.2],
     })
-    valid_df = pd.DataFrame({
+    valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
@@ -887,16 +900,46 @@ def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
     assert result["best_iteration"] == 0, "best_iteration=0 must not fall back to tree_count_"
 
 
-def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
+def test_train_catboost_ranker_sets_bayesian_bootstrap_when_bagging_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    train_df = pd.DataFrame({
+    train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
         "feature_a": [0.1, 0.2],
     })
-    valid_df = pd.DataFrame({
+    valid_df = pl.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+    fake_model = MagicMock()
+    fake_model.predict.return_value = np.array([0.9, 0.5])
+    fake_model.get_best_iteration.return_value = 1
+    fake_model.tree_count_ = 1
+    mock_catboost_cls = MagicMock(return_value=fake_model)
+    monkeypatch.setattr(subject, "CatBoost", mock_catboost_cls)
+    monkeypatch.setattr(subject, "Pool", MagicMock())
+    args = _make_args(bagging_temperature=0.5, random_strength=2.0)
+    subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
+    params = cast(dict[str, object], mock_catboost_cls.call_args.args[0])
+    assert params["bagging_temperature"] == 0.5
+    assert params["bootstrap_type"] == "Bayesian"
+    assert params["random_strength"] == 2.0
+
+
+def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pl.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
@@ -910,9 +953,9 @@ def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch.setattr(subject, "Pool", MagicMock())
     args = _make_args()
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
-    preds = cast(pd.DataFrame, result["valid_predictions"])
+    preds = cast(pl.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.5 (row 1) gets rank 1
-    assert preds["predicted_rank"].tolist() == [2, 1]
+    assert preds["predicted_rank"].to_list() == [2, 1]
 
 
 # ---------------------------------------------------------------------------

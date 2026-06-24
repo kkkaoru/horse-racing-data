@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
 import optuna
-import pandas as pd
+import polars as pl
 import pytest
 
 import learning.feature_explorer as subject
@@ -17,7 +18,7 @@ from learning.feature_registry import FeatureRegistry
 from finish_position_lightgbm import META_COLUMNS, FoldSplit, split_walk_forward
 
 
-def _make_df() -> pd.DataFrame:
+def _make_df() -> pl.DataFrame:
     rows = []
     for year in [2022, 2023]:
         for race in range(5):
@@ -44,7 +45,7 @@ def _make_df() -> pd.DataFrame:
                     "feat_speed": float(horse),
                     "feat_jockey": 0.3,
                 })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def _make_fold() -> FoldSplit:
@@ -73,8 +74,8 @@ def _make_fold() -> FoldSplit:
             "feat_speed": float(i),
             "feat_jockey": 0.3,
         })
-    df = pd.DataFrame(rows)
-    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy(), "valid_year": 2023})
+    df = pl.DataFrame(rows)
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.clone(), "valid_year": 2023})
 
 
 def _make_meta_only_fold() -> FoldSplit:
@@ -101,11 +102,11 @@ def _make_meta_only_fold() -> FoldSplit:
             "target_corner_4_norm": 0.5,
             "target_running_style_class": 0,
         })
-    df = pd.DataFrame(rows)
-    return cast("FoldSplit", {"train_df": df, "valid_df": df.copy(), "valid_year": 2023})
+    df = pl.DataFrame(rows)
+    return cast("FoldSplit", {"train_df": df, "valid_df": df.clone(), "valid_year": 2023})
 
 
-def _make_df_3years() -> pd.DataFrame:
+def _make_df_3years() -> pl.DataFrame:
     """DataFrame spanning 2021-2023 for multi-fold evaluate_feature_set tests."""
     rows = []
     for year in [2021, 2022, 2023]:
@@ -133,10 +134,10 @@ def _make_df_3years() -> pd.DataFrame:
                     "feat_speed": float(horse),
                     "feat_jockey": 0.3,
                 })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
-def _make_df_6feats() -> pd.DataFrame:
+def _make_df_6feats() -> pl.DataFrame:
     """DataFrame with 6 feature columns for build_objective / run_exploration tests."""
     rows = []
     for year in [2022, 2023]:
@@ -168,13 +169,13 @@ def _make_df_6feats() -> pd.DataFrame:
                     "feat_e": 0.4,
                     "feat_f": 0.5,
                 })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 # --- _ndcg_at_3_from_valid_df ---
 
 def test_ndcg_at_3_from_valid_df_perfect_ranking_returns_one() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
@@ -184,14 +185,20 @@ def test_ndcg_at_3_from_valid_df_perfect_ranking_returns_one() -> None:
 
 
 def test_ndcg_at_3_from_valid_df_empty_df_returns_zero() -> None:
-    df = pd.DataFrame(columns=["race_id", "predicted_rank", "finish_position"])
+    df = pl.DataFrame(
+        schema={
+            "race_id": pl.Utf8,
+            "predicted_rank": pl.Int64,
+            "finish_position": pl.Int64,
+        }
+    )
     result = subject._ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(0.0)
 
 
 def test_ndcg_at_3_from_valid_df_worst_ranking_is_less_than_one() -> None:
     # Reverse order: horse finishing 4th predicted 1st, etc.
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [4, 3, 2, 1],
         "finish_position": [1, 2, 3, 4],
@@ -203,7 +210,7 @@ def test_ndcg_at_3_from_valid_df_worst_ranking_is_less_than_one() -> None:
 
 def test_ndcg_at_3_from_valid_df_multiple_races_returns_mean() -> None:
     # Race r1: perfect → NDCG=1.0; Race r2: all wrong → some value
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
         "predicted_rank": [1, 2, 3, 3, 2, 1],
         "finish_position": [1, 2, 3, 1, 2, 3],
@@ -213,7 +220,7 @@ def test_ndcg_at_3_from_valid_df_multiple_races_returns_mean() -> None:
 
 
 def test_ndcg_at_3_from_valid_df_two_horse_race_perfect_returns_one() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "finish_position": [1, 2],
@@ -224,7 +231,7 @@ def test_ndcg_at_3_from_valid_df_two_horse_race_perfect_returns_one() -> None:
 
 def test_ndcg_at_3_from_valid_df_skips_race_with_no_relevant_finishers() -> None:
     # r1: all positions > 3 → ideal_dcg = 0 → race skipped; r2: perfect → 1.0
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2", "r2", "r2"],
         "predicted_rank": [1, 2, 1, 2, 3, 4],
         "finish_position": [4, 5, 1, 2, 3, 4],
@@ -233,27 +240,27 @@ def test_ndcg_at_3_from_valid_df_skips_race_with_no_relevant_finishers() -> None
     assert result == pytest.approx(1.0)
 
 
-def test_ndcg_at_3_from_valid_df_nan_predicted_rank_penalises_ideal() -> None:
-    # Horse "a" has NaN predicted_rank (e.g. absent from predictions after left join)
+def test_ndcg_at_3_from_valid_df_null_predicted_rank_penalises_ideal() -> None:
+    # Horse "a" has null predicted_rank (e.g. absent from predictions after left join)
     # but finishes 1st. DCG only includes b and c; ideal still uses all 3 finishers.
     # NDCG must be < 1.0 (winner was not ranked).
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
-        "predicted_rank": [float("nan"), 1.0, 2.0],
+        "predicted_rank": [None, 1.0, 2.0],
         "finish_position": [1.0, 2.0, 3.0],
     })
     result = subject._ndcg_at_3_from_valid_df(df)
     assert 0.0 < result < 1.0
 
 
-def test_ndcg_at_3_from_valid_df_nan_finish_position_excluded_from_dcg_slot() -> None:
-    # Horse "a" has predicted_rank=1 but finish_position=NaN (scratched).
+def test_ndcg_at_3_from_valid_df_null_finish_position_excluded_from_dcg_slot() -> None:
+    # Horse "a" has predicted_rank=1 but finish_position=null (scratched).
     # It must NOT occupy the top DCG slot — only "b" (rank=2, finish=1) contributes.
     # Perfect prediction among scoreable horses → NDCG = 1.0.
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1.0, 2.0],
-        "finish_position": [float("nan"), 1.0],
+        "finish_position": [None, 1.0],
     })
     result = subject._ndcg_at_3_from_valid_df(df)
     assert result == pytest.approx(1.0)
@@ -319,7 +326,7 @@ def test_dcg_at_3_from_positions_relevances_single_relevance() -> None:
 # --- _xgb_numeric_features ---
 
 def test_xgb_numeric_features_includes_numeric_excludes_non_numeric_and_meta() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "feat_numeric": [1.0],
         "feat_string": ["abc"],
@@ -344,7 +351,7 @@ def test_xgb_numeric_features_excludes_all_meta_columns() -> None:
 
 
 def test_xgb_numeric_features_preserves_feature_names_order() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "feat_b": [2.0],
         "feat_a": [1.0],
@@ -355,7 +362,7 @@ def test_xgb_numeric_features_preserves_feature_names_order() -> None:
 
 
 def test_xgb_numeric_features_twice_same_df_returns_identical_result() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "feat_numeric": [1.0],
         "feat_string": ["abc"],
@@ -368,27 +375,30 @@ def test_xgb_numeric_features_twice_same_df_returns_identical_result() -> None:
 
 
 def test_xgb_numeric_features_caches_dtype_check_on_second_call() -> None:
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "feat_numeric": [1.0],
         "feat_string": ["abc"],
         "finish_position": [1],
     })
     subject._XGB_NUMERIC_CACHE.pop(id(df), None)
-    real_is_numeric = pd.api.types.is_numeric_dtype
-    counter = MagicMock(side_effect=real_is_numeric)
-    with patch("learning.feature_explorer.pd.api.types.is_numeric_dtype", counter):
+    real_signature = subject._dtype_signature
+    counter = MagicMock(side_effect=real_signature)
+    with patch("learning.feature_explorer._dtype_signature", counter):
         subject._xgb_numeric_features(df, list(df.columns))
         calls_after_first = counter.call_count
         subject._xgb_numeric_features(df, list(df.columns))
         calls_after_second = counter.call_count
-    assert calls_after_first > 0
-    assert calls_after_second == calls_after_first
+    # Both calls recompute the signature, but the second is a cache hit and does
+    # not rescan column dtypes; the cached entry must be present after the first.
+    assert calls_after_first == 1
+    assert calls_after_second == 2
+    assert id(df) in subject._XGB_NUMERIC_CACHE
 
 
 def test_xgb_numeric_features_different_schema_is_cache_miss_and_classified() -> None:
-    df_a = pd.DataFrame({"race_id": ["r1"], "feat_numeric": [1.0]})
-    df_b = pd.DataFrame({"race_id": ["r1"], "feat_other": ["x"], "feat_num2": [2.0]})
+    df_a = pl.DataFrame({"race_id": ["r1"], "feat_numeric": [1.0]})
+    df_b = pl.DataFrame({"race_id": ["r1"], "feat_other": ["x"], "feat_num2": [2.0]})
     result_a = subject._xgb_numeric_features(df_a, list(df_a.columns))
     result_b = subject._xgb_numeric_features(df_b, list(df_b.columns))
     assert result_a == ["feat_numeric"]
@@ -396,34 +406,36 @@ def test_xgb_numeric_features_different_schema_is_cache_miss_and_classified() ->
 
 
 def test_xgb_numeric_features_reclassifies_when_id_reused_with_new_dtypes() -> None:
-    df = pd.DataFrame({"race_id": ["r1"], "feat_x": [1.0]})
-    first = subject._xgb_numeric_features(df, list(df.columns))
-    df["feat_x"] = df["feat_x"].astype(str)
-    second = subject._xgb_numeric_features(df, list(df.columns))
-    assert first == ["feat_x"]
-    assert second == []
+    # A reused id whose cached signature no longer matches the live schema must
+    # be treated as a miss and reclassified. Seed the cache for this id with a
+    # stale (mismatched) signature to simulate an id reused after GC.
+    df = pl.DataFrame({"race_id": ["r1"], "feat_x": [1.0]})
+    stale_signature = (("race_id", "String"), ("feat_x", "String"))
+    subject._XGB_NUMERIC_CACHE[id(df)] = (stale_signature, frozenset())
+    result = subject._xgb_numeric_features(df, list(df.columns))
+    assert result == ["feat_x"]
 
 
 # --- _is_model_safe_feature ---
 
 
 def test_is_model_safe_feature_numeric_column_is_safe() -> None:
-    df = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    df = pl.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
     assert subject._is_model_safe_feature(df, "feat_numeric") is True
 
 
 def test_is_model_safe_feature_non_numeric_non_categorical_is_unsafe() -> None:
-    df = pd.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
+    df = pl.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
     assert subject._is_model_safe_feature(df, "nar_subclass") is False
 
 
 def test_is_model_safe_feature_categorical_str_column_is_safe() -> None:
-    df = pd.DataFrame({"track_code": ["1"], "feat_numeric": [1.0]})
+    df = pl.DataFrame({"track_code": ["1"], "feat_numeric": [1.0]})
     assert subject._is_model_safe_feature(df, "track_code") is True
 
 
 def test_is_model_safe_feature_twice_same_df_returns_identical_result() -> None:
-    df = pd.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
+    df = pl.DataFrame({"feat_numeric": [1.0], "nar_subclass": ["A"]})
     first = subject._is_model_safe_feature(df, "feat_numeric")
     second = subject._is_model_safe_feature(df, "feat_numeric")
     assert first is True
@@ -431,22 +443,25 @@ def test_is_model_safe_feature_twice_same_df_returns_identical_result() -> None:
 
 
 def test_is_model_safe_feature_caches_dtype_check_on_second_call() -> None:
-    df = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    df = pl.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
     subject._MODEL_SAFE_CACHE.pop(id(df), None)
-    real_is_numeric = pd.api.types.is_numeric_dtype
-    counter = MagicMock(side_effect=real_is_numeric)
-    with patch("learning.feature_explorer.pd.api.types.is_numeric_dtype", counter):
+    real_signature = subject._dtype_signature
+    counter = MagicMock(side_effect=real_signature)
+    with patch("learning.feature_explorer._dtype_signature", counter):
         subject._is_model_safe_feature(df, "feat_numeric")
         calls_after_first = counter.call_count
         subject._is_model_safe_feature(df, "feat_string")
         calls_after_second = counter.call_count
-    assert calls_after_first > 0
-    assert calls_after_second == calls_after_first
+    # Second call is a cache hit: it recomputes only the cheap signature, not the
+    # per-column dtype scan, so the cached entry must exist after the first call.
+    assert calls_after_first == 1
+    assert calls_after_second == 2
+    assert id(df) in subject._MODEL_SAFE_CACHE
 
 
 def test_is_model_safe_feature_different_schema_is_cache_miss_and_classified() -> None:
-    df_a = pd.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
-    df_b = pd.DataFrame({"feat_other": ["x"], "feat_num2": [2.0]})
+    df_a = pl.DataFrame({"feat_numeric": [1.0], "feat_string": ["abc"]})
+    df_b = pl.DataFrame({"feat_other": ["x"], "feat_num2": [2.0]})
     safe_a = subject._is_model_safe_feature(df_a, "feat_string")
     safe_b = subject._is_model_safe_feature(df_b, "feat_num2")
     assert safe_a is False
@@ -454,7 +469,7 @@ def test_is_model_safe_feature_different_schema_is_cache_miss_and_classified() -
 
 
 def test_model_safe_columns_returns_frozenset_of_safe_columns() -> None:
-    df = pd.DataFrame({"feat_numeric": [1.0], "track_code": ["1"], "nar_subclass": ["A"]})
+    df = pl.DataFrame({"feat_numeric": [1.0], "track_code": ["1"], "nar_subclass": ["A"]})
     result = subject._model_safe_columns(df)
     assert result == frozenset({"feat_numeric", "track_code"})
 
@@ -465,7 +480,7 @@ def test_run_fold_with_backend_lightgbm_computes_ndcg_from_predictions() -> None
     fold = _make_fold()
     params = subject.DEFAULT_PARAMS
     # score_dataset output: race_id + ketto_toroku_bango + predicted_rank (no finish_position)
-    preds_df = pd.DataFrame({
+    preds_df = pl.DataFrame({
         "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
         "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
         "umaban": [1, 2, 3, 4],
@@ -485,7 +500,7 @@ def test_run_fold_with_backend_lightgbm_computes_ndcg_from_predictions() -> None
 def test_run_fold_with_backend_xgboost_returns_ndcg_from_predictions() -> None:
     fold = _make_fold()
     params = subject.DEFAULT_PARAMS
-    valid_preds = pd.DataFrame({
+    valid_preds = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
@@ -503,7 +518,7 @@ def test_run_fold_with_backend_xgboost_returns_ndcg_from_predictions() -> None:
 def test_run_fold_with_backend_catboost_returns_ndcg_from_predictions() -> None:
     fold = _make_fold()
     params = subject.DEFAULT_PARAMS
-    valid_preds = pd.DataFrame({
+    valid_preds = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
@@ -534,14 +549,14 @@ def test_run_fold_with_backend_catboost_returns_none_when_no_feature_cols() -> N
 
 def test_run_fold_with_backend_catboost_excludes_non_categorical_str_feature() -> None:
     fold = _make_fold()
-    str_train = fold["train_df"].assign(nar_subclass="A")
-    str_valid = fold["valid_df"].assign(nar_subclass="A")
+    str_train = fold["train_df"].with_columns(pl.lit("A").alias("nar_subclass"))
+    str_valid = fold["valid_df"].with_columns(pl.lit("A").alias("nar_subclass"))
     str_fold = cast(
         "FoldSplit",
         {"train_df": str_train, "valid_df": str_valid, "valid_year": 2023},
     )
     params = subject.DEFAULT_PARAMS
-    valid_preds = pd.DataFrame({
+    valid_preds = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
@@ -592,11 +607,11 @@ def test_select_features_all_false_mask_returns_only_meta_label_cols() -> None:
     assert "race_id" in result.columns
 
 
-def test_select_features_does_not_copy_shares_values_with_source() -> None:
+def test_select_features_preserves_source_values() -> None:
     df = _make_df()
     mask = {"feat_speed": True, "feat_jockey": True}
     result = subject.select_features(df, mask)
-    assert result["feat_speed"].tolist() == df["feat_speed"].tolist()
+    assert result["feat_speed"].to_list() == df["feat_speed"].to_list()
 
 
 # --- _select_fold_features ---
@@ -628,8 +643,8 @@ def test_select_fold_features_preserves_valid_year() -> None:
 
 def test_select_fold_features_drops_non_categorical_str_feature() -> None:
     fold = _make_fold()
-    str_train = fold["train_df"].assign(nar_subclass="A")
-    str_valid = fold["valid_df"].assign(nar_subclass="A")
+    str_train = fold["train_df"].with_columns(pl.lit("A").alias("nar_subclass"))
+    str_valid = fold["valid_df"].with_columns(pl.lit("A").alias("nar_subclass"))
     str_fold = cast(
         "FoldSplit",
         {"train_df": str_train, "valid_df": str_valid, "valid_year": 2023},
@@ -643,8 +658,8 @@ def test_select_fold_features_drops_non_categorical_str_feature() -> None:
 
 def test_select_fold_features_keeps_known_categorical_str_feature() -> None:
     fold = _make_fold()
-    cat_train = fold["train_df"].assign(track_code="1")
-    cat_valid = fold["valid_df"].assign(track_code="1")
+    cat_train = fold["train_df"].with_columns(pl.lit("1").alias("track_code"))
+    cat_valid = fold["valid_df"].with_columns(pl.lit("1").alias("track_code"))
     cat_fold = cast(
         "FoldSplit",
         {"train_df": cat_train, "valid_df": cat_valid, "valid_year": 2023},
@@ -952,11 +967,16 @@ def test_build_objective_reports_intermediate_value_per_fold() -> None:
     params = subject.DEFAULT_PARAMS
     candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
     df = df.rename(
-        columns={
+        {
             "feat_speed": "feat_a",
             "feat_jockey": "feat_b",
         }
-    ).assign(feat_c=0.1, feat_d=0.2, feat_e=0.4, feat_f=0.5)
+    ).with_columns(
+        feat_c=pl.lit(0.1),
+        feat_d=pl.lit(0.2),
+        feat_e=pl.lit(0.4),
+        feat_f=pl.lit(0.5),
+    )
     with FeatureRegistry(Path(":memory:")) as registry:
         with patch(
             "learning.feature_explorer.run_fold_with_backend",
@@ -980,6 +1000,81 @@ def test_build_objective_reports_intermediate_value_per_fold() -> None:
     assert trial.report.call_count == 2
     assert trial.report.call_args_list[0].args == (0.70, 0)
     assert trial.report.call_args_list[1].args == (0.70, 1)
+
+
+def test_build_objective_aggregates_all_folds_after_per_fold_subset_release() -> None:
+    # The objective deletes each fold's column subset at the end of the loop body;
+    # this asserts that releasing the subset does not drop any fold's contribution,
+    # so the final ndcg still averages every fold's backend score.
+    df = _make_df_3years()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    df = df.rename(
+        {"feat_speed": "feat_a", "feat_jockey": "feat_b"}
+    ).with_columns(
+        feat_c=pl.lit(0.1),
+        feat_d=pl.lit(0.2),
+        feat_e=pl.lit(0.4),
+        feat_f=pl.lit(0.5),
+    )
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            side_effect=[0.60, 0.80],
+        ) as mock_rfwb:
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2022, 2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.should_prune.return_value = False
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            result = objective(trial)
+    # One score per fold, both retained → mean(0.60, 0.80) = 0.70.
+    assert mock_rfwb.call_count == 2
+    assert result == pytest.approx(0.70)
+
+
+def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> None:
+    # objective already fetches the active entry to compute delta_pp; it must hand
+    # that ndcg to maybe_promote so the registry skips a duplicate active-entry SELECT.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        active_id = registry.record_trial("seed", 0.80, ["feat_a"], "{}")
+        registry.activate(active_id)
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            with patch.object(
+                registry, "maybe_promote", wraps=registry.maybe_promote
+            ) as spy_promote:
+                objective = subject.build_objective(
+                    df,
+                    candidate_features,
+                    [2023],
+                    "20160101",
+                    params,
+                    registry,
+                    "test_study",
+                    backends=("lightgbm",),
+                )
+                trial = MagicMock()
+                trial.number = 1
+                trial.should_prune.return_value = False
+                trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                objective(trial)
+    assert spy_promote.call_count == 1
+    assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.80)
 
 
 def test_build_objective_raises_trial_pruned_when_should_prune_true() -> None:
@@ -1061,8 +1156,13 @@ def test_run_exploration_prunes_clearly_bad_later_trial() -> None:
     df = _make_df_3years()
     params = subject.DEFAULT_PARAMS
     df = df.rename(
-        columns={"feat_speed": "feat_a", "feat_jockey": "feat_b"}
-    ).assign(feat_c=0.1, feat_d=0.2, feat_e=0.4, feat_f=0.5)
+        {"feat_speed": "feat_a", "feat_jockey": "feat_b"}
+    ).with_columns(
+        feat_c=pl.lit(0.1),
+        feat_d=pl.lit(0.2),
+        feat_e=pl.lit(0.4),
+        feat_f=pl.lit(0.5),
+    )
     call_count = {"n": 0}
 
     def fold_score(*_args: object, **_kwargs: object) -> float:
@@ -1310,7 +1410,7 @@ def test_category_backends_banei_maps_to_catboost_only() -> None:
 
 def test_predict_fold_with_backend_lightgbm_returns_merged_predictions() -> None:
     fold = _make_fold()
-    preds_df = pd.DataFrame({
+    preds_df = pl.DataFrame({
         "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
         "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
         "predicted_rank": [1, 2, 3, 4],
@@ -1329,7 +1429,7 @@ def test_predict_fold_with_backend_lightgbm_returns_merged_predictions() -> None
 
 def test_predict_fold_with_backend_xgboost_returns_valid_predictions() -> None:
     fold = _make_fold()
-    valid_preds = pd.DataFrame({
+    valid_preds = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
         "predicted_rank": [1, 2, 3, 4],
@@ -1353,7 +1453,7 @@ def test_predict_fold_with_backend_xgboost_returns_none_when_no_numeric_features
 
 def test_predict_fold_with_backend_catboost_returns_valid_predictions() -> None:
     fold = _make_fold()
-    valid_preds = pd.DataFrame({
+    valid_preds = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
         "predicted_rank": [1, 2, 3, 4],
@@ -1377,7 +1477,7 @@ def test_predict_fold_with_backend_catboost_returns_none_when_no_feature_cols() 
 
 def test_predict_fold_with_backend_dispatches_to_lightgbm_helper() -> None:
     fold = _make_fold()
-    sentinel = pd.DataFrame({"predicted_rank": [1]})
+    sentinel = pl.DataFrame({"predicted_rank": [1]})
     with patch(
         "learning.feature_explorer._predict_fold_lightgbm",
         return_value=sentinel,
@@ -1389,7 +1489,7 @@ def test_predict_fold_with_backend_dispatches_to_lightgbm_helper() -> None:
 
 def test_predict_fold_with_backend_dispatches_to_xgboost_helper() -> None:
     fold = _make_fold()
-    sentinel = pd.DataFrame({"predicted_rank": [2]})
+    sentinel = pl.DataFrame({"predicted_rank": [2]})
     with patch(
         "learning.feature_explorer._predict_fold_xgboost",
         return_value=sentinel,
@@ -1401,7 +1501,7 @@ def test_predict_fold_with_backend_dispatches_to_xgboost_helper() -> None:
 
 def test_predict_fold_with_backend_dispatches_to_catboost_helper() -> None:
     fold = _make_fold()
-    sentinel = pd.DataFrame({"predicted_rank": [3]})
+    sentinel = pl.DataFrame({"predicted_rank": [3]})
     with patch(
         "learning.feature_explorer._predict_fold_catboost",
         return_value=sentinel,
@@ -1429,3 +1529,318 @@ def test_select_fold_features_public_alias_matches_private_function() -> None:
     assert list(public_result["train_df"].columns) == list(private_result["train_df"].columns)
     assert list(public_result["valid_df"].columns) == list(private_result["valid_df"].columns)
     assert public_result["valid_year"] == private_result["valid_year"]
+
+
+# --- search-strategy: build_feature_sampler / warm-start / enqueue / timeout ---
+
+
+def test_build_feature_sampler_returns_tpe_sampler() -> None:
+    sampler = subject.build_feature_sampler(20)
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+
+
+def test_build_feature_sampler_caps_startup_below_n_trials() -> None:
+    # n_trials=3 → startup must be min(TPE_N_STARTUP_TRIALS=5, 3-1)=2, not 5.
+    sampler = subject.build_feature_sampler(3)
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+    assert sampler._n_startup_trials == 2
+
+
+def test_build_feature_sampler_floors_startup_at_one() -> None:
+    # n_trials=1 → 1-1=0 would disable random startup; floor keeps it at 1.
+    sampler = subject.build_feature_sampler(1)
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+    assert sampler._n_startup_trials == 1
+
+
+def test_build_feature_sampler_uses_full_startup_for_large_budget() -> None:
+    sampler = subject.build_feature_sampler(50)
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+    assert sampler._n_startup_trials == subject.TPE_N_STARTUP_TRIALS
+
+
+def test_mask_to_params_sets_true_for_selected_false_for_rest() -> None:
+    params, distributions = subject._mask_to_params(
+        ["feat_a", "feat_b", "feat_c"], {"feat_a", "feat_c"}
+    )
+    assert params == {"use_feat_a": True, "use_feat_b": False, "use_feat_c": True}
+    assert set(distributions.keys()) == {"use_feat_a", "use_feat_b", "use_feat_c"}
+
+
+def test_mask_to_params_distribution_is_boolean_categorical() -> None:
+    _, distributions = subject._mask_to_params(["feat_a"], {"feat_a"})
+    distribution = distributions["use_feat_a"]
+    assert isinstance(distribution, optuna.distributions.CategoricalDistribution)
+    assert distribution.choices == (True, False)
+
+
+def test_build_warm_start_trials_reconstructs_prior_trial_as_frozen_trial() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        registry.record_trial(
+            "seed", 0.82, ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"], "{}"
+        )
+        warm = subject.build_warm_start_trials(registry, candidate_features)
+    assert len(warm) == 1
+    assert warm[0].value == pytest.approx(0.82)
+    assert warm[0].params == {
+        "use_feat_a": True,
+        "use_feat_b": True,
+        "use_feat_c": True,
+        "use_feat_d": True,
+        "use_feat_e": True,
+    }
+
+
+def test_build_warm_start_trials_drops_features_absent_from_candidates() -> None:
+    # "feat_old" is no longer a candidate → it must be excluded from the mask.
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        registry.record_trial(
+            "seed", 0.7, ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_old"], "{}"
+        )
+        warm = subject.build_warm_start_trials(registry, candidate_features)
+    assert "use_feat_old" not in warm[0].params
+
+
+def test_build_warm_start_trials_skips_trial_below_min_features() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        registry.record_trial("too_small", 0.9, ["feat_a", "feat_b"], "{}")
+        warm = subject.build_warm_start_trials(registry, candidate_features)
+    assert warm == []
+
+
+def test_build_warm_start_trials_empty_registry_returns_empty() -> None:
+    with FeatureRegistry(Path(":memory:")) as registry:
+        warm = subject.build_warm_start_trials(registry, ["feat_a", "feat_b"])
+    assert warm == []
+
+
+def test_build_warm_start_trials_can_be_added_to_a_study() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        registry.record_trial(
+            "seed", 0.82, ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"], "{}"
+        )
+        warm = subject.build_warm_start_trials(registry, candidate_features)
+        study = optuna.create_study(direction="maximize")
+        study.add_trial(warm[0])
+    assert len(study.trials) == 1
+    assert study.best_value == pytest.approx(0.82)
+
+
+def test_enqueue_feature_subsets_forces_subset_to_be_evaluated_first() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    study = optuna.create_study(
+        direction="maximize", sampler=subject.build_feature_sampler(20)
+    )
+    subject.enqueue_feature_subsets(
+        study,
+        candidate_features,
+        [{"feat_a", "feat_b", "feat_c", "feat_d", "feat_e"}],
+    )
+    seen_first: dict[str, set[str]] = {}
+
+    def objective(trial: optuna.Trial) -> float:
+        mask = {c: trial.suggest_categorical(f"use_{c}", [True, False]) for c in candidate_features}
+        if "first" not in seen_first:
+            seen_first["first"] = {c for c, keep in mask.items() if keep}
+        return 0.5
+
+    study.optimize(objective, n_trials=1)
+    assert seen_first["first"] == {"feat_a", "feat_b", "feat_c", "feat_d", "feat_e"}
+
+
+def test_enqueue_feature_subsets_skips_subset_below_min_features() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    study = MagicMock()
+    subject.enqueue_feature_subsets(study, candidate_features, [{"feat_a", "feat_b"}])
+    study.enqueue_trial.assert_not_called()
+
+
+def test_enqueue_feature_subsets_drops_non_candidate_features() -> None:
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e"]
+    study = MagicMock()
+    subject.enqueue_feature_subsets(
+        study,
+        candidate_features,
+        [{"feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_gone"}],
+    )
+    enqueued_params = study.enqueue_trial.call_args[0][0]
+    assert "use_feat_gone" not in enqueued_params
+    assert enqueued_params["use_feat_a"] is True
+
+
+def test_make_per_trial_timeout_callback_stops_study_when_over_budget() -> None:
+    callback = subject.make_per_trial_timeout_callback(0.0)
+    study = MagicMock()
+    trial = MagicMock()
+    trial.datetime_start = datetime(2026, 1, 1, 0, 0, 0)
+    trial.datetime_complete = datetime(2026, 1, 1, 0, 0, 5)
+    callback(study, trial)
+    study.stop.assert_called_once()
+
+
+def test_make_per_trial_timeout_callback_does_not_stop_when_within_budget() -> None:
+    callback = subject.make_per_trial_timeout_callback(3600.0)
+    study = MagicMock()
+    trial = MagicMock()
+    trial.datetime_start = datetime(2026, 1, 1, 0, 0, 0)
+    trial.datetime_complete = datetime(2026, 1, 1, 0, 0, 5)
+    callback(study, trial)
+    study.stop.assert_not_called()
+
+
+def test_make_per_trial_timeout_callback_ignores_trial_without_start_time() -> None:
+    callback = subject.make_per_trial_timeout_callback(0.0)
+    study = MagicMock()
+    trial = MagicMock()
+    trial.datetime_start = None
+    trial.datetime_complete = datetime(2026, 1, 1, 0, 0, 5)
+    callback(study, trial)
+    study.stop.assert_not_called()
+
+
+def test_make_per_trial_timeout_callback_ignores_trial_without_complete_time() -> None:
+    callback = subject.make_per_trial_timeout_callback(0.0)
+    study = MagicMock()
+    trial = MagicMock()
+    trial.datetime_start = datetime(2026, 1, 1, 0, 0, 0)
+    trial.datetime_complete = None
+    callback(study, trial)
+    study.stop.assert_not_called()
+
+
+def test_run_exploration_passes_sampler_to_create_study() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ) as mock_create:
+            subject.run_exploration(df, registry, n_trials=1, warm_start=False)
+    sampler = mock_create.call_args.kwargs["sampler"]
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+
+
+def test_run_exploration_warm_starts_study_from_registry_when_enabled() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        registry.record_trial(
+            "seed", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "finish_position"], "{}"
+        )
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            with patch(
+                "learning.feature_explorer.build_warm_start_trials",
+                return_value=["warm_a", "warm_b"],
+            ):
+                subject.run_exploration(df, registry, n_trials=1, warm_start=True)
+    assert mock_study.add_trial.call_count == 2
+
+
+def test_run_exploration_skips_warm_start_when_disabled() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            with patch(
+                "learning.feature_explorer.build_warm_start_trials",
+                return_value=["warm_a"],
+            ) as mock_warm:
+                subject.run_exploration(df, registry, n_trials=1, warm_start=False)
+    mock_warm.assert_not_called()
+    mock_study.add_trial.assert_not_called()
+
+
+def test_run_exploration_enqueues_provided_subsets() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            with patch(
+                "learning.feature_explorer.enqueue_feature_subsets"
+            ) as mock_enqueue:
+                subject.run_exploration(
+                    df,
+                    registry,
+                    n_trials=1,
+                    warm_start=False,
+                    enqueue_subsets=[{"feat_speed", "feat_jockey"}],
+                )
+    mock_enqueue.assert_called_once()
+
+
+def test_run_exploration_does_not_enqueue_when_subsets_none() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            with patch(
+                "learning.feature_explorer.enqueue_feature_subsets"
+            ) as mock_enqueue:
+                subject.run_exploration(df, registry, n_trials=1, warm_start=False)
+    mock_enqueue.assert_not_called()
+
+
+def test_run_exploration_passes_timeout_and_n_jobs_to_optimize() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            subject.run_exploration(
+                df,
+                registry,
+                n_trials=1,
+                warm_start=False,
+                n_jobs=2,
+                study_timeout_s=120.0,
+            )
+    optimize_kwargs = mock_study.optimize.call_args.kwargs
+    assert optimize_kwargs["n_jobs"] == 2
+    assert optimize_kwargs["timeout"] == pytest.approx(120.0)
+
+
+def test_run_exploration_adds_timeout_callback_when_per_trial_timeout_set() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            subject.run_exploration(
+                df, registry, n_trials=1, warm_start=False, per_trial_timeout_s=30.0
+            )
+    callbacks = mock_study.optimize.call_args.kwargs["callbacks"]
+    assert len(callbacks) == 1
+
+
+def test_run_exploration_uses_no_callbacks_when_per_trial_timeout_none() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.optuna.create_study", return_value=mock_study
+        ):
+            subject.run_exploration(df, registry, n_trials=1, warm_start=False)
+    callbacks = mock_study.optimize.call_args.kwargs["callbacks"]
+    assert callbacks == []

@@ -11,13 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import pandas as pd
+import polars as pl
 
 import learning.continuous_learner as subject
 from learning.feature_registry import FeatureEntry, FeatureRegistry
 
 
-def _make_df() -> pd.DataFrame:
+def _make_df() -> pl.DataFrame:
     rows = []
     for year in [2023, 2024]:
         for race in range(3):
@@ -46,7 +46,7 @@ def _make_df() -> pd.DataFrame:
                         "feat_jockey": 0.3,
                     }
                 )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def _make_entry(
@@ -65,7 +65,7 @@ def _make_entry(
 
 def _make_learner(
     registry: FeatureRegistry | None = None,
-    df: pd.DataFrame | None = None,
+    df: pl.DataFrame | None = None,
     category: str = "jra",
     repo_root: Path | None = None,
     scripts_dir: Path | None = None,
@@ -113,7 +113,7 @@ def _make_learner(
 def test_write_filtered_parquet_keeps_feature_and_meta_cols(tmp_path: Path) -> None:
     df = _make_df()
     out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
-    result = pd.read_parquet(out)
+    result = pl.read_parquet(out)
     assert "feat_speed" in result.columns
     assert "race_id" in result.columns
     assert "finish_position" in result.columns
@@ -122,7 +122,7 @@ def test_write_filtered_parquet_keeps_feature_and_meta_cols(tmp_path: Path) -> N
 def test_write_filtered_parquet_excludes_non_selected_features(tmp_path: Path) -> None:
     df = _make_df()
     out = subject.write_filtered_parquet(df, ["feat_speed"], tmp_path / "out")
-    result = pd.read_parquet(out)
+    result = pl.read_parquet(out)
     assert "feat_jockey" not in result.columns
 
 
@@ -165,7 +165,7 @@ def test_learner_raises_when_validation_years_is_empty() -> None:
         with pytest.raises(ValueError, match="non-empty"):
             subject.ContinuousLearner(
                 registry=reg,
-                df=pd.DataFrame(),
+                df=pl.DataFrame(),
                 category="jra",
                 repo_root=Path("/tmp"),
                 scripts_dir=Path("/tmp"),
@@ -190,7 +190,7 @@ def test_blind_holdout_year_defaults_to_pool_max_for_empty_df() -> None:
 
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
-            registry=reg, df=pd.DataFrame(), validation_years=[2024]
+            registry=reg, df=pl.DataFrame(), validation_years=[2024]
         )
         assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
 
@@ -200,7 +200,7 @@ def test_blind_holdout_year_falls_back_when_no_race_year_column() -> None:
 
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
-            registry=reg, df=pd.DataFrame({"other_col": [1, 2, 3]})
+            registry=reg, df=pl.DataFrame({"other_col": [1, 2, 3]})
         )
         assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
 
@@ -211,7 +211,7 @@ def test_blind_holdout_year_falls_back_when_race_year_all_nan() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
             registry=reg,
-            df=pd.DataFrame({"race_year": [None, None, None]}),
+            df=pl.DataFrame({"race_year": [None, None, None]}),
         )
         assert learner._blind_holdout_year == max(VALIDATION_YEAR_POOL)
 
@@ -376,6 +376,86 @@ def test_explore_round_uses_override_n_trials() -> None:
             learner._explore_round(0, n_trials=3)
             kwargs = mock_run.call_args.kwargs
             assert kwargs["n_trials"] == 3
+
+
+def test_explore_round_passes_priority_subsets_and_timeout() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            per_trial_timeout_s=45.0,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+            kwargs = mock_run.call_args.kwargs
+            assert kwargs["per_trial_timeout_s"] == pytest.approx(45.0)
+            assert kwargs["enqueue_subsets"] == [
+                {"feat_speed", "feat_jockey", "umaban", "race_id", "barei"}
+            ]
+
+
+# ---------------------------------------------------------------------------
+# _priority_subsets
+# ---------------------------------------------------------------------------
+
+
+def test_priority_subsets_empty_when_no_active_entry() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._priority_subsets() == []
+
+
+def test_priority_subsets_returns_active_set_only_when_no_enriched() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        with patch.object(reg, "compute_feature_enrichment", return_value=[]):
+            subsets = learner._priority_subsets()
+    assert subsets == [{"feat_speed", "feat_jockey", "umaban", "race_id", "barei"}]
+
+
+def test_priority_subsets_appends_active_plus_enriched_candidates() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        with patch.object(
+            reg,
+            "compute_feature_enrichment",
+            return_value=[("feat_new", 0.6), ("feat_speed", 0.5)],
+        ):
+            subsets = learner._priority_subsets()
+    # feat_speed already active → filtered out; feat_new (positive score) added.
+    assert subsets[0] == {"feat_speed", "feat_jockey", "umaban", "race_id", "barei"}
+    assert subsets[1] == {"feat_speed", "feat_jockey", "umaban", "race_id", "barei", "feat_new"}
+
+
+def test_priority_subsets_ignores_non_positive_enrichment_scores() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        with patch.object(
+            reg,
+            "compute_feature_enrichment",
+            return_value=[("feat_bad", -0.4), ("feat_zero", 0.0)],
+        ):
+            subsets = learner._priority_subsets()
+    assert len(subsets) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +801,7 @@ def test_training_scripts_exist_under_module_parent_dir() -> None:
 
 def test_main_resolves_training_script_to_existing_file(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
 
     captured_scripts_dir: list[Path] = []
@@ -1054,7 +1134,7 @@ def test_setup_signal_handler_calls_request_stop_when_triggered() -> None:
 
 def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
 
     explore_calls: list[int] = []
@@ -1096,6 +1176,37 @@ def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
     assert len(explore_calls) == 2
 
 
+def test_main_wires_per_trial_timeout_into_learner(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, float | None] = {}
+
+    def capture_timeout(self: subject.ContinuousLearner, max_rounds: int | None = None) -> None:
+        _ = max_rounds
+        captured["per_trial_timeout_s"] = self._per_trial_timeout_s
+
+    with patch.object(subject.ContinuousLearner, "run", capture_timeout):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--per-trial-timeout",
+                "90.0",
+            ]
+        )
+
+    assert captured["per_trial_timeout_s"] == pytest.approx(90.0)
+
+
 def test_main_default_constants() -> None:
     assert subject.DEFAULT_DOCKER_TAG == "finish-position-predict-local:split2"
     assert subject.DEFAULT_DEPLOY_THRESHOLD == 0.005
@@ -1104,7 +1215,7 @@ def test_main_default_constants() -> None:
 
 def test_main_wires_trial_counts_into_controller(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
 
     created_controllers: list[subject.AdaptiveLoadController] = []
@@ -2307,44 +2418,38 @@ def test_docker_build_true_is_stored() -> None:
 
 def test_load_features_dataframe_single_file_reads_whole_file(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     result = subject._load_features_dataframe(parquet_path, "20160101")
     assert "feat_speed" in result.columns
     assert len(result) == len(_make_df())
 
 
+def _write_year_partition(partition_dir: Path, year: int) -> None:
+    year_dir = partition_dir / f"race_year={year}"
+    year_dir.mkdir(parents=True, exist_ok=True)
+    _make_df().drop("race_year").write_parquet(year_dir / "part-0.parquet")
+
+
 def test_load_features_dataframe_directory_filters_by_min_year(tmp_path: Path) -> None:
     partition_dir = tmp_path / "partitioned"
-    partition_dir.mkdir()
-    expected_df = _make_df()
-    fake_dataset = MagicMock()
-    fake_table = MagicMock()
-    fake_table.to_pandas.return_value = expected_df
-    fake_dataset.read.return_value = fake_table
-    with patch(
-        "learning.continuous_learner.pq.ParquetDataset", return_value=fake_dataset
-    ) as mock_dataset:
-        result = subject._load_features_dataframe(partition_dir, "20130101")
-    assert result is expected_df
-    filters = mock_dataset.call_args.kwargs["filters"]
-    assert filters == [("race_year", ">=", 2012)]
+    # train_start 20130101 → min_year = 2012, so the 2011 partition is pruned.
+    _write_year_partition(partition_dir, 2011)
+    _write_year_partition(partition_dir, 2012)
+    _write_year_partition(partition_dir, 2013)
+    result = subject._load_features_dataframe(partition_dir, "20130101")
+    assert set(result["race_year"].unique().to_list()) == {2012, 2013}
 
 
 def test_load_features_dataframe_directory_uses_train_start_minus_one(
     tmp_path: Path,
 ) -> None:
     partition_dir = tmp_path / "partitioned"
-    partition_dir.mkdir()
-    fake_dataset = MagicMock()
-    fake_table = MagicMock()
-    fake_table.to_pandas.return_value = _make_df()
-    fake_dataset.read.return_value = fake_table
-    with patch(
-        "learning.continuous_learner.pq.ParquetDataset", return_value=fake_dataset
-    ) as mock_dataset:
-        subject._load_features_dataframe(partition_dir, "20060101")
-    filters = mock_dataset.call_args.kwargs["filters"]
-    assert filters == [("race_year", ">=", 2005)]
+    # train_start 20060101 → min_year = 2005, so the 2004 partition is pruned.
+    _write_year_partition(partition_dir, 2004)
+    _write_year_partition(partition_dir, 2005)
+    _write_year_partition(partition_dir, 2006)
+    result = subject._load_features_dataframe(partition_dir, "20060101")
+    assert set(result["race_year"].unique().to_list()) == {2005, 2006}
 
 
 # ---------------------------------------------------------------------------
@@ -2492,7 +2597,7 @@ def _capture_learner_kwargs(
 
 def test_main_resolves_train_start_for_jra_when_omitted(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2527,7 +2632,7 @@ def test_main_resolves_train_start_for_jra_when_omitted(tmp_path: Path) -> None:
 
 def test_main_resolves_train_start_for_nar_when_omitted(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2562,7 +2667,7 @@ def test_main_resolves_train_start_for_nar_when_omitted(tmp_path: Path) -> None:
 
 def test_main_resolves_train_start_for_banei_when_omitted(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2597,7 +2702,7 @@ def test_main_resolves_train_start_for_banei_when_omitted(tmp_path: Path) -> Non
 
 def test_main_train_start_arg_overrides_category_default(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2634,7 +2739,7 @@ def test_main_train_start_arg_overrides_category_default(tmp_path: Path) -> None
 
 def test_main_resolves_backends_for_jra_when_omitted(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2669,7 +2774,7 @@ def test_main_resolves_backends_for_jra_when_omitted(tmp_path: Path) -> None:
 
 def test_main_backends_arg_overrides_category_default(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2706,7 +2811,7 @@ def test_main_backends_arg_overrides_category_default(tmp_path: Path) -> None:
 
 def test_main_forwards_docker_build_and_skip_flags(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2746,7 +2851,7 @@ def test_main_forwards_docker_build_and_skip_flags(tmp_path: Path) -> None:
 
 def test_main_docker_build_and_skip_flags_default_false(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2791,22 +2896,16 @@ def test_load_features_dataframe_partitioned_dir_reads_only_recent_years(
 ) -> None:
     year_dir_2013 = tmp_path / "race_year=2013"
     year_dir_2013.mkdir()
-    _make_df().drop(columns=["race_year"]).to_parquet(
-        year_dir_2013 / "part-0.parquet", index=False
-    )
+    _make_df().drop("race_year").write_parquet(year_dir_2013 / "part-0.parquet")
     year_dir_2014 = tmp_path / "race_year=2014"
     year_dir_2014.mkdir()
-    _make_df().drop(columns=["race_year"]).to_parquet(
-        year_dir_2014 / "part-0.parquet", index=False
-    )
+    _make_df().drop("race_year").write_parquet(year_dir_2014 / "part-0.parquet")
     year_dir_2015 = tmp_path / "race_year=2015"
     year_dir_2015.mkdir()
-    _make_df().drop(columns=["race_year"]).to_parquet(
-        year_dir_2015 / "part-0.parquet", index=False
-    )
+    _make_df().drop("race_year").write_parquet(year_dir_2015 / "part-0.parquet")
     df = subject._load_features_dataframe(tmp_path, "20150101")
-    assert not df.empty
-    assert set(df["race_year"].unique()) == {2014, 2015}
+    assert not df.is_empty()
+    assert set(df["race_year"].unique().to_list()) == {2014, 2015}
 
 
 # ---------------------------------------------------------------------------
@@ -2902,7 +3001,7 @@ def test_deploy_skips_cf_container_when_cf_deploy_false() -> None:
 
 def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -2940,7 +3039,7 @@ def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
 
 def test_main_cf_deploy_and_log_subgroup_default_false(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 
@@ -3048,7 +3147,13 @@ def test_log_subgroup_diagnostics_skips_when_no_predictions() -> None:
         feature_names=["feat_speed"]
     )
     learner = _make_learner(registry=mock_registry)
-    empty = pd.DataFrame(columns=["race_id", "ketto_toroku_bango", "predicted_rank"])
+    empty = pl.DataFrame(
+        schema={
+            "race_id": pl.Utf8,
+            "ketto_toroku_bango": pl.Utf8,
+            "predicted_rank": pl.Int64,
+        }
+    )
     with (
         patch.object(learner, "_collect_active_predictions", return_value=empty),
         patch(
@@ -3069,7 +3174,7 @@ def test_log_subgroup_diagnostics_logs_each_subgroup(
         feature_names=["feat_speed"]
     )
     learner = _make_learner(registry=mock_registry)
-    preds = pd.DataFrame(
+    preds = pl.DataFrame(
         {
             "race_id": ["r1"],
             "ketto_toroku_bango": ["horse_000"],
@@ -3107,7 +3212,7 @@ def test_log_subgroup_diagnostics_handles_empty_metrics(
         feature_names=["feat_speed"]
     )
     learner = _make_learner(registry=mock_registry)
-    preds = pd.DataFrame(
+    preds = pl.DataFrame(
         {
             "race_id": ["r1"],
             "ketto_toroku_bango": ["horse_000"],
@@ -3126,7 +3231,7 @@ def test_log_subgroup_diagnostics_handles_empty_metrics(
     assert any("no subgroups to report" in r.message for r in caplog.records)
 
 
-def _make_df_3years() -> pd.DataFrame:
+def _make_df_3years() -> pl.DataFrame:
     rows = []
     for year in [2022, 2023, 2024]:
         for race in range(3):
@@ -3155,7 +3260,7 @@ def _make_df_3years() -> pd.DataFrame:
                         "feat_jockey": 0.3,
                     }
                 )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def test_collect_active_predictions_stacks_fold_predictions() -> None:
@@ -3166,7 +3271,7 @@ def test_collect_active_predictions_stacks_fold_predictions() -> None:
             validation_years=[2023, 2024],
             train_start="20220101",
         )
-        preds = pd.DataFrame(
+        preds = pl.DataFrame(
             {
                 "race_id": ["r1", "r1"],
                 "ketto_toroku_bango": ["a", "b"],
@@ -3184,10 +3289,9 @@ def test_collect_active_predictions_stacks_fold_predictions() -> None:
         assert mock_predict.call_count == 6
 
 
-def test_collect_active_predictions_returns_frame_decoupled_from_wide_preds() -> None:
-    # The slim 3-column result must not share a numpy block with the wide
-    # prediction frame, so the full-width preds can be released each iteration.
-    # Mutating the original wide frame after collection must not alter the result.
+def test_collect_active_predictions_returns_slim_projection_of_wide_preds() -> None:
+    # The result is the slim 3-column projection of the wide prediction frame, so
+    # the full-width preds (with finish_position) can be released each iteration.
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
             registry=reg,
@@ -3195,7 +3299,7 @@ def test_collect_active_predictions_returns_frame_decoupled_from_wide_preds() ->
             validation_years=[2023],
             train_start="20220101",
         )
-        wide = pd.DataFrame(
+        wide = pl.DataFrame(
             {
                 "race_id": ["r1", "r1"],
                 "ketto_toroku_bango": ["a", "b"],
@@ -3208,9 +3312,9 @@ def test_collect_active_predictions_returns_frame_decoupled_from_wide_preds() ->
             return_value=wide,
         ):
             result = learner._collect_active_predictions(["feat_speed"])
-        wide.loc[0, "predicted_rank"] = 999
-        assert 999 not in result["predicted_rank"].tolist()
-        assert set(result["predicted_rank"].tolist()) == {1, 2}
+        assert result.columns == ["race_id", "ketto_toroku_bango", "predicted_rank"]
+        assert "finish_position" not in result.columns
+        assert set(result["predicted_rank"].to_list()) == {1, 2}
 
 
 def test_collect_active_predictions_skips_none_predictions() -> None:
@@ -3226,7 +3330,7 @@ def test_collect_active_predictions_skips_none_predictions() -> None:
             return_value=None,
         ):
             result = learner._collect_active_predictions(["feat_speed"])
-        assert result.empty
+        assert result.is_empty()
         assert list(result.columns) == ["race_id", "ketto_toroku_bango", "predicted_rank"]
 
 
@@ -3239,7 +3343,7 @@ def test_collect_active_predictions_skips_empty_folds() -> None:
             "learning.continuous_learner.predict_fold_with_backend"
         ) as mock_predict:
             result = learner._collect_active_predictions(["feat_speed"])
-        assert result.empty
+        assert result.is_empty()
         mock_predict.assert_not_called()
 
 
@@ -3362,7 +3466,7 @@ def test_auto_tune_false_is_stored() -> None:
 
 def test_main_no_auto_tune_flag_disables_auto_tune(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
 
     with (
@@ -3393,7 +3497,7 @@ def test_main_no_auto_tune_flag_disables_auto_tune(tmp_path: Path) -> None:
 
 def test_main_default_enables_auto_tune(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
 
     with (
@@ -3455,8 +3559,8 @@ def _make_explorer_fold() -> object:
                 "feat_jockey": 0.3,
             }
         )
-    fold_df = pd.DataFrame(rows)
-    return {"train_df": fold_df, "valid_df": fold_df.copy(), "valid_year": 2023}
+    fold_df = pl.DataFrame(rows)
+    return {"train_df": fold_df, "valid_df": fold_df.clone(), "valid_year": 2023}
 
 
 def _make_explorer_meta_only_fold() -> object:
@@ -3484,8 +3588,8 @@ def _make_explorer_meta_only_fold() -> object:
                 "target_running_style_class": 0,
             }
         )
-    fold_df = pd.DataFrame(rows)
-    return {"train_df": fold_df, "valid_df": fold_df.copy(), "valid_year": 2023}
+    fold_df = pl.DataFrame(rows)
+    return {"train_df": fold_df, "valid_df": fold_df.clone(), "valid_year": 2023}
 
 
 def test_predict_fold_with_backend_lightgbm_returns_predictions_with_finish_position() -> None:
@@ -3493,7 +3597,7 @@ def test_predict_fold_with_backend_lightgbm_returns_predictions_with_finish_posi
     from finish_position_lightgbm import FoldSplit
 
     fold = cast("FoldSplit", _make_explorer_fold())
-    preds_df = pd.DataFrame(
+    preds_df = pl.DataFrame(
         {
             "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
             "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
@@ -3518,7 +3622,7 @@ def test_predict_fold_with_backend_xgboost_returns_valid_predictions() -> None:
     from finish_position_lightgbm import FoldSplit
 
     fold = cast("FoldSplit", _make_explorer_fold())
-    valid_preds = pd.DataFrame(
+    valid_preds = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1", "r1"],
             "ketto_toroku_bango": ["a", "b", "c", "d"],
@@ -3542,7 +3646,7 @@ def test_predict_fold_with_backend_catboost_returns_valid_predictions() -> None:
     from finish_position_lightgbm import FoldSplit
 
     fold = cast("FoldSplit", _make_explorer_fold())
-    valid_preds = pd.DataFrame(
+    valid_preds = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1", "r1"],
             "ketto_toroku_bango": ["a", "b", "c", "d"],
@@ -3674,7 +3778,7 @@ def test_deploy_cf_container_falls_back_to_container_app_dir_when_dir_none() -> 
 
 def test_main_forwards_cf_deploy_dir(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     deploy_dir = tmp_path / "apps" / "finish-position-cron"
     captured: dict[str, object] = {}
@@ -3713,7 +3817,7 @@ def test_main_forwards_cf_deploy_dir(tmp_path: Path) -> None:
 
 def test_main_cf_deploy_dir_default_is_none(tmp_path: Path) -> None:
     parquet_path = tmp_path / "features.parquet"
-    _make_df().to_parquet(parquet_path, index=False)
+    _make_df().write_parquet(parquet_path)
     registry_path = tmp_path / "reg.duckdb"
     captured: dict[str, object] = {}
 

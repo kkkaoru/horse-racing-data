@@ -47,7 +47,7 @@ from subprocess import CompletedProcess
 from typing import Callable, Protocol, TypedDict
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 PROBABILITY_COLUMNS: tuple[str, str, str, str] = ("p_nige", "p_senkou", "p_sashi", "p_oikomi")
 PREDICTED_CLASS_COLUMN: str = "predicted_class"
@@ -139,8 +139,8 @@ class LocalInferenceRunnerLike(Protocol):
     ) -> None: ...
 
 
-class PandasParquetWriter(Protocol):
-    def __call__(self, frame: pd.DataFrame, path: str) -> None: ...
+class ParquetWriter(Protocol):
+    def __call__(self, frame: pl.DataFrame, path: str) -> None: ...
 
 
 class SampleSpec(TypedDict):
@@ -151,16 +151,16 @@ class SampleSpec(TypedDict):
 
 
 class CompareSpec(TypedDict):
-    local_frame: pd.DataFrame
-    prod_frame: pd.DataFrame
+    local_frame: pl.DataFrame
+    prod_frame: pl.DataFrame
     tolerance: float
 
 
 class PhaseTwoDeps(TypedDict):
     pg_connector: PgConnectorLike
     local_inference_runner: LocalInferenceRunnerLike
-    pandas_reader: Callable[[str], pd.DataFrame]
-    pandas_writer: PandasParquetWriter
+    parquet_reader: Callable[[str], pl.DataFrame]
+    parquet_writer: ParquetWriter
     subprocess_runner: SubprocessRunner
 
 
@@ -228,7 +228,7 @@ def fetch_prod_predictions(
     spec: SampleSpec,
     *,
     pg_connector: PgConnectorLike,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     connection = pg_connector(spec["pg_dsn"])
     try:
         cursor = connection.cursor()
@@ -239,38 +239,56 @@ def fetch_prod_predictions(
         rows = cursor.fetchall()
     finally:
         connection.close()
-    return pd.DataFrame(
+    return pl.DataFrame(
         rows,
-        columns=[
+        schema=[
             *RACE_KEY_COLUMNS,
             "ketto_toroku_bango",
             *PROBABILITY_COLUMNS,
             PREDICTED_CLASS_COLUMN,
         ],
+        orient="row",
     )
 
 
 def assert_probability_sums_to_one(
-    frame: pd.DataFrame, *, tolerance: float,
+    frame: pl.DataFrame, *, tolerance: float,
 ) -> bool:
-    probabilities = frame[list(PROBABILITY_COLUMNS)].to_numpy(dtype=np.float64)
+    probabilities = frame.select(list(PROBABILITY_COLUMNS)).to_numpy().astype(np.float64)
     row_sums = probabilities.sum(axis=1)
     deviations = np.abs(row_sums - 1.0)
     return bool(np.all(deviations <= tolerance))
 
 
-def compute_max_diff_per_class(spec: CompareSpec) -> dict[str, float]:
-    merged = spec["local_frame"].merge(
-        spec["prod_frame"],
-        on=[*RACE_KEY_COLUMNS, "ketto_toroku_bango"],
-        suffixes=("_local", "_prod"),
+def _merge_local_prod(spec: CompareSpec, *, with_suffixes: bool) -> pl.DataFrame:
+    on = [*RACE_KEY_COLUMNS, "ketto_toroku_bango"]
+    if not with_suffixes:
+        return spec["local_frame"].join(spec["prod_frame"], on=on, how="inner")
+    prod = spec["prod_frame"].rename(
+        {
+            column: f"{column}_prod"
+            for column in spec["prod_frame"].columns
+            if column not in on
+        }
     )
+    local = spec["local_frame"].rename(
+        {
+            column: f"{column}_local"
+            for column in spec["local_frame"].columns
+            if column not in on
+        }
+    )
+    return local.join(prod, on=on, how="inner")
+
+
+def compute_max_diff_per_class(spec: CompareSpec) -> dict[str, float]:
+    merged = _merge_local_prod(spec, with_suffixes=True)
     return {
         column: float(
             np.max(
                 np.abs(
-                    merged[f"{column}_local"].to_numpy(dtype=np.float64)
-                    - merged[f"{column}_prod"].to_numpy(dtype=np.float64),
+                    merged[f"{column}_local"].to_numpy().astype(np.float64)
+                    - merged[f"{column}_prod"].to_numpy().astype(np.float64),
                 ),
             ),
         )
@@ -281,28 +299,17 @@ def compute_max_diff_per_class(spec: CompareSpec) -> dict[str, float]:
 
 
 def compute_argmax_agreement(spec: CompareSpec) -> float:
-    merged = spec["local_frame"].merge(
-        spec["prod_frame"],
-        on=[*RACE_KEY_COLUMNS, "ketto_toroku_bango"],
-        suffixes=("_local", "_prod"),
-    )
+    merged = _merge_local_prod(spec, with_suffixes=True)
     if len(merged) == 0:
         return 1.0
-    matches = merged[f"{PREDICTED_CLASS_COLUMN}_local"].to_numpy(
-        dtype=np.int64,
-    ) == merged[f"{PREDICTED_CLASS_COLUMN}_prod"].to_numpy(dtype=np.int64)
+    matches = merged[f"{PREDICTED_CLASS_COLUMN}_local"].to_numpy().astype(
+        np.int64,
+    ) == merged[f"{PREDICTED_CLASS_COLUMN}_prod"].to_numpy().astype(np.int64)
     return float(np.mean(matches))
 
 
 def evaluate_parity(spec: CompareSpec) -> ParityResult:
-    merged_count = int(
-        len(
-            spec["local_frame"].merge(
-                spec["prod_frame"],
-                on=[*RACE_KEY_COLUMNS, "ketto_toroku_bango"],
-            ),
-        ),
-    )
+    merged_count = int(len(_merge_local_prod(spec, with_suffixes=False)))
     max_diff = compute_max_diff_per_class(spec)
     agreement = compute_argmax_agreement(spec)
     passed = (
@@ -337,22 +344,18 @@ def resolve_pg_dsn(explicit_dsn: str | None) -> str:
     )
 
 
-def collect_mismatches(spec: CompareSpec, *, max_diff_threshold: float) -> pd.DataFrame:
-    merged = spec["local_frame"].merge(
-        spec["prod_frame"],
-        on=[*RACE_KEY_COLUMNS, "ketto_toroku_bango"],
-        suffixes=("_local", "_prod"),
-    )
+def collect_mismatches(spec: CompareSpec, *, max_diff_threshold: float) -> pl.DataFrame:
+    merged = _merge_local_prod(spec, with_suffixes=True)
     if len(merged) == 0:
-        return pd.DataFrame(
-            columns=[*RACE_KEY_COLUMNS, "ketto_toroku_bango", "max_diff"],
+        return pl.DataFrame(
+            schema=[*RACE_KEY_COLUMNS, "ketto_toroku_bango", "max_diff"],
         )
     per_row_diffs = np.max(
         np.stack(
             [
                 np.abs(
-                    merged[f"{column}_local"].to_numpy(dtype=np.float64)
-                    - merged[f"{column}_prod"].to_numpy(dtype=np.float64),
+                    merged[f"{column}_local"].to_numpy().astype(np.float64)
+                    - merged[f"{column}_prod"].to_numpy().astype(np.float64),
                 )
                 for column in PROBABILITY_COLUMNS
             ],
@@ -360,9 +363,10 @@ def collect_mismatches(spec: CompareSpec, *, max_diff_threshold: float) -> pd.Da
         ),
         axis=1,
     )
-    annotated = merged[[*RACE_KEY_COLUMNS, "ketto_toroku_bango"]].copy()
-    annotated["max_diff"] = per_row_diffs
-    return annotated[annotated["max_diff"] > max_diff_threshold].reset_index(drop=True)
+    annotated = merged.select([*RACE_KEY_COLUMNS, "ketto_toroku_bango"]).with_columns(
+        pl.Series("max_diff", per_row_diffs)
+    )
+    return annotated.filter(pl.col("max_diff") > max_diff_threshold)
 
 
 def build_phase_three_report(
@@ -401,7 +405,7 @@ def resolve_report_paths(
 def write_phase_three_artifacts(
     *,
     report: PhaseThreeReport,
-    mismatches: pd.DataFrame,
+    mismatches: pl.DataFrame,
     report_dir: str,
 ) -> tuple[Path, Path | None]:
     json_path, parquet_path = resolve_report_paths(
@@ -413,7 +417,7 @@ def write_phase_three_artifacts(
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     if len(mismatches) == 0:
         return json_path, None
-    mismatches.to_parquet(parquet_path, index=False)
+    mismatches.write_parquet(parquet_path)
     return json_path, parquet_path
 
 
@@ -490,16 +494,16 @@ def utc_now_iso() -> str:
 
 
 def filter_features_by_race_keys(
-    features: pd.DataFrame, race_keys: list[tuple[str, str, str, str, str]],
-) -> pd.DataFrame:
+    features: pl.DataFrame, race_keys: list[tuple[str, str, str, str, str]],
+) -> pl.DataFrame:
     if len(race_keys) == 0:
-        return features.iloc[0:0].copy()
-    keys_frame = pd.DataFrame(race_keys, columns=list(RACE_KEY_COLUMNS))
-    return features.merge(keys_frame, on=list(RACE_KEY_COLUMNS), how="inner")
+        return features.clear()
+    keys_frame = pl.DataFrame(race_keys, schema=list(RACE_KEY_COLUMNS), orient="row")
+    return features.join(keys_frame, on=list(RACE_KEY_COLUMNS), how="inner")
 
 
-def default_pandas_parquet_writer(frame: pd.DataFrame, path: str) -> None:
-    frame.to_parquet(path, index=False)
+def default_parquet_writer(frame: pl.DataFrame, path: str) -> None:
+    frame.write_parquet(path)
 
 
 class PhaseTwoArgs(TypedDict):
@@ -557,13 +561,13 @@ def spawn_w3_for_filtered_features(
     )
 
 
-def derive_predicted_class(local_frame: pd.DataFrame) -> pd.DataFrame:
+def derive_predicted_class(local_frame: pl.DataFrame) -> pl.DataFrame:
     if PREDICTED_CLASS_COLUMN in local_frame.columns:
         return local_frame
-    probabilities = local_frame[list(PROBABILITY_COLUMNS)].to_numpy(dtype=np.float64)
-    annotated = local_frame.copy()
-    annotated[PREDICTED_CLASS_COLUMN] = probabilities.argmax(axis=1).astype(np.int64)
-    return annotated
+    probabilities = local_frame.select(list(PROBABILITY_COLUMNS)).to_numpy().astype(np.float64)
+    return local_frame.with_columns(
+        pl.Series(PREDICTED_CLASS_COLUMN, probabilities.argmax(axis=1).astype(np.int64))
+    )
 
 
 def run_phase_two(
@@ -579,11 +583,11 @@ def run_phase_two(
         "limit": coerced["sample_limit"],
     }
     race_keys = fetch_sample_race_keys(sample_spec, pg_connector=deps["pg_connector"])
-    features = deps["pandas_reader"](coerced["features_parquet"])
+    features = deps["parquet_reader"](coerced["features_parquet"])
     filtered = filter_features_by_race_keys(features, race_keys)
     with tempfile.TemporaryDirectory() as tmpdir:
         filtered_path = str(Path(tmpdir) / "filtered_features.parquet")
-        deps["pandas_writer"](filtered, filtered_path)
+        deps["parquet_writer"](filtered, filtered_path)
         spawn_w3_for_filtered_features(
             args=coerced,
             filtered_features_path=filtered_path,
@@ -591,7 +595,7 @@ def run_phase_two(
             local_inference_runner=deps["local_inference_runner"],
             subprocess_runner=deps["subprocess_runner"],
         )
-        local_frame = derive_predicted_class(deps["pandas_reader"](coerced["output_parquet"]))
+        local_frame = derive_predicted_class(deps["parquet_reader"](coerced["output_parquet"]))
     prod_frame = fetch_prod_predictions(sample_spec, pg_connector=deps["pg_connector"])
     return evaluate_parity(
         {
@@ -605,8 +609,8 @@ def run_phase_two(
 class PhaseThreeDeps(TypedDict):
     pg_connector: PgConnectorLike
     local_inference_runner: LocalInferenceRunnerLike
-    pandas_reader: Callable[[str], pd.DataFrame]
-    pandas_writer: PandasParquetWriter
+    parquet_reader: Callable[[str], pl.DataFrame]
+    parquet_writer: ParquetWriter
     subprocess_runner: SubprocessRunner
     generated_at_utc: str
 
@@ -621,8 +625,8 @@ def run_phase_three(
         deps={
             "pg_connector": deps["pg_connector"],
             "local_inference_runner": deps["local_inference_runner"],
-            "pandas_reader": deps["pandas_reader"],
-            "pandas_writer": deps["pandas_writer"],
+            "parquet_reader": deps["parquet_reader"],
+            "parquet_writer": deps["parquet_writer"],
             "subprocess_runner": deps["subprocess_runner"],
         },
     )
@@ -636,7 +640,7 @@ def run_phase_three(
         },
         pg_connector=deps["pg_connector"],
     )
-    local_frame = derive_predicted_class(deps["pandas_reader"](coerced["output_parquet"]))
+    local_frame = derive_predicted_class(deps["parquet_reader"](coerced["output_parquet"]))
     compare_spec: CompareSpec = {
         "local_frame": local_frame,
         "prod_frame": prod_frame,
@@ -662,8 +666,8 @@ def run_phase_three(
 class RunDeps(TypedDict):
     pg_connector: PgConnectorLike
     local_inference_runner: LocalInferenceRunnerLike
-    pandas_reader: Callable[[str], pd.DataFrame]
-    pandas_writer: PandasParquetWriter
+    parquet_reader: Callable[[str], pl.DataFrame]
+    parquet_writer: ParquetWriter
     subprocess_runner: SubprocessRunner
     clock_iso: Callable[[], str]
 
@@ -680,8 +684,8 @@ def run_phase_two_outcome(
         deps={
             "pg_connector": deps["pg_connector"],
             "local_inference_runner": deps["local_inference_runner"],
-            "pandas_reader": deps["pandas_reader"],
-            "pandas_writer": deps["pandas_writer"],
+            "parquet_reader": deps["parquet_reader"],
+            "parquet_writer": deps["parquet_writer"],
             "subprocess_runner": deps["subprocess_runner"],
         },
     )
@@ -696,8 +700,8 @@ def run_phase_three_outcome(
         deps={
             "pg_connector": deps["pg_connector"],
             "local_inference_runner": deps["local_inference_runner"],
-            "pandas_reader": deps["pandas_reader"],
-            "pandas_writer": deps["pandas_writer"],
+            "parquet_reader": deps["parquet_reader"],
+            "parquet_writer": deps["parquet_writer"],
             "subprocess_runner": deps["subprocess_runner"],
             "generated_at_utc": deps["clock_iso"](),
         },
@@ -725,8 +729,8 @@ def main(argv: list[str] | None = None) -> None:
         deps={
             "pg_connector": default_pg_connector,
             "local_inference_runner": default_local_inference_runner,
-            "pandas_reader": pd.read_parquet,
-            "pandas_writer": default_pandas_parquet_writer,
+            "parquet_reader": pl.read_parquet,
+            "parquet_writer": default_parquet_writer,
             "subprocess_runner": subprocess.run,
             "clock_iso": utc_now_iso,
         },

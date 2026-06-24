@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, TypedDict, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pyarrow.parquet as pq
 
 import walk_forward_common as wfc_common
@@ -88,26 +88,26 @@ class TrainLightgbmArgs(TypedDict):
 
 
 class ParquetReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class FoldTrainerLike(Protocol):
     def __call__(
         self,
-        train_df: pd.DataFrame,
-        valid_df: pd.DataFrame,
+        train_df: pl.DataFrame,
+        valid_df: pl.DataFrame,
         feature_cols: list[str],
         args: argparse.Namespace,
     ) -> dict[str, object]: ...
 
 
 class BucketMembershipReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class TrainDeps(TypedDict):
     parquet_reader: ParquetReaderLike
-    feature_resolver: Callable[[pd.DataFrame], list[str]]
+    feature_resolver: Callable[[pl.DataFrame], list[str]]
     fold_trainer: FoldTrainerLike
     bucket_reader: BucketMembershipReaderLike
 
@@ -242,17 +242,17 @@ def resolve_fold_learning_rate(
     return args["learning_rate"] / float(divisor)
 
 
-def resolve_feature_columns(df: pd.DataFrame) -> list[str]:
+def resolve_feature_columns(df: pl.DataFrame) -> list[str]:
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
     return [
         c for c in df.columns
-        if c not in excluded and pd.api.types.is_numeric_dtype(df[c])
+        if c not in excluded and df.schema[c].is_numeric()
     ]
 
 
 def merge_bucket_weights_into_train(
-    train_df: pd.DataFrame, bucket_df: pd.DataFrame | None,
-) -> pd.DataFrame:
+    train_df: pl.DataFrame, bucket_df: pl.DataFrame | None,
+) -> pl.DataFrame:
     if bucket_df is None:
         return train_df
     if "race_id" not in bucket_df.columns:
@@ -262,20 +262,20 @@ def merge_bucket_weights_into_train(
             "bucket membership parquet must contain is_weak_bucket_score",
         )
     merge_cols = ["race_id", "is_weak_bucket_score"]
-    deduped = bucket_df[merge_cols].drop_duplicates("race_id")
-    return train_df.merge(deduped, on="race_id", how="left")
+    deduped = bucket_df.select(merge_cols).unique(subset="race_id", maintain_order=True)
+    return train_df.join(deduped, on="race_id", how="left")
 
 
-def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:
+def attach_sample_weights(train_df: pl.DataFrame, alpha: float) -> pl.DataFrame:
     if "race_year" not in train_df.columns:
         raise ValueError("train_df must contain race_year for sample weighting")
     years = np.asarray(
-        train_df["race_year"].astype("int64").to_numpy(), dtype=np.int64,
+        train_df["race_year"].cast(pl.Int64).to_numpy(), dtype=np.int64,
     )
     time_weights = wfc_common.compute_time_decay_weights(years)
     if "is_weak_bucket_score" in train_df.columns and alpha > 0:
         weak_scores = np.asarray(
-            train_df["is_weak_bucket_score"].fillna(0.0).astype(float).to_numpy(),
+            train_df["is_weak_bucket_score"].fill_null(0.0).cast(pl.Float64).to_numpy(),
             dtype=np.float64,
         )
         sample_weights = wfc_common.compute_bucket_aware_weights(
@@ -283,22 +283,22 @@ def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:
         )
     else:
         sample_weights = time_weights
-    out = train_df.copy()
-    out["sample_weight"] = sample_weights
-    return out
+    return train_df.with_columns(pl.Series("sample_weight", sample_weights))
 
 
 def split_train_valid(
-    df: pd.DataFrame, train_start: str, valid_year: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df: pl.DataFrame, train_start: str, valid_year: int,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     train_end = f"{valid_year - 1}1231"
     train_mask = (
-        (df["race_date"] >= train_start)
-        & (df["race_date"] <= train_end)
-        & df["finish_position"].notna()
+        (pl.col("race_date") >= train_start)
+        & (pl.col("race_date") <= train_end)
+        & pl.col("finish_position").is_not_null()
     )
-    valid_mask = df["race_date"].str.startswith(str(valid_year)) & df["finish_position"].notna()
-    return df[train_mask].copy(), df[valid_mask].copy()
+    valid_mask = pl.col("race_date").str.starts_with(str(valid_year)) & pl.col(
+        "finish_position",
+    ).is_not_null()
+    return df.filter(train_mask), df.filter(valid_mask)
 
 
 def build_fold_namespace(
@@ -323,42 +323,45 @@ def make_to_relevance() -> Callable[[object], int]:
     rel_map = {1: RELEVANCE_RANK1, 2: RELEVANCE_RANK2, 3: RELEVANCE_RANK3}
 
     def _to(value: object) -> int:
-        if value is None or pd.isna(cast(float, value)):
+        if value is None:
             return 0
-        return rel_map.get(int(cast(float, value)), 0)
+        fv = float(cast(float, value))
+        if fv != fv:
+            return 0
+        return rel_map.get(int(fv), 0)
 
     return _to
 
 
-def build_group_sizes(df: pd.DataFrame) -> list[int]:
-    return df.groupby("race_id", sort=False).size().tolist()
+def build_group_sizes(df: pl.DataFrame) -> list[int]:
+    return df.group_by("race_id", maintain_order=True).len()["len"].to_list()
 
 
 def sort_train_valid_for_grouping(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     args: argparse.Namespace,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Order rows so race groups are contiguous before building Datasets.
 
-    ``build_group_sizes`` relies on ``groupby(..., sort=False)`` seeing every
-    race's rows back-to-back, so the frame must be sorted by ``(race_id, umaban)``.
-    When the walk-forward caller already sorted the full dataset once (passing
-    ``presorted=True``), each fold slice is still sorted, so we only need a cheap
-    ``reset_index`` for positional alignment instead of re-sorting the cumulative
-    train window every fold.
+    ``build_group_sizes`` relies on ``group_by(..., maintain_order=True)`` seeing
+    every race's rows back-to-back, so the frame must be sorted by
+    ``(race_id, umaban)``. When the walk-forward caller already sorted the full
+    dataset once (passing ``presorted=True``), each fold slice is still sorted,
+    so we can return it as-is instead of re-sorting the cumulative train window
+    every fold.
     """
     if getattr(args, "presorted", False):
-        return train_df.reset_index(drop=True), valid_df.reset_index(drop=True)
+        return train_df, valid_df
     return (
-        train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
-        valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+        train_df.sort(["race_id", "umaban"], maintain_order=True),
+        valid_df.sort(["race_id", "umaban"], maintain_order=True),
     )
 
 
 def default_fold_trainer(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
 ) -> dict[str, object]:
@@ -370,18 +373,34 @@ def default_fold_trainer(
 
     train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
     to_relevance = make_to_relevance()
-    train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
-    valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
-    weights = train_df["sample_weight"].to_numpy(dtype=np.float32) if "sample_weight" in train_df.columns else None
+    train_labels = (
+        train_df["finish_position"]
+        .map_elements(to_relevance, return_dtype=pl.Int32)
+        .to_numpy()
+        .astype(np.int32)
+    )
+    valid_labels = (
+        valid_df["finish_position"]
+        .map_elements(to_relevance, return_dtype=pl.Int32)
+        .to_numpy()
+        .astype(np.int32)
+    )
+    weights = (
+        train_df["sample_weight"].to_numpy().astype(np.float32)
+        if "sample_weight" in train_df.columns
+        else None
+    )
     train_ds = lgb.Dataset(
-        train_df[feature_cols],
+        train_df.select(feature_cols).to_numpy(),
         label=train_labels,
+        feature_name=feature_cols,
         group=build_group_sizes(train_df),
         weight=weights,
     )
     valid_ds = lgb.Dataset(
-        valid_df[feature_cols],
+        valid_df.select(feature_cols).to_numpy(),
         label=valid_labels,
+        feature_name=feature_cols,
         group=build_group_sizes(valid_df),
         reference=train_ds,
     )
@@ -406,13 +425,15 @@ def default_fold_trainer(
     )
     predictions = cast(
         "np.ndarray[tuple[int], np.dtype[np.float64]]",
-        booster.predict(valid_df[feature_cols]),
+        booster.predict(valid_df.select(feature_cols).to_numpy()),
     )
-    valid_df = valid_df.assign(predicted_score=predictions)
-    valid_df["predicted_rank"] = (
-        valid_df.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False)
-        .astype(int)
+    valid_df = valid_df.with_columns(pl.Series("predicted_score", predictions))
+    valid_df = valid_df.with_columns(
+        pl.col("predicted_score")
+        .rank(method="ordinal", descending=True)
+        .over("race_id")
+        .cast(pl.Int64)
+        .alias("predicted_rank"),
     )
     return {
         "booster": booster,
@@ -421,13 +442,13 @@ def default_fold_trainer(
 
 
 def train_fold(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_cols: list[str],
     args: TrainLightgbmArgs,
     fold_year: int,
     fold_years: list[int],
     deps: TrainDeps,
-    bucket_df: pd.DataFrame | None,
+    bucket_df: pl.DataFrame | None,
 ) -> dict[str, object]:
     model_dir = build_per_fold_model_dir(args, fold_year)
     if args["resume_from_checkpoint"] and wfc_common.detect_completed_fold(model_dir, fold_year):
@@ -457,7 +478,7 @@ def train_fold(
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
     fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
-    valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
+    valid_predictions = cast(pl.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,
         "status": METADATA_STATUS_COMPLETED,
@@ -533,18 +554,18 @@ def resolve_projection_columns(schema_names: list[str]) -> list[str]:
     return selected
 
 
-def default_parquet_reader(path: Path) -> pd.DataFrame:
+def default_parquet_reader(path: Path) -> pl.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
-        return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+        return pl.DataFrame()
     projection = resolve_projection_columns(list(pq.read_schema(parts[0]).names))
-    return pd.concat(
-        [pd.read_parquet(p, columns=projection) for p in parts], ignore_index=True,
+    return pl.concat(
+        [pl.read_parquet(p, columns=projection) for p in parts],
     )
 
 
-def default_bucket_reader(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path)
+def default_bucket_reader(path: Path) -> pl.DataFrame:
+    return pl.read_parquet(path)
 
 
 def build_default_deps() -> TrainDeps:

@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import duckdb
-import pandas as pd
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -494,7 +494,7 @@ def test_write_partitioned_appends_exotic_columns(tmp_path: Path) -> None:
     # Read individual parquet files to avoid pyarrow hive-partition schema
     # merging conflicts (race_year is stored in both the column data and the
     # folder name, which causes ArrowTypeError on schema merge).
-    df = pd.concat([pd.read_parquet(p) for p in written], ignore_index=True)
+    df = pl.concat([pl.read_parquet(p) for p in written], how="diagonal_relaxed")
     assert "exotic_sanrenpuku_p3" in df.columns
     assert "exotic_wide_p3" in df.columns
     assert "exotic_umaren_p2" in df.columns
@@ -536,10 +536,10 @@ def test_write_partitioned_null_where_no_odds(tmp_path: Path) -> None:
 
     written = list(out_dir.rglob("*.parquet"))
     assert len(written) >= 1
-    df = pd.concat([pd.read_parquet(p) for p in written], ignore_index=True)
-    assert df["exotic_sanrenpuku_p3"].isna().all()
-    assert df["exotic_wide_p3"].isna().all()
-    assert df["exotic_umaren_p2"].isna().all()
+    df = pl.concat([pl.read_parquet(p) for p in written], how="diagonal_relaxed")
+    assert df["exotic_sanrenpuku_p3"].is_null().all()
+    assert df["exotic_wide_p3"].is_null().all()
+    assert df["exotic_umaren_p2"].is_null().all()
 
 
 def test_write_partitioned_overwrites_existing_output(tmp_path: Path) -> None:

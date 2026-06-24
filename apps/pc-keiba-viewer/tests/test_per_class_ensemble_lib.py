@@ -3,8 +3,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import per_class_ensemble_lib as subject
@@ -28,21 +27,21 @@ def test_is_other_class_false_for_empty_string():
 
 
 def test_class_filter_mask_named_code_exact_match():
-    codes = pd.Series(["005", "010", "005", None])
+    codes = pl.Series(["005", "010", "005", None])
     mask = subject.class_filter_mask(codes, "005")
-    assert mask.tolist() == [True, False, True, False]
+    assert mask.to_list() == [True, False, True, False]
 
 
 def test_class_filter_mask_other_includes_nan_and_unknown_codes():
-    codes = pd.Series(["005", "010", None, "999", "703"])
+    codes = pl.Series(["005", "010", None, "999", "703"])
     mask = subject.class_filter_mask(codes, "other")
-    assert mask.tolist() == [False, False, True, True, False]
+    assert mask.to_list() == [False, False, True, True, False]
 
 
 def test_class_filter_mask_other_with_all_known_codes_returns_all_false():
-    codes = pd.Series(["005", "010", "016", "703", "701"])
+    codes = pl.Series(["005", "010", "016", "703", "701"])
     mask = subject.class_filter_mask(codes, "other")
-    assert mask.tolist() == [False, False, False, False, False]
+    assert mask.to_list() == [False, False, False, False, False]
 
 
 # ---------------------------------------------------------------------------
@@ -51,68 +50,64 @@ def test_class_filter_mask_other_with_all_known_codes_returns_all_false():
 
 
 def test_normalize_within_race_three_horse_race_returns_evenly_spaced_scores():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
         "predicted_score": [10.0, 5.0, 1.0],
         "actual_finish_position": [1, 2, 3],
     })
     out = subject.normalize_within_race(df)
-    out_sorted = out.sort_values("predicted_score", ascending=False).reset_index(
-        drop=True,
-    )
-    assert out_sorted["normalized_score"].tolist() == [1.0, 0.5, 0.0]
+    out_sorted = out.sort("predicted_score", descending=True)
+    assert out_sorted["normalized_score"].to_list() == [1.0, 0.5, 0.0]
 
 
 def test_normalize_within_race_single_horse_race_returns_half():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1"],
         "ketto_toroku_bango": ["a"],
         "predicted_score": [10.0],
         "actual_finish_position": [1],
     })
     out = subject.normalize_within_race(df)
-    assert out["normalized_score"].tolist() == [0.5]
+    assert out["normalized_score"].to_list() == [0.5]
 
 
 def test_normalize_within_race_ties_break_by_ketto_toroku_bango_ascending():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["zz", "aa"],
         "predicted_score": [5.0, 5.0],
         "actual_finish_position": [2, 1],
     })
     out = subject.normalize_within_race(df)
-    sorted_out = out.sort_values("normalized_score", ascending=False).reset_index(
-        drop=True,
-    )
-    assert sorted_out["ketto_toroku_bango"].tolist() == ["aa", "zz"]
+    sorted_out = out.sort("normalized_score", descending=True)
+    assert sorted_out["ketto_toroku_bango"].to_list() == ["aa", "zz"]
 
 
 def test_normalize_within_race_empty_dataframe_returns_empty_with_column():
-    df = pd.DataFrame({
-        "race_id": [],
-        "ketto_toroku_bango": [],
-        "predicted_score": [],
-        "actual_finish_position": [],
+    df = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "predicted_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     out = subject.normalize_within_race(df)
     assert "normalized_score" in out.columns
-    assert out.empty
+    assert out.is_empty()
 
 
 def test_normalize_within_race_two_races_with_different_sizes():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d", "e"],
         "predicted_score": [3.0, 1.0, 5.0, 2.0, 1.0],
         "actual_finish_position": [1, 2, 1, 2, 3],
     })
     out = subject.normalize_within_race(df)
-    r1 = out[out["race_id"] == "r1"]
-    r2 = out[out["race_id"] == "r2"]
-    assert sorted(r1["normalized_score"].tolist()) == [0.0, 1.0]
-    assert sorted(r2["normalized_score"].tolist()) == [0.0, 0.5, 1.0]
+    r1 = out.filter(pl.col("race_id") == "r1")
+    r2 = out.filter(pl.col("race_id") == "r2")
+    assert sorted(r1["normalized_score"].to_list()) == [0.0, 1.0]
+    assert sorted(r2["normalized_score"].to_list()) == [0.0, 0.5, 1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +116,8 @@ def test_normalize_within_race_two_races_with_different_sizes():
 
 
 def _make_normalized(race_id: str, horses: list[str], scores: list[float],
-                     actuals: list[int]) -> pd.DataFrame:
-    return pd.DataFrame({
+                     actuals: list[int]) -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": [race_id] * len(horses),
         "ketto_toroku_bango": horses,
         "normalized_score": scores,
@@ -134,8 +129,8 @@ def test_blend_normalized_two_equal_members_averages_scores():
     left = _make_normalized("r1", ["a", "b"], [1.0, 0.0], [1, 2])
     right = _make_normalized("r1", ["a", "b"], [0.0, 1.0], [1, 2])
     blended = subject.blend_normalized([left, right], [0.5, 0.5])
-    sorted_blended = blended.sort_values("ketto_toroku_bango").reset_index(drop=True)
-    assert sorted_blended["blended_score"].tolist() == [0.5, 0.5]
+    sorted_blended = blended.sort("ketto_toroku_bango")
+    assert sorted_blended["blended_score"].to_list() == [0.5, 0.5]
 
 
 def test_blend_normalized_three_members_weights_sum_to_target():
@@ -143,15 +138,15 @@ def test_blend_normalized_three_members_weights_sum_to_target():
     mid = _make_normalized("r1", ["a"], [0.5], [1])
     right = _make_normalized("r1", ["a"], [0.0], [1])
     blended = subject.blend_normalized([left, mid, right], [0.5, 0.3, 0.2])
-    assert blended["blended_score"].tolist() == [0.5 * 1.0 + 0.3 * 0.5 + 0.2 * 0.0]
+    assert blended["blended_score"].to_list() == [0.5 * 1.0 + 0.3 * 0.5 + 0.2 * 0.0]
 
 
 def test_blend_normalized_inner_join_drops_unjoined_pairs():
     left = _make_normalized("r1", ["a", "b"], [1.0, 0.5], [1, 2])
     right = _make_normalized("r1", ["a"], [0.0], [1])
     blended = subject.blend_normalized([left, right], [0.5, 0.5])
-    assert blended.shape[0] == 1
-    assert blended["ketto_toroku_bango"].tolist() == ["a"]
+    assert blended.height == 1
+    assert blended["ketto_toroku_bango"].to_list() == ["a"]
 
 
 def test_blend_normalized_empty_members_list_raises():
@@ -171,7 +166,7 @@ def test_blend_normalized_length_mismatch_raises():
 
 
 def test_compute_top1_full_hit_returns_one():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [1.0, 0.0, 1.0, 0.0],
@@ -181,7 +176,7 @@ def test_compute_top1_full_hit_returns_one():
 
 
 def test_compute_top1_full_miss_returns_zero():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["a", "b"],
         "blended_score": [1.0, 0.0],
@@ -191,7 +186,7 @@ def test_compute_top1_full_miss_returns_zero():
 
 
 def test_compute_top1_mixed_50_percent_returns_half():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [1.0, 0.0, 1.0, 0.0],
@@ -201,15 +196,17 @@ def test_compute_top1_mixed_50_percent_returns_half():
 
 
 def test_compute_top1_empty_returns_zero():
-    blended = pd.DataFrame({
-        "race_id": [], "ketto_toroku_bango": [],
-        "blended_score": [], "actual_finish_position": [],
+    blended = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "blended_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     assert subject.compute_top1(blended) == 0.0
 
 
 def test_compute_top1_uses_ketto_toroku_tiebreak_when_scores_tie():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["b", "a"],
         "blended_score": [1.0, 1.0],
@@ -225,7 +222,7 @@ def test_compute_top1_uses_ketto_toroku_tiebreak_when_scores_tie():
 
 
 def test_compute_topk_metric_place_k2_full_hit():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
         "blended_score": [3.0, 2.0, 1.0],
@@ -235,7 +232,7 @@ def test_compute_topk_metric_place_k2_full_hit():
 
 
 def test_compute_topk_metric_place_k2_miss_returns_zero():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
         "blended_score": [3.0, 2.0, 1.0],
@@ -245,7 +242,7 @@ def test_compute_topk_metric_place_k2_miss_returns_zero():
 
 
 def test_compute_topk_metric_box_top3_exact_set_match():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [4.0, 3.0, 2.0, 1.0],
@@ -255,7 +252,7 @@ def test_compute_topk_metric_box_top3_exact_set_match():
 
 
 def test_compute_topk_metric_box_top3_wrong_top3_set_returns_zero():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [4.0, 3.0, 2.0, 1.0],
@@ -265,7 +262,7 @@ def test_compute_topk_metric_box_top3_wrong_top3_set_returns_zero():
 
 
 def test_compute_topk_metric_box_top3_excludes_races_shorter_than_three():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["a", "b"],
         "blended_score": [2.0, 1.0],
@@ -275,7 +272,7 @@ def test_compute_topk_metric_box_top3_excludes_races_shorter_than_three():
 
 
 def test_compute_topk_metric_unknown_metric_raises():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["a", "b"],
         "blended_score": [1.0, 0.0],
@@ -286,15 +283,17 @@ def test_compute_topk_metric_unknown_metric_raises():
 
 
 def test_compute_topk_metric_empty_blended_returns_zero():
-    blended = pd.DataFrame({
-        "race_id": [], "ketto_toroku_bango": [],
-        "blended_score": [], "actual_finish_position": [],
+    blended = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "blended_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     assert subject.compute_topk_metric(blended, 2, "place") == 0.0
 
 
 def test_compute_topk_metric_place_k_zero_raises():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1"], "ketto_toroku_bango": ["a"],
         "blended_score": [1.0], "actual_finish_position": [1],
     })
@@ -303,7 +302,7 @@ def test_compute_topk_metric_place_k_zero_raises():
 
 
 def test_compute_topk_metric_place_two_races_one_hit():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [3.0, 2.0, 3.0, 2.0],
@@ -314,7 +313,7 @@ def test_compute_topk_metric_place_two_races_one_hit():
 
 
 def test_compute_topk_metric_box_top3_no_eligible_races_returns_zero():
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["a", "b"],
         "blended_score": [1.0, 0.0],
@@ -325,7 +324,7 @@ def test_compute_topk_metric_box_top3_no_eligible_races_returns_zero():
 
 def test_compute_topk_metric_place_no_eligible_races_returns_zero():
     # All races shorter than k=5 → no eligible races
-    blended = pd.DataFrame({
+    blended = pl.DataFrame({
         "race_id": ["r1", "r1", "r2", "r2"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
         "blended_score": [1.0, 0.0, 1.0, 0.0],
@@ -461,14 +460,14 @@ def _write_year_parquet(
 ) -> None:
     year_dir = root / f"race_year={year}"
     year_dir.mkdir(parents=True, exist_ok=True)
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": [race_id] * len(horses),
         "ketto_toroku_bango": horses,
         "predicted_score": scores,
         "actual_finish_position": actuals,
         "umaban": list(range(1, len(horses) + 1)),
     })
-    df.to_parquet(year_dir / "predictions.parquet", index=False)
+    df.write_parquet(year_dir / "predictions.parquet")
 
 
 def test_load_class_predictions_filters_to_class_and_concatenates_years(tmp_path: Path):
@@ -478,37 +477,37 @@ def test_load_class_predictions_filters_to_class_and_concatenates_years(tmp_path
     _write_year_parquet(
         tmp_path, 2019, "jra:2019:0101:01:01", ["c", "d"], [2.0, 1.0], [1, 2],
     )
-    pg_map = pd.DataFrame({
+    pg_map = pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01", "jra:2019:0101:01:01"],
         "kyoso_joken_code": ["005", "010"],
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018, 2019], pg_map)
-    assert out["race_id"].tolist() == ["jra:2018:0101:01:01"] * 2
-    assert sorted(out["ketto_toroku_bango"].tolist()) == ["a", "b"]
+    assert out["race_id"].to_list() == ["jra:2018:0101:01:01"] * 2
+    assert sorted(out["ketto_toroku_bango"].to_list()) == ["a", "b"]
 
 
 def test_load_class_predictions_skips_missing_year_dirs(tmp_path: Path):
     _write_year_parquet(
         tmp_path, 2020, "jra:2020:0101:01:01", ["e"], [1.0], [1],
     )
-    pg_map = pd.DataFrame({
+    pg_map = pl.DataFrame({
         "race_id": ["jra:2020:0101:01:01"],
         "kyoso_joken_code": ["005"],
     })
     out = subject.load_class_predictions(
         tmp_path, "005", [2018, 2019, 2020], pg_map,
     )
-    assert out.shape[0] == 1
+    assert out.height == 1
 
 
 def test_load_class_predictions_returns_empty_when_no_years_present(tmp_path: Path):
-    pg_map = pd.DataFrame({
+    pg_map = pl.DataFrame({
         "race_id": ["jra:2020:0101:01:01"],
         "kyoso_joken_code": ["005"],
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018], pg_map)
-    assert out.empty
-    assert sorted(out.columns.tolist()) == sorted([
+    assert out.is_empty()
+    assert sorted(out.columns) == sorted([
         "race_id", "ketto_toroku_bango", "predicted_score", "actual_finish_position",
     ])
 
@@ -516,57 +515,57 @@ def test_load_class_predictions_returns_empty_when_no_years_present(tmp_path: Pa
 def test_load_class_predictions_concats_multi_part_year(tmp_path: Path):
     year_dir = tmp_path / "race_year=2018"
     year_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({
+    pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01"],
         "ketto_toroku_bango": ["a"],
         "predicted_score": [1.0],
         "actual_finish_position": [1],
         "umaban": [1],
-    }).to_parquet(year_dir / "part1.parquet", index=False)
-    pd.DataFrame({
+    }).write_parquet(year_dir / "part1.parquet")
+    pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01"],
         "ketto_toroku_bango": ["b"],
         "predicted_score": [0.5],
         "actual_finish_position": [2],
         "umaban": [2],
-    }).to_parquet(year_dir / "part2.parquet", index=False)
-    pg_map = pd.DataFrame({
+    }).write_parquet(year_dir / "part2.parquet")
+    pg_map = pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01"],
         "kyoso_joken_code": ["005"],
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018], pg_map)
-    assert out.shape[0] == 2
+    assert out.height == 2
 
 
 def test_load_class_predictions_other_class_includes_null_kyoso(tmp_path: Path):
     _write_year_parquet(
         tmp_path, 2018, "jra:2018:0101:01:01", ["a"], [1.0], [1],
     )
-    pg_map = pd.DataFrame({
+    pg_map = pl.DataFrame({
         "race_id": ["jra:2018:0101:01:01"],
-        "kyoso_joken_code": [None],
+        "kyoso_joken_code": pl.Series([None], dtype=pl.Utf8),
     })
     out = subject.load_class_predictions(tmp_path, "other", [2018], pg_map)
-    assert out.shape[0] == 1
+    assert out.height == 1
 
 
 def test_load_class_predictions_empty_year_parquet_is_skipped(tmp_path: Path):
     # Empty parquet (no rows) under year dir.
     year_dir = tmp_path / "race_year=2018"
     year_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "ketto_toroku_bango": pd.Series([], dtype=str),
-        "predicted_score": pd.Series([], dtype=np.float64),
-        "actual_finish_position": pd.Series([], dtype=np.int64),
-        "umaban": pd.Series([], dtype=np.int64),
-    }).to_parquet(year_dir / "empty.parquet", index=False)
-    pg_map = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "kyoso_joken_code": pd.Series([], dtype=str),
+    pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "predicted_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
+        "umaban": pl.Series([], dtype=pl.Int64),
+    }).write_parquet(year_dir / "empty.parquet")
+    pg_map = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "kyoso_joken_code": pl.Series([], dtype=pl.Utf8),
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018], pg_map)
-    assert out.empty
+    assert out.is_empty()
 
 
 def test_load_class_predictions_year_dir_with_no_parquet_files_is_skipped(
@@ -575,12 +574,12 @@ def test_load_class_predictions_year_dir_with_no_parquet_files_is_skipped(
     year_dir = tmp_path / "race_year=2018"
     year_dir.mkdir(parents=True, exist_ok=True)
     # No parquet files written under the year directory.
-    pg_map = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "kyoso_joken_code": pd.Series([], dtype=str),
+    pg_map = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "kyoso_joken_code": pl.Series([], dtype=pl.Utf8),
     })
     out = subject.load_class_predictions(tmp_path, "005", [2018], pg_map)
-    assert out.empty
+    assert out.is_empty()
 
 
 # ---------------------------------------------------------------------------
@@ -593,8 +592,8 @@ def _make_blended(
     horses: list[str],
     scores: list[float],
     actuals: list[int],
-) -> pd.DataFrame:
-    return pd.DataFrame({
+) -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": race_ids,
         "ketto_toroku_bango": horses,
         "blended_score": scores,
@@ -674,11 +673,11 @@ def test_compute_fukusho_2p_two_horse_race_both_top3_returns_one():
 
 
 def test_compute_fukusho_2p_empty_dataframe_returns_zero():
-    df = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "ketto_toroku_bango": pd.Series([], dtype=str),
-        "blended_score": pd.Series([], dtype=float),
-        "actual_finish_position": pd.Series([], dtype=int),
+    df = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "blended_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     assert subject.compute_fukusho_2p(df) == 0.0
 
@@ -748,11 +747,11 @@ def test_compute_rentai_hit_single_horse_race_returns_zero():
 
 
 def test_compute_rentai_hit_empty_dataframe_returns_zero():
-    df = pd.DataFrame({
-        "race_id": pd.Series([], dtype=str),
-        "ketto_toroku_bango": pd.Series([], dtype=str),
-        "blended_score": pd.Series([], dtype=float),
-        "actual_finish_position": pd.Series([], dtype=int),
+    df = pl.DataFrame({
+        "race_id": pl.Series([], dtype=pl.Utf8),
+        "ketto_toroku_bango": pl.Series([], dtype=pl.Utf8),
+        "blended_score": pl.Series([], dtype=pl.Float64),
+        "actual_finish_position": pl.Series([], dtype=pl.Int64),
     })
     assert subject.compute_rentai_hit(df) == 0.0
 

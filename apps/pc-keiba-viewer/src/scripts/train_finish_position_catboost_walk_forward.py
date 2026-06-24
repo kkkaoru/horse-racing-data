@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, TypedDict, cast
 
-import pandas as pd
+import polars as pl
 
 import walk_forward_common as wfc_common
 
@@ -67,7 +67,7 @@ class TrainCatBoostArgs(TypedDict):
 
 
 class ParquetReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class SaveModelLike(Protocol):
@@ -77,20 +77,20 @@ class SaveModelLike(Protocol):
 class FoldTrainerLike(Protocol):
     def __call__(
         self,
-        train_df: pd.DataFrame,
-        valid_df: pd.DataFrame,
+        train_df: pl.DataFrame,
+        valid_df: pl.DataFrame,
         feature_cols: list[str],
         args: argparse.Namespace,
     ) -> dict[str, object]: ...
 
 
 class BucketMembershipReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class TrainDeps(TypedDict):
     parquet_reader: ParquetReaderLike
-    feature_resolver: Callable[[pd.DataFrame], list[str]]
+    feature_resolver: Callable[[pl.DataFrame], list[str]]
     fold_trainer: FoldTrainerLike
     bucket_reader: BucketMembershipReaderLike
 
@@ -236,9 +236,9 @@ def resolve_fold_learning_rate(
 
 
 def merge_bucket_weights_into_train(
-    train_df: pd.DataFrame,
-    bucket_df: pd.DataFrame | None,
-) -> pd.DataFrame:
+    train_df: pl.DataFrame,
+    bucket_df: pl.DataFrame | None,
+) -> pl.DataFrame:
     if bucket_df is None:
         return train_df
     if "race_id" not in bucket_df.columns:
@@ -248,22 +248,22 @@ def merge_bucket_weights_into_train(
             "bucket membership parquet must contain is_weak_bucket_score",
         )
     merge_cols = ["race_id", "is_weak_bucket_score"]
-    deduped = bucket_df[merge_cols].drop_duplicates("race_id")
-    return train_df.merge(deduped, on="race_id", how="left")
+    deduped = bucket_df.select(merge_cols).unique(subset="race_id", maintain_order=True)
+    return train_df.join(deduped, on="race_id", how="left")
 
 
-def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:
+def attach_sample_weights(train_df: pl.DataFrame, alpha: float) -> pl.DataFrame:
     import numpy as np
 
     if "race_year" not in train_df.columns:
         raise ValueError("train_df must contain race_year for sample weighting")
     years = np.asarray(
-        train_df["race_year"].astype("int64").to_numpy(), dtype=np.int64,
+        train_df["race_year"].cast(pl.Int64).to_numpy(), dtype=np.int64,
     )
     time_weights = wfc_common.compute_time_decay_weights(years)
     if "is_weak_bucket_score" in train_df.columns and alpha > 0:
         weak_scores = np.asarray(
-            train_df["is_weak_bucket_score"].fillna(0.0).astype(float).to_numpy(),
+            train_df["is_weak_bucket_score"].fill_null(0.0).cast(pl.Float64).to_numpy(),
             dtype=np.float64,
         )
         sample_weights = wfc_common.compute_bucket_aware_weights(
@@ -271,22 +271,22 @@ def attach_sample_weights(train_df: pd.DataFrame, alpha: float) -> pd.DataFrame:
         )
     else:
         sample_weights = time_weights
-    out = train_df.copy()
-    out["sample_weight"] = sample_weights
-    return out
+    return train_df.with_columns(pl.Series("sample_weight", sample_weights))
 
 
 def split_train_valid(
-    df: pd.DataFrame, train_start: str, valid_year: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df: pl.DataFrame, train_start: str, valid_year: int,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     train_end = f"{valid_year - 1}1231"
     train_mask = (
-        (df["race_date"] >= train_start)
-        & (df["race_date"] <= train_end)
-        & df["finish_position"].notna()
+        (pl.col("race_date") >= train_start)
+        & (pl.col("race_date") <= train_end)
+        & pl.col("finish_position").is_not_null()
     )
-    valid_mask = df["race_date"].str.startswith(str(valid_year)) & df["finish_position"].notna()
-    return df[train_mask].copy(), df[valid_mask].copy()
+    valid_mask = pl.col("race_date").str.starts_with(str(valid_year)) & pl.col(
+        "finish_position",
+    ).is_not_null()
+    return df.filter(train_mask), df.filter(valid_mask)
 
 
 def build_fold_namespace(
@@ -311,13 +311,13 @@ def build_fold_namespace(
 
 
 def train_fold(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_cols: list[str],
     args: TrainCatBoostArgs,
     fold_year: int,
     fold_years: list[int],
     deps: TrainDeps,
-    bucket_df: pd.DataFrame | None,
+    bucket_df: pl.DataFrame | None,
 ) -> dict[str, object]:
     model_dir = build_per_fold_model_dir(args, fold_year)
     if args["resume_from_checkpoint"] and wfc_common.detect_completed_fold(model_dir, fold_year):
@@ -351,7 +351,7 @@ def train_fold(
     if saved_model is not None:
         model_dir.mkdir(parents=True, exist_ok=True)
         cast(SaveModelLike, saved_model).save_model(str(model_dir / "model.json"), format="json")
-    valid_predictions = cast(pd.DataFrame, fold_result["valid_predictions"])
+    valid_predictions = cast(pl.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,
         "status": METADATA_STATUS_COMPLETED,
@@ -431,19 +431,19 @@ def run(args: TrainCatBoostArgs, deps: TrainDeps) -> dict[str, object]:
     }
 
 
-def default_parquet_reader(path: Path) -> pd.DataFrame:
+def default_parquet_reader(path: Path) -> pl.DataFrame:
     import finish_position_catboost as cb_walk
     return cb_walk.load_parquet_dir(path)
 
 
-def default_feature_resolver(df: pd.DataFrame) -> list[str]:
+def default_feature_resolver(df: pl.DataFrame) -> list[str]:
     import finish_position_catboost as cb_walk
     return cb_walk.resolve_feature_columns(df, use_cat_features=True)
 
 
 def default_fold_trainer(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
 ) -> dict[str, object]:
@@ -451,8 +451,8 @@ def default_fold_trainer(
     return cb_walk.train_catboost_ranker(train_df, valid_df, feature_cols, args)
 
 
-def default_bucket_reader(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path)
+def default_bucket_reader(path: Path) -> pl.DataFrame:
+    return pl.read_parquet(path)
 
 
 def build_default_deps() -> TrainDeps:

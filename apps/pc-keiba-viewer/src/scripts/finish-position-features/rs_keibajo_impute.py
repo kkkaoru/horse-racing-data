@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportArgumentType=false, reportCallIssue=false, reportIndexIssue=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false
 """Leak-free RS-feature imputation keyed by (keibajo_code, kyori_band).
 
 Background (D2a diagnosis, commit eb249b9):
@@ -45,13 +44,19 @@ Columns imputed (all go NULL together when RS is missing):
 
 Plus new column:
   - rs_imputed: 0 (no imputation) or 1 (imputed from prior)
+
+Representation note (polars migration):
+  polars has no index, so ``cell_prior``/``global_prior`` are plain DataFrames
+  with the group columns as REGULAR columns:
+    - cell_prior columns: keibajo_code, kyori_band, <impute cols present>, n
+    - global_prior columns: kyori_band, <impute cols present>
 """
 from __future__ import annotations
 
+import math
 from typing import Final
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 # Sentinel value: cells with fewer than this many non-NULL observations fall
 # back to the NAR-global prior for that kyori_band.
@@ -94,21 +99,21 @@ PRIOR_GROUP_COLS: Final[tuple[str, str]] = ("keibajo_code", "kyori_band")
 RS_IMPUTED_COL: Final[str] = "rs_imputed"
 
 
-def rs_null_mask(df: pd.DataFrame) -> pd.Series:
+def rs_null_mask(df: pl.DataFrame) -> pl.Series:
     """Boolean mask: True where ALL RS trigger columns are NULL."""
     trigger_cols_present = [c for c in RS_TRIGGER_COLS if c in df.columns]
     if not trigger_cols_present:
-        return pd.Series(False, index=df.index)
-    mask = pd.Series(True, index=df.index)
-    for col in trigger_cols_present:
-        mask = mask & df[col].isna()
-    return mask
+        return pl.Series([False] * df.height, dtype=pl.Boolean)
+    mask_expr = pl.col(trigger_cols_present[0]).is_null()
+    for col in trigger_cols_present[1:]:
+        mask_expr = mask_expr & pl.col(col).is_null()
+    return df.select(mask_expr.alias("_mask")).get_column("_mask")
 
 
 def build_prior_table(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     cutoff_date: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Compute (keibajo, kyori_band) and (kyori_band) prior tables from past races.
 
     Only rows where ``race_date < cutoff_date`` are used — this guarantees zero
@@ -126,49 +131,85 @@ def build_prior_table(
 
     Returns
     -------
-    prior_df:
-        DataFrame with index (keibajo_code, kyori_band) and one column per
-        imputed feature, containing the mean over non-NULL rows + a ``n``
+    cell_prior:
+        DataFrame with regular columns ``keibajo_code``, ``kyori_band``, one
+        column per imputed feature (mean over non-NULL rows), and an ``n``
         column (non-NULL count for the trigger column ``past_nige_rate_self``).
-    global_prior_df:
-        DataFrame with index (kyori_band,) and the same impute-column means
-        over all NAR races before cutoff — the fallback when a cell is sparse.
+    global_prior:
+        DataFrame with regular column ``kyori_band`` and the same impute-column
+        means over all NAR races before cutoff — the fallback when a cell is
+        sparse.
     """
-    past = df[df["race_date"] < cutoff_date].copy()
+    past = df.filter(pl.col("race_date") < cutoff_date)
 
     impute_cols_present = [c for c in RS_IMPUTE_COLS if c in past.columns]
 
-    cell_prior = (
-        past.groupby(list(PRIOR_GROUP_COLS))[impute_cols_present]
-        .agg("mean")
-        .reset_index()
+    cell_prior = past.group_by(list(PRIOR_GROUP_COLS)).agg(
+        [pl.col(c).mean().alias(c) for c in impute_cols_present]
     )
     cell_counts = (
-        past[past["past_nige_rate_self"].notna()]
-        .groupby(list(PRIOR_GROUP_COLS))
-        .size()
-        .reset_index(name="n")
+        past.filter(pl.col("past_nige_rate_self").is_not_null())
+        .group_by(list(PRIOR_GROUP_COLS))
+        .agg(pl.len().alias("n"))
     )
-    cell_prior = cell_prior.merge(cell_counts, on=list(PRIOR_GROUP_COLS), how="left")
-    cell_prior["n"] = cell_prior["n"].fillna(0).astype(int)
-    cell_prior = cell_prior.set_index(list(PRIOR_GROUP_COLS))
+    cell_prior = cell_prior.join(
+        cell_counts, on=list(PRIOR_GROUP_COLS), how="left"
+    ).with_columns(pl.col("n").fill_null(0).cast(pl.Int64))
 
-    global_prior = (
-        past.groupby("kyori_band")[impute_cols_present]
-        .agg("mean")
-        .reset_index()
-        .set_index("kyori_band")
+    global_prior = past.group_by("kyori_band").agg(
+        [pl.col(c).mean().alias(c) for c in impute_cols_present]
     )
 
     return cell_prior, global_prior
 
 
+def _build_cell_lookup(
+    cell_prior: pl.DataFrame,
+    impute_cols_present: list[str],
+) -> dict[tuple[str, int], dict[str, float]]:
+    """Build {(keibajo, kyori_band): {"n": float, col: float, ...}} from cell prior.
+
+    NaN/None column values are skipped so absent columns fall through to global.
+    """
+    cell_cols_present = [c for c in impute_cols_present if c in cell_prior.columns]
+    has_n = "n" in cell_prior.columns
+    lookup: dict[tuple[str, int], dict[str, float]] = {}
+    for row in cell_prior.iter_rows(named=True):
+        key = (str(row["keibajo_code"]), int(row["kyori_band"]))
+        n_val = float(row["n"]) if has_n and row["n"] is not None else 0.0
+        row_dict: dict[str, float] = {"n": n_val}
+        for col in cell_cols_present:
+            v = row[col]
+            if v is not None and not math.isnan(float(v)):
+                row_dict[col] = float(v)
+        lookup[key] = row_dict
+    return lookup
+
+
+def _build_global_lookup(
+    global_prior: pl.DataFrame,
+    impute_cols_present: list[str],
+) -> dict[int, dict[str, float]]:
+    """Build {kyori_band: {col: float, ...}} from global prior, skipping None/NaN."""
+    global_cols_present = [c for c in impute_cols_present if c in global_prior.columns]
+    lookup: dict[int, dict[str, float]] = {}
+    for row in global_prior.iter_rows(named=True):
+        kb = int(row["kyori_band"])
+        gd: dict[str, float] = {}
+        for col in global_cols_present:
+            v = row[col]
+            if v is not None and not math.isnan(float(v)):
+                gd[col] = float(v)
+        lookup[kb] = gd
+    return lookup
+
+
 def impute_rs_features(
-    df: pd.DataFrame,
-    prior_df: pd.DataFrame,
-    global_prior_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Apply leak-free RS imputation in-place (returns a copy).
+    df: pl.DataFrame,
+    prior_df: pl.DataFrame,
+    global_prior_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Apply leak-free RS imputation (returns a new DataFrame).
 
     For each row where ALL RS trigger columns are NULL:
       1. Look up the (keibajo_code, kyori_band) cell in ``prior_df``.
@@ -185,100 +226,62 @@ def impute_rs_features(
         Feature DataFrame for one split (train or holdout).  Must contain
         ``keibajo_code``, ``kyori_band``, and the RS columns.
     prior_df:
-        Output of ``build_prior_table`` — index (keibajo_code, kyori_band).
+        Output of ``build_prior_table`` — columns keibajo_code, kyori_band, ..., n.
     global_prior_df:
-        Output of ``build_prior_table`` — index (kyori_band,).
+        Output of ``build_prior_table`` — column kyori_band, plus impute means.
 
     Returns
     -------
     DataFrame with RS columns filled and ``rs_imputed`` column added.
     """
-    out = df.copy()
-    out[RS_IMPUTED_COL] = 0
+    out = df.with_columns(pl.lit(0).alias(RS_IMPUTED_COL))
 
     null_mask = rs_null_mask(out)
-    if not null_mask.any():
+    if not bool(null_mask.any()):
         return out
 
     impute_cols_present = [c for c in RS_IMPUTE_COLS if c in out.columns]
-    null_idx = out.index[null_mask]
+    cell_lookup = _build_cell_lookup(prior_df, impute_cols_present)
+    global_lookup = _build_global_lookup(global_prior_df, impute_cols_present)
 
-    # Convert priors to Python dicts once to avoid pandas .at[] wide-union issues.
-    # Use pd.to_numeric to guarantee float scalars from any pandas Scalar type.
-    # cell_lookup: (keibajo_code, kyori_band) → {"n": float, col: float, ...}
-    cell_lookup: dict[tuple[str, int], dict[str, float]] = {}
-    cell_cols_present = [c for c in impute_cols_present if c in prior_df.columns]
-    # Build numpy arrays for each column in the cell prior (avoids per-row .at[])
-    cell_index_list = list(prior_df.index)
-    cell_n_arr = pd.to_numeric(
-        prior_df["n"] if "n" in prior_df.columns else pd.Series(0, index=prior_df.index),
-        errors="coerce",
-    ).to_numpy(dtype=float, na_value=0.0)
-    cell_col_arrs: dict[str, np.ndarray] = {
-        col: pd.to_numeric(prior_df[col], errors="coerce").to_numpy(dtype=float, na_value=float("nan"))
-        for col in cell_cols_present
-    }
-    for i, cell_key in enumerate(cell_index_list):
-        k = (str(cell_key[0]), int(cell_key[1]))
-        row_dict: dict[str, float] = {"n": float(cell_n_arr[i])}
-        for col in cell_cols_present:
-            v = cell_col_arrs[col][i]
-            if not np.isnan(v):
-                row_dict[col] = float(v)
-        cell_lookup[k] = row_dict
+    null_positions = [i for i, v in enumerate(null_mask.to_list()) if v]
+    rows = out.to_dicts()
 
-    # global_lookup: kyori_band → {col: float, ...}
-    global_lookup: dict[int, dict[str, float]] = {}
-    global_cols_present = [c for c in impute_cols_present if c in global_prior_df.columns]
-    global_index_list = list(global_prior_df.index)
-    global_col_arrs: dict[str, np.ndarray] = {
-        col: pd.to_numeric(global_prior_df[col], errors="coerce").to_numpy(
-            dtype=float, na_value=float("nan")
-        )
-        for col in global_cols_present
-    }
-    for i, kb in enumerate(global_index_list):
-        kb_int = int(kb)
-        gd: dict[str, float] = {}
-        for col in global_cols_present:
-            v = global_col_arrs[col][i]
-            if not np.isnan(v):
-                gd[col] = float(v)
-        global_lookup[kb_int] = gd
-
-    for idx in null_idx:
-        row = out.loc[idx]
+    for idx in null_positions:
+        row = rows[idx]
         keibajo = str(row["keibajo_code"])
         kyori_band_val = int(row["kyori_band"])
         key = (keibajo, kyori_band_val)
 
-        fill_values: dict[str, float] = {}
         cell_data = cell_lookup.get(key)
         if cell_data is not None and cell_data.get("n", 0.0) >= MIN_CELL_COUNT:
-            for col in impute_cols_present:
-                if col in cell_data:
-                    fill_values[col] = cell_data[col]
+            fill_values = {
+                col: cell_data[col]
+                for col in impute_cols_present
+                if col in cell_data
+            }
         else:
-            global_data = global_lookup.get(kyori_band_val)
-            if global_data is not None:
-                for col in impute_cols_present:
-                    if col in global_data:
-                        fill_values[col] = global_data[col]
+            global_data = global_lookup.get(kyori_band_val, {})
+            fill_values = {
+                col: global_data[col]
+                for col in impute_cols_present
+                if col in global_data
+            }
 
         for col, val in fill_values.items():
-            if pd.isna(out.at[idx, col]):
-                out.at[idx, col] = val
+            if row[col] is None:
+                row[col] = val
 
-        out.at[idx, RS_IMPUTED_COL] = 1
+        row[RS_IMPUTED_COL] = 1
 
-    return out
+    return pl.DataFrame(rows, schema=out.schema)
 
 
 def impute_rs_features_batch(
-    df: pd.DataFrame,
-    prior_df: pd.DataFrame,
-    global_prior_df: pd.DataFrame,
-) -> pd.DataFrame:
+    df: pl.DataFrame,
+    prior_df: pl.DataFrame,
+    global_prior_df: pl.DataFrame,
+) -> pl.DataFrame:
     """Vectorised batch version of ``impute_rs_features``.
 
     Produces identical output for the same inputs.  Preferred for large
@@ -291,64 +294,77 @@ def impute_rs_features_batch(
         - Fill NULL impute columns from the resolved prior values.
       rs_imputed = 1 for all candidates.
     """
-    out = df.copy()
-    out[RS_IMPUTED_COL] = 0
+    out = df.with_columns(pl.lit(0).alias(RS_IMPUTED_COL))
 
     null_mask = rs_null_mask(out)
-    if not null_mask.any():
+    if not bool(null_mask.any()):
         return out
 
     impute_cols_present = [c for c in RS_IMPUTE_COLS if c in out.columns]
-    candidates = out[null_mask].copy()
+
+    # Tag the original positions so order survives the split/concat round-trip.
+    out = out.with_columns(pl.int_range(0, pl.len()).alias("_orig_idx"))
+    candidates = out.filter(null_mask)
+    non_candidates = out.filter(~null_mask)
 
     # ── cell-level fill ──────────────────────────────────────────────────────
     cell_cols = [c for c in impute_cols_present if c in prior_df.columns]
-    cell_prior_reset = (
-        prior_df[cell_cols + ["n"]].reset_index()
-        if "n" in prior_df.columns
-        else prior_df[cell_cols].assign(n=0).reset_index()
+    has_n = "n" in prior_df.columns
+    cell_select = list(PRIOR_GROUP_COLS) + cell_cols
+    cell_renamed = (
+        prior_df.select(cell_select + (["n"] if has_n else []))
+        .rename({c: f"_cell_{c}" for c in cell_cols})
+        .rename({"n": "_cell_n"} if has_n else {})
     )
-    candidates = candidates.merge(
-        cell_prior_reset.rename(columns={c: f"_cell_{c}" for c in cell_cols})
-        .assign(_cell_n=cell_prior_reset["n"]),
-        on=["keibajo_code", "kyori_band"],
-        how="left",
+    if not has_n:
+        cell_renamed = cell_renamed.with_columns(pl.lit(0).alias("_cell_n"))
+    candidates = candidates.join(
+        cell_renamed, on=list(PRIOR_GROUP_COLS), how="left"
     )
-    has_cell = candidates["_cell_n"].fillna(0) >= MIN_CELL_COUNT
+    has_cell = pl.col("_cell_n").fill_null(0) >= MIN_CELL_COUNT
 
     for col in cell_cols:
         cell_col = f"_cell_{col}"
-        if cell_col in candidates.columns:
-            candidates[col] = np.where(
-                has_cell & candidates[col].isna() & candidates[cell_col].notna(),
-                candidates[cell_col],
-                candidates[col],
+        candidates = candidates.with_columns(
+            pl.when(
+                has_cell
+                & pl.col(col).is_null()
+                & pl.col(cell_col).is_not_null()
             )
+            .then(pl.col(cell_col))
+            .otherwise(pl.col(col))
+            .alias(col)
+        )
 
     # ── global fallback for rows still NULL after cell fill ──────────────────
     global_cols = [c for c in impute_cols_present if c in global_prior_df.columns]
-    global_reset = global_prior_df[global_cols].reset_index()
-    candidates = candidates.merge(
-        global_reset.rename(columns={c: f"_global_{c}" for c in global_cols}),
-        on="kyori_band",
-        how="left",
+    global_renamed = global_prior_df.select(["kyori_band"] + global_cols).rename(
+        {c: f"_global_{c}" for c in global_cols}
     )
+    candidates = candidates.join(global_renamed, on="kyori_band", how="left")
 
     for col in global_cols:
         g_col = f"_global_{col}"
-        if g_col in candidates.columns:
-            candidates[col] = np.where(
-                candidates[col].isna() & candidates[g_col].notna(),
-                candidates[g_col],
-                candidates[col],
-            )
+        candidates = candidates.with_columns(
+            pl.when(pl.col(col).is_null() & pl.col(g_col).is_not_null())
+            .then(pl.col(g_col))
+            .otherwise(pl.col(col))
+            .alias(col)
+        )
 
-    # Drop helper columns
-    drop_cols = [c for c in candidates.columns if c.startswith("_cell_") or c.startswith("_global_")]
-    candidates = candidates.drop(columns=drop_cols)
+    # Drop helper columns + set flag.
+    drop_cols = [
+        c
+        for c in candidates.columns
+        if c.startswith("_cell_") or c.startswith("_global_")
+    ]
+    candidates = candidates.drop(drop_cols).with_columns(
+        pl.lit(1).alias(RS_IMPUTED_COL)
+    )
 
-    # Write imputed values back + set flag
-    out.loc[null_mask, impute_cols_present] = candidates[impute_cols_present].values
-    out.loc[null_mask, RS_IMPUTED_COL] = 1
-
-    return out
+    rebuilt = (
+        pl.concat([candidates, non_candidates], how="vertical_relaxed")
+        .sort("_orig_idx")
+        .drop("_orig_idx")
+    )
+    return rebuilt.select(out.drop("_orig_idx").columns)

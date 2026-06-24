@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
-import pandas as pd
+import polars as pl
 import pytest
 
 import finish_position_catboost as cb_walk
@@ -45,8 +45,8 @@ def _base_args(tmp_path: Path, category: str) -> subject.WalkForwardArguments:
     }
 
 
-def _predictions_frame() -> pd.DataFrame:
-    return pd.DataFrame({
+def _predictions_frame() -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": ["jra:2024:0512:05:11", "jra:2024:0512:05:11"],
         "ketto_toroku_bango": ["2019100001", "2019100002"],
         "umaban": [1, 2],
@@ -55,8 +55,8 @@ def _predictions_frame() -> pd.DataFrame:
     })
 
 
-def _feature_df() -> pd.DataFrame:
-    return pd.DataFrame({
+def _feature_df() -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": ["jra:2024:0512:05:11", "jra:2024:0512:05:11"],
         "race_date": ["20240512", "20240512"],
         "ketto_toroku_bango": ["2019100001", "2019100002"],
@@ -74,7 +74,7 @@ class FakeDeps:
     xgb_trainer: MagicMock
 
 
-def _make_fake_deps(predictions: pd.DataFrame, df: pd.DataFrame) -> FakeDeps:
+def _make_fake_deps(predictions: pl.DataFrame, df: pl.DataFrame) -> FakeDeps:
     write_parquet = MagicMock()
     write_jsonl = MagicMock()
     cb_trainer = MagicMock(return_value=predictions)
@@ -273,7 +273,7 @@ def test_assert_feature_count_passes_on_exact_138_for_banei():
 
 
 def test_resolve_feature_columns_for_category_uses_xgboost_resolver_for_nar():
-    df = pd.DataFrame({"a": [1, 2]})
+    df = pl.DataFrame({"a": [1, 2]})
     cb_resolver = MagicMock(return_value=["cb"])
     xgb_resolver = MagicMock(return_value=["xgb1", "xgb2"])
     cols = subject.resolve_feature_columns_for_category(
@@ -285,7 +285,7 @@ def test_resolve_feature_columns_for_category_uses_xgboost_resolver_for_nar():
 
 
 def test_resolve_feature_columns_for_category_disables_cat_features_for_jra():
-    df = pd.DataFrame({"a": [1, 2]})
+    df = pl.DataFrame({"a": [1, 2]})
     cb_resolver = MagicMock(return_value=["cb1"])
     xgb_resolver = MagicMock(return_value=["xgb"])
     cols = subject.resolve_feature_columns_for_category(
@@ -341,17 +341,17 @@ def test_resolve_fold_trainer_dispatches_catboost_for_banei():
 
 
 def test_split_race_id_column_explodes_five_parts():
-    frame = pd.DataFrame({"race_id": ["nar:2024:0512:30:11"]})
+    frame = pl.DataFrame({"race_id": ["nar:2024:0512:30:11"]})
     out = subject.split_race_id_column(frame)
-    assert out["source"].tolist() == ["nar"]
-    assert out["kaisai_nen"].tolist() == ["2024"]
-    assert out["kaisai_tsukihi"].tolist() == ["0512"]
-    assert out["keibajo_code"].tolist() == ["30"]
-    assert out["race_bango"].tolist() == ["11"]
+    assert out["source"].to_list() == ["nar"]
+    assert out["kaisai_nen"].to_list() == ["2024"]
+    assert out["kaisai_tsukihi"].to_list() == ["0512"]
+    assert out["keibajo_code"].to_list() == ["30"]
+    assert out["race_bango"].to_list() == ["11"]
 
 
 def test_split_race_id_column_raises_on_wrong_part_count():
-    frame = pd.DataFrame({"race_id": ["nar:2024:0512"]})
+    frame = pl.DataFrame({"race_id": ["nar:2024:0512"]})
     with pytest.raises(ValueError) as info:
         subject.split_race_id_column(frame)
     assert "5 colon-separated parts" in str(info.value)
@@ -384,42 +384,42 @@ def test_to_parquet_frame_emits_exactly_the_17_partitioned_columns():
 def test_to_parquet_frame_leaves_prob_columns_null_for_rank_only_models():
     args = _base_args(Path("/tmp"), "jra")
     frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
-    assert frame["predicted_top1_prob"].tolist() == [None, None]
-    assert frame["predicted_top3_prob"].tolist() == [None, None]
-    assert frame["predicted_finish_position"].tolist() == [1, 2]
-    assert frame["model_version"].tolist() == [
+    assert frame["predicted_top1_prob"].to_list() == [None, None]
+    assert frame["predicted_top3_prob"].to_list() == [None, None]
+    assert frame["predicted_finish_position"].to_list() == [1, 2]
+    assert frame["model_version"].to_list() == [
         "jra-v7-lineage-wf-21y",
         "jra-v7-lineage-wf-21y",
     ]
-    assert frame["race_year"].tolist() == [2024, 2024]
+    assert frame["race_year"].to_list() == [2024, 2024]
 
 
 def test_to_parquet_frame_stamps_versions_and_source_keys():
     args = _base_args(Path("/tmp"), "jra")
     frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
-    assert frame["source"].tolist() == ["jra", "jra"]
-    assert frame["kaisai_nen"].tolist() == ["2024", "2024"]
-    assert frame["keibajo_code"].tolist() == ["05", "05"]
-    assert frame["running_style_feature_version"].tolist() == ["v3", "v3"]
-    assert frame["finish_position_version"].tolist() == ["v1", "v1"]
+    assert frame["source"].to_list() == ["jra", "jra"]
+    assert frame["kaisai_nen"].to_list() == ["2024", "2024"]
+    assert frame["keibajo_code"].to_list() == ["05", "05"]
+    assert frame["running_style_feature_version"].to_list() == ["v3", "v3"]
+    assert frame["finish_position_version"].to_list() == ["v1", "v1"]
 
 
 def test_to_parquet_frame_category_uses_jra_partition_for_jra():
     args = _base_args(Path("/tmp"), "jra")
     frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
-    assert frame["category"].tolist() == ["jra", "jra"]
+    assert frame["category"].to_list() == ["jra", "jra"]
 
 
 def test_to_parquet_frame_category_uses_nar_partition_for_nar():
     args = _base_args(Path("/tmp"), "nar")
     frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
-    assert frame["category"].tolist() == ["nar", "nar"]
+    assert frame["category"].to_list() == ["nar", "nar"]
 
 
 def test_to_parquet_frame_category_uses_hyphenated_ban_ei_partition_for_banei():
     args = _base_args(Path("/tmp"), "banei")
     frame = subject.to_parquet_frame(_predictions_frame(), args, 2024)
-    assert frame["category"].tolist() == ["ban-ei", "ban-ei"]
+    assert frame["category"].to_list() == ["ban-ei", "ban-ei"]
 
 
 def test_default_write_jsonl_writes_five_column_records(tmp_path: Path):
@@ -438,7 +438,7 @@ def test_default_write_jsonl_writes_five_column_records(tmp_path: Path):
 
 
 def test_default_write_jsonl_emits_null_umaban_when_missing(tmp_path: Path):
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["jra:2024:0512:05:11"],
         "ketto_toroku_bango": ["2019100001"],
         "umaban": [None],
@@ -452,16 +452,29 @@ def test_default_write_jsonl_emits_null_umaban_when_missing(tmp_path: Path):
     assert record["predicted_rank"] == 3
 
 
+def test_default_write_jsonl_emits_null_umaban_for_nan_float(tmp_path: Path):
+    frame = pl.DataFrame({
+        "race_id": ["jra:2024:0512:05:11"],
+        "ketto_toroku_bango": ["2019100001"],
+        "umaban": [float("nan")],
+        "predicted_score": [0.5],
+        "predicted_rank": [3],
+    })
+    output_path = tmp_path / "out.jsonl"
+    subject.default_write_jsonl(frame, output_path)
+    record = json.loads(output_path.read_text(encoding="utf-8").strip())
+    assert record["umaban"] is None
+    assert record["predicted_rank"] == 3
+
+
 def test_default_write_parquet_partitions_by_category_and_year(tmp_path: Path):
-    frame = MagicMock(spec=pd.DataFrame)
+    frame = MagicMock(spec=pl.DataFrame)
     output_dir = tmp_path / "parquet"
     subject.default_write_parquet(frame, output_dir)
     assert output_dir.exists()
-    frame.to_parquet.assert_called_once_with(
+    frame.write_parquet.assert_called_once_with(
         output_dir.as_posix(),
-        partition_cols=["category", "race_year"],
-        index=False,
-        existing_data_behavior="delete_matching",
+        partition_by=["category", "race_year"],
     )
 
 
@@ -471,7 +484,7 @@ def test_build_jsonl_filename_uses_category_and_year():
 
 
 def test_xgboost_numeric_resolver_ignores_use_cat_features(monkeypatch: pytest.MonkeyPatch):
-    df = pd.DataFrame({"a": [1, 2]})
+    df = pl.DataFrame({"a": [1, 2]})
     inner = MagicMock(return_value=["x1", "x2", "x3"])
     monkeypatch.setattr(xgb_walk, "resolve_feature_columns", inner)
     cols = subject.xgboost_numeric_resolver(df, use_cat_features=True)
@@ -483,7 +496,7 @@ def test_score_fold_skips_when_no_train_rows(monkeypatch: pytest.MonkeyPatch, tm
     args = _base_args(tmp_path, "jra")
     fake = _make_fake_deps(_predictions_frame(), _feature_df())
     monkeypatch.setattr(
-        subject, "build_fold_train_valid", MagicMock(return_value=(pd.DataFrame(), _feature_df())),
+        subject, "build_fold_train_valid", MagicMock(return_value=(pl.DataFrame(), _feature_df())),
     )
     result = subject.score_fold(
         _feature_df(), [f"f{i}" for i in range(138)], args, 2024, fake.deps, {},
@@ -497,7 +510,7 @@ def test_score_fold_skips_when_no_valid_rows(monkeypatch: pytest.MonkeyPatch, tm
     args = _base_args(tmp_path, "jra")
     fake = _make_fake_deps(_predictions_frame(), _feature_df())
     monkeypatch.setattr(
-        subject, "build_fold_train_valid", MagicMock(return_value=(_feature_df(), pd.DataFrame())),
+        subject, "build_fold_train_valid", MagicMock(return_value=(_feature_df(), pl.DataFrame())),
     )
     result = subject.score_fold(
         _feature_df(), [f"f{i}" for i in range(138)], args, 2025, fake.deps, {},
@@ -530,7 +543,7 @@ def test_score_fold_uses_xgboost_trainer_for_nar(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ):
     args = _base_args(tmp_path, "nar")
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["nar:2024:0512:30:11", "nar:2024:0512:30:11"],
         "ketto_toroku_bango": ["a", "b"],
         "umaban": [1, 2],
@@ -576,7 +589,7 @@ def test_run_sorts_full_dataset_once_before_folds(
     fold passes presorted=True to the reused rankers; the feature resolver
     therefore sees the sorted frame, not the raw load order."""
     args = _base_args(tmp_path, "jra")
-    unsorted = pd.DataFrame({
+    unsorted = pl.DataFrame({
         "race_id": [
             "jra:2024:0512:05:11",
             "jra:2024:0512:05:10",
@@ -596,13 +609,13 @@ def test_run_sorts_full_dataset_once_before_folds(
     )
     subject.run(args, fake.deps)
     seen = cast(MagicMock, fake.deps["catboost_resolver"]).call_args.args[0]
-    assert seen["race_id"].tolist() == [
+    assert seen["race_id"].to_list() == [
         "jra:2024:0512:05:10",
         "jra:2024:0512:05:10",
         "jra:2024:0512:05:11",
         "jra:2024:0512:05:11",
     ]
-    assert seen["umaban"].tolist() == [1, 2, 1, 2]
+    assert seen["umaban"].to_list() == [1, 2, 1, 2]
 
 
 def test_run_loads_calibration_map_once_across_folds(
@@ -637,9 +650,9 @@ def test_default_train_catboost_fold_unwraps_valid_predictions(monkeypatch: pyte
     trainer = MagicMock(return_value={"valid_predictions": predictions, "metrics": {}})
     monkeypatch.setattr(cb_walk, "train_catboost_ranker", trainer)
     out = subject.default_train_catboost_fold(
-        pd.DataFrame(), pd.DataFrame(), ["f0"], argparse.Namespace(),
+        pl.DataFrame(), pl.DataFrame(), ["f0"], argparse.Namespace(),
     )
-    assert out["predicted_rank"].tolist() == [1, 2]
+    assert out["predicted_rank"].to_list() == [1, 2]
     trainer.assert_called_once()
 
 
@@ -648,9 +661,9 @@ def test_default_train_xgboost_fold_unwraps_valid_predictions(monkeypatch: pytes
     trainer = MagicMock(return_value=(MagicMock(), {"valid_predictions": predictions}))
     monkeypatch.setattr(xgb_walk, "train_xgboost_ranker", trainer)
     out = subject.default_train_xgboost_fold(
-        pd.DataFrame(), pd.DataFrame(), ["f0"], argparse.Namespace(),
+        pl.DataFrame(), pl.DataFrame(), ["f0"], argparse.Namespace(),
     )
-    assert out["predicted_rank"].tolist() == [1, 2]
+    assert out["predicted_rank"].to_list() == [1, 2]
     trainer.assert_called_once()
 
 
@@ -704,8 +717,8 @@ def test_main_runs_and_prints_json(
 
 def test_build_fold_train_valid_filters_by_prior_year_end(monkeypatch: pytest.MonkeyPatch):
     df = _feature_df()
-    train_mock = MagicMock(return_value=df.iloc[:1])
-    year_mock = MagicMock(return_value=df.iloc[1:])
+    train_mock = MagicMock(return_value=df.head(1))
+    year_mock = MagicMock(return_value=df.slice(1))
     monkeypatch.setattr(cb_walk, "filter_range", train_mock)
     monkeypatch.setattr(cb_walk, "filter_year", year_mock)
     args = _base_args(Path("/tmp"), "jra")
@@ -839,7 +852,7 @@ def test_apply_calibration_returns_input_when_bucket_missing():
 
 
 def test_apply_calibration_interpolates_and_reranks():
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["jra:2024:0512:05:11", "jra:2024:0512:05:11"],
         "ketto_toroku_bango": ["a", "b"],
         "umaban": [1, 2],
@@ -848,13 +861,13 @@ def test_apply_calibration_interpolates_and_reranks():
     })
     calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.7]]}
     out = subject.apply_calibration(predictions, calibration_map, "jra")
-    assert out["predicted_score"].iloc[0] == pytest.approx(0.4)
-    assert out["predicted_score"].iloc[1] == pytest.approx(0.64)
-    assert out["predicted_rank"].tolist() == [2, 1]
+    assert out["predicted_score"][0] == pytest.approx(0.4)
+    assert out["predicted_score"][1] == pytest.approx(0.64)
+    assert out["predicted_rank"].to_list() == [2, 1]
 
 
 def test_apply_calibration_clamps_to_first_pair_when_score_below_min():
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["r", "r"],
         "ketto_toroku_bango": ["a", "b"],
         "umaban": [1, 2],
@@ -863,12 +876,12 @@ def test_apply_calibration_clamps_to_first_pair_when_score_below_min():
     })
     calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.7]]}
     out = subject.apply_calibration(predictions, calibration_map, "jra")
-    assert out["predicted_score"].iloc[0] == pytest.approx(0.1)
-    assert out["predicted_score"].iloc[1] == pytest.approx(0.7)
+    assert out["predicted_score"][0] == pytest.approx(0.1)
+    assert out["predicted_score"][1] == pytest.approx(0.7)
 
 
 def test_apply_calibration_handles_zero_span_segment_without_division_error():
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["r"],
         "ketto_toroku_bango": ["a"],
         "umaban": [1],
@@ -877,7 +890,7 @@ def test_apply_calibration_handles_zero_span_segment_without_division_error():
     })
     calibration_map = {"jra": [[0.5, 0.3], [0.5, 0.4], [1.0, 0.9]]}
     out = subject.apply_calibration(predictions, calibration_map, "jra")
-    assert out["predicted_score"].iloc[0] == pytest.approx(0.3)
+    assert out["predicted_score"][0] == pytest.approx(0.3)
 
 
 def test_apply_calibration_returns_input_when_bucket_pairs_empty():
@@ -1052,7 +1065,7 @@ def test_run_raises_when_no_features_remain_after_filtering(tmp_path: Path):
 
 
 def test_apply_calibration_assigns_bottom_rank_to_nan_score():
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["r", "r"],
         "ketto_toroku_bango": ["a", "b"],
         "umaban": [1, 2],
@@ -1062,4 +1075,4 @@ def test_apply_calibration_assigns_bottom_rank_to_nan_score():
     calibration_map = {"jra": [[0.0, 0.1], [1.0, 0.9]]}
     out = subject.apply_calibration(predictions, calibration_map, "jra")
     # NaN score propagates through calibration and must get bottom rank (2), not crash
-    assert out["predicted_rank"].tolist() == [2, 1]
+    assert out["predicted_rank"].to_list() == [2, 1]

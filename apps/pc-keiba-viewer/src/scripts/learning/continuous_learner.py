@@ -18,8 +18,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Final, TypedDict, cast, get_args
 
-import pandas as pd
-import pyarrow.parquet as pq
+import polars as pl
 
 from learning.feature_explorer import (
     CATEGORY_BACKENDS,
@@ -115,30 +114,33 @@ _CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
 DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
 
 
-def _load_features_dataframe(parquet_path: Path, train_start: str) -> pd.DataFrame:
+def _load_features_dataframe(parquet_path: Path, train_start: str) -> pl.DataFrame:
     """Read features, pruning Hive-partitioned year dirs older than the train window.
 
     A directory path is treated as a ``race_year=YYYY/`` partitioned dataset and only
     partitions at or after ``train_start`` (minus one year of warm-up history) are
-    read, which avoids loading decades of unused rows. A single file is read whole.
+    read, which avoids loading decades of unused rows. The lazy ``scan_parquet`` pushes
+    the ``race_year`` predicate into the Hive partition pruning so older year dirs are
+    never opened. A single file is read whole.
     """
     if parquet_path.is_dir():
         min_year = int(train_start[:4]) - 1
-        dataset = pq.ParquetDataset(
-            str(parquet_path), filters=[("race_year", ">=", min_year)]
+        return (
+            pl.scan_parquet(str(parquet_path / "**" / "*.parquet"), hive_partitioning=True)
+            .filter(pl.col("race_year") >= min_year)
+            .collect()
         )
-        return dataset.read().to_pandas()
-    return pd.read_parquet(str(parquet_path))
+    return pl.read_parquet(str(parquet_path))
 
 
 def write_filtered_parquet(
-    df: pd.DataFrame, feature_names: list[str], output_dir: Path
+    df: pl.DataFrame, feature_names: list[str], output_dir: Path
 ) -> Path:
     keep = set(META_COLUMNS) | _LABEL_COLS | set(feature_names)
     cols = [c for c in df.columns if c in keep]
     output_dir.mkdir(parents=True, exist_ok=True)
     out = output_dir / "features.parquet"
-    df[cols].to_parquet(out, index=False)
+    df.select(cols).write_parquet(out)
     return out
 
 
@@ -196,7 +198,7 @@ class ContinuousLearner:
     def __init__(
         self,
         registry: FeatureRegistry,
-        df: pd.DataFrame,
+        df: pl.DataFrame,
         category: str,
         repo_root: Path,
         scripts_dir: Path,
@@ -216,13 +218,14 @@ class ContinuousLearner:
         skip_enrichment: bool = False,
         load_controller: AdaptiveLoadController | None = None,
         auto_tune: bool = True,
+        per_trial_timeout_s: float | None = None,
     ) -> None:
         if category not in _TRAINING_SCRIPT:
             raise ValueError(
                 f"Unknown category {category!r}. Valid categories: {sorted(_TRAINING_SCRIPT)}"
             )
         self._registry: FeatureRegistry = registry
-        self._df: pd.DataFrame = df
+        self._df: pl.DataFrame = df
         self._category: str = category
         self._repo_root: Path = repo_root
         self._scripts_dir: Path = scripts_dir
@@ -257,14 +260,16 @@ class ContinuousLearner:
         self._stop: bool = False
         self._load_controller: AdaptiveLoadController | None = load_controller
         self._auto_tune: bool = auto_tune
+        self._per_trial_timeout_s: float | None = per_trial_timeout_s
 
     @staticmethod
-    def _derive_blind_holdout_year(df: pd.DataFrame) -> int:
+    def _derive_blind_holdout_year(df: pl.DataFrame) -> int:
         """Latest year present in df; falls back to the pool max for an empty/year-less df."""
-        if "race_year" in df.columns and not df.empty:
-            years = pd.to_numeric(df["race_year"], errors="coerce").dropna()
-            if not years.empty:
-                return int(years.max())
+        if "race_year" in df.columns and not df.is_empty():
+            years = df["race_year"].cast(pl.Float64, strict=False).drop_nulls()
+            max_year = years.max()
+            if isinstance(max_year, (int, float)):
+                return int(max_year)
         return max(VALIDATION_YEAR_POOL)
 
     def request_stop(self) -> None:
@@ -358,6 +363,28 @@ class ContinuousLearner:
             "━━━ continuous learning loop finished ━━━  completed rounds: %d", round_num
         )
 
+    def _priority_subsets(self) -> list[set[str]]:
+        """Feature masks worth force-evaluating first: the active set, then active + top enriched.
+
+        Seeding the study with these guarantees each round spends its first trials on the
+        current champion and the most promising enrichment-driven extension before the
+        sampler starts its own search, so a short trial budget isn't wasted rediscovering
+        the known-good region.
+        """
+        active = self._registry.get_active_entry()
+        if active is None:
+            return []
+        active_set = set(active["feature_names"])
+        subsets = [active_set]
+        enriched = [
+            name
+            for name, score in self._registry.compute_feature_enrichment()
+            if score > 0 and name not in active_set
+        ][:MAX_ENRICHMENT_FEATURES]
+        if enriched:
+            subsets.append(active_set | set(enriched))
+        return subsets
+
     def _explore_round(self, round_num: int, n_trials: int) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
         round_years = select_round_validation_years(
@@ -377,6 +404,8 @@ class ContinuousLearner:
             validation_years=round_years,
             train_start=self._train_start,
             backends=self._backends,
+            per_trial_timeout_s=self._per_trial_timeout_s,
+            enqueue_subsets=self._priority_subsets(),
         )
 
     def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
@@ -595,7 +624,7 @@ class ContinuousLearner:
             return
         feature_names = active["feature_names"]
         predictions = self._collect_active_predictions(feature_names)
-        if predictions.empty:
+        if predictions.is_empty():
             _logger.info("subgroup diagnostics: no predictions produced — skipping")
             return
         metrics = compute_subgroup_diagnostics(predictions, self._df)
@@ -615,17 +644,17 @@ class ContinuousLearner:
                 m["top3_box_accuracy"],
             )
 
-    def _collect_active_predictions(self, feature_names: list[str]) -> pd.DataFrame:
+    def _collect_active_predictions(self, feature_names: list[str]) -> pl.DataFrame:
         """Train the active feature set on each validation fold and stack predictions.
 
         Returns a frame of (race_id, ketto_toroku_bango, predicted_rank) over all
         validation years; an empty frame when no fold yields predictions.
         """
         feature_set = set(feature_names)
-        frames: list[pd.DataFrame] = []
+        frames: list[pl.DataFrame] = []
         for year in self._validation_years:
             fold = split_walk_forward(self._df, self._train_start, year)
-            if fold["train_df"].empty or fold["valid_df"].empty:
+            if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
                 continue
             fold_filtered = select_fold_features(fold, feature_set)
             for backend in self._backends:
@@ -634,19 +663,23 @@ class ContinuousLearner:
                 )
                 if preds is None:
                     continue
-                # .copy() detaches the 3-column slice from the wide prediction
-                # frame so the full-width preds block is freed each iteration
-                # instead of being pinned alive by the slice until the final concat.
+                # select() returns a fresh 3-column frame that owns its data, so the
+                # full-width preds block is freed each iteration instead of being
+                # pinned alive by the slice until the final concat.
                 frames.append(
-                    preds[["race_id", "ketto_toroku_bango", "predicted_rank"]].copy()
+                    preds.select(["race_id", "ketto_toroku_bango", "predicted_rank"])
                 )
                 del preds
             del fold, fold_filtered
         if not frames:
-            return pd.DataFrame(
-                columns=["race_id", "ketto_toroku_bango", "predicted_rank"]
+            return pl.DataFrame(
+                schema={
+                    "race_id": pl.Utf8,
+                    "ketto_toroku_bango": pl.Utf8,
+                    "predicted_rank": pl.Int64,
+                }
             )
-        return pd.concat(frames, ignore_index=True)
+        return pl.concat(frames)
 
     def _deploy(self, entry: FeatureEntry) -> None:
         feature_names = entry["feature_names"]
@@ -878,6 +911,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--skip-enrichment", action="store_true")
     parser.add_argument("--auto-tune", dest="auto_tune", action="store_true", default=True)
     parser.add_argument("--no-auto-tune", dest="auto_tune", action="store_false")
+    parser.add_argument("--per-trial-timeout", type=float, default=None)
     args = parser.parse_args(argv)
     setup_logging()
 
@@ -917,6 +951,11 @@ def main(argv: list[str] | None = None) -> None:
             skip_enrichment=bool(args.skip_enrichment),
             load_controller=load_controller,
             auto_tune=bool(args.auto_tune),
+            per_trial_timeout_s=(
+                float(args.per_trial_timeout)
+                if args.per_trial_timeout is not None
+                else None
+            ),
         )
         _setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)

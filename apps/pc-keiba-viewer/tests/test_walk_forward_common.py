@@ -6,7 +6,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import walk_forward_common as subject
@@ -379,7 +379,7 @@ def test_compute_per_bucket_val_ndcg_returns_zero_when_idcg_zero():
     assert out == {"distance": 0.0}
 
 
-def _build_hpo_df(rows: int = 36) -> pd.DataFrame:
+def _build_hpo_df(rows: int = 36) -> pl.DataFrame:
     race_ids = [f"r{i // 3}" for i in range(rows)]
     keibajo = [
         "A" if (i // 3) % 2 == 0 else "B" for i in range(rows)
@@ -387,7 +387,7 @@ def _build_hpo_df(rows: int = 36) -> pd.DataFrame:
     grade = [
         "G1" if (i // 3) % 4 == 0 else "G3" for i in range(rows)
     ]
-    return pd.DataFrame({
+    return pl.DataFrame({
         "race_id": race_ids,
         "keibajo_code": keibajo,
         "grade_code": grade,
@@ -431,14 +431,14 @@ def test_stratified_kfold_indices_rejects_n_folds_below_two():
 
 
 def test_stratified_kfold_indices_raises_when_race_id_missing():
-    df = pd.DataFrame({"keibajo_code": ["A", "B", "A", "B"]})
+    df = pl.DataFrame({"keibajo_code": ["A", "B", "A", "B"]})
     with pytest.raises(ValueError) as info:
         subject.stratified_kfold_indices(df, strata_cols=["keibajo_code"], n_folds=2, seed=1)
     assert "race_id" in str(info.value)
 
 
 def test_stratified_kfold_indices_raises_when_strata_missing():
-    df = pd.DataFrame({"race_id": ["a", "b", "c", "d"]})
+    df = pl.DataFrame({"race_id": ["a", "b", "c", "d"]})
     with pytest.raises(ValueError) as info:
         subject.stratified_kfold_indices(df, strata_cols=["bogus"], n_folds=2, seed=1)
     assert "bogus" in str(info.value)
@@ -473,40 +473,38 @@ def test_stratified_kfold_indices_raises_when_race_id_overlaps(
 
 
 def test_sort_full_dataset_orders_by_race_id_and_umaban():
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r2", "r1", "r2", "r1"],
         "umaban": [2, 1, 1, 2],
         "value": [10, 20, 30, 40],
     })
     out = subject.sort_full_dataset(df)
-    assert out["race_id"].tolist() == ["r1", "r1", "r2", "r2"]
-    assert out["umaban"].tolist() == [1, 2, 1, 2]
-    assert out.index.tolist() == [0, 1, 2, 3]
+    assert out["race_id"].to_list() == ["r1", "r1", "r2", "r2"]
+    assert out["umaban"].to_list() == [1, 2, 1, 2]
 
 
 def test_sort_full_dataset_mask_of_sorted_frame_stays_sorted():
     """The whole optimization hinges on this: a boolean mask of a sorted frame
     must remain sorted by (race_id, umaban) with contiguous race groups, so each
     walk-forward fold slice needs no further sorting."""
-    df = pd.DataFrame({
+    df = pl.DataFrame({
         "race_id": ["r3", "r1", "r2", "r1", "r3", "r2"],
         "umaban": [1, 2, 1, 1, 2, 2],
         "keep": [True, True, False, True, True, False],
     })
     out = subject.sort_full_dataset(df)
-    sliced = out[out["keep"]]
-    assert sliced["race_id"].tolist() == ["r1", "r1", "r3", "r3"]
-    assert sliced["umaban"].tolist() == [1, 2, 1, 2]
+    sliced = out.filter(pl.col("keep"))
+    assert sliced["race_id"].to_list() == ["r1", "r1", "r3", "r3"]
+    assert sliced["umaban"].to_list() == [1, 2, 1, 2]
 
 
 def test_sort_full_dataset_falls_back_when_sort_keys_missing():
-    df = pd.DataFrame({"other": [3, 1, 2]}, index=[7, 8, 9])
+    df = pl.DataFrame({"other": [3, 1, 2]})
     out = subject.sort_full_dataset(df)
-    assert out["other"].tolist() == [3, 1, 2]
-    assert out.index.tolist() == [0, 1, 2]
+    assert out["other"].to_list() == [3, 1, 2]
 
 
 def test_sort_full_dataset_sorts_by_race_id_only_when_umaban_missing():
-    df = pd.DataFrame({"race_id": ["r2", "r1", "r2"], "value": [1, 2, 3]})
+    df = pl.DataFrame({"race_id": ["r2", "r1", "r2"], "value": [1, 2, 3]})
     out = subject.sort_full_dataset(df)
-    assert out["race_id"].tolist() == ["r1", "r2", "r2"]
+    assert out["race_id"].to_list() == ["r1", "r2", "r2"]

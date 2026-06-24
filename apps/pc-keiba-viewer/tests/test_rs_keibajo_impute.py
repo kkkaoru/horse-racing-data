@@ -1,4 +1,3 @@
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportArgumentType=false, reportCallIssue=false, reportIndexIssue=false, reportOperatorIssue=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false
 """Tests for rs_keibajo_impute — NOT DRY, every case self-contained.
 
 Coverage targets: 100% statements, 100% branches.
@@ -6,8 +5,10 @@ All tests use fixed literals, no string concatenation in expect values.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from rs_keibajo_impute import (
     MIN_CELL_COUNT,
@@ -21,23 +22,82 @@ from rs_keibajo_impute import (
     rs_null_mask,
 )
 
+# Stable schema so all-None numeric columns keep Float64 dtype across frames.
+_FRAME_SCHEMA: dict[str, pl.DataType] = {
+    "race_date": pl.Utf8(),
+    "keibajo_code": pl.Utf8(),
+    "kyori_band": pl.Int64(),
+    "past_nige_rate_self": pl.Float64(),
+    "past_senkou_rate_self": pl.Float64(),
+    "past_sashi_rate_self": pl.Float64(),
+    "past_oikomi_rate_self": pl.Float64(),
+    "past_corner_1_norm_avg_5": pl.Float64(),
+    "past_corner_1_norm_avg_3": pl.Float64(),
+    "past_corner_1_norm_avg_10": pl.Float64(),
+    "past_corner_1_norm_std_5": pl.Float64(),
+    "past_corner_1_norm_best_5": pl.Float64(),
+    "past_corner_1_norm_worst_5": pl.Float64(),
+    "past_corner_1_norm_iqr_5": pl.Float64(),
+    "past_corner_progression_avg_5": pl.Float64(),
+    "horse_keibajo_corner_1_norm_avg": pl.Float64(),
+    "last_race_corner_1_norm": pl.Float64(),
+    "past_nige_win_rate_self": pl.Float64(),
+    "past_senkou_win_rate_self": pl.Float64(),
+    "past_sashi_win_rate_self": pl.Float64(),
+    "past_oikomi_win_rate_self": pl.Float64(),
+    "finish_position": pl.Int64(),
+}
+
+
+def _frame(rows: Sequence[Mapping[str, object]]) -> pl.DataFrame:
+    """Build a frame, applying the stable schema only for known columns.
+
+    Rows may omit some columns (some tests drop impute cols) — restrict the
+    schema overrides to the keys actually present so polars infers the rest.
+    """
+    present = {k for r in rows for k in r}
+    overrides = {k: v for k, v in _FRAME_SCHEMA.items() if k in present}
+    return pl.DataFrame(rows, schema_overrides=overrides)
+
 
 # ─────────────────────────────── helpers ────────────────────────────────────
 
-def _fv(df: pd.DataFrame, key: object, col: str) -> float:
-    """Extract a scalar float from a DataFrame index lookup via pd.to_numeric.
 
-    Avoids the pandas .at[] wide-union type that ty cannot narrow to float.
-    """
-    return float(pd.to_numeric(df.at[key, col], errors="coerce"))
+def _cell_fv(df: pl.DataFrame, keibajo: str, kyori_band: int, col: str) -> float:
+    """Extract a scalar float from a cell-prior column lookup."""
+    r = df.filter(
+        (pl.col("keibajo_code") == keibajo) & (pl.col("kyori_band") == kyori_band)
+    )
+    return float(r[col][0])
 
 
-def _iv(df: pd.DataFrame, key: object, col: str) -> int:
-    """Extract a scalar int from a DataFrame index lookup via pd.to_numeric."""
-    return int(pd.to_numeric(df.at[key, col], errors="coerce"))
+def _cell_iv(df: pl.DataFrame, keibajo: str, kyori_band: int, col: str) -> int:
+    """Extract a scalar int from a cell-prior column lookup."""
+    r = df.filter(
+        (pl.col("keibajo_code") == keibajo) & (pl.col("kyori_band") == kyori_band)
+    )
+    return int(r[col][0])
+
+
+def _global_fv(df: pl.DataFrame, kyori_band: int, col: str) -> float:
+    """Extract a scalar float from a global-prior column lookup."""
+    r = df.filter(pl.col("kyori_band") == kyori_band)
+    return float(r[col][0])
+
+
+def _has_cell(df: pl.DataFrame, keibajo: str, kyori_band: int) -> bool:
+    """True when a (keibajo_code, kyori_band) cell exists in the prior frame."""
+    return (
+        df.filter(
+            (pl.col("keibajo_code") == keibajo)
+            & (pl.col("kyori_band") == kyori_band)
+        ).height
+        > 0
+    )
 
 
 # ─────────────────────────────── fixtures ───────────────────────────────────
+
 
 def _make_row(
     race_date: str = "20220101",
@@ -183,33 +243,39 @@ def test_prior_group_cols_are_keibajo_and_kyori_band() -> None:
 
 
 def testrs_null_mask_true_when_all_four_null() -> None:
-    df = pd.DataFrame([_make_row(past_nige=None, past_senkou=None, past_sashi=None, past_oikomi=None)])
+    df = _frame([_make_row(past_nige=None, past_senkou=None, past_sashi=None, past_oikomi=None)])
     mask = rs_null_mask(df)
-    assert bool(mask.iloc[0]) is True
+    assert bool(mask[0]) is True
     assert mask.sum() == 1
 
 
 def testrs_null_mask_false_when_one_col_populated() -> None:
-    df = pd.DataFrame([_make_row(past_nige=0.1, past_senkou=None, past_sashi=None, past_oikomi=None)])
+    df = _frame([_make_row(past_nige=0.1, past_senkou=None, past_sashi=None, past_oikomi=None)])
     mask = rs_null_mask(df)
-    assert bool(mask.iloc[0]) is False
+    assert bool(mask[0]) is False
 
 
 def testrs_null_mask_false_when_all_populated() -> None:
-    df = pd.DataFrame([_make_populated_row()])
+    df = _frame([_make_populated_row()])
     mask = rs_null_mask(df)
     assert mask.sum() == 0
 
 
 def testrs_null_mask_returns_false_when_no_trigger_cols_present() -> None:
-    df = pd.DataFrame([{"race_date": "20220101", "keibajo_code": "44", "kyori_band": 0}])
+    df = pl.DataFrame([{"race_date": "20220101", "keibajo_code": "44", "kyori_band": 0}])
     mask = rs_null_mask(df)
     assert mask.sum() == 0
 
 
 def testrs_null_mask_handles_empty_dataframe() -> None:
-    df = pd.DataFrame(columns=["past_nige_rate_self", "past_senkou_rate_self",
-                                "past_sashi_rate_self", "past_oikomi_rate_self"])
+    df = pl.DataFrame(
+        schema={
+            "past_nige_rate_self": pl.Float64(),
+            "past_senkou_rate_self": pl.Float64(),
+            "past_sashi_rate_self": pl.Float64(),
+            "past_oikomi_rate_self": pl.Float64(),
+        }
+    )
     mask = rs_null_mask(df)
     assert len(mask) == 0
 
@@ -219,10 +285,10 @@ def testrs_null_mask_handles_empty_dataframe() -> None:
 
 def test_build_prior_table_returns_two_dataframes() -> None:
     rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame(rows)
+    df = _frame(rows)
     cell_prior, global_prior = build_prior_table(df, "20230101")
-    assert isinstance(cell_prior, pd.DataFrame)
-    assert isinstance(global_prior, pd.DataFrame)
+    assert isinstance(cell_prior, pl.DataFrame)
+    assert isinstance(global_prior, pl.DataFrame)
 
 
 def test_build_prior_table_excludes_cutoff_date_itself() -> None:
@@ -231,10 +297,10 @@ def test_build_prior_table_excludes_cutoff_date_itself() -> None:
     on_cutoff = _make_populated_row(race_date="20230101", keibajo_code="44", kyori_band=0)
     on_cutoff["past_nige_rate_self"] = 0.99  # distinctive value
     all_rows = rows_before + [on_cutoff]
-    df = pd.DataFrame(all_rows)
+    df = _frame(all_rows)
     cell_prior, _ = build_prior_table(df, "20230101")
     # The mean should NOT be polluted by 0.99 because that row is excluded
-    mean_nige = _fv(cell_prior, ("44", 0), "past_nige_rate_self")
+    mean_nige = _cell_fv(cell_prior, "44", 0, "past_nige_rate_self")
     assert abs(mean_nige - 0.16) < 1e-6
 
 
@@ -243,7 +309,7 @@ def test_build_prior_table_excludes_all_data_after_cutoff() -> None:
         _make_populated_row(race_date="20240601", keibajo_code="44", kyori_band=0)
         for _ in range(30)
     ]
-    df = pd.DataFrame(future_rows)
+    df = _frame(future_rows)
     cell_prior, global_prior = build_prior_table(df, "20230101")
     assert len(cell_prior) == 0
     assert len(global_prior) == 0
@@ -251,7 +317,7 @@ def test_build_prior_table_excludes_all_data_after_cutoff() -> None:
 
 def test_build_prior_table_cell_has_n_column() -> None:
     rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame(rows)
+    df = _frame(rows)
     cell_prior, _ = build_prior_table(df, "20230101")
     assert "n" in cell_prior.columns
 
@@ -267,9 +333,9 @@ def test_build_prior_table_cell_n_equals_non_null_count() -> None:
         )
         for _ in range(3)
     ]
-    df = pd.DataFrame(rows_populated + null_rows)
+    df = _frame(rows_populated + null_rows)
     cell_prior, _ = build_prior_table(df, "20230101")
-    n = _iv(cell_prior, ("44", 0), "n")
+    n = _cell_iv(cell_prior, "44", 0, "n")
     assert n == 25
 
 
@@ -282,35 +348,35 @@ def test_build_prior_table_cell_n_zero_when_all_null() -> None:
         )
         for _ in range(10)
     ]
-    df = pd.DataFrame(null_rows)
+    df = _frame(null_rows)
     cell_prior, _ = build_prior_table(df, "20230101")
-    if ("44", 0) in cell_prior.index:
-        n = _iv(cell_prior, ("44", 0), "n")
+    if _has_cell(cell_prior, "44", 0):
+        n = _cell_iv(cell_prior, "44", 0, "n")
         assert n == 0
 
 
 def test_build_prior_table_global_keyed_by_kyori_band() -> None:
     rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame(rows)
+    df = _frame(rows)
     _, global_prior = build_prior_table(df, "20230101")
-    assert global_prior.index.name == "kyori_band"
+    assert "kyori_band" in global_prior.columns
 
 
 def test_build_prior_table_global_nige_mean_matches_input() -> None:
     rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.16)
-    df = pd.DataFrame(rows)
+    df = _frame(rows)
     _, global_prior = build_prior_table(df, "20230101")
-    mean_nige = _fv(global_prior, 0, "past_nige_rate_self")
+    mean_nige = _global_fv(global_prior, 0, "past_nige_rate_self")
     assert abs(mean_nige - 0.16) < 1e-6
 
 
 def test_build_prior_table_cell_mean_matches_input() -> None:
     rows = _build_prior_rows(n=25, keibajo_code="43", kyori_band=1, nige=0.09, senkou=0.26)
-    df = pd.DataFrame(rows)
+    df = _frame(rows)
     cell_prior, _ = build_prior_table(df, "20230101")
-    assert ("43", 1) in cell_prior.index
-    mean_nige = _fv(cell_prior, ("43", 1), "past_nige_rate_self")
-    mean_senkou = _fv(cell_prior, ("43", 1), "past_senkou_rate_self")
+    assert _has_cell(cell_prior, "43", 1)
+    mean_nige = _cell_fv(cell_prior, "43", 1, "past_nige_rate_self")
+    mean_senkou = _cell_fv(cell_prior, "43", 1, "past_senkou_rate_self")
     assert abs(mean_nige - 0.09) < 1e-6
     assert abs(mean_senkou - 0.26) < 1e-6
 
@@ -318,12 +384,12 @@ def test_build_prior_table_cell_mean_matches_input() -> None:
 def test_build_prior_table_multiple_venues_separate_cells() -> None:
     rows_43 = _build_prior_rows(n=25, keibajo_code="43", kyori_band=0, nige=0.10)
     rows_44 = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.20)
-    df = pd.DataFrame(rows_43 + rows_44)
+    df = _frame(rows_43 + rows_44)
     cell_prior, _ = build_prior_table(df, "20230101")
-    assert ("43", 0) in cell_prior.index
-    assert ("44", 0) in cell_prior.index
-    assert abs(_fv(cell_prior, ("43", 0), "past_nige_rate_self") - 0.10) < 1e-6
-    assert abs(_fv(cell_prior, ("44", 0), "past_nige_rate_self") - 0.20) < 1e-6
+    assert _has_cell(cell_prior, "43", 0)
+    assert _has_cell(cell_prior, "44", 0)
+    assert abs(_cell_fv(cell_prior, "43", 0, "past_nige_rate_self") - 0.10) < 1e-6
+    assert abs(_cell_fv(cell_prior, "44", 0, "past_nige_rate_self") - 0.20) < 1e-6
 
 
 # ─────────────────────── impute_rs_features (row-by-row) ─────────────────────
@@ -331,14 +397,14 @@ def test_build_prior_table_multiple_venues_separate_cells() -> None:
 
 def test_impute_rs_features_non_null_row_unchanged() -> None:
     populated = _make_populated_row(keibajo_code="50", kyori_band=1)
-    df = pd.DataFrame([populated])
+    df = _frame([populated])
     prior_rows = _build_prior_rows(n=25, keibajo_code="50", kyori_band=1)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # Original values must be unchanged
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.15) < 1e-6
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 0
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.15) < 1e-6
+    assert int(result[RS_IMPUTED_COL][0]) == 0
 
 
 def test_impute_rs_features_null_row_imputed_from_cell_prior() -> None:
@@ -347,23 +413,23 @@ def test_impute_rs_features_null_row_imputed_from_cell_prior() -> None:
         keibajo_code="44",
         kyori_band=0,
     )
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.155) < 1e-6
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.155) < 1e-6
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_rs_features_null_row_flag_set_to_1() -> None:
     target_row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_rs_features_sparse_cell_falls_back_to_global() -> None:
@@ -372,50 +438,50 @@ def test_impute_rs_features_sparse_cell_falls_back_to_global() -> None:
     # Expected global mean = (5 * 0.30 + 50 * 0.14) / 55 ≈ 0.15454...
     # This is distinctly different from 0.30 (sparse cell value).
     target_row = _make_row(keibajo_code="44", kyori_band=1)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     sparse_rows = _build_prior_rows(n=5, keibajo_code="44", kyori_band=1, nige=0.30)
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=1, nige=0.14)
-    prior_df_raw = pd.DataFrame(sparse_rows + global_rows)
+    prior_df_raw = _frame(sparse_rows + global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # Must NOT use sparse cell value 0.30 directly
-    nige_val = float(result.iloc[0]["past_nige_rate_self"])
+    nige_val = float(result["past_nige_rate_self"][0])
     expected_global = (5 * 0.30 + 50 * 0.14) / 55.0
     assert abs(nige_val - expected_global) < 1e-5
     assert abs(nige_val - 0.30) > 0.01  # not the sparse cell value
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_rs_features_missing_cell_falls_back_to_global() -> None:
     # No prior data for venue 99 at all → cell absent → fallback to global
     target_row = _make_row(keibajo_code="99", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.12)
-    prior_df_raw = pd.DataFrame(global_rows)
+    prior_df_raw = _frame(global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    nige_val = float(result.iloc[0]["past_nige_rate_self"])
+    nige_val = float(result["past_nige_rate_self"][0])
     assert abs(nige_val - 0.12) < 1e-5
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_rs_features_no_null_rows_returns_unchanged() -> None:
     rows = [_make_populated_row(keibajo_code="50", kyori_band=1) for _ in range(3)]
-    df = pd.DataFrame(rows)
-    prior_df_raw = pd.DataFrame(_build_prior_rows(n=25))
+    df = _frame(rows)
+    prior_df_raw = _frame(_build_prior_rows(n=25))
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     assert (result[RS_IMPUTED_COL] == 0).all()
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.15) < 1e-6
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.15) < 1e-6
 
 
 def test_impute_rs_features_rs_imputed_col_zero_for_non_null_rows() -> None:
     populated = _make_populated_row()
-    df = pd.DataFrame([populated])
-    prior_df_raw = pd.DataFrame(_build_prior_rows(n=25))
+    df = _frame([populated])
+    prior_df_raw = _frame(_build_prior_rows(n=25))
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 0
+    assert int(result[RS_IMPUTED_COL][0]) == 0
 
 
 def test_impute_rs_features_does_not_overwrite_non_null_impute_cols() -> None:
@@ -429,25 +495,31 @@ def test_impute_rs_features_does_not_overwrite_non_null_impute_cols() -> None:
         past_oikomi=None,
         last_c1n=0.77,  # this is non-null already
     )
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
     # Set a different last_c1n in prior
     for r in prior_rows:
         r["last_race_corner_1_norm"] = 0.50
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # last_race_corner_1_norm was non-null → must not be overwritten
-    assert abs(float(result.iloc[0]["last_race_corner_1_norm"]) - 0.77) < 1e-6
+    assert abs(float(result["last_race_corner_1_norm"][0]) - 0.77) < 1e-6
 
 
 def test_impute_rs_features_empty_dataframe_returns_empty() -> None:
-    empty_df = pd.DataFrame(
-        columns=["race_date", "keibajo_code", "kyori_band",
-                 "past_nige_rate_self", "past_senkou_rate_self",
-                 "past_sashi_rate_self", "past_oikomi_rate_self"]
+    empty_df = pl.DataFrame(
+        schema={
+            "race_date": pl.Utf8(),
+            "keibajo_code": pl.Utf8(),
+            "kyori_band": pl.Int64(),
+            "past_nige_rate_self": pl.Float64(),
+            "past_senkou_rate_self": pl.Float64(),
+            "past_sashi_rate_self": pl.Float64(),
+            "past_oikomi_rate_self": pl.Float64(),
+        }
     )
-    prior_df_raw = pd.DataFrame(_build_prior_rows(n=25))
+    prior_df_raw = _frame(_build_prior_rows(n=25))
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(empty_df, cell_prior, global_prior)
     assert len(result) == 0
@@ -456,32 +528,32 @@ def test_impute_rs_features_empty_dataframe_returns_empty() -> None:
 def test_impute_rs_features_mixed_null_non_null_rows() -> None:
     null_row = _make_row(keibajo_code="44", kyori_band=0)
     non_null_row = _make_populated_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([null_row, non_null_row])
+    df = _frame([null_row, non_null_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # Row 0 imputed
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.155) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.155) < 1e-5
     # Row 1 unchanged
-    assert int(result.iloc[1][RS_IMPUTED_COL]) == 0
-    assert abs(float(result.iloc[1]["past_nige_rate_self"]) - 0.15) < 1e-6
+    assert int(result[RS_IMPUTED_COL][1]) == 0
+    assert abs(float(result["past_nige_rate_self"][1]) - 0.15) < 1e-6
 
 
 def test_impute_rs_features_no_global_prior_for_kyori_band() -> None:
     # kyori_band=3 but no prior data at all for kyori_band 3 → all remain NULL
     target_row = _make_row(keibajo_code="99", kyori_band=3)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     # Build priors only for kyori_band=0
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.12)
-    prior_df_raw = pd.DataFrame(global_rows)
+    prior_df_raw = _frame(global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # kyori_band=3 not in global_prior → impute fires but fills nothing (NULL stays)
     # rs_imputed is still 1 (imputation was attempted)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert pd.isna(result.iloc[0]["past_nige_rate_self"])
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert result["past_nige_rate_self"][0] is None
 
 
 # ─────────────────── impute_rs_features_batch (vectorised) ──────────────────
@@ -489,59 +561,65 @@ def test_impute_rs_features_no_global_prior_for_kyori_band() -> None:
 
 def test_batch_non_null_rows_unchanged() -> None:
     rows = [_make_populated_row(keibajo_code="50", kyori_band=1) for _ in range(5)]
-    df = pd.DataFrame(rows)
-    prior_df_raw = pd.DataFrame(_build_prior_rows(n=25))
+    df = _frame(rows)
+    prior_df_raw = _frame(_build_prior_rows(n=25))
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
     assert (result[RS_IMPUTED_COL] == 0).all()
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.15) < 1e-6
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.15) < 1e-6
 
 
 def test_batch_null_row_imputed_from_cell_prior() -> None:
     target_row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.155) < 1e-5
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.155) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_sparse_cell_falls_back_to_global() -> None:
     target_row = _make_row(keibajo_code="44", kyori_band=1)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     sparse_rows = _build_prior_rows(n=5, keibajo_code="44", kyori_band=1, nige=0.30)
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=1, nige=0.14)
-    prior_df_raw = pd.DataFrame(sparse_rows + global_rows)
+    prior_df_raw = _frame(sparse_rows + global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    nige_val = float(result.iloc[0]["past_nige_rate_self"])
+    nige_val = float(result["past_nige_rate_self"][0])
     expected_global = (5 * 0.30 + 50 * 0.14) / 55.0
     assert abs(nige_val - expected_global) < 1e-5
     assert abs(nige_val - 0.30) > 0.01
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_missing_cell_falls_back_to_global() -> None:
     target_row = _make_row(keibajo_code="99", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.12)
-    prior_df_raw = pd.DataFrame(global_rows)
+    prior_df_raw = _frame(global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    nige_val = float(result.iloc[0]["past_nige_rate_self"])
+    nige_val = float(result["past_nige_rate_self"][0])
     assert abs(nige_val - 0.12) < 1e-5
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_empty_dataframe() -> None:
-    empty_df = pd.DataFrame(
-        columns=["race_date", "keibajo_code", "kyori_band",
-                 "past_nige_rate_self", "past_senkou_rate_self",
-                 "past_sashi_rate_self", "past_oikomi_rate_self"]
+    empty_df = pl.DataFrame(
+        schema={
+            "race_date": pl.Utf8(),
+            "keibajo_code": pl.Utf8(),
+            "kyori_band": pl.Int64(),
+            "past_nige_rate_self": pl.Float64(),
+            "past_senkou_rate_self": pl.Float64(),
+            "past_sashi_rate_self": pl.Float64(),
+            "past_oikomi_rate_self": pl.Float64(),
+        }
     )
-    prior_df_raw = pd.DataFrame(_build_prior_rows(n=25))
+    prior_df_raw = _frame(_build_prior_rows(n=25))
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(empty_df, cell_prior, global_prior)
     assert len(result) == 0
@@ -550,43 +628,43 @@ def test_batch_empty_dataframe() -> None:
 def test_batch_mixed_null_non_null_rows() -> None:
     null_row = _make_row(keibajo_code="44", kyori_band=0)
     non_null_row = _make_populated_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([null_row, non_null_row])
+    df = _frame([null_row, non_null_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.155) < 1e-5
-    assert int(result.iloc[1][RS_IMPUTED_COL]) == 0
-    assert abs(float(result.iloc[1]["past_nige_rate_self"]) - 0.15) < 1e-6
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.155) < 1e-5
+    assert int(result[RS_IMPUTED_COL][1]) == 0
+    assert abs(float(result["past_nige_rate_self"][1]) - 0.15) < 1e-6
 
 
 def test_batch_multiple_null_rows_all_imputed() -> None:
     null_rows = [_make_row(keibajo_code="44", kyori_band=0) for _ in range(10)]
-    df = pd.DataFrame(null_rows)
+    df = _frame(null_rows)
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.16)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
     assert (result[RS_IMPUTED_COL] == 1).all()
-    assert (result["past_nige_rate_self"].notna()).all()
+    assert (result["past_nige_rate_self"].is_not_null()).all()
 
 
 def test_batch_and_rowwise_produce_identical_results() -> None:
     """Verify batch and row-by-row produce exactly the same output."""
     null_rows = [_make_row(keibajo_code="44", kyori_band=0) for _ in range(5)]
     populated_rows = [_make_populated_row(keibajo_code="50", kyori_band=1) for _ in range(5)]
-    df = pd.DataFrame(null_rows + populated_rows)
+    df = _frame(null_rows + populated_rows)
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     row_result = impute_rs_features(df, cell_prior, global_prior)
     batch_result = impute_rs_features_batch(df, cell_prior, global_prior)
     common_cols = [c for c in row_result.columns if c in batch_result.columns]
     for col in common_cols:
-        if pd.api.types.is_numeric_dtype(row_result[col]):
-            rvals = row_result[col].to_numpy(dtype=float, na_value=float("nan"))
-            bvals = batch_result[col].to_numpy(dtype=float, na_value=float("nan"))
+        if row_result[col].dtype.is_numeric():
+            rvals = row_result[col].to_numpy().astype(float)
+            bvals = batch_result[col].to_numpy().astype(float)
             null_r = np.isnan(rvals)
             null_b = np.isnan(bvals)
             assert np.array_equal(null_r, null_b), f"NULL mismatch in {col}"
@@ -605,10 +683,10 @@ def test_build_prior_table_is_strictly_less_than_cutoff() -> None:
     rows_past = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.16)
     # A row exactly on 20230101 must be excluded
     row_on_cutoff = _make_populated_row(race_date="20230101", keibajo_code="44", kyori_band=0)
-    row_on_cutoff["past_nige_rate_self"] = 0.90  # type: ignore[assignment]
-    df = pd.DataFrame(rows_past + [row_on_cutoff])
+    row_on_cutoff["past_nige_rate_self"] = 0.90
+    df = _frame(rows_past + [row_on_cutoff])
     cell_prior, _ = build_prior_table(df, "20230101")
-    nige_mean = _fv(cell_prior, ("44", 0), "past_nige_rate_self")
+    nige_mean = _cell_fv(cell_prior, "44", 0, "past_nige_rate_self")
     assert abs(nige_mean - 0.16) < 1e-6
 
 
@@ -616,10 +694,10 @@ def test_build_prior_table_future_row_excluded() -> None:
     """A row one day after cutoff must be excluded."""
     rows_past = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.16)
     row_future = _make_populated_row(race_date="20230102", keibajo_code="44", kyori_band=0)
-    row_future["past_nige_rate_self"] = 0.90  # type: ignore[assignment]
-    df = pd.DataFrame(rows_past + [row_future])
+    row_future["past_nige_rate_self"] = 0.90
+    df = _frame(rows_past + [row_future])
     cell_prior, _ = build_prior_table(df, "20230101")
-    nige_mean = _fv(cell_prior, ("44", 0), "past_nige_rate_self")
+    nige_mean = _cell_fv(cell_prior, "44", 0, "past_nige_rate_self")
     assert abs(nige_mean - 0.16) < 1e-6
 
 
@@ -634,13 +712,13 @@ def test_impute_does_not_use_target_race_label() -> None:
         "past_sashi_rate_self": None,
         "past_oikomi_rate_self": None,
     }
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     # Should not raise even without finish_position column
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_impute_does_not_use_target_race_label() -> None:
@@ -653,12 +731,12 @@ def test_batch_impute_does_not_use_target_race_label() -> None:
         "past_sashi_rate_self": None,
         "past_oikomi_rate_self": None,
     }
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 # ───────────────────── edge cases / robustness ───────────────────────────────
@@ -667,47 +745,44 @@ def test_batch_impute_does_not_use_target_race_label() -> None:
 def test_impute_rs_features_rs_imputed_col_already_present() -> None:
     """If rs_imputed already exists in df, it should be overwritten."""
     row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([row])
-    df[RS_IMPUTED_COL] = 99  # pre-existing junk value
+    df = _frame([row]).with_columns(pl.lit(99).alias(RS_IMPUTED_COL))  # pre-existing junk
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_rs_imputed_col_already_present() -> None:
     row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([row])
-    df[RS_IMPUTED_COL] = 99
+    df = _frame([row]).with_columns(pl.lit(99).alias(RS_IMPUTED_COL))
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_does_not_modify_input_dataframe() -> None:
     """Impute must return a copy, not modify the input in-place."""
     row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([row])
-    original_nige = df.iloc[0]["past_nige_rate_self"]
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     _ = impute_rs_features(df, cell_prior, global_prior)
     # Input must not be modified
-    assert pd.isna(df.iloc[0]["past_nige_rate_self"]) == pd.isna(original_nige)
+    assert df["past_nige_rate_self"][0] is None
 
 
 def test_batch_does_not_modify_input_dataframe() -> None:
     row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     _ = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert pd.isna(df.iloc[0]["past_nige_rate_self"])
+    assert df["past_nige_rate_self"][0] is None
 
 
 def test_impute_with_dataframe_missing_some_impute_cols() -> None:
@@ -722,13 +797,13 @@ def test_impute_with_dataframe_missing_some_impute_cols() -> None:
         "past_oikomi_rate_self": None,
         # past_corner_* columns intentionally omitted
     }
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.16) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.16) < 1e-5
 
 
 def test_batch_with_dataframe_missing_some_impute_cols() -> None:
@@ -741,12 +816,12 @@ def test_batch_with_dataframe_missing_some_impute_cols() -> None:
         "past_sashi_rate_self": None,
         "past_oikomi_rate_self": None,
     }
-    df = pd.DataFrame([row])
+    df = _frame([row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_build_prior_table_handles_wholly_null_rs_col_in_past_data() -> None:
@@ -755,85 +830,111 @@ def test_build_prior_table_handles_wholly_null_rs_col_in_past_data() -> None:
     # Add rows with all NULL RS (locally-anchored horses, which is the whole point)
     null_rows = [_make_row(race_date="20210601", keibajo_code="44", kyori_band=0)
                  for _ in range(5)]
-    df = pd.DataFrame(mixed + null_rows)
+    df = _frame(mixed + null_rows)
     cell_prior, _global_prior = build_prior_table(df, "20230101")
-    assert ("44", 0) in cell_prior.index
+    assert _has_cell(cell_prior, "44", 0)
     # n must count only non-NULL rows (20, not 25)
-    assert _iv(cell_prior, ("44", 0), "n") == 20
+    assert _cell_iv(cell_prior, "44", 0, "n") == 20
 
 
 def test_impute_exactly_min_cell_count_uses_cell_prior() -> None:
     """A cell with exactly MIN_CELL_COUNT non-NULL rows uses the cell prior."""
     target_row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=MIN_CELL_COUNT, keibajo_code="44", kyori_band=0, nige=0.15)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
     # n == MIN_CELL_COUNT → use cell prior
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.15) < 1e-5
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.15) < 1e-5
 
 
 def test_impute_skips_cell_col_when_prior_value_is_nan() -> None:
     """When a cell prior column is NaN (e.g. all rows were NULL for that col),
     the col stays NULL in the output rather than being set to NaN explicitly."""
     target_row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.16)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
-    # Force a NaN in the cell prior for horse_keibajo_corner_1_norm_avg
-    cell_prior.loc[("44", 0), "horse_keibajo_corner_1_norm_avg"] = float("nan")
-    # Ensure global prior also NaN for that col
+    # Force a NULL in the cell prior for horse_keibajo_corner_1_norm_avg
+    cell_prior = cell_prior.with_columns(
+        pl.when((pl.col("keibajo_code") == "44") & (pl.col("kyori_band") == 0))
+        .then(None)
+        .otherwise(pl.col("horse_keibajo_corner_1_norm_avg"))
+        .alias("horse_keibajo_corner_1_norm_avg")
+    )
+    # Ensure global prior also NULL for that col
     if "horse_keibajo_corner_1_norm_avg" in global_prior.columns:
-        global_prior.loc[:, "horse_keibajo_corner_1_norm_avg"] = float("nan")
+        global_prior = global_prior.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("horse_keibajo_corner_1_norm_avg")
+        )
     result = impute_rs_features(df, cell_prior, global_prior)
     # Should not raise; nige_rate still imputed
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.16) < 1e-5
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.16) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_impute_skips_global_col_when_global_prior_value_is_nan() -> None:
     """Fallback should not set a col to NaN; skip it when the global prior is NaN."""
     target_row = _make_row(keibajo_code="99", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.13)
-    prior_df_raw = pd.DataFrame(global_rows)
+    prior_df_raw = _frame(global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
-    # Force NaN for horse_keibajo_corner_1_norm_avg in global prior
+    # Force NULL for horse_keibajo_corner_1_norm_avg in global prior
     if "horse_keibajo_corner_1_norm_avg" in global_prior.columns:
-        global_prior.loc[:, "horse_keibajo_corner_1_norm_avg"] = float("nan")
+        global_prior = global_prior.with_columns(
+            pl.lit(None).cast(pl.Float64).alias("horse_keibajo_corner_1_norm_avg")
+        )
     result = impute_rs_features(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_cell_col_absent_from_candidates_skipped_gracefully() -> None:
     """Batch impute: when a cell_col is not present in candidates, skip gracefully."""
     target_row = _make_row(keibajo_code="44", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     prior_rows = _build_prior_rows(n=25, keibajo_code="44", kyori_band=0, nige=0.155)
-    prior_df_raw = pd.DataFrame(prior_rows)
+    prior_df_raw = _frame(prior_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     # Remove a column from cell_prior so _cell_{col} won't appear after rename
     if "past_corner_1_norm_avg_5" in cell_prior.columns:
-        cell_prior = cell_prior.drop(columns=["past_corner_1_norm_avg_5"])
+        cell_prior = cell_prior.drop("past_corner_1_norm_avg_5")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.155) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.155) < 1e-5
+
+
+def test_batch_cell_prior_without_n_column_treats_count_as_zero() -> None:
+    """Batch impute: a cell prior lacking the ``n`` column treats n=0 (→ global)."""
+    target_row = _make_row(keibajo_code="44", kyori_band=0)
+    df = _frame([target_row])
+    sparse_rows = _build_prior_rows(n=5, keibajo_code="44", kyori_band=0, nige=0.30)
+    global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.14)
+    prior_df_raw = _frame(sparse_rows + global_rows)
+    cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
+    # Drop the n column entirely → batch must default _cell_n to 0 and fall to global
+    cell_prior = cell_prior.drop("n")
+    result = impute_rs_features_batch(df, cell_prior, global_prior)
+    nige_val = float(result["past_nige_rate_self"][0])
+    expected_global = (5 * 0.30 + 50 * 0.14) / 55.0
+    assert abs(nige_val - expected_global) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
 
 
 def test_batch_global_col_absent_from_candidates_skipped_gracefully() -> None:
     """Batch impute: when a g_col is not present in candidates, skip gracefully."""
     target_row = _make_row(keibajo_code="99", kyori_band=0)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=0, nige=0.12)
-    prior_df_raw = pd.DataFrame(global_rows)
+    prior_df_raw = _frame(global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     if "past_corner_1_norm_avg_5" in global_prior.columns:
-        global_prior = global_prior.drop(columns=["past_corner_1_norm_avg_5"])
+        global_prior = global_prior.drop("past_corner_1_norm_avg_5")
     result = impute_rs_features_batch(df, cell_prior, global_prior)
-    assert int(result.iloc[0][RS_IMPUTED_COL]) == 1
-    assert abs(float(result.iloc[0]["past_nige_rate_self"]) - 0.12) < 1e-5
+    assert int(result[RS_IMPUTED_COL][0]) == 1
+    assert abs(float(result["past_nige_rate_self"][0]) - 0.12) < 1e-5
 
 
 def test_impute_exactly_min_cell_count_minus_one_uses_global() -> None:
@@ -844,14 +945,14 @@ def test_impute_exactly_min_cell_count_minus_one_uses_global() -> None:
     The key assertion: nige_val must NOT be 0.30 (the sparse cell value).
     """
     target_row = _make_row(keibajo_code="44", kyori_band=2)
-    df = pd.DataFrame([target_row])
+    df = _frame([target_row])
     n_sparse = MIN_CELL_COUNT - 1
     sparse_rows = _build_prior_rows(n=n_sparse, keibajo_code="44", kyori_band=2, nige=0.30)
     global_rows = _build_prior_rows(n=50, keibajo_code="50", kyori_band=2, nige=0.13)
-    prior_df_raw = pd.DataFrame(sparse_rows + global_rows)
+    prior_df_raw = _frame(sparse_rows + global_rows)
     cell_prior, global_prior = build_prior_table(prior_df_raw, "20230101")
     result = impute_rs_features(df, cell_prior, global_prior)
-    nige_val = float(result.iloc[0]["past_nige_rate_self"])
+    nige_val = float(result["past_nige_rate_self"][0])
     expected_global = (n_sparse * 0.30 + 50 * 0.13) / float(n_sparse + 50)
     assert abs(nige_val - expected_global) < 1e-5
     # Must NOT be 0.30 (the sparse cell value)

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Protocol, TypedDict
 
 import lightgbm as lgb
-import pandas as pd
+import polars as pl
 
 import finish_position_lightgbm as finish_position
 
@@ -41,11 +41,11 @@ class PsqlRunnerLike(Protocol):
 
 
 class PandasReaderLike(Protocol):
-    def __call__(self, path: str) -> pd.DataFrame: ...
+    def __call__(self, path: str, /) -> pl.DataFrame: ...
 
 
 class ScoreDatasetLike(Protocol):
-    def __call__(self, booster: lgb.Booster, df: pd.DataFrame) -> pd.DataFrame: ...
+    def __call__(self, booster: lgb.Booster, df: pl.DataFrame) -> pl.DataFrame: ...
 
 
 class PhaseBArguments(TypedDict):
@@ -132,27 +132,28 @@ def resolve_model_version(active_model_version: str, requested_version: str) -> 
 
 
 def attach_versions(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     *,
     finish_position_version: str,
     running_style_feature_version: str,
     model_version: str,
-) -> pd.DataFrame:
-    frame["finish_position_version"] = finish_position_version
-    frame["running_style_feature_version"] = running_style_feature_version
-    frame["model_version"] = model_version
-    return frame
+) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.lit(finish_position_version).alias("finish_position_version"),
+        pl.lit(running_style_feature_version).alias("running_style_feature_version"),
+        pl.lit(model_version).alias("model_version"),
+    )
 
 
 def score_features_frame(
     *,
     booster: lgb.Booster,
-    features: pd.DataFrame,
+    features: pl.DataFrame,
     finish_position_version: str,
     running_style_feature_version: str,
     model_version: str,
     score_dataset: ScoreDatasetLike,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     scored = score_dataset(booster, features)
     return attach_versions(
         scored,
@@ -162,13 +163,11 @@ def score_features_frame(
     )
 
 
-def write_predictions_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
+def write_predictions_parquet(frame: pl.DataFrame, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
+    frame.write_parquet(
         output_dir.as_posix(),
-        partition_cols=["category", "race_year"],
-        index=False,
-        existing_data_behavior="delete_matching",
+        partition_by=["category", "race_year"],
     )
 
 
@@ -197,7 +196,7 @@ def run(
     write_predictions_parquet(scored, args["output_parquet"])
     return {
         "output_parquet": args["output_parquet"].as_posix(),
-        "rows_written": int(len(scored)),
+        "rows_written": int(scored.height),
         "model_version": model_version,
         "finish_position_version": args["finish_position_version"],
         "running_style_feature_version": args["running_style_feature_version"],
@@ -211,7 +210,7 @@ def main(argv: list[str] | None = None) -> None:
         args,
         psql_runner=run_psql,
         booster_loader=finish_position.load_booster,
-        pandas_reader=pd.read_parquet,
+        pandas_reader=pl.read_parquet,
         score_dataset=finish_position.score_dataset,
     )
     print(json.dumps(result, ensure_ascii=False))

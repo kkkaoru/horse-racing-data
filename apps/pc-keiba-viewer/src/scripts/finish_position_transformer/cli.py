@@ -24,7 +24,7 @@ from typing import TypedDict, cast
 import mlx.core as mx
 import mlx.utils
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from finish_position_lightgbm import (
     PredictionRow,
@@ -224,7 +224,7 @@ def load_checkpoint(model_dir: Path) -> tuple[RaceSetTransformer, NormalizationS
 
 
 def _build_model_for_dataframe(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     embedding_dim: int = DEFAULT_EMBEDDING_DIM,
     num_layers: int = DEFAULT_NUM_LAYERS,
     num_heads: int = DEFAULT_NUM_HEADS,
@@ -280,7 +280,7 @@ def predictions_from_scores(
 
 
 def score_dataframe(
-    model: RaceSetTransformer, stats: NormalizationStats, df: pd.DataFrame, batch_size: int
+    model: RaceSetTransformer, stats: NormalizationStats, df: pl.DataFrame, batch_size: int
 ) -> list[PredictionRow]:
     arrays = build_race_batches(df, stats)
     scores = predict_rank_scores(model, arrays, batch_size=batch_size)
@@ -288,7 +288,7 @@ def score_dataframe(
 
 
 def score_dataframe_with_conditional(
-    model: RaceSetTransformer, stats: NormalizationStats, df: pd.DataFrame, batch_size: int
+    model: RaceSetTransformer, stats: NormalizationStats, df: pl.DataFrame, batch_size: int
 ) -> dict[str, list[PredictionRow]]:
     arrays = build_race_batches(df, stats)
     all_logits = predict_all_logits(model, arrays, batch_size=batch_size)
@@ -300,7 +300,7 @@ def score_dataframe_with_conditional(
 
 
 def write_predictions(predictions: list[PredictionRow], path: Path) -> None:
-    write_predictions_jsonl(pd.DataFrame(predictions), path)
+    write_predictions_jsonl(pl.DataFrame(predictions), path)
 
 
 def run_train_command(args: argparse.Namespace) -> None:
@@ -339,7 +339,7 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
         fold = split_walk_forward(full_df, args.train_start_date, valid_year)
         train_df = fold["train_df"]
         valid_df = fold["valid_df"]
-        if len(train_df) == 0 or len(valid_df) == 0:
+        if train_df.height == 0 or valid_df.height == 0:
             continue
         model, _config, stats = _build_model_for_dataframe(
             train_df,
@@ -357,8 +357,8 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
                 "best_valid_ndcg_at_3": result["best_valid_ndcg_at_3"],
                 "elapsed_seconds": result["elapsed_seconds"],
                 "fold_year": valid_year,
-                "train_rows": len(train_df),
-                "valid_rows": len(valid_df),
+                "train_rows": train_df.height,
+                "valid_rows": valid_df.height,
             }
         )
         if args.output_predictions_dir is not None:
@@ -398,7 +398,7 @@ def run_predict_command(args: argparse.Namespace) -> None:
     print(
         json.dumps(
             {
-                "input_rows": len(df),
+                "input_rows": df.height,
                 "model_dir": str(args.model_dir),
                 "output_predictions": str(args.output_predictions),
                 "scored_rows": len(predictions),

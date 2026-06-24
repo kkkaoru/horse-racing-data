@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pandas as pd
+import polars as pl
 import pytest
 
 import score_finish_position_local as subject
@@ -137,21 +137,21 @@ def test_resolve_model_version_mismatch_raises():
 
 
 def test_attach_versions_adds_three_columns():
-    frame = pd.DataFrame({"race_id": ["r1"]})
+    frame = pl.DataFrame({"race_id": ["r1"]})
     stamped = subject.attach_versions(
         frame,
         finish_position_version="v1",
         running_style_feature_version="v1",
         model_version="m7",
     )
-    assert stamped["finish_position_version"].tolist() == ["v1"]
-    assert stamped["running_style_feature_version"].tolist() == ["v1"]
-    assert stamped["model_version"].tolist() == ["m7"]
+    assert stamped["finish_position_version"].to_list() == ["v1"]
+    assert stamped["running_style_feature_version"].to_list() == ["v1"]
+    assert stamped["model_version"].to_list() == ["m7"]
 
 
 def test_score_features_frame_uses_score_dataset_callable():
     booster = MagicMock()
-    scored = pd.DataFrame(
+    scored = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["a", "b"],
@@ -161,7 +161,7 @@ def test_score_features_frame_uses_score_dataset_callable():
         }
     )
     score_dataset = MagicMock(return_value=scored)
-    features = pd.DataFrame({"race_id": ["r1", "r1"]})
+    features = pl.DataFrame({"race_id": ["r1", "r1"]})
     result = subject.score_features_frame(
         booster=booster,
         features=features,
@@ -171,39 +171,37 @@ def test_score_features_frame_uses_score_dataset_callable():
         score_dataset=score_dataset,
     )
     score_dataset.assert_called_once()
-    assert result["finish_position_version"].tolist() == ["v1", "v1"]
-    assert result["running_style_feature_version"].tolist() == ["v1", "v1"]
-    assert result["model_version"].tolist() == ["m7", "m7"]
-    assert result["predicted_rank"].tolist() == [1, 2]
+    assert result["finish_position_version"].to_list() == ["v1", "v1"]
+    assert result["running_style_feature_version"].to_list() == ["v1", "v1"]
+    assert result["model_version"].to_list() == ["m7", "m7"]
+    assert result["predicted_rank"].to_list() == [1, 2]
 
 
 def test_write_predictions_parquet_partitions_by_category_and_year(tmp_path: Path):
-    frame = MagicMock(spec=pd.DataFrame)
+    frame = MagicMock(spec=pl.DataFrame)
     output_dir = tmp_path / "predictions"
     subject.write_predictions_parquet(frame, output_dir)
     assert output_dir.exists()
-    frame.to_parquet.assert_called_once_with(
+    frame.write_parquet.assert_called_once_with(
         output_dir.as_posix(),
-        partition_cols=["category", "race_year"],
-        index=False,
-        existing_data_behavior="delete_matching",
+        partition_by=["category", "race_year"],
     )
 
 
-def test_write_predictions_parquet_passes_delete_matching_behavior(
+def test_write_predictions_parquet_passes_partition_by(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     captured_kwargs: list[dict[str, object]] = []
 
-    def mock_to_parquet(self: pd.DataFrame, path: object, **kwargs: object) -> None:
+    def mock_write_parquet(self: pl.DataFrame, path: object, **kwargs: object) -> None:
         captured_kwargs.append(kwargs)
         # Don't actually write — just capture kwargs
 
-    monkeypatch.setattr(pd.DataFrame, "to_parquet", mock_to_parquet)
-    frame = pd.DataFrame({"category": ["jra"], "race_year": [2024], "predicted_score": [0.5]})
+    monkeypatch.setattr(pl.DataFrame, "write_parquet", mock_write_parquet)
+    frame = pl.DataFrame({"category": ["jra"], "race_year": [2024], "predicted_score": [0.5]})
     subject.write_predictions_parquet(frame, tmp_path / "out")
     assert len(captured_kwargs) == 1
-    assert captured_kwargs[0].get("existing_data_behavior") == "delete_matching"
+    assert captured_kwargs[0].get("partition_by") == ["category", "race_year"]
 
 
 def test_run_orchestrates_resolve_score_and_write(
@@ -220,11 +218,11 @@ def test_run_orchestrates_resolve_score_and_write(
     )
     fake_booster = MagicMock()
     booster_loader = MagicMock(return_value=fake_booster)
-    features_frame = pd.DataFrame(
+    features_frame = pl.DataFrame(
         {"race_id": ["r1", "r1"], "ketto_toroku_bango": ["a", "b"]},
     )
     pandas_reader = MagicMock(return_value=features_frame)
-    scored_frame = pd.DataFrame(
+    scored_frame = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["a", "b"],

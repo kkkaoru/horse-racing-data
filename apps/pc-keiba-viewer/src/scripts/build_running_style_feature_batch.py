@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
+from typing import cast
 
-import pandas as pd
+import polars as pl
 
 PEER_INPUT_COLUMNS: dict[str, str] = {
     "past_nige_rate_self": "pastNigeRate",
@@ -58,17 +60,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_parquet_rows(parquet_dir: Path) -> pd.DataFrame:
-    return pd.read_parquet(parquet_dir)
+def load_parquet_rows(parquet_dir: Path) -> pl.DataFrame:
+    return pl.read_parquet(parquet_dir)
 
 
-def filter_target_window(df: pd.DataFrame, source: str, from_date: str, to_date: str) -> pd.DataFrame:
-    matches_source = df["source"] == source
-    matches_date = (df["race_date"] >= from_date) & (df["race_date"] <= to_date)
-    return df[matches_source & matches_date].copy()
+def filter_target_window(df: pl.DataFrame, source: str, from_date: str, to_date: str) -> pl.DataFrame:
+    return df.filter(
+        (pl.col("source") == source)
+        & (pl.col("race_date") >= from_date)
+        & (pl.col("race_date") <= to_date)
+    )
 
 
-def build_race_key(row: pd.Series) -> str:
+def build_race_key(row: dict[str, object]) -> str:
     return f"{row['source']}:{row['race_date']}:{row['keibajo_code']}:{row['race_bango']}"
 
 
@@ -76,7 +80,7 @@ def sanitize_float(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, float):
-        if pd.isna(value):
+        if math.isnan(value):
             return None
         return value
     if isinstance(value, (int, bool)):
@@ -84,7 +88,7 @@ def sanitize_float(value: object) -> float | None:
     return None
 
 
-def extract_peer_inputs(row: pd.Series) -> dict[str, float | None]:
+def extract_peer_inputs(row: dict[str, object]) -> dict[str, float | None]:
     return {target_key: sanitize_float(row.get(source_key)) for source_key, target_key in PEER_INPUT_COLUMNS.items()}
 
 
@@ -100,17 +104,20 @@ def select_per_horse_columns(columns: list[str]) -> list[str]:
     return [col for col in columns if is_per_horse_feature_column(col)]
 
 
-def extract_per_horse_features(row: pd.Series, per_horse_columns: list[str]) -> dict[str, float | None]:
+def extract_per_horse_features(row: dict[str, object], per_horse_columns: list[str]) -> dict[str, float | None]:
     return {column: sanitize_float(row.get(column)) for column in per_horse_columns}
 
 
-def derive_category(row: pd.Series) -> str:
-    return str(row.get("category", row["source"]))
+def derive_category(row: dict[str, object]) -> str:
+    category = row.get("category")
+    return str(category) if category is not None else str(row["source"])
 
 
-def build_feature_row(row: pd.Series, per_horse_columns: list[str]) -> dict[str, object]:
+def build_feature_row(row: dict[str, object], per_horse_columns: list[str]) -> dict[str, object]:
+    bamei = row.get("bamei")
+    umaban = row.get("umaban")
     return {
-        "bamei": (None if pd.isna(row.get("bamei")) else str(row.get("bamei", "")).strip() or None),
+        "bamei": (None if bamei is None else str(bamei).strip() or None),
         "category": derive_category(row),
         "kaisaiNen": str(row["kaisai_nen"]),
         "kaisaiTsukihi": str(row["kaisai_tsukihi"]),
@@ -121,7 +128,7 @@ def build_feature_row(row: pd.Series, per_horse_columns: list[str]) -> dict[str,
         "raceBango": str(row["race_bango"]),
         "raceKey": build_race_key(row),
         "source": str(row["source"]),
-        "umaban": int(row["umaban"]) if not pd.isna(row.get("umaban")) else 0,
+        "umaban": int(cast(float, umaban)) if umaban is not None else 0,
     }
 
 
@@ -136,7 +143,7 @@ def run_build(args: argparse.Namespace) -> dict[str, object]:
     df = load_parquet_rows(args.parquet)
     filtered = filter_target_window(df, args.source, args.from_date, args.to_date)
     per_horse_columns = select_per_horse_columns(list(filtered.columns))
-    rows = [build_feature_row(row, per_horse_columns) for _, row in filtered.iterrows()]
+    rows = [build_feature_row(row, per_horse_columns) for row in filtered.iter_rows(named=True)]
     write_jsonl(rows, args.output)
     return {
         "source": args.source,

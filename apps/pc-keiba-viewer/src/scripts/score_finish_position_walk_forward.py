@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 """Stage 3 of the finish-position v7-lineage walk-forward 21y plan.
 
 Per-fold train -> predict -> output. For each validation year ``N`` in the
@@ -34,7 +33,7 @@ import json
 from pathlib import Path
 from typing import Protocol, TypedDict, cast
 
-import pandas as pd
+import polars as pl
 
 import finish_position_catboost as cb_walk
 import finish_position_xgboost as xgb_walk
@@ -166,29 +165,29 @@ class WalkForwardArguments(TypedDict):
 
 
 class ParquetReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class FeatureResolverLike(Protocol):
-    def __call__(self, df: pd.DataFrame, *, use_cat_features: bool) -> list[str]: ...
+    def __call__(self, df: pl.DataFrame, *, use_cat_features: bool) -> list[str]: ...
 
 
 class FoldTrainerLike(Protocol):
     def __call__(
         self,
-        train_df: pd.DataFrame,
-        valid_df: pd.DataFrame,
+        train_df: pl.DataFrame,
+        valid_df: pl.DataFrame,
         feature_cols: list[str],
         args: argparse.Namespace,
-    ) -> pd.DataFrame: ...
+    ) -> pl.DataFrame: ...
 
 
 class ParquetWriterLike(Protocol):
-    def __call__(self, frame: pd.DataFrame, output_dir: Path) -> None: ...
+    def __call__(self, frame: pl.DataFrame, output_dir: Path) -> None: ...
 
 
 class JsonlWriterLike(Protocol):
-    def __call__(self, frame: pd.DataFrame, output_path: Path) -> None: ...
+    def __call__(self, frame: pl.DataFrame, output_path: Path) -> None: ...
 
 
 def default_iterations_for_category(category: str) -> int:
@@ -347,7 +346,7 @@ def assert_feature_count(category: str, feature_cols: list[str]) -> None:
 
 
 def resolve_feature_columns_for_category(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     category: str,
     *,
     catboost_resolver: FeatureResolverLike,
@@ -390,23 +389,23 @@ def build_fold_namespace_args(args: WalkForwardArguments, valid_year: int) -> ar
 
 
 def default_train_catboost_fold(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     result = cb_walk.train_catboost_ranker(train_df, valid_df, feature_cols, args)
-    return cast(pd.DataFrame, result["valid_predictions"])
+    return cast(pl.DataFrame, result["valid_predictions"])
 
 
 def default_train_xgboost_fold(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     _, result = xgb_walk.train_xgboost_ranker(train_df, valid_df, feature_cols, args)
-    return cast(pd.DataFrame, result["valid_predictions"])
+    return cast(pl.DataFrame, result["valid_predictions"])
 
 
 def resolve_fold_trainer(
@@ -420,26 +419,29 @@ def resolve_fold_trainer(
     return catboost_trainer
 
 
-def split_race_id_column(frame: pd.DataFrame) -> pd.DataFrame:
-    parts = frame["race_id"].str.split(RACE_ID_SEPARATOR, expand=True)
-    if parts.shape[1] != RACE_ID_PART_COUNT:
+def split_race_id_column(frame: pl.DataFrame) -> pl.DataFrame:
+    lengths = frame.select(
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.len().alias("n"),
+    )["n"]
+    got = lengths.max() if lengths.n_unique() != 1 else lengths[0]
+    if lengths.n_unique() != 1 or lengths[0] != RACE_ID_PART_COUNT:
         raise ValueError(
-            f"race_id must contain {RACE_ID_PART_COUNT} colon-separated parts; got {parts.shape[1]}.",
+            f"race_id must contain {RACE_ID_PART_COUNT} colon-separated parts; got {got}.",
         )
-    out = frame.copy()
-    out["source"] = parts[0]
-    out["kaisai_nen"] = parts[1]
-    out["kaisai_tsukihi"] = parts[2]
-    out["keibajo_code"] = parts[3]
-    out["race_bango"] = parts[4]
-    return out
+    return frame.with_columns([
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.get(0).alias("source"),
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.get(1).alias("kaisai_nen"),
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.get(2).alias("kaisai_tsukihi"),
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.get(3).alias("keibajo_code"),
+        pl.col("race_id").str.split(RACE_ID_SEPARATOR).list.get(4).alias("race_bango"),
+    ])
 
 
 def to_parquet_frame(
-    predictions: pd.DataFrame,
+    predictions: pl.DataFrame,
     args: WalkForwardArguments,
     valid_year: int,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Project the fold predictions onto the 14-column bucket-eval schema.
 
     The bucket-eval aggregate SQL only reads ``predicted_rank`` /
@@ -448,51 +450,62 @@ def to_parquet_frame(
     table declares both columns as nullable ``numeric``.
     """
     split = split_race_id_column(predictions)
-    frame = pd.DataFrame({
-        "source": split["source"],
-        "kaisai_nen": split["kaisai_nen"],
-        "kaisai_tsukihi": split["kaisai_tsukihi"],
-        "keibajo_code": split["keibajo_code"],
-        "race_bango": split["race_bango"],
-        "ketto_toroku_bango": split["ketto_toroku_bango"],
-        "umaban": split["umaban"],
-        "predicted_score": split["predicted_score"].astype(float),
-        "predicted_rank": split["predicted_rank"].astype(int),
-        "predicted_top1_prob": pd.Series([None] * len(split), dtype="object"),
-        "predicted_top3_prob": pd.Series([None] * len(split), dtype="object"),
-        "predicted_finish_position": split["predicted_rank"].astype(int),
-        "model_version": args["walk_forward_namespace"],
-        "running_style_feature_version": args["running_style_feature_version"],
-        "finish_position_version": args["finish_position_version"],
-        "category": CATEGORY_PARTITION[args["category"]],
-        "race_year": valid_year,
-    })
-    return frame[list(PARQUET_OUTPUT_COLUMNS)]
-
-
-def default_write_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
-        output_dir.as_posix(),
-        partition_cols=["category", "race_year"],
-        index=False,
-        existing_data_behavior="delete_matching",
+    return (
+        split.select([
+            pl.col("source"),
+            pl.col("kaisai_nen"),
+            pl.col("kaisai_tsukihi"),
+            pl.col("keibajo_code"),
+            pl.col("race_bango"),
+            pl.col("ketto_toroku_bango"),
+            pl.col("umaban"),
+            pl.col("predicted_score").cast(pl.Float64),
+            pl.col("predicted_rank").cast(pl.Int64),
+        ])
+        .with_columns([
+            pl.lit(None).cast(pl.Float64).alias("predicted_top1_prob"),
+            pl.lit(None).cast(pl.Float64).alias("predicted_top3_prob"),
+            pl.col("predicted_rank").alias("predicted_finish_position"),
+            pl.lit(args["walk_forward_namespace"]).alias("model_version"),
+            pl.lit(args["running_style_feature_version"]).alias("running_style_feature_version"),
+            pl.lit(args["finish_position_version"]).alias("finish_position_version"),
+            pl.lit(CATEGORY_PARTITION[args["category"]]).alias("category"),
+            pl.lit(valid_year).alias("race_year"),
+        ])
+        .select(list(PARQUET_OUTPUT_COLUMNS))
     )
 
 
-def default_write_jsonl(frame: pd.DataFrame, output_path: Path) -> None:
+def default_write_parquet(frame: pl.DataFrame, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame.write_parquet(
+        output_dir.as_posix(),
+        partition_by=["category", "race_year"],
+    )
+
+
+def _umaban_to_int_or_none(umaban_value: object) -> int | None:
+    if umaban_value is None:
+        return None
+    if isinstance(umaban_value, float) and umaban_value != umaban_value:
+        return None
+    return int(cast(float, umaban_value))
+
+
+def default_write_jsonl(frame: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = frame[["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]]
+    rows = frame.select(
+        ["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"],
+    )
     with output_path.open("w", encoding="utf-8") as fp:
-        for row in rows.itertuples(index=False):
-            umaban_value = cast(float, row.umaban)
+        for row in rows.iter_rows(named=True):
             fp.write(
                 json.dumps({
-                    "race_id": row.race_id,
-                    "ketto_toroku_bango": row.ketto_toroku_bango,
-                    "umaban": int(umaban_value) if pd.notna(umaban_value) else None,
-                    "predicted_score": float(cast(float, row.predicted_score)),
-                    "predicted_rank": int(cast(float, row.predicted_rank)),
+                    "race_id": row["race_id"],
+                    "ketto_toroku_bango": row["ketto_toroku_bango"],
+                    "umaban": _umaban_to_int_or_none(row["umaban"]),
+                    "predicted_score": float(cast(float, row["predicted_score"])),
+                    "predicted_rank": int(cast(float, row["predicted_rank"])),
                 })
                 + "\n",
             )
@@ -510,10 +523,10 @@ class ScoreFoldDeps(TypedDict):
 
 
 def build_fold_train_valid(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     args: WalkForwardArguments,
     valid_year: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     train_end = f"{valid_year - 1}1231"
     train_df = cb_walk.filter_range(df, args["train_start_date"], train_end)
     valid_df = cb_walk.filter_year(df, valid_year)
@@ -562,29 +575,38 @@ def interp_calibrated(score: float, pairs: list[list[float]]) -> float:
 
 
 def apply_calibration(
-    predictions: pd.DataFrame,
+    predictions: pl.DataFrame,
     calibration_map: dict[str, list[list[float]]],
     bucket_key: str,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Apply isotonic calibration if ``bucket_key`` is present in the map."""
     if not calibration_map:
         return predictions
     pairs = calibration_map.get(bucket_key)
     if not pairs:
         return predictions
-    out = predictions.copy()
-    scores_arr = out["predicted_score"].astype(float).to_numpy()
-    out["predicted_score"] = [interp_calibrated(float(value), pairs) for value in scores_arr]
-    out["predicted_rank"] = (
-        out.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False, na_option="bottom")
-        .astype(int)
+    scores = predictions["predicted_score"].cast(pl.Float64).to_list()
+    calibrated = [interp_calibrated(float(value), pairs) for value in scores]
+    return (
+        predictions.with_columns(
+            pl.Series("predicted_score", calibrated, dtype=pl.Float64),
+        )
+        .with_columns(
+            pl.col("predicted_score").fill_nan(float("-inf")).alias("_rank_key"),
+        )
+        .with_columns(
+            pl.col("_rank_key")
+            .rank(method="ordinal", descending=True)
+            .over("race_id")
+            .cast(pl.Int64)
+            .alias("predicted_rank"),
+        )
+        .drop("_rank_key")
     )
-    return out
 
 
 def score_fold(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_cols: list[str],
     args: WalkForwardArguments,
     valid_year: int,
@@ -592,7 +614,7 @@ def score_fold(
     calibration_map: dict[str, list[list[float]]],
 ) -> dict[str, object]:
     train_df, valid_df = build_fold_train_valid(df, args, valid_year)
-    if len(train_df) == 0 or len(valid_df) == 0:
+    if train_df.height == 0 or valid_df.height == 0:
         return {"fold_year": valid_year, "skipped": True, "rows": 0}
     fold_args = build_fold_namespace_args(args, valid_year)
     trainer = resolve_fold_trainer(
@@ -606,7 +628,7 @@ def score_fold(
     deps["write_parquet"](parquet_frame, args["output_parquet_root"])
     jsonl_path = args["output_jsonl_dir"] / build_jsonl_filename(args, valid_year)
     deps["write_jsonl"](predictions, jsonl_path)
-    return {"fold_year": valid_year, "skipped": False, "rows": int(len(predictions))}
+    return {"fold_year": valid_year, "skipped": False, "rows": predictions.height}
 
 
 def build_jsonl_filename(args: WalkForwardArguments, valid_year: int) -> str:
@@ -659,7 +681,7 @@ def build_default_deps() -> ScoreFoldDeps:
     }
 
 
-def xgboost_numeric_resolver(df: pd.DataFrame, *, use_cat_features: bool) -> list[str]:
+def xgboost_numeric_resolver(df: pl.DataFrame, *, use_cat_features: bool) -> list[str]:
     """Adapter so the XGBoost numeric-only resolver matches FeatureResolverLike.
 
     XGBoost trains on numeric features only (categorical columns are excluded by

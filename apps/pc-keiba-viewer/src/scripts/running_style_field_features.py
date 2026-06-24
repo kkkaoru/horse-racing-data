@@ -6,11 +6,10 @@ Python training/evaluation path matches Worker inference.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import cast
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 PACE_NIGE_WEIGHT = 2.0
 PACE_SENKOU_WEIGHT = 1.0
@@ -158,7 +157,7 @@ def compute_field_features_per_horse(horses: list[HorsePeerInputs]) -> list[dict
     return rows
 
 
-def _row_to_peer_inputs(row: pd.Series) -> HorsePeerInputs:
+def _row_to_peer_inputs(row: dict[str, object]) -> HorsePeerInputs:
     return HorsePeerInputs(
         past_nige_rate=_nullable_float(row.get("past_nige_rate_self")),
         past_senkou_rate=_nullable_float(row.get("past_senkou_rate_self")),
@@ -174,27 +173,29 @@ def _row_to_peer_inputs(row: pd.Series) -> HorsePeerInputs:
 
 
 def _nullable_float(value: object) -> float | None:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
-    if pd.isna(cast(float, value)):
-        return None
-    return float(cast(float, value))
+    if isinstance(value, (int, float, bool)):
+        return float(value)
+    return None
 
 
-def enrich_dataframe_with_field_features(df: pd.DataFrame) -> pd.DataFrame:
+def enrich_dataframe_with_field_features(df: pl.DataFrame) -> pl.DataFrame:
     """Attach race-internal field features to every row in a feature dataframe."""
     if "race_id" not in df.columns:
         raise ValueError("dataframe must include race_id for field feature enrichment")
 
-    enriched_parts: list[pd.DataFrame] = []
-    for _, race_df in df.groupby("race_id", sort=False):
-        race_rows = race_df.copy()
-        peer_inputs = [_row_to_peer_inputs(row) for _, row in race_rows.iterrows()]
+    enriched_parts: list[pl.DataFrame] = []
+    for (_race_id,), race_rows in df.group_by("race_id", maintain_order=True):
+        peer_inputs = [_row_to_peer_inputs(row) for row in race_rows.iter_rows(named=True)]
         field_rows = compute_field_features_per_horse(peer_inputs)
-        for column in FIELD_FEATURE_COLUMNS:
-            race_rows[column] = pd.to_numeric(
+        race_rows = race_rows.with_columns(
+            pl.Series(
+                column,
                 [field_row[column] for field_row in field_rows],
-                errors="coerce",
+                dtype=pl.Float64,
             )
+            for column in FIELD_FEATURE_COLUMNS
+        )
         enriched_parts.append(race_rows)
-    return pd.concat(enriched_parts, ignore_index=True)
+    return pl.concat(enriched_parts)

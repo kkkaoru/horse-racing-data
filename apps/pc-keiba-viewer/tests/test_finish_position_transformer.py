@@ -11,7 +11,7 @@ except (ImportError, OSError):
     pytest.skip("MLX requires Apple Silicon/macOS", allow_module_level=True)
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from finish_position_transformer import cli as cli_module
 from finish_position_transformer.dataset import (
@@ -38,7 +38,7 @@ from finish_position_transformer.training import (
 )
 
 
-def _make_synthetic_frame(seed: int = 7) -> pd.DataFrame:
+def _make_synthetic_frame(seed: int = 7) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     races: list[dict[str, object]] = []
     for race_index in range(6):
@@ -67,10 +67,10 @@ def _make_synthetic_frame(seed: int = 7) -> pd.DataFrame:
                     "jockey_recent_win_rate": rng.random(),
                 }
             )
-    return pd.DataFrame(races)
+    return pl.DataFrame(races)
 
 
-def _make_walk_forward_frame(seed: int = 13) -> pd.DataFrame:
+def _make_walk_forward_frame(seed: int = 13) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     races: list[dict[str, object]] = []
     for year in (2023, 2024):
@@ -102,17 +102,19 @@ def _make_walk_forward_frame(seed: int = 13) -> pd.DataFrame:
                         "jockey_recent_win_rate": float(rng.random()),
                     }
                 )
-    return pd.DataFrame(races)
+    return pl.DataFrame(races)
 
 
 def test_build_race_batches_encodes_missing_and_unknown_categorical_values():
     df = _make_synthetic_frame()
-    df = df.copy()
-    df.loc[0, "track_code"] = None
-    df.loc[1, "grade_code"] = ""
-    df.loc[2, "track_code"] = "ZZZ_UNKNOWN_TRACK"
-    df.loc[3, "keibajo_code"] = None
-    df.loc[4, "kaisai_tsukihi"] = ""
+    df = df.with_row_index("_row_idx").with_columns(
+        pl.when(pl.col("_row_idx") == 0).then(None).otherwise(pl.col("track_code")).alias("track_code"),
+        pl.when(pl.col("_row_idx") == 1).then(pl.lit("")).otherwise(pl.col("grade_code")).alias("grade_code"),
+        pl.when(pl.col("_row_idx") == 3).then(None).otherwise(pl.col("keibajo_code")).alias("keibajo_code"),
+        pl.when(pl.col("_row_idx") == 4).then(pl.lit("")).otherwise(pl.col("kaisai_tsukihi")).alias("kaisai_tsukihi"),
+    ).with_columns(
+        pl.when(pl.col("_row_idx") == 2).then(pl.lit("ZZZ_UNKNOWN_TRACK")).otherwise(pl.col("track_code")).alias("track_code"),
+    ).drop("_row_idx")
     cols = resolve_transformer_feature_columns(list(df.columns))
     stats = fit_normalization_stats(df, cols)
     arrays = build_race_batches(df, stats)
@@ -121,8 +123,7 @@ def test_build_race_batches_encodes_missing_and_unknown_categorical_values():
 
 def test_fit_normalization_stats_replaces_non_finite_mean_with_zero():
     df = _make_synthetic_frame()
-    df = df.copy()
-    df["speed_index_avg_5"] = float("inf")
+    df = df.with_columns(pl.lit(float("inf")).alias("speed_index_avg_5"))
     cols = resolve_transformer_feature_columns(list(df.columns))
     stats = fit_normalization_stats(df, cols)
     numeric_columns = stats["numeric_columns"]
@@ -141,7 +142,7 @@ def test_resolve_transformer_feature_columns_splits_numeric_and_categorical():
 
 
 def test_fit_normalization_stats_handles_missing_and_constant_columns():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "speed_index_avg_5": [1.0, 2.0, np.nan, 4.0],
             "track_code": ["11", "11", "12", None],
@@ -389,7 +390,7 @@ def test_run_walk_forward_command_writes_report(
 ):
     df = _make_walk_forward_frame()
     parquet_path = tmp_path / "data.parquet"
-    df.to_parquet(parquet_path, index=False)
+    df.write_parquet(parquet_path)
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
     args = cli_module.parse_args(
@@ -433,8 +434,8 @@ def test_run_train_command_writes_checkpoint_and_predictions(
     df = _make_synthetic_frame()
     train_parquet = tmp_path / "train.parquet"
     valid_parquet = tmp_path / "valid.parquet"
-    df.to_parquet(train_parquet, index=False)
-    df.to_parquet(valid_parquet, index=False)
+    df.write_parquet(train_parquet)
+    df.write_parquet(valid_parquet)
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
     args = cli_module.parse_args(
@@ -487,7 +488,7 @@ def test_run_predict_command_uses_saved_checkpoint(
     mx.eval(model.parameters())
     cli_module.save_checkpoint(model, config, stats, tmp_path / "ckpt")
     input_parquet = tmp_path / "input.parquet"
-    df.to_parquet(input_parquet, index=False)
+    df.write_parquet(input_parquet)
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
     args = cli_module.parse_args(
@@ -520,7 +521,7 @@ def test_cli_main_dispatches_predict(tmp_path: Path, monkeypatch: pytest.MonkeyP
     mx.eval(model.parameters())
     cli_module.save_checkpoint(model, config, stats, tmp_path / "ckpt")
     input_parquet = tmp_path / "input.parquet"
-    df.to_parquet(input_parquet, index=False)
+    df.write_parquet(input_parquet)
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
     cli_module.main(
@@ -544,7 +545,7 @@ def test_cli_main_dispatches_train_and_walk_forward(
 ):
     df = _make_walk_forward_frame()
     train_parquet = tmp_path / "train.parquet"
-    df.to_parquet(train_parquet, index=False)
+    df.write_parquet(train_parquet)
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
     cli_module.main(
@@ -620,7 +621,7 @@ def test_race_categorical_vocab_size_counts_padding_slot():
 
 
 def test_fit_normalization_stats_handles_missing_race_meta_columns():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "speed_index_avg_5": [1.0, 2.0, 3.0, 4.0],
             "track_code": ["11", "11", "12", "12"],

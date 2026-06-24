@@ -23,13 +23,16 @@ import argparse
 import json
 from pathlib import Path
 from time import perf_counter
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from running_style_field_features import FIELD_FEATURE_COLUMNS, enrich_dataframe_with_field_features
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 META_COLUMNS: tuple[str, ...] = (
     "source",
@@ -169,51 +172,48 @@ def detect_categorical_features(feature_columns: list[str]) -> list[str]:
     return [column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS]
 
 
-def _read_partitioned_parquet(child: Path) -> pd.DataFrame:
-    frame = pd.read_parquet(child)
+def _read_partitioned_parquet(child: Path) -> pl.DataFrame:
+    frame = pl.read_parquet(child)
     if "race_year" not in frame.columns:
         year_token = child.parent.name
         if year_token.startswith("race_year="):
-            frame["race_year"] = int(year_token.split("=", 1)[1])
+            frame = frame.with_columns(
+                pl.lit(int(year_token.split("=", 1)[1])).alias("race_year")
+            )
     return frame
 
 
-def load_dataset_parquet(path: Path) -> pd.DataFrame:
+def load_dataset_parquet(path: Path) -> pl.DataFrame:
     if path.is_dir():
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
-            return pd.concat(
-                [_read_partitioned_parquet(child) for child in partitioned], ignore_index=True
+            return pl.concat(
+                [_read_partitioned_parquet(child) for child in partitioned], how="diagonal_relaxed"
             )
         flat = sorted(path.glob("*.parquet"))
         if flat:
-            return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
+            return pl.concat(
+                [pl.read_parquet(child) for child in flat], how="diagonal_relaxed"
+            )
         raise ValueError(f"No parquet files found under {path}")
-    return pd.read_parquet(path)
+    return pl.read_parquet(path)
 
 
-def encode_categoricals(frame: pd.DataFrame, categorical_features: list[str]) -> pd.DataFrame:
-    encoded = frame.copy()
-    for column in categorical_features:
-        if column in encoded.columns:
-            encoded[column] = encoded[column].astype("category")
-    return encoded
+def filter_labeled_rows(df: pl.DataFrame) -> pl.DataFrame:
+    return df.filter(pl.col(TARGET_COLUMN).is_not_null())
 
 
-def filter_labeled_rows(df: pd.DataFrame) -> pd.DataFrame:
-    return df[df[TARGET_COLUMN].notna()].reset_index(drop=True)
+def split_by_year(df: pl.DataFrame, train_start: str, valid_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+    race_date = pl.col("race_date").str.to_datetime("%Y%m%d")
+    train_mask = (race_date >= pl.lit(train_start).str.to_datetime("%Y%m%d")) & (
+        pl.col("race_year") < valid_year
+    )
+    valid_mask = pl.col("race_year") == valid_year
+    return df.filter(train_mask), df.filter(valid_mask)
 
 
-def split_by_year(df: pd.DataFrame, train_start: str, valid_year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_start_date = pd.to_datetime(train_start)
-    race_date = pd.to_datetime(df["race_date"], format="%Y%m%d")
-    train_mask = (race_date >= train_start_date) & (df["race_year"] < valid_year)
-    valid_mask = df["race_year"] == valid_year
-    return df[train_mask].reset_index(drop=True), df[valid_mask].reset_index(drop=True)
-
-
-def compute_inverse_frequency_weights(labels: pd.Series) -> np.ndarray:
-    label_array = labels.to_numpy(dtype=np.int64)
+def compute_inverse_frequency_weights(labels: pl.Series) -> np.ndarray:
+    label_array = labels.to_numpy().astype(np.int64)
     class_counts = np.bincount(label_array, minlength=NUM_CLASSES).astype(np.float64)
     safe_counts = np.where(class_counts == 0, 1.0, class_counts)
     inverse_frequencies = label_array.size / (NUM_CLASSES * safe_counts)
@@ -221,16 +221,16 @@ def compute_inverse_frequency_weights(labels: pd.Series) -> np.ndarray:
 
 
 def compute_weighted_sample_weights(
-    labels: pd.Series, class_multipliers: tuple[float, float, float, float]
+    labels: pl.Series, class_multipliers: tuple[float, float, float, float]
 ) -> np.ndarray:
     """Apply per-class multipliers on top of inverse-frequency base weights."""
     base_weights = compute_inverse_frequency_weights(labels)
-    label_array = labels.to_numpy(dtype=np.int64)
+    label_array = labels.to_numpy().astype(np.int64)
     multiplier_array = np.array(class_multipliers, dtype=np.float64)
     return base_weights * multiplier_array[label_array]
 
 
-def resolve_sample_weights(labels: pd.Series, class_weight_scheme: str) -> np.ndarray:
+def resolve_sample_weights(labels: pl.Series, class_weight_scheme: str) -> np.ndarray:
     """Resolve sample weights by scheme name. 'balanced2' applies BALANCED2_WEIGHT_MULTIPLIERS."""
     if class_weight_scheme == "balanced2":
         return compute_weighted_sample_weights(labels, BALANCED2_WEIGHT_MULTIPLIERS)
@@ -254,18 +254,30 @@ def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
     }
 
 
+def encode_categoricals(frame: pl.DataFrame, categorical_features: list[str]) -> pl.DataFrame:
+    present = [column for column in categorical_features if column in frame.columns]
+    return frame.with_columns(pl.col(column).cast(pl.Categorical) for column in present)
+
+
+def to_lgb_frame(frame: pl.DataFrame) -> "pd.DataFrame":
+    # LightGBM 4.x ingests only pandas/numpy; its Arrow path rejects dictionary
+    # (categorical) columns. Convert at the boundary so polars Categorical maps to
+    # pandas "category" dtype, which LightGBM consumes natively for categorical splits.
+    return frame.to_pandas()
+
+
 def build_lgb_dataset(
-    frame: pd.DataFrame,
-    labels: pd.Series,
+    frame: pl.DataFrame,
+    labels: pl.Series,
     sample_weights: np.ndarray,
     feature_columns: list[str],
     categorical_features: list[str],
     reference: lgb.Dataset | None = None,
 ) -> lgb.Dataset:
-    feature_frame = encode_categoricals(frame[feature_columns], categorical_features)
+    feature_frame = encode_categoricals(frame.select(feature_columns), categorical_features)
     return lgb.Dataset(
-        feature_frame,
-        label=labels.to_numpy(dtype=np.int64),
+        to_lgb_frame(feature_frame),
+        label=labels.to_numpy().astype(np.int64),
         weight=sample_weights,
         categorical_feature=categorical_features if categorical_features else "auto",
         free_raw_data=False,
@@ -275,12 +287,12 @@ def build_lgb_dataset(
 
 def predict_softmax(
     booster: lgb.Booster,
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
 ) -> np.ndarray:
-    feature_frame = encode_categoricals(frame[feature_columns], categorical_features)
-    raw = booster.predict(feature_frame, num_iteration=booster.best_iteration)
+    feature_frame = encode_categoricals(frame.select(feature_columns), categorical_features)
+    raw = booster.predict(to_lgb_frame(feature_frame), num_iteration=booster.best_iteration)
     return np.asarray(raw, dtype=np.float64)
 
 
@@ -389,7 +401,7 @@ def detect_walk_forward_precision_regression(
     return gap_pp >= gap_threshold_pp
 
 
-def maybe_enrich_with_field_features(df: pd.DataFrame, enabled: bool) -> pd.DataFrame:
+def maybe_enrich_with_field_features(df: pl.DataFrame, enabled: bool) -> pl.DataFrame:
     if not enabled:
         return df
     return enrich_dataframe_with_field_features(df)
@@ -406,8 +418,8 @@ def extend_feature_columns(feature_columns: list[str], with_field_features: bool
 
 
 def train_running_style_head(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
@@ -438,20 +450,24 @@ def train_running_style_head(
     return booster, probabilities
 
 
-def build_predictions_df(valid_df: pd.DataFrame, probabilities: np.ndarray) -> pd.DataFrame:
-    output = valid_df[
+def build_predictions_df(valid_df: pl.DataFrame, probabilities: np.ndarray) -> pl.DataFrame:
+    output = valid_df.select(
         ["race_id", "ketto_toroku_bango", "umaban", "race_year", TARGET_COLUMN]
-    ].copy()
-    for class_idx, column_name in enumerate(PROBABILITY_COLUMNS):
-        output[column_name] = probabilities[:, class_idx]
+    )
     predicted_indices = compute_predicted_labels(probabilities)
-    output["predicted_label"] = [CLASS_LABELS[int(idx)] for idx in predicted_indices]
-    output["predicted_class"] = predicted_indices.astype(int)
-    return output
+    probability_columns = [
+        pl.Series(column_name, probabilities[:, class_idx])
+        for class_idx, column_name in enumerate(PROBABILITY_COLUMNS)
+    ]
+    return output.with_columns(
+        *probability_columns,
+        pl.Series("predicted_label", [CLASS_LABELS[int(idx)] for idx in predicted_indices]),
+        pl.Series("predicted_class", predicted_indices.astype(int)),
+    )
 
 
 def run_walk_forward_for_year(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     valid_year: int,
     train_start: str,
     feature_columns: list[str],
@@ -459,7 +475,7 @@ def run_walk_forward_for_year(
     params: TrainingParams,
     *,
     with_field_features: bool,
-) -> tuple[pd.DataFrame, FoldMetrics]:
+) -> tuple[pl.DataFrame, FoldMetrics]:
     train_df, valid_df = split_by_year(df, train_start, valid_year)
     train_df = maybe_enrich_with_field_features(train_df, with_field_features)
     valid_df = maybe_enrich_with_field_features(valid_df, with_field_features)
@@ -471,9 +487,9 @@ def run_walk_forward_for_year(
         params,
     )
     predictions_df = build_predictions_df(valid_df, probabilities)
-    evaluation_subset = predictions_df.dropna(subset=[TARGET_COLUMN])
-    predicted = evaluation_subset["predicted_class"].to_numpy(dtype=np.int64)
-    actual = evaluation_subset[TARGET_COLUMN].to_numpy(dtype=np.int64)
+    evaluation_subset = predictions_df.drop_nulls(subset=[TARGET_COLUMN])
+    predicted = evaluation_subset["predicted_class"].to_numpy().astype(np.int64)
+    actual = evaluation_subset[TARGET_COLUMN].to_numpy().astype(np.int64)
     precision, recall, support = compute_per_class_precision_recall(predicted, actual)
     metrics: FoldMetrics = {
         "validation_year": valid_year,
@@ -498,10 +514,10 @@ def _sanitize_record_for_json(record: dict[str, object]) -> dict[str, object]:
     return sanitized
 
 
-def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> None:
+def write_predictions_jsonl(predictions: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
-        for raw_record in predictions.to_dict(orient="records"):
+        for raw_record in predictions.iter_rows(named=True):
             record = _sanitize_record_for_json({str(k): v for k, v in raw_record.items()})
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -649,7 +665,7 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     params = training_params_from_args(args)
     validation_years = parse_validation_years(args.validation_years)
     metrics_per_fold: list[FoldMetrics] = []
-    all_predictions: list[pd.DataFrame] = []
+    all_predictions: list[pl.DataFrame] = []
     for valid_year in validation_years:
         predictions_df, metrics = run_walk_forward_for_year(
             df,
@@ -663,7 +679,7 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
         metrics_per_fold.append(metrics)
         all_predictions.append(predictions_df)
         print(json.dumps({"fold": metrics}, ensure_ascii=False))
-    combined = pd.concat(all_predictions, ignore_index=True)
+    combined = pl.concat(all_predictions, how="diagonal_relaxed")
     range_label = f"{validation_years[0]}-{validation_years[-1]}"
     output_jsonl = args.output_predictions_dir / f"{range_label}.jsonl"
     write_predictions_jsonl(combined, output_jsonl)
@@ -673,24 +689,24 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     print(json.dumps({"elapsed_seconds": elapsed, "predictions_jsonl": str(output_jsonl), "rows": len(combined)}))
 
 
-def filter_by_date_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    return df[(df["race_date"] >= start) & (df["race_date"] <= end)].copy()
+def filter_by_date_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
+    return df.filter((pl.col("race_date") >= start) & (pl.col("race_date") <= end))
 
 
 def split_production_train_valid(
-    train_df: pd.DataFrame,
+    train_df: pl.DataFrame,
     valid_start_date: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    valid_start = pd.to_datetime(valid_start_date)
-    race_date = pd.to_datetime(train_df["race_date"], format="%Y%m%d")
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    race_date = pl.col("race_date").str.to_datetime("%Y%m%d")
+    valid_start = pl.lit(valid_start_date).str.to_datetime("%Y%m%d")
     return (
-        train_df[race_date < valid_start].reset_index(drop=True),
-        train_df[race_date >= valid_start].reset_index(drop=True),
+        train_df.filter(race_date < valid_start),
+        train_df.filter(race_date >= valid_start),
     )
 
 
 def train_full_dataset(
-    train_df: pd.DataFrame,
+    train_df: pl.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
@@ -738,7 +754,7 @@ def train_full_dataset(
 
 
 def run_walk_forward_eval_for_year(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     holdout_year: int,
     train_start_date: str,
     feature_columns: list[str],
@@ -767,14 +783,14 @@ def run_walk_forward_eval_for_year(
     _booster, probabilities = train_running_style_head(
         train_labeled, valid_labeled, feature_columns, categorical_features, params,
     )
-    actual = valid_labeled[TARGET_COLUMN].to_numpy(dtype=np.int64)
+    actual = valid_labeled[TARGET_COLUMN].to_numpy().astype(np.int64)
     return compute_walk_forward_eval_metrics(
         probabilities, actual, holdout_year, train_start_date, train_end_date, int(len(train_labeled)),
     )
 
 
 def run_walk_forward_eval_for_windows(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     windows: list[int],
     train_start_date: str,
     feature_columns: list[str],
@@ -793,7 +809,7 @@ def run_walk_forward_eval_for_windows(
 
 def compute_production_precision_nige(
     booster: lgb.Booster,
-    train_subset_full: pd.DataFrame,
+    train_subset_full: pl.DataFrame,
     feature_columns: list[str],
     categorical_features: list[str],
     valid_start_date: str,
@@ -804,7 +820,7 @@ def compute_production_precision_nige(
         return float("nan")
     probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
     predicted = compute_predicted_labels(probabilities)
-    actual = valid_df[TARGET_COLUMN].to_numpy(dtype=np.int64)
+    actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
     precision, _, _ = compute_per_class_precision_recall(predicted, actual)
     return precision["nige"]
 

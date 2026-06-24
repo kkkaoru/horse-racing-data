@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Protocol, TypedDict, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 MODE_TRAIN: str = "train"
 SUPPORTED_MODES: tuple[str, ...] = (MODE_TRAIN,)
@@ -129,11 +129,11 @@ class TrainArgs(TypedDict):
 
 
 class ParquetDirReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class PartitionedParquetWriterLike(Protocol):
-    def __call__(self, frame: pd.DataFrame, output_dir: Path) -> None: ...
+    def __call__(self, frame: pl.DataFrame, output_dir: Path) -> None: ...
 
 
 class JsonWriterLike(Protocol):
@@ -255,30 +255,29 @@ def coerce_partition_value(key: str, raw_value: str) -> int | str:
     return raw_value
 
 
-def default_read_parquet_dir(path: Path) -> pd.DataFrame:
+def default_read_parquet_dir(path: Path) -> pl.DataFrame:
     if path.is_file():
-        return pd.read_parquet(path.as_posix())
+        return pl.read_parquet(path.as_posix())
     parts = sorted(path.rglob("*.parquet"))
-    frames: list[pd.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     for part in parts:
-        frame = pd.read_parquet(part.as_posix())
+        frame = pl.read_parquet(part.as_posix())
         for segment in part.relative_to(path).parts[:-1]:
             if "=" not in segment:
                 continue
             key, raw_value = segment.split("=", 1)
-            frame[key] = coerce_partition_value(key, raw_value)
+            frame = frame.with_columns(pl.lit(coerce_partition_value(key, raw_value)).alias(key))
         frames.append(frame)
     if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
-def default_write_partitioned_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
+def default_write_partitioned_parquet(frame: pl.DataFrame, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
+    frame.write_parquet(
         output_dir.as_posix(),
-        partition_cols=[CATEGORY_COLUMN, RACE_YEAR_COLUMN],
-        index=False,
+        partition_by=[CATEGORY_COLUMN, RACE_YEAR_COLUMN],
     )
 
 
@@ -346,61 +345,56 @@ def assign_surface_dirt_flag(track_code: object) -> int:
     return 1 if text.startswith(DIRT_TRACK_CODE_PREFIXES) else 0
 
 
-def encode_distance_band_one_hot(bands: pd.Series) -> pd.DataFrame:
+def encode_distance_band_one_hot(bands: pl.Series) -> pl.DataFrame:
     columns = {
-        f"distance_band_{label}": (bands == label).astype(int) for label in DISTANCE_BAND_LABELS
+        f"distance_band_{label}": (bands == label).cast(pl.Int64) for label in DISTANCE_BAND_LABELS
     }
-    return pd.DataFrame(columns, index=bands.index)
+    return pl.DataFrame(columns)
 
 
-def add_within_race_normalised(frame: pd.DataFrame) -> pd.DataFrame:
-    out = frame.copy()
-    grp_score = out.groupby(RACE_ID_COLUMN)[PREDICTED_SCORE_COLUMN]
-    grp_rank = out.groupby(RACE_ID_COLUMN)[PREDICTED_RANK_COLUMN]
-    field_size = grp_rank.transform("count").astype(float)
-    out["predicted_rank_norm"] = out[PREDICTED_RANK_COLUMN].astype(float) / field_size.replace(
-        0.0, 1.0
+def add_within_race_normalised(frame: pl.DataFrame) -> pl.DataFrame:
+    field_size = pl.col(PREDICTED_RANK_COLUMN).count().over(RACE_ID_COLUMN).cast(pl.Float64)
+    score = pl.col(PREDICTED_SCORE_COLUMN).cast(pl.Float64)
+    score_mean = score.mean().over(RACE_ID_COLUMN)
+    score_std = score.std().over(RACE_ID_COLUMN).fill_null(0.0)
+    fpa = pl.col("horse_recent_finish_position_avg5").cast(pl.Float64)
+    fpa_mean = fpa.mean().over(RACE_ID_COLUMN)
+    fpa_std = fpa.std().over(RACE_ID_COLUMN).fill_null(0.0)
+    return frame.with_columns(
+        (pl.col(PREDICTED_RANK_COLUMN).cast(pl.Float64) / field_size.replace(0.0, 1.0)).alias(
+            "predicted_rank_norm",
+        ),
+        ((score - score_mean) / score_std.replace(0.0, 1e-6)).alias("score_z_in_race"),
+        (score - score.max().over(RACE_ID_COLUMN)).alias("score_max_in_race_delta"),
+        (score - score.min().over(RACE_ID_COLUMN)).alias("score_min_in_race_delta"),
+        pl.col("horse_recent_kohan3f_avg5")
+        .rank(method="average")
+        .over(RACE_ID_COLUMN)
+        .truediv(pl.col("horse_recent_kohan3f_avg5").count().over(RACE_ID_COLUMN))
+        .alias("kohan3f_pct_rank_in_field"),
+        ((fpa - fpa_mean) / fpa_std.replace(0.0, 1e-6)).alias("finish_pos_avg5_z_in_race"),
+        field_size.log1p().alias("field_size_log"),
     )
-    score_mean = grp_score.transform("mean")
-    score_std = grp_score.transform("std").fillna(0.0).replace(0.0, 1e-6)
-    out["score_z_in_race"] = (out[PREDICTED_SCORE_COLUMN].astype(float) - score_mean) / score_std
-    score_max = grp_score.transform("max")
-    score_min = grp_score.transform("min")
-    out["score_max_in_race_delta"] = out[PREDICTED_SCORE_COLUMN].astype(float) - score_max
-    out["score_min_in_race_delta"] = out[PREDICTED_SCORE_COLUMN].astype(float) - score_min
-    out["kohan3f_pct_rank_in_field"] = out.groupby(RACE_ID_COLUMN)[
-        "horse_recent_kohan3f_avg5"
-    ].rank(pct=True, ascending=True)
-    fpa_mean = out.groupby(RACE_ID_COLUMN)["horse_recent_finish_position_avg5"].transform("mean")
-    fpa_std = (
-        out.groupby(RACE_ID_COLUMN)["horse_recent_finish_position_avg5"]
-        .transform("std")
-        .fillna(0.0)
-        .replace(0.0, 1e-6)
-    )
-    out["finish_pos_avg5_z_in_race"] = (
-        out["horse_recent_finish_position_avg5"].astype(float) - fpa_mean
-    ) / fpa_std
-    out["field_size_log"] = np.log1p(field_size)
-    return out
 
 
-def add_categorical_one_hots(frame: pd.DataFrame) -> pd.DataFrame:
-    out = frame.copy()
-    bands = out["kyori"].map(assign_distance_band)
+def add_categorical_one_hots(frame: pl.DataFrame) -> pl.DataFrame:
+    bands = frame["kyori"].map_elements(assign_distance_band, return_dtype=pl.String)
     one_hot = encode_distance_band_one_hot(bands)
-    surface = out["track_code"].map(assign_surface_dirt_flag)
-    out["surface_dirt_flag"] = surface.astype(int)
-    return pd.concat([out, one_hot], axis=1)
+    out = frame.with_columns(
+        pl.col("track_code")
+        .map_elements(assign_surface_dirt_flag, return_dtype=pl.Int64)
+        .alias("surface_dirt_flag"),
+    )
+    return pl.concat([out, one_hot], how="horizontal")
 
 
-def assemble_feature_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def assemble_feature_frame(frame: pl.DataFrame) -> pl.DataFrame:
     out = add_within_race_normalised(frame)
     out = add_categorical_one_hots(out)
     return out
 
 
-def feature_columns(frame: pd.DataFrame) -> list[str]:
+def feature_columns(frame: pl.DataFrame) -> list[str]:
     band_cols = [f"distance_band_{label}" for label in DISTANCE_BAND_LABELS]
     candidate = (
         list(BASE_FEATURE_COLUMNS)
@@ -411,57 +405,61 @@ def feature_columns(frame: pd.DataFrame) -> list[str]:
     return [c for c in candidate if c in frame.columns]
 
 
-def rerank_within_race(frame: pd.DataFrame, score_column: str) -> pd.DataFrame:
+def rerank_within_race(frame: pl.DataFrame, score_column: str) -> pl.DataFrame:
     """Rerank rows by ``score_column`` (ascending = better since meta predicts
     expected finish position; lower = predicted earlier finish)."""
-    out = frame.copy()
-    ranks = out.groupby(RACE_ID_COLUMN)[score_column].rank(method="first", ascending=True)
-    out[PREDICTED_RANK_COLUMN] = ranks.astype(int)
-    return out
+    return frame.with_columns(
+        pl.col(score_column)
+        .rank(method="ordinal", descending=False)
+        .over(RACE_ID_COLUMN)
+        .cast(pl.Int64)
+        .alias(PREDICTED_RANK_COLUMN),
+    )
 
 
-def compute_oos_metrics(frame: pd.DataFrame) -> dict[str, float]:
-    if frame.empty:
+def compute_oos_metrics(frame: pl.DataFrame) -> dict[str, float]:
+    if frame.is_empty():
         return {"races": 0, "top1": 0.0, "place2": 0.0, "place3": 0.0, "top3_box": 0.0}
-    rank_col = frame[PREDICTED_RANK_COLUMN].astype(int)
-    actual_col = frame[ACTUAL_FINISH_POSITION_COLUMN].astype(int)
-    top1_hit = ((rank_col == TOP1_FINISH) & (actual_col == TOP1_FINISH)).astype(int)
-    place2_hit = ((rank_col == 2) & (actual_col == 2)).astype(int)
-    place3_hit = ((rank_col == TOP3_FINISH) & (actual_col == TOP3_FINISH)).astype(int)
-    box_match = ((rank_col <= TOP3_FINISH) & (actual_col <= TOP3_FINISH)).astype(int)
-    top1_per_race = top1_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    place2_per_race = place2_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    place3_per_race = place3_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    box_sum_per_race = box_match.groupby(frame[RACE_ID_COLUMN]).sum()
-    field_size_per_race = frame.groupby(frame[RACE_ID_COLUMN])[RACE_ID_COLUMN].count()
-    box_per_race = (box_sum_per_race >= field_size_per_race.clip(upper=TOP3_FINISH)).astype(int)
-    races = int(len(top1_per_race))
+    rank_col = pl.col(PREDICTED_RANK_COLUMN).cast(pl.Int64)
+    actual_col = pl.col(ACTUAL_FINISH_POSITION_COLUMN).cast(pl.Int64)
+    per_race = frame.group_by(RACE_ID_COLUMN).agg(
+        ((rank_col == TOP1_FINISH) & (actual_col == TOP1_FINISH)).max().cast(pl.Int64).alias("top1"),
+        ((rank_col == 2) & (actual_col == 2)).max().cast(pl.Int64).alias("place2"),
+        ((rank_col == TOP3_FINISH) & (actual_col == TOP3_FINISH)).max().cast(pl.Int64).alias("place3"),
+        ((rank_col <= TOP3_FINISH) & (actual_col <= TOP3_FINISH)).sum().alias("box_sum"),
+        pl.len().alias("field_size"),
+    )
+    per_race = per_race.with_columns(
+        (pl.col("box_sum") >= pl.col("field_size").clip(upper_bound=TOP3_FINISH))
+        .cast(pl.Int64)
+        .alias("top3_box"),
+    )
     return {
-        "races": races,
-        "top1": float(top1_per_race.mean()),
-        "place2": float(place2_per_race.mean()),
-        "place3": float(place3_per_race.mean()),
-        "top3_box": float(box_per_race.mean()),
+        "races": int(per_race.height),
+        "top1": float(cast(float, per_race["top1"].mean())),
+        "place2": float(cast(float, per_race["place2"].mean())),
+        "place3": float(cast(float, per_race["place3"].mean())),
+        "top3_box": float(cast(float, per_race["top3_box"].mean())),
     }
 
 
-def filter_to_fold_year(dataset: pd.DataFrame, fold_year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_mask = dataset[RACE_YEAR_COLUMN] < fold_year
-    val_mask = dataset[RACE_YEAR_COLUMN] == fold_year
-    return (dataset.loc[train_mask].copy(), dataset.loc[val_mask].copy())
+def filter_to_fold_year(dataset: pl.DataFrame, fold_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+    train_df = dataset.filter(pl.col(RACE_YEAR_COLUMN) < fold_year)
+    val_df = dataset.filter(pl.col(RACE_YEAR_COLUMN) == fold_year)
+    return (train_df, val_df)
 
 
 def split_train_val(
-    train_frame: pd.DataFrame, val_fraction: float
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    sorted_frame = train_frame.sort_values([RACE_YEAR_COLUMN, RACE_ID_COLUMN], kind="stable")
-    distinct_races = sorted_frame[RACE_ID_COLUMN].drop_duplicates().tolist()
+    train_frame: pl.DataFrame, val_fraction: float
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    sorted_frame = train_frame.sort([RACE_YEAR_COLUMN, RACE_ID_COLUMN], maintain_order=True)
+    distinct_races = sorted_frame[RACE_ID_COLUMN].unique(maintain_order=True).to_list()
     n_val = max(1, int(round(len(distinct_races) * val_fraction)))
     if n_val >= len(distinct_races):
         n_val = len(distinct_races) - 1
     val_races = set(distinct_races[-n_val:])
-    val = sorted_frame[sorted_frame[RACE_ID_COLUMN].isin(val_races)].copy()
-    train = sorted_frame[~sorted_frame[RACE_ID_COLUMN].isin(val_races)].copy()
+    val = sorted_frame.filter(pl.col(RACE_ID_COLUMN).is_in(val_races))
+    train = sorted_frame.filter(~pl.col(RACE_ID_COLUMN).is_in(val_races))
     return (train, val)
 
 
@@ -470,7 +468,7 @@ def format_iso_now(now: datetime) -> str:
 
 
 def train_one_fold(
-    dataset: pd.DataFrame,
+    dataset: pl.DataFrame,
     *,
     cat: str,
     fold_year: int,
@@ -486,9 +484,9 @@ def train_one_fold(
     regressor_factory: RegressorFactoryLike,
     early_stopping_factory: EarlyStoppingFactoryLike,
     now: datetime,
-) -> tuple[pd.DataFrame, dict[str, object]]:
+) -> tuple[pl.DataFrame, dict[str, object]]:
     train_frame, val_frame = filter_to_fold_year(dataset, fold_year)
-    if len(train_frame) < MIN_SAMPLES_FOR_TRAINING or val_frame.empty:
+    if len(train_frame) < MIN_SAMPLES_FOR_TRAINING or val_frame.is_empty():
         skip_reason = (
             "insufficient training rows"
             if len(train_frame) < MIN_SAMPLES_FOR_TRAINING
@@ -504,21 +502,21 @@ def train_one_fold(
             "skipped": True,
             "skip_reason": skip_reason,
         }
-        return (pd.DataFrame(), meta_skip)
+        return (pl.DataFrame(), meta_skip)
     inner_train, inner_val = split_train_val(train_frame, val_fraction)
     feat_cols = feature_columns(inner_train)
-    x_train = inner_train[feat_cols].to_numpy(dtype=float)
+    x_train = inner_train.select(feat_cols).cast(pl.Float64).to_numpy()
     y_train = (
-        pd.to_numeric(inner_train[ACTUAL_FINISH_POSITION_COLUMN], errors="coerce")
-        .fillna(99.0)
-        .astype(float)
+        inner_train[ACTUAL_FINISH_POSITION_COLUMN]
+        .cast(pl.Float64, strict=False)
+        .fill_null(99.0)
         .to_numpy()
     )
-    x_val = inner_val[feat_cols].to_numpy(dtype=float)
+    x_val = inner_val.select(feat_cols).cast(pl.Float64).to_numpy()
     y_val = (
-        pd.to_numeric(inner_val[ACTUAL_FINISH_POSITION_COLUMN], errors="coerce")
-        .fillna(99.0)
-        .astype(float)
+        inner_val[ACTUAL_FINISH_POSITION_COLUMN]
+        .cast(pl.Float64, strict=False)
+        .fill_null(99.0)
         .to_numpy()
     )
     model = regressor_factory(
@@ -536,11 +534,11 @@ def train_one_fold(
         eval_set=[(x_val, y_val)],
         callbacks=[callback],
     )
-    val_sorted = val_frame.copy()
-    x_oos = val_sorted[feat_cols].to_numpy(dtype=float)
-    val_sorted["meta_score"] = model.predict(x_oos)
+    val_sorted = val_frame
+    x_oos = val_sorted.select(feat_cols).cast(pl.Float64).to_numpy()
+    val_sorted = val_sorted.with_columns(pl.Series("meta_score", model.predict(x_oos)))
     reranked = rerank_within_race(val_sorted, "meta_score")
-    reranked["model_version"] = model_version
+    reranked = reranked.with_columns(pl.lit(model_version).alias("model_version"))
     oos_metrics = compute_oos_metrics(reranked)
     importance_pairs = [
         (feat_cols[i], int(model.feature_importances_[i])) for i in range(len(feat_cols))
@@ -571,9 +569,9 @@ def train_one_fold(
 
 
 def resolve_fold_years(
-    dataset: pd.DataFrame, requested: tuple[int, ...] | None
+    dataset: pl.DataFrame, requested: tuple[int, ...] | None
 ) -> tuple[int, ...]:
-    available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
+    available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().to_list())
     if requested is None:
         return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
@@ -583,11 +581,11 @@ def resolve_fold_years(
 
 
 def write_fold_predictions(
-    fold_preds: pd.DataFrame,
+    fold_preds: pl.DataFrame,
     output_predictions_root: Path,
     writer: PartitionedParquetWriterLike,
 ) -> None:
-    if fold_preds.empty:
+    if fold_preds.is_empty():
         return
     writer(fold_preds, output_predictions_root)
 
@@ -621,10 +619,10 @@ def load_fold_metadata(output_model_dir: Path, fold_year: int) -> dict[str, obje
 def run_train(args: TrainArgs, deps: TrainDeps, *, resume: bool = True) -> int:
     cat = args["cat"]
     dataset = deps["dataset_reader"](args["dataset_root"] / f"category={cat}")
-    if dataset.empty:
+    if dataset.is_empty():
         raise ValueError(f"stacking dataset for category={cat} is empty: {args['dataset_root']}")
     if CATEGORY_COLUMN not in dataset.columns:
-        dataset[CATEGORY_COLUMN] = cat
+        dataset = dataset.with_columns(pl.lit(cat).alias(CATEGORY_COLUMN))
     if RACE_YEAR_COLUMN not in dataset.columns:
         raise ValueError(f"stacking dataset is missing {RACE_YEAR_COLUMN!r} column")
     dataset = assemble_feature_frame(dataset)

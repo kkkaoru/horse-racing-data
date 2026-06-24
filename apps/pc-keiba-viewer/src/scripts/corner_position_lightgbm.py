@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import TypedDict
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 
 META_COLUMNS: tuple[str, ...] = (
     "source",
@@ -125,60 +126,59 @@ def detect_categorical_features(feature_columns: list[str]) -> list[str]:
     return [column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS]
 
 
-def _read_partitioned_parquet(child: Path) -> pd.DataFrame:
-    frame = pd.read_parquet(child)
+def _read_partitioned_parquet(child: Path) -> pl.DataFrame:
+    frame = pl.read_parquet(child)
     if "race_year" not in frame.columns:
         year_token = child.parent.name
         if year_token.startswith("race_year="):
-            frame["race_year"] = int(year_token.split("=", 1)[1])
+            frame = frame.with_columns(pl.lit(int(year_token.split("=", 1)[1])).alias("race_year"))
     return frame
 
 
-def load_dataset_parquet(path: Path) -> pd.DataFrame:
+def load_dataset_parquet(path: Path) -> pl.DataFrame:
     if path.is_dir():
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
-            return pd.concat(
-                [_read_partitioned_parquet(child) for child in partitioned], ignore_index=True
+            return pl.concat(
+                [_read_partitioned_parquet(child) for child in partitioned], how="vertical_relaxed"
             )
         flat = sorted(path.glob("*.parquet"))
         if flat:
-            return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
+            return pl.concat([pl.read_parquet(child) for child in flat], how="vertical_relaxed")
         raise ValueError(f"No parquet files found under {path}")
-    return pd.read_parquet(path)
+    return pl.read_parquet(path)
 
 
-def encode_categoricals(frame: pd.DataFrame, categorical_features: list[str]) -> pd.DataFrame:
-    encoded = frame.copy()
-    for column in categorical_features:
-        if column in encoded.columns:
-            encoded[column] = encoded[column].astype("category")
-    return encoded
+def encode_categoricals(frame: pl.DataFrame, categorical_features: list[str]) -> pl.DataFrame:
+    present = [column for column in categorical_features if column in frame.columns]
+    if not present:
+        return frame.clone()
+    return frame.with_columns([pl.col(column).cast(pl.Utf8).cast(pl.Categorical) for column in present])
 
 
-def filter_target_rows(df: pd.DataFrame, target_column: str) -> pd.DataFrame:
-    return df[df[target_column].notna()].reset_index(drop=True)
+def filter_target_rows(df: pl.DataFrame, target_column: str) -> pl.DataFrame:
+    return df.filter(pl.col(target_column).is_not_null())
 
 
-def split_by_year(df: pd.DataFrame, train_start: str, valid_year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_start_date = pd.to_datetime(train_start)
-    race_date = pd.to_datetime(df["race_date"], format="%Y%m%d")
-    train_mask = (race_date >= train_start_date) & (df["race_year"] < valid_year)
-    valid_mask = df["race_year"] == valid_year
-    return df[train_mask].reset_index(drop=True), df[valid_mask].reset_index(drop=True)
+def split_by_year(df: pl.DataFrame, train_start: str, valid_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+    train_start_date = datetime.strptime(train_start, "%Y%m%d")
+    race_date = pl.col("race_date").str.strptime(pl.Datetime, format="%Y%m%d")
+    train_mask = (race_date >= pl.lit(train_start_date)) & (pl.col("race_year") < valid_year)
+    valid_mask = pl.col("race_year") == valid_year
+    return df.filter(train_mask), df.filter(valid_mask)
 
 
 def build_lgb_dataset(
-    frame: pd.DataFrame,
-    label: pd.Series,
+    frame: pl.DataFrame,
+    label: pl.Series,
     feature_columns: list[str],
     categorical_features: list[str],
     reference: lgb.Dataset | None = None,
 ) -> lgb.Dataset:
-    feature_frame = encode_categoricals(frame[feature_columns], categorical_features)
+    feature_frame = encode_categoricals(frame.select(feature_columns), categorical_features)
     return lgb.Dataset(
         feature_frame,
-        label=label.to_numpy(dtype=np.float64),
+        label=label.to_numpy().astype(np.float64),
         categorical_feature=categorical_features if categorical_features else "auto",
         free_raw_data=False,
         reference=reference,
@@ -202,8 +202,8 @@ def lgb_params_for_regression(params: TrainingParams) -> dict[str, object]:
 
 
 def train_head(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     target_column: str,
     feature_columns: list[str],
     categorical_features: list[str],
@@ -229,60 +229,68 @@ def train_head(
         ],
     )
     predictions = booster.predict(
-        encode_categoricals(valid_df[feature_columns], categorical_features),
+        encode_categoricals(valid_df.select(feature_columns), categorical_features),
         num_iteration=booster.best_iteration,
     )
     return booster, np.asarray(predictions, dtype=np.float64)
 
 
-def mae_for_head(predictions: np.ndarray, target_values: pd.Series) -> float:
-    mask = target_values.notna().to_numpy()
+def mae_for_head(predictions: np.ndarray, target_values: pl.Series) -> float:
+    mask = target_values.is_not_null().to_numpy()
     if mask.sum() == 0:
         return float("nan")
-    diffs = np.abs(predictions[mask] - target_values[mask].to_numpy(dtype=np.float64))
+    diffs = np.abs(predictions[mask] - target_values.filter(target_values.is_not_null()).to_numpy().astype(np.float64))
     return float(diffs.mean())
 
 
-def compute_corner_1_top3_agreement(predictions_df: pd.DataFrame) -> float:
+def compute_corner_1_top3_agreement(predictions_df: pl.DataFrame) -> float:
     """Fraction of races where predicted top-3 by corner_1_pred matches actual top-3 by corner_1_norm."""
-    eligible = predictions_df.dropna(subset=["target_corner_1_norm"]).copy()
-    if eligible.empty:
+    eligible = predictions_df.filter(pl.col("target_corner_1_norm").is_not_null())
+    if eligible.is_empty():
         return float("nan")
-    eligible["pred_rank"] = eligible.groupby("race_id")["corner_1_pred"].rank(method="dense", ascending=True)
-    eligible["actual_rank"] = eligible.groupby("race_id")["target_corner_1_norm"].rank(method="dense", ascending=True)
-    eligible["pred_top3"] = eligible["pred_rank"] <= TOP_K_AGREEMENT
-    eligible["actual_top3"] = eligible["actual_rank"] <= TOP_K_AGREEMENT
-    eligible["match"] = (eligible["pred_top3"] & eligible["actual_top3"]).astype(int)
-    by_race = eligible.groupby("race_id").agg(
-        matched=("match", "sum"),
-        pred_count=("pred_top3", "sum"),
-        actual_count=("actual_top3", "sum"),
+    eligible = eligible.with_columns(
+        pl.col("corner_1_pred").rank(method="dense", descending=False).over("race_id").alias("pred_rank"),
+        pl.col("target_corner_1_norm").rank(method="dense", descending=False).over("race_id").alias("actual_rank"),
+    ).with_columns(
+        (pl.col("pred_rank") <= TOP_K_AGREEMENT).alias("pred_top3"),
+        (pl.col("actual_rank") <= TOP_K_AGREEMENT).alias("actual_top3"),
+    ).with_columns(
+        (pl.col("pred_top3") & pl.col("actual_top3")).cast(pl.Int64).alias("match")
     )
-    denom = by_race[["pred_count", "actual_count"]].min(axis=1).clip(lower=1)
-    return float((by_race["matched"] / denom).mean())
+    by_race = eligible.group_by("race_id", maintain_order=True).agg(
+        pl.col("match").sum().alias("matched"),
+        pl.col("pred_top3").sum().alias("pred_count"),
+        pl.col("actual_top3").sum().alias("actual_count"),
+    ).with_columns(
+        pl.min_horizontal("pred_count", "actual_count").clip(lower_bound=1).alias("denom")
+    )
+    mean_value = by_race.select(
+        (pl.col("matched") / pl.col("denom")).mean().alias("agreement")
+    )["agreement"][0]
+    return float(mean_value)
 
 
 def build_predictions_df(
-    valid_df: pd.DataFrame,
+    valid_df: pl.DataFrame,
     head_predictions: dict[str, np.ndarray],
-) -> pd.DataFrame:
-    output = valid_df[
+) -> pl.DataFrame:
+    output = valid_df.select(
         ["race_id", "ketto_toroku_bango", "umaban", "race_year",
          "target_corner_1_norm", "target_corner_3_norm", "target_corner_4_norm"]
-    ].copy()
+    )
     for head_name, predictions in head_predictions.items():
-        output[f"{head_name}_pred"] = predictions
+        output = output.with_columns(pl.Series(f"{head_name}_pred", predictions))
     return output
 
 
 def run_walk_forward_for_year(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     valid_year: int,
     train_start: str,
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
-) -> tuple[pd.DataFrame, FoldMetrics]:
+) -> tuple[pl.DataFrame, FoldMetrics]:
     train_df, valid_df = split_by_year(df, train_start, valid_year)
     head_predictions: dict[str, np.ndarray] = {}
     per_head_mae: dict[str, float] = {}
@@ -295,8 +303,8 @@ def run_walk_forward_for_year(
     predictions_df = build_predictions_df(valid_df, head_predictions)
     metrics: FoldMetrics = {
         "validation_year": valid_year,
-        "train_rows": int(len(train_df)),
-        "valid_rows": int(len(valid_df)),
+        "train_rows": int(train_df.height),
+        "valid_rows": int(valid_df.height),
         "per_head_mae": per_head_mae,
         "corner_1_top3_agreement": compute_corner_1_top3_agreement(predictions_df),
     }
@@ -313,10 +321,10 @@ def _sanitize_record_for_json(record: dict[str, object]) -> dict[str, object]:
     return sanitized
 
 
-def write_predictions_jsonl(predictions: pd.DataFrame, output_path: Path) -> None:
+def write_predictions_jsonl(predictions: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
-        for raw_record in predictions.to_dict(orient="records"):
+        for raw_record in predictions.to_dicts():
             record = _sanitize_record_for_json({str(k): v for k, v in raw_record.items()})
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -375,7 +383,7 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     params = training_params_from_args(args)
     validation_years = parse_validation_years(args.validation_years)
     metrics_per_fold: list[FoldMetrics] = []
-    all_predictions: list[pd.DataFrame] = []
+    all_predictions: list[pl.DataFrame] = []
     for valid_year in validation_years:
         predictions_df, metrics = run_walk_forward_for_year(
             df, valid_year, args.train_start_date, feature_columns, categorical_features, params
@@ -383,14 +391,14 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
         metrics_per_fold.append(metrics)
         all_predictions.append(predictions_df)
         print(json.dumps({"fold": metrics}, ensure_ascii=False))
-    combined = pd.concat(all_predictions, ignore_index=True)
+    combined = pl.concat(all_predictions, how="vertical_relaxed")
     range_label = f"{validation_years[0]}-{validation_years[-1]}"
     output_jsonl = args.output_predictions_dir / f"{range_label}.jsonl"
     write_predictions_jsonl(combined, output_jsonl)
     if args.output_report is not None:
         write_walk_forward_report(metrics_per_fold, args.output_report)
     elapsed = perf_counter() - started
-    print(json.dumps({"elapsed_seconds": elapsed, "predictions_jsonl": str(output_jsonl), "rows": len(combined)}))
+    print(json.dumps({"elapsed_seconds": elapsed, "predictions_jsonl": str(output_jsonl), "rows": combined.height}))
 
 
 def main(argv: list[str] | None = None) -> None:

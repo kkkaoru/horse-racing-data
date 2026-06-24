@@ -6,7 +6,7 @@ from typing import cast
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import running_style_lightgbm as subject
@@ -77,7 +77,7 @@ def test_detect_categorical_features_returns_only_known_categoricals():
 
 
 def test_compute_inverse_frequency_weights_balances_classes():
-    labels = pd.Series([0, 0, 1, 1, 1, 1, 2, 2, 2, 3])
+    labels = pl.Series([0, 0, 1, 1, 1, 1, 2, 2, 2, 3])
     weights = subject.compute_inverse_frequency_weights(labels)
     assert weights.shape == (10,)
     nige_weight = weights[0]
@@ -91,7 +91,7 @@ def test_compute_inverse_frequency_weights_balances_classes():
 
 
 def test_compute_inverse_frequency_weights_avoids_zero_division():
-    labels = pd.Series([0, 0, 1, 1])
+    labels = pl.Series([0, 0, 1, 1])
     weights = subject.compute_inverse_frequency_weights(labels)
     assert not np.any(np.isnan(weights))
     assert not np.any(np.isinf(weights))
@@ -139,7 +139,7 @@ def test_macro_f1_skips_classes_with_undefined_precision():
 
 
 def test_filter_labeled_rows_drops_null_target():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "a": [1, 2, 3],
             "target_running_style_class": [0, None, 2],
@@ -147,11 +147,11 @@ def test_filter_labeled_rows_drops_null_target():
     )
     filtered = subject.filter_labeled_rows(df)
     assert len(filtered) == 2
-    assert filtered["a"].tolist() == [1, 3]
+    assert filtered["a"].to_list() == [1, 3]
 
 
 def test_split_by_year_separates_train_and_validation():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20230101", "20240615", "20250301"],
             "race_year": [2023, 2024, 2025],
@@ -159,8 +159,8 @@ def test_split_by_year_separates_train_and_validation():
         }
     )
     train, valid = subject.split_by_year(df, "20230101", 2025)
-    assert train["value"].tolist() == [1, 2]
-    assert valid["value"].tolist() == [3]
+    assert train["value"].to_list() == [1, 2]
+    assert valid["value"].to_list() == [3]
 
 
 def test_compute_predicted_labels_picks_argmax_per_row():
@@ -176,7 +176,7 @@ def test_compute_predicted_labels_picks_argmax_per_row():
 
 
 def test_build_predictions_df_emits_probabilities_and_label():
-    valid_df = pd.DataFrame(
+    valid_df = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["h1", "h2"],
@@ -187,10 +187,10 @@ def test_build_predictions_df_emits_probabilities_and_label():
     )
     probabilities = np.array([[0.6, 0.2, 0.1, 0.1], [0.1, 0.1, 0.7, 0.1]])
     output = subject.build_predictions_df(valid_df, probabilities)
-    assert output["predicted_label"].tolist() == ["nige", "sashi"]
-    assert output["predicted_class"].tolist() == [0, 2]
-    assert output["p_nige"].tolist() == [0.6, 0.1]
-    assert output["p_sashi"].tolist() == [0.1, 0.7]
+    assert output["predicted_label"].to_list() == ["nige", "sashi"]
+    assert output["predicted_class"].to_list() == [0, 2]
+    assert output["p_nige"].to_list() == [0.6, 0.1]
+    assert output["p_sashi"].to_list() == [0.1, 0.7]
 
 
 def test_lgb_params_for_multiclass_sets_objective_and_num_class():
@@ -248,7 +248,7 @@ def test_default_valid_start_date_constant_holds_out_2026_partial_year():
 
 
 def test_write_predictions_jsonl_writes_each_row(tmp_path: Path):
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": ["r1"],
             "umaban": [1],
@@ -481,7 +481,7 @@ def test_emit_walk_forward_warnings_returns_empty_when_no_regression(capsys: pyt
 
 
 def test_run_walk_forward_eval_for_year_returns_nan_when_train_subset_empty(monkeypatch: pytest.MonkeyPatch):
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20240115"],
             "race_year": [2024],
@@ -504,7 +504,7 @@ def test_run_walk_forward_eval_for_year_returns_nan_when_train_subset_empty(monk
 
 
 def test_run_walk_forward_eval_for_year_invokes_training_and_returns_metrics(monkeypatch: pytest.MonkeyPatch):
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20230101", "20230102", "20240101", "20240102"],
             "race_year": [2023, 2023, 2024, 2024],
@@ -516,8 +516,8 @@ def test_run_walk_forward_eval_for_year_invokes_training_and_returns_metrics(mon
     captured_train_rows: dict[str, int] = {}
 
     def _fake_train(
-        train_df: pd.DataFrame,
-        valid_df: pd.DataFrame,
+        train_df: pl.DataFrame,
+        valid_df: pl.DataFrame,
         _feature_columns: list[str],
         _categorical_features: list[str],
         _params: subject.TrainingParams,
@@ -541,7 +541,7 @@ def test_run_walk_forward_eval_for_windows_prints_each_year_json(monkeypatch: py
     captured_years: list[int] = []
 
     def _fake_year(
-        _df: pd.DataFrame,
+        _df: pl.DataFrame,
         holdout_year: int,
         train_start_date: str,
         _features: list[str],
@@ -563,7 +563,7 @@ def test_run_walk_forward_eval_for_windows_prints_each_year_json(monkeypatch: py
         }
 
     monkeypatch.setattr(subject, "run_walk_forward_eval_for_year", _fake_year)
-    df = pd.DataFrame({"race_date": [], "race_year": [], "target_running_style_class": []})
+    df = pl.DataFrame({"race_date": [], "race_year": [], "target_running_style_class": []})
     results = subject.run_walk_forward_eval_for_windows(
         df, [2024, 2025], "20050101", [], [], subject.default_training_params(),
     )
@@ -574,7 +574,7 @@ def test_run_walk_forward_eval_for_windows_prints_each_year_json(monkeypatch: py
 
 
 def test_compute_production_precision_nige_returns_nan_when_valid_empty(monkeypatch: pytest.MonkeyPatch):
-    train_subset = pd.DataFrame(
+    train_subset = pl.DataFrame(
         {
             "race_date": ["20240101", "20240102"],
             "target_running_style_class": [0, 1],
@@ -597,7 +597,7 @@ def test_compute_production_precision_nige_returns_nan_when_valid_empty(monkeypa
 
 
 def test_compute_production_precision_nige_computes_from_predict_softmax(monkeypatch: pytest.MonkeyPatch):
-    train_subset = pd.DataFrame(
+    train_subset = pl.DataFrame(
         {
             "race_date": ["20250101", "20250102", "20260101", "20260102"],
             "target_running_style_class": [0, 1, 0, 0],
@@ -609,7 +609,7 @@ def test_compute_production_precision_nige_computes_from_predict_softmax(monkeyp
 
     def _fake_predict(
         _booster: object,
-        frame: pd.DataFrame,
+        frame: pl.DataFrame,
         _feature_columns: list[str],
         _categorical_features: list[str],
     ) -> np.ndarray:
@@ -698,24 +698,24 @@ def test_write_model_metadata_drops_production_precision_when_nan(tmp_path: Path
 def test_run_train_production_command_default_skips_walk_forward_eval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     csv_path = tmp_path / "data.parquet"
     output_dir = tmp_path / "model"
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20240101", "20240102", "20260101", "20260102"],
             "target_running_style_class": [0, 1, 0, 1],
             "feature_a": [1.0, 0.5, 0.4, 0.2],
         }
     )
-    df.to_parquet(csv_path)
+    df.write_parquet(csv_path)
 
     class _FakeBooster:
         def save_model(self, path: str) -> None:
             Path(path).write_text("fake-model", encoding="utf-8")
 
-    def _fake_load(_path: Path) -> pd.DataFrame:
-        return df.copy()
+    def _fake_load(_path: Path) -> pl.DataFrame:
+        return df.clone()
 
     def _fake_train_full(
-        _train_df: pd.DataFrame,
+        _train_df: pl.DataFrame,
         _features: list[str],
         _cats: list[str],
         _params: subject.TrainingParams,
@@ -1074,20 +1074,20 @@ def test_write_model_metadata_omits_class_weight_scheme_when_absent(tmp_path: Pa
 def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     csv_path = tmp_path / "data.parquet"
     output_dir = tmp_path / "model"
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20240101", "20240102", "20260101", "20260102"],
             "target_running_style_class": [0, 1, 0, 1],
             "feature_a": [1.0, 0.5, 0.4, 0.2],
         }
     )
-    df.to_parquet(csv_path)
+    df.write_parquet(csv_path)
 
     class _FakeBooster:
         def save_model(self, path: str) -> None:
             Path(path).write_text("fake-model", encoding="utf-8")
 
-    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.copy())
+    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.clone())
     monkeypatch.setattr(subject, "maybe_enrich_with_field_features", lambda frame, _enabled: frame)
     monkeypatch.setattr(subject, "train_full_dataset", lambda *_args, **_kwargs: _FakeBooster())
     monkeypatch.setattr("builtins.print", lambda *_args, **_kwargs: None)
@@ -1133,7 +1133,7 @@ def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_pat
 
 def test_compute_weighted_sample_weights_balanced2_multiplies_base():
     # nige=class 0 (2 samples), senkou=class 1 (2 samples) — equal base weights before multiplier
-    labels = pd.Series([0, 0, 1, 1])
+    labels = pl.Series([0, 0, 1, 1])
     multipliers: tuple[float, float, float, float] = (0.65, 1.0, 1.0, 0.85)
     weights = subject.compute_weighted_sample_weights(labels, multipliers)
     nige_weight = weights[0]
@@ -1142,14 +1142,14 @@ def test_compute_weighted_sample_weights_balanced2_multiplies_base():
 
 
 def test_resolve_sample_weights_inverse_freq_passthrough():
-    labels = pd.Series([0, 0, 1, 1, 2, 3])
+    labels = pl.Series([0, 0, 1, 1, 2, 3])
     expected = subject.compute_inverse_frequency_weights(labels)
     result = subject.resolve_sample_weights(labels, "inverse_freq")
     np.testing.assert_array_almost_equal(result, expected)
 
 
 def test_resolve_sample_weights_balanced2_scheme():
-    labels = pd.Series([0, 0, 1, 1])
+    labels = pl.Series([0, 0, 1, 1])
     inverse_freq = subject.compute_inverse_frequency_weights(labels)
     balanced2 = subject.resolve_sample_weights(labels, "balanced2")
     # nige weights should be scaled down vs inverse_freq
@@ -1193,14 +1193,14 @@ def test_parse_args_class_weight_scheme_balanced2():
 def test_run_train_production_command_enable_walk_forward_writes_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     csv_path = tmp_path / "data.parquet"
     output_dir = tmp_path / "model"
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20240101", "20240102", "20260101", "20260102"],
             "target_running_style_class": [0, 1, 0, 0],
             "feature_a": [1.0, 0.5, 0.4, 0.2],
         }
     )
-    df.to_parquet(csv_path)
+    df.write_parquet(csv_path)
 
     class _FakeBooster:
         def save_model(self, path: str) -> None:
@@ -1221,7 +1221,7 @@ def test_run_train_production_command_enable_walk_forward_writes_results(tmp_pat
         }
     }
 
-    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.copy())
+    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.clone())
     monkeypatch.setattr(subject, "maybe_enrich_with_field_features", lambda frame, _enabled: frame)
     monkeypatch.setattr(
         subject,

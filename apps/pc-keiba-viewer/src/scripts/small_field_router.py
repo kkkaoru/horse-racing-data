@@ -14,34 +14,38 @@ do no file/network I/O.
 
 from __future__ import annotations
 
-from typing import Final, cast
+from typing import Final
 
-import pandas as pd
+import polars as pl
 
 DEFAULT_SMALL_FIELD_THRESHOLD: Final[int] = 8
 
 _RACE_ID_COL: Final[str] = "race_id"
 _UMABAN_COL: Final[str] = "umaban"
+_FIELD_SIZE_COL: Final[str] = "field_size"
 
 
-def compute_field_sizes(predictions: pd.DataFrame) -> pd.Series:
-    """Return a Series indexed by ``race_id`` giving the row count per race."""
-    return cast(pd.Series, predictions.groupby(_RACE_ID_COL).size())
+def compute_field_sizes(predictions: pl.DataFrame) -> pl.DataFrame:
+    """Return a frame with one row per ``race_id`` and its row count.
+
+    Columns: ``race_id`` and ``field_size``.
+    """
+    return predictions.group_by(_RACE_ID_COL).agg(pl.len().alias(_FIELD_SIZE_COL))
 
 
-def select_small_field_race_ids(predictions: pd.DataFrame, threshold: int) -> set[str]:
+def select_small_field_race_ids(predictions: pl.DataFrame, threshold: int) -> set[str]:
     """Return race_ids whose field size is ``<= threshold``."""
     field_sizes = compute_field_sizes(predictions)
-    small = field_sizes[field_sizes <= threshold]
-    return {str(race_id) for race_id in small.index}
+    small = field_sizes.filter(pl.col(_FIELD_SIZE_COL) <= threshold)
+    return {str(race_id) for race_id in small[_RACE_ID_COL].to_list()}
 
 
 def route_small_field_predictions(
-    small_field_predictions: pd.DataFrame,
-    large_field_predictions: pd.DataFrame,
+    small_field_predictions: pl.DataFrame,
+    large_field_predictions: pl.DataFrame,
     *,
     threshold: int = DEFAULT_SMALL_FIELD_THRESHOLD,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Per-race merge: small fields take ``small_field`` rows, large fields take ``large_field``.
 
     Field size is determined from ``large_field_predictions`` (the baseline /
@@ -49,28 +53,30 @@ def route_small_field_predictions(
     field size ``<= threshold`` the rows come from ``small_field_predictions``;
     otherwise from ``large_field_predictions``. A small-field race missing from
     ``small_field_predictions`` falls back to its large-field rows (the race is
-    never dropped). The output preserves the input column schema, is sorted by
-    ``(race_id, umaban)`` for determinism, and has a reset index. An empty
-    ``large_field_predictions`` yields an empty frame with the same columns.
+    never dropped). The output preserves the input column schema and is sorted by
+    ``(race_id, umaban)`` for determinism. An empty ``large_field_predictions``
+    yields an empty frame with the same columns.
 
     Caller convention: pass CatBoost as ``small_field_predictions`` and XGBoost
     as ``large_field_predictions``.
     """
-    if large_field_predictions.empty:
-        return large_field_predictions.iloc[0:0].reset_index(drop=True)
+    if large_field_predictions.is_empty():
+        return large_field_predictions.clear()
     small_race_ids = select_small_field_race_ids(large_field_predictions, threshold)
-    available_small = set(small_field_predictions[_RACE_ID_COL].astype(str).unique())
+    available_small = set(
+        small_field_predictions[_RACE_ID_COL].cast(pl.String).to_list()
+    )
     routed_to_small = small_race_ids & available_small
-    small_rows = small_field_predictions[
-        small_field_predictions[_RACE_ID_COL].astype(str).isin(routed_to_small)
-    ]
-    large_rows = large_field_predictions[
-        ~large_field_predictions[_RACE_ID_COL].astype(str).isin(routed_to_small)
-    ]
-    combined = pd.concat([small_rows, large_rows], ignore_index=True)
-    ordered = combined.sort_values(
+    small_rows = small_field_predictions.filter(
+        pl.col(_RACE_ID_COL).cast(pl.String).is_in(routed_to_small)
+    )
+    large_rows = large_field_predictions.filter(
+        ~pl.col(_RACE_ID_COL).cast(pl.String).is_in(routed_to_small)
+    )
+    combined = pl.concat([small_rows, large_rows])
+    ordered = combined.sort(
         by=[_RACE_ID_COL, _UMABAN_COL],
-        ascending=[True, True],
-        kind="stable",
-    ).reset_index(drop=True)
-    return ordered[list(large_field_predictions.columns)]
+        descending=[False, False],
+        maintain_order=True,
+    )
+    return ordered.select(large_field_predictions.columns)

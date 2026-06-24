@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pyarrow.parquet as pq
 from catboost import CatBoost, Pool  # pyright: ignore[reportMissingTypeStubs]
 
@@ -91,7 +91,7 @@ def _extract_year(path: Path) -> int:
 
 def load_parquet_dir(
     path: Path, year_max: int | None = None, columns: list[str] | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     parts = sorted(path.glob("race_year=*/*.parquet"))
     if not parts:
         raise ValueError(f"no parquet files found under {path}")
@@ -100,8 +100,8 @@ def load_parquet_dir(
         if not parts:
             raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
     if columns is not None:
-        return pd.concat([pd.read_parquet(p, columns=columns) for p in parts], ignore_index=True)
-    return pd.concat([pd.read_parquet(p) for p in parts], ignore_index=True)
+        return pl.concat([pl.read_parquet(p, columns=columns) for p in parts])
+    return pl.concat([pl.read_parquet(p) for p in parts])
 
 
 def read_parquet_schema_names(path: Path) -> list[str]:
@@ -124,7 +124,7 @@ def resolve_projection_columns(schema_names: list[str]) -> list[str]:
     return projection
 
 
-def resolve_feature_columns(df: pd.DataFrame, use_cat_features: bool = True) -> list[str]:
+def resolve_feature_columns(df: pl.DataFrame, use_cat_features: bool = True) -> list[str]:
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
     if not use_cat_features:
         excluded |= set(CATEGORICAL_FEATURE_NAMES)
@@ -132,7 +132,7 @@ def resolve_feature_columns(df: pd.DataFrame, use_cat_features: bool = True) -> 
         c for c in df.columns
         if c not in excluded
         and c not in CATEGORICAL_FEATURE_NAMES
-        and pd.api.types.is_numeric_dtype(df[c])
+        and df.schema[c].is_numeric()
     ]
     cats = (
         [c for c in CATEGORICAL_FEATURE_NAMES if c in df.columns]
@@ -142,7 +142,7 @@ def resolve_feature_columns(df: pd.DataFrame, use_cat_features: bool = True) -> 
 
 
 def resolve_cat_feature_indices(
-    df: pd.DataFrame, feature_cols: list[str], use_cat_features: bool = True,
+    df: pl.DataFrame, feature_cols: list[str], use_cat_features: bool = True,
 ) -> list[int]:
     if not use_cat_features:
         return []
@@ -156,11 +156,24 @@ def make_to_relevance(rank1: int, rank2: int, rank3: int):
     rel_map = {1: rank1, 2: rank2, 3: rank3}
 
     def _to(value: object) -> int:
-        if value is None or pd.isna(cast(float, value)):
+        if value is None or (isinstance(value, float) and np.isnan(value)):
             return 0
         return rel_map.get(int(cast(float, value)), 0)
 
     return _to
+
+
+def relevance_labels(
+    df: pl.DataFrame, rank1: int, rank2: int, rank3: int,
+) -> np.ndarray:
+    rel_map = {1: rank1, 2: rank2, 3: rank3}
+    labels = (
+        df["finish_position"]
+        .cast(pl.Int64, strict=False)
+        .replace_strict(rel_map, default=0, return_dtype=pl.Int32)
+        .fill_null(0)
+    )
+    return labels.to_numpy().astype(np.int32)
 
 
 def subtract_one_day(date_str: str) -> str:
@@ -169,73 +182,80 @@ def subtract_one_day(date_str: str) -> str:
     return (dt - timedelta(days=1)).strftime("%Y%m%d")
 
 
-def filter_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    mask = (df["race_date"] >= start) & (df["race_date"] <= end) & df["finish_position"].notna()
-    return df[mask].copy()
+def filter_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
+    return df.filter(
+        (pl.col("race_date") >= start)
+        & (pl.col("race_date") <= end)
+        & pl.col("finish_position").is_not_null()
+    )
 
 
-def filter_year(df: pd.DataFrame, year: int) -> pd.DataFrame:
+def filter_year(df: pl.DataFrame, year: int) -> pl.DataFrame:
     year_str = str(year)
-    mask = df["race_date"].str.startswith(year_str) & df["finish_position"].notna()
-    return df[mask].copy()
+    return df.filter(
+        pl.col("race_date").str.starts_with(year_str)
+        & pl.col("finish_position").is_not_null()
+    )
 
 
-def race_group_ids(df: pd.DataFrame) -> np.ndarray:
-    return df["race_id"].astype("category").cat.codes.to_numpy()
+def race_group_ids(df: pl.DataFrame) -> np.ndarray:
+    return df["race_id"].cast(pl.Categorical).to_physical().to_numpy()
 
 
 def sort_train_valid_for_grouping(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     args: argparse.Namespace,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Order rows so race groups are contiguous before building Pools.
 
     CatBoost's ``Pool(group_id=...)`` requires every race's rows to be
     contiguous, which the ``(race_id, umaban)`` sort guarantees. When the
     walk-forward caller already sorted the full dataset once (passing
-    ``presorted=True``), each fold slice is still sorted, so we only need a cheap
-    ``reset_index`` for positional alignment instead of re-sorting the cumulative
-    train window every fold.
+    ``presorted=True``), each fold slice is still sorted, so we skip the
+    re-sort of the cumulative train window every fold.
     """
     if getattr(args, "presorted", False):
-        return train_df.reset_index(drop=True), valid_df.reset_index(drop=True)
+        return train_df, valid_df
     return (
-        train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
-        valid_df.sort_values(["race_id", "umaban"]).reset_index(drop=True),
+        train_df.sort(["race_id", "umaban"]),
+        valid_df.sort(["race_id", "umaban"]),
     )
 
 
 def prepare_feature_matrix(
-    df: pd.DataFrame, feature_cols: list[str], cat_indices: list[int],
-) -> pd.DataFrame:
+    df: pl.DataFrame, feature_cols: list[str], cat_indices: list[int],
+) -> pl.DataFrame:
     cat_set = {feature_cols[i] for i in cat_indices}
-    out = df[feature_cols].copy()
-    for col in feature_cols:
-        if col in cat_set:
-            out[col] = out[col].astype("string").fillna("__missing__").astype(str)
-        else:
-            out[col] = out[col].astype(np.float32)
-    return out
+    exprs = [
+        pl.col(col).cast(pl.String).fill_null("__missing__")
+        if col in cat_set
+        else pl.col(col).cast(pl.Float32)
+        for col in feature_cols
+    ]
+    return df.select(exprs)
 
 
 def train_catboost_ranker(
-    train_df: pd.DataFrame,
-    valid_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
     feature_cols: list[str],
     args: argparse.Namespace,
 ) -> dict[str, object]:
     train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
-    to_relevance = make_to_relevance(
-        int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+    train_labels = relevance_labels(
+        train_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )
-    train_labels = train_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
-    valid_labels = valid_df["finish_position"].map(to_relevance).to_numpy(dtype=np.int32)
+    valid_labels = relevance_labels(
+        valid_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+    )
     use_cat = not getattr(args, "no_cat_features", False)
     cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
     train_features = prepare_feature_matrix(train_df, feature_cols, cat_indices)
     valid_features = prepare_feature_matrix(valid_df, feature_cols, cat_indices)
-    train_weights = train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
+    train_weights = (
+        train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
+    )
     train_pool = Pool(
         data=train_features,
         label=train_labels,
@@ -272,12 +292,15 @@ def train_catboost_ranker(
         params["random_strength"] = float(random_strength)
     model = CatBoost(params)
     model.fit(train_pool, eval_set=valid_pool, verbose=False)
-    pred = model.predict(valid_pool)
-    valid_df = valid_df.assign(predicted_score=pred)
-    valid_df["predicted_rank"] = (
-        valid_df.groupby("race_id")["predicted_score"]
-        .rank(method="first", ascending=False, na_option="bottom")
-        .astype(int)
+    pred = np.asarray(model.predict(valid_pool), dtype=np.float64)
+    valid_df = valid_df.with_columns(pl.Series("predicted_score", pred))
+    valid_df = valid_df.with_columns(
+        pl.col("predicted_score")
+        .fill_nan(float("-inf"))
+        .rank(method="ordinal", descending=True)
+        .over("race_id")
+        .cast(pl.Int64)
+        .alias("predicted_rank")
     )
     metrics = compute_fold_metrics(valid_df)
     best_iter = model.get_best_iteration()
@@ -289,39 +312,50 @@ def train_catboost_ranker(
     }
 
 
-def cb_top1_hit(g: pd.DataFrame) -> int:
-    return int(((g["predicted_rank"] == 1) & (g["finish_position"] == 1)).any())
+def cb_top1_hit(g: pl.DataFrame) -> int:
+    return int(
+        g.filter((pl.col("predicted_rank") == 1) & (pl.col("finish_position") == 1)).height > 0
+    )
 
 
-def cb_top3_box_hit(g: pd.DataFrame) -> int:
-    return int(g[g["predicted_rank"] <= 3]["finish_position"].le(3).sum() == 3)
+def cb_top3_box_hit(g: pl.DataFrame) -> int:
+    top3 = g.filter(pl.col("predicted_rank") <= 3)
+    return int(top3.filter(pl.col("finish_position") <= 3).height == 3)
 
 
-def compute_fold_metrics(valid_df: pd.DataFrame) -> dict[str, float]:
-    groups = [g for _, g in valid_df.groupby("race_id")]
+def compute_fold_metrics(valid_df: pl.DataFrame) -> dict[str, float]:
+    groups = [g for (_,), g in valid_df.group_by(["race_id"])]
     race_count = len(groups)
     top1_hits = [cb_top1_hit(g) for g in groups]
     top3_box = [cb_top3_box_hit(g) for g in groups]
     return {
         "race_count": race_count,
-        "valid_rows": int(len(valid_df)),
+        "valid_rows": int(valid_df.height),
         "top1_accuracy": float(np.mean(top1_hits)) if top1_hits else 0.0,
         "top3_box_accuracy": float(np.mean(top3_box)) if top3_box else 0.0,
     }
 
 
-def write_predictions_jsonl(valid_df: pd.DataFrame, output_path: Path) -> None:
+def _coerce_umaban(value: float | None) -> int | None:
+    if value is None or np.isnan(value):
+        return None
+    return int(value)
+
+
+def write_predictions_jsonl(valid_df: pl.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    rows = valid_df[["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]]
+    rows = valid_df.select(
+        ["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]
+    )
     with output_path.open("w", encoding="utf-8") as fp:
-        for row in rows.itertuples(index=False):
-            umaban_value = cast(float, row.umaban)
+        for row in rows.iter_rows(named=True):
+            umaban_value = cast("float | None", row["umaban"])
             fp.write(json.dumps({
-                "race_id": row.race_id,
-                "ketto_toroku_bango": row.ketto_toroku_bango,
-                "umaban": int(umaban_value) if pd.notna(umaban_value) else None,
-                "predicted_score": float(cast(float, row.predicted_score)),
-                "predicted_rank": int(cast(float, row.predicted_rank)),
+                "race_id": row["race_id"],
+                "ketto_toroku_bango": row["ketto_toroku_bango"],
+                "umaban": _coerce_umaban(umaban_value),
+                "predicted_score": float(cast(float, row["predicted_score"])),
+                "predicted_rank": int(cast(float, row["predicted_rank"])),
             }) + "\n")
 
 
@@ -336,11 +370,11 @@ def run_walk_forward(args: argparse.Namespace) -> None:
         train_end = args.train_end_date or subtract_one_day(args.validation_from_date)
         train_df = filter_range(df, args.train_start_date, train_end)
         valid_df = filter_range(df, args.validation_from_date, args.validation_to_date)
-        if len(train_df) > 0 and len(valid_df) > 0:
+        if train_df.height > 0 and valid_df.height > 0:
             result = train_catboost_ranker(train_df, valid_df, feature_cols, args)
             fold_label = f"{args.validation_from_date}-{args.validation_to_date}"
             write_predictions_jsonl(
-                cast(pd.DataFrame, result["valid_predictions"]),
+                cast(pl.DataFrame, result["valid_predictions"]),
                 args.output_predictions_dir / f"{fold_label}.jsonl",
             )
             folds.append({
@@ -354,11 +388,11 @@ def run_walk_forward(args: argparse.Namespace) -> None:
             train_end = args.train_end_date or f"{valid_year - 1}1231"
             train_df = filter_range(df, args.train_start_date, train_end)
             valid_df = filter_year(df, valid_year)
-            if len(train_df) == 0 or len(valid_df) == 0:
+            if train_df.height == 0 or valid_df.height == 0:
                 continue
             result = train_catboost_ranker(train_df, valid_df, feature_cols, args)
             write_predictions_jsonl(
-                cast(pd.DataFrame, result["valid_predictions"]),
+                cast(pl.DataFrame, result["valid_predictions"]),
                 args.output_predictions_dir / f"{valid_year}.jsonl",
             )
             folds.append({

@@ -6,11 +6,14 @@ import argparse
 import json
 import math
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Final, Literal, TypedDict, cast
 
 import optuna
-import pandas as pd
+import polars as pl
+from optuna.distributions import BaseDistribution, CategoricalDistribution
+from optuna.samplers import BaseSampler, TPESampler
+from optuna.trial import FrozenTrial, TrialState, create_trial
 
 from learning.feature_registry import FeatureRegistry
 from finish_position_catboost import (
@@ -112,16 +115,16 @@ _DtypeSignature = tuple[tuple[str, str], ...]
 # Per-dataframe memo of the model-safe column set. ``build_objective`` pre-splits
 # folds once and reuses the SAME train/valid frames across every trial of a round,
 # so the (id(df), dtypes) key hits on every trial after the first, turning a hot
-# per-(trial x fold x column) ``is_numeric_dtype`` scan into a single classification.
+# per-(trial x fold x column) numeric-dtype scan into a single classification.
 _MODEL_SAFE_CACHE: dict[int, tuple[_DtypeSignature, frozenset[str]]] = {}
 _XGB_NUMERIC_CACHE: dict[int, tuple[_DtypeSignature, frozenset[str]]] = {}
 
 
-def _dtype_signature(df: pd.DataFrame) -> _DtypeSignature:
+def _dtype_signature(df: pl.DataFrame) -> _DtypeSignature:
     return tuple(zip(df.columns, (str(dt) for dt in df.dtypes), strict=True))
 
 
-def _model_safe_columns(df: pd.DataFrame) -> frozenset[str]:
+def _model_safe_columns(df: pl.DataFrame) -> frozenset[str]:
     """Cached frozenset of columns that are model-safe for the given dataframe.
 
     A column is model-safe iff it is an allowed categorical (kept regardless of
@@ -133,16 +136,17 @@ def _model_safe_columns(df: pd.DataFrame) -> frozenset[str]:
     cached = _MODEL_SAFE_CACHE.get(id(df))
     if cached is not None and cached[0] == signature:
         return cached[1]
+    schema = df.schema
     safe = frozenset(
         col
         for col in df.columns
-        if col in _ALLOWED_CATEGORICAL or pd.api.types.is_numeric_dtype(df[col])
+        if col in _ALLOWED_CATEGORICAL or schema[col].is_numeric()
     )
     _MODEL_SAFE_CACHE[id(df)] = (signature, safe)
     return safe
 
 
-def _numeric_columns(df: pd.DataFrame) -> frozenset[str]:
+def _numeric_columns(df: pl.DataFrame) -> frozenset[str]:
     """Cached frozenset of numeric, non-meta/label columns for the given dataframe.
 
     Identical classification to the inline scan it replaces (a column qualifies
@@ -155,16 +159,17 @@ def _numeric_columns(df: pd.DataFrame) -> frozenset[str]:
     if cached is not None and cached[0] == signature:
         return cached[1]
     excluded = set(META_COLUMNS) | _LABEL_COLS
+    schema = df.schema
     numeric = frozenset(
         col
         for col in df.columns
-        if col not in excluded and pd.api.types.is_numeric_dtype(df[col])
+        if col not in excluded and schema[col].is_numeric()
     )
     _XGB_NUMERIC_CACHE[id(df)] = (signature, numeric)
     return numeric
 
 
-def _is_model_safe_feature(df: pd.DataFrame, col: str) -> bool:
+def _is_model_safe_feature(df: pl.DataFrame, col: str) -> bool:
     return col in _model_safe_columns(df)
 
 
@@ -210,14 +215,17 @@ def _dcg_at_3_from_positions(finish_positions: list[float]) -> float:
     )
 
 
-def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
+def _ndcg_at_3_from_valid_df(valid_df: pl.DataFrame) -> float:
     ndcg_scores: list[float] = []
-    for _, group in valid_df.groupby("race_id"):
-        valid_group = group.dropna(subset=["predicted_rank", "finish_position"])
-        sorted_group = valid_group.sort_values("predicted_rank")
-        dcg = _dcg_at_3_from_positions(sorted_group["finish_position"].tolist())
+    for (_race_id,), group in valid_df.group_by("race_id", maintain_order=True):
+        valid_group = group.drop_nulls(subset=["predicted_rank", "finish_position"])
+        sorted_group = valid_group.sort("predicted_rank")
+        dcg = _dcg_at_3_from_positions(sorted_group["finish_position"].to_list())
         ideal_relevances = sorted(
-            (_RELEVANCE_MAP.get(int(fp), 0.0) for fp in group["finish_position"] if pd.notna(fp)),
+            (
+                _RELEVANCE_MAP.get(int(fp), 0.0)
+                for fp in group["finish_position"].drop_nulls().to_list()
+            ),
             reverse=True,
         )[:3]
         ideal_dcg = _dcg_at_3_from_positions_relevances(ideal_relevances)
@@ -226,14 +234,16 @@ def _ndcg_at_3_from_valid_df(valid_df: pd.DataFrame) -> float:
     return sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
 
 
-def _xgb_numeric_features(df: pd.DataFrame, feature_names: list[str]) -> list[str]:
+def _xgb_numeric_features(df: pl.DataFrame, feature_names: list[str]) -> list[str]:
     numeric = _numeric_columns(df)
     return [c for c in feature_names if c in numeric]
 
 
 def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
     _, predictions, _ = run_walk_forward_fold(fold, params)
-    valid_with_pos = fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+    valid_with_pos = fold["valid_df"].select(
+        ["race_id", "ketto_toroku_bango", "finish_position"]
+    ).join(
         predictions,
         on=["race_id", "ketto_toroku_bango"],
         how="left",
@@ -248,7 +258,7 @@ def _run_fold_xgboost(fold: FoldSplit) -> float | None:
     _, result = train_xgboost_ranker(
         fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
     )
-    valid_df = cast(pd.DataFrame, result["valid_predictions"])
+    valid_df = cast(pl.DataFrame, result["valid_predictions"])
     return _ndcg_at_3_from_valid_df(valid_df)
 
 
@@ -264,7 +274,7 @@ def _run_fold_catboost(fold: FoldSplit) -> float | None:
     result = train_catboost_ranker(
         fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
     )
-    valid_df = cast(pd.DataFrame, result["valid_predictions"])
+    valid_df = cast(pl.DataFrame, result["valid_predictions"])
     return _ndcg_at_3_from_valid_df(valid_df)
 
 
@@ -280,26 +290,28 @@ def run_fold_with_backend(
     return _run_fold_catboost(fold)
 
 
-def _predict_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> pd.DataFrame:
+def _predict_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> pl.DataFrame:
     _, predictions, _ = run_walk_forward_fold(fold, params)
-    return fold["valid_df"][["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+    return fold["valid_df"].select(
+        ["race_id", "ketto_toroku_bango", "finish_position"]
+    ).join(
         predictions,
         on=["race_id", "ketto_toroku_bango"],
         how="left",
     )
 
 
-def _predict_fold_xgboost(fold: FoldSplit) -> pd.DataFrame | None:
+def _predict_fold_xgboost(fold: FoldSplit) -> pl.DataFrame | None:
     feature_cols = _xgb_numeric_features(fold["train_df"], list(fold["train_df"].columns))
     if not feature_cols:
         return None
     _, result = train_xgboost_ranker(
         fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
     )
-    return cast(pd.DataFrame, result["valid_predictions"])
+    return cast(pl.DataFrame, result["valid_predictions"])
 
 
-def _predict_fold_catboost(fold: FoldSplit) -> pd.DataFrame | None:
+def _predict_fold_catboost(fold: FoldSplit) -> pl.DataFrame | None:
     excluded = set(META_COLUMNS) | _LABEL_COLS
     feature_cols = [
         c
@@ -311,14 +323,14 @@ def _predict_fold_catboost(fold: FoldSplit) -> pd.DataFrame | None:
     result = train_catboost_ranker(
         fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
     )
-    return cast(pd.DataFrame, result["valid_predictions"])
+    return cast(pl.DataFrame, result["valid_predictions"])
 
 
 def predict_fold_with_backend(
     fold: FoldSplit,
     backend: ModelBackend,
     lgb_params: TrainingParams,
-) -> pd.DataFrame | None:
+) -> pl.DataFrame | None:
     """Train one fold and return its valid predictions with a ``predicted_rank`` column.
 
     Mirrors :func:`run_fold_with_backend` but yields the per-row prediction frame
@@ -333,13 +345,13 @@ def predict_fold_with_backend(
 
 
 def select_features(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_mask: dict[str, bool],
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
     selected = [col for col, keep in feature_mask.items() if keep]
     keep_cols = [c for c in df.columns if c in meta_and_label or c in selected]
-    return df[keep_cols]
+    return df.select(keep_cols)
 
 
 def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
@@ -352,8 +364,8 @@ def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
         or (c in feature_set and _is_model_safe_feature(fold["train_df"], c))
     ]
     return {
-        "train_df": fold["train_df"][keep_cols],
-        "valid_df": fold["valid_df"][keep_cols],
+        "train_df": fold["train_df"].select(keep_cols),
+        "valid_df": fold["valid_df"].select(keep_cols),
         "valid_year": fold["valid_year"],
     }
 
@@ -364,7 +376,7 @@ def select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
 
 
 def evaluate_feature_set(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     feature_names: list[str],
     validation_years: list[int],
     train_start: str,
@@ -377,7 +389,7 @@ def evaluate_feature_set(
     ndcg_scores: list[float] = []
     for year in validation_years:
         fold = split_walk_forward(subset_df, train_start, year)
-        if fold["train_df"].empty or fold["valid_df"].empty:
+        if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
             continue
         for backend in backends:
             score = run_fold_with_backend(fold, backend, params)
@@ -389,7 +401,7 @@ def evaluate_feature_set(
 
 
 def build_objective(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     candidate_features: list[str],
     validation_years: list[int],
     train_start: str,
@@ -401,7 +413,7 @@ def build_objective(
     pre_split_folds: dict[int, FoldSplit] = {}
     for year in validation_years:
         fold = split_walk_forward(df, train_start, year)
-        if not fold["train_df"].empty and not fold["valid_df"].empty:
+        if not fold["train_df"].is_empty() and not fold["valid_df"].is_empty():
             pre_split_folds[year] = fold
 
     def objective(trial: optuna.Trial) -> float:
@@ -427,6 +439,10 @@ def build_objective(
                 trial.report(intermediate, step)
                 if trial.should_prune():
                     raise optuna.TrialPruned()
+            # Free this fold's column subset before the next iteration allocates
+            # its own, so the final fold's frame isn't pinned through the registry
+            # get_active_entry()/maybe_promote calls below.
+            del fold_with_features
         ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
         trial_id = f"{study_name}_trial_{trial.number}"
         active_entry = registry.get_active_entry()
@@ -435,15 +451,129 @@ def build_objective(
         definition = json.dumps(
             {"features": selected, "trial": trial.number, "delta_pp": delta_pp}
         )
-        promoted = registry.maybe_promote(trial_id, ndcg, selected, definition)
+        promoted = registry.maybe_promote(
+            trial_id, ndcg, selected, definition, active_ndcg=active_ndcg
+        )
         trial.set_user_attr("promoted", promoted)
         return ndcg
 
     return objective
 
 
+def build_feature_sampler(n_trials: int, seed: int = SAMPLER_SEED) -> BaseSampler:
+    """Return a TPE sampler tuned for binary feature-selection search.
+
+    ``multivariate`` lets TPE model joint feature interactions rather than treating
+    each ``use_<feature>`` flag independently, which matters because feature value
+    comes from combinations, not isolated columns. ``constant_liar`` keeps suggestions
+    sane if a caller ever runs trials concurrently (a pending trial is treated as a
+    temporary failure so two workers don't pick the same point).
+
+    ``BruteForceSampler`` is infeasible here (2^n candidate space) and ``CmaEsSampler``
+    only handles continuous spaces, so neither fits the boolean mask search.
+
+    The random startup count is capped just below ``n_trials`` so a small per-round
+    budget never collapses into pure random sampling before TPE engages.
+    """
+    n_startup = max(1, min(TPE_N_STARTUP_TRIALS, n_trials - 1))
+    return TPESampler(
+        seed=seed,
+        n_startup_trials=n_startup,
+        multivariate=True,
+        constant_liar=True,
+    )
+
+
+def _mask_to_params(
+    candidate_features: Sequence[str], selected: set[str]
+) -> tuple[dict[str, bool], dict[str, BaseDistribution]]:
+    """Build Optuna params/distributions for a known feature mask over the candidates."""
+    distribution = CategoricalDistribution([True, False])
+    params: dict[str, bool] = {}
+    distributions: dict[str, BaseDistribution] = {}
+    for col in candidate_features:
+        key = f"use_{col}"
+        params[key] = col in selected
+        distributions[key] = distribution
+    return params, distributions
+
+
+def build_warm_start_trials(
+    registry: FeatureRegistry,
+    candidate_features: Sequence[str],
+    top_k: int = DEFAULT_WARM_START_TOP_K,
+) -> list[FrozenTrial]:
+    """Reconstruct the registry's best prior trials as Optuna trials over current candidates.
+
+    Each prior trial's stored feature set is re-expressed as a boolean mask over the
+    *current* candidate columns and paired with its recorded NDCG, so a resumed study
+    can seed TPE with proven points instead of relearning them. Features that no longer
+    exist as candidates are dropped from the mask (they cannot be suggested anyway), and
+    prior trials whose surviving mask falls below ``MIN_FEATURES`` are skipped because the
+    objective would have scored them 0.0 — feeding those back would bias the prior.
+    """
+    candidate_set = set(candidate_features)
+    warm: list[FrozenTrial] = []
+    for entry in registry.list_trials(limit=top_k):
+        surviving = set(entry["feature_names"]) & candidate_set
+        if len(surviving) < MIN_FEATURES:
+            continue
+        params, distributions = _mask_to_params(candidate_features, surviving)
+        warm.append(
+            create_trial(
+                state=TrialState.COMPLETE,
+                value=entry["ndcg_at_3"],
+                params=params,
+                distributions=distributions,
+            )
+        )
+    return warm
+
+
+def enqueue_feature_subsets(
+    study: optuna.Study,
+    candidate_features: Sequence[str],
+    subsets: Sequence[set[str]],
+) -> None:
+    """Queue concrete feature subsets so the next trials evaluate them verbatim.
+
+    Used to force-evaluate the active feature set and enrichment candidates up front,
+    guaranteeing a resumed round spends budget on the most promising masks first rather
+    than waiting for the sampler to rediscover them. Subsets below ``MIN_FEATURES`` are
+    dropped since the objective would short-circuit them to 0.0.
+    """
+    candidate_set = set(candidate_features)
+    for subset in subsets:
+        surviving = subset & candidate_set
+        if len(surviving) < MIN_FEATURES:
+            continue
+        params, _ = _mask_to_params(candidate_features, surviving)
+        study.enqueue_trial(params, skip_if_exists=True)
+
+
+def make_per_trial_timeout_callback(
+    per_trial_timeout_s: float,
+) -> Callable[[optuna.Study, FrozenTrial], None]:
+    """Return a callback that stops the study once a trial exceeds the wall-clock budget.
+
+    Optuna cannot interrupt a trial mid-``run_fold_with_backend`` (the GBDT train call is
+    not cooperative), so this is a *soft* guard: it lets the offending trial finish, then
+    calls ``study.stop()`` so no further long trials are launched. This bounds total
+    wasted time to roughly one over-budget trial instead of an unbounded tail.
+    """
+
+    def _callback(study: optuna.Study, trial: FrozenTrial) -> None:
+        if trial.datetime_start is None or trial.datetime_complete is None:
+            return
+        elapsed = (trial.datetime_complete - trial.datetime_start).total_seconds()
+        if elapsed > per_trial_timeout_s:
+            study.stop()
+
+    return _callback
+
+
 def run_exploration(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     registry: FeatureRegistry,
     n_trials: int = 50,
     validation_years: list[int] | None = None,
@@ -452,7 +582,22 @@ def run_exploration(
     study_name: str = "feature_exploration",
     storage: str | None = None,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+    n_jobs: int = 1,
+    study_timeout_s: float | None = None,
+    per_trial_timeout_s: float | None = None,
+    warm_start: bool = True,
+    enqueue_subsets: Sequence[set[str]] | None = None,
 ) -> list[ExplorationResult]:
+    """Run one Optuna feature-selection study and return its scored trials.
+
+    ``warm_start`` seeds the sampler with the registry's best prior masks so a resumed
+    round starts from proven regions. ``enqueue_subsets`` force-evaluates specific masks
+    (e.g. the active set + enrichment candidates) before the sampler takes over.
+    ``per_trial_timeout_s`` bounds the long-trial tail and ``study_timeout_s`` bounds the
+    whole round. ``n_jobs`` defaults to 1 because the shared DuckDB registry write in the
+    objective is not safe under concurrent threads; raise it only with a thread-safe
+    registry.
+    """
     effective_years = list(validation_years) if validation_years is not None else list(DEFAULT_VALIDATION_YEARS)
     candidate_features = resolve_feature_columns(list(df.columns))
     objective = build_objective(
@@ -470,9 +615,27 @@ def run_exploration(
         study_name=study_name,
         storage=storage,
         load_if_exists=True,
+        sampler=build_feature_sampler(n_trials),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=3, n_warmup_steps=0),
     )
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    if warm_start:
+        for warm_trial in build_warm_start_trials(registry, candidate_features):
+            study.add_trial(warm_trial)
+    if enqueue_subsets:
+        enqueue_feature_subsets(study, candidate_features, enqueue_subsets)
+    callbacks: list[Callable[[optuna.Study, FrozenTrial], None]] = (
+        [make_per_trial_timeout_callback(per_trial_timeout_s)]
+        if per_trial_timeout_s is not None
+        else []
+    )
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        timeout=study_timeout_s,
+        n_jobs=n_jobs,
+        callbacks=callbacks,
+        show_progress_bar=False,
+    )
     results: list[ExplorationResult] = []
     for trial in study.trials:
         if trial.value is None:

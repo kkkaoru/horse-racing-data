@@ -22,7 +22,7 @@ from typing import cast
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 
 LITE_NUMERIC_FEATURES: tuple[str, ...] = (
     "kyori",
@@ -86,29 +86,35 @@ def select_feature_columns() -> list[str]:
 
 
 def to_relevance(value: object) -> int:
-    if value is None or pd.isna(cast(float, value)):
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return DEFAULT_RELEVANCE
     return RELEVANCE_BY_RANK.get(int(cast(float, value)), DEFAULT_RELEVANCE)
 
 
-def encode_categoricals(frame: pd.DataFrame) -> pd.DataFrame:
-    for column in LITE_CATEGORICAL_FEATURES:
-        if column in frame.columns:
-            frame[column] = frame[column].astype("category")
-    return frame
+def encode_categoricals(frame: pl.DataFrame) -> pl.DataFrame:
+    present = [column for column in LITE_CATEGORICAL_FEATURES if column in frame.columns]
+    return frame.with_columns(pl.col(column).cast(pl.Categorical) for column in present)
 
 
-def filter_train_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    mask = (df["race_date"] >= start) & (df["race_date"] <= end) & df["finish_position"].notna()
-    return df[mask].copy()
+def filter_train_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
+    return df.filter(
+        (pl.col("race_date") >= start)
+        & (pl.col("race_date") <= end)
+        & pl.col("finish_position").is_not_null()
+    )
 
 
-def build_label_array(finish_positions: pd.Series) -> np.ndarray:
-    return finish_positions.map(to_relevance).to_numpy(dtype=np.int64)
+def build_label_array(finish_positions: pl.Series) -> np.ndarray:
+    labels = (
+        finish_positions.cast(pl.Int64, strict=False)
+        .replace_strict(RELEVANCE_BY_RANK, default=DEFAULT_RELEVANCE, return_dtype=pl.Int64)
+        .fill_null(DEFAULT_RELEVANCE)
+    )
+    return labels.to_numpy().astype(np.int64)
 
 
-def build_group_sizes(df: pd.DataFrame) -> list[int]:
-    return df.groupby("race_id", sort=False).size().tolist()
+def build_group_sizes(df: pl.DataFrame) -> list[int]:
+    return df.group_by("race_id", maintain_order=True).len()["len"].to_list()
 
 
 def write_model_artifacts(
@@ -140,12 +146,12 @@ def write_model_artifacts(
 def main() -> None:
     args = parse_args()
     started = perf_counter()
-    df = pd.read_parquet(args.parquet)
+    df = pl.read_parquet(args.parquet)
     train_df = filter_train_range(df, args.train_start_date, args.train_end_date)
-    train_df = train_df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+    train_df = train_df.sort(["race_id", "umaban"])
     feature_columns = select_feature_columns()
     train_df = encode_categoricals(train_df)
-    feature_frame = train_df.loc[:, feature_columns]
+    feature_frame = train_df.select(feature_columns)
     labels = build_label_array(train_df["finish_position"])
     group_sizes = build_group_sizes(train_df)
     dataset = lgb.Dataset(
@@ -171,14 +177,14 @@ def main() -> None:
         args.model_version,
         feature_columns,
         list(LITE_CATEGORICAL_FEATURES),
-        int(len(train_df)),
+        int(train_df.height),
         args.train_start_date,
         args.train_end_date,
     )
     elapsed = perf_counter() - started
     print(json.dumps({
         "elapsed_seconds": elapsed,
-        "rows": int(len(train_df)),
+        "rows": int(train_df.height),
         "model_version": args.model_version,
         "output_dir": str(args.output_model_dir),
     }))

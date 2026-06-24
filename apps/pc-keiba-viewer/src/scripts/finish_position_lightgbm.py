@@ -3,7 +3,7 @@
 """LambdaRank training and inference for finish-position prediction.
 
 Run with:
-  uv run --with lightgbm --with pandas --with numpy python \
+  uv run --with lightgbm --with polars --with numpy python \
     src/scripts/finish_position_lightgbm.py train \
     --train-csv tmp/finish-position-training/jra/train.csv \
     --output-model tmp/models/finish-jra-v1.lgb \
@@ -16,15 +16,18 @@ import json
 from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import lightgbm as lgb
 import numpy as np
 import optuna
-import pandas as pd
+import polars as pl
 from numpy.typing import NDArray
 
 from learning.subgroup_diagnostics import compute_race_ndcg
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 LightgbmCallback = Callable[..., object]
 
@@ -156,11 +159,11 @@ def to_relevance(finish_position: int, tiers: dict[int, int] | None = None) -> i
     return table.get(int(finish_position), DEFAULT_RELEVANCE)
 
 
-def to_relevance_series(finish_positions: pd.Series, tiers: dict[int, int] | None = None) -> pd.Series:
+def to_relevance_series(finish_positions: pl.Series, tiers: dict[int, int] | None = None) -> pl.Series:
     table = tiers if tiers is not None else RELEVANCE_TIERS
-    positions = finish_positions.fillna(0).astype(int).to_numpy(dtype=np.int64)
+    positions = finish_positions.fill_null(0).cast(pl.Int64).to_numpy()
     relevances = [to_relevance(int(pos), table) for pos in positions]
-    return pd.Series(relevances, index=finish_positions.index, dtype=int)
+    return pl.Series(values=relevances, dtype=pl.Int64)
 
 
 def resolve_relevance_tiers(tier_name: str | None) -> dict[int, int]:
@@ -173,24 +176,24 @@ def resolve_relevance_tiers(tier_name: str | None) -> dict[int, int]:
 
 
 def build_label_array(
-    finish_positions: pd.Series,
+    finish_positions: pl.Series,
     objective: str,
     relevance_tiers: dict[int, int] | None = None,
 ) -> IntArray:
     if objective == OBJECTIVE_BINARY_TOP1:
-        fp_int = finish_positions.fillna(0).astype(int)
-        return cast(IntArray, (fp_int == 1).astype(np.int64).to_numpy())
+        fp_int = finish_positions.fill_null(0).cast(pl.Int64)
+        return cast(IntArray, (fp_int == 1).cast(pl.Int64).to_numpy())
     if objective == OBJECTIVE_BINARY_TOP3:
-        fp_int = finish_positions.fillna(0).astype(int)
+        fp_int = finish_positions.fill_null(0).cast(pl.Int64)
         binary = (fp_int >= 1) & (fp_int <= TOP3_UPPER_BOUND)
-        return cast(IntArray, binary.astype(np.int64).to_numpy())
+        return cast(IntArray, binary.cast(pl.Int64).to_numpy())
     if objective == OBJECTIVE_BINARY_PLACE2:
-        fp_int = finish_positions.fillna(0).astype(int)
-        return cast(IntArray, (fp_int == 2).astype(np.int64).to_numpy())
+        fp_int = finish_positions.fill_null(0).cast(pl.Int64)
+        return cast(IntArray, (fp_int == 2).cast(pl.Int64).to_numpy())
     if objective == OBJECTIVE_BINARY_PLACE3:
-        fp_int = finish_positions.fillna(0).astype(int)
-        return cast(IntArray, (fp_int == 3).astype(np.int64).to_numpy())
-    return cast(IntArray, to_relevance_series(finish_positions, relevance_tiers).to_numpy(dtype=np.int64))
+        fp_int = finish_positions.fill_null(0).cast(pl.Int64)
+        return cast(IntArray, (fp_int == 3).cast(pl.Int64).to_numpy())
+    return cast(IntArray, to_relevance_series(finish_positions, relevance_tiers).cast(pl.Int64).to_numpy())
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
@@ -198,41 +201,43 @@ def resolve_feature_columns(df_columns: list[str]) -> list[str]:
     return [column for column in df_columns if column not in excluded]
 
 
-def build_group_sizes(df: pd.DataFrame) -> list[int]:
-    return df.groupby("race_id", sort=False).size().tolist()
+def build_group_sizes(df: pl.DataFrame) -> list[int]:
+    return df.group_by("race_id", maintain_order=True).len()["len"].to_list()
 
 
-def rank_within_race(df: pd.DataFrame) -> pd.Series:
-    return df.groupby("race_id")["predicted_score"].rank(method="dense", ascending=False).astype(int)
+def rank_within_race(df: pl.DataFrame) -> pl.Series:
+    return df.select(
+        pl.col("predicted_score").rank(method="dense", descending=True).over("race_id").cast(pl.Int64)
+    )["predicted_score"]
 
 
-def load_dataset_csv(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, dtype={"track_code": "string", "grade_code": "string"})
+def load_dataset_csv(path: Path) -> pl.DataFrame:
+    return pl.read_csv(path, schema_overrides={"track_code": pl.Utf8, "grade_code": pl.Utf8})
 
 
-def load_dataset_parquet(path: Path) -> pd.DataFrame:
+def load_dataset_parquet(path: Path) -> pl.DataFrame:
     if path.is_dir():
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
-            return pd.concat([pd.read_parquet(child) for child in partitioned], ignore_index=True)
+            return pl.concat([pl.read_parquet(child) for child in partitioned])
         flat = sorted(path.glob("*.parquet"))
         if flat:
-            return pd.concat([pd.read_parquet(child) for child in flat], ignore_index=True)
+            return pl.concat([pl.read_parquet(child) for child in flat])
         raise ValueError(f"No parquet files found under {path}")
-    return pd.read_parquet(path)
+    return pl.read_parquet(path)
 
 
-def load_dataset(path: Path) -> pd.DataFrame:
+def load_dataset(path: Path) -> pl.DataFrame:
     if path.suffix == ".parquet" or path.is_dir():
         return load_dataset_parquet(path)
     return load_dataset_csv(path)
 
 
-def sort_for_grouping(df: pd.DataFrame) -> pd.DataFrame:
-    return df.sort_values(["race_id", "umaban"]).reset_index(drop=True)
+def sort_for_grouping(df: pl.DataFrame) -> pl.DataFrame:
+    return df.sort(["race_id", "umaban"])
 
 
-def filter_by_distance_band(df: pd.DataFrame, band: str) -> pd.DataFrame:
+def filter_by_distance_band(df: pl.DataFrame, band: str) -> pl.DataFrame:
     """Return rows whose ``kyori`` value falls within the named distance band.
 
     Raises ``ValueError`` for an unknown band name. The upper bound is
@@ -243,22 +248,28 @@ def filter_by_distance_band(df: pd.DataFrame, band: str) -> pd.DataFrame:
             f"Unknown distance band: {band!r}. Valid: {sorted(DISTANCE_BAND_RANGES)}"
         )
     lo, hi = DISTANCE_BAND_RANGES[band]
-    return df[(df["kyori"] >= lo) & (df["kyori"] < hi)].reset_index(drop=True)
+    return df.filter((pl.col("kyori") >= lo) & (pl.col("kyori") < hi))
 
 
-def select_feature_frame(df: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
-    return df[feature_columns]
+def select_feature_frame(df: pl.DataFrame, feature_columns: list[str]) -> pl.DataFrame:
+    return df.select(feature_columns)
 
 
 def detect_categorical_features(feature_columns: list[str]) -> list[str]:
     return [column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS]
 
 
-def encode_categoricals(frame: pd.DataFrame, categorical_features: list[str]) -> pd.DataFrame:
-    encoded = frame.copy()
-    for column in categorical_features:
-        encoded[column] = encoded[column].astype("category")
-    return encoded
+def encode_categoricals(frame: pl.DataFrame, categorical_features: list[str]) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.col(column).cast(pl.Categorical) for column in categorical_features
+    )
+
+
+def to_lgb_frame(frame: pl.DataFrame) -> "pd.DataFrame":
+    # LightGBM 4.x ingests only pandas/numpy; its Arrow path rejects dictionary
+    # (categorical) columns. Convert at the boundary so polars Categorical maps to
+    # pandas "category" dtype, which LightGBM consumes natively for categorical splits.
+    return frame.to_pandas()
 
 
 class LgbDatasetBundle(TypedDict):
@@ -269,31 +280,33 @@ class LgbDatasetBundle(TypedDict):
     relevance: IntArray
 
 
-def _year_series(df: pd.DataFrame) -> pd.Series:
+def _year_series(df: pl.DataFrame) -> pl.Series:
     if "race_year" in df.columns:
-        return pd.to_numeric(df["race_year"], errors="coerce")
+        return df["race_year"].cast(pl.Float64, strict=False)
     if "kaisai_nen" in df.columns:
-        return pd.to_numeric(df["kaisai_nen"], errors="coerce")
+        return df["kaisai_nen"].cast(pl.Float64, strict=False)
     if "race_date" in df.columns:
-        return pd.to_numeric(df["race_date"].astype(str).str.slice(0, 4), errors="coerce")
+        return df["race_date"].cast(pl.Utf8).str.slice(0, 4).cast(pl.Float64, strict=False)
     raise KeyError("no year column (race_year / kaisai_nen / race_date) in df")
 
 
 def compute_sample_weights(
-    df: pd.DataFrame, mode: str, time_decay: float = DEFAULT_TIME_DECAY
+    df: pl.DataFrame, mode: str, time_decay: float = DEFAULT_TIME_DECAY
 ) -> NDArray[np.float32] | None:
     if mode == SAMPLE_WEIGHT_MODE_NONE:
         return None
     if mode == SAMPLE_WEIGHT_MODE_TIME:
         year_series = _year_series(df)
-        max_year = int(year_series.max()) if year_series.notna().any() else 0
-        weights = np.power(time_decay, (max_year - year_series).fillna(0).to_numpy(dtype=np.float32))
+        raw_max = year_series.max()
+        max_year = int(cast(float, raw_max)) if raw_max is not None else 0
+        ages = (max_year - year_series).fill_null(0).to_numpy().astype(np.float32)
+        weights = np.power(time_decay, ages)
         return weights.astype(np.float32)
     raise ValueError(f"unknown sample_weight mode: {mode!r}")
 
 
 def prepare_lgb_dataset(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     objective: str = OBJECTIVE_LAMBDARANK,
     sample_weight_mode: str = SAMPLE_WEIGHT_MODE_NONE,
     relevance_tier_name: str | None = None,
@@ -308,7 +321,7 @@ def prepare_lgb_dataset(
     group_array = np.array(group_sizes, dtype=np.int64) if objective == OBJECTIVE_LAMBDARANK else None
     weight_array = compute_sample_weights(sorted_df, sample_weight_mode)
     dataset = lgb.Dataset(
-        data=frame,
+        data=to_lgb_frame(frame),
         label=label_array,
         group=group_array,
         weight=weight_array,
@@ -441,26 +454,25 @@ class PredictionRow(TypedDict):
     umaban: int
 
 
-def score_dataset(booster: "lgb.Booster", df: pd.DataFrame) -> pd.DataFrame:
+def score_dataset(booster: "lgb.Booster", df: pl.DataFrame) -> pl.DataFrame:
     sorted_df = sort_for_grouping(df)
     feature_columns = booster.feature_name()
     frame = encode_categoricals(
         select_feature_frame(sorted_df, feature_columns),
         detect_categorical_features(feature_columns),
     )
-    scores = cast(FloatArray, booster.predict(frame, num_iteration=booster.best_iteration))
-    sorted_df = sorted_df.copy()
-    sorted_df["predicted_score"] = pd.Series(scores, index=sorted_df.index)
-    sorted_df["predicted_rank"] = rank_within_race(sorted_df)
-    return sorted_df[
+    scores = cast(FloatArray, booster.predict(to_lgb_frame(frame), num_iteration=booster.best_iteration))
+    scored_df = sorted_df.with_columns(pl.Series(name="predicted_score", values=scores))
+    scored_df = scored_df.with_columns(rank_within_race(scored_df).alias("predicted_rank"))
+    return scored_df.select(
         ["race_id", "ketto_toroku_bango", "umaban", "predicted_score", "predicted_rank"]
-    ].reset_index(drop=True)
+    )
 
 
-def write_predictions_jsonl(predictions: pd.DataFrame, path: Path) -> None:
+def write_predictions_jsonl(predictions: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        for record in predictions.to_dict(orient="records"):
+        for record in predictions.iter_rows(named=True):
             handle.write(f"{json.dumps(record, ensure_ascii=False)}\n")
 
 
@@ -572,26 +584,26 @@ def parse_year_list(raw: str) -> list[int]:
     return sorted(set(parsed))
 
 
-def filter_by_date_range(df: pd.DataFrame, from_date: str, to_date: str) -> pd.DataFrame:
-    mask = (df["race_date"].astype(str) >= from_date) & (df["race_date"].astype(str) <= to_date)
-    return df.loc[mask].reset_index(drop=True)
+def filter_by_date_range(df: pl.DataFrame, from_date: str, to_date: str) -> pl.DataFrame:
+    race_date_str = pl.col("race_date").cast(pl.Utf8)
+    return df.filter((race_date_str >= from_date) & (race_date_str <= to_date))
 
 
 class FoldSplit(TypedDict):
-    train_df: pd.DataFrame
-    valid_df: pd.DataFrame
+    train_df: pl.DataFrame
+    valid_df: pl.DataFrame
     valid_year: int
 
 
-def split_walk_forward(df: pd.DataFrame, train_start: str, valid_year: int) -> FoldSplit:
+def split_walk_forward(df: pl.DataFrame, train_start: str, valid_year: int) -> FoldSplit:
     train_end = f"{valid_year - 1}1231"
     valid_start = f"{valid_year}0101"
     valid_end = f"{valid_year}1231"
     train_raw = filter_by_date_range(df, train_start, train_end)
     valid_raw = filter_by_date_range(df, valid_start, valid_end)
     return {
-        "train_df": train_raw[train_raw["finish_position"].notna()].reset_index(drop=True),
-        "valid_df": valid_raw[valid_raw["finish_position"].notna()].reset_index(drop=True),
+        "train_df": train_raw.filter(pl.col("finish_position").is_not_null()),
+        "valid_df": valid_raw.filter(pl.col("finish_position").is_not_null()),
         "valid_year": valid_year,
     }
 
@@ -606,14 +618,22 @@ class FoldMetrics(TypedDict):
     valid_year: int
 
 
-def compute_top_k_actuals(group: pd.DataFrame, k: int) -> list[str]:
-    actual_top = group.dropna(subset=["finish_position"]).nsmallest(k, "finish_position").sort_values("finish_position")
-    return actual_top["ketto_toroku_bango"].tolist()
+def compute_top_k_actuals(group: pl.DataFrame, k: int) -> list[str]:
+    actual_top = (
+        group.filter(pl.col("finish_position").is_not_null())
+        .sort("finish_position")
+        .head(k)
+    )
+    return actual_top["ketto_toroku_bango"].to_list()
 
 
-def compute_top_k_predicted(group: pd.DataFrame, k: int) -> list[str]:
-    predicted_top = group.dropna(subset=["predicted_rank"]).nsmallest(k, "predicted_rank").sort_values("predicted_rank")
-    return predicted_top["ketto_toroku_bango"].tolist()
+def compute_top_k_predicted(group: pl.DataFrame, k: int) -> list[str]:
+    predicted_top = (
+        group.filter(pl.col("predicted_rank").is_not_null())
+        .sort("predicted_rank")
+        .head(k)
+    )
+    return predicted_top["ketto_toroku_bango"].to_list()
 
 
 def race_top3_box_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
@@ -630,8 +650,8 @@ def race_top1_hit(actual_top3: list[str], predicted_top3: list[str]) -> bool:
     return actual_top3[0] == predicted_top3[0]
 
 
-def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) -> dict[str, float | int]:
-    joined = ground_truth[["race_id", "ketto_toroku_bango", "finish_position"]].merge(
+def evaluate_predictions(predictions: pl.DataFrame, ground_truth: pl.DataFrame) -> dict[str, float | int]:
+    joined = ground_truth.select(["race_id", "ketto_toroku_bango", "finish_position"]).join(
         predictions,
         on=["race_id", "ketto_toroku_bango"],
         how="left",
@@ -641,7 +661,7 @@ def evaluate_predictions(predictions: pd.DataFrame, ground_truth: pd.DataFrame) 
     top1_hits = 0
     race_count = 0
     ndcg_scores: list[float] = []
-    for _race_id, group in joined.groupby("race_id"):
+    for group in joined.partition_by("race_id"):
         actual = compute_top_k_actuals(group, TOP3_K)
         predicted = compute_top_k_predicted(group, TOP3_K)
         race_count += 1
@@ -667,7 +687,7 @@ def run_walk_forward_fold(
     params: TrainingParams,
     sample_weight_mode: str = SAMPLE_WEIGHT_MODE_NONE,
     relevance_tier_name: str | None = None,
-) -> tuple["lgb.Booster", pd.DataFrame, FoldMetrics]:
+) -> tuple["lgb.Booster", pl.DataFrame, FoldMetrics]:
     train_bundle = prepare_lgb_dataset(
         fold["train_df"], params["objective"], sample_weight_mode, relevance_tier_name
     )
@@ -760,7 +780,7 @@ def suggest_hpo_params(
 
 
 def evaluate_fold_set(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     train_start: str,
     validation_years: list[int],
     params: TrainingParams,

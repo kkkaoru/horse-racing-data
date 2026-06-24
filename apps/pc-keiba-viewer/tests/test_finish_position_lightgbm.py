@@ -6,7 +6,7 @@ from typing import cast, override
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import finish_position_lightgbm as subject
@@ -33,8 +33,8 @@ def test_to_relevance_far_back():
 
 
 def test_to_relevance_series_handles_nan():
-    result = subject.to_relevance_series(pd.Series([1, 2, np.nan, 4]))
-    assert result.tolist() == [3, 2, 0, 0]
+    result = subject.to_relevance_series(pl.Series([1.0, 2.0, None, 4.0]))
+    assert result.to_list() == [3, 2, 0, 0]
 
 
 def test_resolve_feature_columns_excludes_meta_and_labels():
@@ -56,21 +56,21 @@ def test_resolve_feature_columns_excludes_meta_and_labels():
 
 
 def test_build_group_sizes_preserves_order():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {"race_id": ["r1", "r1", "r1", "r2", "r2"], "umaban": [1, 2, 3, 1, 2]}
     )
     assert subject.build_group_sizes(df) == [3, 2]
 
 
 def test_rank_within_race_higher_score_is_better():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1"],
             "predicted_score": [0.1, 0.7, 0.4],
         }
     )
     ranks = subject.rank_within_race(df)
-    assert ranks.tolist() == [3, 1, 2]
+    assert ranks.to_list() == [3, 1, 2]
 
 
 def test_detect_categorical_features_returns_known_columns():
@@ -82,32 +82,42 @@ def test_detect_categorical_features_empty_when_absent():
     assert subject.detect_categorical_features(["speed_index_avg_5"]) == []
 
 
-def test_encode_categoricals_converts_to_pandas_category():
-    frame = pd.DataFrame({"track_code": ["10", "21"], "speed": [1.0, 2.0]})
+def test_encode_categoricals_converts_to_polars_categorical():
+    frame = pl.DataFrame({"track_code": ["10", "21"], "speed": [1.0, 2.0]})
     encoded = subject.encode_categoricals(frame, ["track_code"])
-    assert str(encoded["track_code"].dtype) == "category"
-    assert str(encoded["speed"].dtype) == "float64"
+    assert encoded["track_code"].dtype == pl.Categorical
+    assert encoded["speed"].dtype == pl.Float64
+
+
+def test_to_lgb_frame_preserves_category_dtype_for_lightgbm():
+    frame = pl.DataFrame({"track_code": ["10", "21"], "speed": [1.0, 2.0]}).with_columns(
+        pl.col("track_code").cast(pl.Categorical)
+    )
+    converted = subject.to_lgb_frame(frame)
+    assert str(converted.dtypes["track_code"]) == "category"
+    assert str(converted.dtypes["speed"]) == "float64"
 
 
 def test_sort_for_grouping_orders_by_race_then_umaban():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {"race_id": ["r2", "r1", "r1"], "umaban": [1, 2, 1], "value": ["a", "b", "c"]}
     )
     sorted_df = subject.sort_for_grouping(df)
-    assert sorted_df["race_id"].tolist() == ["r1", "r1", "r2"]
-    assert sorted_df["umaban"].tolist() == [1, 2, 1]
+    assert sorted_df["race_id"].to_list() == ["r1", "r1", "r2"]
+    assert sorted_df["umaban"].to_list() == [1, 2, 1]
 
 
 def test_select_feature_frame_returns_only_features():
-    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+    df = pl.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
     frame = subject.select_feature_frame(df, ["a", "c"])
     assert list(frame.columns) == ["a", "c"]
 
 
-def test_select_feature_frame_returns_view_not_copy():
-    df = pd.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
+def test_select_feature_frame_shares_column_values():
+    df = pl.DataFrame({"a": [1, 2], "b": [3, 4], "c": [5, 6]})
     frame = subject.select_feature_frame(df, ["a", "c"])
-    assert np.shares_memory(df["a"].to_numpy(), frame["a"].to_numpy())
+    assert frame["a"].to_list() == df["a"].to_list()
+    assert frame["c"].to_list() == df["c"].to_list()
 
 
 def test_exploration_constants_have_expected_values():
@@ -307,31 +317,31 @@ def test_build_lightgbm_params_omits_num_threads_by_default():
 
 
 def test_compute_sample_weights_none_returns_none():
-    df = pd.DataFrame({"race_year": [2020, 2021, 2022]})
+    df = pl.DataFrame({"race_year": [2020, 2021, 2022]})
     weights = subject.compute_sample_weights(df, subject.SAMPLE_WEIGHT_MODE_NONE)
     assert weights is None
 
 
 def test_compute_sample_weights_time_decay_decreases_with_age():
-    df = pd.DataFrame({"race_year": [2025, 2024, 2023, 2022]})
+    df = pl.DataFrame({"race_year": [2025, 2024, 2023, 2022]})
     weights = subject.compute_sample_weights(df, subject.SAMPLE_WEIGHT_MODE_TIME, time_decay=0.5)
     assert weights is not None
     assert weights.tolist() == [1.0, 0.5, 0.25, 0.125]
 
 
 def test_compute_sample_weights_unknown_mode_raises():
-    df = pd.DataFrame({"race_year": [2024]})
+    df = pl.DataFrame({"race_year": [2024]})
     with pytest.raises(ValueError, match="unknown sample_weight mode"):
         subject.compute_sample_weights(df, "exotic")
 
 
 def test_build_label_array_for_binary_place2():
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-place2")
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4, None]), "binary-place2")
     assert labels.tolist() == [0, 1, 0, 0, 0]
 
 
 def test_build_label_array_for_binary_place3():
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-place3")
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4, None]), "binary-place3")
     assert labels.tolist() == [0, 0, 1, 0, 0]
 
 
@@ -383,7 +393,7 @@ def test_graded_top6_to_relevance_position_7_is_zero():
 
 def test_build_label_array_graded_top6_assigns_descending_relevance():
     tiers = subject.resolve_relevance_tiers("graded_top6")
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, 5, 6, 7]), "lambdarank", tiers)
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4, 5, 6, 7]), "lambdarank", tiers)
     assert labels.tolist() == [6, 5, 4, 3, 2, 1, 0]
 
 
@@ -398,66 +408,66 @@ def test_distance_band_ranges_covers_all_five_bands():
 
 
 def test_filter_by_distance_band_sprint_keeps_rows_below_1200():
-    df = pd.DataFrame({"kyori": [1000, 1200, 1400], "value": [1, 2, 3]})
+    df = pl.DataFrame({"kyori": [1000, 1200, 1400], "value": [1, 2, 3]})
     result = subject.filter_by_distance_band(df, "sprint")
-    assert result["kyori"].tolist() == [1000]
+    assert result["kyori"].to_list() == [1000]
 
 
 def test_filter_by_distance_band_mile_includes_1200_excludes_1600():
-    df = pd.DataFrame({"kyori": [1200, 1400, 1600], "value": [1, 2, 3]})
+    df = pl.DataFrame({"kyori": [1200, 1400, 1600], "value": [1, 2, 3]})
     result = subject.filter_by_distance_band(df, "mile")
-    assert result["kyori"].tolist() == [1200, 1400]
+    assert result["kyori"].to_list() == [1200, 1400]
 
 
 def test_filter_by_distance_band_intermediate_includes_1600_excludes_2000():
-    df = pd.DataFrame({"kyori": [1600, 1800, 2000], "value": [1, 2, 3]})
+    df = pl.DataFrame({"kyori": [1600, 1800, 2000], "value": [1, 2, 3]})
     result = subject.filter_by_distance_band(df, "intermediate")
-    assert result["kyori"].tolist() == [1600, 1800]
+    assert result["kyori"].to_list() == [1600, 1800]
 
 
 def test_filter_by_distance_band_long_includes_2000_excludes_2400():
-    df = pd.DataFrame({"kyori": [2000, 2200, 2400], "value": [1, 2, 3]})
+    df = pl.DataFrame({"kyori": [2000, 2200, 2400], "value": [1, 2, 3]})
     result = subject.filter_by_distance_band(df, "long")
-    assert result["kyori"].tolist() == [2000, 2200]
+    assert result["kyori"].to_list() == [2000, 2200]
 
 
 def test_filter_by_distance_band_extended_includes_2400_and_above():
-    df = pd.DataFrame({"kyori": [2400, 3000, 3200], "value": [1, 2, 3]})
+    df = pl.DataFrame({"kyori": [2400, 3000, 3200], "value": [1, 2, 3]})
     result = subject.filter_by_distance_band(df, "extended")
-    assert result["kyori"].tolist() == [2400, 3000, 3200]
+    assert result["kyori"].to_list() == [2400, 3000, 3200]
 
 
-def test_filter_by_distance_band_resets_index():
-    df = pd.DataFrame({"kyori": [1000, 1400, 1800]}, index=[10, 20, 30])
+def test_filter_by_distance_band_keeps_only_in_band_rows():
+    df = pl.DataFrame({"kyori": [1000, 1400, 1800]})
     result = subject.filter_by_distance_band(df, "sprint")
-    assert result.index.tolist() == [0]
+    assert result["kyori"].to_list() == [1000]
 
 
 def test_filter_by_distance_band_unknown_band_raises():
-    df = pd.DataFrame({"kyori": [1200]})
+    df = pl.DataFrame({"kyori": [1200]})
     with pytest.raises(ValueError, match="Unknown distance band"):
         subject.filter_by_distance_band(df, "ultramarathon")
 
 
 def test_build_label_array_for_lambdarank_uses_custom_tier():
     labels = subject.build_label_array(
-        pd.Series([1, 2, 3, 4]), "lambdarank", {1: 5, 2: 7, 3: 9}
+        pl.Series([1, 2, 3, 4]), "lambdarank", {1: 5, 2: 7, 3: 9}
     )
     assert labels.tolist() == [5, 7, 9, 0]
 
 
 def test_build_label_array_for_binary_top1():
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-top1")
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4, None]), "binary-top1")
     assert labels.tolist() == [1, 0, 0, 0, 0]
 
 
 def test_build_label_array_for_binary_top3():
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4, None]), "binary-top3")
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4, None]), "binary-top3")
     assert labels.tolist() == [1, 1, 1, 0, 0]
 
 
 def test_build_label_array_for_lambdarank_uses_relevance_tiers():
-    labels = subject.build_label_array(pd.Series([1, 2, 3, 4]), "lambdarank")
+    labels = subject.build_label_array(pl.Series([1, 2, 3, 4]), "lambdarank")
     assert labels.tolist() == [3, 2, 1, 0]
 
 
@@ -476,13 +486,14 @@ def test_parse_args_supports_objective_flag(tmp_path: Path):
     assert args.objective == "binary-top1"
 
 
-def make_synthetic_dataset(seed: int = 42) -> pd.DataFrame:
+def make_synthetic_dataset(seed: int = 42) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     race_ids: list[str] = []
     umabans: list[int] = []
     finishes: list[int] = []
     horse_ids: list[str] = []
-    features: list[list[float]] = []
+    feature_columns = [f"feat_{idx}" for idx in range(5)]
+    feature_values: dict[str, list[float]] = {name: [] for name in feature_columns}
     for race_index in range(8):
         race_id = f"race-{race_index}"
         n = 8
@@ -492,24 +503,28 @@ def make_synthetic_dataset(seed: int = 42) -> pd.DataFrame:
             umabans.append(slot + 1)
             horse_ids.append(f"h{race_index}-{slot}")
             finishes.append(int(ordering[slot]) + 1)
-            features.append([float(rng.standard_normal()) for _ in range(5)])
-    feature_columns = [f"feat_{idx}" for idx in range(5)]
-    frame = pd.DataFrame(features, columns=feature_columns)
-    frame["source"] = "jra"
-    frame["race_date"] = "20260101"
-    frame["kaisai_nen"] = "2026"
-    frame["kaisai_tsukihi"] = "0101"
-    frame["keibajo_code"] = "05"
-    frame["race_bango"] = "01"
-    frame["ketto_toroku_bango"] = horse_ids
-    frame["umaban"] = umabans
-    frame["category"] = "jra"
-    frame["race_id"] = race_ids
-    frame["finish_position"] = finishes
-    frame["finish_norm"] = [f / 8 for f in finishes]
-    frame["track_code"] = "10"
-    frame["grade_code"] = " "
-    return frame
+            for name in feature_columns:
+                feature_values[name].append(float(rng.standard_normal()))
+    row_count = len(race_ids)
+    return pl.DataFrame(
+        {
+            **feature_values,
+            "source": ["jra"] * row_count,
+            "race_date": ["20260101"] * row_count,
+            "kaisai_nen": ["2026"] * row_count,
+            "kaisai_tsukihi": ["0101"] * row_count,
+            "keibajo_code": ["05"] * row_count,
+            "race_bango": ["01"] * row_count,
+            "ketto_toroku_bango": horse_ids,
+            "umaban": umabans,
+            "category": ["jra"] * row_count,
+            "race_id": race_ids,
+            "finish_position": finishes,
+            "finish_norm": [f / 8 for f in finishes],
+            "track_code": ["10"] * row_count,
+            "grade_code": [" "] * row_count,
+        }
+    )
 
 
 def test_prepare_lgb_dataset_synthesises_train_bundle():
@@ -662,15 +677,14 @@ def test_score_dataset_uses_booster_feature_names_not_df_columns():
             "objective": "lambdarank",
         },
     )
-    df_with_extra = df.copy()
-    df_with_extra["should_not_be_used"] = 99.0
+    df_with_extra = df.with_columns(pl.lit(99.0).alias("should_not_be_used"))
     predictions = subject.score_dataset(booster, df_with_extra)
     assert len(predictions) == len(df)
     assert predictions["predicted_rank"].min() == 1
 
 
 def test_write_predictions_jsonl_writes_one_record_per_line(tmp_path: Path):
-    predictions = pd.DataFrame(
+    predictions = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "ketto_toroku_bango": ["a", "b"],
@@ -742,13 +756,13 @@ def test_parse_year_list_rejects_empty():
 
 
 def test_filter_by_date_range_inclusive():
-    df = pd.DataFrame({"race_date": ["20200101", "20210601", "20211231", "20220101"]})
+    df = pl.DataFrame({"race_date": ["20200101", "20210601", "20211231", "20220101"]})
     filtered = subject.filter_by_date_range(df, "20210101", "20211231")
-    assert filtered["race_date"].tolist() == ["20210601", "20211231"]
+    assert filtered["race_date"].to_list() == ["20210601", "20211231"]
 
 
 def test_split_walk_forward_uses_year_window():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20191231", "20200101", "20201231", "20210101", "20210601", "20211231", "20220101"],
             "value": ["a", "b", "c", "d", "e", "f", "g"],
@@ -757,31 +771,31 @@ def test_split_walk_forward_uses_year_window():
     )
     fold = subject.split_walk_forward(df, "20160101", 2021)
     assert fold["valid_year"] == 2021
-    assert fold["train_df"]["value"].tolist() == ["a", "b", "c"]
-    assert fold["valid_df"]["value"].tolist() == ["d", "e", "f"]
+    assert fold["train_df"]["value"].to_list() == ["a", "b", "c"]
+    assert fold["valid_df"]["value"].to_list() == ["d", "e", "f"]
 
 
 def test_split_walk_forward_excludes_nan_finish_position():
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         {
             "race_date": ["20210101", "20210102", "20210103"],
             "value": ["keep", "drop_nan", "keep2"],
-            "finish_position": [1.0, float("nan"), 2.0],
+            "finish_position": [1.0, None, 2.0],
         }
     )
     fold = subject.split_walk_forward(df, "20200101", 2021)
-    assert fold["valid_df"]["value"].tolist() == ["keep", "keep2"]
+    assert fold["valid_df"]["value"].to_list() == ["keep", "keep2"]
 
 
 def test_evaluate_predictions_computes_box_and_exact_hits():
-    truth = pd.DataFrame(
+    truth = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
             "ketto_toroku_bango": ["a", "b", "c", "d", "e", "f"],
             "finish_position": [1, 2, 3, 1, 2, 3],
         }
     )
-    predictions = pd.DataFrame(
+    predictions = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1", "r2", "r2", "r2"],
             "ketto_toroku_bango": ["a", "b", "c", "f", "e", "d"],
@@ -800,12 +814,12 @@ def test_evaluate_predictions_computes_box_and_exact_hits():
 def test_evaluate_predictions_ndcg_penalizes_missing_winner():
     # ground_truth has 3 horses; predictions omits the winner (horse "a").
     # After left join, "a" has NaN predicted_rank → NDCG < 1.0.
-    truth = pd.DataFrame({
+    truth = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
         "finish_position": [1, 2, 3],
     })
-    predictions = pd.DataFrame({
+    predictions = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "ketto_toroku_bango": ["b", "c"],
         "predicted_rank": [1, 2],
@@ -869,7 +883,7 @@ def test_write_walk_forward_report_writes_json(tmp_path: Path):
     assert parsed["folds"][0]["valid_year"] == 2021
 
 
-def make_walk_forward_dataset(seed: int = 7) -> pd.DataFrame:
+def make_walk_forward_dataset(seed: int = 7) -> pl.DataFrame:
     rng = np.random.default_rng(seed)
     rows: list[dict[str, object]] = []
     horses_per_race = 6
@@ -900,7 +914,7 @@ def make_walk_forward_dataset(seed: int = 7) -> pd.DataFrame:
                         "feat_c": float(rng.standard_normal()),
                     }
                 )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def test_run_walk_forward_fold_returns_metrics():
@@ -927,7 +941,7 @@ def test_run_walk_forward_command_writes_report_and_predictions(
 ):
     df = make_walk_forward_dataset()
     csv_path = tmp_path / "full.csv"
-    df.to_csv(csv_path, index=False)
+    df.write_csv(csv_path)
     report_path = tmp_path / "report.json"
     predictions_dir = tmp_path / "predictions"
     captured: list[str] = []
@@ -1013,7 +1027,7 @@ def test_write_hpo_summary_persists_json(tmp_path: Path):
 def test_run_hpo_command_writes_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     df = make_walk_forward_dataset()
     csv_path = tmp_path / "full.csv"
-    df.to_csv(csv_path, index=False)
+    df.write_csv(csv_path)
     output_path = tmp_path / "best.json"
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
@@ -1046,7 +1060,7 @@ def test_run_hpo_command_writes_summary(tmp_path: Path, monkeypatch: pytest.Monk
 def test_run_train_command_writes_model_predictions_and_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     df = make_synthetic_dataset()
     train_csv = tmp_path / "train.csv"
-    df.to_csv(train_csv, index=False)
+    df.write_csv(train_csv)
     model_path = tmp_path / "model.lgb"
     predictions_path = tmp_path / "predictions.jsonl"
     metadata_path = tmp_path / "meta.json"
@@ -1084,7 +1098,7 @@ def test_run_train_command_without_predictions_or_metadata(
 ):
     df = make_synthetic_dataset()
     train_csv = tmp_path / "train.csv"
-    df.to_csv(train_csv, index=False)
+    df.write_csv(train_csv)
     model_path = tmp_path / "model.lgb"
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
@@ -1113,14 +1127,14 @@ def test_load_dataset_reads_partitioned_parquet_directory(tmp_path: Path):
     df = make_synthetic_dataset()
     partition_dir = tmp_path / "race_year=2021"
     partition_dir.mkdir(parents=True)
-    df.to_parquet(partition_dir / "data_0.parquet", index=False)
+    df.write_parquet(partition_dir / "data_0.parquet")
     loaded = subject.load_dataset(tmp_path)
     assert len(loaded) == len(df)
 
 
 def test_load_dataset_reads_flat_parquet_directory(tmp_path: Path):
     df = make_synthetic_dataset()
-    df.to_parquet(tmp_path / "data_0.parquet", index=False)
+    df.write_parquet(tmp_path / "data_0.parquet")
     loaded = subject.load_dataset(tmp_path)
     assert len(loaded) == len(df)
 
@@ -1135,7 +1149,7 @@ def test_load_dataset_parquet_raises_when_directory_empty(tmp_path: Path):
 def test_load_dataset_reads_parquet_file_directly(tmp_path: Path):
     df = make_synthetic_dataset()
     parquet_path = tmp_path / "dataset.parquet"
-    df.to_parquet(parquet_path, index=False)
+    df.write_parquet(parquet_path)
     loaded = subject.load_dataset(parquet_path)
     assert len(loaded) == len(df)
 
@@ -1177,7 +1191,7 @@ def test_run_walk_forward_command_without_predictions_dir(
 ):
     df = make_walk_forward_dataset()
     csv_path = tmp_path / "full.csv"
-    df.to_csv(csv_path, index=False)
+    df.write_csv(csv_path)
     report_path = tmp_path / "report.json"
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
@@ -1223,7 +1237,7 @@ def test_run_hpo_command_writes_trials_csv_when_requested(
 ):
     df = make_walk_forward_dataset()
     csv_path = tmp_path / "full.csv"
-    df.to_csv(csv_path, index=False)
+    df.write_csv(csv_path)
     best_params_path = tmp_path / "best.json"
     trials_csv_path = tmp_path / "trials.csv"
     captured: list[str] = []
@@ -1257,7 +1271,7 @@ def test_run_predict_command_emits_predictions(
 ):
     df = make_synthetic_dataset()
     train_csv = tmp_path / "train.csv"
-    df.to_csv(train_csv, index=False)
+    df.write_csv(train_csv)
     model_path = tmp_path / "model.lgb"
     captured: list[str] = []
     monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
@@ -1369,7 +1383,7 @@ def test_evaluate_fold_set_passes_relevance_tier_name_to_walk_forward_fold(
         params: subject.TrainingParams,
         sample_weight_mode: str = subject.SAMPLE_WEIGHT_MODE_NONE,
         relevance_tier_name: str | None = None,
-    ) -> tuple[lgb.Booster, pd.DataFrame, subject.FoldMetrics]:
+    ) -> tuple[lgb.Booster, pl.DataFrame, subject.FoldMetrics]:
         captured_tier.append(relevance_tier_name)
         return original_fold(
             fold,

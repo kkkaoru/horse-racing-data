@@ -7,7 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import calibrate_finish_position as subject
@@ -20,7 +20,7 @@ def _fixed_now() -> datetime:
     return FIXED_NOW
 
 
-def _g1_predictions_frame_600() -> pd.DataFrame:
+def _g1_predictions_frame_600() -> pl.DataFrame:
     rng = np.random.default_rng(seed=20260604)
     n_races = 60
     rows: list[dict[str, object]] = []
@@ -44,10 +44,10 @@ def _g1_predictions_frame_600() -> pd.DataFrame:
                 "kyoso_joken_code": "999",
                 "grade_code": "A",
             })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
-def _small_bucket_frame_300() -> pd.DataFrame:
+def _small_bucket_frame_300() -> pl.DataFrame:
     rng = np.random.default_rng(seed=20260605)
     n_races = 30
     rows: list[dict[str, object]] = []
@@ -69,11 +69,11 @@ def _small_bucket_frame_300() -> pd.DataFrame:
                 "kyoso_joken_code": "005",
                 "grade_code": "B",
             })
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
-def _apply_input_frame() -> pd.DataFrame:
-    return pd.DataFrame({
+def _apply_input_frame() -> pl.DataFrame:
+    return pl.DataFrame({
         "race_id": [
             "jra:2024:0512:05:01",
             "jra:2024:0512:05:01",
@@ -378,101 +378,101 @@ def test_normalize_bucket_key_stringifies_int():
 
 
 def test_derive_top1_prob_uses_existing_column():
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top1_prob": [0.9, 0.4],
     })
     result = subject.derive_top1_prob(frame)
-    assert result.iloc[0] == 0.9
-    assert result.iloc[1] == 0.4
+    assert result[0] == 0.9
+    assert result[1] == 0.4
 
 
 def test_derive_top1_prob_falls_back_to_rank_when_column_missing():
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
     })
     result = subject.derive_top1_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[3] == 0.25
+    assert result[0] == 1.0
+    assert result[3] == 0.25
 
 
 def test_derive_top1_prob_falls_back_when_existing_column_all_null():
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top1_prob": [None, None],
     })
     result = subject.derive_top1_prob(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[1] == 0.5
+    assert result[0] == 1.0
+    assert result[1] == 0.5
 
 
 def test_derive_top3_prob_uses_existing_column():
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top3_prob": [0.95, 0.6],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == 0.95
-    assert result.iloc[1] == 0.6
+    assert result[0] == 0.95
+    assert result[1] == 0.6
 
 
 def test_derive_top3_prob_falls_back_to_rank_when_column_missing():
     # 4-horse race, top_n=3: proxy = (race_size - rank + 1) / race_size * 3
     # Rank 1: (4/4)*3=3.0, Rank 2: (3/4)*3=2.25, Rank 3: (2/4)*3=1.5, Rank 4: (1/4)*3=0.75
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "predicted_rank": [1, 2, 3, 4],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == pytest.approx(3.0)
-    assert result.iloc[2] == pytest.approx(1.5)
-    assert result.iloc[3] == pytest.approx(0.75)
+    assert result[0] == pytest.approx(3.0)
+    assert result[2] == pytest.approx(1.5)
+    assert result[3] == pytest.approx(0.75)
 
 
 def test_derive_top3_prob_falls_back_when_existing_column_all_null():
     # 2-horse race, top_n=3: Rank 1: (2/2)*3=3.0, Rank 2: (1/2)*3=1.5
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [1, 2],
         "predicted_top3_prob": [None, None],
     })
     result = subject.derive_top3_prob(frame)
-    assert result.iloc[0] == pytest.approx(3.0)
-    assert result.iloc[1] == pytest.approx(1.5)
+    assert result[0] == pytest.approx(3.0)
+    assert result[1] == pytest.approx(1.5)
 
 
 def test_derive_prob_from_rank_returns_zeros_when_rank_column_missing():
-    frame = pd.DataFrame({"race_id": ["r1", "r1"]})
+    frame = pl.DataFrame({"race_id": ["r1", "r1"]})
     result = subject.derive_prob_from_rank(frame, top_n=1)
-    assert result.iloc[0] == 0.0
-    assert result.iloc[1] == 0.0
+    assert result[0] == 0.0
+    assert result[1] == 0.0
 
 
 def test_derive_prob_from_rank_top3_allows_values_above_one():
     """top_n=3 proxy must NOT be clipped to 1.0 — top-ranked horses need
     distinguishable proxy values > 1.0 so isotonic regression can learn a
     meaningful calibration curve over them."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1"] * 10,
         "predicted_rank": list(range(1, 11)),
     })
     result = subject.derive_prob_from_rank(frame, top_n=3)
     # Rank 1 in a 10-horse race: (10/10)*3 = 3.0 — well above 1.0
-    assert result.iloc[0] > 1.0, "rank-1 proxy for top_n=3 must exceed 1.0"
+    assert result[0] > 1.0, "rank-1 proxy for top_n=3 must exceed 1.0"
     # Rank 10: (1/10)*3 = 0.3 — below 1.0
-    assert result.iloc[9] < 1.0
+    assert result[9] < 1.0
     # All values must be positive
     assert (result > 0.0).all()
     # Proxy must decrease with rank
-    assert result.iloc[0] > result.iloc[4] > result.iloc[9]
+    assert result[0] > result[4] > result[9]
 
 
 def test_derive_prob_from_rank_top1_stays_within_zero_to_one():
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1"] * 5,
         "predicted_rank": [1, 2, 3, 4, 5],
     })
@@ -486,31 +486,31 @@ def test_derive_prob_from_rank_clamps_nan_rank_to_zero():
     calibrate without crashing re_rank_predictions().astype(int) with
     IntCastingNaNError. fit_curves_for_frame filters NaN-rank rows at frame level
     before calling this function, so the 0.0 fallback only matters for inference."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "predicted_rank": [1.0, 2.0, float("nan")],
     })
     result = subject.derive_prob_from_rank(frame, top_n=1)
-    assert result.iloc[0] > 0.0
-    assert result.iloc[1] > 0.0
-    assert result.iloc[2] == pytest.approx(0.0)
+    assert result[0] > 0.0
+    assert result[1] > 0.0
+    assert result[2] == pytest.approx(0.0)
 
 
 def test_win_indicator_marks_rank_one_only():
-    frame = pd.DataFrame({"actual_finish_position": [1.0, 2.0, 3.0, 4.0]})
+    frame = pl.DataFrame({"actual_finish_position": [1.0, 2.0, 3.0, 4.0]})
     result = subject.win_indicator(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[1] == 0.0
-    assert result.iloc[3] == 0.0
+    assert result[0] == 1.0
+    assert result[1] == 0.0
+    assert result[3] == 0.0
 
 
 def test_top3_indicator_marks_top_three():
-    frame = pd.DataFrame({"actual_finish_position": [1.0, 2.0, 3.0, 4.0]})
+    frame = pl.DataFrame({"actual_finish_position": [1.0, 2.0, 3.0, 4.0]})
     result = subject.top3_indicator(frame)
-    assert result.iloc[0] == 1.0
-    assert result.iloc[1] == 1.0
-    assert result.iloc[2] == 1.0
-    assert result.iloc[3] == 0.0
+    assert result[0] == 1.0
+    assert result[1] == 1.0
+    assert result[2] == 1.0
+    assert result[3] == 0.0
 
 
 def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
@@ -527,13 +527,13 @@ def test_fit_curves_for_frame_excludes_nan_rank_rows_from_fit():
                 "predicted_rank": rank,
                 "actual_finish_position": actual,
             })
-    frame = pd.DataFrame(rows)
-    nan_row = pd.DataFrame([{
+    frame = pl.DataFrame(rows)
+    nan_row = pl.DataFrame([{
         "race_id": "r_extra",
         "predicted_rank": float("nan"),
         "actual_finish_position": 1.0,
     }])
-    frame_with_nan = pd.concat([frame, nan_row], ignore_index=True)
+    frame_with_nan = pl.concat([frame, nan_row], how="vertical")
     pair_clean = subject.fit_curves_for_frame(
         frame, cat="jra", bucket_key="test", now=FIXED_NOW,
     )
@@ -547,7 +547,7 @@ def test_fit_curves_for_frame_raises_when_all_ranks_are_nan():
     """When every row has NaN predicted_rank and no probability column is present,
     fit_curves_for_frame must raise ValueError rather than passing empty arrays
     to IsotonicRegression.fit([],[]) which also raises ValueError."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_rank": [float("nan"), float("nan")],
         "actual_finish_position": [1.0, 2.0],
@@ -559,19 +559,19 @@ def test_fit_curves_for_frame_raises_when_all_ranks_are_nan():
 def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path):
     """fit_run must skip buckets where all predicted_ranks are NaN, fall through
     to the global fallback, and not crash."""
-    frame_valid = pd.DataFrame({
+    frame_valid = pl.DataFrame({
         "race_id": [f"r{i}" for i in range(60) for _ in range(10)],
         "predicted_rank": [float(h + 1) for _ in range(60) for h in range(10)],
         "actual_finish_position": [float(h + 1) for _ in range(60) for h in range(10)],
         "kyoso_joken_code": ["001"] * 600,
     })
-    frame_nanrank = pd.DataFrame({
+    frame_nanrank = pl.DataFrame({
         "race_id": ["r_nan"] * 5,
         "predicted_rank": [float("nan")] * 5,
         "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
         "kyoso_joken_code": ["002"] * 5,
     })
-    frame = pd.concat([frame_valid, frame_nanrank], ignore_index=True)
+    frame = pl.concat([frame_valid, frame_nanrank], how="vertical")
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
     )
@@ -674,7 +674,7 @@ def test_fit_run_falls_back_to_cat_global_when_no_bucket_meets_threshold(tmp_pat
 
 def test_fit_run_emits_warning_for_empty_parquet(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     parquet_reader: subject.ParquetDirReaderLike = cast(
-        subject.ParquetDirReaderLike, MagicMock(return_value=pd.DataFrame()),
+        subject.ParquetDirReaderLike, MagicMock(return_value=pl.DataFrame()),
     )
     json_writer = MagicMock()
     deps: subject.FitDeps = {
@@ -699,7 +699,7 @@ def test_fit_run_emits_warning_for_empty_parquet(tmp_path: Path, capsys: pytest.
 
 
 def test_fit_run_raises_when_actual_finish_position_missing(tmp_path: Path):
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "predicted_score": [0.5, 0.4],
         "predicted_rank": [1, 2],
@@ -755,7 +755,7 @@ def test_fit_run_with_grade_dim_uses_grade_code_column(tmp_path: Path):
 
 
 def test_fit_run_falls_back_when_bucket_dim_column_missing(tmp_path: Path):
-    frame = _g1_predictions_frame_600().drop(columns=["kyoso_joken_code"])
+    frame = _g1_predictions_frame_600().drop("kyoso_joken_code")
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
     )
@@ -779,16 +779,16 @@ def test_fit_run_falls_back_when_bucket_dim_column_missing(tmp_path: Path):
 
 
 def test_isotonic_transform_uses_numpy_interp():
-    probs = pd.Series([0.0, 0.5, 1.0])
+    probs = pl.Series([0.0, 0.5, 1.0])
     curve = _g1_iso_top1_curve()
     out = subject.isotonic_transform(probs, curve)
-    assert out.iloc[0] == 0.05
-    assert out.iloc[1] == 0.40
-    assert out.iloc[2] == 0.90
+    assert out[0] == 0.05
+    assert out[1] == 0.40
+    assert out[2] == 0.90
 
 
 def test_isotonic_transform_returns_identity_when_xs_empty():
-    probs = pd.Series([0.3, 0.7])
+    probs = pl.Series([0.3, 0.7])
     empty_curve: subject.CalibrationCurve = {
         "schema_version": 1,
         "cat": "jra",
@@ -802,22 +802,22 @@ def test_isotonic_transform_returns_identity_when_xs_empty():
         "brier_score_after": 0.0,
     }
     out = subject.isotonic_transform(probs, empty_curve)
-    assert out.iloc[0] == 0.3
-    assert out.iloc[1] == 0.7
+    assert out[0] == 0.3
+    assert out[1] == 0.7
 
 
 def test_resolve_bucket_column_prefers_kyoso_joken():
-    frame = pd.DataFrame({"kyoso_joken_code": ["999"], "grade_code": ["A"]})
+    frame = pl.DataFrame({"kyoso_joken_code": ["999"], "grade_code": ["A"]})
     assert subject.resolve_bucket_column(frame) == "kyoso_joken_code"
 
 
 def test_resolve_bucket_column_falls_back_to_grade_code():
-    frame = pd.DataFrame({"grade_code": ["A"]})
+    frame = pl.DataFrame({"grade_code": ["A"]})
     assert subject.resolve_bucket_column(frame) == "grade_code"
 
 
 def test_resolve_bucket_column_returns_none_when_neither_present():
-    frame = pd.DataFrame({"race_id": ["r1"]})
+    frame = pl.DataFrame({"race_id": ["r1"]})
     assert subject.resolve_bucket_column(frame) is None
 
 
@@ -902,7 +902,7 @@ def test_apply_run_writes_calibrated_columns_when_bucket_present(tmp_path: Path)
     result = subject.apply_run(args, deps)
     assert result["rows_written"] == 6
     parquet_writer.assert_called_once()
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     assert "predicted_top1_prob_calibrated" in written_frame.columns
     assert "predicted_top3_prob_calibrated" in written_frame.columns
     assert "calibration_source" in written_frame.columns
@@ -937,7 +937,7 @@ def test_apply_run_falls_back_to_cat_global(tmp_path: Path):
     }
     result = subject.apply_run(args, deps)
     assert result["rows_written"] == 6
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     assert (written_frame["calibration_source"] == "cat-global").all()
 
 
@@ -964,11 +964,11 @@ def test_apply_run_marks_uncalibrated_when_no_curve_found(tmp_path: Path):
     }
     result = subject.apply_run(args, deps)
     assert result["rows_written"] == 6
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     assert (written_frame["calibration_source"] == "uncalibrated").all()
     # Without calibration, top1 prob unchanged
-    assert written_frame["predicted_top1_prob_calibrated"].iloc[0] == 0.9
-    assert written_frame["predicted_top1_prob_calibrated"].iloc[3] == 0.85
+    assert written_frame["predicted_top1_prob_calibrated"][0] == 0.9
+    assert written_frame["predicted_top1_prob_calibrated"][3] == 0.85
 
 
 def test_apply_run_re_ranks_per_race_by_calibrated_top1(tmp_path: Path):
@@ -1008,20 +1008,19 @@ def test_apply_run_re_ranks_per_race_by_calibrated_top1(tmp_path: Path):
         "output_predictions_root": tmp_path / "out",
     }
     subject.apply_run(args, deps)
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     # After inverting calibration, the prev rank=3 horse (lowest raw prob) -> highest calibrated -> rank 1
-    race1_mask = written_frame["race_id"] == "jra:2024:0512:05:01"
-    race1 = written_frame[race1_mask].reset_index(drop=True)
+    race1 = written_frame.filter(pl.col("race_id") == "jra:2024:0512:05:01")
     # umaban=3 had raw 0.2, becomes top after inversion
-    rank_for_umaban_3 = int(race1.loc[race1["umaban"] == 3, "predicted_rank"].iloc[0])
-    rank_for_umaban_1 = int(race1.loc[race1["umaban"] == 1, "predicted_rank"].iloc[0])
+    rank_for_umaban_3 = int(race1.filter(pl.col("umaban") == 3)["predicted_rank"][0])
+    rank_for_umaban_1 = int(race1.filter(pl.col("umaban") == 1)["predicted_rank"][0])
     assert rank_for_umaban_3 == 1
     assert rank_for_umaban_1 == 3
 
 
 def test_apply_run_handles_empty_input(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     parquet_reader: subject.ParquetDirReaderLike = cast(
-        subject.ParquetDirReaderLike, MagicMock(return_value=pd.DataFrame()),
+        subject.ParquetDirReaderLike, MagicMock(return_value=pl.DataFrame()),
     )
     parquet_writer = MagicMock()
     json_reader: subject.JsonReaderLike = cast(subject.JsonReaderLike, MagicMock())
@@ -1070,11 +1069,11 @@ def test_apply_run_handles_top3_calibration_independently(tmp_path: Path):
         "output_predictions_root": tmp_path / "out",
     }
     subject.apply_run(args, deps)
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     # top3 curve maps 1.0 -> 0.95, raw input row 0 has top3=1.0
-    assert written_frame["predicted_top3_prob_calibrated"].iloc[0] == 0.95
+    assert written_frame["predicted_top3_prob_calibrated"][0] == 0.95
     # top3 curve maps 0.4 by interp(0.4, [0.0, 0.5, 1.0], [0.10, 0.55, 0.95]) = 0.10 + (0.4/0.5)*(0.55-0.10) = 0.46
-    assert written_frame["predicted_top3_prob_calibrated"].iloc[2] == pytest.approx(0.46, abs=1e-9)
+    assert written_frame["predicted_top3_prob_calibrated"][2] == pytest.approx(0.46, abs=1e-9)
 
 
 def test_apply_run_logs_top3_calibration_source(
@@ -1111,8 +1110,9 @@ def test_apply_run_logs_top3_calibration_source(
 
 
 def test_apply_run_uses_grade_code_when_kyoso_joken_absent(tmp_path: Path):
-    frame = _apply_input_frame().drop(columns=["kyoso_joken_code"])
-    frame["grade_code"] = "A"
+    frame = _apply_input_frame().drop("kyoso_joken_code").with_columns(
+        pl.lit("A").alias("grade_code")
+    )
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
     )
@@ -1134,12 +1134,12 @@ def test_apply_run_uses_grade_code_when_kyoso_joken_absent(tmp_path: Path):
     }
     result = subject.apply_run(args, deps)
     assert result["rows_written"] == 6
-    written_frame = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written_frame = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     assert (written_frame["calibration_source"] == "bucket").all()
 
 
 def test_apply_run_uses_unknown_bucket_when_dim_column_missing(tmp_path: Path):
-    frame = _apply_input_frame().drop(columns=["kyoso_joken_code"])
+    frame = _apply_input_frame().drop("kyoso_joken_code")
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
     )
@@ -1166,17 +1166,17 @@ def test_apply_run_uses_unknown_bucket_when_dim_column_missing(tmp_path: Path):
 
 
 def test_race_count_from_frame_returns_zero_when_race_id_missing():
-    frame = pd.DataFrame({"predicted_score": [0.5]})
+    frame = pl.DataFrame({"predicted_score": [0.5]})
     assert subject.race_count_from_frame(frame) == 0
 
 
 def test_race_count_from_frame_uses_nunique():
-    frame = pd.DataFrame({"race_id": ["r1", "r1", "r2"]})
+    frame = pl.DataFrame({"race_id": ["r1", "r1", "r2"]})
     assert subject.race_count_from_frame(frame) == 2
 
 
 def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture[str]):
-    series = pd.Series(["bucket", "bucket", "cat-global", "uncalibrated"])
+    series = pl.Series("calibration_source", ["bucket", "bucket", "cat-global", "uncalibrated"])
     subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
     assert "[top1]" in captured.err
@@ -1186,7 +1186,7 @@ def test_log_source_distribution_summarizes_counts(capsys: pytest.CaptureFixture
 
 
 def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixture[str]):
-    series = pd.Series([], dtype=str)
+    series = pl.Series("calibration_source", [], dtype=pl.Utf8)
     subject.log_source_distribution(series, label="top1")
     captured = capsys.readouterr()
     assert captured.err == ""
@@ -1195,7 +1195,7 @@ def test_log_source_distribution_empty_emits_nothing(capsys: pytest.CaptureFixtu
 def test_fit_run_uses_race_count_for_bucket_threshold_passes_when_enough_races(tmp_path: Path):
     """min_bucket_samples compares against unique race count, not total row count.
     10 races × 1 horse = 10 rows, race_count=10 >= min_bucket_samples=5 → bucket written."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": [f"r{i}" for i in range(10)],
         "ketto_toroku_bango": [f"horse_{i}" for i in range(10)],
         "predicted_score": [float(i) / 10 for i in range(10)],
@@ -1252,28 +1252,28 @@ def test_default_read_calibration_json_returns_dict(tmp_path: Path):
 def test_default_read_parquet_dir_concatenates_partitions(tmp_path: Path):
     part1 = tmp_path / "year=2024"
     part1.mkdir()
-    pd.DataFrame({"a": [1, 2]}).to_parquet((part1 / "data.parquet").as_posix())
+    pl.DataFrame({"a": [1, 2]}).write_parquet((part1 / "data.parquet").as_posix())
     part2 = tmp_path / "year=2025"
     part2.mkdir()
-    pd.DataFrame({"a": [3]}).to_parquet((part2 / "data.parquet").as_posix())
+    pl.DataFrame({"a": [3]}).write_parquet((part2 / "data.parquet").as_posix())
     frame = subject.default_read_parquet_dir(tmp_path)
-    assert len(frame) == 3
+    assert frame.height == 3
 
 
 def test_default_read_parquet_dir_returns_empty_when_no_files(tmp_path: Path):
     frame = subject.default_read_parquet_dir(tmp_path)
-    assert frame.empty
+    assert frame.is_empty()
 
 
 def test_default_read_parquet_dir_reads_single_file(tmp_path: Path):
     file_path = tmp_path / "data.parquet"
-    pd.DataFrame({"a": [1, 2, 3]}).to_parquet(file_path.as_posix())
+    pl.DataFrame({"a": [1, 2, 3]}).write_parquet(file_path.as_posix())
     frame = subject.default_read_parquet_dir(file_path)
-    assert len(frame) == 3
+    assert frame.height == 3
 
 
 def test_default_write_parquet_writes_partitioned(tmp_path: Path):
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "ketto_toroku_bango": ["A", "B"],
         "predicted_score": [0.9, 0.4],
         "category": ["jra", "jra"],
@@ -1365,7 +1365,7 @@ def test_isotonic_transform_raises_on_wrong_schema_version():
         "brier_score_before": 0.25,
         "brier_score_after": 0.20,
     }
-    probs = pd.Series([0.3, 0.7])
+    probs = pl.Series([0.3, 0.7])
     with pytest.raises(ValueError, match="schema_version"):
         subject.isotonic_transform(probs, curve)
 
@@ -1383,11 +1383,11 @@ def test_isotonic_transform_accepts_current_schema_version():
         "brier_score_before": 0.25,
         "brier_score_after": 0.20,
     }
-    probs = pd.Series([0.0, 0.5, 1.0])
+    probs = pl.Series([0.0, 0.5, 1.0])
     result = subject.isotonic_transform(probs, curve)
-    assert result.iloc[0] == pytest.approx(0.0)
-    assert result.iloc[1] == pytest.approx(0.4)
-    assert result.iloc[2] == pytest.approx(0.9)
+    assert result[0] == pytest.approx(0.0)
+    assert result[1] == pytest.approx(0.4)
+    assert result[2] == pytest.approx(0.9)
 
 
 def test_isotonic_transform_accepts_old_file_without_schema_version():
@@ -1407,11 +1407,11 @@ def test_isotonic_transform_accepts_old_file_without_schema_version():
     }
     import typing
     curve = typing.cast(subject.CalibrationCurve, curve_dict)
-    probs = pd.Series([0.0, 0.5, 1.0])
+    probs = pl.Series([0.0, 0.5, 1.0])
     result = subject.isotonic_transform(probs, curve)
-    assert result.iloc[0] == pytest.approx(0.0)
-    assert result.iloc[1] == pytest.approx(0.4)
-    assert result.iloc[2] == pytest.approx(0.9)
+    assert result[0] == pytest.approx(0.0)
+    assert result[1] == pytest.approx(0.4)
+    assert result[2] == pytest.approx(0.9)
 
 
 def test_fit_run_returns_zero_buckets_when_global_fallback_has_all_nan_ranks(
@@ -1420,7 +1420,7 @@ def test_fit_run_returns_zero_buckets_when_global_fallback_has_all_nan_ranks(
     """When all rows have NaN predicted_rank and no bucket meets the threshold,
     the global fallback fit_curves_for_frame raises ValueError; fit_run must
     return gracefully with buckets_written=0 and log a warning."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1"] * 5,
         "predicted_rank": [float("nan")] * 5,
         "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
@@ -1504,7 +1504,7 @@ def test_fit_run_skips_bucket_when_threshold_met_but_all_ranks_are_nan(tmp_path:
                 "actual_finish_position": float(horse_idx + 1),
                 "kyoso_joken_code": "B",
             })
-    frame = pd.DataFrame(nan_rows + valid_rows)
+    frame = pl.DataFrame(nan_rows + valid_rows)
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
     )
@@ -1537,7 +1537,7 @@ def test_apply_run_clamps_uncalibrated_top3_to_unit_interval(tmp_path: Path):
     the rank proxy which returns values in [0, 3].  calibrated_series_for_target must
     clip raw_series to [0, 1] before using it as the uncalibrated default so that
     predicted_top3_prob_calibrated is always a valid probability."""
-    frame = pd.DataFrame({
+    frame = pl.DataFrame({
         "race_id": ["r1"] * 10,
         "ketto_toroku_bango": [f"horse{i}" for i in range(10)],
         "umaban": list(range(1, 11)),
@@ -1568,9 +1568,9 @@ def test_apply_run_clamps_uncalibrated_top3_to_unit_interval(tmp_path: Path):
         "output_predictions_root": tmp_path / "out",
     }
     result = subject.apply_run(args, deps)
-    written = cast(pd.DataFrame, parquet_writer.call_args.args[0])
+    written = cast(pl.DataFrame, parquet_writer.call_args.args[0])
     top3_vals = written["predicted_top3_prob_calibrated"]
     # rank proxy for top_n=3 produces values up to 3.0 — must be clamped to [0, 1]
-    assert float(top3_vals.max()) <= 1.0
-    assert float(top3_vals.min()) >= 0.0
+    assert float(cast(float, top3_vals.max())) <= 1.0
+    assert float(cast(float, top3_vals.min())) >= 0.0
     assert result["rows_written"] == 10

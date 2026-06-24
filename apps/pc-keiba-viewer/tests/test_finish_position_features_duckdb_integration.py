@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 import duckdb
-import pandas as pd
+import polars as pl
 import pytest
 
 import finish_position_features_duckdb as subject
@@ -58,7 +58,7 @@ REC_DATA: list[tuple[object, ...]] = [
 
 
 def _seed_rec(con: duckdb.DuckDBPyConnection) -> None:
-    df = pd.DataFrame(REC_DATA, columns=REC_COLUMNS)
+    df = pl.DataFrame(REC_DATA, schema=REC_COLUMNS, orient="row")
     con.register("rec_df", df)
     con.execute(
         """
@@ -79,24 +79,27 @@ def _seed_rec(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_horse_masters(con: duckdb.DuckDBPyConnection) -> None:
-    jra_um = pd.DataFrame(
+    jra_um = pl.DataFrame(
         [
             ("h001", "s001", "d001"),
             ("h002", "s002", "d002"),
         ],
-        columns=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        schema=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        orient="row",
     )
-    nar_um = pd.DataFrame(
+    nar_um = pl.DataFrame(
         [
             ("h003", "s003", "d003"),
         ],
-        columns=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        schema=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        orient="row",
     )
-    nar_nu = pd.DataFrame(
+    nar_nu = pl.DataFrame(
         [
             ("h004", "s004", "d004"),
         ],
-        columns=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        schema=["ketto_toroku_bango", "ketto_joho_01b", "ketto_joho_05b"],
+        orient="row",
     )
     con.register("jra_um_df", jra_um)
     con.register("nar_um_df", nar_um)
@@ -107,7 +110,7 @@ def _seed_horse_masters(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
-    jra_se = pd.DataFrame(
+    jra_se = pl.DataFrame(
         [
             ("2018", "0101", "01", "01", "h001", "480", "000", "+"),
             ("2018", "0601", "02", "01", "h001", "478", "002", "-"),
@@ -118,7 +121,7 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
             ("2020", "0101", "01", "01", "h001", "486", "002", "+"),
             ("2020", "0101", "01", "01", "h002", "474", "002", "+"),
         ],
-        columns=[
+        schema=[
             "kaisai_nen",
             "kaisai_tsukihi",
             "keibajo_code",
@@ -128,13 +131,14 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
             "zogen_sa",
             "zogen_fugo",
         ],
+        orient="row",
     )
-    nar_se = pd.DataFrame(
+    nar_se = pl.DataFrame(
         [
             ("2019", "0601", "01", "02", "h003", "440", "000", "+"),
             ("2020", "0601", "01", "02", "h003", "442", "002", "+"),
         ],
-        columns=[
+        schema=[
             "kaisai_nen",
             "kaisai_tsukihi",
             "keibajo_code",
@@ -144,6 +148,7 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
             "zogen_sa",
             "zogen_fugo",
         ],
+        orient="row",
     )
     con.register("jra_se_df", jra_se)
     con.register("nar_se_df", nar_se)
@@ -152,11 +157,11 @@ def _seed_weight_tables(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
-    jra_ra = pd.DataFrame(
+    jra_ra = pl.DataFrame(
         [
             ("2020", "0101", "01", "01", "1", None),
         ],
-        columns=[
+        schema=[
             "kaisai_nen",
             "kaisai_tsukihi",
             "keibajo_code",
@@ -164,12 +169,13 @@ def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
             "tenko_code",
             "kyoso_joken_meisho",
         ],
+        orient="row",
     )
-    nar_ra = pd.DataFrame(
+    nar_ra = pl.DataFrame(
         [
             ("2020", "0601", "01", "02", "2", "「　　　Ｃ２　」"),
         ],
-        columns=[
+        schema=[
             "kaisai_nen",
             "kaisai_tsukihi",
             "keibajo_code",
@@ -177,6 +183,7 @@ def _seed_weather_tables(con: duckdb.DuckDBPyConnection) -> None:
             "tenko_code",
             "kyoso_joken_meisho",
         ],
+        orient="row",
     )
     con.register("jra_ra_df", jra_ra)
     con.register("nar_ra_df", nar_ra)
@@ -597,7 +604,7 @@ def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
         ("jra", "20180102", "2018", "0102", "01", "01", "h001", 2, "j1", "t1", 1600, "10", "A", "000", 10, 2, None, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
         ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 0.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1, 5),
     ]
-    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_null_df", df)
     con.execute(
         """
@@ -689,9 +696,9 @@ def _seed_pedigree_rec_um_for_parity(con: duckdb.DuckDBPyConnection) -> None:
                     )
                 )
                 counter += 1
-    df = pd.DataFrame(
+    df = pl.DataFrame(
         rows,
-        columns=[
+        schema=[
             "source",
             "race_year_month",
             "kyori",
@@ -703,6 +710,7 @@ def _seed_pedigree_rec_um_for_parity(con: duckdb.DuckDBPyConnection) -> None:
             "ketto_joho_05b",
             "corner1_norm",
         ],
+        orient="row",
     )
     con.register("pedigree_parity_df", df)
     con.execute(
@@ -971,7 +979,7 @@ UPCOMING_REC_DATA: list[tuple[object, ...]] = [
 
 
 def _seed_upcoming_rec(con: duckdb.DuckDBPyConnection) -> None:
-    df = pd.DataFrame(UPCOMING_REC_DATA, columns=REC_COLUMNS)
+    df = pl.DataFrame(UPCOMING_REC_DATA, schema=REC_COLUMNS, orient="row")
     con.register("rec_upcoming_df", df)
     con.execute(
         """
@@ -1449,11 +1457,12 @@ def test_assemble_final_select_emits_race_internal_rank_values(
         force_clean: bool,
     ) -> None:
         sql = subject.assemble_final_select_from_temp_tables(category)
-        rows = con.execute(f"with final as ({sql}) select * from final").fetchdf()
+        rows = con.execute(f"with final as ({sql}) select * from final").pl()
         captured_columns["names"] = [str(name) for name in rows.columns]
         captured_values["speed_rank"] = [float(value) for value in rows["speed_index_avg_5_rank_in_race"]]
         captured_values["jockey_diff"] = [
-            float(value) for value in rows["jockey_recent_win_rate_diff_from_race_avg"]
+            float("nan") if value is None else float(value)
+            for value in rows["jockey_recent_win_rate_diff_from_race_avg"]
         ]
         subject.prepare_output_dir(output_dir, keep_existing, force_clean)
 
@@ -1516,7 +1525,7 @@ def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
         ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
         ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
-    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_keibajo_df", df)
     con.execute(
         """
@@ -1561,7 +1570,7 @@ def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
         ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
         ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
-    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_damsire_keibajo_df", df)
     con.execute(
         """
@@ -1605,7 +1614,7 @@ def test_keibajo_win_rate_null_when_race_count_below_min_races():
         ("jra", "20180301", "2018", "0301", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 2, 0.5, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 2, 3.0, 1, 3),
         ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
-    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_below_min_df", df)
     con.execute(
         """
@@ -1657,7 +1666,7 @@ def test_keibajo_win_rate_present_in_final_output_value():
         ("jra", "20180501", "2018", "0501", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 4, 0.9, 1.0, 35.0, 0.3, 0.4, 0.5, "1", None, 4, 5.0, 1, 3),
         ("jra", "20200101", "2020", "0101", "01", "01", "h001", 1, "j1", "t1", 1600, "10", "A", "000", 10, 1, 0.0, 1.0, 34.0, 0.2, 0.3, 0.4, "1", None, 1, 2.0, 1, 3),
     ]
-    df = pd.DataFrame(rows, columns=REC_COLUMNS)
+    df = pl.DataFrame(rows, schema=REC_COLUMNS, orient="row")
     con.register("rec_value_df", df)
     con.execute(
         """

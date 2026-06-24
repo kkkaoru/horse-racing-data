@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Protocol, TypedDict, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sklearn.isotonic import IsotonicRegression
 
 MODE_FIT: str = "fit"
@@ -117,11 +117,11 @@ class CurvePair(TypedDict):
 
 
 class ParquetDirReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class ParquetWriterLike(Protocol):
-    def __call__(self, frame: pd.DataFrame, output_dir: Path) -> None: ...
+    def __call__(self, frame: pl.DataFrame, output_dir: Path) -> None: ...
 
 
 class JsonReaderLike(Protocol):
@@ -214,7 +214,7 @@ def format_fit_timestamp(now: datetime) -> str:
     return now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def default_read_parquet_dir(path: Path) -> pd.DataFrame:
+def default_read_parquet_dir(path: Path) -> pl.DataFrame:
     """Read every parquet under ``path`` (recursive) into a single DataFrame.
 
     Both ``fit`` and ``apply`` modes consume Hive-partitioned parquet trees
@@ -222,20 +222,19 @@ def default_read_parquet_dir(path: Path) -> pd.DataFrame:
     directory or a single file path and concatenate every parquet under it.
     """
     if path.is_file():
-        return pd.read_parquet(path.as_posix())
+        return pl.read_parquet(path.as_posix())
     parts = sorted(path.rglob("*.parquet"))
-    frames = [pd.read_parquet(p.as_posix()) for p in parts]
+    frames = [pl.read_parquet(p.as_posix()) for p in parts]
     if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
-def default_write_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
+def default_write_parquet(frame: pl.DataFrame, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
+    frame.write_parquet(
         output_dir.as_posix(),
-        partition_cols=["category", "race_year"],
-        index=False,
+        partition_by=["category", "race_year"],
     )
 
 
@@ -252,7 +251,7 @@ def default_path_exists(path: Path) -> bool:
     return path.exists()
 
 
-def derive_top1_prob(frame: pd.DataFrame) -> pd.Series:
+def derive_top1_prob(frame: pl.DataFrame) -> pl.Series:
     """Return a ``predicted_top1_prob`` series, deriving it from per-race rank when absent.
 
     The walk-forward script leaves the column null for rank-only learners
@@ -262,45 +261,47 @@ def derive_top1_prob(frame: pd.DataFrame) -> pd.Series:
     """
     if PREDICTED_TOP1_PROB_COLUMN in frame.columns:
         column = frame[PREDICTED_TOP1_PROB_COLUMN]
-        if not column.isna().all():
-            return column.astype(float).fillna(0.0)
+        if not column.is_null().all():
+            return column.cast(pl.Float64).fill_null(0.0)
     return derive_prob_from_rank(frame, top_n=1)
 
 
-def derive_top3_prob(frame: pd.DataFrame) -> pd.Series:
+def derive_top3_prob(frame: pl.DataFrame) -> pl.Series:
     if PREDICTED_TOP3_PROB_COLUMN in frame.columns:
         column = frame[PREDICTED_TOP3_PROB_COLUMN]
-        if not column.isna().all():
-            return column.astype(float).fillna(0.0)
+        if not column.is_null().all():
+            return column.cast(pl.Float64).fill_null(0.0)
     return derive_prob_from_rank(frame, top_n=TOP3_FINISH_THRESHOLD)
 
 
-def derive_prob_from_rank(frame: pd.DataFrame, *, top_n: int) -> pd.Series:
+def derive_prob_from_rank(frame: pl.DataFrame, *, top_n: int) -> pl.Series:
     """Linear-decay proxy: 1.0 at rank 1, 0.0 below rank == race_size.
 
     ``top_n=1`` yields the win-proxy; ``top_n=3`` yields the box-proxy that
     sums to roughly 3.0 per race for top1 distributions.
     """
     if PREDICTED_RANK_COLUMN not in frame.columns:
-        return pd.Series([0.0] * len(frame), index=frame.index)
-    grouped = frame.groupby(RACE_ID_COLUMN)[PREDICTED_RANK_COLUMN]
-    race_sizes = grouped.transform("count").astype(float)
-    ranks = frame[PREDICTED_RANK_COLUMN].astype(float)
-    if top_n == 1:
-        proxy = (race_sizes - ranks + 1.0) / race_sizes
-    else:
-        proxy = ((race_sizes - ranks + 1.0) / race_sizes) * float(top_n)
-    return proxy.clip(lower=0.0, upper=float(top_n)).fillna(0.0)
+        return pl.Series(PREDICTED_TOP1_PROB_COLUMN, [0.0] * frame.height, dtype=pl.Float64)
+    race_sizes = (
+        frame.select(pl.col(PREDICTED_RANK_COLUMN).count().over(RACE_ID_COLUMN))
+        .to_series()
+        .cast(pl.Float64)
+    )
+    ranks = frame[PREDICTED_RANK_COLUMN].cast(pl.Float64)
+    proxy = (race_sizes - ranks + 1.0) / race_sizes
+    if top_n != 1:
+        proxy = proxy * float(top_n)
+    return proxy.clip(0.0, float(top_n)).fill_null(0.0).fill_nan(0.0)
 
 
-def win_indicator(frame: pd.DataFrame) -> pd.Series:
-    actual = frame[ACTUAL_FINISH_POSITION_COLUMN].astype(float)
-    return (actual == 1.0).astype(float)
+def win_indicator(frame: pl.DataFrame) -> pl.Series:
+    actual = frame[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64)
+    return (actual == 1.0).cast(pl.Float64)
 
 
-def top3_indicator(frame: pd.DataFrame) -> pd.Series:
-    actual = frame[ACTUAL_FINISH_POSITION_COLUMN].astype(float)
-    return (actual <= float(TOP3_FINISH_THRESHOLD)).astype(float)
+def top3_indicator(frame: pl.DataFrame) -> pl.Series:
+    actual = frame[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64)
+    return (actual <= float(TOP3_FINISH_THRESHOLD)).cast(pl.Float64)
 
 
 def normalize_bucket_key(value: object) -> str:
@@ -350,7 +351,7 @@ def fit_single_curve(
 
 
 def fit_curves_for_frame(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     *,
     cat: str,
     bucket_key: str,
@@ -360,18 +361,21 @@ def fit_curves_for_frame(
     # rows before fitting so they don't create spurious calibration knots.
     if PREDICTED_RANK_COLUMN in frame.columns and (
         PREDICTED_TOP1_PROB_COLUMN not in frame.columns
-        or frame[PREDICTED_TOP1_PROB_COLUMN].isna().all()
+        or frame[PREDICTED_TOP1_PROB_COLUMN].is_null().all()
     ):
-        frame = frame[frame[PREDICTED_RANK_COLUMN].notna()]
-    if len(frame) == 0:
+        frame = frame.filter(
+            pl.col(PREDICTED_RANK_COLUMN).is_not_null()
+            & pl.col(PREDICTED_RANK_COLUMN).is_not_nan()
+        )
+    if frame.height == 0:
         raise ValueError(
             f"No valid rows for calibration fit (bucket_key={bucket_key!r}); "
             "all rows have NaN predicted_rank and no direct probability column"
         )
-    top1_probs = derive_top1_prob(frame).to_numpy(dtype=float)
-    top3_probs = derive_top3_prob(frame).to_numpy(dtype=float)
-    top1_targets = win_indicator(frame).to_numpy(dtype=float)
-    top3_targets = top3_indicator(frame).to_numpy(dtype=float)
+    top1_probs = derive_top1_prob(frame).to_numpy().astype(float)
+    top3_probs = derive_top3_prob(frame).to_numpy().astype(float)
+    top1_targets = win_indicator(frame).to_numpy().astype(float)
+    top3_targets = top3_indicator(frame).to_numpy().astype(float)
     top1_curve = fit_single_curve(
         top1_probs,
         top1_targets,
@@ -391,10 +395,10 @@ def fit_curves_for_frame(
     return {"top1": top1_curve, "top3": top3_curve}
 
 
-def race_count_from_frame(frame: pd.DataFrame) -> int:
+def race_count_from_frame(frame: pl.DataFrame) -> int:
     if RACE_ID_COLUMN not in frame.columns:
         return 0
-    return int(frame[RACE_ID_COLUMN].nunique())
+    return int(frame[RACE_ID_COLUMN].n_unique())
 
 
 def write_curve_pair(
@@ -411,7 +415,7 @@ def write_curve_pair(
 
 def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
     frame = deps["parquet_reader"](args["predictions_root"])
-    if frame.empty:
+    if frame.is_empty():
         sys.stderr.write(
             f"calibrate_finish_position: empty predictions parquet at {args['predictions_root']}; "
             "no calibration JSON written.\n",
@@ -427,11 +431,11 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
     buckets_written = 0
     fallback_used = False
     bucket_values: list[object] = (
-        sorted(frame[column].dropna().unique().tolist()) if column in frame.columns else []
+        sorted(frame[column].drop_nulls().unique().to_list()) if column in frame.columns else []
     )
     for raw_value in bucket_values:
         bucket_key = normalize_bucket_key(raw_value)
-        bucket_frame = frame[frame[column] == raw_value]
+        bucket_frame = frame.filter(pl.col(column) == raw_value)
         bucket_races = race_count_from_frame(bucket_frame)
         if bucket_races < args["min_bucket_samples"]:
             continue
@@ -483,7 +487,7 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
     }
 
 
-def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
+def isotonic_transform(probs: pl.Series, curve: CalibrationCurve) -> pl.Series:
     schema_ver = cast("Mapping[str, object]", curve).get("schema_version")
     if schema_ver is not None and schema_ver != CALIBRATION_SCHEMA_VERSION:
         raise ValueError(
@@ -493,13 +497,13 @@ def isotonic_transform(probs: pd.Series, curve: CalibrationCurve) -> pd.Series:
     xs = np.asarray(curve["iso_x"], dtype=float)
     ys = np.asarray(curve["iso_y"], dtype=float)
     if xs.size == 0:
-        return probs.astype(float)
-    raw = probs.astype(float).to_numpy()
+        return probs.cast(pl.Float64)
+    raw = probs.cast(pl.Float64).to_numpy()
     calibrated = np.interp(raw, xs, ys)
-    return pd.Series(calibrated, index=probs.index)
+    return pl.Series(probs.name, calibrated, dtype=pl.Float64)
 
 
-def resolve_bucket_column(frame: pd.DataFrame) -> str | None:
+def resolve_bucket_column(frame: pl.DataFrame) -> str | None:
     if BUCKET_DIM_COLUMN[BUCKET_DIM_KYOSO_JOKEN] in frame.columns:
         return BUCKET_DIM_COLUMN[BUCKET_DIM_KYOSO_JOKEN]
     if BUCKET_DIM_COLUMN[BUCKET_DIM_GRADE] in frame.columns:
@@ -525,21 +529,29 @@ def lookup_curve(
 
 
 def calibrated_series_for_target(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     *,
-    raw_series: pd.Series,
+    raw_series: pl.Series,
     bucket_column: str | None,
     filename: str,
     deps: ApplyDeps,
     calibration_dir: Path,
-) -> tuple[pd.Series, pd.Series]:
+) -> tuple[pl.Series, pl.Series]:
     if bucket_column is None:
-        raw_bucket_keys = pd.Series(["_unknown"] * len(frame), index=frame.index)
+        raw_bucket_keys = pl.Series("bucket_key", ["_unknown"] * frame.height, dtype=pl.Utf8)
     else:
-        raw_bucket_keys = frame[bucket_column].map(normalize_bucket_key)
-    calibrated_values = raw_series.clip(lower=0.0, upper=1.0).astype(float).copy()
-    source_values = pd.Series([CALIBRATION_SOURCE_UNCALIBRATED] * len(frame), index=frame.index)
-    unique_keys: list[str] = sorted(set(raw_bucket_keys.tolist()))
+        raw_bucket_keys = (
+            frame[bucket_column]
+            .map_elements(normalize_bucket_key, return_dtype=pl.Utf8)
+            .rename("bucket_key")
+        )
+    calibrated_values = raw_series.clip(0.0, 1.0).cast(pl.Float64).rename(raw_series.name)
+    source_values = pl.Series(
+        CALIBRATION_SOURCE_COLUMN,
+        [CALIBRATION_SOURCE_UNCALIBRATED] * frame.height,
+        dtype=pl.Utf8,
+    )
+    unique_keys: list[str] = sorted(set(raw_bucket_keys.to_list()))
     for bucket_key in unique_keys:
         mask = raw_bucket_keys == bucket_key
         curve, source = lookup_curve(
@@ -549,30 +561,46 @@ def calibrated_series_for_target(
             json_reader=deps["json_reader"],
             path_exists=deps["path_exists"],
         )
-        source_values = source_values.where(~mask, source)
+        source_values = (
+            pl.select(pl.when(mask).then(pl.lit(source)).otherwise(source_values))
+            .to_series()
+            .rename(CALIBRATION_SOURCE_COLUMN)
+        )
         if curve is None:
             continue
-        transformed = isotonic_transform(raw_series[mask], curve)
-        calibrated_values = calibrated_values.where(~mask, transformed)
-    return calibrated_values, source_values
+        transformed = isotonic_transform(raw_series, curve)
+        calibrated_values = (
+            pl.select(pl.when(mask).then(transformed).otherwise(calibrated_values))
+            .to_series()
+            .rename(raw_series.name)
+        )
+    return calibrated_values.rename(raw_series.name), source_values.rename(CALIBRATION_SOURCE_COLUMN)
 
 
-def re_rank_predictions(frame: pd.DataFrame, *, prob_column: str) -> pd.Series:
+def re_rank_predictions(frame: pl.DataFrame, *, prob_column: str) -> pl.Series:
     return (
-        frame.groupby(RACE_ID_COLUMN)[prob_column]
-        .rank(method="first", ascending=False)
-        .astype(int)
+        frame.select(
+            pl.col(prob_column)
+            .rank(method="ordinal", descending=True)
+            .over(RACE_ID_COLUMN)
+            .cast(pl.Int64)
+            .alias(PREDICTED_RANK_COLUMN)
+        )
+        .to_series()
     )
 
 
-def log_source_distribution(source_series: pd.Series, label: str) -> None:
-    counts = source_series.value_counts(dropna=False)
-    total = int(counts.sum())
+def log_source_distribution(source_series: pl.Series, label: str) -> None:
+    total = source_series.len()
     if total == 0:
         return
-    bucket = int(counts.get(CALIBRATION_SOURCE_BUCKET, 0))
-    cat_global = int(counts.get(CALIBRATION_SOURCE_CAT_GLOBAL, 0))
-    uncalibrated = int(counts.get(CALIBRATION_SOURCE_UNCALIBRATED, 0))
+    counts_frame = source_series.value_counts()
+    counts: dict[str, int] = {
+        str(row[0]): int(row[1]) for row in counts_frame.iter_rows()
+    }
+    bucket = counts.get(CALIBRATION_SOURCE_BUCKET, 0)
+    cat_global = counts.get(CALIBRATION_SOURCE_CAT_GLOBAL, 0)
+    uncalibrated = counts.get(CALIBRATION_SOURCE_UNCALIBRATED, 0)
     sys.stderr.write(
         f"calibrate_finish_position: calibration_source distribution [{label}]"
         f" bucket={bucket}/{total} cat-global={cat_global}/{total}"
@@ -582,14 +610,14 @@ def log_source_distribution(source_series: pd.Series, label: str) -> None:
 
 def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
     frame = deps["parquet_reader"](args["input_predictions_root"])
-    if frame.empty:
+    if frame.is_empty():
         sys.stderr.write(
             "calibrate_finish_position: empty input predictions; no output parquet written.\n",
         )
         return {"cat": args["cat"], "rows_written": 0}
     bucket_column = resolve_bucket_column(frame)
-    raw_top1 = derive_top1_prob(frame)
-    raw_top3 = derive_top3_prob(frame)
+    raw_top1 = derive_top1_prob(frame).rename(PREDICTED_TOP1_PROB_CALIBRATED_COLUMN)
+    raw_top3 = derive_top3_prob(frame).rename(PREDICTED_TOP3_PROB_CALIBRATED_COLUMN)
     calibrated_top1, source_top1 = calibrated_series_for_target(
         frame,
         raw_series=raw_top1,
@@ -606,17 +634,18 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
         deps=deps,
         calibration_dir=args["calibration_dir"],
     )
-    out = frame.copy()
-    out[PREDICTED_TOP1_PROB_CALIBRATED_COLUMN] = calibrated_top1.astype(float)
-    out[PREDICTED_TOP3_PROB_CALIBRATED_COLUMN] = calibrated_top3.astype(float)
-    out[CALIBRATION_SOURCE_COLUMN] = source_top1.astype(str)
-    out[PREDICTED_RANK_COLUMN] = re_rank_predictions(
-        out, prob_column=PREDICTED_TOP1_PROB_CALIBRATED_COLUMN,
+    out = frame.with_columns(
+        calibrated_top1.cast(pl.Float64),
+        calibrated_top3.cast(pl.Float64),
+        source_top1.cast(pl.Utf8).rename(CALIBRATION_SOURCE_COLUMN),
     )
-    log_source_distribution(source_top1, label="top1")
-    log_source_distribution(source_top3, label="top3")
+    out = out.with_columns(
+        re_rank_predictions(out, prob_column=PREDICTED_TOP1_PROB_CALIBRATED_COLUMN),
+    )
+    log_source_distribution(source_top1.rename(CALIBRATION_SOURCE_COLUMN), label="top1")
+    log_source_distribution(source_top3.rename(CALIBRATION_SOURCE_COLUMN), label="top3")
     deps["parquet_writer"](out, args["output_predictions_root"])
-    return {"cat": args["cat"], "rows_written": int(len(out))}
+    return {"cat": args["cat"], "rows_written": int(out.height)}
 
 
 def build_default_fit_deps() -> FitDeps:

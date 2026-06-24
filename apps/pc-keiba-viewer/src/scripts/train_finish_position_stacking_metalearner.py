@@ -55,7 +55,7 @@ from pathlib import Path
 from typing import Protocol, TypedDict, cast
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sklearn.linear_model import Ridge
 
 MODE_BUILD_DATASET: str = "build-dataset"
@@ -139,15 +139,15 @@ class TrainArgs(TypedDict):
 
 
 class ParquetDirReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class ParquetFileReaderLike(Protocol):
-    def __call__(self, path: Path) -> pd.DataFrame: ...
+    def __call__(self, path: Path) -> pl.DataFrame: ...
 
 
 class PartitionedParquetWriterLike(Protocol):
-    def __call__(self, frame: pd.DataFrame, output_dir: Path) -> None: ...
+    def __call__(self, frame: pl.DataFrame, output_dir: Path) -> None: ...
 
 
 class JsonWriterLike(Protocol):
@@ -259,7 +259,7 @@ def now_utc() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def default_read_parquet_dir(path: Path) -> pd.DataFrame:
+def default_read_parquet_dir(path: Path) -> pl.DataFrame:
     """Read every parquet under ``path`` recursively into one DataFrame.
 
     Hive-style partition keys (``category=…``, ``race_year=…``) are decoded
@@ -267,20 +267,20 @@ def default_read_parquet_dir(path: Path) -> pd.DataFrame:
     see those columns on the returned frame.
     """
     if path.is_file():
-        return pd.read_parquet(path.as_posix())
+        return pl.read_parquet(path.as_posix())
     parts = sorted(path.rglob("*.parquet"))
-    frames: list[pd.DataFrame] = []
+    frames: list[pl.DataFrame] = []
     for part in parts:
-        frame = pd.read_parquet(part.as_posix())
+        frame = pl.read_parquet(part.as_posix())
         for segment in part.relative_to(path).parts[:-1]:
             if "=" not in segment:
                 continue
             key, raw_value = segment.split("=", 1)
-            frame[key] = coerce_partition_value(key, raw_value)
+            frame = frame.with_columns(pl.lit(coerce_partition_value(key, raw_value)).alias(key))
         frames.append(frame)
     if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame()
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def coerce_partition_value(key: str, raw_value: str) -> int | str:
@@ -297,16 +297,15 @@ def coerce_partition_value(key: str, raw_value: str) -> int | str:
     return raw_value
 
 
-def default_read_parquet_file(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path.as_posix())
+def default_read_parquet_file(path: Path) -> pl.DataFrame:
+    return pl.read_parquet(path.as_posix())
 
 
-def default_write_partitioned_parquet(frame: pd.DataFrame, output_dir: Path) -> None:
+def default_write_partitioned_parquet(frame: pl.DataFrame, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(
+    frame.write_parquet(
         output_dir.as_posix(),
-        partition_cols=[CATEGORY_COLUMN, RACE_YEAR_COLUMN],
-        index=False,
+        partition_by=[CATEGORY_COLUMN, RACE_YEAR_COLUMN],
     )
 
 
@@ -353,44 +352,57 @@ def assign_surface_dirt_flag(track_code: object) -> int:
     return 1 if text.startswith(DIRT_TRACK_CODE_PREFIXES) else 0
 
 
-def encode_kyakushitsu_one_hot(values: pd.Series) -> pd.DataFrame:
+def encode_kyakushitsu_one_hot(values: pl.Series) -> pl.DataFrame:
     """Return a 5-wide one-hot frame for the JRA kyakushitsu_hantei field.
 
     Unknown / null values map to the ``0`` (未判定) column, which keeps the
     feature dense and avoids silent NaN propagation downstream.
     """
-    numeric = pd.to_numeric(values, errors="coerce").fillna(0.0).astype(int).clip(lower=0, upper=4)
-    columns = {f"kyakushitsu_{cls}": (numeric == cls).astype(int) for cls in KYAKUSHITSU_CLASSES}
-    return pd.DataFrame(columns, index=values.index)
+    numeric = (
+        values.cast(pl.Float64, strict=False)
+        .fill_null(0.0)
+        .cast(pl.Int64)
+        .clip(0, 4)
+    )
+    columns = {
+        f"kyakushitsu_{cls}": (numeric == cls).cast(pl.Int64) for cls in KYAKUSHITSU_CLASSES
+    }
+    return pl.DataFrame(columns)
 
 
-def encode_distance_band_one_hot(bands: pd.Series) -> pd.DataFrame:
-    columns = {f"distance_band_{label}": (bands == label).astype(int) for label in DISTANCE_BAND_LABELS}
-    return pd.DataFrame(columns, index=bands.index)
+def encode_distance_band_one_hot(bands: pl.Series) -> pl.DataFrame:
+    columns = {
+        f"distance_band_{label}": (bands == label).cast(pl.Int64) for label in DISTANCE_BAND_LABELS
+    }
+    return pl.DataFrame(columns)
 
 
-def add_race_level_aggregates(frame: pd.DataFrame) -> pd.DataFrame:
+def add_race_level_aggregates(frame: pl.DataFrame) -> pl.DataFrame:
     """Append per-race mean / std of ``predicted_score`` plus ``num_horses_in_race``."""
-    grouped = frame.groupby(RACE_ID_COLUMN)[PREDICTED_SCORE_COLUMN]
-    frame = frame.copy()
-    frame["mean_field_score"] = grouped.transform("mean").astype(float)
-    raw_std = grouped.transform("std").astype(float)
-    frame["score_std_in_race"] = raw_std.fillna(0.0)
-    frame["num_horses_in_race"] = (
-        frame.groupby(RACE_ID_COLUMN)[PREDICTED_SCORE_COLUMN].transform("count").astype(int)
+    frame = frame.with_columns(
+        pl.col(PREDICTED_SCORE_COLUMN).mean().over(RACE_ID_COLUMN).cast(pl.Float64).alias(
+            "mean_field_score",
+        ),
+        pl.col(PREDICTED_SCORE_COLUMN).std().over(RACE_ID_COLUMN).fill_null(0.0).cast(pl.Float64).alias(
+            "score_std_in_race",
+        ),
+        pl.col(PREDICTED_SCORE_COLUMN).count().over(RACE_ID_COLUMN).cast(pl.Int64).alias(
+            "num_horses_in_race",
+        ),
     )
-    frame["predicted_rank_norm"] = (
-        frame[PREDICTED_RANK_COLUMN].astype(float) / frame["num_horses_in_race"].astype(float)
+    return frame.with_columns(
+        (pl.col(PREDICTED_RANK_COLUMN).cast(pl.Float64) / pl.col("num_horses_in_race").cast(pl.Float64)).alias(
+            "predicted_rank_norm",
+        ),
     )
-    return frame
 
 
 def assemble_stacking_dataset(
-    baseline: pd.DataFrame,
-    race_context: pd.DataFrame,
-    running_style: pd.DataFrame | None,
+    baseline: pl.DataFrame,
+    race_context: pl.DataFrame,
+    running_style: pl.DataFrame | None,
     cat: str,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Join enriched predictions with race-context and (JRA only) running style.
 
     The race-context parquet is keyed by ``race_id`` and supplies ``kyori`` /
@@ -410,45 +422,51 @@ def assemble_stacking_dataset(
         GRADE_CODE_COLUMN,
         KYOSO_JOKEN_CODE_COLUMN,
     ]
-    base = baseline[[c for c in keep_cols if c in baseline.columns]].copy()
-    base = base.dropna(subset=[ACTUAL_FINISH_POSITION_COLUMN, PREDICTED_RANK_COLUMN])
+    base = baseline.select([c for c in keep_cols if c in baseline.columns])
+    base = base.drop_nulls(subset=[ACTUAL_FINISH_POSITION_COLUMN, PREDICTED_RANK_COLUMN])
     ctx_cols = [RACE_ID_COLUMN, KYORI_COLUMN, TRACK_CODE_COLUMN, SHUSSO_TOSU_COLUMN]
-    ctx = race_context[[c for c in ctx_cols if c in race_context.columns]].drop_duplicates(
-        subset=[RACE_ID_COLUMN]
+    ctx = race_context.select([c for c in ctx_cols if c in race_context.columns]).unique(
+        subset=[RACE_ID_COLUMN], maintain_order=True,
     )
-    merged = base.merge(ctx, how="left", on=RACE_ID_COLUMN)
-    merged["distance_band"] = merged[KYORI_COLUMN].map(assign_distance_band)
-    merged["surface_dirt_flag"] = merged[TRACK_CODE_COLUMN].map(assign_surface_dirt_flag)
+    merged = base.join(ctx, how="left", on=RACE_ID_COLUMN)
+    merged = merged.with_columns(
+        pl.col(KYORI_COLUMN).map_elements(assign_distance_band, return_dtype=pl.String).alias(
+            "distance_band",
+        ),
+        pl.col(TRACK_CODE_COLUMN).map_elements(assign_surface_dirt_flag, return_dtype=pl.Int64).alias(
+            "surface_dirt_flag",
+        ),
+    )
     distance_one_hot = encode_distance_band_one_hot(merged["distance_band"])
-    merged = pd.concat([merged.reset_index(drop=True), distance_one_hot.reset_index(drop=True)], axis=1)
+    merged = pl.concat([merged, distance_one_hot], how="horizontal")
     if cat == CATEGORY_JRA:
         merged = _attach_running_style(merged, running_style)
     else:
-        kyaku_cols = {f"kyakushitsu_{cls}": 0 for cls in KYAKUSHITSU_CLASSES}
-        kyaku_frame = pd.DataFrame(kyaku_cols, index=merged.index)
-        merged = pd.concat([merged.reset_index(drop=True), kyaku_frame.reset_index(drop=True)], axis=1)
+        merged = merged.with_columns(
+            [pl.lit(0).alias(f"kyakushitsu_{cls}") for cls in KYAKUSHITSU_CLASSES],
+        )
     merged = add_race_level_aggregates(merged)
     return merged
 
 
 def _attach_running_style(
-    merged: pd.DataFrame, running_style: pd.DataFrame | None
-) -> pd.DataFrame:
-    if running_style is None or running_style.empty:
-        kyaku_cols = {f"kyakushitsu_{cls}": 0 for cls in KYAKUSHITSU_CLASSES}
-        kyaku_frame = pd.DataFrame(kyaku_cols, index=merged.index)
-        return pd.concat([merged.reset_index(drop=True), kyaku_frame.reset_index(drop=True)], axis=1)
+    merged: pl.DataFrame, running_style: pl.DataFrame | None
+) -> pl.DataFrame:
+    if running_style is None or running_style.is_empty():
+        return merged.with_columns(
+            [pl.lit(0).alias(f"kyakushitsu_{cls}") for cls in KYAKUSHITSU_CLASSES],
+        )
     rs_cols = [RACE_ID_COLUMN, KETTO_TOROKU_BANGO_COLUMN, KYAKUSHITSU_HANTEI_COLUMN]
-    rs = running_style[[c for c in rs_cols if c in running_style.columns]].drop_duplicates(
-        subset=[RACE_ID_COLUMN, KETTO_TOROKU_BANGO_COLUMN]
+    rs = running_style.select([c for c in rs_cols if c in running_style.columns]).unique(
+        subset=[RACE_ID_COLUMN, KETTO_TOROKU_BANGO_COLUMN], maintain_order=True,
     )
-    merged = merged.merge(rs, how="left", on=[RACE_ID_COLUMN, KETTO_TOROKU_BANGO_COLUMN])
+    merged = merged.join(rs, how="left", on=[RACE_ID_COLUMN, KETTO_TOROKU_BANGO_COLUMN])
     one_hot = encode_kyakushitsu_one_hot(merged[KYAKUSHITSU_HANTEI_COLUMN])
-    merged = pd.concat([merged.reset_index(drop=True), one_hot.reset_index(drop=True)], axis=1)
+    merged = pl.concat([merged, one_hot], how="horizontal")
     return merged
 
 
-def stacking_feature_columns(frame: pd.DataFrame) -> list[str]:
+def stacking_feature_columns(frame: pl.DataFrame) -> list[str]:
     """Return the ordered feature columns used by the Ridge meta-learner."""
     base_cols = [
         PREDICTED_SCORE_COLUMN,
@@ -465,7 +483,7 @@ def stacking_feature_columns(frame: pd.DataFrame) -> list[str]:
 
 
 def pick_alpha_via_cv(
-    train_frame: pd.DataFrame,
+    train_frame: pl.DataFrame,
     *,
     alpha_grid: tuple[float, ...],
     cv_folds: int,
@@ -480,7 +498,7 @@ def pick_alpha_via_cv(
     feature_cols = stacking_feature_columns(train_frame)
     if not feature_cols:
         raise ValueError("training frame has no usable feature columns")
-    years = sorted(train_frame[RACE_YEAR_COLUMN].unique().tolist())
+    years = sorted(train_frame[RACE_YEAR_COLUMN].unique().to_list())
     n_folds = max(2, min(cv_folds, len(years)))
     # Assign years to folds in chronological order (earlier years → lower fold indices).
     # Forward-chain CV: fold k trains on folds 0..k-1 and validates on fold k.
@@ -496,15 +514,15 @@ def pick_alpha_via_cv(
                 continue
             # Forward-chain: train only on years assigned to earlier folds
             train_years = {y for y, f in year_to_fold.items() if f < fold_idx}
-            train_mask = train_frame[RACE_YEAR_COLUMN].isin(train_years)
-            val_mask = train_frame[RACE_YEAR_COLUMN].isin(holdout_years)
-            if train_mask.sum() == 0 or val_mask.sum() == 0:
+            train_slice = train_frame.filter(pl.col(RACE_YEAR_COLUMN).is_in(train_years))
+            val_slice = train_frame.filter(pl.col(RACE_YEAR_COLUMN).is_in(holdout_years))
+            if train_slice.is_empty() or val_slice.is_empty():
                 continue
             model = ridge_factory(alpha=alpha, random_state=random_state)
-            x_train = train_frame.loc[train_mask, feature_cols].to_numpy(dtype=float)
-            y_train = train_frame.loc[train_mask, ACTUAL_FINISH_POSITION_COLUMN].to_numpy(dtype=float)
-            x_val = train_frame.loc[val_mask, feature_cols].to_numpy(dtype=float)
-            y_val = train_frame.loc[val_mask, ACTUAL_FINISH_POSITION_COLUMN].to_numpy(dtype=float)
+            x_train = train_slice.select(feature_cols).cast(pl.Float64).to_numpy()
+            y_train = train_slice[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64).to_numpy()
+            x_val = val_slice.select(feature_cols).cast(pl.Float64).to_numpy()
+            y_val = val_slice[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64).to_numpy()
             model.fit(x_train, y_train)
             preds = model.predict(x_val)
             fold_rmses.append(float(np.sqrt(np.mean((preds - y_val) ** 2))))
@@ -513,15 +531,18 @@ def pick_alpha_via_cv(
     return (best_alpha, score_grid)
 
 
-def rerank_within_race(frame: pd.DataFrame, score_column: str) -> pd.DataFrame:
+def rerank_within_race(frame: pl.DataFrame, score_column: str) -> pl.DataFrame:
     """Rerank rows by ``score_column`` (ascending = better) within each race."""
-    frame = frame.copy()
-    ranks = frame.groupby(RACE_ID_COLUMN)[score_column].rank(method="first", ascending=True)
-    frame[PREDICTED_RANK_COLUMN] = ranks.astype(int)
-    return frame
+    return frame.with_columns(
+        pl.col(score_column)
+        .rank(method="ordinal", descending=False)
+        .over(RACE_ID_COLUMN)
+        .cast(pl.Int64)
+        .alias(PREDICTED_RANK_COLUMN),
+    )
 
 
-def compute_oos_metrics(frame: pd.DataFrame) -> dict[str, float]:
+def compute_oos_metrics(frame: pl.DataFrame) -> dict[str, float]:
     """Compute the 4-metric OOS scoreboard (top1 / place2 / place3 / top3_box).
 
     The metric definitions mirror ``tmp/v8/compute_metrics_duckdb.py``:
@@ -529,33 +550,31 @@ def compute_oos_metrics(frame: pd.DataFrame) -> dict[str, float]:
     predicted_rank==2, place3 likewise, top3_box = all 3 of predicted_rank<=3
     finish at actual_finish_position<=3.
     """
-    if frame.empty:
+    if frame.is_empty():
         return {"races": 0, "top1": 0.0, "place2": 0.0, "place3": 0.0, "top3_box": 0.0}
-    grouped = frame.groupby(RACE_ID_COLUMN)
-    races = len(grouped)
-    rank_col = frame[PREDICTED_RANK_COLUMN].astype(int)
-    actual_col = frame[ACTUAL_FINISH_POSITION_COLUMN].astype(int)
-    top1_hit = ((rank_col == TOP1_FINISH) & (actual_col == TOP1_FINISH)).astype(int)
-    place2_hit = ((rank_col == 2) & (actual_col == 2)).astype(int)
-    place3_hit = ((rank_col == TOP3_FINISH) & (actual_col == TOP3_FINISH)).astype(int)
-    box_match = ((rank_col <= TOP3_FINISH) & (actual_col <= TOP3_FINISH)).astype(int)
-    top1_per_race = top1_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    place2_per_race = place2_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    place3_per_race = place3_hit.groupby(frame[RACE_ID_COLUMN]).max()
-    box_per_race = (box_match.groupby(frame[RACE_ID_COLUMN]).sum() == TOP3_FINISH).astype(int)
+    rank_col = pl.col(PREDICTED_RANK_COLUMN).cast(pl.Int64)
+    actual_col = pl.col(ACTUAL_FINISH_POSITION_COLUMN).cast(pl.Int64)
+    per_race = frame.group_by(RACE_ID_COLUMN).agg(
+        ((rank_col == TOP1_FINISH) & (actual_col == TOP1_FINISH)).max().cast(pl.Int64).alias("top1"),
+        ((rank_col == 2) & (actual_col == 2)).max().cast(pl.Int64).alias("place2"),
+        ((rank_col == TOP3_FINISH) & (actual_col == TOP3_FINISH)).max().cast(pl.Int64).alias("place3"),
+        (((rank_col <= TOP3_FINISH) & (actual_col <= TOP3_FINISH)).sum() == TOP3_FINISH)
+        .cast(pl.Int64)
+        .alias("top3_box"),
+    )
     return {
-        "races": int(races),
-        "top1": float(top1_per_race.mean()),
-        "place2": float(place2_per_race.mean()),
-        "place3": float(place3_per_race.mean()),
-        "top3_box": float(box_per_race.mean()),
+        "races": int(per_race.height),
+        "top1": float(cast(float, per_race["top1"].mean())),
+        "place2": float(cast(float, per_race["place2"].mean())),
+        "place3": float(cast(float, per_race["place3"].mean())),
+        "top3_box": float(cast(float, per_race["top3_box"].mean())),
     }
 
 
-def filter_to_fold_year(dataset: pd.DataFrame, fold_year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    train_mask = dataset[RACE_YEAR_COLUMN] < fold_year
-    val_mask = dataset[RACE_YEAR_COLUMN] == fold_year
-    return (dataset.loc[train_mask].copy(), dataset.loc[val_mask].copy())
+def filter_to_fold_year(dataset: pl.DataFrame, fold_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+    train_df = dataset.filter(pl.col(RACE_YEAR_COLUMN) < fold_year)
+    val_df = dataset.filter(pl.col(RACE_YEAR_COLUMN) == fold_year)
+    return (train_df, val_df)
 
 
 def format_iso_now(now: datetime) -> str:
@@ -563,7 +582,7 @@ def format_iso_now(now: datetime) -> str:
 
 
 def train_one_fold(
-    dataset: pd.DataFrame,
+    dataset: pl.DataFrame,
     *,
     cat: str,
     fold_year: int,
@@ -573,14 +592,14 @@ def train_one_fold(
     random_state: int,
     ridge_factory: RidgeFactoryLike,
     now: datetime,
-) -> tuple[pd.DataFrame, dict[str, object]]:
+) -> tuple[pl.DataFrame, dict[str, object]]:
     """Train Ridge on ``year < fold_year``, predict on ``year == fold_year``.
 
     Returns the reranked OOS predictions plus a metadata dict including the
     picked alpha and per-fold OOS metrics.
     """
     train_frame, val_frame = filter_to_fold_year(dataset, fold_year)
-    if len(train_frame) < MIN_SAMPLES_FOR_TRAINING or val_frame.empty:
+    if len(train_frame) < MIN_SAMPLES_FOR_TRAINING or val_frame.is_empty():
         meta_skip: dict[str, object] = {
             "category": cat,
             "fold_year": fold_year,
@@ -596,7 +615,7 @@ def train_one_fold(
                 else "no OOS rows for fold year"
             ),
         }
-        return (pd.DataFrame(), meta_skip)
+        return (pl.DataFrame(), meta_skip)
     alpha_picked, score_grid = pick_alpha_via_cv(
         train_frame,
         alpha_grid=alpha_grid,
@@ -606,13 +625,13 @@ def train_one_fold(
     )
     feature_cols = stacking_feature_columns(train_frame)
     model = ridge_factory(alpha=alpha_picked, random_state=random_state)
-    x_train = train_frame[feature_cols].to_numpy(dtype=float)
-    y_train = train_frame[ACTUAL_FINISH_POSITION_COLUMN].to_numpy(dtype=float)
+    x_train = train_frame.select(feature_cols).cast(pl.Float64).to_numpy()
+    y_train = train_frame[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64).to_numpy()
     model.fit(x_train, y_train)
-    x_val = val_frame[feature_cols].to_numpy(dtype=float)
-    val_frame["stacking_score"] = model.predict(x_val)
+    x_val = val_frame.select(feature_cols).cast(pl.Float64).to_numpy()
+    val_frame = val_frame.with_columns(pl.Series("stacking_score", model.predict(x_val)))
     reranked = rerank_within_race(val_frame, "stacking_score")
-    reranked["model_version"] = model_version
+    reranked = reranked.with_columns(pl.lit(model_version).alias("model_version"))
     metrics = compute_oos_metrics(reranked)
     meta: dict[str, object] = {
         "category": cat,
@@ -631,9 +650,9 @@ def train_one_fold(
 
 
 def resolve_fold_years(
-    dataset: pd.DataFrame, requested: tuple[int, ...] | None
+    dataset: pl.DataFrame, requested: tuple[int, ...] | None
 ) -> tuple[int, ...]:
-    available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().tolist())
+    available = sorted(int(y) for y in dataset[RACE_YEAR_COLUMN].unique().to_list())
     if requested is None:
         return tuple(available[1:]) if len(available) > 1 else tuple(available)
     keep = tuple(year for year in requested if year in set(available))
@@ -645,15 +664,15 @@ def resolve_fold_years(
 def run_build_dataset(args: BuildDatasetArgs, deps: BuildDeps) -> int:
     cat = args["cat"]
     baseline = deps["baseline_reader"](args["baseline_parquet_root"] / f"category={cat}")
-    if baseline.empty:
+    if baseline.is_empty():
         raise ValueError(f"baseline parquet for category={cat} is empty: {args['baseline_parquet_root']}")
     race_context = deps["race_context_reader"](args["race_context_parquet"])
-    running_style: pd.DataFrame | None = None
+    running_style: pl.DataFrame | None = None
     if args["running_style_parquet"] is not None and cat == CATEGORY_JRA:
         running_style = deps["running_style_reader"](args["running_style_parquet"])
     dataset = assemble_stacking_dataset(baseline, race_context, running_style, cat)
     if CATEGORY_COLUMN not in dataset.columns:
-        dataset[CATEGORY_COLUMN] = cat
+        dataset = dataset.with_columns(pl.lit(cat).alias(CATEGORY_COLUMN))
     deps["parquet_writer"](dataset, args["output_root"])
     return 0
 
@@ -661,14 +680,14 @@ def run_build_dataset(args: BuildDatasetArgs, deps: BuildDeps) -> int:
 def run_train(args: TrainArgs, deps: TrainDeps) -> int:
     cat = args["cat"]
     dataset = deps["dataset_reader"](args["dataset_root"] / f"category={cat}")
-    if dataset.empty:
+    if dataset.is_empty():
         raise ValueError(f"stacking dataset for category={cat} is empty: {args['dataset_root']}")
     if CATEGORY_COLUMN not in dataset.columns:
-        dataset[CATEGORY_COLUMN] = cat
+        dataset = dataset.with_columns(pl.lit(cat).alias(CATEGORY_COLUMN))
     if RACE_YEAR_COLUMN not in dataset.columns:
         raise ValueError(f"stacking dataset is missing {RACE_YEAR_COLUMN!r} column")
     fold_years = resolve_fold_years(dataset, args["fold_years"])
-    all_preds: list[pd.DataFrame] = []
+    all_preds: list[pl.DataFrame] = []
     all_meta: list[dict[str, object]] = []
     now = deps["now"]()
     for fold_year in fold_years:
@@ -683,11 +702,11 @@ def run_train(args: TrainArgs, deps: TrainDeps) -> int:
             ridge_factory=deps["ridge_factory"],
             now=now,
         )
-        if not preds.empty:
+        if not preds.is_empty():
             all_preds.append(preds)
         all_meta.append(meta)
     if all_preds:
-        combined = pd.concat(all_preds, ignore_index=True)
+        combined = pl.concat(all_preds, how="diagonal_relaxed")
         deps["parquet_writer"](combined, args["output_predictions_root"])
     metadata_path = args["output_predictions_root"].parent / "metadata.json"
     deps["json_writer"](

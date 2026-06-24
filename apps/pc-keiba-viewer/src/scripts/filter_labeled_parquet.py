@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,14 +33,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    df = pd.read_parquet(args.input)
-    labeled = df[df["finish_position"].notna()].copy()
-    in_range = labeled[
-        (labeled["race_date"] >= args.from_date) & (labeled["race_date"] <= args.to_date)
-    ].copy()
+    df = pl.read_parquet(args.input)
+    in_range = df.filter(
+        pl.col("finish_position").is_not_null()
+        & (pl.col("race_date") >= args.from_date)
+        & (pl.col("race_date") <= args.to_date)
+    )
     args.output.mkdir(parents=True, exist_ok=True)
-    in_range.to_parquet(args.output, partition_cols=["race_year"], index=False, engine="pyarrow")
-    print(f"input={len(df)} labeled_in_range={len(in_range)} output={args.output}")
+    in_range.write_parquet(args.output, partition_by=["race_year"], mkdir=True)
+    print(f"input={df.height} labeled_in_range={in_range.height} output={args.output}")
 
 
 if __name__ == "__main__":

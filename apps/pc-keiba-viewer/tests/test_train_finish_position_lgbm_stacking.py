@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast, final
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 import train_finish_position_lgbm_stacking as subject
@@ -62,7 +62,7 @@ class _FakeRanker:
         return -np.arange(X.shape[0], dtype=float) + self._predict_offset
 
 
-def _build_dataset_frame(year_offsets: tuple[int, ...] = (0, 1, 2)) -> pd.DataFrame:
+def _build_dataset_frame(year_offsets: tuple[int, ...] = (0, 1, 2)) -> pl.DataFrame:
     rows: list[dict[str, object]] = []
     base_year = 2010
     for offset in year_offsets:
@@ -97,7 +97,7 @@ def _build_dataset_frame(year_offsets: tuple[int, ...] = (0, 1, 2)) -> pd.DataFr
                         "trainer_recent_30d_win_rate": 0.15,
                     }
                 )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def test_parse_args_train_mode_defaults() -> None:
@@ -235,16 +235,16 @@ def test_assign_surface_dirt_flag_handles_branches() -> None:
 
 
 def test_encode_sex_one_hot_emits_three_columns() -> None:
-    series = pd.Series(["1", "2", "3", "9"])
+    series = pl.Series(["1", "2", "3", "9"])
     out = subject.encode_sex_one_hot(series)
     assert list(out.columns) == ["sex_male", "sex_female", "sex_gelding"]
-    assert out["sex_male"].tolist() == [1, 0, 0, 0]
-    assert out["sex_female"].tolist() == [0, 1, 0, 0]
-    assert out["sex_gelding"].tolist() == [0, 0, 1, 0]
+    assert out["sex_male"].to_list() == [1, 0, 0, 0]
+    assert out["sex_female"].to_list() == [0, 1, 0, 0]
+    assert out["sex_gelding"].to_list() == [0, 0, 1, 0]
 
 
 def test_encode_distance_band_one_hot_columns() -> None:
-    bands = pd.Series(["sprint", "mile", "intermediate", "long", "extended"])
+    bands = pl.Series(["sprint", "mile", "intermediate", "long", "extended"])
     out = subject.encode_distance_band_one_hot(bands)
     assert list(out.columns) == [
         "distance_band_sprint",
@@ -253,8 +253,8 @@ def test_encode_distance_band_one_hot_columns() -> None:
         "distance_band_long",
         "distance_band_extended",
     ]
-    assert out["distance_band_sprint"].tolist() == [1, 0, 0, 0, 0]
-    assert out["distance_band_extended"].tolist() == [0, 0, 0, 0, 1]
+    assert out["distance_band_sprint"].to_list() == [1, 0, 0, 0, 0]
+    assert out["distance_band_extended"].to_list() == [0, 0, 0, 0, 1]
 
 
 def test_add_within_race_normalised_produces_expected_columns() -> None:
@@ -270,8 +270,8 @@ def test_add_within_race_normalised_produces_expected_columns() -> None:
         "wakuban_norm",
     }
     assert expected.issubset(set(out.columns))
-    assert out["bataiju_filler"].iloc[0] == 0.0
-    assert 0.0 <= float(out["wakuban_norm"].iloc[0]) <= 1.0
+    assert out["bataiju_filler"][0] == 0.0
+    assert 0.0 <= float(out["wakuban_norm"][0]) <= 1.0
 
 
 def test_add_categorical_one_hots_adds_band_and_sex() -> None:
@@ -293,13 +293,13 @@ def test_assemble_feature_frame_full_pipeline() -> None:
 
 
 def test_feature_columns_skips_missing() -> None:
-    frame = pd.DataFrame({"predicted_score": [1.0, 2.0]})
+    frame = pl.DataFrame({"predicted_score": [1.0, 2.0]})
     cols = subject.feature_columns(frame)
     assert cols == ["predicted_score"]
 
 
 def test_race_group_sizes_returns_contiguous_counts() -> None:
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "race_id": ["a", "a", "a", "b", "b"],
             "predicted_score": [0.0, 0.0, 0.0, 0.0, 0.0],
@@ -310,13 +310,13 @@ def test_race_group_sizes_returns_contiguous_counts() -> None:
 
 
 def test_relevance_from_finish_maps_top_k() -> None:
-    series = pd.Series([1, 2, 3, 4, 5, 10])
+    series = pl.Series([1, 2, 3, 4, 5, 10])
     rel = subject.relevance_from_finish(series, truncation_level=5)
     assert rel.tolist() == [5, 4, 3, 2, 1, 0]
 
 
 def test_relevance_from_finish_handles_nulls() -> None:
-    series = pd.Series([1, None, 3])
+    series = pl.Series([1, None, 3])
     rel = subject.relevance_from_finish(series, truncation_level=5)
     assert rel[0] == 5
     assert rel[1] == 0
@@ -324,7 +324,7 @@ def test_relevance_from_finish_handles_nulls() -> None:
 
 
 def test_relevance_from_finish_clips_zero_finish_to_truncation_level() -> None:
-    series = pd.Series([0, 1, 2])
+    series = pl.Series([0, 1, 2])
     rel = subject.relevance_from_finish(series, truncation_level=5)
     assert rel[0] == 5
     assert rel[1] == 5
@@ -332,23 +332,23 @@ def test_relevance_from_finish_clips_zero_finish_to_truncation_level() -> None:
 
 
 def test_rerank_within_race_descends_score() -> None:
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r1", "r2", "r2"],
             "stacking_score": [0.5, 2.1, -0.4, 1.0, 1.2],
         }
     )
     out = subject.rerank_within_race(frame, "stacking_score")
-    assert out["predicted_rank"].tolist() == [2, 1, 3, 2, 1]
+    assert out["predicted_rank"].to_list() == [2, 1, 3, 2, 1]
 
 
 def test_compute_oos_metrics_empty_frame_returns_zero() -> None:
-    metrics = subject.compute_oos_metrics(pd.DataFrame())
+    metrics = subject.compute_oos_metrics(pl.DataFrame())
     assert metrics == {"races": 0, "top1": 0.0, "place2": 0.0, "place3": 0.0, "top3_box": 0.0}
 
 
 def test_compute_oos_metrics_counts_hits() -> None:
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "race_id": [
                 "r1", "r1", "r1", "r1",
@@ -372,7 +372,7 @@ def test_compute_oos_metrics_top3_box_correct_for_small_field() -> None:
     Old code compared box_sum == TOP3_FINISH (3) which is never reachable for a
     2-horse race — the sum can be at most 2. Fix clips expected sum to field size.
     """
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "race_id": ["r1", "r1"],
             "predicted_rank": [1, 2],
@@ -386,21 +386,21 @@ def test_compute_oos_metrics_top3_box_correct_for_small_field() -> None:
 def test_filter_to_fold_year_splits_correctly() -> None:
     frame = _build_dataset_frame((0, 1, 2))
     train, val = subject.filter_to_fold_year(frame, fold_year=2012)
-    assert int(train["race_year"].max()) == 2011
-    assert int(val["race_year"].min()) == 2012
-    assert int(val["race_year"].max()) == 2012
+    assert int(cast(int, train["race_year"].max())) == 2011
+    assert int(cast(int, val["race_year"].min())) == 2012
+    assert int(cast(int, val["race_year"].max())) == 2012
 
 
 def test_split_train_val_holds_out_trailing_races() -> None:
     frame = _build_dataset_frame((0, 1))
     train, val = subject.split_train_val(frame, val_fraction=0.5)
-    assert not train.empty
-    assert not val.empty
-    assert train["race_id"].isin(val["race_id"]).sum() == 0
+    assert not train.is_empty()
+    assert not val.is_empty()
+    assert train.filter(pl.col("race_id").is_in(val["race_id"].to_list())).height == 0
 
 
 def test_split_train_val_caps_holdout_to_n_minus_one() -> None:
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "race_id": ["r1", "r2"],
             "race_year": [2010, 2010],
@@ -431,7 +431,7 @@ def test_resolve_fold_years_rejects_all_missing() -> None:
 
 def test_train_one_fold_skips_when_insufficient_train_rows() -> None:
     frame = _build_dataset_frame((0, 1))
-    small = frame.head(5).copy()
+    small = frame.head(5)
     preds, meta = subject.train_one_fold(
         subject.assemble_feature_frame(small),
         cat="jra",
@@ -455,12 +455,12 @@ def test_train_one_fold_skips_when_insufficient_train_rows() -> None:
         ),
         now=FIXED_NOW,
     )
-    assert preds.empty
+    assert preds.is_empty()
     assert meta["skipped"] is True
     assert meta["skip_reason"] == "insufficient training rows"
 
 
-def _large_dataset_frame() -> pd.DataFrame:
+def _large_dataset_frame() -> pl.DataFrame:
     """Build a frame large enough to exceed MIN_SAMPLES_FOR_TRAINING."""
     rows: list[dict[str, object]] = []
     for race_idx in range(200):
@@ -491,7 +491,7 @@ def _large_dataset_frame() -> pd.DataFrame:
                     "trainer_recent_30d_win_rate": 0.15,
                 }
             )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def test_train_one_fold_skips_when_no_oos_rows() -> None:
@@ -519,7 +519,7 @@ def test_train_one_fold_skips_when_no_oos_rows() -> None:
         ),
         now=FIXED_NOW,
     )
-    assert preds.empty
+    assert preds.is_empty()
     assert meta["skipped"] is True
     assert meta["skip_reason"] == "no OOS rows for fold year"
 
@@ -562,7 +562,7 @@ def test_train_one_fold_runs_with_fake_ranker() -> None:
         ),
         now=FIXED_NOW,
     )
-    assert not preds.empty
+    assert not preds.is_empty()
     assert meta["skipped"] is False
     assert meta["fold_year"] == 2012
     assert meta["category"] == "jra"
@@ -577,8 +577,8 @@ def test_train_one_fold_runs_with_fake_ranker() -> None:
 
 
 def test_write_fold_predictions_skips_empty_frame() -> None:
-    calls: list[tuple[pd.DataFrame, Path]] = []
-    subject.write_fold_predictions(pd.DataFrame(), Path("ignored"), cast(
+    calls: list[tuple[pl.DataFrame, Path]] = []
+    subject.write_fold_predictions(pl.DataFrame(), Path("ignored"), cast(
         subject.PartitionedParquetWriterLike,
         lambda frame, output_dir: calls.append((frame, output_dir)),
     ))
@@ -586,8 +586,8 @@ def test_write_fold_predictions_skips_empty_frame() -> None:
 
 
 def test_write_fold_predictions_invokes_writer() -> None:
-    calls: list[tuple[pd.DataFrame, Path]] = []
-    frame = pd.DataFrame({"race_id": ["a"]})
+    calls: list[tuple[pl.DataFrame, Path]] = []
+    frame = pl.DataFrame({"race_id": ["a"]})
     subject.write_fold_predictions(
         frame,
         Path("out"),
@@ -642,9 +642,9 @@ def test_coerce_partition_value_handles_year_and_default() -> None:
 
 
 def test_default_read_parquet_dir_reads_file(tmp_path: Path) -> None:
-    frame = pd.DataFrame({"x": [1, 2]})
+    frame = pl.DataFrame({"x": [1, 2]})
     file_path = tmp_path / "a.parquet"
-    frame.to_parquet(file_path)
+    frame.write_parquet(file_path)
     out = subject.default_read_parquet_dir(file_path)
     assert list(out["x"]) == [1, 2]
 
@@ -652,19 +652,19 @@ def test_default_read_parquet_dir_reads_file(tmp_path: Path) -> None:
 def test_default_read_parquet_dir_walks_partitions(tmp_path: Path) -> None:
     leaf = tmp_path / "category=jra" / "race_year=2024"
     leaf.mkdir(parents=True)
-    pd.DataFrame({"x": [1]}).to_parquet(leaf / "p.parquet")
+    pl.DataFrame({"x": [1]}).write_parquet(leaf / "p.parquet")
     out = subject.default_read_parquet_dir(tmp_path)
     assert "category" in out.columns
-    assert int(out["race_year"].iloc[0]) == 2024
+    assert int(cast(int, out["race_year"][0])) == 2024
 
 
 def test_default_read_parquet_dir_empty_returns_empty(tmp_path: Path) -> None:
     out = subject.default_read_parquet_dir(tmp_path)
-    assert out.empty
+    assert out.is_empty()
 
 
 def test_default_write_partitioned_parquet_round_trip(tmp_path: Path) -> None:
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         {
             "category": ["jra"],
             "race_year": [2024],
@@ -686,13 +686,13 @@ def test_run_train_writes_metadata_summary_and_predictions(tmp_path: Path) -> No
     dataset = subject.assemble_feature_frame(_build_dataset_frame((0, 1, 2)))
     n_feats = len(subject.feature_columns(dataset))
 
-    captured_parquet: list[tuple[pd.DataFrame, Path]] = []
+    captured_parquet: list[tuple[pl.DataFrame, Path]] = []
     captured_json: list[tuple[dict[str, object], Path]] = []
 
-    def reader(path: Path) -> pd.DataFrame:
+    def reader(path: Path) -> pl.DataFrame:
         return _build_dataset_frame((0, 1, 2))
 
-    def writer(frame: pd.DataFrame, output_dir: Path) -> None:
+    def writer(frame: pl.DataFrame, output_dir: Path) -> None:
         captured_parquet.append((frame, output_dir))
 
     def json_writer(payload: dict[str, object], path: Path) -> None:
@@ -761,10 +761,10 @@ def test_run_train_resumes_when_metadata_exists(tmp_path: Path) -> None:
     )
     json_calls: list[Path] = []
 
-    def reader(path: Path) -> pd.DataFrame:
+    def reader(path: Path) -> pl.DataFrame:
         return _build_dataset_frame((0, 1, 2))
 
-    def writer(frame: pd.DataFrame, output_dir: Path) -> None:
+    def writer(frame: pl.DataFrame, output_dir: Path) -> None:
         json_calls.append(output_dir)
 
     def json_writer(payload: dict[str, object], path: Path) -> None:
@@ -845,7 +845,7 @@ def test_run_train_raises_on_empty_dataset(tmp_path: Path) -> None:
         "val_fraction": 0.2,
     }
     deps: subject.TrainDeps = {
-        "dataset_reader": cast(subject.ParquetDirReaderLike, lambda path: pd.DataFrame()),
+        "dataset_reader": cast(subject.ParquetDirReaderLike, lambda path: pl.DataFrame()),
         "parquet_writer": cast(
             subject.PartitionedParquetWriterLike,
             lambda frame, output_dir: None,
@@ -865,7 +865,7 @@ def test_run_train_raises_on_empty_dataset(tmp_path: Path) -> None:
 
 
 def test_run_train_raises_when_race_year_column_missing(tmp_path: Path) -> None:
-    frame = _build_dataset_frame((0,)).drop(columns=["race_year"])
+    frame = _build_dataset_frame((0,)).drop("race_year")
     args: subject.TrainArgs = {
         "mode": subject.MODE_TRAIN,
         "cat": "jra",
@@ -905,12 +905,12 @@ def test_run_train_raises_when_race_year_column_missing(tmp_path: Path) -> None:
 
 
 def test_run_train_assigns_category_when_missing(tmp_path: Path) -> None:
-    frame = _build_dataset_frame((0, 1, 2)).drop(columns=["category"])
-    assembled = subject.assemble_feature_frame(frame.copy())
+    frame = _build_dataset_frame((0, 1, 2)).drop("category")
+    assembled = subject.assemble_feature_frame(frame)
     n_feats = len(subject.feature_columns(assembled))
     json_paths: list[Path] = []
 
-    def reader(path: Path) -> pd.DataFrame:
+    def reader(path: Path) -> pl.DataFrame:
         return frame
 
     def ranker_factory(

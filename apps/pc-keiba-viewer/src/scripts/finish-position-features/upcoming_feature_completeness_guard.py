@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, final, override
 
 if TYPE_CHECKING:
-    import pandas as pd
+    import polars as pl
 
 # ---------------------------------------------------------------------------
 # Configuration constants
@@ -159,12 +159,12 @@ class ViolationDetail:
 
 
 # ---------------------------------------------------------------------------
-# Core check (pure logic — no I/O, no pandas import at module level)
+# Core check (pure logic — no I/O, no polars import at module level)
 # ---------------------------------------------------------------------------
 
 
 def check_upcoming_feature_completeness(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     *,
     must_be_present: Sequence[str] = MUST_BE_PRESENT_FEATURES,
     rank_features: Sequence[str] = RANK_FEATURES_ALL_EQUAL_FORBIDDEN,
@@ -183,7 +183,7 @@ def check_upcoming_feature_completeness(
     Parameters
     ----------
     df:
-        A ``pandas.DataFrame`` produced by the serve-path feature pipeline.
+        A ``polars.DataFrame`` produced by the serve-path feature pipeline.
         Must contain a column named by ``upcoming_col`` (default
         ``finish_position``); rows where that column IS NULL are considered
         UPCOMING.
@@ -212,20 +212,18 @@ def check_upcoming_feature_completeness(
     Missing columns (not in the DataFrame at all) are treated as a violation
     immediately — they indicate a layer that failed to write its output.
     """
-    import pandas as _pd
+    import polars as _pl
 
     violations: list[ViolationDetail] = []
 
     # If the upcoming column is absent the guard cannot distinguish upcoming
     # vs historical rows; treat the entire frame as upcoming to be conservative.
     if upcoming_col in df.columns:
-        upcoming_mask = df[upcoming_col].isna()
+        upcoming = df.filter(_pl.col(upcoming_col).is_null())
     else:
-        upcoming_mask = _pd.Series([True] * len(df), index=df.index)
+        upcoming = df
 
-    upcoming = df[upcoming_mask]
-
-    if len(upcoming) == 0:
+    if upcoming.height == 0:
         # No upcoming rows — nothing to check.
         return violations
 
@@ -245,10 +243,10 @@ def check_upcoming_feature_completeness(
 
     # --- Check 2: null-rate threshold for present columns -------------------
     present_must = [f for f in must_be_present if f in df.columns]
-    total_upcoming = len(upcoming)
+    total_upcoming = upcoming.height
 
     for feature in present_must:
-        non_null_count = int(upcoming[feature].notna().sum())
+        non_null_count = int(upcoming[feature].is_not_null().sum())
         non_null_rate = non_null_count / total_upcoming
         if non_null_rate < null_rate_threshold:
             pct = non_null_rate * 100.0
@@ -269,16 +267,16 @@ def check_upcoming_feature_completeness(
     race_id_present = [c for c in race_id_cols if c in df.columns]
     rank_present = [f for f in rank_features if f in df.columns]
 
-    if race_id_present and rank_present and len(upcoming) > 0:
-        for race_key, race_frame in upcoming.groupby(list(race_id_present)):
-            if len(race_frame) < MIN_RUNNERS_FOR_RANK_CHECK:
+    if race_id_present and rank_present and upcoming.height > 0:
+        for race_key, race_frame in upcoming.group_by(race_id_present):
+            if race_frame.height < MIN_RUNNERS_FOR_RANK_CHECK:
                 continue
             for feature in rank_present:
-                col_series = race_frame[feature].dropna()
-                if len(col_series) < MIN_RUNNERS_FOR_RANK_CHECK:
+                col_series = race_frame[feature].drop_nulls()
+                if col_series.len() < MIN_RUNNERS_FOR_RANK_CHECK:
                     continue
                 unique_vals = col_series.unique()
-                if len(unique_vals) == 1:
+                if unique_vals.len() == 1:
                     violations.append(
                         ViolationDetail(
                             feature=feature,
@@ -286,7 +284,7 @@ def check_upcoming_feature_completeness(
                             detail=(
                                 f"column '{feature}' is all-equal "
                                 f"(value={unique_vals[0]!r}) for race "
-                                f"{race_key!r} with {len(race_frame)} runners "
+                                f"{race_key!r} with {race_frame.height} runners "
                                 f"— indicates bogus all-same-rank bug"
                             ),
                         )
@@ -296,7 +294,7 @@ def check_upcoming_feature_completeness(
 
 
 def assert_upcoming_feature_completeness(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     *,
     must_be_present: Sequence[str] = MUST_BE_PRESENT_FEATURES,
     rank_features: Sequence[str] = RANK_FEATURES_ALL_EQUAL_FORBIDDEN,
@@ -323,7 +321,7 @@ def assert_upcoming_feature_completeness(
     Parameters
     ----------
     df:
-        A ``pandas.DataFrame`` produced by the serve-path feature pipeline.
+        A ``polars.DataFrame`` produced by the serve-path feature pipeline.
 
     Raises
     ------
@@ -358,7 +356,7 @@ def assert_upcoming_feature_completeness(
 # ---------------------------------------------------------------------------
 
 
-def load_upcoming_parquet(parquet_dir: Path) -> pd.DataFrame:
+def load_upcoming_parquet(parquet_dir: Path) -> pl.DataFrame:
     """Read a hive-partitioned parquet directory into a DataFrame.
 
     Parameters
@@ -368,11 +366,11 @@ def load_upcoming_parquet(parquet_dir: Path) -> pd.DataFrame:
 
     Returns
     -------
-    pandas.DataFrame
+    polars.DataFrame
     """
-    import pandas as _pd
+    import polars as _pl
 
-    return _pd.read_parquet(parquet_dir)
+    return _pl.read_parquet(parquet_dir)
 
 
 def check_parquet_dir(
