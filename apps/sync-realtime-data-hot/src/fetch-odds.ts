@@ -5,7 +5,10 @@ import { getCachedNarVenueLastRaceStartAtJst } from "./nar-venue-cache";
 import {
   claimOddsFetch,
   completeOddsFetch,
+  countOddsRows,
   failOddsFetch,
+  filterChangedOdds,
+  getLatestOddsFromD1,
   getOddsFetchState,
   insertOddsSnapshot,
   logFetch,
@@ -183,17 +186,16 @@ export const fetchAndStoreOdds = async (
     }
     const fetchedAt = toJstIsoString(now);
     const scrape = await scrapeOddsForState(env, state);
-    const inserted = await insertOddsSnapshot(
-      env.REALTIME_HOT_DB,
-      raceKey,
-      fetchedAt,
-      scrape.latest,
-    );
-    if (inserted === 0) {
+    // A scrape that produced no rows is a failure (upstream returned nothing),
+    // so keep throwing as before. A scrape that produced rows but matches the
+    // stored snapshot is a legitimate no-change and must not throw.
+    if (countOddsRows(scrape.latest) === 0) {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
+    const stored = await getLatestOddsFromD1(env.REALTIME_HOT_DB, raceKey);
+    const changed = stored ? filterChangedOdds(scrape.latest, stored.latest) : scrape.latest;
+    const inserted = await insertOddsSnapshot(env.REALTIME_HOT_DB, raceKey, fetchedAt, changed);
     await completeOddsFetch(env.REALTIME_HOT_DB, raceKey, fetchedAt);
-    await logFetch(env.REALTIME_HOT_DB, "fetch-odds", "ok", raceKey, null);
     if (scrape.missingTypes.length > 0) {
       await logJraPartialFetch(env, raceKey, {
         fetchedTypes: Object.keys(scrape.latest) as OddsType[],

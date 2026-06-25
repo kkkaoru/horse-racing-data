@@ -17,7 +17,9 @@ declare global {
   }
 
   interface PcKeibaDurableObjectState {
+    acceptWebSocket(ws: WebSocket): void;
     blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+    getWebSockets(): WebSocket[];
     storage: {
       get<T = unknown>(key: string): Promise<T | undefined>;
       put(key: string, value: unknown): Promise<void>;

@@ -48,7 +48,13 @@
       "*/2 0-13 * * *",
       "10 0 * * *",
       "5 11 * * *",
-      "*/10 * * * *",
+      // 2026-06-26: running-style inference cron restricted from "*/10 * * * *"
+      // (every 10 min, 24/7) to "*/10 0-14 * * *" (JST 09:00-23:50). Running-
+      // style prediction is only useful during race-prep / race hours, so the
+      // overnight ticks were re-planning settled days and burning Neon compute
+      // for no enqueue. Matches RUNNING_STYLE_INFERENCE_CRON in
+      // running-style-cron.ts.
+      "*/10 0-14 * * *",
       // 2026-06-07: every-minute weight watchdog. Runs runWeightWatchdog
       // which inspects realtime_race_sources directly and enqueues
       // fetch-weights jobs for races within +/- the watchdog window whose

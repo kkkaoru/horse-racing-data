@@ -88,19 +88,28 @@ describe("odds fetch schedule", () => {
     );
   });
 
-  it("aligns JRA advance odds slots hourly from previous-day 19:00 until one hour before post time", () => {
+  it("aligns JRA advance odds slots to a 3-hour JST grid from previous-day 19:00 until one hour before post time", () => {
     const raceStart = new Date("2026-05-16T09:45:00+09:00");
     expect(
       getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T18:59:59+09:00")),
     ).toBeNull();
     expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T19:00:00+09:00"))).toBe(
-      "2026-05-15T19:00:00+09:00",
+      "2026-05-15T18:00:00+09:00",
     );
-    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T19:59:59+09:00"))).toBe(
-      "2026-05-15T19:00:00+09:00",
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T20:59:59+09:00"))).toBe(
+      "2026-05-15T18:00:00+09:00",
+    );
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-15T21:00:00+09:00"))).toBe(
+      "2026-05-15T21:00:00+09:00",
+    );
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T00:30:00+09:00"))).toBe(
+      "2026-05-16T00:00:00+09:00",
+    );
+    expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T06:00:00+09:00"))).toBe(
+      "2026-05-16T06:00:00+09:00",
     );
     expect(getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T08:44:59+09:00"))).toBe(
-      "2026-05-16T08:00:00+09:00",
+      "2026-05-16T06:00:00+09:00",
     );
     expect(
       getJraAdvanceOddsFetchSlotAt(raceStart, new Date("2026-05-16T08:45:00+09:00")),

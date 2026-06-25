@@ -49,10 +49,10 @@ export default {
       );
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx, { date: todayJst }));
     }
-    if (controller.cron === "*/5 * * * *") {
+    if (controller.cron === "*/5 0-14 * * *") {
       ctx.waitUntil(scheduleDueRaceTrendCache(openNextWorker, env, ctx));
     }
-    if (controller.cron === "*/15 * * * *") {
+    if (controller.cron === "*/15 0-14 * * *") {
       ctx.waitUntil(scheduleRaceDetailSsrCacheWarm(openNextWorker, env, ctx));
     }
   },

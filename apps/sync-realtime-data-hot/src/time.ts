@@ -8,6 +8,10 @@ const ONE_MIN_THRESHOLD_MINUTES = 1;
 const HOURLY_INTERVAL_MINUTES = 60;
 const FIVE_MIN_INTERVAL = 5;
 const ONE_MIN_INTERVAL = 1;
+// JRA advance-sale odds (saleStart..T-60) are slow-moving, so we floor `now`
+// to a 3-hour grid anchored at JST midnight (00:00, 03:00, 06:00, 09:00...).
+// This scrapes ~4-5 times across the advance window instead of every hour.
+const ADVANCE_SLOT_INTERVAL_HOURS = 3;
 const REGULAR_OFFSET_MINUTES = [
   60, 55, 50, 45, 40, 35, 30, 25, 20, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, -2,
 ] satisfies readonly number[];
@@ -156,8 +160,16 @@ export const getOddsFetchSlotAt = (raceStart: Date, now: Date): string | null =>
   return now.getTime() >= finalOddsSlot.getTime() ? toJstIsoString(finalOddsSlot) : null;
 };
 
-const floorToHourJstSlot = (date: Date): string =>
-  `${toJstIsoString(date).slice(0, 14)}00:00+09:00`;
+// Floors a JST instant to the nearest lower multiple of
+// ADVANCE_SLOT_INTERVAL_HOURS, anchored at 00:00 JST of the same day, so slots
+// land on a stable grid (00:00, 03:00, 06:00, ...).
+const floorToAdvanceSlotJst = (date: Date): string => {
+  const iso = toJstIsoString(date);
+  const flooredHour =
+    Math.floor(Number(iso.slice(11, 13)) / ADVANCE_SLOT_INTERVAL_HOURS) *
+    ADVANCE_SLOT_INTERVAL_HOURS;
+  return `${iso.slice(0, 11)}${String(flooredHour).padStart(2, "0")}:00:00+09:00`;
+};
 
 export const getJraAdvanceOddsFetchSlotAt = (raceStart: Date, now: Date): string | null => {
   const raceDate = toJstIsoString(raceStart).slice(0, 10);
@@ -167,7 +179,7 @@ export const getJraAdvanceOddsFetchSlotAt = (raceStart: Date, now: Date): string
   if (now.getTime() < saleStart.getTime() || now.getTime() >= oneHourBeforeRace.getTime()) {
     return null;
   }
-  return floorToHourJstSlot(now);
+  return floorToAdvanceSlotJst(now);
 };
 
 const ceilToNextHourJstSlot = (date: Date): Date => {

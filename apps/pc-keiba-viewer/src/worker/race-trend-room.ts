@@ -1,6 +1,8 @@
 // Run with bun (vitest) / Cloudflare Workers runtime.
 import { DurableObject } from "cloudflare:workers";
 
+import { closeSocket, trySend } from "./websocket-broadcast";
+
 interface RaceTrendRoomEvent {
   cacheKey: string | null;
   raceKey: string;
@@ -44,7 +46,6 @@ const getCacheKey = (value: unknown): string | null => {
 export class RaceTrendRoom extends DurableObject<CloudflareEnv> {
   private currentEvent: RaceTrendRoomEvent | null = null;
   private initialized: Promise<void> | null = null;
-  private readonly sockets = new Set<WebSocket>();
 
   override async fetch(request: Request): Promise<Response> {
     const raceKey = getRaceKey(request);
@@ -82,11 +83,8 @@ export class RaceTrendRoom extends DurableObject<CloudflareEnv> {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
-    server.accept();
-    this.sockets.add(server);
+    this.ctx.acceptWebSocket(server);
     server.send(JSON.stringify({ type: "ready" }));
-    server.addEventListener("close", () => this.sockets.delete(server));
-    server.addEventListener("error", () => this.sockets.delete(server));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -106,12 +104,27 @@ export class RaceTrendRoom extends DurableObject<CloudflareEnv> {
 
   private broadcast(event: RaceTrendRoomEvent): void {
     const message = JSON.stringify(event);
-    for (const socket of this.sockets) {
-      try {
-        socket.send(message);
-      } catch {
-        this.sockets.delete(socket);
-      }
+    for (const socket of this.ctx.getWebSockets()) {
+      trySend(socket, message);
     }
+  }
+
+  // Hibernation runtime entrypoint. These rooms are broadcast-only, so inbound
+  // client frames are ignored.
+  async webSocketMessage(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  // Hibernation runtime entrypoint invoked when a peer closes; release the
+  // server-side socket so it stops counting against billed duration.
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    closeSocket(ws);
+    return Promise.resolve();
+  }
+
+  // Hibernation runtime entrypoint invoked on socket error; release the socket.
+  async webSocketError(ws: WebSocket): Promise<void> {
+    closeSocket(ws);
+    return Promise.resolve();
   }
 }

@@ -73,7 +73,7 @@ vi.mock("./win5-cron", () => ({
   logWin5CronResult: vi.fn(async () => {}),
 }));
 vi.mock("./running-style-cron", () => ({
-  RUNNING_STYLE_INFERENCE_CRON: "*/10 * * * *",
+  RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
   formatTomorrowYYYYMMDDInJst: vi.fn(() => "20260513"),
   formatYYYYMMDDInJst: vi.fn(() => "20260512"),
@@ -208,7 +208,7 @@ it("scheduled logs error when runRunningStyleCronTick rejects", async () => {
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/10 * * * *",
+      cron: "*/10 0-14 * * *",
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
@@ -231,7 +231,7 @@ it("scheduled triggers logRunningStylePlanResult for the inference cron", async 
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "*/10 * * * *",
+      cron: "*/10 0-14 * * *",
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,

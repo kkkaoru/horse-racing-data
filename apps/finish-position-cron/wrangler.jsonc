@@ -30,7 +30,7 @@
       // rescore consumer (task B) is not wired yet, so an enqueued message has
       // no effect on production predictions — it only reads D1 + writes the
       // queue, and never starts the container or touches predict / warm crons.
-      "*/5 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator (shadow)
+      "*/10 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator
       // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
       // disabled until PHASE 3 pilot confirms full-mode container viability.
       // To enable: uncomment the line below and wrangler deploy.

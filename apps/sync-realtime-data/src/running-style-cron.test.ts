@@ -30,8 +30,8 @@ const buildDbWithRegisteredRaces = (races: RegisteredRaceRow[]): D1Database =>
     })),
   }) as unknown as D1Database;
 
-test("RUNNING_STYLE_INFERENCE_CRON is */10 schedule", () => {
-  expect(RUNNING_STYLE_INFERENCE_CRON).toBe("*/10 * * * *");
+test("RUNNING_STYLE_INFERENCE_CRON runs every 10 min during JST race hours", () => {
+  expect(RUNNING_STYLE_INFERENCE_CRON).toBe("*/10 0-14 * * *");
 });
 
 test("RUNNING_STYLE_PREWARM_CRON runs at 21:00 JST", () => {

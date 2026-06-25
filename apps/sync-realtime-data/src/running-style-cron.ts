@@ -31,7 +31,7 @@ import {
 import { listRunningStyleRacesByDate } from "./running-style-race-list";
 import type { Env, RunningStylePredictionJob } from "./types";
 
-export const RUNNING_STYLE_INFERENCE_CRON = "*/10 * * * *";
+export const RUNNING_STYLE_INFERENCE_CRON = "*/10 0-14 * * *";
 export const RUNNING_STYLE_PREWARM_CRON = "0 12 * * *";
 
 const ENABLED_FLAG = "1";

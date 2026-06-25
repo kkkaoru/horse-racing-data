@@ -486,7 +486,8 @@ it("insertHorseWeightSnapshot short-circuits without deleting when weights is em
 
 it("insertHorseWeightSnapshot replaces existing rows when weights present", async () => {
   const run = vi.fn(async () => ({}));
-  const bind = vi.fn(() => ({ run, bind: vi.fn() }));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -515,7 +516,8 @@ it("insertRaceEntrySnapshot returns 0 without running delete when entries empty"
 
 it("insertRaceEntrySnapshot returns row count when entries present", async () => {
   const run = vi.fn(async () => ({}));
-  const bind = vi.fn(() => ({ run, bind: vi.fn() }));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -543,7 +545,8 @@ it("insertRaceResultSnapshot does not run delete when results empty", async () =
 
 it("insertRaceResultSnapshot returns row count when results present", async () => {
   const run = vi.fn(async () => ({}));
-  const bind = vi.fn(() => ({ run, bind: vi.fn() }));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -1862,7 +1865,8 @@ it("getPremiumRacePayload returns [] reasons when reasons_json parses to a non-a
 
 it("insertRaceEntrySnapshot normalizes jockey marks/whitespace through normalizeStoredJockeyName", async () => {
   const run = vi.fn(async () => ({}));
-  const bind = vi.fn(() => ({ run, bind: vi.fn() }));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -1872,6 +1876,194 @@ it("insertRaceEntrySnapshot normalizes jockey marks/whitespace through normalize
     { horseName: null, horseNumber: "3", jockeyName: null, status: null },
   ]);
   expect(count).toBe(3);
+});
+
+it("insertHorseWeightSnapshot skips delete and insert when stored weights are identical", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        change_amount: 2,
+        change_sign: "+",
+        fetched_at: "earlier",
+        horse_name: "サンプル",
+        horse_number: "1",
+        weight: 500,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertHorseWeightSnapshot(db, "key", "now", [
+    { changeAmount: 2, changeSign: "+", horseName: "サンプル", horseNumber: "1", weight: 500 },
+  ]);
+  expect(batch).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("insertHorseWeightSnapshot writes when stored weight differs", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        change_amount: 2,
+        change_sign: "+",
+        fetched_at: "earlier",
+        horse_name: "サンプル",
+        horse_number: "1",
+        weight: 498,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertHorseWeightSnapshot(db, "key", "now", [
+    { changeAmount: 2, changeSign: "+", horseName: "サンプル", horseNumber: "1", weight: 500 },
+  ]);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceEntrySnapshot skips write when stored entries match after jockey normalization", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "earlier",
+        horse_name: "h1",
+        horse_number: "1",
+        jockey_name: "武豊",
+        status: null,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceEntrySnapshot(db, "key", "now", [
+    { horseName: "h1", horseNumber: "1", jockeyName: "△武  豊", status: null },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceEntrySnapshot writes when stored entry status differs", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "earlier",
+        horse_name: "h1",
+        horse_number: "1",
+        jockey_name: "武豊",
+        status: null,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceEntrySnapshot(db, "key", "now", [
+    { horseName: "h1", horseNumber: "1", jockeyName: "武豊", status: "取消" },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceResultSnapshot skips write when stored results are identical", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "earlier",
+        finish_position: "1",
+        horse_name: "h",
+        horse_number: "1",
+        time: "1:23.4",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceResultSnapshot(db, "key", "now", [
+    { finishPosition: "1", horseName: "h", horseNumber: "1", time: "1:23.4" },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).not.toHaveBeenCalled();
+  expect(prepare).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceResultSnapshot writes when stored finish position differs", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        fetched_at: "earlier",
+        finish_position: "2",
+        horse_name: "h",
+        horse_number: "1",
+        time: "1:23.4",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceResultSnapshot(db, "key", "now", [
+    { finishPosition: "1", horseName: "h", horseNumber: "1", time: "1:23.4" },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("insertHorseWeightSnapshot writes on first snapshot when no rows are stored", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await insertHorseWeightSnapshot(db, "key", "now", [
+    { changeAmount: 2, changeSign: "+", horseName: "サンプル", horseNumber: "1", weight: 500 },
+  ]);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceEntrySnapshot writes on first snapshot when no rows are stored", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceEntrySnapshot(db, "key", "now", [
+    { horseName: "h1", horseNumber: "1", jockeyName: "武豊", status: null },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).toHaveBeenCalledTimes(1);
+});
+
+it("insertRaceResultSnapshot writes on first snapshot when no rows are stored", async () => {
+  const run = vi.fn(async () => ({}));
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all, run, bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  const count = await insertRaceResultSnapshot(db, "key", "now", [
+    { finishPosition: "1", horseName: "h", horseNumber: "1", time: "1:23.4" },
+  ]);
+  expect(count).toBe(1);
+  expect(batch).toHaveBeenCalledTimes(1);
 });
 
 it("listOddsSnapshotsForExport returns rows without fetched_at filter", async () => {

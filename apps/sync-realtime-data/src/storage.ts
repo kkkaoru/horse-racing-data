@@ -824,6 +824,65 @@ export const recordPartialResultFetch = async (
     .run();
 };
 
+// Write-on-change guards (2026-06-26). The weight watchdog (every minute) and
+// the result poll (every 2 min) re-scrape the same race dozens of times before
+// the upstream data finalizes, and each scrape used to DELETE + re-INSERT the
+// identical rows. DELETEs and INSERTs both count as D1 writes, so for a single
+// race this could re-write the same snapshot 30-50 times. These signature
+// helpers serialize the meaningful columns (everything except the always-
+// changing fetched_at) so the caller can read the current stored rows, compare,
+// and skip the DELETE + INSERT entirely when nothing changed. The signature is
+// order-independent: rows are sorted before joining so a re-scrape that returns
+// the same horses in a different order is still treated as unchanged.
+const SNAPSHOT_FIELD_SEPARATOR_CHAR_CODE = 31;
+const SNAPSHOT_ROW_SEPARATOR_CHAR_CODE = 30;
+const SNAPSHOT_FIELD_SEPARATOR = String.fromCharCode(SNAPSHOT_FIELD_SEPARATOR_CHAR_CODE);
+const SNAPSHOT_ROW_SEPARATOR = String.fromCharCode(SNAPSHOT_ROW_SEPARATOR_CHAR_CODE);
+const SNAPSHOT_NULL_TOKEN = String.fromCharCode(0);
+
+const snapshotNullable = (value: string | number | null): string =>
+  value === null ? SNAPSHOT_NULL_TOKEN : String(value);
+
+const joinSnapshotRows = (rows: ReadonlyArray<string>): string =>
+  [...rows].sort().join(SNAPSHOT_ROW_SEPARATOR);
+
+const weightSnapshotSignature = (horses: ReadonlyArray<HorseWeight>): string =>
+  joinSnapshotRows(
+    horses.map((horse) =>
+      [
+        horse.horseNumber,
+        snapshotNullable(horse.horseName),
+        snapshotNullable(horse.weight),
+        snapshotNullable(horse.changeSign),
+        snapshotNullable(horse.changeAmount),
+      ].join(SNAPSHOT_FIELD_SEPARATOR),
+    ),
+  );
+
+const entrySnapshotSignature = (horses: ReadonlyArray<Omit<RaceEntry, "fetchedAt">>): string =>
+  joinSnapshotRows(
+    horses.map((horse) =>
+      [
+        horse.horseNumber,
+        snapshotNullable(horse.horseName),
+        snapshotNullable(normalizeStoredJockeyName(horse.jockeyName)),
+        snapshotNullable(horse.status),
+      ].join(SNAPSHOT_FIELD_SEPARATOR),
+    ),
+  );
+
+const resultSnapshotSignature = (horses: ReadonlyArray<Omit<RaceResult, "fetchedAt">>): string =>
+  joinSnapshotRows(
+    horses.map((horse) =>
+      [
+        horse.horseNumber,
+        snapshotNullable(horse.horseName),
+        horse.finishPosition,
+        snapshotNullable(horse.time),
+      ].join(SNAPSHOT_FIELD_SEPARATOR),
+    ),
+  );
+
 export const insertHorseWeightSnapshot = async (
   db: D1Database,
   raceKey: string,
@@ -831,6 +890,13 @@ export const insertHorseWeightSnapshot = async (
   weights: HorseWeight[],
 ): Promise<void> => {
   if (weights.length === 0) {
+    return;
+  }
+  const stored = await getLatestHorseWeights(db, raceKey);
+  if (
+    stored !== null &&
+    weightSnapshotSignature(stored.horses) === weightSnapshotSignature(weights)
+  ) {
     return;
   }
   await db.prepare("delete from horse_weight_snapshots where race_key = ?").bind(raceKey).run();
@@ -877,6 +943,13 @@ export const insertRaceEntrySnapshot = async (
   if (entries.length === 0) {
     return 0;
   }
+  const stored = await getLatestRaceEntries(db, raceKey);
+  if (
+    stored !== null &&
+    entrySnapshotSignature(stored.horses) === entrySnapshotSignature(entries)
+  ) {
+    return entries.length;
+  }
   await db.prepare("delete from race_entry_snapshots where race_key = ?").bind(raceKey).run();
   await runD1Batches(
     db,
@@ -911,6 +984,13 @@ export const insertRaceResultSnapshot = async (
 ): Promise<number> => {
   if (results.length === 0) {
     return 0;
+  }
+  const stored = await getLatestRaceResults(db, raceKey);
+  if (
+    stored !== null &&
+    resultSnapshotSignature(stored.horses) === resultSnapshotSignature(results)
+  ) {
+    return results.length;
   }
   await db.prepare("delete from race_result_snapshots where race_key = ?").bind(raceKey).run();
   await runD1Batches(

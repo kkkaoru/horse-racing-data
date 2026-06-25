@@ -98,12 +98,12 @@ test("shouldRunRescoreCron rejects an unrelated cron", () => {
   expect(shouldRunRescoreCron("*/10 * * * *")).toBe(false);
 });
 
-test("COORDINATOR_CRON_RACE_HOURS is the every-5-min race-hours schedule", () => {
-  expect(COORDINATOR_CRON_RACE_HOURS).toBe("*/5 1-11 * * *");
+test("COORDINATOR_CRON_RACE_HOURS is the every-10-min race-hours schedule", () => {
+  expect(COORDINATOR_CRON_RACE_HOURS).toBe("*/10 1-11 * * *");
 });
 
 test("shouldRunCoordinatorCron matches the coordinator race-hours cron", () => {
-  expect(shouldRunCoordinatorCron("*/5 1-11 * * *")).toBe(true);
+  expect(shouldRunCoordinatorCron("*/10 1-11 * * *")).toBe(true);
 });
 
 test("shouldRunCoordinatorCron rejects the rescore cron", () => {
@@ -123,7 +123,7 @@ test("shouldRunCoordinatorCron rejects an empty string", () => {
 });
 
 test("shouldRunWarmCron rejects the coordinator cron", () => {
-  expect(shouldRunWarmCron("*/5 1-11 * * *")).toBe(false);
+  expect(shouldRunWarmCron("*/10 1-11 * * *")).toBe(false);
 });
 
 test("FEATURE_BUILD_CRON is the JST 09:30 schedule", () => {
@@ -139,7 +139,7 @@ test("shouldRunFeatureBuildCron rejects the pre-JRA warm cron", () => {
 });
 
 test("shouldRunFeatureBuildCron rejects the coordinator cron", () => {
-  expect(shouldRunFeatureBuildCron("*/5 1-11 * * *")).toBe(false);
+  expect(shouldRunFeatureBuildCron("*/10 1-11 * * *")).toBe(false);
 });
 
 test("shouldRunFeatureBuildCron rejects the predict cron", () => {

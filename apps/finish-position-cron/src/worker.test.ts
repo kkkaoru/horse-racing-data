@@ -224,13 +224,13 @@ test("handleScheduled rescore enqueue does not start container", async () => {
 });
 
 test("handleScheduled runs the per-race coordinator for the coordinator cron", async () => {
-  await handleScheduled(makeEvent("*/5 1-11 * * *"), makeEnv());
+  await handleScheduled(makeEvent("*/10 1-11 * * *"), makeEnv());
   expect(coordinatorTickMock).toHaveBeenCalledTimes(1);
   expect(coordinatorTickMock).toHaveBeenCalledWith(expect.objectContaining({ leadMinutes: 25 }));
 });
 
 test("handleScheduled coordinator cron does not start container or warm or enqueue per-category", async () => {
-  await handleScheduled(makeEvent("*/5 1-11 * * *"), makeEnv());
+  await handleScheduled(makeEvent("*/10 1-11 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
   expect(warmNeonMock).not.toHaveBeenCalled();

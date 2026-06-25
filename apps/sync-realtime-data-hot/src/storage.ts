@@ -103,6 +103,51 @@ export const runD1Batches = async (
   }
 };
 
+// True when there is no matching stored row (new combination) or any key
+// field differs from the stored row. `?? null` normalizes undefined/missing so
+// undefined-vs-undefined compares equal and a no-change race yields no writes.
+export const hasOddsRowChanged = (next: OddsData, prev: OddsData | undefined): boolean => {
+  if (!prev) {
+    return true;
+  }
+  return (
+    (next.odds ?? null) !== (prev.odds ?? null) ||
+    (next.minOdds ?? null) !== (prev.minOdds ?? null) ||
+    (next.maxOdds ?? null) !== (prev.maxOdds ?? null) ||
+    (next.averageOdds ?? null) !== (prev.averageOdds ?? null) ||
+    (next.rank ?? null) !== (prev.rank ?? null)
+  );
+};
+
+// Returns only the rows that differ from the stored snapshot, keyed by
+// combination. Odds types whose rows are all unchanged are omitted entirely so
+// `insertOddsSnapshot` skips the D1 write for them.
+export const filterChangedOdds = (
+  next: Partial<Record<OddsType, OddsData[]>>,
+  stored: Partial<Record<OddsType, OddsData[]>>,
+): Partial<Record<OddsType, OddsData[]>> => {
+  const entries = Object.entries(next) as [OddsType, OddsData[]][];
+  return Object.fromEntries(
+    entries
+      .map(([oddsType, rows]) => {
+        const storedByCombination = new Map(
+          (stored[oddsType] ?? []).map((row) => [row.combination, row]),
+        );
+        const changedRows = rows.filter((row) =>
+          hasOddsRowChanged(row, storedByCombination.get(row.combination)),
+        );
+        return [oddsType, changedRows] satisfies [OddsType, OddsData[]];
+      })
+      .filter(([, changedRows]) => changedRows.length > 0),
+  );
+};
+
+// Total number of odds rows across all types; used to distinguish a failed
+// scrape (zero rows) from a legitimate no-change scrape (rows present but all
+// already stored).
+export const countOddsRows = (odds: Partial<Record<OddsType, OddsData[]>>): number =>
+  Object.values(odds).reduce((total, rows) => total + (rows?.length ?? 0), 0);
+
 // ON CONFLICT DO UPDATE keeps retries (catch-up sweep, backfill scripts) idempotent
 // after the (race_key, fetched_at, odds_type, combination) UNIQUE index lands in
 // migration 0003.

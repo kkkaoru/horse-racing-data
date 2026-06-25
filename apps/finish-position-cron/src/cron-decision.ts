@@ -26,12 +26,12 @@ export const WARM_CRON_RACE_HOURS = "*/30 1-11 * * *";
 // NOTE: This cron is NOT active in wrangler.jsonc triggers yet — enabled after pilot phase.
 export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 
-// Per-race coordinator cron: every 5 min during race hours
+// Per-race coordinator cron: every 10 min during race hours
 // (01:00-11:59 UTC == JST 10:00-20:59). Finer-grained than RESCORE so each race
 // can be enqueued close to its post time T-X window. Shadow-safe: it only
 // enqueues per-race rescore messages; it does not start the container or touch
 // the predict / warm crons. Mirrors the running-style "*/10" coordinator.
-export const COORDINATOR_CRON_RACE_HOURS = "*/5 1-11 * * *";
+export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 
 // Feature-build cron: 00:30 UTC == JST 09:30 — triggers the Container full
 // pipeline for all categories so per-race feature parquets are uploaded to R2

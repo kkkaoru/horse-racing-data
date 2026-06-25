@@ -6,9 +6,12 @@ import {
   claimOddsFetch,
   completeOddsFetch,
   countOddsFetchStateForDate,
+  countOddsRows,
   failOddsFetch,
+  filterChangedOdds,
   getLatestOddsFromD1,
   getOddsFetchState,
+  hasOddsRowChanged,
   insertOddsSnapshot,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
@@ -952,4 +955,145 @@ it("aggregateArchiveRowsForFetchedAtList concatenates results from every chunk i
   const result = await aggregateArchiveRowsForFetchedAtList(db, fetchedAts);
   expect(prepare).toHaveBeenCalledTimes(2);
   expect(result.length).toBe(2);
+});
+
+it("hasOddsRowChanged returns true when there is no stored row", () => {
+  expect(hasOddsRowChanged({ combination: "01", odds: 2.5, rank: 1 }, undefined)).toBe(true);
+});
+
+it("hasOddsRowChanged returns false when every key field matches", () => {
+  expect(
+    hasOddsRowChanged(
+      { averageOdds: 3.0, combination: "01", maxOdds: 3.5, minOdds: 2.5, odds: 2.8, rank: 1 },
+      { averageOdds: 3.0, combination: "01", maxOdds: 3.5, minOdds: 2.5, odds: 2.8, rank: 1 },
+    ),
+  ).toBe(false);
+});
+
+it("hasOddsRowChanged treats undefined-vs-undefined odds as unchanged", () => {
+  expect(hasOddsRowChanged({ combination: "01", rank: 1 }, { combination: "01", rank: 1 })).toBe(
+    false,
+  );
+});
+
+it("hasOddsRowChanged returns true when odds differ", () => {
+  expect(
+    hasOddsRowChanged(
+      { combination: "01", odds: 2.5, rank: 1 },
+      { combination: "01", odds: 2.6, rank: 1 },
+    ),
+  ).toBe(true);
+});
+
+it("hasOddsRowChanged returns true when rank differs", () => {
+  expect(
+    hasOddsRowChanged(
+      { combination: "01", odds: 2.5, rank: 1 },
+      { combination: "01", odds: 2.5, rank: 2 },
+    ),
+  ).toBe(true);
+});
+
+it("hasOddsRowChanged returns true when minOdds differs", () => {
+  expect(
+    hasOddsRowChanged(
+      { combination: "01", minOdds: 2.4, odds: 2.5 },
+      { combination: "01", minOdds: 2.3, odds: 2.5 },
+    ),
+  ).toBe(true);
+});
+
+it("hasOddsRowChanged returns true when maxOdds differs", () => {
+  expect(
+    hasOddsRowChanged(
+      { combination: "01", maxOdds: 3.5, odds: 2.5 },
+      { combination: "01", maxOdds: 3.6, odds: 2.5 },
+    ),
+  ).toBe(true);
+});
+
+it("hasOddsRowChanged returns true when averageOdds differs", () => {
+  expect(
+    hasOddsRowChanged(
+      { averageOdds: 3.0, combination: "01", odds: 2.5 },
+      { averageOdds: 3.1, combination: "01", odds: 2.5 },
+    ),
+  ).toBe(true);
+});
+
+it("filterChangedOdds returns an empty object when all rows are unchanged", () => {
+  expect(
+    filterChangedOdds(
+      { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+      { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+    ),
+  ).toStrictEqual({});
+});
+
+it("filterChangedOdds keeps only the changed rows for a partially changed type", () => {
+  expect(
+    filterChangedOdds(
+      {
+        tansho: [
+          { combination: "01", odds: 2.4, rank: 1 },
+          { combination: "02", odds: 5.0, rank: 2 },
+        ],
+      },
+      {
+        tansho: [
+          { combination: "01", odds: 2.5, rank: 1 },
+          { combination: "02", odds: 5.0, rank: 2 },
+        ],
+      },
+    ),
+  ).toStrictEqual({ tansho: [{ combination: "01", odds: 2.4, rank: 1 }] });
+});
+
+it("filterChangedOdds omits a type whose rows are all unchanged while keeping a changed type", () => {
+  expect(
+    filterChangedOdds(
+      {
+        fukusho: [{ combination: "01", odds: 1.5, rank: 1 }],
+        tansho: [{ combination: "01", odds: 2.4, rank: 1 }],
+      },
+      {
+        fukusho: [{ combination: "01", odds: 1.5, rank: 1 }],
+        tansho: [{ combination: "01", odds: 2.5, rank: 1 }],
+      },
+    ),
+  ).toStrictEqual({ tansho: [{ combination: "01", odds: 2.4, rank: 1 }] });
+});
+
+it("filterChangedOdds includes a new combination absent from the stored snapshot", () => {
+  expect(
+    filterChangedOdds(
+      {
+        tansho: [
+          { combination: "01", odds: 2.5, rank: 1 },
+          { combination: "03", odds: 9.0, rank: 3 },
+        ],
+      },
+      { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+    ),
+  ).toStrictEqual({ tansho: [{ combination: "03", odds: 9.0, rank: 3 }] });
+});
+
+it("filterChangedOdds includes all rows when the stored type is missing", () => {
+  expect(
+    filterChangedOdds({ tansho: [{ combination: "01", odds: 2.5, rank: 1 }] }, {}),
+  ).toStrictEqual({ tansho: [{ combination: "01", odds: 2.5, rank: 1 }] });
+});
+
+it("countOddsRows returns 0 for an empty snapshot", () => {
+  expect(countOddsRows({})).toBe(0);
+});
+
+it("countOddsRows ignores undefined arrays and sums the rest", () => {
+  expect(
+    countOddsRows({
+      fukusho: undefined,
+      tansho: [{ combination: "01", odds: 2.5 }, { combination: "02" }],
+      umaren: [{ combination: "01-02", odds: 12.3 }],
+    }),
+  ).toBe(3);
 });

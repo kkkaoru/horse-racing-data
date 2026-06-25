@@ -86,7 +86,7 @@ vi.mock("./win5-cron", () => ({
   logWin5CronResult: vi.fn(async () => {}),
 }));
 vi.mock("./running-style-cron", () => ({
-  RUNNING_STYLE_INFERENCE_CRON: "*/10 * * * *",
+  RUNNING_STYLE_INFERENCE_CRON: "*/10 0-14 * * *",
   RUNNING_STYLE_PREWARM_CRON: "0 12 * * *",
   planRunningStylePredictionsForDate: vi.fn(async () => ({
     alreadyQueued: 0,

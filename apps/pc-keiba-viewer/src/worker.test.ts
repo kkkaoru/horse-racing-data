@@ -145,7 +145,7 @@ it("cron-0-21-utc-warms-today-sections-and-ssr-with-jst-date", () => {
 it("cron-every-5-min-utc-warms-due-race-trend", () => {
   const env = buildEnv();
   const ctx = buildCtx();
-  worker.scheduled({ cron: "*/5 * * * *" }, env, ctx);
+  worker.scheduled({ cron: "*/5 0-14 * * *" }, env, ctx);
   expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
   expect(scheduleDueRaceTrendCacheMock).toHaveBeenCalledTimes(1);
   expect(scheduleTomorrowRaceDetailSectionCacheMock).toHaveBeenCalledTimes(0);
@@ -155,7 +155,7 @@ it("cron-every-5-min-utc-warms-due-race-trend", () => {
 it("cron-every-15-min-utc-warms-ssr-cache-without-date", () => {
   const env = buildEnv();
   const ctx = buildCtx();
-  worker.scheduled({ cron: "*/15 * * * *" }, env, ctx);
+  worker.scheduled({ cron: "*/15 0-14 * * *" }, env, ctx);
   expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
   expect(scheduleRaceDetailSsrCacheWarmMock).toHaveBeenCalledTimes(1);
   const ssrOptions = scheduleRaceDetailSsrCacheWarmMock.mock.calls[0]?.[3];

@@ -51,11 +51,23 @@ const sampleNarState = (overrides: Partial<OddsFetchStateRow> = {}): OddsFetchSt
   ...overrides,
 });
 
+interface StoredOddsSnapshotRow {
+  average_odds: number | null;
+  combination: string;
+  fetched_at: string;
+  max_odds: number | null;
+  min_odds: number | null;
+  odds: number | null;
+  odds_type: string;
+  rank: number | null;
+}
+
 interface BuildDbOptions {
   claimChanges?: number;
   state?: OddsFetchStateRow | null;
   narVenueLast?: string | null;
   insertedCount?: number;
+  latestStored?: StoredOddsSnapshotRow[] | null;
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -99,6 +111,10 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
         last_race_start_at_jst: options.narVenueLast ?? null,
       }));
       return { bind: vi.fn(() => ({ first })) };
+    }
+    if (lowered.includes("select odds_type, fetched_at, combination")) {
+      const all = vi.fn(async () => ({ results: options.latestStored ?? [] }));
+      return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("insert into odds_snapshots")) {
       const run = vi.fn(async () => ({ meta: { changes: options.insertedCount ?? 1 } }));
@@ -359,7 +375,7 @@ it("fetchAndStoreOdds keeps the enqueue lock when raceStart cannot be parsed (K1
   expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
 });
 
-it("fetchAndStoreOdds writes a partial-fetch warn log when missingTypes is non-empty (K1-A)", async () => {
+it("fetchAndStoreOdds writes only the partial-fetch warn log when missingTypes is non-empty (K1-A)", async () => {
   vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
     entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
@@ -374,7 +390,7 @@ it("fetchAndStoreOdds writes a partial-fetch warn log when missingTypes is non-e
   const fetchLogCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
     String(call[0]).toLowerCase().includes("insert into fetch_logs"),
   );
-  expect(fetchLogCalls.length >= 2).toBe(true);
+  expect(fetchLogCalls).toHaveLength(1);
 });
 
 it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to claimOddsFetch", async () => {
@@ -409,6 +425,10 @@ it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to cla
       const first = vi.fn(async () => ({ last_race_start_at_jst: null }));
       return { bind: vi.fn(() => ({ first })) };
     }
+    if (lowered.includes("select odds_type, fetched_at, combination")) {
+      const all = vi.fn(async () => ({ results: [] }));
+      return { bind: vi.fn(() => ({ all })) };
+    }
     const run = vi.fn(async () => ({ meta: { changes: 1 } }));
     return { bind: vi.fn(() => ({ run })) };
   });
@@ -420,7 +440,7 @@ it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to cla
   expect(lockUntilArg).toBe("2026-05-28T14:58:00+09:00");
 });
 
-it("fetchAndStoreOdds skips the partial-fetch log when every JRA tab succeeded (K1-A)", async () => {
+it("fetchAndStoreOdds writes no fetch_logs row when every JRA tab succeeded (K1-A)", async () => {
   vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
     entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
@@ -435,5 +455,124 @@ it("fetchAndStoreOdds skips the partial-fetch log when every JRA tab succeeded (
   const fetchLogCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
     String(call[0]).toLowerCase().includes("insert into fetch_logs"),
   );
-  expect(fetchLogCalls).toHaveLength(1);
+  expect(fetchLogCalls).toHaveLength(0);
+});
+
+it("fetchAndStoreOdds writes every scraped row on the first fetch when no snapshot is stored (OPT1)", async () => {
+  const env = buildEnv({}, { latestStored: [] });
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T05:55:00Z"),
+  );
+  expect(result?.inserted).toBe(1);
+});
+
+it("fetchAndStoreOdds skips the insert and does not throw when every scraped row is unchanged (OPT1)", async () => {
+  const env = buildEnv(
+    {},
+    {
+      latestStored: [
+        {
+          average_odds: null,
+          combination: "01",
+          fetched_at: "2026-05-28T14:50:00+09:00",
+          max_odds: null,
+          min_odds: null,
+          odds: 2.5,
+          odds_type: "tansho",
+          rank: null,
+        },
+      ],
+    },
+  );
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T05:55:00Z"),
+  );
+  expect(result?.inserted).toBe(0);
+  const insertCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("insert into odds_snapshots"),
+  );
+  expect(insertCalls).toHaveLength(0);
+});
+
+it("fetchAndStoreOdds still calls completeOddsFetch when every scraped row is unchanged (OPT1)", async () => {
+  const env = buildEnv(
+    {},
+    {
+      latestStored: [
+        {
+          average_odds: null,
+          combination: "01",
+          fetched_at: "2026-05-28T14:50:00+09:00",
+          max_odds: null,
+          min_odds: null,
+          odds: 2.5,
+          odds_type: "tansho",
+          rank: null,
+        },
+      ],
+    },
+  );
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z"));
+  const completeCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("set last_odds_fetch_at"),
+  );
+  expect(completeCalls).toHaveLength(1);
+});
+
+it("fetchAndStoreOdds returns the full scraped latest even when all rows are unchanged (OPT1)", async () => {
+  const env = buildEnv(
+    {},
+    {
+      latestStored: [
+        {
+          average_odds: null,
+          combination: "01",
+          fetched_at: "2026-05-28T14:50:00+09:00",
+          max_odds: null,
+          min_odds: null,
+          odds: 2.5,
+          odds_type: "tansho",
+          rank: null,
+        },
+      ],
+    },
+  );
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T05:55:00Z"),
+  );
+  expect(result?.latest).toStrictEqual({ tansho: [{ combination: "01", odds: 2.5 }] });
+});
+
+it("fetchAndStoreOdds writes only the changed row when the stored odds differ (OPT1)", async () => {
+  const env = buildEnv(
+    {},
+    {
+      latestStored: [
+        {
+          average_odds: null,
+          combination: "01",
+          fetched_at: "2026-05-28T14:50:00+09:00",
+          max_odds: null,
+          min_odds: null,
+          odds: 9.9,
+          odds_type: "tansho",
+          rank: null,
+        },
+      ],
+    },
+  );
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T05:55:00Z"),
+  );
+  expect(result?.inserted).toBe(1);
 });
