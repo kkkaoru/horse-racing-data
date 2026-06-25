@@ -7,7 +7,7 @@ import json
 import math
 import random
 from collections.abc import Callable, Sequence
-from typing import Final, Literal, TypedDict, cast
+from typing import Final, Literal, TypedDict, cast, final
 
 import optuna
 import polars as pl
@@ -478,6 +478,44 @@ def select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
     return _select_fold_features(fold, feature_set)
 
 
+@final
+class _FoldPlan:
+    """Per-fold static selection plan, computed once and reused across every trial.
+
+    ``build_objective`` evaluates thousands of feature masks against the SAME
+    pre-split folds. The column order and the model-safe classification of those
+    columns never change within a round, so they are resolved once here. Each trial
+    then only intersects its ``feature_set`` against ``selectable`` — a cheap set
+    membership pass — instead of re-deriving ``_model_safe_columns`` (and its
+    dtype-signature scan) on every fold of every trial.
+    """
+
+    __slots__ = ("fold", "columns", "always_keep", "selectable")
+
+    def __init__(self, fold: FoldSplit) -> None:
+        safe = _model_safe_columns(fold["train_df"])
+        columns = list(fold["train_df"].columns)
+        self.fold: FoldSplit = fold
+        self.columns: list[str] = columns
+        # Meta/label columns are kept regardless of the mask; ``selectable`` is the
+        # subset of feature columns a trial may opt into (model-safe and not meta).
+        self.always_keep: frozenset[str] = frozenset(
+            c for c in columns if c in _META_AND_LABEL
+        )
+        self.selectable: frozenset[str] = frozenset(
+            c for c in columns if c not in _META_AND_LABEL and c in safe
+        )
+
+    def select(self, feature_set: set[str]) -> FoldSplit:
+        chosen = self.selectable & feature_set
+        keep_cols = [c for c in self.columns if c in self.always_keep or c in chosen]
+        return {
+            "train_df": self.fold["train_df"].select(keep_cols),
+            "valid_df": self.fold["valid_df"].select(keep_cols),
+            "valid_year": self.fold["valid_year"],
+        }
+
+
 def evaluate_feature_set(
     df: pl.DataFrame,
     feature_names: list[str],
@@ -515,13 +553,23 @@ def build_objective(
     xgb_args: argparse.Namespace | None = None,
     cb_args: argparse.Namespace | None = None,
 ) -> FeatureObjective:
-    pre_split_folds: dict[int, FoldSplit] = {}
+    fold_plans: list[_FoldPlan] = []
     for year in validation_years:
         fold = split_walk_forward(df, train_start, year)
         if not fold["train_df"].is_empty() and not fold["valid_df"].is_empty():
-            pre_split_folds[year] = fold
+            fold_plans.append(_FoldPlan(fold))
 
     deferred_trials: list[DeferredTrial] = []
+
+    # The active entry only changes when a trial in *this* study promotes (via
+    # maybe_promote below), so its NDCG is read from the registry once here and
+    # tracked locally — saving one get_active_entry() SELECT on every trial. The
+    # buffered (non-promoting) and warm-start/enqueued trials never activate, so
+    # nothing else can move the active row mid-round.
+    active_entry = registry.get_active_entry()
+    active_state = {
+        "ndcg": active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+    }
 
     def objective(trial: optuna.Trial) -> float:
         feature_mask = {
@@ -533,8 +581,8 @@ def build_objective(
             return 0.0
         feature_set = set(selected)
         ndcg_scores: list[float] = []
-        for step, fold in enumerate(pre_split_folds.values()):
-            fold_with_features = _select_fold_features(fold, feature_set)
+        for step, plan in enumerate(fold_plans):
+            fold_with_features = plan.select(feature_set)
             fold_scores: list[float] = []
             for backend in backends:
                 score = run_fold_with_backend(fold_with_features, backend, params, xgb_args, cb_args)
@@ -548,12 +596,11 @@ def build_objective(
                     raise optuna.TrialPruned()
             # Free this fold's column subset before the next iteration allocates
             # its own, so the final fold's frame isn't pinned through the registry
-            # get_active_entry()/maybe_promote calls below.
+            # maybe_promote call below.
             del fold_with_features
         ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
         trial_id = f"{study_name}_trial_{trial.number}"
-        active_entry = registry.get_active_entry()
-        active_ndcg = active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+        active_ndcg = active_state["ndcg"]
         delta_pp = (ndcg - active_ndcg) * 100
         definition = json.dumps(
             {"features": selected, "trial": trial.number, "delta_pp": delta_pp}
@@ -566,6 +613,8 @@ def build_objective(
             promoted = registry.maybe_promote(
                 trial_id, ndcg, selected, definition, active_ndcg=active_ndcg
             )
+            if promoted:
+                active_state["ndcg"] = ndcg
             trial.set_user_attr("promoted", promoted)
         else:
             deferred_trials.append((trial_id, ndcg, json.dumps(selected), definition))

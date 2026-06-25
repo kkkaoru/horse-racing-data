@@ -1141,6 +1141,117 @@ def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> Non
     assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.50)
 
 
+def test_build_objective_reads_active_entry_once_at_build_not_per_trial() -> None:
+    # The active NDCG is fetched once when build_objective runs and tracked locally
+    # afterwards, so running multiple trials must not re-query get_active_entry.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        seed_id = registry.record_trial("seed", 0.95, ["feat_a"], "{}")
+        registry.activate(seed_id)
+        with patch.object(
+            registry, "get_active_entry", wraps=registry.get_active_entry
+        ) as spy_active:
+            with patch(
+                "learning.feature_explorer.run_fold_with_backend",
+                return_value=0.50,
+            ):
+                objective = subject.build_objective(
+                    df,
+                    candidate_features,
+                    [2023],
+                    "20160101",
+                    params,
+                    registry,
+                    "test_study",
+                    backends=("lightgbm",),
+                )
+                calls_after_build = spy_active.call_count
+                for trial_number in range(3):
+                    trial = MagicMock()
+                    trial.number = trial_number
+                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                    trial.should_prune.return_value = False
+                    objective(trial)
+                calls_after_trials = spy_active.call_count
+    assert calls_after_build == 1
+    assert calls_after_trials == 1
+
+
+def test_build_objective_promotion_updates_cached_active_for_next_trial_delta() -> None:
+    # Trial 0 (0.75) promotes from an empty registry → cached active becomes 0.75.
+    # Trial 1 also scores 0.75, so its delta_pp must be 0.0 against the updated cache,
+    # not 75.0 against the stale build-time active of 0.0.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial0 = MagicMock()
+            trial0.number = 0
+            trial0.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial0.should_prune.return_value = False
+            objective(trial0)
+            trial1 = MagicMock()
+            trial1.number = 1
+            trial1.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial1.should_prune.return_value = False
+            objective(trial1)
+        registry.bulk_record_trials(objective.deferred_trials)
+        recorded = next(
+            e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_1"
+        )
+        payload = json.loads(recorded["definition_json"])
+    assert payload["delta_pp"] == pytest.approx(0.0)
+
+
+def test_build_objective_does_not_update_cache_when_maybe_promote_returns_false() -> None:
+    # The routing condition (ndcg > active + threshold) is met so the promote branch is
+    # taken, but maybe_promote is forced to report False; the trial is not buffered as
+    # a deferred row and the user attribute records the False outcome, while the cached
+    # active NDCG must not advance.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            with patch.object(registry, "maybe_promote", return_value=False):
+                objective = subject.build_objective(
+                    df,
+                    candidate_features,
+                    [2023],
+                    "20160101",
+                    params,
+                    registry,
+                    "test_study",
+                    backends=("lightgbm",),
+                )
+                trial0 = MagicMock()
+                trial0.number = 0
+                trial0.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                trial0.should_prune.return_value = False
+                objective(trial0)
+    trial0.set_user_attr.assert_called_once_with("promoted", False)
+    assert objective.deferred_trials == []
+
+
 def test_build_objective_raises_trial_pruned_when_should_prune_true() -> None:
     df = _make_df_6feats()
     params = subject.DEFAULT_PARAMS
@@ -1593,6 +1704,91 @@ def test_select_fold_features_public_alias_matches_private_function() -> None:
     assert list(public_result["train_df"].columns) == list(private_result["train_df"].columns)
     assert list(public_result["valid_df"].columns) == list(private_result["valid_df"].columns)
     assert public_result["valid_year"] == private_result["valid_year"]
+
+
+# --- _FoldPlan ---
+
+
+def test_fold_plan_select_keeps_only_requested_feature_columns() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    result = plan.select({"feat_speed"})
+    assert "feat_speed" in result["train_df"].columns
+    assert "feat_jockey" not in result["train_df"].columns
+    assert "feat_speed" in result["valid_df"].columns
+    assert "feat_jockey" not in result["valid_df"].columns
+
+
+def test_fold_plan_select_always_keeps_meta_and_label_columns() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    result = plan.select(set())
+    assert "race_id" in result["train_df"].columns
+    assert "finish_position" in result["train_df"].columns
+    assert "ketto_toroku_bango" in result["train_df"].columns
+    assert "feat_speed" not in result["train_df"].columns
+
+
+def test_fold_plan_select_preserves_valid_year() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    result = plan.select({"feat_speed"})
+    assert result["valid_year"] == 2023
+
+
+def test_fold_plan_select_drops_non_categorical_str_feature() -> None:
+    fold = _make_fold()
+    str_train = fold["train_df"].with_columns(pl.lit("A").alias("nar_subclass"))
+    str_valid = fold["valid_df"].with_columns(pl.lit("A").alias("nar_subclass"))
+    str_fold = cast(
+        "FoldSplit",
+        {"train_df": str_train, "valid_df": str_valid, "valid_year": 2023},
+    )
+    plan = subject._FoldPlan(str_fold)
+    result = plan.select({"feat_speed", "nar_subclass"})
+    assert "nar_subclass" not in result["train_df"].columns
+    assert "feat_speed" in result["train_df"].columns
+
+
+def test_fold_plan_select_keeps_known_categorical_str_feature() -> None:
+    fold = _make_fold()
+    cat_train = fold["train_df"].with_columns(pl.lit("1").alias("track_code"))
+    cat_valid = fold["valid_df"].with_columns(pl.lit("1").alias("track_code"))
+    cat_fold = cast(
+        "FoldSplit",
+        {"train_df": cat_train, "valid_df": cat_valid, "valid_year": 2023},
+    )
+    plan = subject._FoldPlan(cat_fold)
+    result = plan.select({"track_code"})
+    assert "track_code" in result["train_df"].columns
+    assert "track_code" in result["valid_df"].columns
+
+
+def test_fold_plan_select_matches_select_fold_features_columns() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    plan_result = plan.select({"feat_speed"})
+    reference = subject._select_fold_features(fold, {"feat_speed"})
+    assert list(plan_result["train_df"].columns) == list(reference["train_df"].columns)
+    assert list(plan_result["valid_df"].columns) == list(reference["valid_df"].columns)
+    assert plan_result["valid_year"] == reference["valid_year"]
+
+
+def test_fold_plan_selectable_excludes_meta_and_label_columns() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    assert not (plan.selectable & subject._META_AND_LABEL)
+    assert "feat_speed" in plan.selectable
+    assert "feat_jockey" in plan.selectable
+
+
+def test_fold_plan_always_keep_is_only_meta_and_label_columns() -> None:
+    fold = _make_fold()
+    plan = subject._FoldPlan(fold)
+    assert plan.always_keep == frozenset(
+        c for c in plan.columns if c in subject._META_AND_LABEL
+    )
+    assert "feat_speed" not in plan.always_keep
 
 
 # --- search-strategy: build_feature_sampler / warm-start / enqueue / timeout ---

@@ -154,10 +154,14 @@ def _load_features_dataframe(parquet_path: Path, train_start: str) -> pl.DataFra
     """
     if parquet_path.is_dir():
         min_year = int(train_start[:4]) - 1
-        return _load_partitioned_features(
+        df = _load_partitioned_features(
             str(parquet_path / "**" / "*.parquet"), min_year
         )
-    return pl.read_parquet(str(parquet_path))
+    else:
+        df = pl.read_parquet(str(parquet_path))
+    # CatBoost is called with presorted=True, which trusts rows to be grouped
+    # contiguously by race_id; a single global sort here honours that contract.
+    return df.sort(["race_id", "umaban"])
 
 
 def write_filtered_parquet(
@@ -202,6 +206,12 @@ class AdaptiveLoadController:
         self._cpu_low_pct: float = cpu_low_pct
         self._mem_high_pct: float = mem_high_pct
         self._mem_low_pct: float = mem_low_pct
+        # Prime psutil's per-process CPU counter so the first non-blocking
+        # _cpu_percent() read has a baseline to diff against. Without this the
+        # blocking interval=0.1 form was the only way to get a non-zero first
+        # sample, costing a 100ms stall every round.
+        if _psutil is not None:
+            _psutil.cpu_percent(interval=None)
 
     def adjusted_n_trials(self) -> int:
         """Return trial count scaled by current system load (delegates to round_params)."""
@@ -222,10 +232,17 @@ class AdaptiveLoadController:
         return self._base_n_trials, 0.0
 
     def _cpu_percent(self) -> float:
-        """psutil.cpu_percent(interval=0.1). Returns 0.0 if psutil not installed."""
+        """Non-blocking psutil.cpu_percent(). Returns 0.0 if psutil not installed.
+
+        ``interval=None`` reports CPU utilisation accumulated since the previous
+        call instead of sleeping for a fresh sample, so polling once per round
+        costs no wall-clock and reflects the whole inter-round span rather than a
+        100ms spot reading. ``__init__`` primes the counter so the first round
+        already has a baseline to diff against.
+        """
         if _psutil is None:
             return 0.0
-        return float(_psutil.cpu_percent(interval=0.1))
+        return float(_psutil.cpu_percent(interval=None))
 
     def _mem_percent(self) -> float:
         """psutil.virtual_memory().percent. Returns 0.0 if psutil not installed."""
@@ -394,10 +411,15 @@ class ContinuousLearner:
             self._saturated = self._saturated or saturated
             if self._log_subgroup and round_num % 5 == 0:
                 self._log_subgroup_diagnostics()
-            if not self._saturated and not self._skip_inverse:
-                self._check_and_try_inverses(round_num, actual_trials)
-            if not self._saturated and not self._skip_enrichment:
-                self._analyze_feature_enrichment(round_num)
+            if self._saturated:
+                _logger.info(
+                    "saturated — skipping inverse and enrichment phases this round"
+                )
+            else:
+                if not self._skip_inverse:
+                    self._check_and_try_inverses(round_num, actual_trials)
+                if not self._skip_enrichment:
+                    self._analyze_feature_enrichment(round_num)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
                 "─── round %s done (elapsed: %.1fs) ───", progress, _elapsed

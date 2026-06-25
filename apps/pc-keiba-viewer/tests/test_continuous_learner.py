@@ -1670,13 +1670,27 @@ def test_adaptive_controller_cpu_percent_returns_float_when_psutil_available() -
     assert result == 42.5
 
 
-def test_adaptive_controller_cpu_percent_uses_short_interval() -> None:
+def test_adaptive_controller_cpu_percent_uses_non_blocking_interval() -> None:
     ctrl = subject.AdaptiveLoadController(base_n_trials=20)
     fake_psutil = MagicMock()
     fake_psutil.cpu_percent.return_value = 30.0
     with patch.object(subject, "_psutil", fake_psutil):
         ctrl._cpu_percent()
-    assert fake_psutil.cpu_percent.call_args.kwargs["interval"] == pytest.approx(0.1)
+    assert fake_psutil.cpu_percent.call_args.kwargs["interval"] is None
+
+
+def test_adaptive_controller_primes_cpu_counter_on_construction() -> None:
+    fake_psutil = MagicMock()
+    fake_psutil.cpu_percent.return_value = 0.0
+    with patch.object(subject, "_psutil", fake_psutil):
+        subject.AdaptiveLoadController(base_n_trials=20)
+    fake_psutil.cpu_percent.assert_called_once_with(interval=None)
+
+
+def test_adaptive_controller_construction_tolerates_missing_psutil() -> None:
+    with patch.object(subject, "_psutil", None):
+        ctrl = subject.AdaptiveLoadController(base_n_trials=20)
+    assert ctrl._base_n_trials == 20
 
 
 def test_adaptive_controller_mem_percent_returns_zero_without_psutil() -> None:
@@ -2860,12 +2874,20 @@ def test_load_features_dataframe_directory_promotes_mismatched_umaban_dtype(
     int_year_dir = partition_dir / "race_year=2013"
     int_year_dir.mkdir(parents=True)
     pl.DataFrame(
-        {"umaban": pl.Series([1, 2], dtype=pl.Int32), "feat_speed": [0.1, 0.2]}
+        {
+            "race_id": ["r1", "r1"],
+            "umaban": pl.Series([1, 2], dtype=pl.Int32),
+            "feat_speed": [0.1, 0.2],
+        }
     ).write_parquet(int_year_dir / "part-0.parquet")
     float_year_dir = partition_dir / "race_year=2014"
     float_year_dir.mkdir(parents=True)
     pl.DataFrame(
-        {"umaban": pl.Series([3.0, 4.0], dtype=pl.Float64), "feat_speed": [0.3, 0.4]}
+        {
+            "race_id": ["r2", "r2"],
+            "umaban": pl.Series([3.0, 4.0], dtype=pl.Float64),
+            "feat_speed": [0.3, 0.4],
+        }
     ).write_parquet(float_year_dir / "part-0.parquet")
     result = subject._load_features_dataframe(partition_dir, "20140101")
     assert result["umaban"].dtype == pl.Float64
@@ -2879,17 +2901,66 @@ def test_load_features_dataframe_directory_prunes_old_years_on_dtype_mismatch(
     old_year_dir = partition_dir / "race_year=2011"
     old_year_dir.mkdir(parents=True)
     pl.DataFrame(
-        {"umaban": pl.Series([1, 2], dtype=pl.Int32), "feat_speed": [0.1, 0.2]}
+        {
+            "race_id": ["r1", "r1"],
+            "umaban": pl.Series([1, 2], dtype=pl.Int32),
+            "feat_speed": [0.1, 0.2],
+        }
     ).write_parquet(old_year_dir / "part-0.parquet")
     recent_year_dir = partition_dir / "race_year=2013"
     recent_year_dir.mkdir(parents=True)
     pl.DataFrame(
-        {"umaban": pl.Series([3.0, 4.0], dtype=pl.Float64), "feat_speed": [0.3, 0.4]}
+        {
+            "race_id": ["r2", "r2"],
+            "umaban": pl.Series([3.0, 4.0], dtype=pl.Float64),
+            "feat_speed": [0.3, 0.4],
+        }
     ).write_parquet(recent_year_dir / "part-0.parquet")
     # train_start 20130101 → min_year = 2012, so the 2011 partition is pruned even
     # though the SchemaError fallback path scans every file before filtering.
     result = subject._load_features_dataframe(partition_dir, "20130101")
     assert set(result["race_year"].unique().to_list()) == {2013}
+
+
+def test_load_features_dataframe_single_file_is_grouped_by_race_id(
+    tmp_path: Path,
+) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    pl.DataFrame(
+        {
+            "race_id": ["B", "A", "B", "A"],
+            "umaban": [2, 2, 1, 1],
+            "race_year": [2024, 2024, 2024, 2024],
+            "feat_speed": [0.3, 0.4, 0.1, 0.2],
+        }
+    ).write_parquet(parquet_path)
+    result = subject._load_features_dataframe(parquet_path, "20240101")
+    race_ids = result["race_id"].to_list()
+    runs = result["race_id"].rle().len()
+    assert race_ids == ["A", "A", "B", "B"]
+    assert runs == result["race_id"].n_unique()
+    assert result["umaban"].to_list() == [1, 2, 1, 2]
+
+
+def test_load_features_dataframe_directory_is_grouped_by_race_id(
+    tmp_path: Path,
+) -> None:
+    partition_dir = tmp_path / "partitioned"
+    year_dir = partition_dir / "race_year=2024"
+    year_dir.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "race_id": ["B", "A", "B", "A"],
+            "umaban": [2, 2, 1, 1],
+            "feat_speed": [0.3, 0.4, 0.1, 0.2],
+        }
+    ).write_parquet(year_dir / "part-0.parquet")
+    result = subject._load_features_dataframe(partition_dir, "20240101")
+    race_ids = result["race_id"].to_list()
+    runs = result["race_id"].rle().len()
+    assert race_ids == ["A", "A", "B", "B"]
+    assert runs == result["race_id"].n_unique()
+    assert result["umaban"].to_list() == [1, 2, 1, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -2979,6 +3050,48 @@ def test_run_skips_inverse_when_saturated_even_with_skip_flags_false() -> None:
             learner.run(max_rounds=1)
         mock_check.assert_not_called()
         mock_enrich.assert_not_called()
+
+
+def test_run_logs_skip_message_when_saturated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            caplog.at_level("INFO", logger="learning.continuous_learner"),
+        ):
+            learner.run(max_rounds=1)
+        skip_logs = [
+            r.message
+            for r in caplog.records
+            if "skipping inverse and enrichment" in r.message
+        ]
+        assert len(skip_logs) == 1
+
+
+def test_run_does_not_log_skip_message_when_not_saturated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            caplog.at_level("INFO", logger="learning.continuous_learner"),
+        ):
+            learner.run(max_rounds=1)
+        skip_logs = [
+            r.message
+            for r in caplog.records
+            if "skipping inverse and enrichment" in r.message
+        ]
+        assert skip_logs == []
 
 
 def test_skip_inverse_default_is_false() -> None:

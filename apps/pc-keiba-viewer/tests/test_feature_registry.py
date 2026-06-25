@@ -729,6 +729,40 @@ def test_compute_feature_enrichment_handles_non_list_feature_json() -> None:
         assert result == [("feat_a", -1.0)]
 
 
+def test_next_ids_returns_consecutive_ids_from_empty_sequence() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        ids = reg._next_ids(3)
+        assert ids == [1, 2, 3]
+
+
+def test_next_ids_continues_after_prior_next_id_call() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        first = reg._next_id()
+        ids = reg._next_ids(2)
+        assert first == 1
+        assert ids == [2, 3]
+
+
+def test_next_ids_zero_count_returns_empty_list() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg._next_ids(0) == []
+
+
+def test_next_ids_uses_deployments_sequence_when_table_given() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.5, 10)
+        ids = reg._next_ids(2, "deployments")
+        assert ids == [2, 3]
+
+
+def test_next_ids_matches_successive_next_id_allocation() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        batched = reg._next_ids(4)
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        sequential = [reg._next_id() for _ in range(4)]
+    assert batched == sequential
+
+
 def test_bulk_record_trials_inserts_multiple_rows_inactive_with_correct_fields() -> None:
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         reg.bulk_record_trials(
@@ -802,7 +836,9 @@ def test_bulk_record_trials_rolls_back_on_insert_failure(
     # the pre-existing row.
     with subject.FeatureRegistry(Path(":memory:")) as reg:
         existing_id = reg.record_trial("existing", 0.50, ["feat_a"])
-        monkeypatch.setattr(reg, "_next_id", lambda *_args, **_kwargs: existing_id)
+        monkeypatch.setattr(
+            reg, "_next_ids", lambda count, *_args, **_kwargs: [existing_id] * count
+        )
         with pytest.raises(duckdb.ConstraintException):
             reg.bulk_record_trials(
                 [

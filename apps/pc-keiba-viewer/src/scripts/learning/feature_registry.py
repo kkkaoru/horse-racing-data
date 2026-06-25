@@ -98,16 +98,33 @@ class FeatureRegistry:
         self._con.execute(f"DROP SEQUENCE IF EXISTS {seq_name}")
         self._con.execute(f"CREATE SEQUENCE {seq_name} START {max_id + 1}")
 
+    _SEQUENCES: Final[dict[str, str]] = {
+        "feature_trials": "seq_feature_trials_id",
+        "deployments": "seq_deployments_id",
+        "inverse_trials": "seq_inverse_trials_id",
+    }
+
     def _next_id(self, table: str = "feature_trials") -> int:
         assert self._con is not None
-        seq = {
-            "feature_trials": "seq_feature_trials_id",
-            "deployments": "seq_deployments_id",
-            "inverse_trials": "seq_inverse_trials_id",
-        }[table]
+        seq = self._SEQUENCES[table]
         row = self._con.execute(f"SELECT nextval('{seq}')").fetchone()
         assert row is not None
         return int(row[0])
+
+    def _next_ids(self, count: int, table: str = "feature_trials") -> list[int]:
+        """Reserve ``count`` consecutive sequence ids in a single round-trip.
+
+        ``bulk_record_trials`` would otherwise issue one ``nextval`` SELECT per row;
+        generating the ids with a single ``range``-driven query collapses that N+1
+        into one call while preserving ``nextval``'s monotonic allocation (the ids
+        are identical to ``count`` successive :meth:`_next_id` calls).
+        """
+        assert self._con is not None
+        seq = self._SEQUENCES[table]
+        rows = self._con.execute(
+            f"SELECT nextval('{seq}') FROM range(?)", [count]
+        ).fetchall()
+        return [int(row[0]) for row in rows]
 
     def get_best_ndcg(self) -> float:
         assert self._con is not None
@@ -199,16 +216,19 @@ class FeatureRegistry:
         if not trials:
             return
         created_at = datetime.now(timezone.utc).isoformat()
+        ids = self._next_ids(len(trials))
         rows = [
             [
-                self._next_id(),
+                entry_id,
                 trial_id,
                 ndcg_at_3,
                 feature_names_json,
                 definition_json,
                 created_at,
             ]
-            for trial_id, ndcg_at_3, feature_names_json, definition_json in trials
+            for entry_id, (trial_id, ndcg_at_3, feature_names_json, definition_json) in zip(
+                ids, trials, strict=True
+            )
         ]
         self._con.begin()
         try:
