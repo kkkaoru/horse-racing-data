@@ -112,6 +112,44 @@ test("buildJockeyUpdateSql derives jockey_horse_pair_win_rate", () => {
   );
 });
 
+test("buildJockeyUpdateSql derives jockey_season_win_rate via season band match", () => {
+  expect(buildJockeyUpdateSql("jra")).toContain(
+    "filter (where (cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3) as jockey_season_win_rate",
+  );
+});
+
+test("buildJockeyUpdateSql derives jockey_season_keibajo_win_rate with season and keibajo", () => {
+  expect(buildJockeyUpdateSql("jra")).toContain(
+    "(cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 and history_keibajo_code = target_keibajo_code) as jockey_season_keibajo_win_rate",
+  );
+});
+
+test("buildJockeyUpdateSql derives jockey_keibajo_distance_win_rate without season gate", () => {
+  expect(buildJockeyUpdateSql("jra")).toContain(
+    "filter (where history_keibajo_code = target_keibajo_code and abs(history_kyori - target_kyori) <= 200) as jockey_keibajo_distance_win_rate",
+  );
+});
+
+test("buildJockeyUpdateSql derives jockey_season_keibajo_distance_win_rate with all three gates", () => {
+  expect(buildJockeyUpdateSql("jra")).toContain(
+    "(cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 and history_keibajo_code = target_keibajo_code and abs(history_kyori - target_kyori) <= 200) as jockey_season_keibajo_distance_win_rate",
+  );
+});
+
+test("buildJockeyUpdateSql derives jockey_season_keibajo_distance_count via count star", () => {
+  expect(buildJockeyUpdateSql("jra")).toContain(
+    "count(*) filter (where (cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 and history_keibajo_code = target_keibajo_code and abs(history_kyori - target_kyori) <= 200) as jockey_season_keibajo_distance_count",
+  );
+});
+
+test("buildJockeyUpdateSql assigns the five season-aware jockey columns from source_agg", () => {
+  const sql = buildJockeyUpdateSql("jra");
+  expect(sql).toContain("jockey_season_win_rate = source_agg.jockey_season_win_rate");
+  expect(sql).toContain(
+    "jockey_season_keibajo_distance_count = source_agg.jockey_season_keibajo_distance_count",
+  );
+});
+
 test("buildJockeyUpdateSql refreshes updated_at", () => {
   expect(buildJockeyUpdateSql("jra")).toContain("updated_at = now()");
 });
@@ -149,6 +187,32 @@ test("buildTrainerUpdateSql derives trainer_distance_win_rate with tolerance", (
 test("buildTrainerUpdateSql derives trainer_horse_win_rate", () => {
   expect(buildTrainerUpdateSql("jra")).toContain(
     "filter (where history_horse = target_horse) as trainer_horse_win_rate",
+  );
+});
+
+test("buildTrainerUpdateSql derives trainer_grade_win_rate via grade match", () => {
+  expect(buildTrainerUpdateSql("jra")).toContain(
+    "filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '')) as trainer_grade_win_rate",
+  );
+});
+
+test("buildTrainerUpdateSql derives trainer_class_surface_season_win_rate with grade surface season", () => {
+  expect(buildTrainerUpdateSql("jra")).toContain(
+    "filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '') and left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1) and (cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3) as trainer_class_surface_season_win_rate",
+  );
+});
+
+test("buildTrainerUpdateSql derives trainer_class_surface_season_count via count star", () => {
+  expect(buildTrainerUpdateSql("jra")).toContain(
+    "count(*) filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '') and left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1) and (cast(month(to_date(history_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3 = (cast(month(to_date(target_race_date, 'YYYYMMDD')) as int) + 9) % 12 // 3) as trainer_class_surface_season_count",
+  );
+});
+
+test("buildTrainerUpdateSql assigns the three class/surface trainer columns from source_agg", () => {
+  const sql = buildTrainerUpdateSql("jra");
+  expect(sql).toContain("trainer_grade_win_rate = source_agg.trainer_grade_win_rate");
+  expect(sql).toContain(
+    "trainer_class_surface_season_count = source_agg.trainer_class_surface_season_count",
   );
 });
 

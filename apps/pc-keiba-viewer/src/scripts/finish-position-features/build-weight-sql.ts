@@ -128,7 +128,9 @@ export const buildWeightUpdateSql = (category: FeatureCategory): string => {
         race_bango,
         ketto_toroku_bango,
         max(current_bataiju) as current_bataiju,
-        avg(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_avg_5
+        avg(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_avg_5,
+        regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_trend_5,
+        stddev_pop(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_volatility_5
       from history_raw
       group by
         source,
@@ -147,6 +149,9 @@ export const buildWeightUpdateSql = (category: FeatureCategory): string => {
     set
       weight_avg_5 = history_agg.weight_avg_5,
       weight_diff_from_avg = history_agg.current_bataiju::numeric - history_agg.weight_avg_5,
+      weight_trend_5 = history_agg.weight_trend_5,
+      weight_volatility_5 = history_agg.weight_volatility_5,
+      weight_zscore = (history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(history_agg.weight_volatility_5, 0),
       updated_at = now()
     from history_agg
     where target.source = history_agg.source

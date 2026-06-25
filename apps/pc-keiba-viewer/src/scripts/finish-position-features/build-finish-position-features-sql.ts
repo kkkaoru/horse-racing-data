@@ -43,6 +43,9 @@ const HORSE_CAREER_COLUMNS = [
   "same_grade_win_rate",
   "weight_avg_5",
   "weight_diff_from_avg",
+  "weight_trend_5",
+  "weight_volatility_5",
+  "weight_zscore",
   "days_since_last_race",
   "consecutive_race_count",
 ];
@@ -56,10 +59,18 @@ const JOCKEY_TRAINER_COLUMNS = [
   "jockey_grade_win_rate",
   "jockey_horse_pair_count",
   "jockey_horse_pair_win_rate",
+  "jockey_season_win_rate",
+  "jockey_season_keibajo_win_rate",
+  "jockey_keibajo_distance_win_rate",
+  "jockey_season_keibajo_distance_win_rate",
+  "jockey_season_keibajo_distance_count",
   "trainer_career_win_rate",
   "trainer_keibajo_win_rate",
   "trainer_distance_win_rate",
   "trainer_horse_win_rate",
+  "trainer_grade_win_rate",
+  "trainer_class_surface_season_win_rate",
+  "trainer_class_surface_season_count",
 ];
 
 const PEDIGREE_COLUMNS = [
@@ -131,6 +142,8 @@ const FEATURE_COLUMN_TYPES: Record<string, string> = {
   consecutive_race_count: "integer",
   days_since_last_race: "integer",
   jockey_horse_pair_count: "integer",
+  jockey_season_keibajo_distance_count: "integer",
+  trainer_class_surface_season_count: "integer",
   last_race_class_diff: "integer",
   last_race_distance_diff: "integer",
   rival_count_at_distance: "integer",

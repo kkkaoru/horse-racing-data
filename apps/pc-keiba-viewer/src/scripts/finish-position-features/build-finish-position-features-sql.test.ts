@@ -43,12 +43,42 @@ test("META_COLUMNS includes category and shusso_tosu", () => {
   expect(META_COLUMNS).toContain("shusso_tosu");
 });
 
-test("HORSE_CAREER_COLUMNS contains 15 entries", () => {
-  expect(HORSE_CAREER_COLUMNS.length).toBe(15);
+test("HORSE_CAREER_COLUMNS contains 18 entries", () => {
+  expect(HORSE_CAREER_COLUMNS.length).toBe(18);
 });
 
-test("JOCKEY_TRAINER_COLUMNS contains 12 entries", () => {
-  expect(JOCKEY_TRAINER_COLUMNS.length).toBe(12);
+test("HORSE_CAREER_COLUMNS includes the three weight trend columns", () => {
+  expect(HORSE_CAREER_COLUMNS.indexOf("weight_trend_5") >= 0).toStrictEqual(true);
+  expect(HORSE_CAREER_COLUMNS.indexOf("weight_volatility_5") >= 0).toStrictEqual(true);
+  expect(HORSE_CAREER_COLUMNS.indexOf("weight_zscore") >= 0).toStrictEqual(true);
+});
+
+test("JOCKEY_TRAINER_COLUMNS contains 20 entries", () => {
+  expect(JOCKEY_TRAINER_COLUMNS.length).toBe(20);
+});
+
+test("JOCKEY_TRAINER_COLUMNS includes the five season-aware jockey columns", () => {
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("jockey_season_win_rate") >= 0).toStrictEqual(true);
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("jockey_season_keibajo_win_rate") >= 0).toStrictEqual(true);
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("jockey_keibajo_distance_win_rate") >= 0).toStrictEqual(
+    true,
+  );
+  expect(
+    JOCKEY_TRAINER_COLUMNS.indexOf("jockey_season_keibajo_distance_win_rate") >= 0,
+  ).toStrictEqual(true);
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("jockey_season_keibajo_distance_count") >= 0).toStrictEqual(
+    true,
+  );
+});
+
+test("JOCKEY_TRAINER_COLUMNS includes the three class/surface trainer columns", () => {
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("trainer_grade_win_rate") >= 0).toStrictEqual(true);
+  expect(
+    JOCKEY_TRAINER_COLUMNS.indexOf("trainer_class_surface_season_win_rate") >= 0,
+  ).toStrictEqual(true);
+  expect(JOCKEY_TRAINER_COLUMNS.indexOf("trainer_class_surface_season_count") >= 0).toStrictEqual(
+    true,
+  );
 });
 
 test("PEDIGREE_COLUMNS contains 6 entries", () => {
@@ -77,8 +107,8 @@ test("ALL_FEATURE_COLUMNS has no duplicates", () => {
   expect(ALL_FEATURE_COLUMNS.length).toBe(new Set(ALL_FEATURE_COLUMNS).size);
 });
 
-test("ALL_FEATURE_COLUMNS aggregates to 66 entries", () => {
-  expect(ALL_FEATURE_COLUMNS.length).toBe(66);
+test("ALL_FEATURE_COLUMNS aggregates to 77 entries", () => {
+  expect(ALL_FEATURE_COLUMNS.length).toBe(77);
 });
 
 test("RELATIONSHIP_R1_COLUMNS lists the twelve iter-26 relationship features", () => {
@@ -217,6 +247,30 @@ test("buildCreateTableSql declares past_speed_volatility_5 as numeric", () => {
 test("buildCreateTableSql declares past_finish_position_volatility_5 as numeric", () => {
   expect(findFeatureDdl(buildCreateTableSql(), "past_finish_position_volatility_5")).toStrictEqual(
     "past_finish_position_volatility_5 numeric",
+  );
+});
+
+test("buildCreateTableSql declares jockey_season_keibajo_distance_count as integer", () => {
+  expect(
+    findFeatureDdl(buildCreateTableSql(), "jockey_season_keibajo_distance_count"),
+  ).toStrictEqual("jockey_season_keibajo_distance_count integer");
+});
+
+test("buildCreateTableSql declares trainer_class_surface_season_count as integer", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "trainer_class_surface_season_count")).toStrictEqual(
+    "trainer_class_surface_season_count integer",
+  );
+});
+
+test("buildCreateTableSql declares weight_zscore as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "weight_zscore")).toStrictEqual(
+    "weight_zscore numeric",
+  );
+});
+
+test("buildCreateTableSql declares jockey_season_win_rate as numeric", () => {
+  expect(findFeatureDdl(buildCreateTableSql(), "jockey_season_win_rate")).toStrictEqual(
+    "jockey_season_win_rate numeric",
   );
 });
 

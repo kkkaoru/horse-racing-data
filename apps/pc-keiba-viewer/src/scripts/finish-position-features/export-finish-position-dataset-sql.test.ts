@@ -24,8 +24,8 @@ test("LABEL_COLUMNS exposes finish position and finish_norm", () => {
   expect(LABEL_COLUMNS).toStrictEqual(["finish_position", "finish_norm"]);
 });
 
-test("FEATURE_COLUMNS covers all 54 v1 columns", () => {
-  expect(FEATURE_COLUMNS.length).toBe(54);
+test("FEATURE_COLUMNS covers all 65 columns", () => {
+  expect(FEATURE_COLUMNS.length).toBe(65);
 });
 
 test("FEATURE_COLUMNS exposes the deferred-then-completed columns", () => {
@@ -34,6 +34,26 @@ test("FEATURE_COLUMNS exposes the deferred-then-completed columns", () => {
   expect(FEATURE_COLUMNS).toContain("weather_normalized");
   expect(FEATURE_COLUMNS).toContain("track_bias_inside");
   expect(FEATURE_COLUMNS).toContain("track_bias_front");
+});
+
+test("FEATURE_COLUMNS exposes the three weight trend columns", () => {
+  expect(FEATURE_COLUMNS).toContain("weight_trend_5");
+  expect(FEATURE_COLUMNS).toContain("weight_volatility_5");
+  expect(FEATURE_COLUMNS).toContain("weight_zscore");
+});
+
+test("FEATURE_COLUMNS exposes the five season-aware jockey columns", () => {
+  expect(FEATURE_COLUMNS).toContain("jockey_season_win_rate");
+  expect(FEATURE_COLUMNS).toContain("jockey_season_keibajo_win_rate");
+  expect(FEATURE_COLUMNS).toContain("jockey_keibajo_distance_win_rate");
+  expect(FEATURE_COLUMNS).toContain("jockey_season_keibajo_distance_win_rate");
+  expect(FEATURE_COLUMNS).toContain("jockey_season_keibajo_distance_count");
+});
+
+test("FEATURE_COLUMNS exposes the three class/surface trainer columns", () => {
+  expect(FEATURE_COLUMNS).toContain("trainer_grade_win_rate");
+  expect(FEATURE_COLUMNS).toContain("trainer_class_surface_season_win_rate");
+  expect(FEATURE_COLUMNS).toContain("trainer_class_surface_season_count");
 });
 
 test("FEATURE_COLUMNS preserves the heuristic five at the tail", () => {

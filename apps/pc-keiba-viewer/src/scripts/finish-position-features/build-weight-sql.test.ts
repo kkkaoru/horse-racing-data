@@ -97,6 +97,30 @@ test("buildWeightUpdateSql derives weight_diff_from_avg as current minus avg", (
   );
 });
 
+test("buildWeightUpdateSql derives weight_trend_5 via regr_slope over recent five", () => {
+  expect(buildWeightUpdateSql("jra")).toContain(
+    "regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= 5) as weight_trend_5",
+  );
+});
+
+test("buildWeightUpdateSql derives weight_volatility_5 via stddev_pop over recent five", () => {
+  expect(buildWeightUpdateSql("jra")).toContain(
+    "stddev_pop(history_bataiju) filter (where recent_rank <= 5) as weight_volatility_5",
+  );
+});
+
+test("buildWeightUpdateSql derives weight_zscore guarded by nullif on volatility", () => {
+  expect(buildWeightUpdateSql("jra")).toContain(
+    "weight_zscore = (history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(history_agg.weight_volatility_5, 0)",
+  );
+});
+
+test("buildWeightUpdateSql assigns weight_trend_5 and weight_volatility_5 from history_agg", () => {
+  const sql = buildWeightUpdateSql("jra");
+  expect(sql).toContain("weight_trend_5 = history_agg.weight_trend_5");
+  expect(sql).toContain("weight_volatility_5 = history_agg.weight_volatility_5");
+});
+
 test("buildWeightUpdateSql refreshes updated_at", () => {
   expect(buildWeightUpdateSql("jra")).toContain("updated_at = now()");
 });

@@ -43,22 +43,40 @@ const winRateFilter = (whenClause: string | null): string => {
   return `avg(case when finish_position = 1 then 1 else 0 end)${filterClause}`;
 };
 
+const seasonBand = (dateColumn: string): string =>
+  `(cast(month(to_date(${dateColumn}, 'YYYYMMDD')) as int) + 9) % 12 // 3`;
+
+const SAME_SEASON_CLAUSE = `${seasonBand("history_race_date")} = ${seasonBand("target_race_date")}`;
+const SAME_KEIBAJO_CLAUSE = "history_keibajo_code = target_keibajo_code";
+const SAME_DISTANCE_CLAUSE = `abs(history_kyori - target_kyori) <= ${SAME_DISTANCE_TOLERANCE_METERS}`;
+const SAME_SURFACE_CLAUSE =
+  "left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)";
+const SAME_GRADE_CLAUSE = "coalesce(history_grade_code, '') = coalesce(target_grade_code, '')";
+
 const buildJockeyAggregationColumns = (): string[] => [
   `${winRateFilter(null)} as jockey_career_win_rate`,
   `${winRateFilter(`to_date(history_race_date, 'YYYYMMDD') >= to_date(target_race_date, 'YYYYMMDD') - ${RECENT_WINDOW_DAYS}`)} as jockey_recent_win_rate`,
-  `${winRateFilter("history_keibajo_code = target_keibajo_code")} as jockey_keibajo_win_rate`,
-  `${winRateFilter(`abs(history_kyori - target_kyori) <= ${SAME_DISTANCE_TOLERANCE_METERS}`)} as jockey_distance_win_rate`,
-  `${winRateFilter("left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)")} as jockey_track_win_rate`,
-  `${winRateFilter("coalesce(history_grade_code, '') = coalesce(target_grade_code, '')")} as jockey_grade_win_rate`,
+  `${winRateFilter(SAME_KEIBAJO_CLAUSE)} as jockey_keibajo_win_rate`,
+  `${winRateFilter(SAME_DISTANCE_CLAUSE)} as jockey_distance_win_rate`,
+  `${winRateFilter(SAME_SURFACE_CLAUSE)} as jockey_track_win_rate`,
+  `${winRateFilter(SAME_GRADE_CLAUSE)} as jockey_grade_win_rate`,
   `count(*) filter (where history_horse = target_horse) as jockey_horse_pair_count`,
   `${winRateFilter("history_horse = target_horse")} as jockey_horse_pair_win_rate`,
+  `${winRateFilter(SAME_SEASON_CLAUSE)} as jockey_season_win_rate`,
+  `${winRateFilter(`${SAME_SEASON_CLAUSE} and ${SAME_KEIBAJO_CLAUSE}`)} as jockey_season_keibajo_win_rate`,
+  `${winRateFilter(`${SAME_KEIBAJO_CLAUSE} and ${SAME_DISTANCE_CLAUSE}`)} as jockey_keibajo_distance_win_rate`,
+  `${winRateFilter(`${SAME_SEASON_CLAUSE} and ${SAME_KEIBAJO_CLAUSE} and ${SAME_DISTANCE_CLAUSE}`)} as jockey_season_keibajo_distance_win_rate`,
+  `count(*) filter (where ${SAME_SEASON_CLAUSE} and ${SAME_KEIBAJO_CLAUSE} and ${SAME_DISTANCE_CLAUSE}) as jockey_season_keibajo_distance_count`,
 ];
 
 const buildTrainerAggregationColumns = (): string[] => [
   `${winRateFilter(null)} as trainer_career_win_rate`,
-  `${winRateFilter("history_keibajo_code = target_keibajo_code")} as trainer_keibajo_win_rate`,
-  `${winRateFilter(`abs(history_kyori - target_kyori) <= ${SAME_DISTANCE_TOLERANCE_METERS}`)} as trainer_distance_win_rate`,
+  `${winRateFilter(SAME_KEIBAJO_CLAUSE)} as trainer_keibajo_win_rate`,
+  `${winRateFilter(SAME_DISTANCE_CLAUSE)} as trainer_distance_win_rate`,
   `${winRateFilter("history_horse = target_horse")} as trainer_horse_win_rate`,
+  `${winRateFilter(SAME_GRADE_CLAUSE)} as trainer_grade_win_rate`,
+  `${winRateFilter(`${SAME_GRADE_CLAUSE} and ${SAME_SURFACE_CLAUSE} and ${SAME_SEASON_CLAUSE}`)} as trainer_class_surface_season_win_rate`,
+  `count(*) filter (where ${SAME_GRADE_CLAUSE} and ${SAME_SURFACE_CLAUSE} and ${SAME_SEASON_CLAUSE}) as trainer_class_surface_season_count`,
 ];
 
 const buildTargetCte = (
@@ -181,6 +199,11 @@ export const buildJockeyUpdateSql = (category: FeatureCategory): string => {
     "jockey_grade_win_rate = source_agg.jockey_grade_win_rate",
     "jockey_horse_pair_count = source_agg.jockey_horse_pair_count",
     "jockey_horse_pair_win_rate = source_agg.jockey_horse_pair_win_rate",
+    "jockey_season_win_rate = source_agg.jockey_season_win_rate",
+    "jockey_season_keibajo_win_rate = source_agg.jockey_season_keibajo_win_rate",
+    "jockey_keibajo_distance_win_rate = source_agg.jockey_keibajo_distance_win_rate",
+    "jockey_season_keibajo_distance_win_rate = source_agg.jockey_season_keibajo_distance_win_rate",
+    "jockey_season_keibajo_distance_count = source_agg.jockey_season_keibajo_distance_count",
     "updated_at = now()",
   ];
   return `
@@ -204,6 +227,9 @@ export const buildTrainerUpdateSql = (category: FeatureCategory): string => {
     "trainer_keibajo_win_rate = source_agg.trainer_keibajo_win_rate",
     "trainer_distance_win_rate = source_agg.trainer_distance_win_rate",
     "trainer_horse_win_rate = source_agg.trainer_horse_win_rate",
+    "trainer_grade_win_rate = source_agg.trainer_grade_win_rate",
+    "trainer_class_surface_season_win_rate = source_agg.trainer_class_surface_season_win_rate",
+    "trainer_class_surface_season_count = source_agg.trainer_class_surface_season_count",
     "updated_at = now()",
   ];
   return `
