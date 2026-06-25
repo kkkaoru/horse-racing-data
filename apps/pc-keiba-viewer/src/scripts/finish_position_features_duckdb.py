@@ -64,6 +64,11 @@ DISTANCE_BAND_METERS = 400
 PEDIGREE_MIN_RACES = 5
 PEDIGREE_COMPOSITE_DIVISOR = 3
 TREND_MIN_RACES = 3
+# regr_slope returns NaN with <2 points (zero variance in x); require >=2.
+WEIGHT_TREND_MIN_RACES = 2
+# Floor volatility (kg) so near-zero spread does not blow up the z-score.
+WEIGHT_ZSCORE_MIN_VOLATILITY = 1.0
+WEIGHT_ZSCORE_CLAMP = 5.0
 RUNNING_STYLE_SENKOU_THRESHOLD = 0.30
 RUNNING_STYLE_SASHI_THRESHOLD = 0.70
 RUNNING_STYLE_CLASS_NIGE = 0
@@ -1404,6 +1409,157 @@ def target_pedigree_sql() -> str:
     """
 
 
+PEDIGREE_NATURAL_KEY: tuple[str, ...] = (
+    "source",
+    "kaisai_nen",
+    "kaisai_tsukihi",
+    "keibajo_code",
+    "race_bango",
+    "ketto_toroku_bango",
+)
+
+PEDIGREE_FEATURES_TABLE = "pedigree_features"
+
+
+class PedigreeJoinSpec(TypedDict):
+    table: str
+    alias: str
+    key_alias: str
+    bucket_alias: str
+    target_bucket: str
+    val_columns: tuple[str, ...]
+
+
+# How each stats table joins back onto target_pedigree (tp) and which value
+# columns it contributes. `target_bucket` is the tp column matched against the
+# stats table's bucket; the third join key is always stats_year_month derived
+# from the race date. Drives both the per-table index creation and the single
+# consolidated pedigree_features join, replacing the 8 separate LEFT JOINs that
+# previously ran inside base_features_select_sql for every one of the 2.89M rows.
+PEDIGREE_JOIN_SPECS: tuple[PedigreeJoinSpec, ...] = (
+    {
+        "table": "sire_distance_stats",
+        "alias": "sds",
+        "key_alias": "sire",
+        "bucket_alias": "kyori_band",
+        "target_bucket": "kyori_band",
+        "val_columns": ("sire_distance_win_rate_val", "sire_avg_finish_at_distance_val"),
+    },
+    {
+        "table": "sire_track_stats",
+        "alias": "sts",
+        "key_alias": "sire",
+        "bucket_alias": "surface",
+        "target_bucket": "surface",
+        "val_columns": ("sire_track_win_rate_val",),
+    },
+    {
+        "table": "damsire_distance_stats",
+        "alias": "dsd",
+        "key_alias": "damsire",
+        "bucket_alias": "kyori_band",
+        "target_bucket": "kyori_band",
+        "val_columns": ("dam_sire_distance_win_rate_val",),
+    },
+    {
+        "table": "damsire_track_stats",
+        "alias": "dst",
+        "key_alias": "damsire",
+        "bucket_alias": "surface",
+        "target_bucket": "surface",
+        "val_columns": ("damsire_avg_finish_at_track_val",),
+    },
+    {
+        "table": "sire_running_style_stats",
+        "alias": "srs",
+        "key_alias": "sire",
+        "bucket_alias": "rs_bucket",
+        "target_bucket": "rs_bucket",
+        "val_columns": (
+            "sire_nige_rate_val",
+            "sire_senkou_rate_val",
+            "sire_sashi_rate_val",
+            "sire_oikomi_rate_val",
+            "sire_corner_1_norm_avg_val",
+        ),
+    },
+    {
+        "table": "sire_keibajo_stats",
+        "alias": "sks",
+        "key_alias": "sire",
+        "bucket_alias": "keibajo_code",
+        "target_bucket": "target_keibajo_code",
+        "val_columns": ("sire_keibajo_win_rate_val",),
+    },
+    {
+        "table": "damsire_keibajo_stats",
+        "alias": "dks",
+        "key_alias": "damsire",
+        "bucket_alias": "keibajo_code",
+        "target_bucket": "target_keibajo_code",
+        "val_columns": ("damsire_keibajo_win_rate_val",),
+    },
+)
+
+
+def pedigree_target_key_column(spec: PedigreeJoinSpec) -> str:
+    """tp column holding the lineage id this stats table keys on (sire/damsire)."""
+    return "target_sire" if spec["key_alias"] == "sire" else "target_damsire"
+
+
+def pedigree_stats_index_sql(spec: PedigreeStatSpec) -> str:
+    """CREATE INDEX on a stats temp table's composite probe key.
+
+    The consolidated pedigree_features join probes each stats table by
+    (key, bucket, stats_year_month); indexing that triple lets DuckDB use an
+    index scan instead of building a full hash table per stats relation."""
+    table = spec["table"]
+    return (
+        f"create index if not exists idx_{table} on {table}"
+        f" ({spec['key_alias']}, {spec['bucket_alias']}, stats_year_month)"
+    )
+
+
+def target_pedigree_index_sql() -> str:
+    """CREATE INDEX on target_pedigree's natural key (the consolidation anchor)."""
+    keys = ", ".join(PEDIGREE_NATURAL_KEY)
+    return f"create index if not exists idx_target_pedigree on target_pedigree ({keys})"
+
+
+def pedigree_features_sql() -> str:
+    """Pre-join target_pedigree with all stats tables into one temp table.
+
+    Keyed at the target-row grain (PEDIGREE_NATURAL_KEY), it exposes every stats
+    `_val` column plus each table's race_count (aliased `<alias>_race_count` to
+    avoid collisions). base_features_select_sql then does a single LEFT JOIN on
+    this table instead of 8 — one hash probe per row rather than eight."""
+    tp_keys = ", ".join(f"tp.{col}" for col in PEDIGREE_NATURAL_KEY)
+    select_cols = [tp_keys]
+    joins: list[str] = []
+    for spec in PEDIGREE_JOIN_SPECS:
+        alias = spec["alias"]
+        for val in spec["val_columns"]:
+            select_cols.append(f"{alias}.{val} as {val}")
+        select_cols.append(f"{alias}.race_count as {alias}_race_count")
+        target_key = pedigree_target_key_column(spec)
+        joins.append(
+            f"    left join {spec['table']} {alias}"
+            f" on {alias}.{spec['key_alias']} = tp.{target_key}"
+            f" and {alias}.{spec['bucket_alias']} = tp.{spec['target_bucket']}"
+            f" and {alias}.stats_year_month ="
+            " cast(tp.kaisai_nen as int) * 100 + cast(substr(tp.kaisai_tsukihi, 1, 2) as int)"
+        )
+    columns = ",\n      ".join(select_cols)
+    join_text = "\n".join(joins)
+    return f"""
+    create or replace temp table {PEDIGREE_FEATURES_TABLE} as
+    select
+      {columns}
+    from target_pedigree tp
+{join_text}
+    """
+
+
 def target_months_sql() -> str:
     return (
         "create or replace temp table target_months as"
@@ -1597,7 +1753,9 @@ def weight_cte(target_filter: str = "true") -> str:
         max(tcb.current_bataiju) as current_bataiju_kept,
         max(tcb.target_zogen_sa) as zogen_sa,
         avg(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5,
-        regr_slope(b.history_bataiju, (-b.recent_rank)::double) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_trend_5,
+        case when count(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) >= {WEIGHT_TREND_MIN_RACES}
+             then regr_slope(b.history_bataiju, (-b.recent_rank)::double) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+             else null end as weight_trend_5,
         stddev_pop(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_volatility_5
       from horse_history_base b
       left join target_current_bataiju tcb
@@ -1686,10 +1844,21 @@ def materialize_pedigree_stats(
     category: str,
 ) -> None:
     run_staged_sql(con, "pedigree.target_pedigree", target_pedigree_sql())
+    con.execute(target_pedigree_index_sql())
     run_staged_sql(con, "pedigree.target_months", target_months_sql())
     run_staged_sql(con, "pedigree.rec_um", pedigree_rec_um_sql(category))
     for spec in PEDIGREE_STAT_SPECS:
         run_staged_sql(con, f"pedigree.{spec['table']}", pedigree_monthly_stat_sql(spec))
+        con.execute(pedigree_stats_index_sql(spec))
+    run_staged_sql(
+        con,
+        f"pedigree.{PEDIGREE_FEATURES_TABLE}",
+        pedigree_features_sql(),
+        PEDIGREE_FEATURES_TABLE,
+    )
+    for spec in PEDIGREE_JOIN_SPECS:
+        drop_view_or_table(con, spec["table"])
+    drop_view_or_table(con, "target_pedigree")
 
 
 def materialize_race_context(con: duckdb.DuckDBPyConnection) -> None:
@@ -1866,7 +2035,7 @@ def base_features_select_sql(category: str) -> str:
       cast(wa.current_bataiju_kept as double) - wa.weight_avg_5 as weight_diff_from_avg,
       wa.weight_trend_5,
       wa.weight_volatility_5,
-      (cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(wa.weight_volatility_5, 0) as weight_zscore,
+      least(greatest((cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(greatest(wa.weight_volatility_5, {WEIGHT_ZSCORE_MIN_VOLATILITY}), 0), -{WEIGHT_ZSCORE_CLAMP}), {WEIGHT_ZSCORE_CLAMP}) as weight_zscore,
       hc.days_since_last_race, hc.consecutive_race_count,
       jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
       jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
@@ -1880,30 +2049,30 @@ def base_features_select_sql(category: str) -> str:
       tc.trainer_nige_rate, tc.trainer_senkou_rate, tc.trainer_sashi_rate, tc.trainer_oikomi_rate,
       tc.trainer_corner_1_norm_avg,
       tc.trainer_grade_win_rate, tc.trainer_class_surface_season_win_rate, tc.trainer_class_surface_season_count,
-      case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
-      case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
-      case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,
-      case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_avg_finish_at_distance_val else null end as sire_avg_finish_at_distance,
-      case when dst.race_count >= {PEDIGREE_MIN_RACES} then dst.damsire_avg_finish_at_track_val else null end as damsire_avg_finish_at_track,
-      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val else null end as sire_nige_rate,
-      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_senkou_rate_val else null end as sire_senkou_rate,
-      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_sashi_rate_val else null end as sire_sashi_rate,
-      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_oikomi_rate_val else null end as sire_oikomi_rate,
-      case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_corner_1_norm_avg_val else null end as sire_corner_1_norm_avg,
-      case when sks.race_count >= {PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate,
-      case when dks.race_count >= {PEDIGREE_MIN_RACES} then dks.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate,
+      case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end as sire_distance_win_rate,
+      case when pf.sts_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_track_win_rate_val else null end as sire_track_win_rate,
+      case when pf.dsd_race_count >= {PEDIGREE_MIN_RACES} then pf.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,
+      case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_avg_finish_at_distance_val else null end as sire_avg_finish_at_distance,
+      case when pf.dst_race_count >= {PEDIGREE_MIN_RACES} then pf.damsire_avg_finish_at_track_val else null end as damsire_avg_finish_at_track,
+      case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_nige_rate_val else null end as sire_nige_rate,
+      case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_senkou_rate_val else null end as sire_senkou_rate,
+      case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_sashi_rate_val else null end as sire_sashi_rate,
+      case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_oikomi_rate_val else null end as sire_oikomi_rate,
+      case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_corner_1_norm_avg_val else null end as sire_corner_1_norm_avg,
+      case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate,
+      case when pf.dks_race_count >= {PEDIGREE_MIN_RACES} then pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate,
       (
-        coalesce(case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) +
-        coalesce(case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end, 0) +
-        coalesce(case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end, 0) +
-        coalesce(case when sks.race_count >= {PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end, 0) +
-        coalesce(case when dks.race_count >= {PEDIGREE_MIN_RACES} then dks.damsire_keibajo_win_rate_val else null end, 0)
+        coalesce(case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end, 0) +
+        coalesce(case when pf.dsd_race_count >= {PEDIGREE_MIN_RACES} then pf.dam_sire_distance_win_rate_val else null end, 0) +
+        coalesce(case when pf.sts_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_track_win_rate_val else null end, 0) +
+        coalesce(case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end, 0) +
+        coalesce(case when pf.dks_race_count >= {PEDIGREE_MIN_RACES} then pf.damsire_keibajo_win_rate_val else null end, 0)
       ) / nullif(
-        (case when sds.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
-        (case when dsd.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
-        (case when sts.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
-        (case when sks.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
-        (case when dks.race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end),
+        (case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when pf.dsd_race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when pf.sts_race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end) +
+        (case when pf.dks_race_count >= {PEDIGREE_MIN_RACES} then 1 else 0 end),
         0
       )::double as pedigree_score_for_race,
       rfa.race_avg_speed as field_strength_avg_speed,
@@ -1922,15 +2091,15 @@ def base_features_select_sql(category: str) -> str:
       wl.venue_wind_gusts_max,
       coalesce(wl.venue_precipitation_total, 0) * coalesce(hc.speed_index_avg_5, 0) as rain_x_speed_decay,
       coalesce(wl.venue_wind_speed_max, 0) * coalesce(rsh.past_nige_rate_self, 0) as wind_x_front_runner,
-      coalesce(case when sks.race_count >= {PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue,
-      coalesce(case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance,
+      coalesce(case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue,
+      coalesce(case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance,
       case
         when rsh.past_nige_rate_self is null then null
         else
-          coalesce(rsh.past_nige_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val else null end, 0) +
-          coalesce(rsh.past_senkou_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_senkou_rate_val else null end, 0) +
-          coalesce(rsh.past_sashi_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_sashi_rate_val else null end, 0) +
-          coalesce(rsh.past_oikomi_rate_self, 0) * coalesce(case when srs.race_count >= {PEDIGREE_MIN_RACES} then srs.sire_oikomi_rate_val else null end, 0)
+          coalesce(rsh.past_nige_rate_self, 0) * coalesce(case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_nige_rate_val else null end, 0) +
+          coalesce(rsh.past_senkou_rate_self, 0) * coalesce(case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_senkou_rate_val else null end, 0) +
+          coalesce(rsh.past_sashi_rate_self, 0) * coalesce(case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_sashi_rate_val else null end, 0) +
+          coalesce(rsh.past_oikomi_rate_self, 0) * coalesce(case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_oikomi_rate_val else null end, 0)
       end as sire_style_x_horse_style_match,
       coalesce(wl.venue_wind_speed_max, 0) * (coalesce(t.shusso_tosu, 0)::double / {MAX_FIELD_SIZE}::double) as wind_x_field_size,
       coalesce(wl.venue_precipitation_total, 0) * coalesce(
@@ -2020,14 +2189,7 @@ def base_features_select_sql(category: str) -> str:
     left join horse_career hc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join jockey_career jc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join trainer_career tc using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
-    left join target_pedigree tp using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
-    left join sire_distance_stats sds on sds.sire = tp.target_sire and sds.kyori_band = tp.kyori_band and sds.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join sire_track_stats sts on sts.sire = tp.target_sire and sts.surface = tp.surface and sts.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join damsire_distance_stats dsd on dsd.damsire = tp.target_damsire and dsd.kyori_band = tp.kyori_band and dsd.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join damsire_track_stats dst on dst.damsire = tp.target_damsire and dst.surface = tp.surface and dst.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join sire_running_style_stats srs on srs.sire = tp.target_sire and srs.rs_bucket = tp.rs_bucket and srs.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join sire_keibajo_stats sks on sks.sire = tp.target_sire and sks.keibajo_code = tp.target_keibajo_code and sks.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
-    left join damsire_keibajo_stats dks on dks.damsire = tp.target_damsire and dks.keibajo_code = tp.target_keibajo_code and dks.stats_year_month = cast(t.kaisai_nen as int) * 100 + cast(substr(t.kaisai_tsukihi, 1, 2) as int)
+    left join {PEDIGREE_FEATURES_TABLE} pf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
     left join race_field_aggregates rfa using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join race_top3_speed rts using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
     left join track_bias tb using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
@@ -2769,14 +2931,7 @@ SPILL_TABLES: tuple[str, ...] = (
     "horse_career",
     "jockey_career",
     "trainer_career",
-    "target_pedigree",
-    "sire_distance_stats",
-    "sire_track_stats",
-    "damsire_distance_stats",
-    "damsire_track_stats",
-    "sire_running_style_stats",
-    "sire_keibajo_stats",
-    "damsire_keibajo_stats",
+    "pedigree_features",
     "race_field_aggregates",
     "race_top3_speed",
     "track_bias",
@@ -2799,16 +2954,7 @@ SPILL_AFTER_PARTNER: tuple[str, ...] = (
     "trainer_career",
     "horse_running_style_history",
 )
-SPILL_AFTER_PEDIGREE: tuple[str, ...] = (
-    "target_pedigree",
-    "sire_distance_stats",
-    "sire_track_stats",
-    "damsire_distance_stats",
-    "damsire_track_stats",
-    "sire_running_style_stats",
-    "sire_keibajo_stats",
-    "damsire_keibajo_stats",
-)
+SPILL_AFTER_PEDIGREE: tuple[str, ...] = ("pedigree_features",)
 SPILL_AFTER_RACE_CONTEXT: tuple[str, ...] = (
     "race_field_aggregates",
     "race_top3_speed",
@@ -2918,16 +3064,7 @@ CHECKPOINT_STAGE_TABLES: dict[str, tuple[str, ...]] = {
         "horse_running_style_history",
     ),
     CHECKPOINT_PARTNER: ("jockey_career", "trainer_career"),
-    CHECKPOINT_PEDIGREE: (
-        "target_pedigree",
-        "sire_distance_stats",
-        "sire_track_stats",
-        "damsire_distance_stats",
-        "damsire_track_stats",
-        "sire_running_style_stats",
-        "sire_keibajo_stats",
-        "damsire_keibajo_stats",
-    ),
+    CHECKPOINT_PEDIGREE: ("pedigree_features",),
     CHECKPOINT_RACE_CONTEXT: ("race_field_aggregates", "race_top3_speed"),
     CHECKPOINT_TRACK_BIAS: ("track_bias",),
     CHECKPOINT_WEATHER: ("weather_lookup",),
@@ -3056,6 +3193,7 @@ def _stage_sql_fingerprint(
             pedigree_rec_um_sql(category),
         ]
         parts.extend(pedigree_monthly_stat_sql(spec) for spec in PEDIGREE_STAT_SPECS)
+        parts.append(pedigree_features_sql())
         return "\n".join(parts)
     if stage_name == CHECKPOINT_RACE_CONTEXT:
         return race_context_cte()

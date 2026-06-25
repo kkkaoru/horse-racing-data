@@ -542,26 +542,45 @@ def test_stage_horse_history_derived_creates_four_tables(seeded_con: duckdb.Duck
         assert row[0] > 0
 
 
-def test_materialize_pedigree_stats_creates_month_partitioned_stats(
+def test_materialize_pedigree_stats_consolidates_all_val_columns(
     seeded_con: duckdb.DuckDBPyConnection,
 ):
     subject.materialize_pedigree_stats(seeded_con, "jra")
-    for table in subject.PEDIGREE_STAT_TABLES:
-        row = seeded_con.execute(
-            f"select count(*) from pragma_table_info('{table}') where name = 'stats_year_month'"
-        ).fetchone()
-        assert row is not None
-        assert row[0] == 1
+    columns = {
+        r[0]
+        for r in seeded_con.execute(
+            "select name from pragma_table_info('pedigree_features')"
+        ).fetchall()
+    }
+    assert "sire_distance_win_rate_val" in columns
+    assert "sire_avg_finish_at_distance_val" in columns
+    assert "damsire_keibajo_win_rate_val" in columns
+    assert "sds_race_count" in columns
+    assert "srs_race_count" in columns
+    assert "dks_race_count" in columns
 
 
-def test_materialize_pedigree_stats_excludes_current_month_data(
+def test_materialize_pedigree_stats_drops_intermediate_stats_tables(
+    seeded_con: duckdb.DuckDBPyConnection,
+):
+    subject.materialize_pedigree_stats(seeded_con, "jra")
+    remaining = seeded_con.execute(
+        "select count(*) from information_schema.tables where table_name in "
+        "('target_pedigree', 'sire_distance_stats', 'sire_keibajo_stats', 'damsire_keibajo_stats')"
+    ).fetchone()
+    assert remaining is not None
+    assert remaining[0] == 0
+
+
+def test_materialize_pedigree_stats_computes_sire_distance_win_rate(
     seeded_con: duckdb.DuckDBPyConnection,
 ):
     subject.materialize_pedigree_stats(seeded_con, "jra")
     row = seeded_con.execute(
-        "select count(*) from sire_distance_stats where stats_year_month = 202001"
+        "select sds_race_count from pedigree_features where ketto_toroku_bango = 'h001'"
     ).fetchone()
     assert row is not None
+    assert row[0] is not None
     assert row[0] > 0
 
 
@@ -629,8 +648,8 @@ def test_pedigree_stats_avg_uses_non_null_count_only(tmp_path: Path):
     subject.build_target_table(con, "jra", "20200101", "20201231")
     subject.materialize_pedigree_stats(con, "jra")
     row = con.execute(
-        "select sire_avg_finish_at_distance_val from sire_distance_stats "
-        "where stats_year_month = 202001"
+        "select sire_avg_finish_at_distance_val from pedigree_features "
+        "where ketto_toroku_bango = 'h001'"
     ).fetchone()
     assert row is not None
     assert row[0] == pytest.approx(0.0)
@@ -1550,14 +1569,12 @@ def test_materialize_pedigree_stats_creates_sire_keibajo_stats_table():
     subject.build_target_table(con, "jra", "20200101", "20201231")
     subject.materialize_pedigree_stats(con, "jra")
     row = con.execute(
-        "select sire, keibajo_code, sire_keibajo_win_rate_val, race_count "
-        "from sire_keibajo_stats where stats_year_month = 202001"
+        "select sire_keibajo_win_rate_val, sks_race_count "
+        "from pedigree_features where ketto_toroku_bango = 'h001'"
     ).fetchone()
     assert row is not None
-    assert row[0] == "s001"
-    assert row[1] == "01"
-    assert row[2] == pytest.approx(0.4)
-    assert row[3] == 5
+    assert row[0] == pytest.approx(0.4)
+    assert row[1] == 5
 
 
 def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
@@ -1595,14 +1612,12 @@ def test_materialize_pedigree_stats_computes_damsire_keibajo_win_rate():
     subject.build_target_table(con, "jra", "20200101", "20201231")
     subject.materialize_pedigree_stats(con, "jra")
     row = con.execute(
-        "select damsire, keibajo_code, damsire_keibajo_win_rate_val, race_count "
-        "from damsire_keibajo_stats where stats_year_month = 202001"
+        "select damsire_keibajo_win_rate_val, dks_race_count "
+        "from pedigree_features where ketto_toroku_bango = 'h001'"
     ).fetchone()
     assert row is not None
-    assert row[0] == "d001"
-    assert row[1] == "01"
-    assert row[2] == pytest.approx(0.4)
-    assert row[3] == 5
+    assert row[0] == pytest.approx(0.4)
+    assert row[1] == 5
 
 
 def test_keibajo_win_rate_null_when_race_count_below_min_races():
@@ -1838,7 +1853,7 @@ def test_run_stage_pedigree_active_spills_and_records(
     )
     manifest = subject.CheckpointManifest.load(tmp_path)
     assert manifest is not None
-    assert "target_pedigree.parquet" in manifest.stages["pedigree"].tables
+    assert "pedigree_features.parquet" in manifest.stages["pedigree"].tables
 
 
 def test_run_stage_race_context_active_records_then_restores(
@@ -1991,13 +2006,11 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
 ):
     subject.stage_horse_history_derived(seeded_con, [2020], _silent_heartbeat())
     subject.stage_partner_features(seeded_con, [2020], _silent_heartbeat())
-    subject.materialize_pedigree_stats(seeded_con, "jra")
-    subject.materialize_race_context(seeded_con)
-    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
-    subject.materialize_venue_weather(seeded_con, None, [2020])
-    subject.materialize_weather_lookup(seeded_con)
-    # Override pedigree stats so the min-races guard passes with known values.
     # h001 links to sire s001 / keibajo '01' / kyori_band 4 / rs_bucket 0 / 202001.
+    # Build target_pedigree (the consolidation anchor) and override the stats
+    # tables with known values so the min-races guard passes, then assemble the
+    # consolidated pedigree_features table that base_features_select_sql reads.
+    seeded_con.execute(subject.target_pedigree_sql())
     seeded_con.execute(
         "create or replace temp table sire_keibajo_stats as select * from (values "
         f"('s001', '01', 202001, 0.4, {subject.PEDIGREE_MIN_RACES})) "
@@ -2015,6 +2028,31 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
         "as t(sire, rs_bucket, stats_year_month, sire_nige_rate_val, sire_senkou_rate_val, "
         "sire_sashi_rate_val, sire_oikomi_rate_val, sire_corner_1_norm_avg_val, race_count)"
     )
+    seeded_con.execute(
+        "create or replace temp table sire_track_stats as select * from (values "
+        f"('s001', '1', 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(sire, surface, stats_year_month, sire_track_win_rate_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table damsire_distance_stats as select * from (values "
+        f"('d001', 4, 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(damsire, kyori_band, stats_year_month, dam_sire_distance_win_rate_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table damsire_track_stats as select * from (values "
+        f"('d001', '1', 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(damsire, surface, stats_year_month, damsire_avg_finish_at_track_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table damsire_keibajo_stats as select * from (values "
+        f"('d001', '01', 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(damsire, keibajo_code, stats_year_month, damsire_keibajo_win_rate_val, race_count)"
+    )
+    seeded_con.execute(subject.pedigree_features_sql())
+    subject.materialize_race_context(seeded_con)
+    subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
+    subject.materialize_venue_weather(seeded_con, None, [2020])
+    subject.materialize_weather_lookup(seeded_con)
     # h001 has past_nige_rate_self=0.0 (not null) → dot product branch taken.
     # h002 set to NULL nige rate → null-guard branch returns NULL.
     seeded_con.execute(

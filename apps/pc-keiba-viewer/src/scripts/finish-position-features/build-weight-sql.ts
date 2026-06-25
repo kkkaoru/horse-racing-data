@@ -8,6 +8,11 @@ const JRA_RUNNER_TABLE = "jvd_se";
 const NAR_RUNNER_TABLE = "nvd_se";
 const HISTORY_LOOKBACK_DAYS_YYYYMMDD = 100000;
 const RECENT_HISTORY_WINDOW_SIZE = 5;
+// regr_slope returns NaN with <2 points (zero variance in x); require >=2.
+const WEIGHT_TREND_MIN_RACES = 2;
+// Floor volatility (kg) so near-zero spread does not blow up the z-score.
+const WEIGHT_ZSCORE_MIN_VOLATILITY = 1;
+const WEIGHT_ZSCORE_CLAMP = 5;
 
 interface CategoryFilterClauses {
   historySourceFilter: string;
@@ -129,7 +134,9 @@ export const buildWeightUpdateSql = (category: FeatureCategory): string => {
         ketto_toroku_bango,
         max(current_bataiju) as current_bataiju,
         avg(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_avg_5,
-        regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_trend_5,
+        case when count(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) >= ${WEIGHT_TREND_MIN_RACES}
+             then regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE})
+             else null end as weight_trend_5,
         stddev_pop(history_bataiju) filter (where recent_rank <= ${RECENT_HISTORY_WINDOW_SIZE}) as weight_volatility_5
       from history_raw
       group by
@@ -151,7 +158,7 @@ export const buildWeightUpdateSql = (category: FeatureCategory): string => {
       weight_diff_from_avg = history_agg.current_bataiju::numeric - history_agg.weight_avg_5,
       weight_trend_5 = history_agg.weight_trend_5,
       weight_volatility_5 = history_agg.weight_volatility_5,
-      weight_zscore = (history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(history_agg.weight_volatility_5, 0),
+      weight_zscore = least(greatest((history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(greatest(history_agg.weight_volatility_5, ${WEIGHT_ZSCORE_MIN_VOLATILITY}), 0), -${WEIGHT_ZSCORE_CLAMP}), ${WEIGHT_ZSCORE_CLAMP}),
       updated_at = now()
     from history_agg
     where target.source = history_agg.source
@@ -170,4 +177,7 @@ export {
   RECENT_HISTORY_WINDOW_SIZE,
   SOURCE_FEATURE_TABLE,
   TARGET_FEATURE_TABLE,
+  WEIGHT_TREND_MIN_RACES,
+  WEIGHT_ZSCORE_CLAMP,
+  WEIGHT_ZSCORE_MIN_VOLATILITY,
 };

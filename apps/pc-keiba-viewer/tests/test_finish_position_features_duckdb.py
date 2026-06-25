@@ -833,7 +833,7 @@ def test_base_features_select_sql_includes_sire_running_style():
     assert "sire_sashi_rate" in sql
     assert "sire_oikomi_rate" in sql
     assert "sire_corner_1_norm_avg" in sql
-    assert "left join sire_running_style_stats srs" in sql
+    assert "left join sire_running_style_stats srs" in subject.pedigree_features_sql()
 
 
 def test_trainer_cte_emits_running_style_aggregates():
@@ -1937,12 +1937,12 @@ def test_pedigree_monthly_stat_sql_damsire_keibajo() -> None:
 
 def test_base_features_select_sql_includes_sire_keibajo_win_rate() -> None:
     sql = subject.base_features_select_sql("jra")
-    assert "sks.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate" in sql
+    assert "pf.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate" in sql
 
 
 def test_base_features_select_sql_includes_damsire_keibajo_win_rate() -> None:
     sql = subject.base_features_select_sql("jra")
-    assert "dks.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate" in sql
+    assert "pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -1964,17 +1964,17 @@ def test_target_pedigree_sql_projects_target_keibajo_code() -> None:
 def test_base_features_select_sql_guards_keibajo_win_rate_by_min_races() -> None:
     sql = subject.base_features_select_sql("jra")
     assert (
-        f"case when sks.race_count >= {subject.PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate"
+        f"case when pf.sks_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate"
         in sql
     )
     assert (
-        f"case when dks.race_count >= {subject.PEDIGREE_MIN_RACES} then dks.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate"
+        f"case when pf.dks_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate"
         in sql
     )
 
 
 def test_base_features_select_sql_joins_keibajo_stats_on_sire_and_keibajo() -> None:
-    sql = subject.base_features_select_sql("jra")
+    sql = subject.pedigree_features_sql()
     assert (
         "left join sire_keibajo_stats sks on sks.sire = tp.target_sire and sks.keibajo_code = tp.target_keibajo_code"
         in sql
@@ -1991,14 +1991,7 @@ def test_spill_tables_lists_all_final_join_temp_tables() -> None:
         "horse_career",
         "jockey_career",
         "trainer_career",
-        "target_pedigree",
-        "sire_distance_stats",
-        "sire_track_stats",
-        "damsire_distance_stats",
-        "damsire_track_stats",
-        "sire_running_style_stats",
-        "sire_keibajo_stats",
-        "damsire_keibajo_stats",
+        "pedigree_features",
         "race_field_aggregates",
         "race_top3_speed",
         "track_bias",
@@ -2954,11 +2947,11 @@ def test_interaction_columns_flow_through_assemble_final_select() -> None:
 def test_pedigree_interaction_columns_respect_min_races_guard() -> None:
     sql = subject.base_features_select_sql("jra")
     assert (
-        f"coalesce(case when sks.race_count >= {subject.PEDIGREE_MIN_RACES} then sks.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue"
+        f"coalesce(case when pf.sks_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue"
         in sql
     )
     assert (
-        f"coalesce(case when sds.race_count >= {subject.PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance"
+        f"coalesce(case when pf.sds_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance"
         in sql
     )
 
@@ -2966,7 +2959,7 @@ def test_pedigree_interaction_columns_respect_min_races_guard() -> None:
 def test_sire_style_match_returns_null_when_horse_style_unknown() -> None:
     sql = subject.base_features_select_sql("jra")
     assert "when rsh.past_nige_rate_self is null then null" in sql
-    assert f"srs.race_count >= {subject.PEDIGREE_MIN_RACES} then srs.sire_nige_rate_val" in sql
+    assert f"pf.srs_race_count >= {subject.PEDIGREE_MIN_RACES} then pf.sire_nige_rate_val" in sql
 
 
 def test_parse_args_log_file_defaults_none() -> None:
@@ -3098,16 +3091,95 @@ def test_weight_cte_emits_trend_and_volatility_aggregates():
     assert "stddev_pop(b.history_bataiju)" in cte
 
 
+def test_weight_cte_guards_trend_against_single_point_nan():
+    cte = subject.weight_cte()
+    assert subject.WEIGHT_TREND_MIN_RACES == 2
+    assert (
+        f"case when count(b.history_bataiju) filter (where b.recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.WEIGHT_TREND_MIN_RACES}"
+        in cte
+    )
+    assert "else null end as weight_trend_5" in cte
+
+
 def test_base_features_select_sql_registers_weight_zscore_and_new_partner_features():
     sql = subject.base_features_select_sql("jra")
     assert "weight_zscore" in sql
     assert "wa.weight_trend_5" in sql
     assert "wa.weight_volatility_5" in sql
-    assert "(cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(wa.weight_volatility_5, 0) as weight_zscore" in sql
+    assert (
+        f"least(greatest((cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(greatest(wa.weight_volatility_5, {subject.WEIGHT_ZSCORE_MIN_VOLATILITY}), 0), -{subject.WEIGHT_ZSCORE_CLAMP}), {subject.WEIGHT_ZSCORE_CLAMP}) as weight_zscore"
+        in sql
+    )
     assert "jc.jockey_season_win_rate" in sql
     assert "jc.jockey_season_keibajo_distance_count" in sql
     assert "tc.trainer_grade_win_rate" in sql
     assert "tc.trainer_class_surface_season_count" in sql
+
+
+def test_weight_zscore_clamp_constants_floor_volatility_and_bound_magnitude():
+    assert subject.WEIGHT_ZSCORE_MIN_VOLATILITY == 1.0
+    assert subject.WEIGHT_ZSCORE_CLAMP == 5.0
+
+
+def test_weight_zscore_clamps_extreme_values_and_floors_near_zero_volatility():
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        create table wa as
+        select * from (values
+          (520.0, 500.0, 0.001),
+          (480.0, 500.0, 0.001),
+          (502.0, 500.0, 8.0)
+        ) as t(current_bataiju_kept, weight_avg_5, weight_volatility_5)
+        """
+    )
+    rows = con.execute(
+        f"""
+        select least(greatest((cast(wa.current_bataiju_kept as double) - wa.weight_avg_5)
+          / nullif(greatest(wa.weight_volatility_5, {subject.WEIGHT_ZSCORE_MIN_VOLATILITY}), 0),
+          -{subject.WEIGHT_ZSCORE_CLAMP}), {subject.WEIGHT_ZSCORE_CLAMP}) as weight_zscore
+        from wa
+        order by current_bataiju_kept
+        """
+    ).fetchall()
+    con.close()
+    assert rows[0][0] == -5.0
+    assert rows[1][0] == 0.25
+    assert rows[2][0] == 5.0
+
+
+def test_weight_trend_5_is_null_for_single_history_point():
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        f"""
+        create table horse_history_base as
+        select * from (values
+          ('jra', 480.0, 1),
+          ('jra', 484.0, 2),
+          ('nar', 500.0, 1)
+        ) as t(source, history_bataiju, recent_rank)
+        """
+    )
+    rows = con.execute(
+        f"""
+        select source,
+          case when count(history_bataiju) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.WEIGHT_TREND_MIN_RACES}
+               then regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE})
+               else null end as weight_trend_5
+        from horse_history_base
+        group by source
+        order by source
+        """
+    ).fetchall()
+    con.close()
+    assert rows[0][0] == "jra"
+    assert rows[0][1] == -4.0
+    assert rows[1][0] == "nar"
+    assert rows[1][1] is None
 
 
 def test_write_parquet_writes_per_year_from_target_table(tmp_path: Path) -> None:
@@ -3284,3 +3356,372 @@ def test_stage_parquet_write_prematerializes_and_cleans_up(tmp_path: Path) -> No
     assert len(parquet_2024) == 1
 
     con.close()
+
+
+# ---------------------------------------------------------------------------
+# Pedigree consolidation: the 8 per-row LEFT JOINs in base_features_select_sql
+# are replaced by a single LEFT JOIN on the pre-joined pedigree_features table,
+# with composite indexes added on the stats temp tables to speed the build.
+# ---------------------------------------------------------------------------
+
+
+def test_pedigree_natural_key_is_the_target_row_grain() -> None:
+    assert subject.PEDIGREE_NATURAL_KEY == (
+        "source",
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "ketto_toroku_bango",
+    )
+
+
+def test_pedigree_features_table_name_constant() -> None:
+    assert subject.PEDIGREE_FEATURES_TABLE == "pedigree_features"
+
+
+def test_pedigree_join_specs_cover_all_seven_stats_tables() -> None:
+    tables = [spec["table"] for spec in subject.PEDIGREE_JOIN_SPECS]
+    assert tables == [
+        "sire_distance_stats",
+        "sire_track_stats",
+        "damsire_distance_stats",
+        "damsire_track_stats",
+        "sire_running_style_stats",
+        "sire_keibajo_stats",
+        "damsire_keibajo_stats",
+    ]
+
+
+def test_pedigree_join_specs_aliases_match_legacy_base_sql_aliases() -> None:
+    aliases = [spec["alias"] for spec in subject.PEDIGREE_JOIN_SPECS]
+    assert aliases == ["sds", "sts", "dsd", "dst", "srs", "sks", "dks"]
+
+
+def test_pedigree_target_key_column_uses_target_sire_for_sire_specs() -> None:
+    sds_spec = next(s for s in subject.PEDIGREE_JOIN_SPECS if s["alias"] == "sds")
+    assert subject.pedigree_target_key_column(sds_spec) == "target_sire"
+
+
+def test_pedigree_target_key_column_uses_target_damsire_for_damsire_specs() -> None:
+    dks_spec = next(s for s in subject.PEDIGREE_JOIN_SPECS if s["alias"] == "dks")
+    assert subject.pedigree_target_key_column(dks_spec) == "target_damsire"
+
+
+def test_pedigree_stats_index_sql_indexes_composite_probe_key() -> None:
+    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats")
+    sql = subject.pedigree_stats_index_sql(spec)
+    assert (
+        sql
+        == "create index if not exists idx_sire_distance_stats on sire_distance_stats (sire, kyori_band, stats_year_month)"
+    )
+
+
+def test_pedigree_stats_index_sql_for_keibajo_bucketed_spec() -> None:
+    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_keibajo_stats")
+    sql = subject.pedigree_stats_index_sql(spec)
+    assert (
+        sql
+        == "create index if not exists idx_sire_keibajo_stats on sire_keibajo_stats (sire, keibajo_code, stats_year_month)"
+    )
+
+
+def test_target_pedigree_index_sql_indexes_the_natural_key() -> None:
+    sql = subject.target_pedigree_index_sql()
+    assert (
+        sql
+        == "create index if not exists idx_target_pedigree on target_pedigree (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+
+
+def test_pedigree_features_sql_creates_consolidated_temp_table() -> None:
+    sql = subject.pedigree_features_sql()
+    assert "create or replace temp table pedigree_features as" in sql
+    assert "from target_pedigree tp" in sql
+
+
+def test_pedigree_features_sql_joins_all_seven_stats_tables() -> None:
+    sql = subject.pedigree_features_sql()
+    assert "left join sire_distance_stats sds" in sql
+    assert "left join sire_track_stats sts" in sql
+    assert "left join damsire_distance_stats dsd" in sql
+    assert "left join damsire_track_stats dst" in sql
+    assert "left join sire_running_style_stats srs" in sql
+    assert "left join sire_keibajo_stats sks" in sql
+    assert "left join damsire_keibajo_stats dks" in sql
+
+
+def test_pedigree_features_sql_projects_per_table_race_count_aliases() -> None:
+    sql = subject.pedigree_features_sql()
+    assert "sds.race_count as sds_race_count" in sql
+    assert "srs.race_count as srs_race_count" in sql
+    assert "dks.race_count as dks_race_count" in sql
+
+
+def test_pedigree_features_sql_projects_every_val_column() -> None:
+    sql = subject.pedigree_features_sql()
+    assert "sds.sire_distance_win_rate_val as sire_distance_win_rate_val" in sql
+    assert "sds.sire_avg_finish_at_distance_val as sire_avg_finish_at_distance_val" in sql
+    assert "srs.sire_corner_1_norm_avg_val as sire_corner_1_norm_avg_val" in sql
+    assert "dks.damsire_keibajo_win_rate_val as damsire_keibajo_win_rate_val" in sql
+
+
+def test_pedigree_features_sql_projects_the_natural_key() -> None:
+    sql = subject.pedigree_features_sql()
+    assert "tp.source" in sql
+    assert "tp.kaisai_nen" in sql
+    assert "tp.ketto_toroku_bango" in sql
+
+
+def test_base_features_select_sql_joins_pedigree_features_once() -> None:
+    sql = subject.base_features_select_sql("jra")
+    assert (
+        "left join pedigree_features pf using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+        in sql
+    )
+    # The 8 per-row pedigree joins must no longer live in the final SELECT.
+    assert "left join sire_distance_stats" not in sql
+    assert "left join target_pedigree" not in sql
+
+
+def test_pedigree_features_consolidation_preserves_stats_values() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table target_pedigree as
+        select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
+               '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango,
+               3 as kyori_band, '1' as surface, '01' as target_keibajo_code,
+               0 as rs_bucket, 'SIRE' as target_sire, 'DAM' as target_damsire
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_distance_stats as
+        select 'SIRE' as sire, 3 as kyori_band, 202306 as stats_year_month,
+               0.21::double as sire_distance_win_rate_val, 0.42::double as sire_avg_finish_at_distance_val,
+               9 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_track_stats as
+        select 'SIRE' as sire, '1' as surface, 202306 as stats_year_month,
+               0.11::double as sire_track_win_rate_val, 7 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_distance_stats as
+        select 'DAM' as damsire, 3 as kyori_band, 202306 as stats_year_month,
+               0.13::double as dam_sire_distance_win_rate_val, 6 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_track_stats as
+        select 'DAM' as damsire, '1' as surface, 202306 as stats_year_month,
+               0.31::double as damsire_avg_finish_at_track_val, 5 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_running_style_stats as
+        select 'SIRE' as sire, 0 as rs_bucket, 202306 as stats_year_month,
+               0.4::double as sire_nige_rate_val, 0.3::double as sire_senkou_rate_val,
+               0.2::double as sire_sashi_rate_val, 0.1::double as sire_oikomi_rate_val,
+               1.5::double as sire_corner_1_norm_avg_val, 8 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_keibajo_stats as
+        select 'SIRE' as sire, '01' as keibajo_code, 202306 as stats_year_month,
+               0.18::double as sire_keibajo_win_rate_val, 10 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_keibajo_stats as
+        select 'DAM' as damsire, '01' as keibajo_code, 202306 as stats_year_month,
+               0.09::double as damsire_keibajo_win_rate_val, 4 as race_count
+        """
+    )
+    con.execute(subject.pedigree_features_sql())
+    row = con.execute(
+        """
+        select sire_distance_win_rate_val, sds_race_count,
+               sire_track_win_rate_val, sts_race_count,
+               dam_sire_distance_win_rate_val, dsd_race_count,
+               damsire_avg_finish_at_track_val, dst_race_count,
+               sire_nige_rate_val, sire_corner_1_norm_avg_val, srs_race_count,
+               sire_keibajo_win_rate_val, sks_race_count,
+               damsire_keibajo_win_rate_val, dks_race_count
+        from pedigree_features
+        """
+    ).fetchone()
+    assert row == (
+        0.21,
+        9,
+        0.11,
+        7,
+        0.13,
+        6,
+        0.31,
+        5,
+        0.4,
+        1.5,
+        8,
+        0.18,
+        10,
+        0.09,
+        4,
+    )
+    con.close()
+
+
+def test_pedigree_features_consolidation_keeps_unmatched_lineage_null() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table target_pedigree as
+        select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
+               '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango,
+               3 as kyori_band, '1' as surface, '01' as target_keibajo_code,
+               0 as rs_bucket, 'UNKNOWN' as target_sire, 'UNKNOWN' as target_damsire
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_distance_stats as
+        select 'SIRE' as sire, 3 as kyori_band, 202306 as stats_year_month,
+               0.21 as sire_distance_win_rate_val, 0.42 as sire_avg_finish_at_distance_val,
+               9 as race_count
+        """
+    )
+    con.execute(
+        "create temp table sire_track_stats as select 'SIRE' as sire, '1' as surface, 202306 as stats_year_month, 0.11 as sire_track_win_rate_val, 7 as race_count"
+    )
+    con.execute(
+        "create temp table damsire_distance_stats as select 'DAM' as damsire, 3 as kyori_band, 202306 as stats_year_month, 0.13 as dam_sire_distance_win_rate_val, 6 as race_count"
+    )
+    con.execute(
+        "create temp table damsire_track_stats as select 'DAM' as damsire, '1' as surface, 202306 as stats_year_month, 0.31 as damsire_avg_finish_at_track_val, 5 as race_count"
+    )
+    con.execute(
+        "create temp table sire_running_style_stats as select 'SIRE' as sire, 0 as rs_bucket, 202306 as stats_year_month, 0.4 as sire_nige_rate_val, 0.3 as sire_senkou_rate_val, 0.2 as sire_sashi_rate_val, 0.1 as sire_oikomi_rate_val, 1.5 as sire_corner_1_norm_avg_val, 8 as race_count"
+    )
+    con.execute(
+        "create temp table sire_keibajo_stats as select 'SIRE' as sire, '01' as keibajo_code, 202306 as stats_year_month, 0.18 as sire_keibajo_win_rate_val, 10 as race_count"
+    )
+    con.execute(
+        "create temp table damsire_keibajo_stats as select 'DAM' as damsire, '01' as keibajo_code, 202306 as stats_year_month, 0.09 as damsire_keibajo_win_rate_val, 4 as race_count"
+    )
+    con.execute(subject.pedigree_features_sql())
+    row = con.execute(
+        "select ketto_toroku_bango, sire_distance_win_rate_val, sds_race_count from pedigree_features"
+    ).fetchone()
+    assert row == ("H1", None, None)
+    con.close()
+
+
+def test_materialize_pedigree_stats_leaves_only_pedigree_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table target as
+        select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
+               '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango,
+               1800 as kyori, '10' as track_code
+        """
+    )
+    con.execute(
+        "create temp table jra_um as select 'H1' as ketto_toroku_bango, 'SIRE' as ketto_joho_01b, 'DAM' as ketto_joho_05b"
+    )
+    con.execute("create temp table nar_um as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false")
+    con.execute("create temp table nar_nu as select '' as ketto_toroku_bango, '' as ketto_joho_01b, '' as ketto_joho_05b where false")
+    con.execute(
+        """
+        create temp table pedigree_rec_um as
+        select 'jra' as source, '20230101' as race_date, 202301 as race_year_month,
+               'H0' as ketto_toroku_bango, 1800 as kyori, '10' as track_code,
+               1 as finish_position, 0.1 as finish_norm, '01' as keibajo_code,
+               'SIRE' as ketto_joho_01b, 'DAM' as ketto_joho_05b, 0.0 as corner1_norm
+        """
+    )
+
+    monkeypatch.setattr(subject, "pedigree_rec_um_sql", lambda category: "create or replace temp table pedigree_rec_um as select * from pedigree_rec_um")
+    subject.materialize_pedigree_stats(con, "jra")
+
+    remaining = {
+        r[0]
+        for r in con.execute(
+            "select table_name from information_schema.tables where table_name in ("
+            "'pedigree_features', 'target_pedigree', 'sire_distance_stats', 'sire_keibajo_stats')"
+        ).fetchall()
+    }
+    assert remaining == {"pedigree_features"}
+    feature_rows = con.execute("select count(*) from pedigree_features").fetchone()
+    assert feature_rows == (1,)
+    con.close()
+
+
+def test_pedigree_stats_index_sql_creates_a_usable_index() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table sire_distance_stats as
+        select 'SIRE' as sire, 3 as kyori_band, 202306 as stats_year_month,
+               0.21::double as sire_distance_win_rate_val, 0.42::double as sire_avg_finish_at_distance_val,
+               9 as race_count
+        """
+    )
+    spec = next(s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats")
+    con.execute(subject.pedigree_stats_index_sql(spec))
+    index_names = {
+        r[0] for r in con.execute("select index_name from duckdb_indexes()").fetchall()
+    }
+    assert "idx_sire_distance_stats" in index_names
+    con.close()
+
+
+def test_target_pedigree_index_sql_creates_a_usable_index() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table target_pedigree as
+        select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
+               '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango
+        """
+    )
+    con.execute(subject.target_pedigree_index_sql())
+    index_names = {
+        r[0] for r in con.execute("select index_name from duckdb_indexes()").fetchall()
+    }
+    assert "idx_target_pedigree" in index_names
+    con.close()
+
+
+def test_stage_sql_fingerprint_pedigree_includes_consolidation_sql() -> None:
+    fingerprint = subject._stage_sql_fingerprint(subject.CHECKPOINT_PEDIGREE, "jra", None)
+    assert "create or replace temp table pedigree_features as" in fingerprint
+
+
+def test_checkpoint_pedigree_stage_owns_pedigree_features_only() -> None:
+    assert subject.CHECKPOINT_STAGE_TABLES[subject.CHECKPOINT_PEDIGREE] == ("pedigree_features",)
+
+
+def test_spill_after_pedigree_is_just_pedigree_features() -> None:
+    assert subject.SPILL_AFTER_PEDIGREE == ("pedigree_features",)

@@ -8,6 +8,9 @@ import {
   RECENT_HISTORY_WINDOW_SIZE,
   SOURCE_FEATURE_TABLE,
   TARGET_FEATURE_TABLE,
+  WEIGHT_TREND_MIN_RACES,
+  WEIGHT_ZSCORE_CLAMP,
+  WEIGHT_ZSCORE_MIN_VOLATILITY,
 } from "./build-weight-sql";
 
 test("SOURCE_FEATURE_TABLE points to the aggregated source", () => {
@@ -97,9 +100,21 @@ test("buildWeightUpdateSql derives weight_diff_from_avg as current minus avg", (
   );
 });
 
-test("buildWeightUpdateSql derives weight_trend_5 via regr_slope over recent five", () => {
+test("WEIGHT_TREND_MIN_RACES requires at least two points to avoid NaN slope", () => {
+  expect(WEIGHT_TREND_MIN_RACES).toBe(2);
+});
+
+test("WEIGHT_ZSCORE_MIN_VOLATILITY floors volatility at one kilogram", () => {
+  expect(WEIGHT_ZSCORE_MIN_VOLATILITY).toBe(1);
+});
+
+test("WEIGHT_ZSCORE_CLAMP bounds the z-score magnitude at five", () => {
+  expect(WEIGHT_ZSCORE_CLAMP).toBe(5);
+});
+
+test("buildWeightUpdateSql derives weight_trend_5 via regr_slope guarded by a two-race minimum", () => {
   expect(buildWeightUpdateSql("jra")).toContain(
-    "regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= 5) as weight_trend_5",
+    "case when count(history_bataiju) filter (where recent_rank <= 5) >= 2\n             then regr_slope(history_bataiju, (-recent_rank)::double) filter (where recent_rank <= 5)\n             else null end as weight_trend_5",
   );
 });
 
@@ -109,9 +124,9 @@ test("buildWeightUpdateSql derives weight_volatility_5 via stddev_pop over recen
   );
 });
 
-test("buildWeightUpdateSql derives weight_zscore guarded by nullif on volatility", () => {
+test("buildWeightUpdateSql clamps weight_zscore and floors volatility at one kilogram", () => {
   expect(buildWeightUpdateSql("jra")).toContain(
-    "weight_zscore = (history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(history_agg.weight_volatility_5, 0)",
+    "weight_zscore = least(greatest((history_agg.current_bataiju::numeric - history_agg.weight_avg_5) / nullif(greatest(history_agg.weight_volatility_5, 1), 0), -5), 5)",
   );
 });
 
