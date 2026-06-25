@@ -2116,31 +2116,32 @@ def write_parquet(
     force_clean: bool,
 ) -> None:
     prepare_output_dir(output_dir, keep_existing, force_clean)
-    # Materialize the windowed CTE result once. Filtering ``final_query`` per year
-    # in the COPY loop forces DuckDB to re-evaluate every CTE join and window
-    # function for each year (the ``race_year`` predicate cannot push below the
-    # window functions), pinning the full result set on every iteration and OOMing
-    # large builds (NAR: 2.89M rows). Staging to a flat temp table evaluates the
-    # CTEs once; the per-year COPY then reads a partition-pruned flat scan that the
-    # temp_directory can spill, so peak memory is bounded by a single year.
-    con.execute(f"create or replace temp table _parquet_staging as {final_query}")
+    # Discover years from the ``target`` temp table (already present in ``con``)
+    # so we can materialize one year at a time and avoid OOM on large datasets
+    # (NAR: 2.89M rows).  The previous approach materialized *all* rows into a
+    # staging table first, which required holding the full result set in memory.
+    # ``final_query`` contains window functions partitioned per-race, so adding
+    # an outer ``WHERE race_year = <year>`` is safe — it cannot change window
+    # results because no race spans multiple years.
     year_rows = con.execute(
-        "select distinct race_year from _parquet_staging order by race_year"
+        "select distinct race_year from target order by race_year"
     ).fetchall()
     threads_row = con.execute("select current_setting('threads')").fetchone()
     original_threads = int(threads_row[0]) if threads_row is not None else DEFAULT_THREADS
     con.execute("set threads = 1")
     for row in year_rows:
         year = int(row[0])
+        year_query = f"select * from ({final_query}) _fq where race_year = {year}"
+        con.execute(f"create or replace temp table _parquet_staging as {year_query}")
         con.execute(
             f"""
-            copy (select * from _parquet_staging where race_year = {year})
+            copy (select * from _parquet_staging)
             to '{output_dir.as_posix()}'
             (format parquet, partition_by (race_year), overwrite_or_ignore true)
             """
         )
+        con.execute("drop table if exists _parquet_staging")
     con.execute(f"set threads = {original_threads}")
-    con.execute("drop table if exists _parquet_staging")
 
 
 class BuildResult(TypedDict):

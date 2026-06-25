@@ -3108,3 +3108,75 @@ def test_base_features_select_sql_registers_weight_zscore_and_new_partner_featur
     assert "jc.jockey_season_keibajo_distance_count" in sql
     assert "tc.trainer_grade_win_rate" in sql
     assert "tc.trainer_class_surface_season_count" in sql
+
+
+def test_write_parquet_writes_per_year_from_target_table(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create temp table target (race_year int, race_id text, horse_id text, val double)"
+    )
+    con.execute("insert into target values (2023, 'R1', 'H1', 1.0)")
+    con.execute("insert into target values (2023, 'R2', 'H2', 2.0)")
+    con.execute("insert into target values (2024, 'R3', 'H3', 3.0)")
+
+    final_query = "select race_year, race_id, horse_id, val from target"
+    output_dir = tmp_path / "parquet_out"
+
+    subject.write_parquet(con, final_query, output_dir, False, False)
+
+    parquet_2023 = list((output_dir / "race_year=2023").glob("*.parquet"))
+    parquet_2024 = list((output_dir / "race_year=2024").glob("*.parquet"))
+    assert len(parquet_2023) == 1
+    assert len(parquet_2024) == 1
+
+    rows = con.execute(
+        f"select race_year, race_id, horse_id, val from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet', hive_partitioning=true) order by val"
+    ).fetchall()
+    assert rows == [(2023, "R1", "H1", 1.0), (2023, "R2", "H2", 2.0), (2024, "R3", "H3", 3.0)]
+
+    con.close()
+
+
+def test_write_parquet_restores_threads_after_write(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("set threads = 4")
+    con.execute(
+        "create temp table target (race_year int, race_id text, val double)"
+    )
+    con.execute("insert into target values (2025, 'R1', 10.0)")
+
+    final_query = "select race_year, race_id, val from target"
+    output_dir = tmp_path / "parquet_threads"
+
+    subject.write_parquet(con, final_query, output_dir, False, False)
+
+    threads_after = con.execute("select current_setting('threads')").fetchone()
+    assert threads_after is not None
+    assert int(threads_after[0]) == 4
+    con.close()
+
+
+def test_write_parquet_no_staging_table_leak(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create temp table target (race_year int, race_id text, val double)"
+    )
+    con.execute("insert into target values (2023, 'R1', 1.0)")
+    con.execute("insert into target values (2024, 'R2', 2.0)")
+
+    final_query = "select race_year, race_id, val from target"
+    output_dir = tmp_path / "parquet_leak"
+
+    subject.write_parquet(con, final_query, output_dir, False, False)
+
+    tables = con.execute(
+        "select table_name from information_schema.tables where table_name = '_parquet_staging'"
+    ).fetchall()
+    assert tables == []
+    con.close()
