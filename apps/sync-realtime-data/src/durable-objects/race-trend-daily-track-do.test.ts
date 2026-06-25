@@ -13,8 +13,9 @@ import {
   RACE_TREND_DAILY_TRACK_STORAGE_KEY,
   RaceTrendDailyTrackDO,
   __testables,
+  areAllRacesComplete,
   buildRaceTrendDailyTrackDoIdName,
-  computeNextAlarmDelayMs,
+  computeNextAlarmAt,
   fetchRaceTrendDailyTrackRacesFromStub,
   parseDoContextFromRaceKey,
   parseDoContextFromUrl,
@@ -246,12 +247,100 @@ it("buildRaceTrendDailyTrackDoIdName joins source / targetYmd / keibajoCode", ()
   ).toBe("jra:20260531:06");
 });
 
-it("computeNextAlarmDelayMs returns 60s inside the JST polling window", () => {
-  expect(computeNextAlarmDelayMs(new Date("2026-05-31T05:00:00Z"))).toBe(60_000);
+it("computeNextAlarmAt returns now+300s in-window with incomplete races", () => {
+  const now = new Date("2026-05-31T05:00:00Z");
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "48",
+    races: { "05": { ...NAR_ROW, isComplete: false } },
+    source: "nar",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(computeNextAlarmAt({ now, state })).toBe(now.getTime() + 300_000);
 });
 
-it("computeNextAlarmDelayMs returns 30min outside the JST polling window", () => {
-  expect(computeNextAlarmDelayMs(new Date("2026-05-31T20:00:00Z"))).toBe(30 * 60_000);
+it("computeNextAlarmAt returns null in-window when all races complete", () => {
+  const now = new Date("2026-05-31T05:00:00Z");
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: { "03": { ...JRA_ROW, isComplete: true } },
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(computeNextAlarmAt({ now, state })).toBeNull();
+});
+
+it("computeNextAlarmAt returns null out-of-window", () => {
+  const now = new Date("2026-05-31T20:00:00Z");
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "48",
+    races: { "05": { ...NAR_ROW, isComplete: false } },
+    source: "nar",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T20:00:00.000Z",
+  };
+  expect(computeNextAlarmAt({ now, state })).toBeNull();
+});
+
+it("computeNextAlarmAt returns now+300s in-window when state is null", () => {
+  const now = new Date("2026-05-31T05:00:00Z");
+  expect(computeNextAlarmAt({ now, state: null })).toBe(now.getTime() + 300_000);
+});
+
+it("computeNextAlarmAt returns now+300s in-window when state has empty races", () => {
+  const now = new Date("2026-05-31T05:00:00Z");
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: {},
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(computeNextAlarmAt({ now, state })).toBe(now.getTime() + 300_000);
+});
+
+it("areAllRacesComplete returns false for null state", () => {
+  expect(areAllRacesComplete(null)).toBe(false);
+});
+
+it("areAllRacesComplete returns false for empty races", () => {
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: {},
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(areAllRacesComplete(state)).toBe(false);
+});
+
+it("areAllRacesComplete returns true when every race isComplete", () => {
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: {
+      "03": { ...JRA_ROW, isComplete: true },
+      "04": { ...JRA_ROW, raceBango: "04", raceKey: "jra:2026:0531:06:04", isComplete: true },
+    },
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(areAllRacesComplete(state)).toBe(true);
+});
+
+it("areAllRacesComplete returns false when one race is incomplete", () => {
+  const state: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: {
+      "03": { ...JRA_ROW, isComplete: true },
+      "04": { ...JRA_ROW, raceBango: "04", raceKey: "jra:2026:0531:06:04", isComplete: false },
+    },
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  expect(areAllRacesComplete(state)).toBe(false);
 });
 
 it("POST /push stores a row, merges into state, and persists snapshot", async () => {
@@ -512,7 +601,7 @@ it("createForTest hydrates state and parsed context from previously stored snaps
   expect(payload.races[0]!).toStrictEqual(JRA_ROW);
 });
 
-it("runAlarmTick schedules a 60s alarm inside the polling window", async () => {
+it("runAlarmTick schedules a 300s alarm inside the polling window with empty races", async () => {
   const persisted: RaceTrendDailyTrackState = {
     keibajoCode: "06",
     races: {},
@@ -525,10 +614,10 @@ it("runAlarmTick schedules a 60s alarm inside the polling window", async () => {
   const now = new Date("2026-05-31T05:00:00Z");
   await cache.runAlarmTick({ env: buildEnv(), now });
   expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
-  expect(handle.storage.setAlarm.mock.calls[0]![0]).toBe(now.getTime() + 60_000);
+  expect(handle.storage.setAlarm.mock.calls[0]![0]).toBe(now.getTime() + 300_000);
 });
 
-it("runAlarmTick schedules a 30min alarm outside the polling window", async () => {
+it("runAlarmTick does not re-arm the alarm outside the polling window", async () => {
   const persisted: RaceTrendDailyTrackState = {
     keibajoCode: "06",
     races: {},
@@ -540,7 +629,38 @@ it("runAlarmTick schedules a 30min alarm outside the polling window", async () =
   const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
   const now = new Date("2026-05-31T20:00:00Z");
   await cache.runAlarmTick({ env: buildEnv(), now });
-  expect(handle.storage.setAlarm.mock.calls[0]![0]).toBe(now.getTime() + 30 * 60_000);
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(0);
+});
+
+it("runAlarmTick does not re-arm when all refreshed races are complete", async () => {
+  const persisted: RaceTrendDailyTrackState = {
+    keibajoCode: "06",
+    races: { "03": { ...JRA_ROW, isComplete: true } },
+    source: "jra",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  const handle = buildFakeState(new Map([["snapshot", persisted]]));
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  const now = new Date("2026-05-31T05:00:00Z");
+  await cache.runAlarmTick({ env: buildEnv(), now });
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(0);
+});
+
+it("runAlarmTick re-arms at 300s when refreshed races still incomplete", async () => {
+  const persisted: RaceTrendDailyTrackState = {
+    keibajoCode: "48",
+    races: { "05": { ...NAR_ROW, isComplete: false } },
+    source: "nar",
+    targetYmd: "20260531",
+    updatedAt: "2026-05-31T05:00:00.000Z",
+  };
+  const handle = buildFakeState(new Map([["snapshot", persisted]]));
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  const now = new Date("2026-05-31T05:00:00Z");
+  await cache.runAlarmTick({ env: buildEnv(), now });
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+  expect(handle.storage.setAlarm.mock.calls[0]![0]).toBe(now.getTime() + 300_000);
 });
 
 it("runAlarmTick still schedules the next alarm when the DO has no parsed context", async () => {
@@ -552,6 +672,8 @@ it("runAlarmTick still schedules the next alarm when the DO has no parsed contex
 });
 
 it("alarm() delegates to runAlarmTick with the current clock", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-31T05:00:00Z"));
   const persisted: RaceTrendDailyTrackState = {
     keibajoCode: "06",
     races: {},
@@ -563,6 +685,7 @@ it("alarm() delegates to runAlarmTick with the current clock", async () => {
   const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
   await cache.alarm();
   expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
 });
 
 it("pushRaceTrendDailyTrackRowToStub posts the row to the DO push URL", async () => {
@@ -1171,6 +1294,8 @@ it("GET /races on a cold DO self-pulls from D1 via URL context and returns hit",
 });
 
 it("GET /races on a cold DO with URL context primes the next alarm", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-31T05:00:00Z"));
   const handle = buildFakeState(new Map());
   const env = buildEnv();
   const cache = await RaceTrendDailyTrackDO.createForTest({ env, state: handle.state });
@@ -1180,6 +1305,7 @@ it("GET /races on a cold DO with URL context primes the next alarm", async () =>
     ),
   );
   expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
 });
 
 it("GET /races on a cold DO with URL context but empty D1 returns miss", async () => {
@@ -1241,6 +1367,8 @@ it("GET /races still returns hit even if setAlarm throws during cold-start prime
     umaban: "1",
     weight: null,
   };
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-31T05:00:00Z"));
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   const handle = buildFakeState(new Map());
   handle.storage.setAlarm.mockImplementation(async (_at: number): Promise<void> => {
@@ -1255,6 +1383,7 @@ it("GET /races still returns hit even if setAlarm throws during cold-start prime
   );
   expect(response.headers.get("X-Race-Trend-DO")).toBe("hit");
   expect(consoleSpy).toHaveBeenCalled();
+  vi.useRealTimers();
 });
 
 it("GET /races without URL context and with empty state returns miss without touching D1", async () => {
@@ -2148,7 +2277,25 @@ it("POST /push preserves existing bataiju when incoming row has finishPosition b
 // /races never gets hit while state is empty. Without this, a DO populated
 // entirely by pushResultsToRaceTrendDO never refreshes from D1 — bataiju /
 // weight stays null because the push payload always nulls those columns.
-it("POST /push schedules the alarm tick when no alarm is currently set", async () => {
+it("POST /push schedules the alarm tick when no alarm is set and the pushed race is incomplete", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-31T05:00:00Z"));
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(NAR_ROW),
+      method: "POST",
+    }),
+  );
+  expect(handle.storage.getAlarm).toHaveBeenCalledTimes(1);
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
+});
+
+it("POST /push does not schedule the alarm when the only pushed race is already complete", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-05-31T05:00:00Z"));
   const handle = buildFakeState(new Map());
   const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
   await cache.fetch(
@@ -2158,7 +2305,8 @@ it("POST /push schedules the alarm tick when no alarm is currently set", async (
     }),
   );
   expect(handle.storage.getAlarm).toHaveBeenCalledTimes(1);
-  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(1);
+  expect(handle.storage.setAlarm).toHaveBeenCalledTimes(0);
+  vi.useRealTimers();
 });
 
 it("POST /push does not reschedule the alarm when one is already set", async () => {

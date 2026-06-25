@@ -85,13 +85,16 @@ const STORAGE_KEY = "snapshot";
 const PUSH_URL = "https://race-trend-daily-track-do/push";
 const RACES_URL = "https://race-trend-daily-track-do/races";
 
-// JST polling window: 09:00 (inclusive) - 23:00 (inclusive). Outside this
-// window, races have not started / have all completed for the day, so a
-// 30-minute alarm interval is more than enough to catch a stray late push.
+// JST polling window: 09:00 (inclusive) - 23:00 (inclusive). Push-based
+// updates from `fetchAndStoreResults` are the primary freshness mechanism;
+// the self-rescheduling alarm is only a reconciliation safety net. So the
+// alarm re-arms every 5 minutes while in-window with at least one
+// still-incomplete race, and does NOT re-arm at all out-of-window or once
+// every race for the venue-day is complete (the DO goes dormant, which is
+// what eliminates the bulk of the DO Duration cost).
 const ALARM_WINDOW_START_HOUR = 9;
 const ALARM_WINDOW_END_HOUR = 23;
-const ALARM_IN_WINDOW_MS = 60_000;
-const ALARM_OUT_OF_WINDOW_MS = 30 * 60_000;
+const ALARM_IN_WINDOW_MS = 300_000;
 
 const RUNNING_STYLE_LABELS = new Set(["nige", "senkou", "sashi", "oikomi"]);
 
@@ -495,8 +498,30 @@ const isInPollingWindow = (now: Date): boolean => {
   return hour >= ALARM_WINDOW_START_HOUR && hour <= ALARM_WINDOW_END_HOUR;
 };
 
-export const computeNextAlarmDelayMs = (now: Date): number =>
-  isInPollingWindow(now) ? ALARM_IN_WINDOW_MS : ALARM_OUT_OF_WINDOW_MS;
+// True iff the state holds at least one race AND every race row is already
+// complete. When this is true the alarm reconciliation has nothing left to
+// reconcile for the venue-day, so the DO can go dormant (no re-arm).
+export const areAllRacesComplete = (state: RaceTrendDailyTrackState | null): boolean => {
+  if (!state) return false;
+  const rows = Object.values(state.races);
+  if (rows.length === 0) return false;
+  return rows.every((row) => row.isComplete === true);
+};
+
+interface ComputeNextAlarmAtArgs {
+  now: Date;
+  state: RaceTrendDailyTrackState | null;
+}
+
+// Re-arm decision for the self-rescheduling reconciliation alarm. Returns
+// `null` when no alarm should be set (out-of-window OR every race already
+// complete), otherwise the absolute time `now + ALARM_IN_WINDOW_MS`. Guard
+// clauses keep the two dormancy reasons explicit (typescript rule 58).
+export const computeNextAlarmAt = ({ now, state }: ComputeNextAlarmAtArgs): number | null => {
+  if (!isInPollingWindow(now)) return null;
+  if (areAllRacesComplete(state)) return null;
+  return now.getTime() + ALARM_IN_WINDOW_MS;
+};
 
 interface MergeArgs {
   existing: RaceTrendDailyTrackState | null;
@@ -751,9 +776,9 @@ export class RaceTrendDailyTrackDO {
     if (this.parsed) {
       await this.refreshFromD1({ env: context.env, parsed: this.parsed });
     }
-    await this.doState.storage.setAlarm(
-      context.now.getTime() + computeNextAlarmDelayMs(context.now),
-    );
+    const at = computeNextAlarmAt({ now: context.now, state: this.state });
+    if (at === null) return;
+    await this.doState.storage.setAlarm(at);
   }
 
   private async handlePush(request: Request): Promise<Response> {
@@ -783,7 +808,9 @@ export class RaceTrendDailyTrackDO {
   private async ensureAlarmScheduled(): Promise<void> {
     const existingAlarm = await this.doState.storage.getAlarm();
     if (existingAlarm !== null) return;
-    await this.doState.storage.setAlarm(Date.now() + computeNextAlarmDelayMs(new Date()));
+    const at = computeNextAlarmAt({ now: new Date(), state: this.state });
+    if (at === null) return;
+    await this.doState.storage.setAlarm(at);
   }
 
   // GET /races cold-start contract:
@@ -842,7 +869,8 @@ export class RaceTrendDailyTrackDO {
   private async bootstrapFromUrlContext(context: ParsedDoId): Promise<void> {
     this.parsed = context;
     try {
-      await this.doState.storage.setAlarm(Date.now() + computeNextAlarmDelayMs(new Date()));
+      const at = computeNextAlarmAt({ now: new Date(), state: this.state });
+      if (at !== null) await this.doState.storage.setAlarm(at);
     } catch (alarmError) {
       console.error("RaceTrendDailyTrackDO failed to prime alarm", alarmError);
     }
@@ -922,8 +950,9 @@ export const buildRaceTrendDailyTrackDoIdName = (args: BuildDoNameArgs): string 
 // State helpers re-exported for tests so the merge logic can be unit-tested
 // without going through the DO HTTP layer.
 export const __testables = {
+  areAllRacesComplete,
   buildRowsFromSnapshotResults,
-  computeNextAlarmDelayMs,
+  computeNextAlarmAt,
   isRawSnapshotRow,
   mergeIncomingRow,
   mergeRowFields,
