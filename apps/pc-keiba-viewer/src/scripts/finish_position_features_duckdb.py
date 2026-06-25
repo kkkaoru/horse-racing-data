@@ -1091,7 +1091,22 @@ def jockey_cte(target_filter: str = "true") -> str:
                  when corner1_norm is null then null
                  else 0.0 end)
           filter (where history_race_dt >= target_race_dt - {JOCKEY_RECENT_DAYS})
-          as jockey_recent_nige_rate_90d
+          as jockey_recent_nige_rate_90d,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3)
+          as jockey_season_win_rate,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3 and history_keibajo = target_keibajo)
+          as jockey_season_keibajo_win_rate,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where history_keibajo = target_keibajo and abs(history_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE})
+          as jockey_keibajo_distance_win_rate,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3 and history_keibajo = target_keibajo and abs(history_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE})
+          as jockey_season_keibajo_distance_win_rate,
+        count(*)
+          filter (where (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3 and history_keibajo = target_keibajo and abs(history_kyori - target_kyori) <= {SAME_DISTANCE_TOLERANCE})
+          as jockey_season_keibajo_distance_count
     """
     return template.replace("{aggregations}", aggregations)
 
@@ -1118,7 +1133,16 @@ def trainer_cte(target_filter: str = "true") -> str:
         avg(case when corner1_norm is null then null
                  when corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
                  else 0.0 end) as trainer_oikomi_rate,
-        avg(corner1_norm) as trainer_corner_1_norm_avg
+        avg(corner1_norm) as trainer_corner_1_norm_avg,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, ''))
+          as trainer_grade_win_rate,
+        avg(case when finish_position = 1 then 1 else 0 end)
+          filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '') and left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1) and (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3)
+          as trainer_class_surface_season_win_rate,
+        count(*)
+          filter (where coalesce(history_grade_code, '') = coalesce(target_grade_code, '') and left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1) and (cast(month(history_race_dt) as int) + 9) % 12 // 3 = (cast(month(target_race_dt) as int) + 9) % 12 // 3)
+          as trainer_class_surface_season_count
     """
     return template.replace("{aggregations}", aggregations)
 
@@ -1572,7 +1596,9 @@ def weight_cte(target_filter: str = "true") -> str:
       select b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
         max(tcb.current_bataiju) as current_bataiju_kept,
         max(tcb.target_zogen_sa) as zogen_sa,
-        avg(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5
+        avg(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_avg_5,
+        regr_slope(b.history_bataiju, (-b.recent_rank)::double) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_trend_5,
+        stddev_pop(b.history_bataiju) filter (where b.recent_rank <= {RECENT_WINDOW_SIZE}) as weight_volatility_5
       from horse_history_base b
       left join target_current_bataiju tcb
         using (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
@@ -1838,6 +1864,9 @@ def base_features_select_sql(category: str) -> str:
       hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
       wa.weight_avg_5,
       cast(wa.current_bataiju_kept as double) - wa.weight_avg_5 as weight_diff_from_avg,
+      wa.weight_trend_5,
+      wa.weight_volatility_5,
+      (cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(wa.weight_volatility_5, 0) as weight_zscore,
       hc.days_since_last_race, hc.consecutive_race_count,
       jc.jockey_career_win_rate, jc.jockey_recent_win_rate, jc.jockey_keibajo_win_rate,
       jc.jockey_distance_win_rate, jc.jockey_track_win_rate, jc.jockey_grade_win_rate,
@@ -1845,9 +1874,12 @@ def base_features_select_sql(category: str) -> str:
       jc.jockey_nige_rate, jc.jockey_senkou_rate, jc.jockey_sashi_rate, jc.jockey_oikomi_rate,
       jc.jockey_corner_1_norm_avg, jc.jockey_horse_corner_1_norm_avg,
       jc.jockey_recent_corner_1_norm_avg_90d, jc.jockey_recent_nige_rate_90d,
+      jc.jockey_season_win_rate, jc.jockey_season_keibajo_win_rate, jc.jockey_keibajo_distance_win_rate,
+      jc.jockey_season_keibajo_distance_win_rate, jc.jockey_season_keibajo_distance_count,
       tc.trainer_career_win_rate, tc.trainer_keibajo_win_rate, tc.trainer_distance_win_rate, tc.trainer_horse_win_rate,
       tc.trainer_nige_rate, tc.trainer_senkou_rate, tc.trainer_sashi_rate, tc.trainer_oikomi_rate,
       tc.trainer_corner_1_norm_avg,
+      tc.trainer_grade_win_rate, tc.trainer_class_surface_season_win_rate, tc.trainer_class_surface_season_count,
       case when sds.race_count >= {PEDIGREE_MIN_RACES} then sds.sire_distance_win_rate_val else null end as sire_distance_win_rate,
       case when sts.race_count >= {PEDIGREE_MIN_RACES} then sts.sire_track_win_rate_val else null end as sire_track_win_rate,
       case when dsd.race_count >= {PEDIGREE_MIN_RACES} then dsd.dam_sire_distance_win_rate_val else null end as dam_sire_distance_win_rate,

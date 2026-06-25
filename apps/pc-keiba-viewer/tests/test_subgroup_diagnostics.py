@@ -133,16 +133,16 @@ def test_get_class_label_empty_returns_unknown():
     assert subject.get_class_label("") == "unknown"
 
 
-def test_make_subgroup_key_five_parts():
-    assert subject.make_subgroup_key("jra", "turf", "mile", "G2", "summer") == "jra_turf_mile_G2_summer"
+def test_make_subgroup_key_six_parts():
+    assert subject.make_subgroup_key("jra", "turf", "mile", "G2", "summer", "10") == "jra_turf_mile_G2_summer_10"
 
 
 def test_make_subgroup_key_defaults_unknown():
-    assert subject.make_subgroup_key("jra", "turf", "mile") == "jra_turf_mile_unknown_unknown"
+    assert subject.make_subgroup_key("jra", "turf", "mile") == "jra_turf_mile_unknown_unknown_unknown"
 
 
-def test_make_subgroup_key_nar_dirt_sprint_with_class_season():
-    assert subject.make_subgroup_key("nar", "dirt", "sprint", "A", "winter") == "nar_dirt_sprint_A_winter"
+def test_make_subgroup_key_nar_dirt_sprint_with_class_season_venue():
+    assert subject.make_subgroup_key("nar", "dirt", "sprint", "A", "winter", "40") == "nar_dirt_sprint_A_winter_40"
 
 
 def test_assign_subgroup_keys_jra_turf_mile_with_class_and_season():
@@ -155,7 +155,7 @@ def test_assign_subgroup_keys_jra_turf_mile_with_class_and_season():
         "kaisai_nengappi": "20260615",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile_G2_summer"]
+    assert result.to_list() == ["jra_turf_mile_G2_summer_10"]
 
 
 def test_assign_subgroup_keys_nar_dirt_long_with_class_and_season():
@@ -168,7 +168,7 @@ def test_assign_subgroup_keys_nar_dirt_long_with_class_and_season():
         "kaisai_nengappi": "20261201",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["nar_dirt_long_A_winter"]
+    assert result.to_list() == ["nar_dirt_long_A_winter_40"]
 
 
 def test_assign_subgroup_keys_jra_turf_extended_spring():
@@ -181,7 +181,7 @@ def test_assign_subgroup_keys_jra_turf_extended_spring():
         "kaisai_nengappi": "20260405",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_extended_G1_spring"]
+    assert result.to_list() == ["jra_turf_extended_G1_spring_10"]
 
 
 def test_assign_subgroup_keys_banei_dirt_sprint_autumn():
@@ -194,7 +194,7 @@ def test_assign_subgroup_keys_banei_dirt_sprint_autumn():
         "kaisai_nengappi": "20261010",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["banei_dirt_sprint_B_autumn"]
+    assert result.to_list() == ["banei_dirt_sprint_B_autumn_83"]
 
 
 def test_assign_subgroup_keys_multiple_rows_with_class_and_season():
@@ -205,7 +205,7 @@ def test_assign_subgroup_keys_multiple_rows_with_class_and_season():
          "grade_code": "C", "kaisai_nengappi": "20260720"},
     ])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_dirt_sprint_OP_winter", "nar_dirt_intermediate_C_summer"]
+    assert result.to_list() == ["jra_dirt_sprint_OP_winter_10", "nar_dirt_intermediate_C_summer_40"]
 
 
 def test_assign_subgroup_keys_missing_grade_code_column_uses_unknown():
@@ -217,7 +217,7 @@ def test_assign_subgroup_keys_missing_grade_code_column_uses_unknown():
         "kaisai_nengappi": "20260615",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile_unknown_summer"]
+    assert result.to_list() == ["jra_turf_mile_unknown_summer_10"]
 
 
 def test_assign_subgroup_keys_missing_kaisai_nengappi_column_uses_unknown():
@@ -229,7 +229,7 @@ def test_assign_subgroup_keys_missing_kaisai_nengappi_column_uses_unknown():
         "grade_code": "G1",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile_G1_unknown"]
+    assert result.to_list() == ["jra_turf_mile_G1_unknown_10"]
 
 
 def test_assign_subgroup_keys_missing_both_optional_columns_uses_unknown():
@@ -240,7 +240,7 @@ def test_assign_subgroup_keys_missing_both_optional_columns_uses_unknown():
         "kyori": 1400,
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile_unknown_unknown"]
+    assert result.to_list() == ["jra_turf_mile_unknown_unknown_10"]
 
 
 def test_assign_subgroup_keys_null_grade_code_uses_unknown():
@@ -253,7 +253,7 @@ def test_assign_subgroup_keys_null_grade_code_uses_unknown():
         "kaisai_nengappi": "20260615",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile_unknown_summer"]
+    assert result.to_list() == ["jra_turf_mile_unknown_summer_10"]
 
 
 def test_dcg_at_3_perfect_prediction():
@@ -462,12 +462,14 @@ def test_evaluate_subgroup_populates_dimension_fields_from_kwargs():
         distance_band="mile",
         class_label="G2",
         season="summer",
+        venue="10",
     )
     assert result["category"] == "jra"
     assert result["surface"] == "turf"
     assert result["distance_band"] == "mile"
     assert result["class_label"] == "G2"
     assert result["season"] == "summer"
+    assert result["venue"] == "10"
 
 
 def test_evaluate_subgroup_dimension_fields_default_to_empty_string():
@@ -483,6 +485,7 @@ def test_evaluate_subgroup_dimension_fields_default_to_empty_string():
     assert result["distance_band"] == ""
     assert result["class_label"] == ""
     assert result["season"] == ""
+    assert result["venue"] == ""
 
 
 def test_evaluate_subgroup_empty_df_populates_dimension_fields_from_kwargs():
@@ -501,6 +504,7 @@ def test_evaluate_subgroup_empty_df_populates_dimension_fields_from_kwargs():
         distance_band="sprint",
         class_label="A",
         season="winter",
+        venue="40",
     )
     assert result["race_count"] == 0
     assert result["category"] == "nar"
@@ -508,6 +512,7 @@ def test_evaluate_subgroup_empty_df_populates_dimension_fields_from_kwargs():
     assert result["distance_band"] == "sprint"
     assert result["class_label"] == "A"
     assert result["season"] == "winter"
+    assert result["venue"] == "40"
 
 
 def test_evaluate_subgroup_single_race_perfect():
@@ -618,12 +623,13 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_turf_mile_G2_summer"
+    assert results[0]["subgroup"] == "jra_turf_mile_G2_summer_10"
     assert results[0]["category"] == "jra"
     assert results[0]["surface"] == "turf"
     assert results[0]["distance_band"] == "mile"
     assert results[0]["class_label"] == "G2"
     assert results[0]["season"] == "summer"
+    assert results[0]["venue"] == "10"
     assert results[0]["race_count"] == 1
 
 
@@ -777,21 +783,23 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
     assert len(results) == 2
     assert results[0]["subgroup"] < results[1]["subgroup"]
     assert {results[0]["subgroup"], results[1]["subgroup"]} == {
-        "jra_turf_mile_G1_spring", "nar_dirt_sprint_C_winter",
+        "jra_turf_mile_G1_spring_10", "nar_dirt_sprint_C_winter_40",
     }
     by_key = {m["subgroup"]: m for m in results}
-    jra = by_key["jra_turf_mile_G1_spring"]
+    jra = by_key["jra_turf_mile_G1_spring_10"]
     assert jra["category"] == "jra"
     assert jra["surface"] == "turf"
     assert jra["distance_band"] == "mile"
     assert jra["class_label"] == "G1"
     assert jra["season"] == "spring"
-    nar = by_key["nar_dirt_sprint_C_winter"]
+    assert jra["venue"] == "10"
+    nar = by_key["nar_dirt_sprint_C_winter_40"]
     assert nar["category"] == "nar"
     assert nar["surface"] == "dirt"
     assert nar["distance_band"] == "sprint"
     assert nar["class_label"] == "C"
     assert nar["season"] == "winter"
+    assert nar["venue"] == "40"
 
 
 def test_compute_subgroup_diagnostics_banei_subgroup():
@@ -837,12 +845,13 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "banei_dirt_sprint_B_summer"
+    assert results[0]["subgroup"] == "banei_dirt_sprint_B_summer_83"
     assert results[0]["category"] == "banei"
     assert results[0]["surface"] == "dirt"
     assert results[0]["distance_band"] == "sprint"
     assert results[0]["class_label"] == "B"
     assert results[0]["season"] == "summer"
+    assert results[0]["venue"] == "83"
 
 
 def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
@@ -888,7 +897,7 @@ def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_dirt_mile_OP_autumn"
+    assert results[0]["subgroup"] == "jra_dirt_mile_OP_autumn_10"
 
 
 def test_compute_subgroup_diagnostics_jra_other_track_code():
@@ -934,7 +943,7 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_other_extended_G3_winter"
+    assert results[0]["subgroup"] == "jra_other_extended_G3_winter_10"
 
 
 def test_evaluate_subgroup_top3_not_counted_when_fewer_than_3_valid_predicted_ranks():
@@ -1187,6 +1196,7 @@ def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():
             subject.get_distance_band(int(row["kyori"])),
             subject.get_class_label(row["grade_code"]),
             subject.get_season(int(str(row["kaisai_nengappi"])[4:6])),
+            row["keibajo_code"],
         )
         for row in df.iter_rows(named=True)
     ]
@@ -1203,10 +1213,10 @@ def test_season_expr_all_four_seasons():
         "kaisai_nengappi": ["20260315", "20260720", "20261015", "20261215"],
     })
     keys = subject.assign_subgroup_keys(df).to_list()
-    assert keys[0].endswith("_spring")
-    assert keys[1].endswith("_summer")
-    assert keys[2].endswith("_autumn")
-    assert keys[3].endswith("_winter")
+    assert keys[0] == "jra_turf_mile_A_spring_10"
+    assert keys[1] == "jra_turf_mile_A_summer_10"
+    assert keys[2] == "jra_turf_mile_A_autumn_10"
+    assert keys[3] == "jra_turf_mile_A_winter_10"
 
 
 def test_season_expr_january_february_are_winter():
@@ -1219,8 +1229,8 @@ def test_season_expr_january_february_are_winter():
         "kaisai_nengappi": ["20260115", "20260220"],
     })
     keys = subject.assign_subgroup_keys(df).to_list()
-    assert keys[0].endswith("_winter")
-    assert keys[1].endswith("_winter")
+    assert keys[0] == "jra_turf_mile_A_winter_10"
+    assert keys[1] == "jra_turf_mile_A_winter_10"
 
 
 def test_class_expr_various_grade_codes():
@@ -1233,11 +1243,23 @@ def test_class_expr_various_grade_codes():
         "kaisai_nengappi": ["20260615"] * 5,
     })
     keys = subject.assign_subgroup_keys(df).to_list()
-    assert keys[0] == "jra_turf_mile_G1_summer"
-    assert keys[1] == "jra_turf_mile_G2_summer"
-    assert keys[2] == "jra_turf_mile_G3_summer"
-    assert keys[3] == "jra_turf_mile_OP_summer"
-    assert keys[4] == "jra_turf_mile_NEW_summer"
+    assert keys[0] == "jra_turf_mile_G1_summer_10"
+    assert keys[1] == "jra_turf_mile_G2_summer_10"
+    assert keys[2] == "jra_turf_mile_G3_summer_10"
+    assert keys[3] == "jra_turf_mile_OP_summer_10"
+    assert keys[4] == "jra_turf_mile_NEW_summer_10"
+
+
+def test_venue_expr_returns_keibajo_code():
+    df = pl.DataFrame({"keibajo_code": ["10", "40", "83"]})
+    result = df.select(subject._venue_expr().alias("venue"))
+    assert result["venue"].to_list() == ["10", "40", "83"]
+
+
+def test_venue_expr_null_keibajo_code_uses_unknown():
+    df = pl.DataFrame({"keibajo_code": [None]}, schema={"keibajo_code": pl.Utf8})
+    result = df.select(subject._venue_expr().alias("venue"))
+    assert result["venue"].to_list() == ["unknown"]
 
 
 def test_compute_subgroup_diagnostics_missing_optional_columns_uses_unknown():
@@ -1262,7 +1284,7 @@ def test_compute_subgroup_diagnostics_missing_optional_columns_uses_unknown():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_turf_mile_unknown_unknown"
+    assert results[0]["subgroup"] == "jra_turf_mile_unknown_unknown_10"
     assert results[0]["race_count"] == 1
 
 
@@ -1291,7 +1313,7 @@ def test_compute_subgroup_diagnostics_missing_only_grade_code():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_turf_mile_unknown_autumn"
+    assert results[0]["subgroup"] == "jra_turf_mile_unknown_autumn_10"
 
 
 def test_compute_subgroup_diagnostics_missing_only_kaisai_nengappi():
@@ -1319,7 +1341,7 @@ def test_compute_subgroup_diagnostics_missing_only_kaisai_nengappi():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_turf_mile_G2_unknown"
+    assert results[0]["subgroup"] == "jra_turf_mile_G2_unknown_10"
 
 
 def test_season_expr_december_is_winter():
@@ -1332,4 +1354,4 @@ def test_season_expr_december_is_winter():
         "kaisai_nengappi": ["20261201"],
     })
     keys = subject.assign_subgroup_keys(df).to_list()
-    assert keys[0] == "jra_turf_mile_A_winter"
+    assert keys[0] == "jra_turf_mile_A_winter_10"

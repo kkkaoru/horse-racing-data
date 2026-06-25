@@ -3064,3 +3064,47 @@ def test_close_log_file_is_idempotent() -> None:
     subject.close_log_file()
     subject.close_log_file()
     assert subject._log_file is None
+
+
+def test_jockey_cte_emits_season_keibajo_distance_aggregates():
+    cte = subject.jockey_cte()
+    assert "jockey_season_win_rate" in cte
+    assert "jockey_season_keibajo_win_rate" in cte
+    assert "jockey_keibajo_distance_win_rate" in cte
+    assert "jockey_season_keibajo_distance_win_rate" in cte
+    assert "jockey_season_keibajo_distance_count" in cte
+    assert "(cast(month(history_race_dt) as int) + 9) % 12 // 3" in cte
+    assert "(cast(month(target_race_dt) as int) + 9) % 12 // 3" in cte
+    assert "abs(history_kyori - target_kyori) <= 200" in cte
+
+
+def test_trainer_cte_emits_class_surface_season_aggregates():
+    cte = subject.trainer_cte()
+    assert "trainer_grade_win_rate" in cte
+    assert "trainer_class_surface_season_win_rate" in cte
+    assert "trainer_class_surface_season_count" in cte
+    assert "coalesce(history_grade_code, '') = coalesce(target_grade_code, '')" in cte
+    assert "left(coalesce(history_track_code, ''), 1) = left(coalesce(target_track_code, ''), 1)" in cte
+    assert "(cast(month(history_race_dt) as int) + 9) % 12 // 3" in cte
+    assert "(cast(month(target_race_dt) as int) + 9) % 12 // 3" in cte
+
+
+def test_weight_cte_emits_trend_and_volatility_aggregates():
+    cte = subject.weight_cte()
+    assert "weight_trend_5" in cte
+    assert "weight_volatility_5" in cte
+    assert "regr_slope(b.history_bataiju" in cte
+    assert "(-b.recent_rank)::double" in cte
+    assert "stddev_pop(b.history_bataiju)" in cte
+
+
+def test_base_features_select_sql_registers_weight_zscore_and_new_partner_features():
+    sql = subject.base_features_select_sql("jra")
+    assert "weight_zscore" in sql
+    assert "wa.weight_trend_5" in sql
+    assert "wa.weight_volatility_5" in sql
+    assert "(cast(wa.current_bataiju_kept as double) - wa.weight_avg_5) / nullif(wa.weight_volatility_5, 0) as weight_zscore" in sql
+    assert "jc.jockey_season_win_rate" in sql
+    assert "jc.jockey_season_keibajo_distance_count" in sql
+    assert "tc.trainer_grade_win_rate" in sql
+    assert "tc.trainer_class_surface_season_count" in sql

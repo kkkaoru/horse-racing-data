@@ -713,12 +713,13 @@ class ContinuousLearner:
         )
         for m in metrics:
             _logger.info(
-                "│  %-8s %-6s %-14s %-8s %-8s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                "│  %-8s %-6s %-14s %-8s %-8s %-8s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
                 m["category"],
                 m["surface"],
                 m["distance_band"],
                 m["class_label"],
                 m["season"],
+                m["venue"],
                 m["race_count"],
                 m["ndcg_at_3"],
                 m["top1_accuracy"],

@@ -34,6 +34,7 @@ class SubgroupMetrics(TypedDict):
     distance_band: str
     class_label: str
     season: str
+    venue: str
     race_count: int
     ndcg_at_3: float
     top1_accuracy: float
@@ -92,8 +93,9 @@ def make_subgroup_key(
     distance_band: str,
     class_label: str = "unknown",
     season: str = "unknown",
+    venue: str = "unknown",
 ) -> str:
-    return f"{source_label}_{surface}_{distance_band}_{class_label}_{season}"
+    return f"{source_label}_{surface}_{distance_band}_{class_label}_{season}_{venue}"
 
 
 def _source_label_expr() -> pl.Expr:
@@ -159,6 +161,10 @@ def _class_expr(df: pl.DataFrame) -> pl.Expr:
     return pl.col("grade_code").cast(pl.Utf8).fill_null("unknown")
 
 
+def _venue_expr() -> pl.Expr:
+    return pl.col("keibajo_code").cast(pl.Utf8).fill_null("unknown")
+
+
 def assign_subgroup_keys(df: pl.DataFrame) -> pl.Series:
     """Return a Series of subgroup key strings aligned with df's rows."""
     result = df.select(
@@ -173,6 +179,8 @@ def assign_subgroup_keys(df: pl.DataFrame) -> pl.Series:
                 _class_expr(df),
                 pl.lit("_"),
                 _season_expr(df),
+                pl.lit("_"),
+                _venue_expr(),
             ]
         ).alias("key")
     )
@@ -350,6 +358,7 @@ def evaluate_subgroup(
     distance_band: str = "",
     class_label: str = "",
     season: str = "",
+    venue: str = "",
 ) -> SubgroupMetrics:
     """Compute metrics for a single subgroup slice (already filtered)."""
     race_count = joined.select(pl.col("race_id").n_unique()).item()
@@ -361,6 +370,7 @@ def evaluate_subgroup(
             distance_band=distance_band,
             class_label=class_label,
             season=season,
+            venue=venue,
             race_count=0,
             ndcg_at_3=0.0,
             top1_accuracy=0.0,
@@ -376,6 +386,7 @@ def evaluate_subgroup(
         distance_band=distance_band,
         class_label=class_label,
         season=season,
+        venue=venue,
         race_count=race_count,
         ndcg_at_3=ndcg_mean,
         top1_accuracy=top1_hits / race_count,
@@ -422,6 +433,7 @@ def compute_subgroup_diagnostics(
         _distance_band_expr().alias("_distance_band"),
         _class_expr(joined).alias("_class_label"),
         _season_expr(joined).alias("_season"),
+        _venue_expr().alias("_venue"),
     )
     results: list[SubgroupMetrics] = []
     for (subgroup_key,), group_df in joined.group_by("_subgroup", maintain_order=True):
@@ -433,6 +445,7 @@ def compute_subgroup_diagnostics(
             distance_band=str(first_row["_distance_band"]),
             class_label=str(first_row["_class_label"]),
             season=str(first_row["_season"]),
+            venue=str(first_row["_venue"]),
         )
         metrics["subgroup"] = str(subgroup_key)
         results.append(metrics)
