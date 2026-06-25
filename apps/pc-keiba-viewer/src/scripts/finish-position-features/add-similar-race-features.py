@@ -40,19 +40,24 @@ Run with::
     --input-dir tmp/feat-jra-v9-new \\
     --output-dir tmp/feat-jra-v9-similar \\
     --category jra \\
-    --pg-url postgresql://horse_racing:***@127.0.0.1:15432/horse_racing
+    --pg-url postgresql://horse_racing:***@127.0.0.1:5432/horse_racing
 """
 from __future__ import annotations
 
 import argparse
 import os
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import duckdb
 
 from _resource_defaults import add_resource_args, apply_to_connection
+
+
+class _Fetchable(Protocol):
+    def fetchall(self) -> Sequence[Sequence[int]]: ...
 
 
 class _DuckDBConnectionLike(Protocol):
@@ -64,6 +69,12 @@ DEFAULT_PG_URL: str = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/hor
 # Minimum number of similar races a level must yield before it is accepted;
 # below this the next (broader) fallback level is used.
 MIN_SIMILAR: int = 30
+
+# Cap the similar-race pool to the most-recent N races per target. Time decay
+# makes older races negligible, and the cap keeps the broad (level-4) pool from
+# fanning out to the whole venue (which OOMs Ban-ei, single-venue, ~20K races).
+# Targets with fewer than this many similar races are unaffected.
+SIMILAR_POOL_CAP: int = 200
 
 # Only look back this many years from the target race when pooling similar races.
 HISTORY_LOOKBACK_YEARS: int = 10
@@ -324,31 +335,62 @@ def _level_match_predicate(level: int) -> str:
     return base
 
 
+def _level_count_sql(level: int) -> str:
+    """SQL building `_level_count_{level}`: distinct similar races per target key.
+
+    Drives a SEPARATE per-level join off `_level_match_predicate(level)`. For
+    levels 1-3 that predicate carries an equality on class_group (plus venue /
+    season for the tighter levels), so DuckDB extracts those equality conjuncts
+    into a selective hash-join key and applies the strictly-earlier-date and 10y
+    lookback as residual filters — avoiding the near-cartesian surface+kyori_band
+    fan-out that OOMs for single-venue Ban-ei when all dims collapse. `race_summary`
+    is already one-row-per-race, so count(*) over matching history rows equals the
+    count of distinct similar races — exactly what the old
+    count(distinct source||race_date||keibajo_code||race_bango) produced. n4 is
+    never counted (sim_match_level defaults to 4), so only levels 1, 2, 3 run here.
+    """
+    return f"""
+        create or replace temp table _level_count_{level} as
+        select
+          t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+          count(*) as n{level}
+        from target_races t
+        join race_summary h
+          on {_level_match_predicate(level)}
+        group by t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango
+        """
+
+
 def stage_target_match_level(con: _DuckDBConnectionLike) -> None:
     """Resolve, per target race, the coarsest similarity level meeting MIN_SIMILAR.
 
     Counts distinct similar races at each level (1..3); the first level with
     >= MIN_SIMILAR wins, otherwise level 4 (broad) is used.
+
+    Each level is counted via its own selective key-driven hash join (Prong A)
+    rather than one broad surface+kyori_band join that fans out to ~400M rows for
+    single-venue Ban-ei. n4 is never needed because the level falls to 4 by
+    default once n1, n2, n3 are all below MIN_SIMILAR. A target absent from a
+    level's count table had zero matches there, so coalesce(..., 0) restores the
+    0 the old single LEFT JOIN produced.
     """
-    counts = ",\n          ".join(
-        f"""count(distinct case when {_level_match_predicate(level)}
-              then h.source || h.race_date || h.keibajo_code || h.race_bango end) as n{level}"""
-        for level in (1, 2, 3)
-    )
+    for level in (1, 2, 3):
+        con.execute(_level_count_sql(level))
     con.execute(
-        f"""
+        """
         create or replace temp table target_level_counts as
         select
           t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
-          {counts}
+          coalesce(c1.n1, 0) as n1,
+          coalesce(c2.n2, 0) as n2,
+          coalesce(c3.n3, 0) as n3
         from target_races t
-        left join race_summary h
-          on h.source = t.source
-          and h.surface = t.surface
-          and h.kyori_band = t.kyori_band
-          and h.race_date < t.race_date
-          and cast(h.kaisai_nen as int) >= cast(t.kaisai_nen as int) - {HISTORY_LOOKBACK_YEARS}
-        group by t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango
+        left join _level_count_1 c1 using
+          (source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        left join _level_count_2 c2 using
+          (source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        left join _level_count_3 c3 using
+          (source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
         """
     )
     con.execute(
@@ -371,27 +413,201 @@ def stage_target_match_level(con: _DuckDBConnectionLike) -> None:
     )
 
 
-def _similar_pool_join_predicate() -> str:
-    """ON-clause selecting the similar-race summary rows for a target's chosen level.
-
-    `t` is target_races joined with its resolved sim_match_level (tml). The level
-    is materialised as `t.sim_match_level`; the predicate fans out to the matching
-    level's dims via OR-by-level so a single join serves all four levels.
-    """
+def _decay_weight_sql(target_date_col: str, sim_date_col: str) -> str:
+    """exp(-rate * days) time-decay weight between a target date and a sim date."""
     return (
-        "h.source = t.source "
-        "and h.surface = t.surface "
-        "and h.kyori_band = t.kyori_band "
-        "and h.race_date < t.race_date "
-        f"and cast(h.kaisai_nen as int) >= cast(t.kaisai_nen as int) - {HISTORY_LOOKBACK_YEARS} "
-        "and ("
-        "  (t.sim_match_level = 1 and h.keibajo_code = t.keibajo_code "
-        "     and h.season_band = t.season_band and h.class_group = t.class_group)"
-        "  or (t.sim_match_level = 2 and h.keibajo_code = t.keibajo_code "
-        "     and h.class_group = t.class_group)"
-        "  or (t.sim_match_level = 3 and h.class_group = t.class_group)"
-        "  or (t.sim_match_level = 4)"
-        ")"
+        f"exp(-{TIME_DECAY_RATE} * ("
+        f"cast(strptime({target_date_col}, '%Y%m%d') as date) "
+        f"- cast(strptime({sim_date_col}, '%Y%m%d') as date)))"
+    )
+
+
+def _level_equality_dims(level: int) -> tuple[str, ...]:
+    """The history/target equality dims that define a similarity level's pool.
+
+    These are exactly the equality conjuncts `_level_match_predicate(level)` adds
+    on top of (source, surface, kyori_band) — so two targets that agree on these
+    dims plus (race_date, kaisai_nen) match the IDENTICAL history set in the
+    IDENTICAL order. Level 4 keeps only (surface, kyori_band); levels 1-3 add:
+      level 1: keibajo_code + season_band + class_group
+      level 2: keibajo_code + class_group   (drops season_band)
+      level 3: class_group                  (drops keibajo_code and season_band)
+    """
+    if level == 1:
+        return ("surface", "kyori_band", "keibajo_code", "season_band", "class_group")
+    if level == 2:
+        return ("surface", "kyori_band", "keibajo_code", "class_group")
+    return ("surface", "kyori_band", "class_group")
+
+
+def _insert_similar_pool_level(con: _DuckDBConnectionLike, level: int) -> None:
+    """INSERT for levels 1-3: key-collapsed recency slice (same shape as level 4).
+
+    A per-target recency cap would partition by the FULL target key, but the SET
+    of history rows a target matches (and their order) depends ONLY on the level's
+    equality dims plus (race_date, kaisai_nen). So every target sharing the same
+    (equality-dims, race_date, kaisai_nen) tuple gets the IDENTICAL capped pool.
+    We therefore rank history ONCE per distinct tuple — bounded by
+    distinct-keys x dates x SIMILAR_POOL_CAP — then fan the capped slice back out
+    to every target with that tuple. This avoids the per-target window buffering
+    the venue-wide surface+kyori_band fan-out that OOMs single-venue Ban-ei (where
+    every dim collapses to one value), while producing byte-for-byte identical
+    edges (decay_weight depends only on the same (target race_date, sim
+    race_date), also identical within the tuple).
+    """
+    dims = _level_equality_dims(level)
+    dim_cols = ", ".join(dims)
+    target_eq = " and ".join(f"h.{d} = k.{d}" for d in dims)
+    partition_dims = ", ".join(f"k.{d}" for d in dims)
+    key_cols = ", ".join(f"k.{d}" for d in dims)
+    fanout_eq = " and ".join(f"p.{d} = t.{d}" for d in dims)
+    con.execute(
+        f"""
+        create or replace temp table _l{level}_targets as
+        select tr.source, tr.race_date, tr.kaisai_nen, tr.kaisai_tsukihi,
+               tr.keibajo_code, tr.race_bango, {dim_cols}
+        from target_races tr
+        join target_match_level tml using
+          (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where tml.sim_match_level = {level}
+        """
+    )
+    con.execute(
+        f"""
+        create or replace temp table _l{level}_target_keys as
+        select distinct source, {dim_cols}, race_date, kaisai_nen
+        from _l{level}_targets
+        """
+    )
+    con.execute(
+        f"""
+        create or replace temp table _l{level}_pool_by_key as
+        select
+          k.source, {key_cols},
+          k.race_date as target_race_date,
+          k.kaisai_nen as target_kaisai_nen,
+          h.race_date as sim_race_date,
+          h.kaisai_nen as sim_kaisai_nen,
+          h.kaisai_tsukihi as sim_kaisai_tsukihi,
+          h.keibajo_code as sim_keibajo_code,
+          h.race_bango as sim_race_bango,
+          h.odds_rank_corr,
+          h.fav_won
+        from _l{level}_target_keys k
+        join race_summary h
+          on h.source = k.source
+          and {target_eq}
+          and h.race_date < k.race_date
+          and cast(h.kaisai_nen as int) >= cast(k.kaisai_nen as int) - {HISTORY_LOOKBACK_YEARS}
+        qualify row_number() over (
+          partition by k.source, {partition_dims}, k.race_date, k.kaisai_nen
+          order by h.race_date desc, h.keibajo_code, h.race_bango
+        ) <= {SIMILAR_POOL_CAP}
+        """
+    )
+    con.execute(
+        f"""
+        insert into similar_pool
+        select
+          t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+          {level} as sim_match_level,
+          p.sim_race_date,
+          p.sim_kaisai_nen,
+          p.sim_kaisai_tsukihi,
+          p.sim_keibajo_code,
+          p.sim_race_bango,
+          p.odds_rank_corr,
+          p.fav_won,
+          {_decay_weight_sql("t.race_date", "p.sim_race_date")} as decay_weight
+        from _l{level}_targets t
+        join _l{level}_pool_by_key p
+          on p.source = t.source
+          and {fanout_eq}
+          and p.target_race_date = t.race_date
+          and p.target_kaisai_nen = t.kaisai_nen
+        """
+    )
+
+
+def _insert_similar_pool_level4(con: _DuckDBConnectionLike) -> None:
+    """INSERT for level 4 (surface + kyori_band only): key-collapsed recency slice.
+
+    Level 4 is the dangerous fan-out: its pool is keyed only by
+    (source, surface, kyori_band), so naively joining every level-4 target to
+    history materialises ~entire-venue x targets (~400M rows for Ban-ei) BEFORE
+    any window prunes. We collapse instead: every level-4 target sharing the same
+    (source, surface, kyori_band, race_date, kaisai_nen) gets the IDENTICAL pool,
+    so history is ranked once per distinct (key, date) tuple — bounded by
+    distinct-keys x dates x SIMILAR_POOL_CAP — then the capped slice is fanned back
+    out to every target. The recency cap matches the per-target cap exactly.
+    """
+    con.execute(
+        """
+        create or replace temp table _l4_targets as
+        select tr.source, tr.race_date, tr.kaisai_nen, tr.kaisai_tsukihi,
+               tr.keibajo_code, tr.race_bango, tr.surface, tr.kyori_band
+        from target_races tr
+        join target_match_level tml using
+          (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        where tml.sim_match_level = 4
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table _l4_target_keys as
+        select distinct source, surface, kyori_band, race_date, kaisai_nen
+        from _l4_targets
+        """
+    )
+    con.execute(
+        f"""
+        create or replace temp table _l4_pool_by_key as
+        select
+          k.source, k.surface, k.kyori_band,
+          k.race_date as target_race_date,
+          k.kaisai_nen as target_kaisai_nen,
+          h.race_date as sim_race_date,
+          h.kaisai_nen as sim_kaisai_nen,
+          h.kaisai_tsukihi as sim_kaisai_tsukihi,
+          h.keibajo_code as sim_keibajo_code,
+          h.race_bango as sim_race_bango,
+          h.odds_rank_corr,
+          h.fav_won
+        from _l4_target_keys k
+        join race_summary h
+          on h.source = k.source
+          and h.surface = k.surface
+          and h.kyori_band = k.kyori_band
+          and h.race_date < k.race_date
+          and cast(h.kaisai_nen as int) >= cast(k.kaisai_nen as int) - {HISTORY_LOOKBACK_YEARS}
+        qualify row_number() over (
+          partition by k.source, k.surface, k.kyori_band, k.race_date, k.kaisai_nen
+          order by h.race_date desc, h.keibajo_code, h.race_bango
+        ) <= {SIMILAR_POOL_CAP}
+        """
+    )
+    con.execute(
+        f"""
+        insert into similar_pool
+        select
+          t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+          4 as sim_match_level,
+          p.sim_race_date,
+          p.sim_kaisai_nen,
+          p.sim_kaisai_tsukihi,
+          p.sim_keibajo_code,
+          p.sim_race_bango,
+          p.odds_rank_corr,
+          p.fav_won,
+          {_decay_weight_sql("t.race_date", "p.sim_race_date")} as decay_weight
+        from _l4_targets t
+        join _l4_pool_by_key p
+          on p.source = t.source
+          and p.surface = t.surface
+          and p.kyori_band = t.kyori_band
+          and p.target_race_date = t.race_date
+          and p.target_kaisai_nen = t.kaisai_nen
+        """
     )
 
 
@@ -400,14 +616,24 @@ def stage_similar_pool(con: _DuckDBConnectionLike) -> None:
 
     Each edge carries the time-decay weight and the historical race's odds stats,
     so Phase-1 race-level aggregates reduce to a weighted reduction over edges.
+
+    To stay under memory_limit for single-venue Ban-ei, the levels are inserted
+    SEPARATELY: every level (1-3 via _insert_similar_pool_level, 4 via
+    _insert_similar_pool_level4) uses the same key-collapsed recency slice — rank
+    history ONCE per distinct (level-equality-dims, race_date, kaisai_nen) tuple,
+    then fan the capped slice out to every target sharing the tuple. No single
+    statement materialises the ~20K x 20K (~400M-row) cross that previously OOM'd,
+    and no per-target window buffers a venue-wide partition (which threw DuckDB's
+    4 GB string cap for Ban-ei, where every dim collapses to one value). Output is
+    byte-for-byte identical because targets sharing a tuple match the identical
+    capped pool in the identical order.
     """
-    pred = _similar_pool_join_predicate()
     con.execute(
         f"""
         create or replace temp table similar_pool as
         select
           t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
-          t.sim_match_level,
+          cast(null as integer) as sim_match_level,
           h.race_date as sim_race_date,
           h.kaisai_nen as sim_kaisai_nen,
           h.kaisai_tsukihi as sim_kaisai_tsukihi,
@@ -415,25 +641,14 @@ def stage_similar_pool(con: _DuckDBConnectionLike) -> None:
           h.race_bango as sim_race_bango,
           h.odds_rank_corr,
           h.fav_won,
-          exp(
-            -{TIME_DECAY_RATE} * (
-              cast(strptime(t.race_date, '%Y%m%d') as date)
-              - cast(strptime(h.race_date, '%Y%m%d') as date)
-            )
-          ) as decay_weight
-        from (
-          select tr.*, tml.sim_match_level
-          from target_races tr
-          join target_match_level tml
-            on tml.source = tr.source
-            and tml.kaisai_nen = tr.kaisai_nen
-            and tml.kaisai_tsukihi = tr.kaisai_tsukihi
-            and tml.keibajo_code = tr.keibajo_code
-            and tml.race_bango = tr.race_bango
-        ) t
-        join race_summary h on {pred}
+          {_decay_weight_sql("t.race_date", "h.race_date")} as decay_weight
+        from target_races t
+        join race_summary h on 1 = 0
         """
     )
+    for level in (1, 2, 3):
+        _insert_similar_pool_level(con, level)
+    _insert_similar_pool_level4(con)
     con.execute(
         "create index similar_pool_idx on similar_pool "
         "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)"
@@ -573,7 +788,13 @@ def stage_target_entities(con: _DuckDBConnectionLike, from_date: str, category: 
 
 
 def append_features_sql(input_glob: str) -> str:
-    """LEFT JOIN all Phase-1 + Phase-2 columns onto the base parquet."""
+    """LEFT JOIN all Phase-1 + Phase-2 columns onto the base parquet.
+
+    Called once per output year with a year-specific ``input_glob``; every staging
+    table the joins reference (target_entities + the per-key stat tables) is built
+    for that same single year, and the base parquet itself is one year, so each
+    join only ever sees that year's rows — no explicit year filter is needed.
+    """
     race_key = (
         "{a}.source = {b}.source "
         "and {a}.kaisai_nen = {b}.kaisai_nen "
@@ -640,33 +861,94 @@ def append_features_sql(input_glob: str) -> str:
     """
 
 
-def write_partitioned(con: _DuckDBConnectionLike, sql: str, output_dir: Path) -> None:
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    con.execute(
-        f"copy ({sql}) to '{output_dir.as_posix()}' "
-        "(format parquet, partition_by (race_year), overwrite_or_ignore true)"
-    )
+def drop_staging_tables(con: _DuckDBConnectionLike) -> None:
+    """Drop every PER-YEAR staging table at the end of a year's iteration.
+
+    similar_history and race_summary are staged ONCE from PG and reused across all
+    output years, so they are deliberately NOT dropped here — only the per-year
+    pool/target/stat tables (which are rebuilt for the next year) are released. A
+    single year's slice is ~1/20th of the full data, keeping the resident set far
+    under the 6GB DuckDB budget that the multi-CTE write previously blew past.
+    """
+    for table in (
+        "similar_pool",
+        "target_races",
+        "target_match_level",
+        "target_level_counts",
+        "pool_results",
+        "_l1_targets",
+        "_l1_target_keys",
+        "_l1_pool_by_key",
+        "_l2_targets",
+        "_l2_target_keys",
+        "_l2_pool_by_key",
+        "_l3_targets",
+        "_l3_target_keys",
+        "_l3_pool_by_key",
+        "_l4_targets",
+        "_l4_target_keys",
+        "_l4_pool_by_key",
+        "_level_count_1",
+        "_level_count_2",
+        "_level_count_3",
+        "sim_race_features",
+        "sim_jockey_stats",
+        "sim_trainer_stats",
+        "sim_sire_stats",
+        "sim_damsire_stats",
+        "sim_owner_stats",
+        "sim_umaban_zone_stats",
+        "target_entities",
+    ):
+        con.execute(f"drop table if exists {table}")
+
+
+def _get_years(con: _DuckDBConnectionLike, input_glob: str) -> list[int]:
+    rows = cast(
+        _Fetchable,
+        con.execute(
+            "select distinct race_year from "
+            f"read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) "
+            "order by race_year"
+        ),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 def main() -> None:
     args = parse_args()
     input_glob = f"{args.input_dir.as_posix()}/race_year=*/*.parquet"
+    tmp_dir = Path("/tmp/duckdb_similar_race_tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
+    con.execute(f"SET temp_directory='{tmp_dir.as_posix()}'")
+    con.execute("SET max_temp_directory_size='50GB'")
     install_and_attach_pg(con, args.pg_url)
     stage_similar_history(con, args.from_date, args.category)
     stage_race_summary(con)
-    stage_target_races(con, input_glob)
-    stage_target_match_level(con)
-    stage_similar_pool(con)
-    stage_race_level_features(con)
-    stage_entity_features(con)
-    stage_target_entities(con, args.from_date, args.category)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    years = _get_years(con, input_glob)
+    output_dir = args.output_dir
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for year in years:
+        year_glob = f"{args.input_dir.as_posix()}/race_year={year}/*.parquet"
+        stage_target_races(con, year_glob)
+        stage_target_match_level(con)
+        stage_similar_pool(con)
+        stage_race_level_features(con)
+        stage_entity_features(con)
+        stage_target_entities(con, args.from_date, args.category)
+        year_dir = output_dir / f"race_year={year}"
+        year_dir.mkdir(parents=True, exist_ok=True)
+        sql = append_features_sql(year_glob)
+        con.execute(
+            f"copy ({sql}) to '{(year_dir / 'data_0.parquet').as_posix()}' (format parquet)"
+        )
+        drop_staging_tables(con)
     con.close()
 
 

@@ -23,12 +23,23 @@ sys.modules["add_similar_race_features"] = subject
 _spec.loader.exec_module(subject)
 
 
+class _FakeResult:
+    def __init__(self, rows: list[tuple[int]]) -> None:
+        self._rows: list[tuple[int]] = rows
+
+    def fetchall(self) -> list[tuple[int]]:
+        return self._rows
+
+
 class FakeConn:
-    def __init__(self) -> None:
+    def __init__(self, years: list[tuple[int]] | None = None) -> None:
         self.statements: list[str] = []
+        self._years: list[tuple[int]] = years if years is not None else [(2024,), (2025,)]
 
     def execute(self, query: str) -> object:
         self.statements.append(query)
+        if query.startswith("select distinct race_year from "):
+            return _FakeResult(self._years)
         return None
 
 
@@ -145,6 +156,10 @@ def test_time_decay_rate_constant() -> None:
 
 def test_ban_ei_keibajo_code_constant() -> None:
     assert subject.BAN_EI_KEIBAJO_CODE == "83"
+
+
+def test_similar_pool_cap_constant() -> None:
+    assert subject.SIMILAR_POOL_CAP == 200
 
 
 # ── install_and_attach_pg ──────────────────────────────────────────────────────
@@ -318,15 +333,119 @@ def test_level_4_predicate_is_surface_and_kyori_band_only() -> None:
     assert "h.keibajo_code = t.keibajo_code" not in pred
 
 
-# ── _similar_pool_join_predicate ───────────────────────────────────────────────
+# ── _level_count_sql ───────────────────────────────────────────────────────────
 
 
-def test_similar_pool_join_predicate_branches_per_level() -> None:
-    pred = subject._similar_pool_join_predicate()
-    assert "t.sim_match_level = 1" in pred
-    assert "t.sim_match_level = 2" in pred
-    assert "t.sim_match_level = 3" in pred
-    assert "t.sim_match_level = 4" in pred
+def test_level_count_sql_level_1_counts_with_all_six_dim_predicate() -> None:
+    sql = subject._level_count_sql(1)
+    assert "create or replace temp table _level_count_1" in sql
+    assert "h.season_band = t.season_band" in sql
+    assert "h.keibajo_code = t.keibajo_code" in sql
+    assert "count(*) as n1" in sql
+
+
+def test_level_count_sql_drives_join_off_class_group_for_level_3() -> None:
+    sql = subject._level_count_sql(3)
+    assert "create or replace temp table _level_count_3" in sql
+    assert "h.class_group = t.class_group" in sql
+    assert "h.keibajo_code = t.keibajo_code" not in sql
+    assert "count(*) as n3" in sql
+    assert "h.race_date < t.race_date" in sql
+
+
+# ── _decay_weight_sql ──────────────────────────────────────────────────────────
+
+
+def test_decay_weight_sql_uses_supplied_columns_and_rate() -> None:
+    sql = subject._decay_weight_sql("t.race_date", "h.race_date")
+    assert "exp(-0.001 *" in sql
+    assert "strptime(t.race_date, '%Y%m%d')" in sql
+    assert "strptime(h.race_date, '%Y%m%d')" in sql
+
+
+# ── _level_equality_dims ──────────────────────────────────────────────────────
+
+
+def test_level_equality_dims_level_1_includes_venue_season_class() -> None:
+    dims = subject._level_equality_dims(1)
+    assert "keibajo_code" in dims
+    assert "season_band" in dims
+    assert "class_group" in dims
+
+
+def test_level_equality_dims_level_2_drops_only_season() -> None:
+    dims = subject._level_equality_dims(2)
+    assert "keibajo_code" in dims
+    assert "class_group" in dims
+    assert "season_band" not in dims
+
+
+def test_level_equality_dims_level_3_drops_venue_and_season() -> None:
+    dims = subject._level_equality_dims(3)
+    assert "class_group" in dims
+    assert "keibajo_code" not in dims
+    assert "season_band" not in dims
+
+
+# ── _insert_similar_pool_level (key-collapsed SQL shape) ───────────────────────
+
+
+class _RecordingConn:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, query: str) -> object:
+        self.statements.append(query)
+        return None
+
+
+def test_insert_similar_pool_level_1_collapses_on_venue_season_class_keys() -> None:
+    conn = _RecordingConn()
+    subject._insert_similar_pool_level(conn, 1)
+    sql = "\n".join(conn.statements)
+    assert "create or replace temp table _l1_targets" in sql
+    assert "create or replace temp table _l1_target_keys" in sql
+    assert "create or replace temp table _l1_pool_by_key" in sql
+    assert "insert into similar_pool" in sql
+    assert "where tml.sim_match_level = 1" in sql
+    assert "1 as sim_match_level" in sql
+    assert "h.keibajo_code = k.keibajo_code" in sql
+    assert "h.season_band = k.season_band" in sql
+    assert "h.class_group = k.class_group" in sql
+    assert "p.season_band = t.season_band" in sql
+
+
+def test_insert_similar_pool_level_2_drops_season_band_from_collapse_key() -> None:
+    conn = _RecordingConn()
+    subject._insert_similar_pool_level(conn, 2)
+    sql = "\n".join(conn.statements)
+    assert "create or replace temp table _l2_pool_by_key" in sql
+    assert "where tml.sim_match_level = 2" in sql
+    assert "2 as sim_match_level" in sql
+    assert "h.keibajo_code = k.keibajo_code" in sql
+    assert "h.class_group = k.class_group" in sql
+    assert "h.season_band = k.season_band" not in sql
+
+
+def test_insert_similar_pool_level_3_drops_venue_and_season_from_collapse_key() -> None:
+    conn = _RecordingConn()
+    subject._insert_similar_pool_level(conn, 3)
+    sql = "\n".join(conn.statements)
+    assert "create or replace temp table _l3_pool_by_key" in sql
+    assert "where tml.sim_match_level = 3" in sql
+    assert "3 as sim_match_level" in sql
+    assert "h.class_group = k.class_group" in sql
+    assert "h.keibajo_code = k.keibajo_code" not in sql
+    assert "h.season_band = k.season_band" not in sql
+
+
+def test_insert_similar_pool_level_caps_at_pool_cap_ordered_by_race_date_desc() -> None:
+    conn = _RecordingConn()
+    subject._insert_similar_pool_level(conn, 1)
+    sql = "\n".join(conn.statements)
+    assert "qualify row_number() over (" in sql
+    assert "order by h.race_date desc, h.keibajo_code, h.race_bango" in sql
+    assert "<= 200" in sql
 
 
 # ── stage_similar_history (SQL shape) ──────────────────────────────────────────
@@ -419,27 +538,101 @@ def test_append_features_sql_reads_parquet_glob() -> None:
     assert "read_parquet('/tmp/x/race_year=*/*.parquet'" in sql
 
 
-# ── write_partitioned ──────────────────────────────────────────────────────────
+def test_append_features_sql_has_no_year_filter_and_uses_bare_tables() -> None:
+    # Per-year scoping now comes from the year-specific input_glob plus the
+    # per-year staging tables, so the SQL carries no race_year / kaisai_nen
+    # predicate and joins the staging tables by their bare names.
+    sql = subject.append_features_sql("/tmp/x/race_year=2024/*.parquet")
+    assert "where race_year = " not in sql
+    assert "where kaisai_nen = " not in sql
+    assert "left join target_entities te" in sql
+    assert "left join sim_race_features srf" in sql
+    assert "left join sim_jockey_stats js" in sql
+    assert "left join sim_trainer_stats ts" in sql
+    assert "left join sim_sire_stats ss" in sql
+    assert "left join sim_damsire_stats ds" in sql
+    assert "left join sim_owner_stats os" in sql
+    assert "left join sim_umaban_zone_stats uz" in sql
 
 
-def test_write_partitioned_creates_output_dir_and_emits_copy(tmp_path: Path) -> None:
+def test_append_features_sql_reads_year_specific_glob() -> None:
+    sql = subject.append_features_sql("/tmp/x/race_year=2024/*.parquet")
+    assert "read_parquet('/tmp/x/race_year=2024/*.parquet'" in sql
+
+
+# ── drop_staging_tables ────────────────────────────────────────────────────────
+
+
+def test_drop_staging_tables_drops_per_year_intermediates() -> None:
     conn = FakeConn()
-    out_dir = tmp_path / "fresh-out"
-    subject.write_partitioned(conn, "select 1 as race_year", out_dir)
-    assert out_dir.exists()
-    assert conn.statements[0].startswith("copy (select 1 as race_year) to ")
-    assert "partition_by (race_year)" in conn.statements[0]
+    subject.drop_staging_tables(conn)
+    body = " ".join(conn.statements)
+    assert "drop table if exists similar_pool" in body
+    assert "drop table if exists target_races" in body
+    assert "drop table if exists target_match_level" in body
+    assert "drop table if exists sim_race_features" in body
+    assert "drop table if exists sim_jockey_stats" in body
+    assert "drop table if exists sim_owner_stats" in body
+    assert "drop table if exists target_entities" in body
+    assert "drop table if exists _l4_targets" in body
+    assert "drop table if exists _level_count_1" in body
 
 
-def test_write_partitioned_removes_preexisting_output_dir(tmp_path: Path) -> None:
+def test_drop_staging_tables_preserves_shared_history() -> None:
     conn = FakeConn()
-    out_dir = tmp_path / "stale-out"
-    stale_file = out_dir / "race_year=1999" / "data_0.parquet"
-    stale_file.parent.mkdir(parents=True)
-    stale_file.write_text("stale")
-    subject.write_partitioned(conn, "select 1 as race_year", out_dir)
-    assert out_dir.exists()
-    assert not stale_file.exists()
+    subject.drop_staging_tables(conn)
+    body = " ".join(conn.statements)
+    assert "similar_history" not in body
+    assert "race_summary" not in body
+
+
+def test_drop_staging_tables_keeps_stat_tables_in_duckdb(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    con = duckdb.connect(":memory:")
+    _seed_pg_schema(con)
+    subject.stage_similar_history(con, "20000101", "jra")
+    subject.stage_race_summary(con)
+    subject.stage_target_races(con, input_glob)
+    subject.stage_target_match_level(con)
+    subject.stage_similar_pool(con)
+    subject.stage_race_level_features(con)
+    subject.stage_entity_features(con)
+    subject.stage_target_entities(con, "20000101", "jra")
+    subject.drop_staging_tables(con)
+
+    remaining = {
+        row[0]
+        for row in con.execute(
+            "select table_name from information_schema.tables"
+        ).fetchall()
+    }
+    con.close()
+    assert "similar_pool" not in remaining
+    assert "similar_history" in remaining
+    assert "race_summary" in remaining
+    assert "pool_results" not in remaining
+    assert "_l4_pool_by_key" not in remaining
+    assert "sim_race_features" not in remaining
+    assert "sim_jockey_stats" not in remaining
+    assert "target_entities" not in remaining
+
+
+# ── _get_years ─────────────────────────────────────────────────────────────────
+
+
+def test_get_years_reads_distinct_race_year_from_glob() -> None:
+    conn = FakeConn([(2023,), (2024,)])
+    years = subject._get_years(conn, "/tmp/in/race_year=*/*.parquet")
+    assert years == [2023, 2024]
+    assert conn.statements[0].startswith(
+        "select distinct race_year from read_parquet("
+        "'/tmp/in/race_year=*/*.parquet', hive_partitioning=true, union_by_name=true) "
+        "order by race_year"
+    )
 
 
 # ── functional: staging pipeline against in-memory DuckDB ──────────────────────
@@ -728,3 +921,294 @@ def test_main_end_to_end_emits_sire_and_umaban_zone_columns(
     assert "sim_umaban_zone_win_rate" in names
     # SIRE_X has one offspring result (h_a1, finished 1st) in pool race A.
     assert sire_row[0][0] == 1
+
+
+def test_main_end_to_end_clears_preexisting_output_and_writes_hive_partition(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+    stale_file = output_dir / "race_year=1999" / "data_0.parquet"
+    stale_file.parent.mkdir(parents=True)
+    stale_file.write_text("stale")
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+        ],
+    )
+    subject.main()
+
+    # The pre-existing stale partition was removed before the fresh write.
+    assert not stale_file.exists()
+    assert (output_dir / "race_year=2025" / "data_0.parquet").exists()
+
+    # The output is written into a race_year=<year>/ hive directory and keeps the
+    # race_year column in the file body (matching the input + sibling scripts).
+    verify_con = duckdb.connect(":memory:")
+    file_cols = {
+        c[0]
+        for c in verify_con.execute(
+            f"select * from read_parquet('{output_dir.as_posix()}/race_year=2025/data_0.parquet') limit 0"
+        ).description
+    }
+    verify_con.close()
+    assert "sim_race_count" in file_cols
+    assert "race_year" in file_cols
+
+
+def test_staging_pipeline_level4_caps_pool_to_most_recent_races(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Level-4 (broad) pool is capped to the SIMILAR_POOL_CAP most-recent races.
+
+    Five history races all share surface='1' + kyori_band=1 (1600m) but carry
+    DISTINCT class_group (C01..C05) and DISTINCT venues, so they never match the
+    target at levels 1-3 (n1=n2=n3=0 < MIN_SIMILAR) and resolve ONLY at level 4.
+    The target (2025/0601) is dated after all five. With SIMILAR_POOL_CAP lowered
+    to 2 (interpolated at call time inside _insert_similar_pool_level4, so the
+    monkeypatch takes effect), the level-4 collapse must keep exactly the 2
+    MOST-RECENT history races (2024/0505, 2024/0404) and drop the older three,
+    every kept sim_race_date strictly earlier than the target (leak-free).
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2025', '0601', '06', '11', 'tg1', '20250601', 2025),
+            ('jra', '2025', '0601', '06', '11', 'tg2', '20250601', 2025)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    monkeypatch.setattr(subject, "SIMILAR_POOL_CAP", 2)
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20240101','2024','0101','01','11','hh1', 1,'17',1600,2,1,'C01','1','JA','TA','OA'),
+            ('jra','20240101','2024','0101','01','11','hh1b',2,'17',1600,2,2,'C01','2','JB','TB','OB'),
+            ('jra','20240202','2024','0202','02','12','hh2', 1,'17',1600,2,1,'C02','1','JC','TC','OC'),
+            ('jra','20240202','2024','0202','02','12','hh2b',2,'17',1600,2,2,'C02','2','JD','TD','OD'),
+            ('jra','20240303','2024','0303','03','13','hh3', 1,'17',1600,2,1,'C03','1','JE','TE','OE'),
+            ('jra','20240303','2024','0303','03','13','hh3b',2,'17',1600,2,2,'C03','2','JF','TF','OF'),
+            ('jra','20240404','2024','0404','04','14','hh4', 1,'17',1600,2,1,'C04','1','JG','TG','OG'),
+            ('jra','20240404','2024','0404','04','14','hh4b',2,'17',1600,2,2,'C04','2','JH','TH','OH'),
+            ('jra','20240505','2024','0505','05','15','hh5', 1,'17',1600,2,1,'C05','1','JI','TI','OI'),
+            ('jra','20240505','2024','0505','05','15','hh5b',2,'17',1600,2,2,'C05','2','JJ','TJ','OJ'),
+            ('jra','20250601','2025','0601','06','11','tg1', 1,'17',1600,2,1,'C99','1','JX','TX','OX'),
+            ('jra','20250601','2025','0601','06','11','tg2', 2,'17',1600,2,2,'C99','2','JY','TY','OY')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                ketto_toroku_bango, umaban, track_code, kyori, shusso_tosu, finish_position,
+                kyoso_joken_code, tansho_ninkijun, kishumei_ryakusho, chokyoshimei_ryakusho, banushimei)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select * from (
+          values
+            ('2024','0101','01','11','C01'),
+            ('2024','0202','02','12','C02'),
+            ('2024','0303','03','13','C03'),
+            ('2024','0404','04','14','C04'),
+            ('2024','0505','05','15','C05'),
+            ('2025','0601','06','11','C99')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, kyoso_joken_meisho)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as
+        select * from (
+          values ('tg1','SIRE_X','DAMSIRE_Y')
+        ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
+        """
+    )
+    subject.stage_similar_history(con, "20000101", "jra")
+    subject.stage_race_summary(con)
+    subject.stage_target_races(con, input_glob)
+    subject.stage_target_match_level(con)
+    subject.stage_similar_pool(con)
+
+    level_rows = con.execute(
+        """
+        select n1, n2, n3, sim_match_level
+        from target_match_level
+        join target_level_counts using
+          (source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
+        """
+    ).fetchall()
+    pool_rows = con.execute(
+        """
+        select sim_match_level, sim_race_date
+        from similar_pool
+        order by sim_race_date desc
+        """
+    ).fetchall()
+    con.close()
+
+    # All lower levels yield zero matches -> the target resolves only at level 4.
+    assert level_rows[0][0] == 0
+    assert level_rows[0][1] == 0
+    assert level_rows[0][2] == 0
+    assert level_rows[0][3] == 4
+    # The cap (lowered to 2 via monkeypatch) prunes the 5-race pool to exactly 2.
+    assert len(pool_rows) == 2
+    assert pool_rows[0][0] == 4
+    assert pool_rows[1][0] == 4
+    # The kept races are the 2 MOST-RECENT history races before the target.
+    assert pool_rows[0][1] == "20240505"
+    assert pool_rows[1][1] == "20240404"
+    # Leak-free: every kept sim_race_date is strictly earlier than the target.
+    assert pool_rows[0][1] < "20250601"
+    assert pool_rows[1][1] < "20250601"
+
+
+def test_staging_pipeline_level1_collapse_fans_identical_pool_to_shared_key_targets(
+    tmp_path: Path,
+) -> None:
+    """Level-1 (exact) collapse fans one capped pool out to targets sharing a key.
+
+    36 history races (2024) all share the SAME level-1 key — venue 06, 1600m turf
+    (surface='1', kyori_band=1), class '010', April (season_band=0) — so they
+    exceed MIN_SIMILAR (30) and resolve the target at LEVEL 1. TWO target races
+    (2025/0415, race_bango 11 and 12) share that identical level-1 key AND the
+    same race_date, so the key-collapse ranks history ONCE and fans the same
+    capped pool out to both. Both targets must get the identical sim_race_count
+    and resolve at level 1.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2025', '0415', '06', '11', 'tg11', '20250415', 2025),
+            ('jra', '2025', '0415', '06', '12', 'tg12', '20250415', 2025)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    # 36 history races (12 April dates x 3 race_bango), one entry each, all sharing
+    # the level-1 key (venue 06, 1600m turf, class 010, April) so n1 >= MIN_SIMILAR.
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select
+          'jra' as source,
+          '2024' || '04' || lpad(cast(d as varchar), 2, '0') as race_date,
+          '2024' as kaisai_nen,
+          '04' || lpad(cast(d as varchar), 2, '0') as kaisai_tsukihi,
+          '06' as keibajo_code,
+          cast(b as varchar) as race_bango,
+          'hh' || cast(d as varchar) || '_' || cast(b as varchar) as ketto_toroku_bango,
+          1 as umaban,
+          '17' as track_code,
+          1600 as kyori,
+          4 as shusso_tosu,
+          1 as finish_position,
+          '010' as kyoso_joken_code,
+          1 as tansho_ninkijun,
+          'JH' as kishumei_ryakusho,
+          'TH' as chokyoshimei_ryakusho,
+          'OH' as banushimei
+        from generate_series(1, 12) as g(d)
+        cross join (select unnest([10, 11, 12]) as b)
+        union all
+        select
+          'jra', '20250415', '2025', '0415', '06', cast(rb as varchar),
+          'tg' || cast(rb as varchar), 1, '17', 1600, 3, 1, '010', 1, 'JX', 'TX', 'OX'
+        from (select unnest([11, 12]) as rb)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select '2024' as kaisai_nen,
+               '04' || lpad(cast(d as varchar), 2, '0') as kaisai_tsukihi,
+               '06' as keibajo_code, cast(b as varchar) as race_bango,
+               '010' as kyoso_joken_meisho
+        from generate_series(1, 12) as g(d)
+        cross join (select unnest([10, 11, 12]) as b)
+        union all
+        select '2025', '0415', '06', cast(rb as varchar), '010'
+        from (select unnest([11, 12]) as rb)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as
+        select * from (
+          values ('tg11', 'SIRE_X', 'DAMSIRE_Y')
+        ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
+        """
+    )
+    subject.stage_similar_history(con, "20000101", "jra")
+    subject.stage_race_summary(con)
+    subject.stage_target_races(con, input_glob)
+    subject.stage_target_match_level(con)
+    subject.stage_similar_pool(con)
+    subject.stage_race_level_features(con)
+
+    feature_rows = con.execute(
+        """
+        select race_bango, sim_match_level, sim_race_count
+        from sim_race_features
+        order by race_bango
+        """
+    ).fetchall()
+    con.close()
+
+    # Two target races, each resolving at level 1 (exact) with >= MIN_SIMILAR pool.
+    assert len(feature_rows) == 2
+    assert feature_rows[0][0] == "11"
+    assert feature_rows[1][0] == "12"
+    assert feature_rows[0][1] == 1
+    assert feature_rows[1][1] == 1
+    # Both share the level-1 key + race_date, so the collapse fans the IDENTICAL
+    # capped pool to both -> identical sim_race_count (all 36 history races).
+    assert feature_rows[0][2] == 36
+    assert feature_rows[1][2] == 36
