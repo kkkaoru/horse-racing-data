@@ -16,6 +16,7 @@ import polars as pl
 import learning.continuous_learner as subject
 from learning.feature_explorer import select_round_validation_years
 from learning.feature_registry import FeatureEntry, FeatureRegistry
+from finish_position_lightgbm import split_walk_forward
 
 
 def _make_df() -> pl.DataFrame:
@@ -3993,6 +3994,111 @@ def test_collect_active_predictions_skips_empty_folds() -> None:
             result = learner._collect_active_predictions(["feat_speed"])
         assert result.is_empty()
         mock_predict.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _get_folds (fold-split caching)
+# ---------------------------------------------------------------------------
+
+
+def test_fold_cache_starts_empty() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._fold_cache == {}
+
+
+def test_get_folds_cache_miss_computes_via_split_walk_forward() -> None:
+    fold_2023 = {"train_df": None, "valid_df": None, "valid_year": 2023}
+    fold_2024 = {"train_df": None, "valid_df": None, "valid_year": 2024}
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch(
+            "learning.continuous_learner.split_walk_forward",
+            side_effect=[fold_2023, fold_2024],
+        ) as mock_split:
+            folds = learner._get_folds([2023, 2024])
+        assert mock_split.call_count == 2
+        assert folds == [fold_2023, fold_2024]
+
+
+def test_get_folds_cache_hit_does_not_recompute() -> None:
+    fold_2023 = {"train_df": None, "valid_df": None, "valid_year": 2023}
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch(
+            "learning.continuous_learner.split_walk_forward",
+            return_value=fold_2023,
+        ) as mock_split:
+            first = learner._get_folds([2023])
+            second = learner._get_folds([2023])
+        assert mock_split.call_count == 1
+        assert first[0] is second[0]
+
+
+def test_get_folds_partial_cache_only_computes_uncached_years() -> None:
+    fold_2023 = {"train_df": None, "valid_df": None, "valid_year": 2023}
+    fold_2024 = {"train_df": None, "valid_df": None, "valid_year": 2024}
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch(
+            "learning.continuous_learner.split_walk_forward",
+            return_value=fold_2023,
+        ):
+            learner._get_folds([2023])
+        with patch(
+            "learning.continuous_learner.split_walk_forward",
+            return_value=fold_2024,
+        ) as mock_split_second:
+            folds = learner._get_folds([2023, 2024])
+        assert mock_split_second.call_count == 1
+        assert folds[0] is fold_2023
+        assert folds[1] is fold_2024
+
+
+def test_get_folds_preserves_input_order() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch(
+            "learning.continuous_learner.split_walk_forward",
+            side_effect=lambda df, ts, yr: {
+                "train_df": None,
+                "valid_df": None,
+                "valid_year": yr,
+            },
+        ):
+            folds = learner._get_folds([2024, 2023])
+        assert [fold["valid_year"] for fold in folds] == [2024, 2023]
+
+
+def test_collect_active_predictions_uses_cached_folds_across_two_calls() -> None:
+    preds = pl.DataFrame(
+        {
+            "race_id": ["r1", "r1"],
+            "ketto_toroku_bango": ["a", "b"],
+            "predicted_rank": [1, 2],
+            "finish_position": [1, 2],
+        }
+    )
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            df=_make_df_3years(),
+            validation_years=[2023, 2024],
+            train_start="20220101",
+        )
+        with (
+            patch(
+                "learning.continuous_learner.predict_fold_with_backend",
+                return_value=preds,
+            ),
+            patch(
+                "learning.continuous_learner.split_walk_forward",
+                wraps=split_walk_forward,
+            ) as mock_split,
+        ):
+            learner._collect_active_predictions(["feat_speed"])
+            learner._collect_active_predictions(["feat_speed"])
+        assert mock_split.call_count == 2
 
 
 # ---------------------------------------------------------------------------

@@ -38,7 +38,12 @@ from learning.feature_explorer import (
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
 from learning.subgroup_diagnostics import SubgroupMetrics, compute_subgroup_diagnostics
-from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS, split_walk_forward
+from finish_position_lightgbm import (
+    LABEL_COLUMNS,
+    META_COLUMNS,
+    FoldSplit,
+    split_walk_forward,
+)
 from walk_forward_common import atomic_write_metadata
 
 _psutil: ModuleType | None
@@ -298,6 +303,7 @@ class ContinuousLearner:
         self._per_trial_timeout_s: float | None = per_trial_timeout_s
         self._last_enrichment: list[tuple[str, float]] | None = None
         self._saturated: bool = False
+        self._fold_cache: dict[int, FoldSplit] = {}
 
     @staticmethod
     def _derive_blind_holdout_year(df: pl.DataFrame) -> int:
@@ -750,6 +756,24 @@ class ContinuousLearner:
                 weighted_top3,
             )
 
+    def _get_folds(self, years: list[int]) -> list[FoldSplit]:
+        """Return the walk-forward folds for the given years, memoised per year.
+
+        Each fold is produced by ``split_walk_forward(self._df, self._train_start, year)``
+        whose result depends only on the year because ``self._df`` and ``self._train_start``
+        are fixed for the learner's lifetime, so the O(rows) string-cast + boolean filter is
+        paid once per year instead of once per caller per round. Folds are returned in the
+        same order as ``years``.
+        """
+        folds: list[FoldSplit] = []
+        for year in years:
+            cached = self._fold_cache.get(year)
+            if cached is None:
+                cached = split_walk_forward(self._df, self._train_start, year)
+                self._fold_cache[year] = cached
+            folds.append(cached)
+        return folds
+
     def _collect_active_predictions(self, feature_names: list[str]) -> pl.DataFrame:
         """Train the active feature set on each validation fold and stack predictions.
 
@@ -758,8 +782,7 @@ class ContinuousLearner:
         """
         feature_set = set(feature_names)
         frames: list[pl.DataFrame] = []
-        for year in self._validation_years:
-            fold = split_walk_forward(self._df, self._train_start, year)
+        for fold in self._get_folds(self._validation_years):
             if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
                 continue
             fold_filtered = select_fold_features(fold, feature_set)
@@ -776,7 +799,7 @@ class ContinuousLearner:
                     preds.select(["race_id", "ketto_toroku_bango", "predicted_rank"])
                 )
                 del preds
-            del fold, fold_filtered
+            del fold_filtered
         if not frames:
             return pl.DataFrame(
                 schema={

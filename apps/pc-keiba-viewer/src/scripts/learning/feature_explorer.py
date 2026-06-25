@@ -15,7 +15,7 @@ from optuna.distributions import BaseDistribution, CategoricalDistribution
 from optuna.samplers import BaseSampler, TPESampler
 from optuna.trial import FrozenTrial, TrialState, create_trial
 
-from learning.feature_registry import FeatureRegistry
+from learning.feature_registry import NDCG_IMPROVEMENT_THRESHOLD, FeatureRegistry
 from finish_position_catboost import (
     CATEGORICAL_FEATURE_NAMES as CB_CATEGORICAL_FEATURE_NAMES,
     train_catboost_ranker,
@@ -78,6 +78,7 @@ _XGB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     relevance_rank1=3,
     relevance_rank2=2,
     relevance_rank3=1,
+    presorted=True,
 )
 
 _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
@@ -91,6 +92,7 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     relevance_rank2=2,
     relevance_rank3=1,
     no_cat_features=False,
+    presorted=True,
 )
 
 _SCREEN_XGB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
@@ -104,6 +106,7 @@ _SCREEN_XGB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     relevance_rank1=3,
     relevance_rank2=2,
     relevance_rank3=1,
+    presorted=True,
 )
 
 _SCREEN_CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
@@ -117,6 +120,7 @@ _SCREEN_CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     relevance_rank2=2,
     relevance_rank3=1,
     no_cat_features=False,
+    presorted=True,
 )
 
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
@@ -207,6 +211,32 @@ class ExplorationResult(TypedDict):
     ndcg_at_3: float
     feature_names: list[str]
     promoted: bool
+
+
+# (trial_id, ndcg_at_3, feature_names_json, definition_json) — exactly the columns
+# bulk_record_trials writes, so non-promoting trials defer to one flush per round.
+DeferredTrial = tuple[str, float, str, str]
+
+
+class FeatureObjective:
+    """Callable Optuna objective that also accumulates non-promoting trial rows.
+
+    Wrapping the closure in a callable object (instead of attaching an attribute to a
+    plain function) lets ``run_exploration`` read ``deferred_trials`` after the study
+    finishes while keeping the value a callable the existing tests and ``study.optimize``
+    can invoke directly, and without tripping the type checkers on dynamic attributes.
+    """
+
+    def __init__(
+        self,
+        fn: Callable[[optuna.Trial], float],
+        deferred_trials: list[DeferredTrial],
+    ) -> None:
+        self._fn: Callable[[optuna.Trial], float] = fn
+        self.deferred_trials: list[DeferredTrial] = deferred_trials
+
+    def __call__(self, trial: optuna.Trial) -> float:
+        return self._fn(trial)
 
 
 def select_round_validation_years(
@@ -484,12 +514,14 @@ def build_objective(
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
     xgb_args: argparse.Namespace | None = None,
     cb_args: argparse.Namespace | None = None,
-) -> Callable[[optuna.Trial], float]:
+) -> FeatureObjective:
     pre_split_folds: dict[int, FoldSplit] = {}
     for year in validation_years:
         fold = split_walk_forward(df, train_start, year)
         if not fold["train_df"].is_empty() and not fold["valid_df"].is_empty():
             pre_split_folds[year] = fold
+
+    deferred_trials: list[DeferredTrial] = []
 
     def objective(trial: optuna.Trial) -> float:
         feature_mask = {
@@ -526,13 +558,21 @@ def build_objective(
         definition = json.dumps(
             {"features": selected, "trial": trial.number, "delta_pp": delta_pp}
         )
-        promoted = registry.maybe_promote(
-            trial_id, ndcg, selected, definition, active_ndcg=active_ndcg
-        )
-        trial.set_user_attr("promoted", promoted)
+        # Mirror maybe_promote's internal decision (strict ``>`` against the same
+        # threshold constant) so promote-vs-defer routing is byte-identical to the
+        # old per-trial path: promoting rows insert+activate immediately, while
+        # non-promoting rows are buffered and flushed in one bulk write afterward.
+        if ndcg > active_ndcg + NDCG_IMPROVEMENT_THRESHOLD:
+            promoted = registry.maybe_promote(
+                trial_id, ndcg, selected, definition, active_ndcg=active_ndcg
+            )
+            trial.set_user_attr("promoted", promoted)
+        else:
+            deferred_trials.append((trial_id, ndcg, json.dumps(selected), definition))
+            trial.set_user_attr("promoted", False)
         return ndcg
 
-    return objective
+    return FeatureObjective(objective, deferred_trials)
 
 
 def build_feature_sampler(n_trials: int, seed: int = SAMPLER_SEED) -> BaseSampler:
@@ -540,9 +580,10 @@ def build_feature_sampler(n_trials: int, seed: int = SAMPLER_SEED) -> BaseSample
 
     ``multivariate`` lets TPE model joint feature interactions rather than treating
     each ``use_<feature>`` flag independently, which matters because feature value
-    comes from combinations, not isolated columns. ``constant_liar`` keeps suggestions
-    sane if a caller ever runs trials concurrently (a pending trial is treated as a
-    temporary failure so two workers don't pick the same point).
+    comes from combinations, not isolated columns. ``constant_liar`` is disabled
+    because ``run_exploration`` runs with ``n_jobs=1`` (no concurrent trials), so
+    there is never a pending trial to penalise; leaving it off keeps suggestions
+    driven purely by completed observations.
 
     ``BruteForceSampler`` is infeasible here (2^n candidate space) and ``CmaEsSampler``
     only handles continuous spaces, so neither fits the boolean mask search.
@@ -555,7 +596,7 @@ def build_feature_sampler(n_trials: int, seed: int = SAMPLER_SEED) -> BaseSample
         seed=seed,
         n_startup_trials=n_startup,
         multivariate=True,
-        constant_liar=True,
+        constant_liar=False,
     )
 
 
@@ -716,6 +757,10 @@ def run_exploration(
         callbacks=callbacks,
         show_progress_bar=False,
     )
+    # Flush every non-promoting trial buffered during the study in one bulk write,
+    # so by the time this returns each scored trial exists as a feature_trials row
+    # (the contract continuous_learner depends on when it reads the registry back).
+    registry.bulk_record_trials(objective.deferred_trials)
     results: list[ExplorationResult] = []
     for trial in study.trials:
         if trial.value is None:

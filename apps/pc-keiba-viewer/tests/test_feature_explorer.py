@@ -615,6 +615,22 @@ def test_meta_and_label_equals_meta_label_and_race_id() -> None:
     assert subject._META_AND_LABEL == expected
 
 
+def test_xgb_args_marks_dataset_presorted() -> None:
+    assert subject._XGB_ARGS.presorted is True
+
+
+def test_cb_args_marks_dataset_presorted() -> None:
+    assert subject._CB_ARGS.presorted is True
+
+
+def test_screen_xgb_args_marks_dataset_presorted() -> None:
+    assert subject._SCREEN_XGB_ARGS.presorted is True
+
+
+def test_screen_cb_args_marks_dataset_presorted() -> None:
+    assert subject._SCREEN_CB_ARGS.presorted is True
+
+
 # --- select_features ---
 
 def test_select_features_keeps_selected_feature_columns() -> None:
@@ -1000,6 +1016,9 @@ def test_build_objective_records_negative_delta_pp_against_active_entry() -> Non
             trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
             trial.should_prune.return_value = False
             objective(trial)
+        # Non-promoting trial: buffered in deferred_trials, not yet in the registry.
+        assert [e["trial_id"] for e in registry.list_trials()] == ["seed"]
+        registry.bulk_record_trials(objective.deferred_trials)
         recorded = next(e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_1")
         payload = json.loads(recorded["definition_json"])
     # Active ndcg 0.80, trial ndcg 0.75 → delta_pp = (0.75 - 0.80) * 100 = -5.0.
@@ -1087,13 +1106,14 @@ def test_build_objective_aggregates_all_folds_after_per_fold_subset_release() ->
 
 
 def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> None:
-    # objective already fetches the active entry to compute delta_pp; it must hand
-    # that ndcg to maybe_promote so the registry skips a duplicate active-entry SELECT.
+    # objective already fetches the active entry to compute delta_pp; on the promote
+    # path it must hand that ndcg to maybe_promote so the registry skips a duplicate
+    # active-entry SELECT. Active 0.50, trial 0.75 → beats threshold → promotes.
     df = _make_df_6feats()
     params = subject.DEFAULT_PARAMS
     candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
     with FeatureRegistry(Path(":memory:")) as registry:
-        active_id = registry.record_trial("seed", 0.80, ["feat_a"], "{}")
+        active_id = registry.record_trial("seed", 0.50, ["feat_a"], "{}")
         registry.activate(active_id)
         with patch(
             "learning.feature_explorer.run_fold_with_backend",
@@ -1118,7 +1138,7 @@ def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> Non
                 trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
                 objective(trial)
     assert spy_promote.call_count == 1
-    assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.80)
+    assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.50)
 
 
 def test_build_objective_raises_trial_pruned_when_should_prune_true() -> None:
@@ -1950,7 +1970,8 @@ def test_run_exploration_screening_true_passes_screen_args_to_build_objective() 
                 "learning.feature_explorer.optuna.create_study", return_value=mock_study
             ),
             patch(
-                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda t: 0.5, []),
             ) as mock_build,
         ):
             subject.run_exploration(
@@ -1971,7 +1992,8 @@ def test_run_exploration_screening_false_passes_none_args_to_build_objective() -
                 "learning.feature_explorer.optuna.create_study", return_value=mock_study
             ),
             patch(
-                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda t: 0.5, []),
             ) as mock_build,
         ):
             subject.run_exploration(
@@ -1992,7 +2014,8 @@ def test_run_exploration_default_screening_is_false() -> None:
                 "learning.feature_explorer.optuna.create_study", return_value=mock_study
             ),
             patch(
-                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda t: 0.5, []),
             ) as mock_build,
         ):
             subject.run_exploration(df, registry, n_trials=1, warm_start=False)
@@ -2085,3 +2108,143 @@ def test_run_fold_with_backend_catboost_uses_default_when_cb_args_none() -> None
         subject.run_fold_with_backend(fold, "catboost", params)
     passed_args = mock_cb.call_args[0][3]
     assert passed_args is subject._CB_ARGS
+
+
+# --- deferred non-promoting trial writes ---
+
+
+def test_build_feature_sampler_disables_constant_liar() -> None:
+    sampler = subject.build_feature_sampler(20)
+    assert isinstance(sampler, optuna.samplers.TPESampler)
+    assert sampler._constant_liar is False
+
+
+def test_build_objective_defers_non_promoting_trial_and_flush_records_it() -> None:
+    # Active 0.80, trial 0.75 → not promoted → buffered, not written during objective.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        active_id = registry.record_trial("seed", 0.80, ["feat_a"], "{}")
+        registry.activate(active_id)
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 3
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
+            objective(trial)
+        # Nothing written yet for this trial; the tuple is buffered in deferred_trials.
+        assert [e["trial_id"] for e in registry.list_trials()] == ["seed"]
+        assert objective.deferred_trials[0][0] == "test_study_trial_3"
+        registry.bulk_record_trials(objective.deferred_trials)
+        recorded = next(
+            e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_3"
+        )
+        payload = json.loads(recorded["definition_json"])
+    assert recorded["feature_names"] == [
+        "feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f",
+    ]
+    assert recorded["is_active"] is False
+    assert payload["delta_pp"] == pytest.approx(-5.0)
+
+
+def test_build_objective_promoting_trial_is_active_before_any_flush() -> None:
+    # No prior active entry → trial 0.75 beats threshold → promoted immediately,
+    # is_active=True right after objective(), before bulk_record_trials runs.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.should_prune.return_value = False
+            objective(trial)
+        active = registry.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "test_study_trial_0"
+        assert active["ndcg_at_3"] == pytest.approx(0.75)
+        assert objective.deferred_trials == []
+
+
+def test_run_exploration_flushes_non_promoting_trials_and_best_is_readable() -> None:
+    # Critical contract: after run_exploration returns, every scored trial exists as a
+    # feature_trials row (promoting + non-promoting), and get_best_ndcg_for_study works.
+    df = _make_df_3years()
+    params = subject.DEFAULT_PARAMS
+    df = df.rename(
+        {"feat_speed": "feat_a", "feat_jockey": "feat_b"}
+    ).with_columns(
+        feat_c=pl.lit(0.1),
+        feat_d=pl.lit(0.2),
+        feat_e=pl.lit(0.4),
+        feat_f=pl.lit(0.5),
+    )
+    # First trial 0.90 (promotes immediately); the next two score 0.50 each — below
+    # the active 0.90, so non-promoting → deferred and flushed at the end. Three
+    # startup trials (no pruning) keep both non-promoting trials COMPLETE.
+    scores = iter([0.90, 0.90, 0.50, 0.50, 0.50, 0.50])
+
+    def fold_score(*_args: object, **_kwargs: object) -> float:
+        return next(scores)
+
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch.object(optuna.Trial, "suggest_categorical", return_value=True),
+            patch(
+                "learning.feature_explorer.run_fold_with_backend",
+                side_effect=fold_score,
+            ),
+        ):
+            subject.run_exploration(
+                df,
+                registry,
+                n_trials=3,
+                validation_years=[2022, 2023],
+                train_start="20160101",
+                params=params,
+                study_name="flush_study",
+                backends=("lightgbm",),
+                warm_start=False,
+            )
+        recorded = registry.list_trials(limit=50)
+        recorded_ids = {e["trial_id"] for e in recorded}
+        best_for_study = registry.get_best_ndcg_for_study("flush_study")
+        promoter = registry.get_active_entry()
+    # The promoting trial (recorded immediately) and both non-promoting trials
+    # (flushed at the end) are all present after run_exploration returns.
+    assert recorded_ids == {"flush_study_trial_0", "flush_study_trial_1", "flush_study_trial_2"}
+    assert best_for_study == pytest.approx(0.90)
+    assert promoter is not None
+    assert promoter["trial_id"] == "flush_study_trial_0"
+    # The two non-promoting trials are present and inactive, proving the flush ran.
+    non_promoting = [e for e in recorded if e["trial_id"] != "flush_study_trial_0"]
+    assert all(e["ndcg_at_3"] == pytest.approx(0.50) for e in non_promoting)
+    assert all(e["is_active"] is False for e in non_promoting)

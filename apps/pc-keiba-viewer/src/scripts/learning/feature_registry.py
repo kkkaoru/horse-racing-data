@@ -180,6 +180,49 @@ class FeatureRegistry:
         )
         return entry_id
 
+    def bulk_record_trials(self, trials: list[tuple[str, float, str, str]]) -> None:
+        """Insert many non-promoting trial rows in a single ``executemany``.
+
+        Each tuple is ``(trial_id, ndcg_at_3, feature_names_json, definition_json)``
+        where ``feature_names_json`` is already a JSON string of the feature-name list
+        (matching how :meth:`record_trial` stores ``feature_names``). Every row is
+        assigned a fresh sequence id, ``is_active = FALSE``, and a fresh UTC
+        ``created_at`` — byte-identical to what per-trial :meth:`record_trial` would
+        have written, only deferred to one bulk flush. An empty list is a no-op so the
+        DB is never touched when a round promotes every scored trial. The whole batch
+        runs in one begin/commit with rollback-and-raise on failure, mirroring
+        :meth:`maybe_promote`. Because these rows are never activated, a later flush
+        cannot change which row :meth:`get_active_entry` returns (it selects on
+        ``is_active = TRUE``, and only promoting trials set that flag).
+        """
+        assert self._con is not None
+        if not trials:
+            return
+        created_at = datetime.now(timezone.utc).isoformat()
+        rows = [
+            [
+                self._next_id(),
+                trial_id,
+                ndcg_at_3,
+                feature_names_json,
+                definition_json,
+                created_at,
+            ]
+            for trial_id, ndcg_at_3, feature_names_json, definition_json in trials
+        ]
+        self._con.begin()
+        try:
+            self._con.executemany(
+                "INSERT INTO feature_trials "
+                "(id, trial_id, ndcg_at_3, is_active, feature_names, definition_json, created_at) "
+                "VALUES (?, ?, ?, FALSE, ?, ?, ?)",
+                rows,
+            )
+            self._con.commit()
+        except Exception:
+            self._con.rollback()
+            raise
+
     def activate(self, entry_id: int) -> None:
         assert self._con is not None
         self._con.execute(

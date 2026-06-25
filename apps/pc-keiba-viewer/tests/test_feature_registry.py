@@ -727,3 +727,99 @@ def test_compute_feature_enrichment_handles_non_list_feature_json() -> None:
         reg.record_trial("normal", 0.10, ["feat_a", "feat_a"])
         result = reg.compute_feature_enrichment(top_k=1, bottom_k=1)
         assert result == [("feat_a", -1.0)]
+
+
+def test_bulk_record_trials_inserts_multiple_rows_inactive_with_correct_fields() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.bulk_record_trials(
+            [
+                ("study_trial_0", 0.40, '["feat_a", "feat_b"]', '{"delta_pp": -1.0}'),
+                ("study_trial_1", 0.60, '["feat_c"]', '{"delta_pp": 2.0}'),
+            ]
+        )
+        trials = reg.list_trials(limit=10)
+        by_id = {entry["trial_id"]: entry for entry in trials}
+        assert by_id["study_trial_0"]["ndcg_at_3"] == 0.40
+        assert by_id["study_trial_0"]["feature_names"] == ["feat_a", "feat_b"]
+        assert by_id["study_trial_0"]["definition_json"] == '{"delta_pp": -1.0}'
+        assert by_id["study_trial_0"]["is_active"] is False
+        assert by_id["study_trial_1"]["ndcg_at_3"] == 0.60
+        assert by_id["study_trial_1"]["feature_names"] == ["feat_c"]
+        assert by_id["study_trial_1"]["is_active"] is False
+
+
+def test_bulk_record_trials_empty_list_is_noop() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.bulk_record_trials([])
+        assert reg.list_trials(limit=10) == []
+        assert reg.get_best_ndcg() == 0.0
+
+
+def test_bulk_record_trials_assigns_sequential_ids_after_record_trial() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        first_id = reg.record_trial("trial-1", 0.50, ["feat_a"])
+        reg.bulk_record_trials(
+            [
+                ("study_trial_0", 0.40, '["feat_b"]', "{}"),
+                ("study_trial_1", 0.30, '["feat_c"]', "{}"),
+            ]
+        )
+        assert reg._con is not None
+        rows = reg._con.execute(
+            "SELECT id, trial_id FROM feature_trials ORDER BY id"
+        ).fetchall()
+        assert first_id == 1
+        assert [(row[0], row[1]) for row in rows] == [
+            (1, "trial-1"),
+            (2, "study_trial_0"),
+            (3, "study_trial_1"),
+        ]
+
+
+def test_bulk_record_trials_does_not_change_active_entry() -> None:
+    # A later non-active bulk insert (with higher ids) must not displace the
+    # is_active=TRUE row that get_active_entry returns.
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.80, ["feat_a"])
+        reg.activate(active_id)
+        reg.bulk_record_trials(
+            [
+                ("study_trial_0", 0.95, '["feat_b"]', "{}"),
+                ("study_trial_1", 0.99, '["feat_c"]', "{}"),
+            ]
+        )
+        active = reg.get_active_entry()
+        assert active is not None
+        assert active["trial_id"] == "active"
+        assert active["id"] == active_id
+
+
+def test_bulk_record_trials_rolls_back_on_insert_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Forcing every buffered row to reuse the existing active id triggers a PRIMARY
+    # KEY violation inside executemany; the whole batch must roll back, leaving only
+    # the pre-existing row.
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        existing_id = reg.record_trial("existing", 0.50, ["feat_a"])
+        monkeypatch.setattr(reg, "_next_id", lambda *_args, **_kwargs: existing_id)
+        with pytest.raises(duckdb.ConstraintException):
+            reg.bulk_record_trials(
+                [
+                    ("study_trial_0", 0.40, '["feat_b"]', "{}"),
+                    ("study_trial_1", 0.30, '["feat_c"]', "{}"),
+                ]
+            )
+        assert [e["trial_id"] for e in reg.list_trials(limit=10)] == ["existing"]
+
+
+def test_bulk_record_trials_found_by_get_best_ndcg_for_study() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.bulk_record_trials(
+            [
+                ("mystudy_trial_0", 0.42, '["feat_a"]', "{}"),
+                ("mystudy_trial_1", 0.71, '["feat_b"]', "{}"),
+                ("other_trial_0", 0.99, '["feat_c"]', "{}"),
+            ]
+        )
+        assert reg.get_best_ndcg_for_study("mystudy") == 0.71
