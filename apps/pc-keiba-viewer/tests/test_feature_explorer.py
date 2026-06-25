@@ -15,7 +15,7 @@ import pytest
 
 import learning.feature_explorer as subject
 from learning.feature_registry import FeatureRegistry
-from finish_position_lightgbm import META_COLUMNS, FoldSplit, split_walk_forward
+from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS, FoldSplit, split_walk_forward
 
 
 def _make_df() -> pl.DataFrame:
@@ -593,6 +593,26 @@ def test_run_fold_with_backend_catboost_excludes_non_categorical_str_feature() -
     feature_cols = mock_cb.call_args[0][2]
     assert "nar_subclass" not in feature_cols
     assert "feat_speed" in feature_cols
+
+
+# --- _META_AND_LABEL ---
+
+
+def test_meta_and_label_contains_all_meta_columns() -> None:
+    assert set(META_COLUMNS).issubset(subject._META_AND_LABEL)
+
+
+def test_meta_and_label_contains_all_label_columns() -> None:
+    assert set(LABEL_COLUMNS).issubset(subject._META_AND_LABEL)
+
+
+def test_meta_and_label_contains_race_id() -> None:
+    assert "race_id" in subject._META_AND_LABEL
+
+
+def test_meta_and_label_equals_meta_label_and_race_id() -> None:
+    expected = frozenset(META_COLUMNS) | frozenset(LABEL_COLUMNS) | frozenset({"race_id"})
+    assert subject._META_AND_LABEL == expected
 
 
 # --- select_features ---

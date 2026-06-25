@@ -341,6 +341,74 @@ def test_run_calls_maybe_deploy_after_each_explore() -> None:
         assert order == ["explore", "deploy", "explore", "deploy"]
 
 
+def test_learner_saturated_defaults_to_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._saturated is False
+
+
+def test_run_sets_saturated_from_maybe_deploy_return() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+        ):
+            learner.run(max_rounds=1)
+        assert learner._saturated is True
+
+
+def test_run_halves_trials_after_saturation_detected() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=20)
+        trials_seen: list[int] = []
+
+        def _record(round_num: int, n_trials: int) -> None:
+            trials_seen.append(n_trials)
+
+        with (
+            patch.object(learner, "_explore_round", side_effect=_record),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+        ):
+            learner.run(max_rounds=2)
+
+        assert trials_seen == [20, 10]
+
+
+def test_run_does_not_halve_trials_when_not_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=20)
+        trials_seen: list[int] = []
+
+        def _record(round_num: int, n_trials: int) -> None:
+            trials_seen.append(n_trials)
+
+        with (
+            patch.object(learner, "_explore_round", side_effect=_record),
+            patch.object(learner, "_maybe_deploy", return_value=False),
+        ):
+            learner.run(max_rounds=2)
+
+        assert trials_seen == [20, 20]
+
+
+def test_run_saturated_trials_floor_is_min_saturated_trials() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=8)
+        trials_seen: list[int] = []
+
+        def _record(round_num: int, n_trials: int) -> None:
+            trials_seen.append(n_trials)
+
+        with (
+            patch.object(learner, "_explore_round", side_effect=_record),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+        ):
+            learner.run(max_rounds=2)
+
+        assert trials_seen == [8, subject._MIN_SATURATED_TRIALS]
+
+
 # ---------------------------------------------------------------------------
 # _explore_round
 # ---------------------------------------------------------------------------
@@ -3503,7 +3571,12 @@ def test_log_subgroup_diagnostics_logs_each_subgroup(
     )
     metrics = [
         {
-            "subgroup": "jra_turf_mile",
+            "subgroup": "jra_turf_mile_G2_summer",
+            "category": "jra",
+            "surface": "turf",
+            "distance_band": "mile",
+            "class_label": "G2",
+            "season": "summer",
             "race_count": 12,
             "ndcg_at_3": 0.61,
             "top1_accuracy": 0.5,
@@ -3519,7 +3592,7 @@ def test_log_subgroup_diagnostics_logs_each_subgroup(
     ):
         with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
             learner._log_subgroup_diagnostics()
-    assert any("jra_turf_mile" in r.message for r in caplog.records)
+    assert any("turf" in r.message for r in caplog.records)
 
 
 def test_log_subgroup_diagnostics_handles_empty_metrics(
@@ -3549,6 +3622,145 @@ def test_log_subgroup_diagnostics_handles_empty_metrics(
         with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
             learner._log_subgroup_diagnostics()
     assert any("no subgroups to report" in r.message for r in caplog.records)
+
+
+def test_log_surface_summary_logs_turf_and_dirt_groups(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    learner = _make_learner()
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "race_count": 10,
+                "ndcg_at_3": 0.6,
+                "top1_accuracy": 0.5,
+                "top3_box_accuracy": 0.25,
+            },
+            {
+                "subgroup": "nar_dirt_sprint_A_winter",
+                "category": "nar",
+                "surface": "dirt",
+                "distance_band": "sprint",
+                "class_label": "A",
+                "season": "winter",
+                "race_count": 20,
+                "ndcg_at_3": 0.4,
+                "top1_accuracy": 0.3,
+                "top3_box_accuracy": 0.15,
+            },
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+        learner._log_surface_summary(metrics)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("surface summary" in m for m in messages)
+    assert any("surface=turf" in m for m in messages)
+    assert any("surface=dirt" in m for m in messages)
+
+
+def test_log_surface_summary_handles_empty_metrics(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    learner = _make_learner()
+    with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+        learner._log_surface_summary([])
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("surface summary" in m for m in messages)
+    assert not any("surface=" in m for m in messages)
+
+
+def test_log_surface_summary_weights_average_by_race_count(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    learner = _make_learner()
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "race_count": 10,
+                "ndcg_at_3": 0.6,
+                "top1_accuracy": 0.6,
+                "top3_box_accuracy": 0.6,
+            },
+            {
+                "subgroup": "jra_turf_sprint_G1_winter",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "sprint",
+                "class_label": "G1",
+                "season": "winter",
+                "race_count": 30,
+                "ndcg_at_3": 0.2,
+                "top1_accuracy": 0.2,
+                "top3_box_accuracy": 0.2,
+            },
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+        learner._log_surface_summary(metrics)
+    turf_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "surface=turf" in r.getMessage()
+    ]
+    assert turf_lines == [
+        "│  surface=turf    races=   40  ndcg@3=0.3000  top1=0.3000  top3_box=0.3000"
+    ]
+
+
+def test_log_surface_summary_skips_zero_race_surface(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    learner = _make_learner()
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "race_count": 0,
+                "ndcg_at_3": 0.0,
+                "top1_accuracy": 0.0,
+                "top3_box_accuracy": 0.0,
+            }
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="learning.continuous_learner"):
+        learner._log_surface_summary(metrics)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("surface summary" in m for m in messages)
+    assert not any("surface=" in m for m in messages)
 
 
 def _make_df_3years() -> pl.DataFrame:

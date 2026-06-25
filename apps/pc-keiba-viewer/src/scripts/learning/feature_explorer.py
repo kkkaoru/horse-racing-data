@@ -123,6 +123,8 @@ _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | _LABEL_COLS
 
+_META_AND_LABEL: Final[frozenset[str]] = frozenset(META_COLUMNS) | _LABEL_COLS | frozenset({"race_id"})
+
 _ALLOWED_CATEGORICAL: Final[frozenset[str]] = frozenset(CATEGORICAL_FEATURE_COLUMNS) | frozenset(
     CB_CATEGORICAL_FEATURE_NAMES
 )
@@ -421,20 +423,18 @@ def select_features(
     df: pl.DataFrame,
     feature_mask: dict[str, bool],
 ) -> pl.DataFrame:
-    meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
     selected = [col for col, keep in feature_mask.items() if keep]
-    keep_cols = [c for c in df.columns if c in meta_and_label or c in selected]
+    keep_cols = [c for c in df.columns if c in _META_AND_LABEL or c in selected]
     return df.select(keep_cols)
 
 
 def _select_fold_features(fold: FoldSplit, feature_set: set[str]) -> FoldSplit:
     """Select only the needed features from a pre-split fold."""
-    meta_and_label = set(META_COLUMNS) | _LABEL_COLS | {"race_id"}
+    safe = _model_safe_columns(fold["train_df"])
     keep_cols = [
         c
         for c in fold["train_df"].columns
-        if c in meta_and_label
-        or (c in feature_set and _is_model_safe_feature(fold["train_df"], c))
+        if c in _META_AND_LABEL or (c in feature_set and c in safe)
     ]
     return {
         "train_df": fold["train_df"].select(keep_cols),

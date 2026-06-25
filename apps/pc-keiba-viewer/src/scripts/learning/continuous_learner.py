@@ -36,7 +36,7 @@ from learning.feature_explorer import (
     select_round_validation_years,
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
-from learning.subgroup_diagnostics import compute_subgroup_diagnostics
+from learning.subgroup_diagnostics import SubgroupMetrics, compute_subgroup_diagnostics
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS, split_walk_forward
 from walk_forward_common import atomic_write_metadata
 
@@ -95,6 +95,8 @@ ENRICHMENT_THRESHOLD: Final[float] = 0.3
 ENRICHMENT_N_TRIALS: Final[int] = 2
 MAX_ENRICHMENT_FEATURES: Final[int] = 5
 SATURATION_LOOKBACK: Final[int] = 50
+_SATURATED_TRIAL_DIVISOR: Final[int] = 2
+_MIN_SATURATED_TRIALS: Final[int] = 5
 
 _MIN_NTHREAD: Final[int] = 2
 _MAX_NTHREAD: Final[int] = 6
@@ -294,6 +296,7 @@ class ContinuousLearner:
         self._auto_tune: bool = auto_tune
         self._per_trial_timeout_s: float | None = per_trial_timeout_s
         self._last_enrichment: list[tuple[str, float]] | None = None
+        self._saturated: bool = False
 
     @staticmethod
     def _derive_blind_holdout_year(df: pl.DataFrame) -> int:
@@ -365,6 +368,11 @@ class ContinuousLearner:
                         actual_trials,
                     )
 
+            if self._saturated:
+                actual_trials = max(
+                    actual_trials // _SATURATED_TRIAL_DIVISOR, _MIN_SATURATED_TRIALS
+                )
+
             progress = (
                 f"{round_num + 1}/{max_rounds}" if max_rounds else f"#{round_num + 1}"
             )
@@ -372,6 +380,7 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             saturated = self._maybe_deploy()
+            self._saturated = saturated
             if self._log_subgroup and round_num % 5 == 0:
                 self._log_subgroup_diagnostics()
             if not saturated and not self._skip_inverse:
@@ -692,12 +701,47 @@ class ContinuousLearner:
         )
         for m in metrics:
             _logger.info(
-                "│  %-28s  races=%4d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
-                m["subgroup"],
+                "│  %-8s %-6s %-14s %-8s %-8s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                m["category"],
+                m["surface"],
+                m["distance_band"],
+                m["class_label"],
+                m["season"],
                 m["race_count"],
                 m["ndcg_at_3"],
                 m["top1_accuracy"],
                 m["top3_box_accuracy"],
+            )
+        self._log_surface_summary(metrics)
+
+    def _log_surface_summary(self, metrics: list[SubgroupMetrics]) -> None:
+        """Log aggregated metrics grouped by surface (turf/dirt/other)."""
+        surface_groups: dict[str, list[SubgroupMetrics]] = {}
+        for m in metrics:
+            surface_groups.setdefault(m["surface"], []).append(m)
+        _logger.info("surface summary:")
+        for surface in sorted(surface_groups):
+            group = surface_groups[surface]
+            total_races = sum(m["race_count"] for m in group)
+            if total_races == 0:
+                continue
+            weighted_ndcg = (
+                sum(m["ndcg_at_3"] * m["race_count"] for m in group) / total_races
+            )
+            weighted_top1 = (
+                sum(m["top1_accuracy"] * m["race_count"] for m in group) / total_races
+            )
+            weighted_top3 = (
+                sum(m["top3_box_accuracy"] * m["race_count"] for m in group)
+                / total_races
+            )
+            _logger.info(
+                "│  surface=%-6s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                surface,
+                total_races,
+                weighted_ndcg,
+                weighted_top1,
+                weighted_top3,
             )
 
     def _collect_active_predictions(self, feature_names: list[str]) -> pl.DataFrame:

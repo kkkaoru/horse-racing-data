@@ -29,6 +29,11 @@ _DISCOUNT_AT_3: Final[tuple[float, float, float]] = (
 
 class SubgroupMetrics(TypedDict):
     subgroup: str
+    category: str
+    surface: str
+    distance_band: str
+    class_label: str
+    season: str
     race_count: int
     ndcg_at_3: float
     top1_accuracy: float
@@ -337,12 +342,25 @@ def _top3_box_per_race(joined: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def evaluate_subgroup(joined: pl.DataFrame) -> SubgroupMetrics:
+def evaluate_subgroup(
+    joined: pl.DataFrame,
+    *,
+    category: str = "",
+    surface: str = "",
+    distance_band: str = "",
+    class_label: str = "",
+    season: str = "",
+) -> SubgroupMetrics:
     """Compute metrics for a single subgroup slice (already filtered)."""
     race_count = joined.select(pl.col("race_id").n_unique()).item()
     if race_count == 0:
         return SubgroupMetrics(
             subgroup="",
+            category=category,
+            surface=surface,
+            distance_band=distance_band,
+            class_label=class_label,
+            season=season,
             race_count=0,
             ndcg_at_3=0.0,
             top1_accuracy=0.0,
@@ -353,6 +371,11 @@ def evaluate_subgroup(joined: pl.DataFrame) -> SubgroupMetrics:
     top3_hits = int(cast(SupportsInt, _top3_box_per_race(joined)["top3"].sum()))
     return SubgroupMetrics(
         subgroup="",
+        category=category,
+        surface=surface,
+        distance_band=distance_band,
+        class_label=class_label,
+        season=season,
         race_count=race_count,
         ndcg_at_3=ndcg_mean,
         top1_accuracy=top1_hits / race_count,
@@ -392,10 +415,25 @@ def compute_subgroup_diagnostics(
     )
     if joined.is_empty():
         return []
-    joined = joined.with_columns(assign_subgroup_keys(joined).alias("_subgroup"))
+    joined = joined.with_columns(
+        assign_subgroup_keys(joined).alias("_subgroup"),
+        _source_label_expr().alias("_category"),
+        _surface_expr().alias("_surface"),
+        _distance_band_expr().alias("_distance_band"),
+        _class_expr(joined).alias("_class_label"),
+        _season_expr(joined).alias("_season"),
+    )
     results: list[SubgroupMetrics] = []
     for (subgroup_key,), group_df in joined.group_by("_subgroup", maintain_order=True):
-        metrics = evaluate_subgroup(group_df)
+        first_row = group_df.row(0, named=True)
+        metrics = evaluate_subgroup(
+            group_df,
+            category=str(first_row["_category"]),
+            surface=str(first_row["_surface"]),
+            distance_band=str(first_row["_distance_band"]),
+            class_label=str(first_row["_class_label"]),
+            season=str(first_row["_season"]),
+        )
         metrics["subgroup"] = str(subgroup_key)
         results.append(metrics)
     return sorted(results, key=lambda m: m["subgroup"])

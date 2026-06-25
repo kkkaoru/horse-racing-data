@@ -448,6 +448,68 @@ def test_evaluate_subgroup_empty_df_returns_zero_race_count():
     assert result["top3_box_accuracy"] == 0.0
 
 
+def test_evaluate_subgroup_populates_dimension_fields_from_kwargs():
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [1, 2, 3],
+    })
+    result = subject.evaluate_subgroup(
+        joined,
+        category="jra",
+        surface="turf",
+        distance_band="mile",
+        class_label="G2",
+        season="summer",
+    )
+    assert result["category"] == "jra"
+    assert result["surface"] == "turf"
+    assert result["distance_band"] == "mile"
+    assert result["class_label"] == "G2"
+    assert result["season"] == "summer"
+
+
+def test_evaluate_subgroup_dimension_fields_default_to_empty_string():
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [1, 2, 3],
+    })
+    result = subject.evaluate_subgroup(joined)
+    assert result["category"] == ""
+    assert result["surface"] == ""
+    assert result["distance_band"] == ""
+    assert result["class_label"] == ""
+    assert result["season"] == ""
+
+
+def test_evaluate_subgroup_empty_df_populates_dimension_fields_from_kwargs():
+    empty = pl.DataFrame(
+        schema={
+            "race_id": pl.Utf8,
+            "ketto_toroku_bango": pl.Utf8,
+            "predicted_rank": pl.Int64,
+            "finish_position": pl.Int64,
+        }
+    )
+    result = subject.evaluate_subgroup(
+        empty,
+        category="nar",
+        surface="dirt",
+        distance_band="sprint",
+        class_label="A",
+        season="winter",
+    )
+    assert result["race_count"] == 0
+    assert result["category"] == "nar"
+    assert result["surface"] == "dirt"
+    assert result["distance_band"] == "sprint"
+    assert result["class_label"] == "A"
+    assert result["season"] == "winter"
+
+
 def test_evaluate_subgroup_single_race_perfect():
     joined = pl.DataFrame({
         "race_id": ["r1"] * 5,
@@ -557,6 +619,11 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
     assert results[0]["subgroup"] == "jra_turf_mile_G2_summer"
+    assert results[0]["category"] == "jra"
+    assert results[0]["surface"] == "turf"
+    assert results[0]["distance_band"] == "mile"
+    assert results[0]["class_label"] == "G2"
+    assert results[0]["season"] == "summer"
     assert results[0]["race_count"] == 1
 
 
@@ -712,6 +779,19 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
     assert {results[0]["subgroup"], results[1]["subgroup"]} == {
         "jra_turf_mile_G1_spring", "nar_dirt_sprint_C_winter",
     }
+    by_key = {m["subgroup"]: m for m in results}
+    jra = by_key["jra_turf_mile_G1_spring"]
+    assert jra["category"] == "jra"
+    assert jra["surface"] == "turf"
+    assert jra["distance_band"] == "mile"
+    assert jra["class_label"] == "G1"
+    assert jra["season"] == "spring"
+    nar = by_key["nar_dirt_sprint_C_winter"]
+    assert nar["category"] == "nar"
+    assert nar["surface"] == "dirt"
+    assert nar["distance_band"] == "sprint"
+    assert nar["class_label"] == "C"
+    assert nar["season"] == "winter"
 
 
 def test_compute_subgroup_diagnostics_banei_subgroup():
@@ -758,6 +838,11 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
     assert results[0]["subgroup"] == "banei_dirt_sprint_B_summer"
+    assert results[0]["category"] == "banei"
+    assert results[0]["surface"] == "dirt"
+    assert results[0]["distance_band"] == "sprint"
+    assert results[0]["class_label"] == "B"
+    assert results[0]["season"] == "summer"
 
 
 def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
