@@ -93,6 +93,32 @@ _CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     no_cat_features=False,
 )
 
+_SCREEN_XGB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
+    learning_rate=0.05,
+    max_depth=6,
+    min_child_weight=1,
+    reg_lambda=1.0,
+    seed=42,
+    num_rounds=150,
+    early_stopping_rounds=30,
+    relevance_rank1=3,
+    relevance_rank2=2,
+    relevance_rank3=1,
+)
+
+_SCREEN_CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
+    learning_rate=0.05,
+    depth=6,
+    l2_leaf_reg=3.0,
+    seed=42,
+    iterations=150,
+    early_stopping_rounds=30,
+    relevance_rank1=3,
+    relevance_rank2=2,
+    relevance_rank3=1,
+    no_cat_features=False,
+)
+
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | _LABEL_COLS
@@ -292,18 +318,24 @@ def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
     return _ndcg_at_3_from_valid_df(valid_with_pos)
 
 
-def _run_fold_xgboost(fold: FoldSplit) -> float | None:
+def _run_fold_xgboost(
+    fold: FoldSplit,
+    xgb_args: argparse.Namespace | None = None,
+) -> float | None:
     feature_cols = _xgb_numeric_features(fold["train_df"], list(fold["train_df"].columns))
     if not feature_cols:
         return None
     _, result = train_xgboost_ranker(
-        fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
+        fold["train_df"], fold["valid_df"], feature_cols, xgb_args if xgb_args is not None else _XGB_ARGS,
     )
     valid_df = cast(pl.DataFrame, result["valid_predictions"])
     return _ndcg_at_3_from_valid_df(valid_df)
 
 
-def _run_fold_catboost(fold: FoldSplit) -> float | None:
+def _run_fold_catboost(
+    fold: FoldSplit,
+    cb_args: argparse.Namespace | None = None,
+) -> float | None:
     feature_cols = [
         c
         for c in fold["train_df"].columns
@@ -312,7 +344,7 @@ def _run_fold_catboost(fold: FoldSplit) -> float | None:
     if not feature_cols:
         return None
     result = train_catboost_ranker(
-        fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
+        fold["train_df"], fold["valid_df"], feature_cols, cb_args if cb_args is not None else _CB_ARGS,
     )
     valid_df = cast(pl.DataFrame, result["valid_predictions"])
     return _ndcg_at_3_from_valid_df(valid_df)
@@ -322,12 +354,14 @@ def run_fold_with_backend(
     fold: FoldSplit,
     backend: ModelBackend,
     lgb_params: TrainingParams,
+    xgb_args: argparse.Namespace | None = None,
+    cb_args: argparse.Namespace | None = None,
 ) -> float | None:
     if backend == "lightgbm":
         return _run_fold_lightgbm(fold, lgb_params)
     if backend == "xgboost":
-        return _run_fold_xgboost(fold)
-    return _run_fold_catboost(fold)
+        return _run_fold_xgboost(fold, xgb_args)
+    return _run_fold_catboost(fold, cb_args)
 
 
 def _predict_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> pl.DataFrame:
@@ -448,6 +482,8 @@ def build_objective(
     registry: FeatureRegistry,
     study_name: str,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+    xgb_args: argparse.Namespace | None = None,
+    cb_args: argparse.Namespace | None = None,
 ) -> Callable[[optuna.Trial], float]:
     pre_split_folds: dict[int, FoldSplit] = {}
     for year in validation_years:
@@ -469,7 +505,7 @@ def build_objective(
             fold_with_features = _select_fold_features(fold, feature_set)
             fold_scores: list[float] = []
             for backend in backends:
-                score = run_fold_with_backend(fold_with_features, backend, params)
+                score = run_fold_with_backend(fold_with_features, backend, params, xgb_args, cb_args)
                 if score is not None:
                     fold_scores.append(score)
             if fold_scores:
@@ -626,6 +662,7 @@ def run_exploration(
     per_trial_timeout_s: float | None = None,
     warm_start: bool = True,
     enqueue_subsets: Sequence[set[str]] | None = None,
+    screening: bool = False,
 ) -> list[ExplorationResult]:
     """Run one Optuna feature-selection study and return its scored trials.
 
@@ -639,6 +676,8 @@ def run_exploration(
     """
     effective_years = list(validation_years) if validation_years is not None else list(DEFAULT_VALIDATION_YEARS)
     candidate_features = resolve_feature_columns(list(df.columns))
+    screen_xgb = _SCREEN_XGB_ARGS if screening else None
+    screen_cb = _SCREEN_CB_ARGS if screening else None
     objective = build_objective(
         df,
         candidate_features,
@@ -648,6 +687,8 @@ def run_exploration(
         registry,
         study_name,
         backends,
+        xgb_args=screen_xgb,
+        cb_args=screen_cb,
     )
     study = optuna.create_study(
         direction="maximize",

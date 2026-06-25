@@ -1868,3 +1868,200 @@ def test_run_exploration_uses_no_callbacks_when_per_trial_timeout_none() -> None
             subject.run_exploration(df, registry, n_trials=1, warm_start=False)
     callbacks = mock_study.optimize.call_args.kwargs["callbacks"]
     assert callbacks == []
+
+
+# --- _SCREEN_XGB_ARGS / _SCREEN_CB_ARGS constants ---
+
+
+def test_screen_xgb_args_exists_with_reduced_iterations() -> None:
+    assert hasattr(subject, "_SCREEN_XGB_ARGS")
+    assert subject._SCREEN_XGB_ARGS.num_rounds == 150
+    assert subject._SCREEN_XGB_ARGS.early_stopping_rounds == 30
+
+
+def test_screen_cb_args_exists_with_reduced_iterations() -> None:
+    assert hasattr(subject, "_SCREEN_CB_ARGS")
+    assert subject._SCREEN_CB_ARGS.iterations == 150
+    assert subject._SCREEN_CB_ARGS.early_stopping_rounds == 30
+
+
+def test_screen_xgb_args_matches_xgb_args_except_rounds() -> None:
+    assert subject._SCREEN_XGB_ARGS.learning_rate == subject._XGB_ARGS.learning_rate
+    assert subject._SCREEN_XGB_ARGS.max_depth == subject._XGB_ARGS.max_depth
+    assert subject._SCREEN_XGB_ARGS.min_child_weight == subject._XGB_ARGS.min_child_weight
+    assert subject._SCREEN_XGB_ARGS.reg_lambda == subject._XGB_ARGS.reg_lambda
+    assert subject._SCREEN_XGB_ARGS.seed == subject._XGB_ARGS.seed
+    assert subject._SCREEN_XGB_ARGS.relevance_rank1 == subject._XGB_ARGS.relevance_rank1
+    assert subject._SCREEN_XGB_ARGS.relevance_rank2 == subject._XGB_ARGS.relevance_rank2
+    assert subject._SCREEN_XGB_ARGS.relevance_rank3 == subject._XGB_ARGS.relevance_rank3
+
+
+def test_screen_cb_args_matches_cb_args_except_rounds() -> None:
+    assert subject._SCREEN_CB_ARGS.learning_rate == subject._CB_ARGS.learning_rate
+    assert subject._SCREEN_CB_ARGS.depth == subject._CB_ARGS.depth
+    assert subject._SCREEN_CB_ARGS.l2_leaf_reg == subject._CB_ARGS.l2_leaf_reg
+    assert subject._SCREEN_CB_ARGS.seed == subject._CB_ARGS.seed
+    assert subject._SCREEN_CB_ARGS.no_cat_features == subject._CB_ARGS.no_cat_features
+    assert subject._SCREEN_CB_ARGS.relevance_rank1 == subject._CB_ARGS.relevance_rank1
+    assert subject._SCREEN_CB_ARGS.relevance_rank2 == subject._CB_ARGS.relevance_rank2
+    assert subject._SCREEN_CB_ARGS.relevance_rank3 == subject._CB_ARGS.relevance_rank3
+
+
+def test_full_xgb_args_has_300_rounds() -> None:
+    assert subject._XGB_ARGS.num_rounds == 300
+    assert subject._XGB_ARGS.early_stopping_rounds == 50
+
+
+def test_full_cb_args_has_300_iterations() -> None:
+    assert subject._CB_ARGS.iterations == 300
+    assert subject._CB_ARGS.early_stopping_rounds == 50
+
+
+# --- run_exploration screening parameter ---
+
+
+def test_run_exploration_screening_true_passes_screen_args_to_build_objective() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+            ) as mock_build,
+        ):
+            subject.run_exploration(
+                df, registry, n_trials=1, warm_start=False, screening=True
+            )
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["xgb_args"] is subject._SCREEN_XGB_ARGS
+    assert kwargs["cb_args"] is subject._SCREEN_CB_ARGS
+
+
+def test_run_exploration_screening_false_passes_none_args_to_build_objective() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+            ) as mock_build,
+        ):
+            subject.run_exploration(
+                df, registry, n_trials=1, warm_start=False, screening=False
+            )
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["xgb_args"] is None
+    assert kwargs["cb_args"] is None
+
+
+def test_run_exploration_default_screening_is_false() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective", return_value=lambda t: 0.5
+            ) as mock_build,
+        ):
+            subject.run_exploration(df, registry, n_trials=1, warm_start=False)
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["xgb_args"] is None
+    assert kwargs["cb_args"] is None
+
+
+# --- run_fold_with_backend with xgb_args / cb_args ---
+
+
+def test_run_fold_with_backend_xgboost_passes_xgb_args_to_trainer() -> None:
+    import argparse
+
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    custom_args = argparse.Namespace(
+        learning_rate=0.05, max_depth=6, min_child_weight=1, reg_lambda=1.0,
+        seed=42, num_rounds=150, early_stopping_rounds=30,
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+    )
+    valid_preds = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(MagicMock(), {"valid_predictions": valid_preds}),
+    ) as mock_xgb:
+        subject.run_fold_with_backend(fold, "xgboost", params, xgb_args=custom_args)
+    passed_args = mock_xgb.call_args[0][3]
+    assert passed_args is custom_args
+
+
+def test_run_fold_with_backend_xgboost_uses_default_when_xgb_args_none() -> None:
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    valid_preds = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(MagicMock(), {"valid_predictions": valid_preds}),
+    ) as mock_xgb:
+        subject.run_fold_with_backend(fold, "xgboost", params)
+    passed_args = mock_xgb.call_args[0][3]
+    assert passed_args is subject._XGB_ARGS
+
+
+def test_run_fold_with_backend_catboost_passes_cb_args_to_trainer() -> None:
+    import argparse
+
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    custom_args = argparse.Namespace(
+        learning_rate=0.05, depth=6, l2_leaf_reg=3.0, seed=42,
+        iterations=150, early_stopping_rounds=30,
+        relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
+        no_cat_features=False,
+    )
+    valid_preds = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        subject.run_fold_with_backend(fold, "catboost", params, cb_args=custom_args)
+    passed_args = mock_cb.call_args[0][3]
+    assert passed_args is custom_args
+
+
+def test_run_fold_with_backend_catboost_uses_default_when_cb_args_none() -> None:
+    fold = _make_fold()
+    params = subject.DEFAULT_PARAMS
+    valid_preds = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"valid_predictions": valid_preds},
+    ) as mock_cb:
+        subject.run_fold_with_backend(fold, "catboost", params)
+    passed_args = mock_cb.call_args[0][3]
+    assert passed_args is subject._CB_ARGS

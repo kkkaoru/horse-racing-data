@@ -293,6 +293,7 @@ class ContinuousLearner:
         self._load_controller: AdaptiveLoadController | None = load_controller
         self._auto_tune: bool = auto_tune
         self._per_trial_timeout_s: float | None = per_trial_timeout_s
+        self._last_enrichment: list[tuple[str, float]] | None = None
 
     @staticmethod
     def _derive_blind_holdout_year(df: pl.DataFrame) -> int:
@@ -371,7 +372,7 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             saturated = self._maybe_deploy()
-            if self._log_subgroup:
+            if self._log_subgroup and round_num % 5 == 0:
                 self._log_subgroup_diagnostics()
             if not saturated and not self._skip_inverse:
                 self._check_and_try_inverses(round_num, actual_trials)
@@ -408,9 +409,10 @@ class ContinuousLearner:
             return []
         active_set = set(active["feature_names"])
         subsets = [active_set]
+        self._last_enrichment = self._registry.compute_feature_enrichment()
         enriched = [
             name
-            for name, score in self._registry.compute_feature_enrichment()
+            for name, score in self._last_enrichment
             if score > 0 and name not in active_set
         ][:MAX_ENRICHMENT_FEATURES]
         if enriched:
@@ -438,6 +440,7 @@ class ContinuousLearner:
             backends=self._backends,
             per_trial_timeout_s=self._per_trial_timeout_s,
             enqueue_subsets=self._priority_subsets(),
+            screening=True,
         )
 
     def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
@@ -513,6 +516,7 @@ class ContinuousLearner:
             validation_years=screen_years,
             train_start=self._train_start,
             backends=self._backends,
+            screening=True,
         )
         best_from_study = self._registry.get_best_ndcg_for_study(inverse_study_name)
         if best_from_study is None:
@@ -531,7 +535,11 @@ class ContinuousLearner:
         score) are candidates the active set is missing. When such features exist that
         are not already active, a follow-up exploration is launched to fold them in.
         """
-        enriched = self._registry.compute_feature_enrichment()
+        if self._last_enrichment is not None:
+            enriched = self._last_enrichment
+            self._last_enrichment = None
+        else:
+            enriched = self._registry.compute_feature_enrichment()
         if not enriched:
             _logger.info(
                 "no enriched features found (threshold=%.1f)", ENRICHMENT_THRESHOLD
@@ -584,6 +592,7 @@ class ContinuousLearner:
             validation_years=screen_years,
             train_start=self._train_start,
             backends=self._backends,
+            screening=True,
         )
 
     def _maybe_deploy(self) -> bool:

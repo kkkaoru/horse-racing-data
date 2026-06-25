@@ -424,6 +424,14 @@ def test_explore_round_passes_priority_subsets_and_timeout() -> None:
             ]
 
 
+def test_explore_round_passes_screening_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+        assert mock_run.call_args.kwargs["screening"] is True
+
+
 # ---------------------------------------------------------------------------
 # _priority_subsets
 # ---------------------------------------------------------------------------
@@ -479,6 +487,32 @@ def test_priority_subsets_ignores_non_positive_enrichment_scores() -> None:
         ):
             subsets = learner._priority_subsets()
     assert len(subsets) == 1
+
+
+def test_priority_subsets_caches_enrichment_for_reuse() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        with patch.object(
+            reg, "compute_feature_enrichment", return_value=[("feat_new", 0.6)]
+        ):
+            learner._priority_subsets()
+    assert learner._last_enrichment == [("feat_new", 0.6)]
+
+
+def test_priority_subsets_caches_empty_enrichment() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        with patch.object(reg, "compute_feature_enrichment", return_value=[]):
+            learner._priority_subsets()
+    assert learner._last_enrichment == []
 
 
 # ---------------------------------------------------------------------------
@@ -2040,6 +2074,15 @@ def test_run_inverse_exploration_screens_on_single_validation_year() -> None:
         assert screen_years == full_round_years[:1]
 
 
+def test_run_inverse_exploration_passes_screening_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
+        assert mock_run.call_args.kwargs["screening"] is True
+
+
 def test_run_inverse_exploration_n_trials_ignores_caller_value() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
@@ -2338,6 +2381,45 @@ def test_analyze_feature_enrichment_runs_trial_when_candidates_found() -> None:
     mock_trial.assert_called_once_with({"feat_speed"}, [("feat_new", 0.8)], 4)
 
 
+def test_analyze_feature_enrichment_uses_cached_enrichment() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    learner._last_enrichment = [("feat_cached", 0.7)]
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    mock_registry.compute_feature_enrichment.assert_not_called()
+    mock_trial.assert_called_once_with({"feat_speed"}, [("feat_cached", 0.7)], 0)
+
+
+def test_analyze_feature_enrichment_clears_cache_after_use() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    learner._last_enrichment = [("feat_cached", 0.7)]
+    with patch.object(learner, "_run_enrichment_trial"):
+        learner._analyze_feature_enrichment(0)
+    assert learner._last_enrichment is None
+
+
+def test_analyze_feature_enrichment_computes_when_cache_empty() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.compute_feature_enrichment.return_value = [("feat_new", 0.8)]
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    assert learner._last_enrichment is None
+    with patch.object(learner, "_run_enrichment_trial") as mock_trial:
+        learner._analyze_feature_enrichment(0)
+    mock_registry.compute_feature_enrichment.assert_called_once_with()
+    mock_trial.assert_called_once_with({"feat_speed"}, [("feat_new", 0.8)], 0)
+
+
 def test_analyze_feature_enrichment_skips_trial_when_no_active_entry() -> None:
     mock_registry = MagicMock(spec=FeatureRegistry)
     mock_registry.compute_feature_enrichment.return_value = [("feat_new", 0.8)]
@@ -2474,6 +2556,14 @@ def test_run_enrichment_trial_study_name_includes_round_and_features() -> None:
                 3,
             )
         assert mock_run.call_args.kwargs["study_name"] == "enrichment-r3-feat_a+feat_b+feat_c"
+
+
+def test_run_enrichment_trial_passes_screening_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 0)
+        assert mock_run.call_args.kwargs["screening"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3327,6 +3417,27 @@ def test_run_calls_log_subgroup_when_enabled() -> None:
         mock_log.assert_called_once_with()
 
 
+def test_run_skips_log_subgroup_on_non_fifth_round() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=5)
+        assert mock_log.call_count == 1
+
+
 def test_run_skips_log_subgroup_when_disabled() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
@@ -4057,3 +4168,119 @@ def test_main_cf_deploy_dir_default_is_none(tmp_path: Path) -> None:
         )
 
     assert captured["cf_deploy_dir"] is None
+
+
+# ---------------------------------------------------------------------------
+# screening=True — blind holdout does NOT use screening
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_blind_holdout_does_not_use_screening() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, blind_holdout_year=2025)
+        entry = _make_entry(feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.evaluate_feature_set",
+            return_value=0.5,
+        ) as mock_eval:
+            learner._evaluate_blind_holdout(entry)
+        # evaluate_feature_set has no screening param -- it always uses full params.
+        # Just verify it was called without any screening kwarg.
+        assert "screening" not in mock_eval.call_args.kwargs
+
+
+# ---------------------------------------------------------------------------
+# subgroup diagnostics skipped on non-5th rounds
+# ---------------------------------------------------------------------------
+
+
+def test_run_skips_subgroup_diagnostics_on_non_5th_round() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=4)
+        # Rounds 0, 1, 2, 3 — only round 0 has round_num % 5 == 0.
+        assert mock_log.call_count == 1
+
+
+def test_run_calls_subgroup_diagnostics_on_round_5() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=6)
+        # Rounds 0, 1, 2, 3, 4, 5 — rounds 0 and 5 have round_num % 5 == 0.
+        assert mock_log.call_count == 2
+
+
+def test_run_calls_subgroup_diagnostics_on_round_10() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+            log_subgroup=True,
+        )
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
+        ):
+            learner.run(max_rounds=11)
+        # Rounds 0..10 — rounds 0, 5, 10 have round_num % 5 == 0.
+        assert mock_log.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# enrichment caching (_last_enrichment)
+# ---------------------------------------------------------------------------
+
+
+def test_last_enrichment_initialized_to_none() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._last_enrichment is None
+
+
+def test_priority_subsets_stores_enrichment_in_last_enrichment() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial(
+            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
+        )
+        reg.activate(active_id)
+        learner = _make_learner(registry=reg)
+        enrichment_data = [("feat_new", 0.6), ("feat_speed", 0.5)]
+        with patch.object(
+            reg, "compute_feature_enrichment", return_value=enrichment_data
+        ):
+            learner._priority_subsets()
+    assert learner._last_enrichment is enrichment_data
