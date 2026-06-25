@@ -65,8 +65,30 @@ def get_distance_band(kyori: int) -> str:
     return "extended"
 
 
-def make_subgroup_key(source_label: str, surface: str, distance_band: str) -> str:
-    return f"{source_label}_{surface}_{distance_band}"
+def get_season(month: int) -> str:
+    if month in {3, 4, 5}:
+        return "spring"
+    if month in {6, 7, 8}:
+        return "summer"
+    if month in {9, 10, 11}:
+        return "autumn"
+    return "winter"
+
+
+def get_class_label(grade_code: str) -> str:
+    if grade_code:
+        return grade_code
+    return "unknown"
+
+
+def make_subgroup_key(
+    source_label: str,
+    surface: str,
+    distance_band: str,
+    class_label: str = "unknown",
+    season: str = "unknown",
+) -> str:
+    return f"{source_label}_{surface}_{distance_band}_{class_label}_{season}"
 
 
 def _source_label_expr() -> pl.Expr:
@@ -109,6 +131,29 @@ def _distance_band_expr() -> pl.Expr:
     )
 
 
+def _season_expr(df: pl.DataFrame) -> pl.Expr:
+    """Map kaisai_nengappi (YYYYMMDD int/str) to season label."""
+    if "kaisai_nengappi" not in df.columns:
+        return pl.lit("unknown")
+    month = pl.col("kaisai_nengappi").cast(pl.Utf8).str.slice(4, 2).cast(pl.Int64)
+    return (
+        pl.when(month.is_in([3, 4, 5]))
+        .then(pl.lit("spring"))
+        .when(month.is_in([6, 7, 8]))
+        .then(pl.lit("summer"))
+        .when(month.is_in([9, 10, 11]))
+        .then(pl.lit("autumn"))
+        .otherwise(pl.lit("winter"))
+    )
+
+
+def _class_expr(df: pl.DataFrame) -> pl.Expr:
+    """Return grade_code as-is, or 'unknown' if the column is absent."""
+    if "grade_code" not in df.columns:
+        return pl.lit("unknown")
+    return pl.col("grade_code").cast(pl.Utf8).fill_null("unknown")
+
+
 def assign_subgroup_keys(df: pl.DataFrame) -> pl.Series:
     """Return a Series of subgroup key strings aligned with df's rows."""
     result = df.select(
@@ -119,6 +164,10 @@ def assign_subgroup_keys(df: pl.DataFrame) -> pl.Series:
                 _surface_expr(),
                 pl.lit("_"),
                 _distance_band_expr(),
+                pl.lit("_"),
+                _class_expr(df),
+                pl.lit("_"),
+                _season_expr(df),
             ]
         ).alias("key")
     )
@@ -329,10 +378,14 @@ def compute_subgroup_diagnostics(
     -------
     list[SubgroupMetrics] sorted by subgroup key ascending.
     """
-    joined = ground_truth.select(
-        ["race_id", "ketto_toroku_bango", "finish_position",
-         "source", "keibajo_code", "track_code", "kyori"]
-    ).join(
+    gt_cols = [
+        "race_id", "ketto_toroku_bango", "finish_position",
+        "source", "keibajo_code", "track_code", "kyori",
+    ]
+    for optional_col in ("kaisai_nengappi", "grade_code"):
+        if optional_col in ground_truth.columns:
+            gt_cols.append(optional_col)
+    joined = ground_truth.select(gt_cols).join(
         predictions,
         on=["race_id", "ketto_toroku_bango"],
         how="left",

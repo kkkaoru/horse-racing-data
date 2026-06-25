@@ -98,15 +98,141 @@ def test_get_distance_band_extended_far():
     assert subject.get_distance_band(3200) == "extended"
 
 
-def test_make_subgroup_key_concatenates_with_underscores():
-    assert subject.make_subgroup_key("jra", "turf", "mile") == "jra_turf_mile"
+def test_get_season_spring():
+    assert subject.get_season(3) == "spring"
+    assert subject.get_season(4) == "spring"
+    assert subject.get_season(5) == "spring"
 
 
-def test_make_subgroup_key_nar_dirt_sprint():
-    assert subject.make_subgroup_key("nar", "dirt", "sprint") == "nar_dirt_sprint"
+def test_get_season_summer():
+    assert subject.get_season(6) == "summer"
+    assert subject.get_season(7) == "summer"
+    assert subject.get_season(8) == "summer"
 
 
-def test_assign_subgroup_keys_jra_turf_mile():
+def test_get_season_autumn():
+    assert subject.get_season(9) == "autumn"
+    assert subject.get_season(10) == "autumn"
+    assert subject.get_season(11) == "autumn"
+
+
+def test_get_season_winter():
+    assert subject.get_season(12) == "winter"
+    assert subject.get_season(1) == "winter"
+    assert subject.get_season(2) == "winter"
+
+
+def test_get_class_label_returns_grade_code():
+    assert subject.get_class_label("G1") == "G1"
+    assert subject.get_class_label("A") == "A"
+    assert subject.get_class_label("NEW") == "NEW"
+    assert subject.get_class_label("OP") == "OP"
+
+
+def test_get_class_label_empty_returns_unknown():
+    assert subject.get_class_label("") == "unknown"
+
+
+def test_make_subgroup_key_five_parts():
+    assert subject.make_subgroup_key("jra", "turf", "mile", "G2", "summer") == "jra_turf_mile_G2_summer"
+
+
+def test_make_subgroup_key_defaults_unknown():
+    assert subject.make_subgroup_key("jra", "turf", "mile") == "jra_turf_mile_unknown_unknown"
+
+
+def test_make_subgroup_key_nar_dirt_sprint_with_class_season():
+    assert subject.make_subgroup_key("nar", "dirt", "sprint", "A", "winter") == "nar_dirt_sprint_A_winter"
+
+
+def test_assign_subgroup_keys_jra_turf_mile_with_class_and_season():
+    df = pl.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "10",
+        "track_code": "10",
+        "kyori": 1400,
+        "grade_code": "G2",
+        "kaisai_nengappi": "20260615",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_turf_mile_G2_summer"]
+
+
+def test_assign_subgroup_keys_nar_dirt_long_with_class_and_season():
+    df = pl.DataFrame([{
+        "source": "nar",
+        "keibajo_code": "40",
+        "track_code": "10",
+        "kyori": 2200,
+        "grade_code": "A",
+        "kaisai_nengappi": "20261201",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["nar_dirt_long_A_winter"]
+
+
+def test_assign_subgroup_keys_jra_turf_extended_spring():
+    df = pl.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "10",
+        "track_code": "10",
+        "kyori": 3000,
+        "grade_code": "G1",
+        "kaisai_nengappi": "20260405",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_turf_extended_G1_spring"]
+
+
+def test_assign_subgroup_keys_banei_dirt_sprint_autumn():
+    df = pl.DataFrame([{
+        "source": "nar",
+        "keibajo_code": "83",
+        "track_code": "10",
+        "kyori": 200,
+        "grade_code": "B",
+        "kaisai_nengappi": "20261010",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["banei_dirt_sprint_B_autumn"]
+
+
+def test_assign_subgroup_keys_multiple_rows_with_class_and_season():
+    df = pl.DataFrame([
+        {"source": "jra", "keibajo_code": "10", "track_code": "23", "kyori": 1100,
+         "grade_code": "OP", "kaisai_nengappi": "20260115"},
+        {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1800,
+         "grade_code": "C", "kaisai_nengappi": "20260720"},
+    ])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_dirt_sprint_OP_winter", "nar_dirt_intermediate_C_summer"]
+
+
+def test_assign_subgroup_keys_missing_grade_code_column_uses_unknown():
+    df = pl.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "10",
+        "track_code": "10",
+        "kyori": 1400,
+        "kaisai_nengappi": "20260615",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_turf_mile_unknown_summer"]
+
+
+def test_assign_subgroup_keys_missing_kaisai_nengappi_column_uses_unknown():
+    df = pl.DataFrame([{
+        "source": "jra",
+        "keibajo_code": "10",
+        "track_code": "10",
+        "kyori": 1400,
+        "grade_code": "G1",
+    }])
+    result = subject.assign_subgroup_keys(df)
+    assert result.to_list() == ["jra_turf_mile_G1_unknown"]
+
+
+def test_assign_subgroup_keys_missing_both_optional_columns_uses_unknown():
     df = pl.DataFrame([{
         "source": "jra",
         "keibajo_code": "10",
@@ -114,49 +240,20 @@ def test_assign_subgroup_keys_jra_turf_mile():
         "kyori": 1400,
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_mile"]
+    assert result.to_list() == ["jra_turf_mile_unknown_unknown"]
 
 
-def test_assign_subgroup_keys_nar_dirt_long():
-    df = pl.DataFrame([{
-        "source": "nar",
-        "keibajo_code": "40",
-        "track_code": "10",
-        "kyori": 2200,
-    }])
-    result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["nar_dirt_long"]
-
-
-def test_assign_subgroup_keys_jra_turf_extended():
+def test_assign_subgroup_keys_null_grade_code_uses_unknown():
     df = pl.DataFrame([{
         "source": "jra",
         "keibajo_code": "10",
         "track_code": "10",
-        "kyori": 3000,
+        "kyori": 1400,
+        "grade_code": None,
+        "kaisai_nengappi": "20260615",
     }])
     result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_turf_extended"]
-
-
-def test_assign_subgroup_keys_banei_dirt_sprint():
-    df = pl.DataFrame([{
-        "source": "nar",
-        "keibajo_code": "83",
-        "track_code": "10",
-        "kyori": 200,
-    }])
-    result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["banei_dirt_sprint"]
-
-
-def test_assign_subgroup_keys_multiple_rows():
-    df = pl.DataFrame([
-        {"source": "jra", "keibajo_code": "10", "track_code": "23", "kyori": 1100},
-        {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1800},
-    ])
-    result = subject.assign_subgroup_keys(df)
-    assert result.to_list() == ["jra_dirt_sprint", "nar_dirt_intermediate"]
+    assert result.to_list() == ["jra_turf_mile_unknown_summer"]
 
 
 def test_dcg_at_3_perfect_prediction():
@@ -426,6 +523,8 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G2",
+            "kaisai_nengappi": "20260615",
         },
         {
             "race_id": "r1",
@@ -435,6 +534,8 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G2",
+            "kaisai_nengappi": "20260615",
         },
         {
             "race_id": "r1",
@@ -444,6 +545,8 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G2",
+            "kaisai_nengappi": "20260615",
         },
     ])
     predictions = _make_predictions([
@@ -453,7 +556,7 @@ def test_compute_subgroup_diagnostics_returns_sorted_list():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_turf_mile"
+    assert results[0]["subgroup"] == "jra_turf_mile_G2_summer"
     assert results[0]["race_count"] == 1
 
 
@@ -486,6 +589,8 @@ def test_compute_subgroup_diagnostics_empty_predictions_returns_zero_ndcg():
         "keibajo_code": "10",
         "track_code": "10",
         "kyori": 1400,
+        "grade_code": "A",
+        "kaisai_nengappi": "20260315",
     }])
     predictions = pl.DataFrame(
         schema={
@@ -510,6 +615,8 @@ def test_compute_subgroup_diagnostics_no_matching_rows_returns_zero_ndcg():
         "keibajo_code": "10",
         "track_code": "10",
         "kyori": 1400,
+        "grade_code": "A",
+        "kaisai_nengappi": "20260315",
     }])
     predictions = _make_predictions([{
         "race_id": "r999",
@@ -532,6 +639,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G1",
+            "kaisai_nengappi": "20260405",
         },
         {
             "race_id": "r1",
@@ -541,6 +650,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G1",
+            "kaisai_nengappi": "20260405",
         },
         {
             "race_id": "r1",
@@ -550,6 +661,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "10",
             "track_code": "10",
             "kyori": 1400,
+            "grade_code": "G1",
+            "kaisai_nengappi": "20260405",
         },
         {
             "race_id": "r2",
@@ -559,6 +672,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "40",
             "track_code": "10",
             "kyori": 1100,
+            "grade_code": "C",
+            "kaisai_nengappi": "20261215",
         },
         {
             "race_id": "r2",
@@ -568,6 +683,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "40",
             "track_code": "10",
             "kyori": 1100,
+            "grade_code": "C",
+            "kaisai_nengappi": "20261215",
         },
         {
             "race_id": "r2",
@@ -577,6 +694,8 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
             "keibajo_code": "40",
             "track_code": "10",
             "kyori": 1100,
+            "grade_code": "C",
+            "kaisai_nengappi": "20261215",
         },
     ])
     predictions = _make_predictions([
@@ -590,7 +709,9 @@ def test_compute_subgroup_diagnostics_multiple_subgroups_sorted():
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 2
     assert results[0]["subgroup"] < results[1]["subgroup"]
-    assert {results[0]["subgroup"], results[1]["subgroup"]} == {"jra_turf_mile", "nar_dirt_sprint"}
+    assert {results[0]["subgroup"], results[1]["subgroup"]} == {
+        "jra_turf_mile_G1_spring", "nar_dirt_sprint_C_winter",
+    }
 
 
 def test_compute_subgroup_diagnostics_banei_subgroup():
@@ -603,6 +724,8 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
             "keibajo_code": "83",
             "track_code": "10",
             "kyori": 200,
+            "grade_code": "B",
+            "kaisai_nengappi": "20260810",
         },
         {
             "race_id": "r1",
@@ -612,6 +735,8 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
             "keibajo_code": "83",
             "track_code": "10",
             "kyori": 200,
+            "grade_code": "B",
+            "kaisai_nengappi": "20260810",
         },
         {
             "race_id": "r1",
@@ -621,6 +746,8 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
             "keibajo_code": "83",
             "track_code": "10",
             "kyori": 200,
+            "grade_code": "B",
+            "kaisai_nengappi": "20260810",
         },
     ])
     predictions = _make_predictions([
@@ -630,7 +757,7 @@ def test_compute_subgroup_diagnostics_banei_subgroup():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "banei_dirt_sprint"
+    assert results[0]["subgroup"] == "banei_dirt_sprint_B_summer"
 
 
 def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
@@ -643,6 +770,8 @@ def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
             "keibajo_code": "10",
             "track_code": "25",
             "kyori": 1400,
+            "grade_code": "OP",
+            "kaisai_nengappi": "20260920",
         },
         {
             "race_id": "r1",
@@ -652,6 +781,8 @@ def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
             "keibajo_code": "10",
             "track_code": "25",
             "kyori": 1400,
+            "grade_code": "OP",
+            "kaisai_nengappi": "20260920",
         },
         {
             "race_id": "r1",
@@ -661,6 +792,8 @@ def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
             "keibajo_code": "10",
             "track_code": "25",
             "kyori": 1400,
+            "grade_code": "OP",
+            "kaisai_nengappi": "20260920",
         },
     ])
     predictions = _make_predictions([
@@ -670,7 +803,7 @@ def test_compute_subgroup_diagnostics_jra_dirt_subgroup():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_dirt_mile"
+    assert results[0]["subgroup"] == "jra_dirt_mile_OP_autumn"
 
 
 def test_compute_subgroup_diagnostics_jra_other_track_code():
@@ -683,6 +816,8 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
             "keibajo_code": "10",
             "track_code": "99",
             "kyori": 2500,
+            "grade_code": "G3",
+            "kaisai_nengappi": "20260215",
         },
         {
             "race_id": "r1",
@@ -692,6 +827,8 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
             "keibajo_code": "10",
             "track_code": "99",
             "kyori": 2500,
+            "grade_code": "G3",
+            "kaisai_nengappi": "20260215",
         },
         {
             "race_id": "r1",
@@ -701,6 +838,8 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
             "keibajo_code": "10",
             "track_code": "99",
             "kyori": 2500,
+            "grade_code": "G3",
+            "kaisai_nengappi": "20260215",
         },
     ])
     predictions = _make_predictions([
@@ -710,7 +849,7 @@ def test_compute_subgroup_diagnostics_jra_other_track_code():
     ])
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert len(results) == 1
-    assert results[0]["subgroup"] == "jra_other_extended"
+    assert results[0]["subgroup"] == "jra_other_extended_G3_winter"
 
 
 def test_evaluate_subgroup_top3_not_counted_when_fewer_than_3_valid_predicted_ranks():
@@ -788,14 +927,17 @@ def test_compute_subgroup_diagnostics_penalizes_unpredicted_winner_via_left_join
         {
             "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+            "grade_code": "A", "kaisai_nengappi": "20260715",
         },
         {
             "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+            "grade_code": "A", "kaisai_nengappi": "20260715",
         },
         {
             "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1600,
+            "grade_code": "A", "kaisai_nengappi": "20260715",
         },
     ])
     predictions = _make_predictions([
@@ -814,10 +956,12 @@ def test_compute_subgroup_diagnostics_does_not_mutate_input_frames():
         {
             "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "A", "kaisai_nengappi": "20260615",
         },
         {
             "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "A", "kaisai_nengappi": "20260615",
         },
     ])
     predictions = _make_predictions([
@@ -828,6 +972,7 @@ def test_compute_subgroup_diagnostics_does_not_mutate_input_frames():
     assert ground_truth.columns == [
         "race_id", "ketto_toroku_bango", "finish_position",
         "source", "keibajo_code", "track_code", "kyori",
+        "grade_code", "kaisai_nengappi",
     ]
     assert predictions.columns == ["race_id", "ketto_toroku_bango", "predicted_rank"]
 
@@ -839,14 +984,17 @@ def test_compute_subgroup_diagnostics_perfect_prediction_scores_one():
         {
             "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G1", "kaisai_nengappi": "20260405",
         },
         {
             "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G1", "kaisai_nengappi": "20260405",
         },
         {
             "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
             "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G1", "kaisai_nengappi": "20260405",
         },
     ])
     predictions = _make_predictions([
@@ -931,12 +1079,18 @@ def test_evaluate_subgroup_top3_box_tie_uses_stable_order():
 
 def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():
     df = pl.DataFrame([
-        {"source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1000},
-        {"source": "jra", "keibajo_code": "10", "track_code": "25", "kyori": 1600},
-        {"source": "jra", "keibajo_code": "10", "track_code": "99", "kyori": 2400},
-        {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1300},
-        {"source": "nar", "keibajo_code": "83", "track_code": "22", "kyori": 200},
-        {"source": "jra", "keibajo_code": "83", "track_code": "10", "kyori": 2100},
+        {"source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1000,
+         "grade_code": "G1", "kaisai_nengappi": "20260315"},
+        {"source": "jra", "keibajo_code": "10", "track_code": "25", "kyori": 1600,
+         "grade_code": "OP", "kaisai_nengappi": "20260720"},
+        {"source": "jra", "keibajo_code": "10", "track_code": "99", "kyori": 2400,
+         "grade_code": "A", "kaisai_nengappi": "20261105"},
+        {"source": "nar", "keibajo_code": "40", "track_code": "10", "kyori": 1300,
+         "grade_code": "C", "kaisai_nengappi": "20260120"},
+        {"source": "nar", "keibajo_code": "83", "track_code": "22", "kyori": 200,
+         "grade_code": "B", "kaisai_nengappi": "20260810"},
+        {"source": "jra", "keibajo_code": "83", "track_code": "10", "kyori": 2100,
+         "grade_code": "NEW", "kaisai_nengappi": "20261220"},
     ])
     expected = [
         subject.make_subgroup_key(
@@ -946,7 +1100,151 @@ def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():
                 subject.get_source_label(row["source"], row["keibajo_code"]),
             ),
             subject.get_distance_band(int(row["kyori"])),
+            subject.get_class_label(row["grade_code"]),
+            subject.get_season(int(str(row["kaisai_nengappi"])[4:6])),
         )
         for row in df.iter_rows(named=True)
     ]
     assert subject.assign_subgroup_keys(df).to_list() == expected
+
+
+def test_season_expr_all_four_seasons():
+    df = pl.DataFrame({
+        "source": ["jra"] * 4,
+        "keibajo_code": ["10"] * 4,
+        "track_code": ["10"] * 4,
+        "kyori": [1400] * 4,
+        "grade_code": ["A"] * 4,
+        "kaisai_nengappi": ["20260315", "20260720", "20261015", "20261215"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0].endswith("_spring")
+    assert keys[1].endswith("_summer")
+    assert keys[2].endswith("_autumn")
+    assert keys[3].endswith("_winter")
+
+
+def test_season_expr_january_february_are_winter():
+    df = pl.DataFrame({
+        "source": ["jra", "jra"],
+        "keibajo_code": ["10", "10"],
+        "track_code": ["10", "10"],
+        "kyori": [1400, 1400],
+        "grade_code": ["A", "A"],
+        "kaisai_nengappi": ["20260115", "20260220"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0].endswith("_winter")
+    assert keys[1].endswith("_winter")
+
+
+def test_class_expr_various_grade_codes():
+    df = pl.DataFrame({
+        "source": ["jra"] * 5,
+        "keibajo_code": ["10"] * 5,
+        "track_code": ["10"] * 5,
+        "kyori": [1400] * 5,
+        "grade_code": ["G1", "G2", "G3", "OP", "NEW"],
+        "kaisai_nengappi": ["20260615"] * 5,
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_G1_summer"
+    assert keys[1] == "jra_turf_mile_G2_summer"
+    assert keys[2] == "jra_turf_mile_G3_summer"
+    assert keys[3] == "jra_turf_mile_OP_summer"
+    assert keys[4] == "jra_turf_mile_NEW_summer"
+
+
+def test_compute_subgroup_diagnostics_missing_optional_columns_uses_unknown():
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 2},
+        {"race_id": "r1", "ketto_toroku_bango": "c", "predicted_rank": 3},
+    ])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert len(results) == 1
+    assert results[0]["subgroup"] == "jra_turf_mile_unknown_unknown"
+    assert results[0]["race_count"] == 1
+
+
+def test_compute_subgroup_diagnostics_missing_only_grade_code():
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "kaisai_nengappi": "20260915",
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "kaisai_nengappi": "20260915",
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "kaisai_nengappi": "20260915",
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 2},
+        {"race_id": "r1", "ketto_toroku_bango": "c", "predicted_rank": 3},
+    ])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert len(results) == 1
+    assert results[0]["subgroup"] == "jra_turf_mile_unknown_autumn"
+
+
+def test_compute_subgroup_diagnostics_missing_only_kaisai_nengappi():
+    ground_truth = _make_ground_truth([
+        {
+            "race_id": "r1", "ketto_toroku_bango": "a", "finish_position": 1,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G2",
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "b", "finish_position": 2,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G2",
+        },
+        {
+            "race_id": "r1", "ketto_toroku_bango": "c", "finish_position": 3,
+            "source": "jra", "keibajo_code": "10", "track_code": "10", "kyori": 1400,
+            "grade_code": "G2",
+        },
+    ])
+    predictions = _make_predictions([
+        {"race_id": "r1", "ketto_toroku_bango": "a", "predicted_rank": 1},
+        {"race_id": "r1", "ketto_toroku_bango": "b", "predicted_rank": 2},
+        {"race_id": "r1", "ketto_toroku_bango": "c", "predicted_rank": 3},
+    ])
+    results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
+    assert len(results) == 1
+    assert results[0]["subgroup"] == "jra_turf_mile_G2_unknown"
+
+
+def test_season_expr_december_is_winter():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": ["A"],
+        "kaisai_nengappi": ["20261201"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_A_winter"

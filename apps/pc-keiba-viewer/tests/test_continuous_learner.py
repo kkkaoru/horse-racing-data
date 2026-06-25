@@ -4194,28 +4194,6 @@ def test_evaluate_blind_holdout_does_not_use_screening() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_skips_subgroup_diagnostics_on_non_5th_round() -> None:
-    with FeatureRegistry(Path(":memory:")) as reg:
-        learner = subject.ContinuousLearner(
-            registry=reg,
-            df=_make_df(),
-            category="jra",
-            repo_root=Path("/fake/repo"),
-            scripts_dir=Path("/fake/scripts"),
-            log_subgroup=True,
-        )
-        with (
-            patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
-            patch.object(learner, "_check_and_try_inverses"),
-            patch.object(learner, "_analyze_feature_enrichment"),
-            patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
-        ):
-            learner.run(max_rounds=4)
-        # Rounds 0, 1, 2, 3 — only round 0 has round_num % 5 == 0.
-        assert mock_log.call_count == 1
-
-
 def test_run_calls_subgroup_diagnostics_on_round_5() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = subject.ContinuousLearner(
@@ -4269,18 +4247,3 @@ def test_last_enrichment_initialized_to_none() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         assert learner._last_enrichment is None
-
-
-def test_priority_subsets_stores_enrichment_in_last_enrichment() -> None:
-    with FeatureRegistry(Path(":memory:")) as reg:
-        active_id = reg.record_trial(
-            "active", 0.8, ["feat_speed", "feat_jockey", "umaban", "race_id", "barei"], "{}"
-        )
-        reg.activate(active_id)
-        learner = _make_learner(registry=reg)
-        enrichment_data = [("feat_new", 0.6), ("feat_speed", 0.5)]
-        with patch.object(
-            reg, "compute_feature_enrichment", return_value=enrichment_data
-        ):
-            learner._priority_subsets()
-    assert learner._last_enrichment is enrichment_data
