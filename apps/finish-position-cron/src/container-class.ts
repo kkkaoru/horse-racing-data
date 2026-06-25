@@ -10,7 +10,7 @@ import type { PerRaceParquetEntry, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
-const SLEEP_AFTER = "3m";
+const SLEEP_AFTER = "1m";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
 const RESULT_LINE_TYPE = "result";
