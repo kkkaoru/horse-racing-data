@@ -409,6 +409,96 @@ def test_run_saturated_trials_floor_is_min_saturated_trials() -> None:
         assert trials_seen == [8, subject._MIN_SATURATED_TRIALS]
 
 
+def test_run_saturation_latches_and_does_not_reset_when_maybe_deploy_returns_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        returns = iter([True, False])
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(
+                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+            ),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+        ):
+            learner.run(max_rounds=2)
+        assert learner._saturated is True
+
+
+def test_run_latched_saturation_halves_trials_in_later_round() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, n_trials_per_round=20)
+        returns = iter([True, False])
+        trials_seen: list[int] = []
+
+        def _record(round_num: int, n_trials: int) -> None:
+            trials_seen.append(n_trials)
+
+        with (
+            patch.object(learner, "_explore_round", side_effect=_record),
+            patch.object(
+                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+            ),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+        ):
+            learner.run(max_rounds=2)
+        assert trials_seen == [20, 10]
+
+
+def test_run_latched_saturation_skips_inverse_and_enrichment_in_later_round() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        returns = iter([True, False])
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(
+                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+            ),
+            patch.object(learner, "_check_and_try_inverses") as mock_check,
+            patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
+        ):
+            learner.run(max_rounds=2)
+        mock_check.assert_not_called()
+        mock_enrich.assert_not_called()
+
+
+def test_run_logs_saturation_latched_message_on_first_saturation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+            caplog.at_level("INFO", logger="learning.continuous_learner"),
+        ):
+            learner.run(max_rounds=1)
+        latch_logs = [
+            r.message for r in caplog.records if "saturation latched" in r.message
+        ]
+        assert len(latch_logs) == 1
+
+
+def test_run_logs_saturation_latched_only_once_across_rounds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        with (
+            patch.object(learner, "_explore_round"),
+            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_and_try_inverses"),
+            patch.object(learner, "_analyze_feature_enrichment"),
+            caplog.at_level("INFO", logger="learning.continuous_learner"),
+        ):
+            learner.run(max_rounds=3)
+        latch_logs = [
+            r.message for r in caplog.records if "saturation latched" in r.message
+        ]
+        assert len(latch_logs) == 1
+
+
 # ---------------------------------------------------------------------------
 # _explore_round
 # ---------------------------------------------------------------------------
@@ -498,6 +588,32 @@ def test_explore_round_passes_screening_true() -> None:
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._explore_round(0, n_trials=20)
         assert mock_run.call_args.kwargs["screening"] is True
+
+
+def test_explore_round_uses_two_validation_years_when_not_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        learner._saturated = False
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+        assert len(mock_run.call_args.kwargs["validation_years"]) == 2
+
+
+def test_explore_round_uses_single_validation_year_when_saturated() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        learner._saturated = True
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+        assert len(mock_run.call_args.kwargs["validation_years"]) == 1
 
 
 # ---------------------------------------------------------------------------

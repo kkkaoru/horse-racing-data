@@ -27,6 +27,7 @@ from learning.feature_explorer import (
     DEFAULT_PARAMS,
     DEFAULT_TRAIN_START,
     DEFAULT_VALIDATION_YEARS,
+    DEFAULT_VALIDATION_YEARS_PER_ROUND,
     VALIDATION_YEAR_POOL,
     ModelBackend,
     evaluate_feature_set,
@@ -380,12 +381,16 @@ class ContinuousLearner:
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
             saturated = self._maybe_deploy()
-            self._saturated = saturated
+            if saturated and not self._saturated:
+                _logger.info(
+                    "saturation latched — subsequent rounds will use reduced trials"
+                )
+            self._saturated = self._saturated or saturated
             if self._log_subgroup and round_num % 5 == 0:
                 self._log_subgroup_diagnostics()
-            if not saturated and not self._skip_inverse:
+            if not self._saturated and not self._skip_inverse:
                 self._check_and_try_inverses(round_num, actual_trials)
-            if not saturated and not self._skip_enrichment:
+            if not self._saturated and not self._skip_enrichment:
                 self._analyze_feature_enrichment(round_num)
             _elapsed = time.perf_counter() - _round_t0
             _logger.info(
@@ -430,8 +435,9 @@ class ContinuousLearner:
 
     def _explore_round(self, round_num: int, n_trials: int) -> None:
         study_name = f"auto-{self._category}-r{round_num}-{uuid.uuid4().hex[:8]}"
+        k = 1 if self._saturated else DEFAULT_VALIDATION_YEARS_PER_ROUND
         round_years = select_round_validation_years(
-            round_num, self._validation_year_pool, self._blind_holdout_year
+            round_num, self._validation_year_pool, self._blind_holdout_year, k=k
         )
         _logger.info(
             "round %d validation years: %s (blind holdout: %d)",
