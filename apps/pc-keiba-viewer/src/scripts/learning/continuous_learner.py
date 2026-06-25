@@ -90,9 +90,9 @@ DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
 MAX_INVERSE_PER_ROUND: Final[int] = 3
-INVERSE_N_TRIALS: Final[int] = 5
+INVERSE_N_TRIALS: Final[int] = 2
 ENRICHMENT_THRESHOLD: Final[float] = 0.3
-ENRICHMENT_N_TRIALS: Final[int] = 5
+ENRICHMENT_N_TRIALS: Final[int] = 2
 MAX_ENRICHMENT_FEATURES: Final[int] = 5
 SATURATION_LOOKBACK: Final[int] = 50
 
@@ -501,12 +501,16 @@ class ContinuousLearner:
         round_years = select_round_validation_years(
             round_num, self._validation_year_pool, self._blind_holdout_year
         )
+        # Inverse is a screen for whether negating a feature set helps, so it runs on a
+        # single validation fold instead of the full round — if a negated set cannot beat
+        # the active model on one year it will not on more, and this halves the per-trial cost.
+        screen_years = round_years[:1]
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=inverse_study_name,
             n_trials=INVERSE_N_TRIALS,
-            validation_years=round_years,
+            validation_years=screen_years,
             train_start=self._train_start,
             backends=self._backends,
         )
@@ -567,13 +571,17 @@ class ContinuousLearner:
         round_years = select_round_validation_years(
             round_num, self._validation_year_pool, self._blind_holdout_year
         )
+        # Enrichment is a targeted screen for whether folding in the candidate features
+        # helps, so it runs on a single validation fold instead of the full round to keep
+        # the per-round enrichment cost small.
+        screen_years = round_years[:1]
         _logger.info("enrichment trial: adding %s to active set", enriched_names)
         run_exploration(
             df=self._df,
             registry=self._registry,
             study_name=study_name,
             n_trials=ENRICHMENT_N_TRIALS,
-            validation_years=round_years,
+            validation_years=screen_years,
             train_start=self._train_start,
             backends=self._backends,
         )

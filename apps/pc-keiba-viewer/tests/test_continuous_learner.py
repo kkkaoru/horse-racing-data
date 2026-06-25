@@ -14,6 +14,7 @@ import pytest
 import polars as pl
 
 import learning.continuous_learner as subject
+from learning.feature_explorer import select_round_validation_years
 from learning.feature_registry import FeatureEntry, FeatureRegistry
 
 
@@ -2000,7 +2001,7 @@ def test_check_and_try_inverses_dedup_uses_full_inverse_name() -> None:
 
 
 def test_inverse_n_trials_constant() -> None:
-    assert subject.INVERSE_N_TRIALS == 5
+    assert subject.INVERSE_N_TRIALS == 2
 
 
 def test_run_inverse_exploration_uses_inverse_n_trials_constant() -> None:
@@ -2014,12 +2015,29 @@ def test_run_inverse_exploration_uses_inverse_n_trials_constant() -> None:
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
         kwargs = mock_run.call_args.kwargs
-        assert kwargs["n_trials"] == 5
+        assert kwargs["n_trials"] == 2
         assert kwargs["registry"] is reg
         years = kwargs["validation_years"]
-        assert len(years) == 2
+        assert len(years) == 1
         assert 2023 not in years
         assert set(years).issubset({2021, 2022})
+
+
+def test_run_inverse_exploration_screens_on_single_validation_year() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_inverse_exploration(trial, "feature_negate", 1, 20)
+        full_round_years = select_round_validation_years(
+            1, [2021, 2022, 2023], 2023
+        )
+        screen_years = mock_run.call_args.kwargs["validation_years"]
+        assert screen_years == full_round_years[:1]
 
 
 def test_run_inverse_exploration_n_trials_ignores_caller_value() -> None:
@@ -2028,7 +2046,7 @@ def test_run_inverse_exploration_n_trials_ignores_caller_value() -> None:
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_inverse_exploration(trial, "feature_negate", 1, 2)
-        assert mock_run.call_args.kwargs["n_trials"] == 5
+        assert mock_run.call_args.kwargs["n_trials"] == 2
 
 
 def test_run_inverse_exploration_study_name_includes_approach_and_trial() -> None:
@@ -2370,7 +2388,7 @@ def test_analyze_feature_enrichment_caps_candidates_to_max() -> None:
 
 
 def test_enrichment_n_trials_constant() -> None:
-    assert subject.ENRICHMENT_N_TRIALS == 5
+    assert subject.ENRICHMENT_N_TRIALS == 2
 
 
 def test_run_enrichment_trial_uses_enrichment_n_trials_constant() -> None:
@@ -2384,12 +2402,28 @@ def test_run_enrichment_trial_uses_enrichment_n_trials_constant() -> None:
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 2)
         kwargs = mock_run.call_args.kwargs
-        assert kwargs["n_trials"] == 5
+        assert kwargs["n_trials"] == 2
         assert kwargs["registry"] is reg
         years = kwargs["validation_years"]
-        assert len(years) == 2
+        assert len(years) == 1
         assert 2023 not in years
         assert set(years).issubset({2021, 2022})
+
+
+def test_run_enrichment_trial_screens_on_single_validation_year() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg,
+            validation_year_pool=[2021, 2022, 2023],
+            blind_holdout_year=2023,
+        )
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._run_enrichment_trial({"feat_x"}, [("feat_y", 1.0)], 2)
+        full_round_years = select_round_validation_years(
+            2, [2021, 2022, 2023], 2023
+        )
+        screen_years = mock_run.call_args.kwargs["validation_years"]
+        assert screen_years == full_round_years[:1]
 
 
 def test_run_enrichment_trial_uses_rotating_validation_years() -> None:
@@ -2402,7 +2436,7 @@ def test_run_enrichment_trial_uses_rotating_validation_years() -> None:
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_enrichment_trial({"feat_x"}, [("feat_y", 1.0)], 2)
         years = mock_run.call_args.kwargs["validation_years"]
-        assert len(years) == 2
+        assert len(years) == 1
         assert 2023 not in years
         assert set(years).issubset({2021, 2022})
 
@@ -2427,7 +2461,7 @@ def test_run_enrichment_trial_n_trials_ignores_per_round_value() -> None:
         learner = _make_learner(registry=reg, n_trials_per_round=40)
         with patch("learning.continuous_learner.run_exploration") as mock_run:
             learner._run_enrichment_trial({"feat_speed"}, [("feat_new", 0.8)], 0)
-        assert mock_run.call_args.kwargs["n_trials"] == 5
+        assert mock_run.call_args.kwargs["n_trials"] == 2
 
 
 def test_run_enrichment_trial_study_name_includes_round_and_features() -> None:
