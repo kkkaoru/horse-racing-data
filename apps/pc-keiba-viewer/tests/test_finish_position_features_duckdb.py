@@ -3180,3 +3180,107 @@ def test_write_parquet_no_staging_table_leak(tmp_path: Path) -> None:
     ).fetchall()
     assert tables == []
     con.close()
+
+
+def test_window_query_from_base_table_produces_valid_sql_with_expected_columns() -> None:
+    sql = subject._window_query_from_base_table("my_base_table")
+    assert "from my_base_table b" in sql
+    assert "speed_index_avg_5_rank_in_race" in sql
+    assert "speed_index_best_5_rank_in_race" in sql
+    assert "jockey_recent_win_rate_rank_in_race" in sql
+    assert "trainer_career_win_rate_rank_in_race" in sql
+    assert "pedigree_score_for_race_rank_in_race" in sql
+    assert "same_distance_win_rate_rank_in_race" in sql
+    assert "speed_index_avg_5_diff_from_race_avg" in sql
+    assert "jockey_recent_win_rate_diff_from_race_avg" in sql
+    assert "pedigree_score_diff_from_race_avg" in sql
+    assert "race_partition" in sql
+    assert "race_by_speed_avg_asc" in sql
+
+
+def test_window_query_from_base_table_uses_race_partition_columns() -> None:
+    sql = subject._window_query_from_base_table("tbl")
+    assert "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango" in sql
+
+
+def test_window_query_from_base_table_is_executable_in_duckdb() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("""
+        create temp table _test_base (
+            source text, kaisai_nen text, kaisai_tsukihi text, keibajo_code text,
+            race_bango text, race_year int, ketto_toroku_bango text, umaban int,
+            speed_index_avg_5 double, speed_index_best_5 double,
+            jockey_recent_win_rate double, trainer_career_win_rate double,
+            pedigree_score_for_race double, same_distance_win_rate double
+        )
+    """)
+    con.execute("""
+        insert into _test_base values
+        ('jra','2024','0601','01','01',2024,'H1',1,50.0,55.0,0.2,0.3,0.4,0.5),
+        ('jra','2024','0601','01','01',2024,'H2',2,45.0,48.0,0.15,0.25,0.35,0.45)
+    """)
+
+    query = subject._window_query_from_base_table("_test_base")
+    rows = con.execute(query).fetchall()
+    assert len(rows) == 2
+    con.close()
+
+
+def test_stage_parquet_write_prematerializes_and_cleans_up(tmp_path: Path) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    # Create minimal temp tables that base_features_select_sql references.
+    # Instead of setting up all 17 tables, we mock base_features_select_sql
+    # and _window_query_from_base_table via monkeypatching.
+    con.execute("""
+        create temp table target (
+            race_year int, source text, kaisai_nen text, kaisai_tsukihi text,
+            keibajo_code text, race_bango text, ketto_toroku_bango text
+        )
+    """)
+    con.execute("""
+        insert into target values
+        (2023, 'jra', '2023', '0601', '01', '01', 'H1'),
+        (2024, 'jra', '2024', '0601', '01', '01', 'H2')
+    """)
+
+    # Track calls to verify the flow
+    calls: list[str] = []
+
+    def mock_base_sql(category: str) -> str:
+        calls.append(f"base_sql:{category}")
+        return """
+            select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
+                   '01' as keibajo_code, '01' as race_bango, 2023 as race_year,
+                   50.0 as speed_index_avg_5, 55.0 as speed_index_best_5,
+                   0.2 as jockey_recent_win_rate, 0.3 as trainer_career_win_rate,
+                   0.4 as pedigree_score_for_race, 0.5 as same_distance_win_rate
+            union all
+            select 'jra', '2024', '0601', '01', '01', 2024,
+                   45.0, 48.0, 0.15, 0.25, 0.35, 0.45
+        """
+
+    import unittest.mock
+
+    output_dir = tmp_path / "parquet_stage"
+    with unittest.mock.patch.object(subject, "base_features_select_sql", mock_base_sql):
+        subject.stage_parquet_write(con, "jra", output_dir, False, False)
+
+    assert "base_sql:jra" in calls
+
+    # _base_features_all should be cleaned up
+    tables = con.execute(
+        "select table_name from information_schema.tables where table_name = '_base_features_all'"
+    ).fetchall()
+    assert tables == []
+
+    # Parquet files should exist
+    parquet_2023 = list((output_dir / "race_year=2023").glob("*.parquet"))
+    parquet_2024 = list((output_dir / "race_year=2024").glob("*.parquet"))
+    assert len(parquet_2023) == 1
+    assert len(parquet_2024) == 1
+
+    con.close()

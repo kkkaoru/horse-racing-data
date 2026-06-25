@@ -2084,6 +2084,52 @@ def assemble_final_select_from_temp_tables(category: str) -> str:
     """
 
 
+def _window_query_from_base_table(table_name: str) -> str:
+    """Build the window-function-only SELECT reading from *table_name*.
+
+    This produces the same columns as ``assemble_final_select_from_temp_tables``
+    but assumes the 17-table JOIN has already been materialized into
+    *table_name*, avoiding repeated evaluation in the per-year write loop.
+    """
+    return f"""
+    select
+      b.*,
+      rank() over race_by_speed_avg_asc as speed_index_avg_5_rank_in_race,
+      rank() over race_by_speed_best_asc as speed_index_best_5_rank_in_race,
+      rank() over race_by_jockey_recent_desc as jockey_recent_win_rate_rank_in_race,
+      rank() over race_by_trainer_career_desc as trainer_career_win_rate_rank_in_race,
+      rank() over race_by_pedigree_desc as pedigree_score_for_race_rank_in_race,
+      rank() over race_by_same_distance_desc as same_distance_win_rate_rank_in_race,
+      b.speed_index_avg_5 - avg(b.speed_index_avg_5) over race_partition
+        as speed_index_avg_5_diff_from_race_avg,
+      b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition
+        as jockey_recent_win_rate_diff_from_race_avg,
+      b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition
+        as pedigree_score_diff_from_race_avg
+    from {table_name} b
+    window
+      race_partition as (partition by {RACE_PARTITION_COLUMNS}),
+      race_by_speed_avg_asc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.speed_index_avg_5 asc nulls last
+      ),
+      race_by_speed_best_asc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.speed_index_best_5 asc nulls last
+      ),
+      race_by_jockey_recent_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.jockey_recent_win_rate desc nulls last
+      ),
+      race_by_trainer_career_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.trainer_career_win_rate desc nulls last
+      ),
+      race_by_pedigree_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.pedigree_score_for_race desc nulls last
+      ),
+      race_by_same_distance_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.same_distance_win_rate desc nulls last
+      )
+    """
+
+
 PARTITION_DIR_PATTERN = "race_year=*"
 
 
@@ -3255,13 +3301,14 @@ def stage_parquet_write(
 ) -> None:
     log_event("parquet.write", "start", 0.0)
     started = perf_counter()
-    write_parquet(
-        con,
-        assemble_final_select_from_temp_tables(category),
-        output_dir,
-        keep_existing,
-        force_clean,
-    )
+    # Pre-materialize the 17-table JOIN once so that write_parquet's
+    # per-year loop only re-evaluates cheap window functions, not the
+    # full JOIN for every year.
+    base_sql = base_features_select_sql(category)
+    con.execute(f"create or replace temp table _base_features_all as {base_sql}")
+    window_query = _window_query_from_base_table("_base_features_all")
+    write_parquet(con, window_query, output_dir, keep_existing, force_clean)
+    con.execute("drop table if exists _base_features_all")
     log_event("parquet.write", "done", perf_counter() - started)
 
 
