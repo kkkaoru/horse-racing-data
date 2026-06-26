@@ -159,6 +159,24 @@ const BLINKER_RING_RADIUS = 5;
 const UPCOMING_BLINKER_RING_RADIUS = 7;
 const BLINKER_RING_STROKE_WIDTH = 1.5;
 const BLINKER_RING_FILL = "none";
+// Hex color helpers for the blinker ring contrast resolver below: a #rrggbb color
+// is validated, then split into three 2-char channels (radix 16) after the leading
+// "#" and weighted into a perceptual luminance (0..1) on the 0..255 channel scale.
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+const HEX_PREFIX_LENGTH = 1;
+const HEX_CHANNEL_RADIX = 16;
+const HEX_CHANNEL_WIDTH = 2;
+const RGB_CHANNEL_MAX = 255;
+const RED_LUMINANCE_WEIGHT = 0.299;
+const GREEN_LUMINANCE_WEIGHT = 0.587;
+const BLUE_LUMINANCE_WEIGHT = 0.114;
+// Frame colors at or above this perceptual luminance (e.g. the white 枠1 stroke
+// "#ffffff" = 1.0) vanish against the light chart background, so the blinker ring
+// is redrawn in a dark contrast color. 0.82 keeps the visible 桃/橙/etc. frames
+// (luminance < 0.8) on their own color and only swaps near-white.
+const LIGHT_STROKE_LUMINANCE_THRESHOLD = 0.82;
+// Dark ring used when the frame color is too light to show the blinker marker.
+const BLINKER_RING_CONTRAST_STROKE = "#1f2933";
 // One-line hint shown above the overview panels so a viewer knows the on-chart
 // ring marks a past race where the horse wore a blinker. Styled inline so no
 // globals.css change is needed for this marker feature.
@@ -399,6 +417,36 @@ const resolveOverviewDotRadius = (isUpcoming: boolean | undefined): number =>
 const resolveOverviewRingRadius = (isUpcoming: boolean | undefined): number =>
   isUpcoming === true ? UPCOMING_BLINKER_RING_RADIUS : BLINKER_RING_RADIUS;
 
+// Parse one 2-char hex channel (radix 16) of a #-stripped #rrggbb color body,
+// starting at the given offset, e.g. start 0 = red, 2 = green, 4 = blue.
+const parseHexChannel = (hex: string, start: number): number =>
+  Number.parseInt(hex.slice(start, start + HEX_CHANNEL_WIDTH), HEX_CHANNEL_RADIX);
+
+// Perceptual luminance (0..1) of a #rrggbb color; null when the input is not a
+// 6-digit hex color (e.g. an undefined stroke), so the caller keeps the raw stroke.
+const strokeLuminance = (color: string | undefined): number | null => {
+  if (color === undefined || !HEX_COLOR_PATTERN.test(color)) {
+    return null;
+  }
+  const hex = color.slice(HEX_PREFIX_LENGTH);
+  return (
+    (RED_LUMINANCE_WEIGHT * parseHexChannel(hex, 0) +
+      GREEN_LUMINANCE_WEIGHT * parseHexChannel(hex, HEX_CHANNEL_WIDTH) +
+      BLUE_LUMINANCE_WEIGHT * parseHexChannel(hex, HEX_CHANNEL_WIDTH * 2)) /
+    RGB_CHANNEL_MAX
+  );
+};
+
+// Keep the frame-colored blinker ring unless that color is too light to be seen
+// against the chart background (e.g. the white 枠1 stroke), in which case use a
+// dark contrast ring so the ブリンカー marker stays visible.
+const resolveBlinkerRingStroke = (stroke: string | undefined): string | undefined => {
+  const luminance = strokeLuminance(stroke);
+  return luminance !== null && luminance >= LIGHT_STROKE_LUMINANCE_THRESHOLD
+    ? BLINKER_RING_CONTRAST_STROKE
+    : stroke;
+};
+
 // Custom per-point dot for the overview lines: a filled dot (larger for the
 // synthetic upcoming point) plus an outer hollow ring when the point's race wore
 // a blinker (blinker === "1"). The upcoming point reads its target-race blinker
@@ -420,7 +468,7 @@ export const OverviewChartDot = ({
           cy={cy}
           fill={BLINKER_RING_FILL}
           r={resolveOverviewRingRadius(payload?.isUpcoming)}
-          stroke={stroke}
+          stroke={resolveBlinkerRingStroke(stroke)}
           strokeWidth={BLINKER_RING_STROKE_WIDTH}
         />
       ) : null}

@@ -1059,6 +1059,59 @@ test("OverviewChartDot draws the blinker ring plus a normal dot for a worn point
   expect(circles[1]?.getAttribute("fill")).toStrictEqual("#e6194b");
 });
 
+test("OverviewChartDot redraws the worn blinker ring in the dark contrast color for a white frame stroke", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="#ffffff" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#1f2933");
+  expect(circles[1]?.getAttribute("fill")).toStrictEqual("#ffffff");
+});
+
+test("OverviewChartDot keeps the worn blinker ring in a dark visible frame color", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="#f4a3c4" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#f4a3c4");
+});
+
+test("OverviewChartDot keeps the worn blinker ring in a light-ish yellow frame below the swap threshold", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="#ffd400" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("#ffd400");
+});
+
+test("OverviewChartDot omits the worn blinker ring stroke when the series stroke is undefined", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles.length).toStrictEqual(2);
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual(null);
+});
+
+test("OverviewChartDot keeps a non-hex worn blinker ring stroke unchanged", () => {
+  const { container } = render(
+    <svg>
+      <OverviewChartDot cx={10} cy={20} payload={{ blinker: "1" }} stroke="papayawhip" />
+    </svg>,
+  );
+  const circles = container.querySelectorAll("circle");
+  expect(circles[0]?.getAttribute("stroke")).toStrictEqual("papayawhip");
+});
+
 test("OverviewChartDot draws only the normal dot for a not-worn point", () => {
   const { container } = render(
     <svg>
