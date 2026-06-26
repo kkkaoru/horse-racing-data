@@ -6,6 +6,13 @@ routes class=E races to the v8 base model (111 features) while everything else
 uses the v9 sim model (130 features); JRA and NAR have no routing and always
 use their single ``MODEL_VERSION_BY_CATEGORY`` model.
 
+A rule matches a race when *all* of its conditions hold (logical AND), so a
+single rule can target a multi-dimensional cell such as ``venue=03`` AND
+``surface=turf`` AND ``season=summer``. Dimensions are resolved from the raw
+entry columns, deriving ``surface`` / ``distance_band`` / ``season`` / ``class``
+on the fly; any dimension that is not one of the derived names falls back to the
+raw column of the same name.
+
 The routing table is data-driven (``cell_routing.json``) so adding a cell rule
 does not require touching the serve loop.
 """
@@ -30,9 +37,14 @@ VARIANT_BASE: Final[str] = "base"
 
 
 @dataclass(frozen=True)
-class CellRouteRule:
+class CellCondition:
     dimension: str
     values: frozenset[str]
+
+
+@dataclass(frozen=True)
+class CellRouteRule:
+    conditions: tuple[CellCondition, ...]
     variant: str
 
 
@@ -44,6 +56,93 @@ class CategoryRouting:
     base_architecture: str
     default_variant: str
     rules: tuple[CellRouteRule, ...]
+
+
+def derive_surface(track_code: str, category: str) -> str:
+    if category != "jra":
+        return "dirt"
+    if track_code.startswith("1"):
+        return "turf"
+    if track_code.startswith("2"):
+        return "dirt"
+    return "other"
+
+
+def derive_distance_band(kyori: int) -> str:
+    if kyori < 1200:
+        return "sprint"
+    if kyori < 1600:
+        return "mile"
+    if kyori < 2000:
+        return "intermediate"
+    if kyori < 2400:
+        return "long"
+    return "extended"
+
+
+def derive_season(month: int) -> str:
+    if month in {3, 4, 5}:
+        return "spring"
+    if month in {6, 7, 8}:
+        return "summer"
+    if month in {9, 10, 11}:
+        return "autumn"
+    return "winter"
+
+
+def derive_class(grade_code: str) -> str:
+    return grade_code if grade_code else "unknown"
+
+
+def resolve_dimension(
+    entry: Mapping[str, object], dimension: str, category: str
+) -> str | None:
+    if dimension == "venue":
+        raw = entry.get("keibajo_code")
+        return str(raw).strip() if raw is not None else None
+    if dimension == "surface":
+        track_code = entry.get("track_code")
+        if track_code is None:
+            return None
+        return derive_surface(str(track_code), category)
+    if dimension == "distance_band":
+        kyori = entry.get("kyori")
+        if kyori is None:
+            return None
+        return derive_distance_band(int(float(str(kyori))))
+    if dimension == "season":
+        tsukihi = entry.get("kaisai_tsukihi")
+        if tsukihi is not None:
+            month_str = str(tsukihi).strip()[:2]
+            if month_str.isdigit():
+                return derive_season(int(month_str))
+        race_id = entry.get("race_id")
+        if race_id is not None:
+            parts = str(race_id).split(":")
+            if len(parts) >= 3:
+                tsukihi_part = parts[2]
+                if len(tsukihi_part) >= 2 and tsukihi_part[:2].isdigit():
+                    return derive_season(int(tsukihi_part[:2]))
+        return None
+    if dimension == "class":
+        grade_code = entry.get("grade_code")
+        if grade_code is None:
+            return None
+        return derive_class(str(grade_code).strip())
+    raw = entry.get(dimension)
+    return str(raw).strip() if raw is not None else None
+
+
+def all_conditions_match(
+    entry: Mapping[str, object],
+    conditions: tuple[CellCondition, ...],
+    category: str,
+) -> bool:
+    for condition in conditions:
+        value = resolve_dimension(entry, condition.dimension, category)
+        if value is None or value not in condition.values:
+            return False
+    return True
 
 
 class CellRouter:
@@ -68,8 +167,7 @@ class CellRouter:
             return routing.default_variant
         first = entries[0]
         for rule in routing.rules:
-            value = first.get(rule.dimension)
-            if isinstance(value, str) and value in rule.values:
+            if all_conditions_match(first, rule.conditions, category):
                 return rule.variant
         return routing.default_variant
 
@@ -86,13 +184,23 @@ def _as_sequence(value: object, field: str) -> Sequence[object]:
     return value
 
 
+def _parse_condition(value: object) -> CellCondition:
+    condition = _as_mapping(value, "condition")
+    return CellCondition(
+        dimension=str(condition["dimension"]),
+        values=frozenset(
+            str(v) for v in _as_sequence(condition["values"], "values")
+        ),
+    )
+
+
 def _parse_rule(value: object) -> CellRouteRule:
     rule = _as_mapping(value, "rule")
-    return CellRouteRule(
-        dimension=str(rule["dimension"]),
-        values=frozenset(str(v) for v in _as_sequence(rule["values"], "values")),
-        variant=str(rule["variant"]),
+    conditions = tuple(
+        _parse_condition(condition)
+        for condition in _as_sequence(rule["conditions"], "conditions")
     )
+    return CellRouteRule(conditions=conditions, variant=str(rule["variant"]))
 
 
 def _parse_category_routing(payload: Mapping[str, object]) -> CategoryRouting:

@@ -7,8 +7,7 @@
     "default_variant": "sim",
     "rules": [
       {
-        "dimension": "grade_code",
-        "values": ["E"],
+        "conditions": [{ "dimension": "grade_code", "values": ["E"] }],
         "variant": "base"
       }
     ]

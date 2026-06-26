@@ -93,6 +93,13 @@ KOHAN3F_GOING_SCRIPT: Final[str] = "add_kohan3f_going_features.py"
 # caps (``--threads`` / ``--memory-limit``) to stay inside the container budget.
 SIMILAR_RACE_SCRIPT: Final[str] = "add-similar-race-features.py"
 
+# sire x venue x surface x distance bias layer. Runs as the LAST layer on every
+# category (it reads PG history and appends sire-bias columns to the already
+# built parquet). Takes ``--category {jra,nar,ban-ei}`` to pick the PG source
+# table (jra -> jvd_se, nar/ban-ei -> nvd_se) plus the keibajo filter, and
+# ``--pg-url`` + ``--from-date`` to bound the history scan.
+SIRE_VENUE_BIAS_SCRIPT: Final[str] = "add-sire-venue-bias-features.py"
+
 # DuckDB resource caps for the similar-race layer inside the prediction
 # container (standard-4 / 12 GiB) — mirror the per-year OOM-safe limits used by
 # the offline store build so the pairwise similarity scan spills to disk instead
@@ -134,6 +141,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         RELATIONSHIP_SCRIPT,
         KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -145,6 +153,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
         SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -153,6 +162,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         BANEI_FUTAN_CLASS_SCRIPT,
         BANEI_GRADE_CAREER_SCRIPT,
         SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
     ),
 }
 
@@ -179,6 +189,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         EXOTIC_SCRIPT,
         KOHAN3F_GOING_SCRIPT,  # reads PG but uses --history-from-year, NOT --from-date
         SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
     }
 )
 
@@ -203,6 +214,7 @@ SCRIPTS_WITH_FROM_DATE: Final[frozenset[str]] = frozenset(
         RELATIONSHIP_SCRIPT,
         EXOTIC_SCRIPT,
         SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
     }
 )
 
@@ -246,6 +258,16 @@ EXOTIC_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
 # chains, so the map carries every category — including ban-ei, which the script
 # accepts directly as a ``--category`` choice.
 SIMILAR_RACE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+    "ban-ei": "ban-ei",
+}
+
+# The sire-venue-bias layer takes ``--category {jra,nar,ban-ei}`` to pick the PG
+# source table (jra -> jvd_se, nar/ban-ei -> nvd_se) plus the keibajo filter.
+# Like similar-race, it runs on ALL THREE chains, so the map carries every
+# category.
+SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "jra": "jra",
     "nar": "nar",
     "ban-ei": "ban-ei",
@@ -378,6 +400,13 @@ def _similar_race_args(script: str, category: Category) -> list[str]:
     ]
 
 
+def _sire_venue_bias_category_args(script: str, category: Category) -> list[str]:
+    """``--category`` for the sire-venue-bias layer (source table selector)."""
+    if script != SIRE_VENUE_BIAS_SCRIPT:
+        return []
+    return ["--category", SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY[category]]
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -419,6 +448,7 @@ def build_layer_argv(
         + _course_lookup_args(script)
         + _exotic_category_args(script, category)
         + _similar_race_args(script, category)
+        + _sire_venue_bias_category_args(script, category)
     )
 
 

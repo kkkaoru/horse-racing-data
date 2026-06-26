@@ -21,6 +21,8 @@ from predict_lib.pipeline_args import (
     SIMILAR_RACE_MEMORY_LIMIT,
     SIMILAR_RACE_SCRIPT,
     SIMILAR_RACE_THREADS,
+    SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY,
+    SIRE_VENUE_BIAS_SCRIPT,
     build_base_argv,
     build_layer_argv,
     layer_chain_for,
@@ -371,6 +373,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8_plus_kohan3f() 
         "add-relationship-r1-features.py",
         "add_kohan3f_going_features.py",
         "add-similar-race-features.py",
+        "add-sire-venue-bias-features.py",
     ]
 
 
@@ -386,6 +389,7 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-pacestyle-features.py",
         "add-relationship-r1-features.py",
         "add-similar-race-features.py",
+        "add-sire-venue-bias-features.py",
     ]
 
 
@@ -398,6 +402,7 @@ def test_layer_chain_ban_ei_appends_futan_and_grade_career() -> None:
         "add-banei-futan-class-features.py",
         "add-banei-grade-career-features.py",
         "add-similar-race-features.py",
+        "add-sire-venue-bias-features.py",
     ]
 
 
@@ -642,7 +647,7 @@ def test_build_layer_argv_exotic_passes_pg_url_from_date_and_category_for_nar() 
 
 def test_layer_chain_jra_has_kohan3f_going_before_similar_race() -> None:
     chain = layer_chain_for("jra")
-    assert chain[-2] == KOHAN3F_GOING_SCRIPT
+    assert chain[chain.index(SIMILAR_RACE_SCRIPT) - 1] == KOHAN3F_GOING_SCRIPT
 
 
 def test_build_layer_argv_kohan3f_going_passes_pg_url_only_no_from_date() -> None:
@@ -728,19 +733,19 @@ def test_build_base_argv_with_both_realtime_odds_and_venue_weather() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_layer_chain_jra_has_similar_race_as_last_script() -> None:
+def test_layer_chain_jra_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("jra")
-    assert chain[-1] == SIMILAR_RACE_SCRIPT
+    assert chain[-2] == SIMILAR_RACE_SCRIPT
 
 
-def test_layer_chain_nar_has_similar_race_as_last_script() -> None:
+def test_layer_chain_nar_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("nar")
-    assert chain[-1] == SIMILAR_RACE_SCRIPT
+    assert chain[-2] == SIMILAR_RACE_SCRIPT
 
 
-def test_layer_chain_ban_ei_has_similar_race_as_last_script() -> None:
+def test_layer_chain_ban_ei_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("ban-ei")
-    assert chain[-1] == SIMILAR_RACE_SCRIPT
+    assert chain[-2] == SIMILAR_RACE_SCRIPT
 
 
 def test_similar_race_script_is_in_scripts_with_pg_url() -> None:
@@ -836,3 +841,80 @@ def test_build_layer_argv_non_similar_race_script_omits_similar_race_flags() -> 
         "--course-lookup",
         str(COURSE_LOOKUP_PATH),
     ]
+
+
+# ---------------------------------------------------------------------------
+# sire x venue x surface x distance bias layer
+# ---------------------------------------------------------------------------
+
+
+def test_sire_venue_bias_script_in_jra_layer_chain() -> None:
+    chain = layer_chain_for("jra")
+    assert SIRE_VENUE_BIAS_SCRIPT in chain
+    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+
+
+def test_sire_venue_bias_script_in_nar_layer_chain() -> None:
+    chain = layer_chain_for("nar")
+    assert SIRE_VENUE_BIAS_SCRIPT in chain
+    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+
+
+def test_sire_venue_bias_script_in_banei_layer_chain() -> None:
+    chain = layer_chain_for("ban-ei")
+    assert SIRE_VENUE_BIAS_SCRIPT in chain
+    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+
+
+def test_sire_venue_bias_script_receives_pg_url() -> None:
+    assert SIRE_VENUE_BIAS_SCRIPT in SCRIPTS_WITH_PG_URL
+
+
+def test_sire_venue_bias_script_receives_from_date() -> None:
+    assert SIRE_VENUE_BIAS_SCRIPT in SCRIPTS_WITH_FROM_DATE
+
+
+def test_sire_venue_bias_category_map_has_all_three_categories() -> None:
+    assert set(SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY.keys()) == {"jra", "nar", "ban-ei"}
+
+
+def test_build_layer_argv_sire_venue_bias_jra_has_category() -> None:
+    argv = build_layer_argv(
+        SIRE_VENUE_BIAS_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert "--pg-url" in argv
+    assert "--from-date" in argv
+    assert "--category" in argv
+    cat_idx = argv.index("--category")
+    assert argv[cat_idx + 1] == "jra"
+
+
+def test_build_layer_argv_sire_venue_bias_nar_has_category() -> None:
+    argv = build_layer_argv(
+        SIRE_VENUE_BIAS_SCRIPT,
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    cat_idx = argv.index("--category")
+    assert argv[cat_idx + 1] == "nar"
+
+
+def test_build_layer_argv_sire_venue_bias_banei_has_category() -> None:
+    argv = build_layer_argv(
+        SIRE_VENUE_BIAS_SCRIPT,
+        "ban-ei",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    cat_idx = argv.index("--category")
+    assert argv[cat_idx + 1] == "ban-ei"
