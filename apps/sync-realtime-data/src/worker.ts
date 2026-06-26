@@ -321,6 +321,20 @@ const WEIGHT_RACE_LIST_KV_PREFIX = "realtime:weight-race-list:";
 // skip the write entirely so existing snapshots are preserved. The next cron
 // will re-fetch.
 const MIN_HORSE_WEIGHT_ROWS_PER_RACE = 2;
+// Event-driven per-race rescore trigger fired right after a fetch-weights job
+// writes weights to D1. Posts to finish-position-cron's internal endpoint over
+// the FINISH_POSITION_CRON service binding so the race is re-scored with fresh
+// weights immediately, without waiting for the 5-min coordinator cron poll.
+// The internal URL host is arbitrary — service bindings ignore it — but the
+// path must match finish-position-cron's INTERNAL_RESCORE_RACE_PATH.
+const FINISH_POSITION_CRON_INTERNAL_RESCORE_RACE_URL =
+  "https://finish-position-cron.internal/api/internal/rescore-race";
+const WEIGHT_RESCORE_TRIGGER_LOG_KIND = "weight-rescore-trigger";
+// Ban-ei rows live under the nar source with keibajo_code 65 / 83 (帯広);
+// the finish-position-cron predict pipeline produces ban-ei as its own
+// category so the trigger maps those two codes to "ban-ei" instead of "nar".
+const BAN_EI_KEIBAJO_CODES: ReadonlySet<string> = new Set(["65", "83"]);
+const RACE_KEY_PART_COUNT = 5;
 // Notification grace window: if the race start has already passed by less
 // than this margin, we still send the first paddock notification (paddock
 // info is useful even shortly after gate-open). Past the window, suppress
@@ -2685,6 +2699,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
   if (weights.length > 0) {
     await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
     await broadcastHorseWeightsToDO(env, raceKey, fetchedAt, weights);
+    await triggerRescoreAfterWeights(env, raceKey);
   }
 };
 
@@ -2717,6 +2732,87 @@ const broadcastHorseWeightsToDO = async (
     });
   } catch (error) {
     await logFetch(env.REALTIME_DB, "horse-weight-do-write", "error", raceKey, formatError(error));
+  }
+};
+
+interface RescoreTriggerRequest {
+  category: "ban-ei" | "jra" | "nar";
+  keibajoCode: string;
+  raceBango: string;
+  runYmd: string;
+}
+
+const resolveRescoreCategory = (
+  source: string,
+  keibajoCode: string,
+): "ban-ei" | "jra" | "nar" | null => {
+  if (source === "jra") return "jra";
+  if (source !== "nar") return null;
+  return BAN_EI_KEIBAJO_CODES.has(keibajoCode) ? "ban-ei" : "nar";
+};
+
+// raceKey shape: "<source>:<year>:<mmdd>:<keibajoCode>:<raceBango>" (see
+// buildRealtimeRaceKey in race-key.ts). Returns null when the shape does not
+// match or the source maps to no predict category (defensive — every D1 row
+// today is jra or nar).
+export const parseRescoreTriggerRequest = (raceKey: string): RescoreTriggerRequest | null => {
+  const parts = raceKey.split(":");
+  if (parts.length !== RACE_KEY_PART_COUNT) return null;
+  const source = parts[0]!;
+  const year = parts[1]!;
+  const mmdd = parts[2]!;
+  const keibajoCode = parts[3]!;
+  const raceBango = parts[4]!;
+  if (!source || !year || !mmdd || !keibajoCode || !raceBango) return null;
+  const category = resolveRescoreCategory(source, keibajoCode);
+  if (!category) return null;
+  return { category, keibajoCode, raceBango, runYmd: `${year}${mmdd}` };
+};
+
+const postRescoreTriggerRequest = async (
+  binding: { fetch: typeof fetch },
+  token: string,
+  target: RescoreTriggerRequest,
+): Promise<void> => {
+  await binding.fetch(
+    new Request(FINISH_POSITION_CRON_INTERNAL_RESCORE_RACE_URL, {
+      body: JSON.stringify(target),
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+};
+
+// Fire-and-forget event-driven trigger fired right after a successful horse
+// weight write to D1. Failures (binding missing, token missing, network) are
+// swallowed and logged so they never fail the weight write. The next weight
+// fetch will re-trigger; the 5-min coordinator cron also remains a backstop.
+export const triggerRescoreAfterWeights = async (env: Env, raceKey: string): Promise<void> => {
+  const binding = env.FINISH_POSITION_CRON;
+  const token = env.TRIGGER_TOKEN;
+  if (!binding || !token) return;
+  const target = parseRescoreTriggerRequest(raceKey);
+  if (!target) {
+    await logFetch(
+      env.REALTIME_DB,
+      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
+      "error",
+      raceKey,
+      "invalid race key shape",
+    );
+    return;
+  }
+  try {
+    await postRescoreTriggerRequest(binding, token, target);
+    await logFetch(env.REALTIME_DB, WEIGHT_RESCORE_TRIGGER_LOG_KIND, "ok", raceKey, null);
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
+      "error",
+      raceKey,
+      formatError(error),
+    );
   }
 };
 

@@ -141,6 +141,17 @@
       "binding": "REALTIME_FEATURES",
       "service": "sync-realtime-data-features",
     },
+    {
+      // Event-driven per-race rescore trigger: after a fetch-weights job writes
+      // weights to D1, this worker POSTs to finish-position-cron's
+      // /api/internal/rescore-race so the race is re-scored with fresh weights
+      // immediately instead of waiting for the 5-min coordinator cron poll.
+      // Authorization uses TRIGGER_TOKEN (set as a secret via
+      // `wrangler secret put TRIGGER_TOKEN --name sync-realtime-data` with the
+      // same value as finish-position-cron's TRIGGER_TOKEN secret).
+      "binding": "FINISH_POSITION_CRON",
+      "service": "finish-position-cron",
+    },
   ],
   "d1_databases": [
     {

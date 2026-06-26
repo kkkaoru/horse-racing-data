@@ -10,12 +10,14 @@ const {
   enqueueMock,
   handleQueueMock,
   coordinatorTickMock,
+  claimRescoreRaceMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
   const enqueuePredict = vi.fn(async (_p: Record<string, unknown>) => ["jra", "nar", "ban-ei"]);
   const handleQueue = vi.fn(async () => undefined);
   const runRaceCoordinatorTick = vi.fn(async () => []);
+  const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
   return {
     getContainerMock: vi.fn(() => ({ start })),
     startMock: start,
@@ -23,6 +25,7 @@ const {
     enqueueMock: enqueuePredict,
     handleQueueMock: handleQueue,
     coordinatorTickMock: runRaceCoordinatorTick,
+    claimRescoreRaceMock: claimRescoreRace,
   };
 });
 
@@ -44,12 +47,15 @@ vi.mock("./race-coordinator", () => ({
   runRaceCoordinatorTick: coordinatorTickMock,
 }));
 
+vi.mock("./do-state", () => ({ claimRescoreRace: claimRescoreRaceMock }));
+
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
 
 const runMock = vi.fn(async () => ({ success: true }));
 const bindMock = vi.fn(() => ({ run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
+const predictQueueSendMock = vi.fn(async () => undefined);
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -57,7 +63,7 @@ const makeEnv = (): Env => ({
   FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
-  PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
+  PREDICT_QUEUE: { send: predictQueueSendMock } as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
   REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
@@ -85,9 +91,19 @@ beforeEach(() => {
   enqueueMock.mockClear();
   handleQueueMock.mockClear();
   coordinatorTickMock.mockClear();
+  claimRescoreRaceMock.mockClear();
+  predictQueueSendMock.mockClear();
   enqueueMock.mockResolvedValue(["jra", "nar", "ban-ei"]);
   coordinatorTickMock.mockResolvedValue([]);
+  claimRescoreRaceMock.mockResolvedValue({ proceed: true });
 });
+
+const internalRescoreRaceRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/internal/rescore-race", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
 
 test("fetch returns a health payload for GET", async () => {
   const response = await workerDefault.fetch(healthRequest(), makeEnv());
@@ -390,4 +406,230 @@ test("handleFetch omits per-race fields for the per-category path", async () => 
   expect(enqueueMock).toHaveBeenCalledWith(
     expect.objectContaining({ keibajoCode: undefined, raceBango: undefined }),
   );
+});
+
+test("internal rescore-race endpoint claims, enqueues a per-race rescore message, and returns 202", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(claimRescoreRaceMock).toHaveBeenCalledTimes(1);
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      keibajoCode: "45",
+      raceBango: "12",
+      runYmd: "20260619",
+    }),
+  );
+  expect(predictQueueSendMock).toHaveBeenCalledTimes(1);
+  expect(predictQueueSendMock).toHaveBeenCalledWith({
+    category: "nar",
+    daysAhead: 0,
+    keibajoCode: "45",
+    mode: "rescore",
+    raceBango: "12",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+});
+
+test("internal rescore-race endpoint response body marks claimed true when proceed", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  const body = (await response.json()) as { ok: boolean; claimed: boolean };
+  expect(body.ok).toBe(true);
+  expect(body.claimed).toBe(true);
+});
+
+test("internal rescore-race endpoint returns 200 with claimed=false on claim collision", async () => {
+  claimRescoreRaceMock.mockResolvedValueOnce({ proceed: false });
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        raceBango: "11",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean; claimed: boolean };
+  expect(body.ok).toBe(true);
+  expect(body.claimed).toBe(false);
+  expect(predictQueueSendMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 401 when authorization header is missing", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      null,
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+  expect(predictQueueSendMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 401 when bearer token mismatches", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "wrong-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when category is missing", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({ keibajoCode: "45", raceBango: "12", runYmd: "20260619" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when category is invalid", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "garbage",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when keibajoCode is blank", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "   ",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when raceBango is missing", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({ category: "nar", keibajoCode: "45", runYmd: "20260619" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when runYmd is malformed", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "2026-06-19",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint returns 400 when body is not parseable JSON", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest("secret-token", "{not-json"),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint trims whitespace from keibajoCode and raceBango", async () => {
+  await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "ban-ei",
+        keibajoCode: "  83  ",
+        raceBango: "  11  ",
+        runYmd: "20260620",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(claimRescoreRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "83", raceBango: "11" }),
+  );
+  expect(predictQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "ban-ei", keibajoCode: "83", raceBango: "11" }),
+  );
+});
+
+test("non-trigger non-rescore request falls through to health response", async () => {
+  const response = await handleFetch(
+    new Request("https://cron.example/api/other", { method: "POST" }),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
 });

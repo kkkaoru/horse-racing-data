@@ -187,6 +187,17 @@ export interface Env {
   REALTIME_DB: D1Database;
   REALTIME_HOT?: { fetch: typeof fetch };
   REALTIME_FEATURES?: { fetch: typeof fetch };
+  // Service binding to the finish-position-cron Worker. Used by the
+  // event-driven per-race rescore trigger fired right after a horse-weight
+  // write so the race is re-scored with fresh weights without waiting for the
+  // 5-min coordinator cron poll. Optional so existing callers / tests need
+  // not set it (when absent, the trigger is a no-op and weight write succeeds).
+  FINISH_POSITION_CRON?: { fetch: typeof fetch };
+  // Bearer token forwarded to FINISH_POSITION_CRON for the internal
+  // rescore-race endpoint. Same secret value as TRIGGER_TOKEN in
+  // finish-position-cron — orchestrator must `wrangler secret put TRIGGER_TOKEN
+  // --name sync-realtime-data` with the same value after deploy.
+  TRIGGER_TOKEN?: string;
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
   RUNNING_STYLE_CACHE_ORIGIN?: string;

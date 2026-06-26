@@ -12,6 +12,7 @@ import {
   shouldRunWarmCron,
 } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
+import { claimRescoreRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
@@ -35,14 +36,31 @@ const MODE_FIELD = "mode";
 const CATEGORY_FIELD = "category";
 const KEIBAJO_CODE_FIELD = "keibajoCode";
 const RACE_BANGO_FIELD = "raceBango";
+const RUN_YMD_FIELD = "runYmd";
 const DEFAULT_MODE: PredictMode = "full";
 const FULL_MODE: PredictMode = "full";
+const RESCORE_MODE: PredictMode = "rescore";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
 const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
 const RESCORE_DAYS_AHEAD = 0;
+const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
+const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
+const INTERNAL_RESCORE_RACE_METHOD = "POST";
+const RUN_YMD_LENGTH = 8;
+const RUN_YMD_YEAR_END = 4;
+const RUN_YMD_MONTH_END = 6;
+const RUN_YMD_PATTERN = /^\d{8}$/u;
+const RUN_DATE_SEPARATOR = "-";
+
+interface InternalRescoreRaceRequest {
+  category: PredictCategory;
+  keibajoCode: string;
+  raceBango: string;
+  runYmd: string;
+}
 
 export { FinishPositionPredictContainer, PredictRunCoordinator };
 
@@ -145,10 +163,103 @@ const guardedTrigger = async (request: Request, env: Env): Promise<Response> => 
   }
 };
 
+// True only for the internal event-driven per-race rescore route
+// (POST /api/internal/rescore-race). The sync-realtime-data worker hits this
+// path immediately after a horse-weight write to D1 so the race is re-scored
+// with fresh weights without waiting for the 5-min coordinator cron poll.
+export const isInternalRescoreRaceRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === INTERNAL_RESCORE_RACE_PATH;
+
+const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
+  typeof value === "string" && VALID_CATEGORIES.has(value);
+
+const isValidNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+const isValidRunYmd = (value: unknown): value is string =>
+  typeof value === "string" && value.length === RUN_YMD_LENGTH && RUN_YMD_PATTERN.test(value);
+
+const parseInternalRescoreRaceBody = (
+  body: Record<string, unknown>,
+): InternalRescoreRaceRequest | null => {
+  const category = body[CATEGORY_FIELD];
+  const keibajoCode = body[KEIBAJO_CODE_FIELD];
+  const raceBango = body[RACE_BANGO_FIELD];
+  const runYmd = body[RUN_YMD_FIELD];
+  if (!isValidRescoreCategory(category)) return null;
+  if (!isValidNonEmptyString(keibajoCode)) return null;
+  if (!isValidNonEmptyString(raceBango)) return null;
+  if (!isValidRunYmd(runYmd)) return null;
+  return {
+    category,
+    keibajoCode: keibajoCode.trim(),
+    raceBango: raceBango.trim(),
+    runYmd,
+  };
+};
+
+const buildRunDateFromYmd = (runYmd: string): string =>
+  [
+    runYmd.slice(0, RUN_YMD_YEAR_END),
+    runYmd.slice(RUN_YMD_YEAR_END, RUN_YMD_MONTH_END),
+    runYmd.slice(RUN_YMD_MONTH_END, RUN_YMD_LENGTH),
+  ].join(RUN_DATE_SEPARATOR);
+
+const sendRescoreRaceMessage = async (
+  env: Env,
+  body: InternalRescoreRaceRequest,
+): Promise<void> => {
+  const runDate = buildRunDateFromYmd(body.runYmd);
+  await env.PREDICT_QUEUE.send({
+    category: body.category,
+    daysAhead: RESCORE_DAYS_AHEAD,
+    keibajoCode: body.keibajoCode,
+    mode: RESCORE_MODE,
+    raceBango: body.raceBango,
+    runDate,
+    runDateIso: runDate,
+    runYmd: body.runYmd,
+  } satisfies PredictQueueMessage);
+};
+
+const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const raw = await parseBody(request);
+  const parsed = parseInternalRescoreRaceBody(raw);
+  if (!parsed) {
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const claim = await claimRescoreRace({
+    category: parsed.category,
+    env,
+    keibajoCode: parsed.keibajoCode,
+    raceBango: parsed.raceBango,
+    runYmd: parsed.runYmd,
+  });
+  if (!claim.proceed) {
+    return Response.json({ claimed: false, ok: true }, { status: HTTP_OK });
+  }
+  await sendRescoreRaceMessage(env, parsed);
+  return Response.json({ claimed: true, ok: true }, { status: HTTP_ACCEPTED });
+};
+
+const guardedInternalRescoreRace = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleInternalRescoreRace(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
 export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
   if (isTriggerRequest(request.method, url.pathname)) {
     return guardedTrigger(request, env);
+  }
+  if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
+    return guardedInternalRescoreRace(request, env);
   }
   return healthResponse();
 };
