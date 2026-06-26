@@ -25,6 +25,7 @@ import {
   formatRunnerValue,
   formatSexAge,
 } from "../../../lib/runner-format";
+import type { SurfaceSwitch } from "../../../lib/surface-switch";
 import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -42,6 +43,11 @@ interface BlinkerPatternEntry {
   pattern: BlinkerPattern;
 }
 
+interface SurfaceSwitchEntry {
+  kettoTorokuBango: string;
+  surfaceSwitch: SurfaceSwitch;
+}
+
 interface RunnersTableProps {
   blinkerPatterns?: ReadonlyArray<BlinkerPatternEntry>;
   d1FinishPositions?: ReadonlyArray<D1FinishPositionEntry>;
@@ -49,6 +55,7 @@ interface RunnersTableProps {
   initialRealtimePayload?: RealtimeRacePayload | null;
   realtimeRequest?: RealtimeRaceRequest;
   runners: Runner[];
+  surfaceSwitches?: ReadonlyArray<SurfaceSwitchEntry>;
 }
 
 interface GetSortValueParams {
@@ -173,11 +180,19 @@ export function RunnersTable({
   initialRealtimePayload = null,
   realtimeRequest,
   runners,
+  surfaceSwitches,
 }: RunnersTableProps) {
   const [sort, setSort] = useState<SortState | null>(null);
   const blinkerPatternByHorse = useMemo(
     () => new Map((blinkerPatterns ?? []).map((entry) => [entry.kettoTorokuBango, entry.pattern])),
     [blinkerPatterns],
+  );
+  const surfaceSwitchByHorse = useMemo(
+    () =>
+      new Map(
+        (surfaceSwitches ?? []).map((entry) => [entry.kettoTorokuBango, entry.surfaceSwitch]),
+      ),
+    [surfaceSwitches],
   );
   const { payload } = useRealtimeRacePayload(
     realtimeRequest ?? {
@@ -358,6 +373,7 @@ export function RunnersTable({
     const ownerName = cleanText(runner.banushimei);
     const entryStatus = realtimeEntry?.status || "";
     const blinkerPattern = blinkerPatternByHorse.get(cleanText(runner.kettoTorokuBango, ""));
+    const surfaceSwitch = surfaceSwitchByHorse.get(cleanText(runner.kettoTorokuBango, ""));
 
     return (
       <tr
@@ -389,9 +405,11 @@ export function RunnersTable({
             >
               {BLINKER_PATTERN_SHORT_LABELS[blinkerPattern]}
             </span>
-          ) : (
-            "-"
-          )}
+          ) : null}
+          {surfaceSwitch ? (
+            <span className="runner-surface-switch-badge">{surfaceSwitch}</span>
+          ) : null}
+          {!blinkerPattern && !surfaceSwitch ? "-" : null}
         </td>
         <td>{formatSexAge(runner.seibetsuCode, runner.barei)}</td>
         <td>{formatCarriedWeight(runner.futanJuryo, decodeHexHorseWeight)}</td>
@@ -479,7 +497,10 @@ export function RunnersTable({
             <th className="runner-frame-header">枠</th>
             <th>{renderSortButton("umaban")}</th>
             <th>馬名</th>
-            <th>ブリンカー</th>
+            <th className="runner-blinker-header">
+              <span>ブリンカー</span>
+              <span>転向</span>
+            </th>
             <th>性齢</th>
             <th>負担</th>
             <th>騎手</th>

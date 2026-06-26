@@ -1490,3 +1490,75 @@ test("parseUpcomingWeightValues returns null weight when the label is a dash", (
 test("parseUpcomingWeightValues parses a bare numeric weight without a kg suffix", () => {
   expect(parseUpcomingWeightValues("456(+4)")).toStrictEqual({ weight: 456, weightDelta: 4 });
 });
+
+test("PaddockSection shows 芝替わり badge when raceTrackCode is turf and horse has only dirt past races", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      raceTrackCode="10"
+      recentResults={[
+        buildPastResult({ currentUmaban: "01", trackCode: "23" }),
+        buildPastResult({ currentUmaban: "01", trackCode: "25" }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const badge = container.querySelector(".paddock-surface-switch-badge");
+  expect(badge?.textContent).toBe("芝替わり");
+  expect(badge?.getAttribute("aria-label")).toBe("転向 芝替わり");
+});
+
+test("PaddockSection shows both blinker and surface switch badges when both are present", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      raceTrackCode="23"
+      recentResults={[
+        buildPastResult({ blinkerShiyoKubun: "0", currentUmaban: "01", trackCode: "10" }),
+        buildPastResult({ blinkerShiyoKubun: "0", currentUmaban: "01", trackCode: "11" }),
+      ]}
+      runners={[buildRunner({ blinkerShiyoKubun: "1", bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  const blinkerBadge = container.querySelector(".paddock-blinker-pattern-badge");
+  expect(blinkerBadge?.textContent).toBe("初ブリンカー");
+  const surfaceBadge = container.querySelector(".paddock-surface-switch-badge");
+  expect(surfaceBadge?.textContent).toBe("ダート替わり");
+  expect(surfaceBadge?.getAttribute("aria-label")).toBe("転向 ダート替わり");
+});
+
+test("PaddockSection shows no surface switch badge when horse ran on both surfaces", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  const { container } = render(
+    <PaddockSection
+      {...baseProps}
+      raceTrackCode="10"
+      recentResults={[
+        buildPastResult({ currentUmaban: "01", trackCode: "23" }),
+        buildPastResult({ currentUmaban: "01", trackCode: "10" }),
+      ]}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getAllByRole("article").length).toBe(1);
+  });
+  expect(container.querySelector(".paddock-surface-switch-badge") === null).toBe(true);
+});

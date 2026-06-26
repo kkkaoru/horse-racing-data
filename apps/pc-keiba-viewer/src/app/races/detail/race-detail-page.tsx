@@ -12,6 +12,7 @@ import {
 } from "../../../db/queries";
 import { getRaceFinishPositionsFromD1 } from "../../../db/race-finish-d1.server";
 import { type BlinkerPattern, classifyBlinkerPattern } from "../../../lib/blinker-pattern";
+import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import {
   safeGetCloudflareEnv,
   safeGetCloudflareExecutionContext,
@@ -195,6 +196,30 @@ const buildBlinkerPatterns = (params: {
       .map((result) => result.blinkerShiyoKubun);
     const pattern = classifyBlinkerPattern(runner.blinkerShiyoKubun, past);
     return pattern === null ? [] : [{ kettoTorokuBango, pattern }];
+  });
+};
+
+interface SurfaceSwitchEntry {
+  kettoTorokuBango: string;
+  surfaceSwitch: SurfaceSwitch;
+}
+
+const buildSurfaceSwitches = (params: {
+  raceTrackCode: string | null;
+  results: ReadonlyArray<HorseRaceResult>;
+  runners: ReadonlyArray<Runner>;
+}): SurfaceSwitchEntry[] => {
+  const { raceTrackCode, results, runners } = params;
+  return runners.flatMap((runner) => {
+    const kettoTorokuBango = cleanText(runner.kettoTorokuBango, "");
+    if (kettoTorokuBango === "") {
+      return [];
+    }
+    const pastTrackCodes = results
+      .filter((result) => cleanText(result.kettoTorokuBango, "") === kettoTorokuBango)
+      .map((result) => result.trackCode);
+    const surfaceSwitch = classifySurfaceSwitch(raceTrackCode, pastTrackCodes);
+    return surfaceSwitch === null ? [] : [{ kettoTorokuBango, surfaceSwitch }];
   });
 };
 
@@ -386,6 +411,11 @@ export async function RaceDetailView({
     raceNumber,
   ).catch(() => []);
   const blinkerPatterns = buildBlinkerPatterns({ results: horseRaceResults, runners });
+  const surfaceSwitches = buildSurfaceSwitches({
+    raceTrackCode: race.trackCode,
+    results: horseRaceResults,
+    runners,
+  });
   const raceStartsAt = getRaceStartsAt(year, month, day, race.hassoJikoku);
   const sharePath = getRaceDetailPath({
     kaisaiNen: year,
@@ -669,6 +699,7 @@ export async function RaceDetailView({
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}
+          raceTrackCode={race.trackCode}
           runners={runners}
           showBloodline={false}
           source={race.source}
@@ -762,6 +793,7 @@ export async function RaceDetailView({
               initialRealtimePayload={initialRealtimePayload}
               realtimeRequest={realtimeRequest}
               runners={runners}
+              surfaceSwitches={surfaceSwitches}
             />
           )}
         </section>

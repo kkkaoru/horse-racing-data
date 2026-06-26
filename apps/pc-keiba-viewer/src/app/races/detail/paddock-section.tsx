@@ -19,6 +19,7 @@ import {
   type BlinkerPattern,
 } from "../../../lib/blinker-pattern";
 import type { RaceSource } from "../../../lib/codes";
+import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import {
   cleanText,
@@ -81,6 +82,7 @@ interface PaddockSectionProps {
   raceStartsAt?: string | null;
   raceStartsAtLabel?: string;
   raceTitle?: string;
+  raceTrackCode?: string | null;
   realtimeRequest?: RealtimeRaceRequest;
   recentResults?: HorseRaceResult[];
   runningStyleLabelsByHorse?: Partial<Record<string, PaddockRunningStyleLabel>>;
@@ -123,6 +125,7 @@ interface PaddockHorseRowProps {
   sireName: string;
   sireSireName: string;
   status: string | null;
+  surfaceSwitch: SurfaceSwitch | null;
   trainerName: string;
   trainingEvaluationGrade: string | null;
   upcomingRaceDate: string;
@@ -143,6 +146,7 @@ interface PaddockRunnerRow {
   sireName: string;
   sireSireName: string;
   status: string;
+  surfaceSwitch: SurfaceSwitch | null;
   trainerName: string;
   weight: string;
 }
@@ -1025,6 +1029,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
   sireName,
   sireSireName,
   status,
+  surfaceSwitch,
   trainerName,
   trainingEvaluationGrade,
   upcomingRaceDate,
@@ -1097,6 +1102,14 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
               className={`paddock-blinker-pattern-badge pattern-${blinkerPattern}`}
             >
               <strong>{BLINKER_PATTERN_LABELS[blinkerPattern]}</strong>
+            </span>
+          ) : null}
+          {surfaceSwitch ? (
+            <span
+              aria-label={`転向 ${surfaceSwitch}`}
+              className="paddock-surface-switch-badge"
+            >
+              <strong>{surfaceSwitch}</strong>
             </span>
           ) : null}
           {status ? <span className="paddock-status-badge">{status}</span> : null}
@@ -1624,6 +1637,7 @@ export function PaddockSection({
   raceStartsAt = null,
   raceStartsAtLabel = "",
   raceTitle = "",
+  raceTrackCode = null,
   realtimeRequest,
   recentResults,
   runningStyleLabelsByHorse,
@@ -1764,6 +1778,10 @@ export function PaddockSection({
             sireName: cleanText(runner.sireName, ""),
             sireSireName: cleanText(runner.sireSireName, ""),
             status: realtimeEntryByHorse.get(horseNumber)?.status || "",
+            surfaceSwitch: classifySurfaceSwitch(
+              raceTrackCode,
+              (recentResultsByHorse?.get(horseNumber) ?? []).map((result) => result.trackCode),
+            ),
             trainerName: cleanText(runner.chokyoshimeiRyakusho, ""),
             weight:
               realtimeWeightByHorse.get(horseNumber) ??
@@ -1785,8 +1803,10 @@ export function PaddockSection({
         }),
     [
       decodeHexHorseWeight,
+      raceTrackCode,
       realtimeEntryByHorse,
       realtimeWeightByHorse,
+      recentResultsByHorse,
       runners,
       runningStyleLabelsByHorse,
     ],
@@ -2261,6 +2281,7 @@ export function PaddockSection({
                 sireName={runner.sireName}
                 sireSireName={runner.sireSireName}
                 status={status}
+                surfaceSwitch={runner.surfaceSwitch}
                 trainerName={runner.trainerName}
                 trainingEvaluationGrade={
                   premiumTrainingGradesByHorse.get(runner.horseNumber) ?? null

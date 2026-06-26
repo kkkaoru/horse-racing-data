@@ -384,6 +384,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
         raceStartsAt={raceStartsAt}
         raceStartsAtLabel={raceStartsAtLabel}
         raceTitle={raceTitle}
+        raceTrackCode={race.trackCode}
         realtimeRequest={{
           apiBaseUrl: realtimeApiBaseUrl,
           day,

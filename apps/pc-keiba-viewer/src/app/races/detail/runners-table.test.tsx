@@ -493,7 +493,7 @@ describe("runners table", () => {
       />,
     );
 
-    expect(screen.getByRole("columnheader", { name: "ブリンカー" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "ブリンカー 転向" })).toBeTruthy();
     expect(screen.queryByText("○")).toBeNull();
     const firstBlinkerCell = screen
       .getByText("対象外馬一")
@@ -527,6 +527,70 @@ describe("runners table", () => {
       ?.querySelector(".runner-blinker-cell");
     expect(excludedBlinkerCell?.textContent).toBe("-");
     expect(excludedBlinkerCell?.querySelector(".runner-blinker-pattern-badge")).toBeNull();
+  });
+
+  it("renders the header with two lines: ブリンカー and 転向", () => {
+    render(<RunnersTable runners={[runner({ umaban: "01" })]} />);
+
+    const header = screen.getByRole("columnheader", { name: "ブリンカー 転向" });
+    const spans = header.querySelectorAll("span");
+    expect(spans.length).toStrictEqual(2);
+    expect(spans[0]?.textContent).toStrictEqual("ブリンカー");
+    expect(spans[1]?.textContent).toStrictEqual("転向");
+  });
+
+  it("renders surface switch badge when surfaceSwitches match a horse", () => {
+    render(
+      <RunnersTable
+        surfaceSwitches={[{ kettoTorokuBango: "2023100001", surfaceSwitch: "芝替わり" }]}
+        runners={[
+          runner({ bamei: "芝替わり馬", kettoTorokuBango: "2023100001", umaban: "01" }),
+        ]}
+      />,
+    );
+
+    const cell = screen
+      .getByText("芝替わり馬")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(cell?.querySelector(".runner-surface-switch-badge")?.textContent).toStrictEqual(
+      "芝替わり",
+    );
+  });
+
+  it("renders both blinker and surface switch badges in the same cell", () => {
+    render(
+      <RunnersTable
+        blinkerPatterns={[{ kettoTorokuBango: "2023100001", pattern: "A" }]}
+        surfaceSwitches={[{ kettoTorokuBango: "2023100001", surfaceSwitch: "ダート替わり" }]}
+        runners={[
+          runner({ bamei: "両方馬", kettoTorokuBango: "2023100001", umaban: "01" }),
+        ]}
+      />,
+    );
+
+    const cell = screen
+      .getByText("両方馬")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(cell?.querySelector(".runner-blinker-pattern-badge")).toBeTruthy();
+    expect(cell?.querySelector(".runner-surface-switch-badge")?.textContent).toStrictEqual(
+      "ダート替わり",
+    );
+  });
+
+  it("renders dash when neither blinker nor surface switch exists", () => {
+    render(
+      <RunnersTable
+        runners={[runner({ bamei: "なし馬", kettoTorokuBango: "2023100099", umaban: "01" })]}
+      />,
+    );
+
+    const cell = screen
+      .getByText("なし馬")
+      .closest("tr")
+      ?.querySelector(".runner-blinker-cell");
+    expect(cell?.textContent).toStrictEqual("-");
   });
 
   it("decodes ban-ei hexadecimal horse weights", () => {
