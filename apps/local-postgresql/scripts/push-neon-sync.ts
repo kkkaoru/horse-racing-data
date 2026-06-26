@@ -19,6 +19,7 @@ import {
   computeBackoffDelayMs,
   computeChunkEtaSeconds,
   computeChunkPlan,
+  decideSkipForUnknownProfile,
   decideVerifyMismatchAction,
   formatRowsPerSecond,
   isVerifyMismatchSkipError,
@@ -39,6 +40,8 @@ import {
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
+  DEFAULT_NEON_PSQL_CONTAINER,
+  LOCAL_CONTAINER_NAME,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   VerifyMismatchSkipError,
@@ -445,10 +448,6 @@ function runCommand(
   });
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 interface RunCopyPipelineOptions {
   env: Record<string, string | undefined>;
   localCopySql: string;
@@ -460,15 +459,9 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
   return new Promise((resolvePipeline, reject) => {
     const { env, localCopySql, neonCopySql, tableName } = options;
     const command = [
-      "docker",
-      "compose",
-      "--env-file",
-      shellQuote(envPath),
-      "--project-directory",
-      shellQuote(appDir),
+      "container",
       "exec",
-      "-T",
-      "postgres",
+      '"$LOCAL_CONTAINER_NAME"',
       "psql",
       "-U",
       '"$POSTGRES_USER"',
@@ -480,11 +473,10 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
       "-c",
       '"$LOCAL_COPY_SQL"',
       "|",
-      "docker",
-      "run",
-      "--rm",
+      "container",
+      "exec",
       "-i",
-      "postgres:18-alpine",
+      '"$NEON_PSQL_CONTAINER"',
       "psql",
       '"$NEON_DIRECT_DATABASE_URL"',
       "-v",
@@ -501,6 +493,8 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
         NEON_DIRECT_DATABASE_URL: env.NEON_DIRECT_DATABASE_URL ?? "",
         LOCAL_COPY_SQL: localCopySql,
         NEON_COPY_SQL: neonCopySql,
+        LOCAL_CONTAINER_NAME,
+        NEON_PSQL_CONTAINER: env.REPLICA_SYNC_NEON_PSQL_CONTAINER ?? DEFAULT_NEON_PSQL_CONTAINER,
       },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -536,16 +530,10 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
   });
 }
 
-function dockerComposeArgs(env: Record<string, string | undefined>, sql: string): string[] {
+function containerExecArgs(env: Record<string, string | undefined>, sql: string): string[] {
   return [
-    "compose",
-    "--env-file",
-    envPath,
-    "--project-directory",
-    appDir,
     "exec",
-    "-T",
-    "postgres",
+    LOCAL_CONTAINER_NAME,
     "psql",
     "-U",
     env.POSTGRES_USER ?? "",
@@ -572,7 +560,7 @@ async function loadTableMetadata(
 ): Promise<TableMetadata[]> {
   const config = buildConfig(env);
   const sql = buildMetadataSql(config.selectedTables);
-  const { stdout } = await runCommand("docker", dockerComposeArgs(env, sql));
+  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
   return parseTableMetadata(stdout);
 }
 
@@ -600,7 +588,7 @@ Environment:
   NEON_CONNECT_TIMEOUT_SECONDS    Wait timeout for Neon cold start. Default: 120.
   NEON_CONNECT_RETRY_SECONDS      Retry interval while Neon is warming. Default: 5.
   REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS
-                                  Wall-clock timeout that kills any docker/psql child that
+                                  Wall-clock timeout that kills any container/psql child that
                                   hangs. Default: 3600.
   REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_<table>
                                   Per-table override for the wall-clock timeout (seconds).
@@ -621,11 +609,11 @@ Environment:
   REPLICA_SYNC_LOG_JSONL          When set to 1 or true, append one JSON line per progress
                                   event to tmp/push-neon-sync.jsonl. Default: off.
   REPLICA_SYNC_NEON_PSQL_CONTAINER
-                                  Name of the long-lived local container to exec psql in for
-                                  Neon connections. The script reuses this container instead of
-                                  spawning a disposable one per query, which avoids the docker
-                                  run --rm cleanup hangs that accumulate zombie containers on
-                                  Colima. Default: horse-racing-local-postgresql.
+                                  Name of the long-lived local Apple Container to exec psql in
+                                  for Neon connections. The script reuses this container instead
+                                  of spawning a disposable one per query, avoiding the cleanup
+                                  hangs that previously accumulated zombie containers under the
+                                  docker-based pipeline. Default: horse-racing-local-postgresql.
   REPLICA_SYNC_MAX_ATTEMPTS       Max per-table COPY attempts before giving up on a single
                                   table. Retries are scoped to the failing COPY only — the
                                   whole script is no longer respawned on transient TLS errors.
@@ -684,7 +672,10 @@ Real-time progress:
 
 async function checkNeonReady(env: Record<string, string | undefined>): Promise<boolean> {
   try {
-    await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAtc", "select 1"]));
+    await runCommand(
+      "container",
+      neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAtc", "select 1"]),
+    );
     return true;
   } catch {
     return false;
@@ -720,9 +711,9 @@ async function loadTableChecksum(
   const sql = buildTableChecksumSql(table);
   const result =
     target === "local"
-      ? await runCommand("docker", dockerComposeArgs(env, sql))
+      ? await runCommand("container", containerExecArgs(env, sql))
       : await runCommand(
-          "docker",
+          "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
         );
 
@@ -746,7 +737,7 @@ async function loadDependencyEdges(
 ): Promise<DependencyEdge[]> {
   const config = buildConfig(env);
   const sql = buildDependencySql(config.selectedTables);
-  const { stdout } = await runCommand("docker", dockerComposeArgs(env, sql));
+  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
   return parseDependencyEdges(stdout);
 }
 
@@ -755,7 +746,7 @@ async function loadTableProfileMap(
   config: PushSyncConfig,
 ): Promise<Map<string, TableProfile>> {
   const sql = buildTableProfileSql(config.selectedTables);
-  const { stdout } = await runCommand("docker", dockerComposeArgs(env, sql));
+  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
   const profiles = parseTableProfiles(stdout, config.strategyThresholds, config.strategyMode);
   return new Map(profiles.map((profile) => [profile.tableName, profile]));
 }
@@ -770,9 +761,9 @@ async function loadFingerprint(
     tsColumn === null ? buildFingerprintSql(table) : buildTimestampFingerprintSql(table, tsColumn);
   const result =
     target === "local"
-      ? await runCommand("docker", dockerComposeArgs(env, sql))
+      ? await runCommand("container", containerExecArgs(env, sql))
       : await runCommand(
-          "docker",
+          "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
         );
   return parseFingerprintLine(result.stdout);
@@ -928,7 +919,7 @@ async function runIncrementalCopyWithRetry(
   const { env, table, incSql, localCopySql, retry } = options;
   await runWithRetry(
     async () => {
-      await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+      await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
         input: incSql.preCopySql,
         tableName: table.tableName,
       });
@@ -942,7 +933,7 @@ async function runIncrementalCopyWithRetry(
           const message = error instanceof Error ? error.message : String(error);
           throw new Error(`Failed to incremental-copy ${table.tableName}\n${message}`);
         });
-        await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+        await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
           input: incSql.postCopySql,
           tableName: table.tableName,
         });
@@ -1034,20 +1025,20 @@ interface RunFullReplaceOnceOptions {
 
 async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<void> {
   const { env, table, quotedTable, neonSql, batchRows } = options;
-  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+  await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
     input: neonSql.preCopySql,
     tableName: table.tableName,
   });
 
   try {
     const { stdout: countOutput } = await runCommand(
-      "docker",
-      dockerComposeArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
+      "container",
+      containerExecArgs(env, `SELECT count(*) FROM public.${quotedTable};`),
       { tableName: table.tableName },
     );
     const rowCount = Number(countOutput.trim());
     await runFullReplaceChunked({ env, table, quotedTable, neonSql, batchRows, rowCount });
-    await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
+    await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
       input: neonSql.postCopySql,
       tableName: table.tableName,
     });
@@ -1068,7 +1059,7 @@ interface RunCleanupIgnoringFailureOptions {
 }
 
 async function runCleanupIgnoringFailure(options: RunCleanupIgnoringFailureOptions): Promise<void> {
-  await runCommand("docker", neonPsqlArgs(options.env, ["-q"]), {
+  await runCommand("container", neonPsqlArgs(options.env, ["-q"]), {
     input: options.cleanupSql,
     tableName: options.tableName,
   }).catch((error: unknown) => {
@@ -1289,7 +1280,7 @@ async function syncAnalyticsIndexes(env: Record<string, string | undefined>): Pr
 
   console.log(`[${formatNow()}] Applying analytics indexes to Neon`);
   const sql = readFileSync(analyticsIndexesPath, "utf8");
-  await runCommand("docker", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1"]), {
+  await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1"]), {
     input: sql,
     tableName: "(analytics-indexes)",
   });
@@ -1560,6 +1551,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   const verifyMismatchPolicy = resolveVerifyMismatchPolicy(env);
   const skipTables = resolveSkipTables(env);
   const skippedTables: VerifyMismatchSkipError[] = [];
+  const skippedUnknownTables: string[] = [];
 
   await runPushSync(
     tables,
@@ -1579,6 +1571,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
           verifyMismatchPolicy,
           skipTables,
           skippedTables,
+          skippedUnknownTables,
         }),
       report: reportProgress,
     },
@@ -1587,6 +1580,7 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   await syncAnalyticsIndexes(env);
   await warmViewerCaches(env);
   reportSkippedTables(skippedTables);
+  reportSkippedUnknownTables(skippedUnknownTables);
 }
 
 function loadViewerEnv(): Record<string, string | undefined> {
@@ -1609,6 +1603,7 @@ async function warmViewerCaches(env: Record<string, string | undefined>): Promis
 interface SyncTableWithSkipTrackingOptions extends SyncTableOptions {
   skipTables: ReadonlySet<string>;
   skippedTables: VerifyMismatchSkipError[];
+  skippedUnknownTables: string[];
 }
 
 async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptions): Promise<void> {
@@ -1616,6 +1611,12 @@ async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptio
     writeLine(
       `[${formatNow()}] ⊘ ${options.table.tableName}: skipped via REPLICA_SYNC_SKIP_TABLES`,
     );
+    return;
+  }
+  const unknownDecision = decideSkipForUnknownProfile({ profile: options.profile });
+  if (unknownDecision.skip) {
+    writeLine(`[${formatNow()}] ⚠ ${options.table.tableName}: ${unknownDecision.reason}`);
+    options.skippedUnknownTables.push(options.table.tableName);
     return;
   }
   try {
@@ -1648,6 +1649,13 @@ function reportSkippedTables(skipped: VerifyMismatchSkipError[]): void {
     );
   }
   process.exitCode = 1;
+}
+
+function reportSkippedUnknownTables(tableNames: readonly string[]): void {
+  if (tableNames.length === 0) return;
+  writeLine(
+    `[${formatNow()}] ⚠ skipped ${tableNames.length} table(s) with strategy=unknown: ${tableNames.join(", ")}. Add timestamp/PK columns or extend loadTableProfileMap.`,
+  );
 }
 
 function logStrategySummary(profileMap: Map<string, TableProfile>, tables: TableMetadata[]): void {

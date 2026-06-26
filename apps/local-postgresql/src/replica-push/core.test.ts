@@ -17,6 +17,7 @@ import {
   computeBackoffDelayMs,
   computeChunkEtaSeconds,
   computeChunkPlan,
+  decideSkipForUnknownProfile,
   decideVerifyMismatchAction,
   formatRowsPerSecond,
   incrementalComparatorForTimestampColumn,
@@ -49,6 +50,7 @@ import {
   runWithRetry,
   buildNeonPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
+  LOCAL_CONTAINER_NAME,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
   VerifyMismatchSkipError,
@@ -989,7 +991,7 @@ describe("parallel push runner", () => {
 });
 
 describe("buildNeonPsqlArgs", () => {
-  it("defaults to docker exec against the long-lived local container", () => {
+  it("defaults to container exec against the long-lived local container", () => {
     expect(
       buildNeonPsqlArgs({
         neonUrl: "postgresql://user:pass@neon.example/db",
@@ -1006,6 +1008,10 @@ describe("buildNeonPsqlArgs", () => {
 
   it("uses the default container name from the exported constant", () => {
     expect(DEFAULT_NEON_PSQL_CONTAINER).toBe("horse-racing-local-postgresql");
+  });
+
+  it("exports LOCAL_CONTAINER_NAME matching the long-lived Apple Container", () => {
+    expect(LOCAL_CONTAINER_NAME).toBe("horse-racing-local-postgresql");
   });
 
   it("respects a custom container name", () => {
@@ -2521,5 +2527,45 @@ describe("resolveSkipTables", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,,table_b" })).toStrictEqual(
       new Set(["table_a", "table_b"]),
     );
+  });
+});
+
+describe("decideSkipForUnknownProfile", () => {
+  it("returns skip=true with reason when profile is undefined", () => {
+    expect(decideSkipForUnknownProfile({ profile: undefined })).toStrictEqual({
+      skip: true,
+      reason:
+        "skipped — no sync profile (strategy=unknown). Inspect loadTableProfileMap to add support.",
+    });
+  });
+
+  it("returns skip=false when a full-replace profile is provided", () => {
+    expect(
+      decideSkipForUnknownProfile({
+        profile: {
+          tableName: "cell_training_evaluations",
+          rowCount: 0,
+          hasUpdateChurn: false,
+          timestampColumn: null,
+          hasPrimaryKey: false,
+          strategy: "full-replace",
+        },
+      }),
+    ).toStrictEqual({ skip: false });
+  });
+
+  it("returns skip=false when a timestamp-incremental profile is provided", () => {
+    expect(
+      decideSkipForUnknownProfile({
+        profile: {
+          tableName: "jvd_se",
+          rowCount: 5_000_000,
+          hasUpdateChurn: true,
+          timestampColumn: "updated_at",
+          hasPrimaryKey: true,
+          strategy: "timestamp-incremental",
+        },
+      }),
+    ).toStrictEqual({ skip: false });
   });
 });

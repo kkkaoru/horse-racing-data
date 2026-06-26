@@ -395,6 +395,27 @@ export function resolveStrategy(input: ResolveStrategyInput): SyncStrategy {
   return "pk-incremental";
 }
 
+const UNKNOWN_PROFILE_SKIP_REASON =
+  "skipped — no sync profile (strategy=unknown). Inspect loadTableProfileMap to add support.";
+
+export interface SkipUnknownDecision {
+  skip: boolean;
+  reason?: string;
+}
+
+export interface DecideSkipForUnknownProfileInput {
+  profile: TableProfile | undefined;
+}
+
+export function decideSkipForUnknownProfile(
+  input: DecideSkipForUnknownProfileInput,
+): SkipUnknownDecision {
+  if (input.profile === undefined) {
+    return { skip: true, reason: UNKNOWN_PROFILE_SKIP_REASON };
+  }
+  return { skip: false };
+}
+
 export function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
@@ -996,7 +1017,8 @@ export async function runPushSync(
   });
 }
 
-export const DEFAULT_NEON_PSQL_CONTAINER = "horse-racing-local-postgresql";
+export const LOCAL_CONTAINER_NAME = "horse-racing-local-postgresql";
+export const DEFAULT_NEON_PSQL_CONTAINER = LOCAL_CONTAINER_NAME;
 
 export type NeonPsqlArgsInput = {
   neonUrl: string | undefined;
