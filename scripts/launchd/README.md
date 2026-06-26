@@ -28,8 +28,15 @@ and the D1 audit table — those are unaffected.
 - `finish-position-predict-daily.sh` — wrapper script that runs the proven
   local docker pipeline (`finish-position-predict-local:split2`) once. Reads
   `NEON_DATABASE_URL` from `apps/local-postgresql/.env.replica`,
-  defaults `SOURCE_DATABASE_URL` to `postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing`,
+  defaults `SOURCE_DATABASE_URL` to `postgresql://horse_racing:horse_racing@host.docker.internal:15432/horse_racing`,
   and computes `RUN_DATE` as **today in JST** (`date -u -v+9H +%Y%m%d`).
+  The host is `host.docker.internal` (not `127.0.0.1`) because local PG was
+  migrated from Docker Compose to **Apple Container CLI** (commits `ac8626f4`,
+  `0fe46d1c`, `8887fb52`). PG no longer runs inside the Colima VM, so the
+  predict container — which still runs under Colima / Docker with
+  `--network=host` — must reach the Mac host loopback via the
+  `host.docker.internal` alias instead of the in-VM `127.0.0.1`. Callers can
+  still override via the `SOURCE_DATABASE_URL` env var.
 
 ## Install
 

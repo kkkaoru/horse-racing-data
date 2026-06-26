@@ -33,7 +33,13 @@ cd "$REPO_ROOT"
 # Constants.
 IMAGE_TAG="finish-position-predict-local:split2"
 DOCKERFILE_PATH="apps/finish-position-predict-container/Dockerfile"
-SOURCE_DATABASE_URL_DEFAULT="postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+# Host is host.docker.internal (not 127.0.0.1) because local PG was migrated
+# from Docker Compose (inside Colima VM) to Apple Container CLI (outside Colima
+# VM) in commits ac8626f4 / 0fe46d1c / 8887fb52. With Apple-CLI PG bound on the
+# Mac host, the Colima VM's 127.0.0.1 loopback no longer reaches it, so the
+# predict container needs host.docker.internal to traverse Colima → Mac host.
+# Caller may still override via the SOURCE_DATABASE_URL env (see pre-flight 5).
+SOURCE_DATABASE_URL_DEFAULT="postgresql://horse_racing:horse_racing@host.docker.internal:15432/horse_racing"
 NEON_ENV_FILE="apps/local-postgresql/.env.replica"
 LOG_DIR="/Users/kkk4oru/Library/Logs/finish-position-predict"
 FAILURE_LOG="$LOG_DIR/failures.log"
@@ -193,9 +199,11 @@ else
   log "R2 credentials missing — forcing RS_SOURCE=pg (Neon ATTACH fallback)"
 fi
 
-# Run the prediction container. --network=host so the container can reach the
-# local Colima Postgres on 127.0.0.1:15432 directly. --rm so the container is
-# removed after exit.
+# Run the prediction container. --network=host keeps the Colima VM's networking
+# stack shared with the container; the SOURCE_DATABASE_URL default targets
+# host.docker.internal:15432 (the Mac host) because local PG now runs under
+# Apple Container CLI on the host (post-migration commits ac8626f4 / 0fe46d1c /
+# 8887fb52). --rm so the container is removed after exit.
 log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>}..."
 set +e
 docker run --rm --network=host \
