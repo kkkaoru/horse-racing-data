@@ -63,6 +63,7 @@ from predict_lib.audit import (
     build_audit_table_ddl,
 )
 from predict_lib.booster_pool import BoosterPool
+from predict_lib.cell_router import build_base_model_r2_key, load_cell_router
 from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.ensemble_routing import (
@@ -524,6 +525,34 @@ def score_races(
     """
     fallback_booster = _load_booster(models_dir, category)
     pool = init_member_pool(models_dir, category)
+    cell_router = load_cell_router()
+    base_cell_booster: BoosterLike | None = None
+    base_cell_feature_names: Sequence[str] | None = None
+    if cell_router.has_routing(category):
+        routing_config = cell_router.routing_for(category)
+        base_model_path = models_dir / build_base_model_r2_key(
+            category, routing_config.base_model_version, MODEL_FILE_NAME
+        )
+        if architecture_for(category) == "xgboost":
+            from xgboost_adapter import load_xgboost_booster  # bundled in image
+
+            base_cell_booster = load_xgboost_booster(str(base_model_path))
+        else:
+            from catboost_adapter import load_catboost_booster  # bundled in image
+
+            base_cell_booster = load_catboost_booster(str(base_model_path))
+        base_meta_path = models_dir / build_base_model_r2_key(
+            category, routing_config.base_model_version, METADATA_FILE_NAME
+        )
+        base_metadata = json.loads(base_meta_path.read_text(encoding="utf-8"))
+        base_cell_feature_names = list(base_metadata["feature_names"])
+        assert_feature_count(base_cell_feature_names, routing_config.base_feature_count)
+        print(
+            f"[cell-routing] loaded base model category={category} "
+            f"version={routing_config.base_model_version} "
+            f"features={routing_config.base_feature_count}",
+            file=sys.stderr,
+        )
     xgb_etop2_booster: BoosterLike | None = None
     if JRA_ETOP2_ENABLED and category == "jra":
         xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
@@ -532,26 +561,43 @@ def score_races(
         cb_nar_etop2_booster = _load_cb_nar_etop2_booster(models_dir)
     scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
+        effective_booster = fallback_booster
+        effective_feature_names = feature_names
+        if base_cell_booster is not None and base_cell_feature_names is not None:
+            variant = cell_router.resolve_variant(category, entries)
+            if variant == "base":
+                effective_booster = base_cell_booster
+                effective_feature_names = base_cell_feature_names
+                print(
+                    f"[cell-routing] race={race_id} category={category} -> base",
+                    file=sys.stderr,
+                )
         if xgb_etop2_booster is not None:
             rows = _score_one_race_etop2(
-                fallback_booster,
+                effective_booster,
                 xgb_etop2_booster,
                 race_id,
                 entries,
-                feature_names,
+                effective_feature_names,
             )
         elif cb_nar_etop2_booster is not None:
             rows = score_one_race_nar_etop2(
-                fallback_booster,
+                effective_booster,
                 cb_nar_etop2_booster,
                 race_id,
                 category,
                 entries,
-                feature_names,
+                effective_feature_names,
             )
         else:
             rows = _score_one_race(
-                fallback_booster, pool, models_dir, race_id, category, entries, feature_names
+                effective_booster,
+                pool,
+                models_dir,
+                race_id,
+                category,
+                entries,
+                effective_feature_names,
             )
         scored.append(rows)
     return scored
@@ -752,8 +798,6 @@ def _load_r2_config() -> R2Config | None:
         secret_access_key=secret_access_key,
         bucket=bucket,
     )
-
-
 
 
 def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
@@ -1277,9 +1321,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
             rescore_fn: PredictCategoryFn | None = None
             rescore_per_race_fn: PerRaceParquetPayloadFn | None = None
             if self.rescore_factory is not None:
-                rescore_fn, rescore_per_race_fn = self.rescore_factory(
-                    _scope_from_params(result)
-                )
+                rescore_fn, rescore_per_race_fn = self.rescore_factory(_scope_from_params(result))
             effective_per_race_fn: PerRaceParquetPayloadFn | None = (
                 rescore_per_race_fn
                 if result.mode == "rescore" and rescore_per_race_fn is not None
@@ -1403,9 +1445,7 @@ def main() -> int:
             database_url, models_dir, source_url, r2
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
-        serve_http(
-            HTTP_PORT, predict_fn, parquet_payload_fn, per_race_payload_fn, rescore_factory
-        )
+        serve_http(HTTP_PORT, predict_fn, parquet_payload_fn, per_race_payload_fn, rescore_factory)
         return 0  # unreachable but satisfies the return type
 
     started = time.monotonic()
