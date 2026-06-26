@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -17,7 +18,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Final, TypedDict, cast, get_args
+from typing import TYPE_CHECKING, Final, TypedDict, cast, get_args
+
+if TYPE_CHECKING:
+    import psycopg
 
 import polars as pl
 
@@ -109,6 +113,11 @@ _MAX_NTHREAD: Final[int] = 6
 _MIN_FREE_MEM_GB: Final[float] = 8.0
 
 
+class CellFilter(TypedDict, total=False):
+    keibajo_codes: list[str]
+    season_bands: list[str]
+
+
 class InverseResult(TypedDict):
     delta_pp: dict[str, float]
     decision: str
@@ -121,6 +130,75 @@ _MODEL_META_JSON_PATH: Final[str] = (
 )
 _CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
 DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
+
+_LOCAL_PG_URL: Final[str] = (
+    "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+)
+
+_CELL_EVAL_TABLE: Final[str] = "cell_training_evaluations"
+
+_CELL_EVAL_DDL = """
+CREATE TABLE IF NOT EXISTS cell_training_evaluations (
+    feature_set_hash    TEXT NOT NULL,
+    category            TEXT NOT NULL,
+    surface             TEXT NOT NULL,
+    distance_band       TEXT NOT NULL,
+    class_label         TEXT NOT NULL,
+    season              TEXT NOT NULL,
+    venue               TEXT NOT NULL,
+    feature_count       INTEGER NOT NULL,
+    race_count          INTEGER NOT NULL,
+    ndcg_at_3           DOUBLE PRECISION NOT NULL,
+    top1_accuracy       DOUBLE PRECISION NOT NULL,
+    place2_accuracy     DOUBLE PRECISION NOT NULL,
+    place3_accuracy     DOUBLE PRECISION NOT NULL,
+    place4_accuracy     DOUBLE PRECISION NOT NULL,
+    place5_accuracy     DOUBLE PRECISION NOT NULL,
+    place6_accuracy     DOUBLE PRECISION NOT NULL,
+    top3_box_accuracy   DOUBLE PRECISION NOT NULL,
+    accuracy_vector     DOUBLE PRECISION[] NOT NULL,
+    feature_names_array TEXT[] NOT NULL,
+    cell_vector         TEXT[] NOT NULL,
+    evaluated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (feature_set_hash, category, surface, distance_band, class_label, season, venue)
+)
+"""
+
+_CELL_EVAL_UPSERT = """
+INSERT INTO cell_training_evaluations (
+    feature_set_hash, category, surface, distance_band, class_label, season, venue,
+    feature_count, race_count, ndcg_at_3,
+    top1_accuracy, place2_accuracy, place3_accuracy,
+    place4_accuracy, place5_accuracy, place6_accuracy,
+    top3_box_accuracy,
+    accuracy_vector, feature_names_array, cell_vector
+) VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+)
+ON CONFLICT (feature_set_hash, category, surface, distance_band, class_label, season, venue)
+DO UPDATE SET
+    feature_count = EXCLUDED.feature_count,
+    race_count = EXCLUDED.race_count,
+    ndcg_at_3 = EXCLUDED.ndcg_at_3,
+    top1_accuracy = EXCLUDED.top1_accuracy,
+    place2_accuracy = EXCLUDED.place2_accuracy,
+    place3_accuracy = EXCLUDED.place3_accuracy,
+    place4_accuracy = EXCLUDED.place4_accuracy,
+    place5_accuracy = EXCLUDED.place5_accuracy,
+    place6_accuracy = EXCLUDED.place6_accuracy,
+    top3_box_accuracy = EXCLUDED.top3_box_accuracy,
+    accuracy_vector = EXCLUDED.accuracy_vector,
+    feature_names_array = EXCLUDED.feature_names_array,
+    cell_vector = EXCLUDED.cell_vector,
+    evaluated_at = NOW()
+"""
+
+_SEASON_MONTHS: Final[dict[str, set[int]]] = {
+    "spring": {3, 4, 5},
+    "summer": {6, 7, 8},
+    "autumn": {9, 10, 11},
+    "winter": {12, 1, 2},
+}
 
 
 def _load_partitioned_features(glob_pattern: str, min_year: int) -> pl.DataFrame:
@@ -162,6 +240,237 @@ def _load_features_dataframe(parquet_path: Path, train_start: str) -> pl.DataFra
     # CatBoost is called with presorted=True, which trusts rows to be grouped
     # contiguously by race_id; a single global sort here honours that contract.
     return df.sort(["race_id", "umaban"])
+
+
+def filter_dataframe_by_cell(df: pl.DataFrame, cell_filter: CellFilter) -> pl.DataFrame:
+    filtered = df
+    keibajo_codes = cell_filter.get("keibajo_codes")
+    if keibajo_codes:
+        filtered = filtered.filter(pl.col("keibajo_code").cast(pl.Utf8).is_in(keibajo_codes))
+    season_bands = cell_filter.get("season_bands")
+    if season_bands:
+        allowed_months: set[int] = set()
+        for band in season_bands:
+            allowed_months |= _SEASON_MONTHS.get(band, set())
+        if allowed_months and "kaisai_tsukihi" in filtered.columns:
+            filtered = filtered.filter(
+                pl.col("kaisai_tsukihi")
+                .cast(pl.Utf8)
+                .str.slice(0, 2)
+                .cast(pl.Int32)
+                .is_in(sorted(allowed_months))
+            )
+    return filtered
+
+
+def compute_sire_venue_bias_features(
+    df: pl.DataFrame, pg_url: str = _LOCAL_PG_URL
+) -> pl.DataFrame:
+    psycopg = __import__("psycopg")
+    horse_ids = df["ketto_toroku_bango"].unique().to_list()
+
+    sire_map: dict[str, str] = {}
+    with psycopg.connect(pg_url) as conn:
+        with conn.cursor() as cur:
+            batch_size = 5000
+            for i in range(0, len(horse_ids), batch_size):
+                batch = horse_ids[i : i + batch_size]
+                placeholders = ",".join(["%s"] * len(batch))
+                cur.execute(
+                    f"SELECT ketto_toroku_bango, ketto_joho_01a FROM jvd_um "
+                    f"WHERE ketto_toroku_bango IN ({placeholders})",
+                    batch,
+                )
+                for row in cur.fetchall():
+                    if row[1] and row[1].strip():
+                        sire_map[row[0]] = row[1].strip()
+
+    _logger.info("sire venue bias: loaded %d sire mappings from jvd_um", len(sire_map))
+
+    sire_lookup = pl.DataFrame(
+        {
+            "ketto_toroku_bango": list(sire_map.keys()),
+            "_sire_id": list(sire_map.values()),
+        },
+        schema={"ketto_toroku_bango": pl.Utf8, "_sire_id": pl.Utf8},
+    )
+    df = df.join(sire_lookup, on="ketto_toroku_bango", how="left")
+    df = df.with_columns(pl.col("_sire_id").fill_null(""))
+
+    surface_expr = (
+        pl.when(pl.col("track_code").cast(pl.Utf8).str.starts_with("1"))
+        .then(pl.lit("turf"))
+        .when(pl.col("track_code").cast(pl.Utf8).str.starts_with("2"))
+        .then(pl.lit("dirt"))
+        .otherwise(pl.lit("other"))
+    )
+    df = df.with_columns(surface_expr.alias("_surface_type"))
+
+    is_win = (pl.col("finish_position") == 1).cast(pl.Int32)
+    is_place = (pl.col("finish_position") <= 3).cast(pl.Int32)
+
+    df = df.with_columns([
+        is_win.alias("_is_win"),
+        is_place.alias("_is_place"),
+        pl.lit(1).alias("_one"),
+    ])
+
+    df = df.sort("race_year", "race_id", "finish_position")
+
+    svsd_group = ["_sire_id", "keibajo_code", "_surface_type", "kyori"]
+    df = df.with_columns([
+        pl.col("_is_win")
+        .shift(1)
+        .cum_sum()
+        .over(svsd_group)
+        .truediv(
+            pl.col("_one").cum_sum().over(svsd_group) - 1
+        )
+        .alias("sire_venue_surface_dist_win_rate"),
+
+        pl.col("_is_place")
+        .shift(1)
+        .cum_sum()
+        .over(svsd_group)
+        .truediv(
+            pl.col("_one").cum_sum().over(svsd_group) - 1
+        )
+        .alias("sire_venue_surface_dist_place_rate"),
+
+        (pl.col("_one").cum_sum().over(svsd_group) - 1).alias("sire_venue_surface_dist_runs"),
+    ])
+
+    svs_group = ["_sire_id", "keibajo_code", "_surface_type"]
+    df = df.with_columns([
+        pl.col("_is_win")
+        .shift(1)
+        .cum_sum()
+        .over(svs_group)
+        .truediv(
+            pl.col("_one").cum_sum().over(svs_group) - 1
+        )
+        .alias("sire_venue_surface_win_rate"),
+
+        pl.col("_is_place")
+        .shift(1)
+        .cum_sum()
+        .over(svs_group)
+        .truediv(
+            pl.col("_one").cum_sum().over(svs_group) - 1
+        )
+        .alias("sire_venue_surface_place_rate"),
+    ])
+
+    df = df.drop(["_sire_id", "_surface_type", "_is_win", "_is_place", "_one"])
+
+    _logger.info(
+        "sire venue bias: added 5 features, non-null rates: dist=%.1f%% surface=%.1f%%",
+        (1 - df["sire_venue_surface_dist_win_rate"].null_count() / len(df)) * 100,
+        (1 - df["sire_venue_surface_win_rate"].null_count() / len(df)) * 100,
+    )
+
+    return df
+
+
+def compute_feature_set_hash(feature_names: list[str]) -> str:
+    canonical = json.dumps(sorted(feature_names), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class CellAccuracyStore:
+    def __init__(self, pg_url: str = _LOCAL_PG_URL) -> None:
+        self._pg_url: str = pg_url
+        self._con: psycopg.Connection[tuple[object, ...]] | None = None
+
+    def open(self) -> None:
+        _psycopg = __import__("psycopg")
+        con = _psycopg.connect(self._pg_url)
+        with con.cursor() as cur:
+            cur.execute(_CELL_EVAL_DDL)
+        con.commit()
+        self._con = con
+
+    def close(self) -> None:
+        if self._con is not None:
+            self._con.close()
+            self._con = None
+
+    def __enter__(self) -> "CellAccuracyStore":
+        self.open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def evaluated_cells(self, feature_set_hash: str) -> set[str]:
+        assert self._con is not None
+        with self._con.cursor() as cur:
+            cur.execute(
+                "SELECT category, surface, distance_band, class_label, season, venue "
+                "FROM cell_training_evaluations WHERE feature_set_hash = %s",
+                (feature_set_hash,),
+            )
+            return {
+                f"{row[0]}_{row[1]}_{row[2]}_{row[3]}_{row[4]}_{row[5]}"
+                for row in cur.fetchall()
+            }
+
+    def save_cell_metrics(
+        self,
+        feature_set_hash: str,
+        feature_count: int,
+        metrics: list[SubgroupMetrics],
+        feature_names: list[str] | None = None,
+    ) -> int:
+        assert self._con is not None
+        sorted_names = sorted(feature_names) if feature_names is not None else []
+        saved = 0
+        with self._con.cursor() as cur:
+            for m in metrics:
+                accuracy_vector = [
+                    m["top1_accuracy"],
+                    m["place2_accuracy"],
+                    m["place3_accuracy"],
+                    m["place4_accuracy"],
+                    m["place5_accuracy"],
+                    m["place6_accuracy"],
+                ]
+                cell_vector = [
+                    m["category"],
+                    m["surface"],
+                    m["distance_band"],
+                    m["class_label"],
+                    m["season"],
+                    m["venue"],
+                ]
+                cur.execute(
+                    _CELL_EVAL_UPSERT,
+                    (
+                        feature_set_hash,
+                        m["category"],
+                        m["surface"],
+                        m["distance_band"],
+                        m["class_label"],
+                        m["season"],
+                        m["venue"],
+                        feature_count,
+                        m["race_count"],
+                        m["ndcg_at_3"],
+                        m["top1_accuracy"],
+                        m["place2_accuracy"],
+                        m["place3_accuracy"],
+                        m["place4_accuracy"],
+                        m["place5_accuracy"],
+                        m["place6_accuracy"],
+                        m["top3_box_accuracy"],
+                        accuracy_vector,
+                        sorted_names,
+                        cell_vector,
+                    ),
+                )
+                saved += 1
+        self._con.commit()
+        return saved
 
 
 def write_filtered_parquet(
@@ -276,6 +585,9 @@ class ContinuousLearner:
         load_controller: AdaptiveLoadController | None = None,
         auto_tune: bool = True,
         per_trial_timeout_s: float | None = None,
+        cell_filter: CellFilter | None = None,
+        cell_accuracy_store: CellAccuracyStore | None = None,
+        pg_url: str = _LOCAL_PG_URL,
     ) -> None:
         if category not in _TRAINING_SCRIPT:
             raise ValueError(
@@ -318,6 +630,27 @@ class ContinuousLearner:
         self._load_controller: AdaptiveLoadController | None = load_controller
         self._auto_tune: bool = auto_tune
         self._per_trial_timeout_s: float | None = per_trial_timeout_s
+        self._cell_filter: CellFilter | None = cell_filter
+        self._cell_accuracy_store: CellAccuracyStore | None = cell_accuracy_store
+        self._pg_url: str = pg_url
+        if cell_filter:
+            original_len = len(self._df)
+            self._df = filter_dataframe_by_cell(self._df, cell_filter)
+            _logger.info(
+                "cell filter applied: %d → %d rows",
+                original_len,
+                len(self._df),
+            )
+            if self._df.is_empty():
+                raise ValueError("cell filter produced empty DataFrame")
+        _sire_required = {"ketto_toroku_bango", "track_code", "kyori", "finish_position", "keibajo_code"}
+        if (
+            pg_url
+            and "sire_venue_surface_dist_win_rate" not in self._df.columns
+            and _sire_required.issubset(self._df.columns)
+        ):
+            _logger.info("computing sire venue bias features...")
+            self._df = compute_sire_venue_bias_features(self._df, pg_url)
         self._last_enrichment: list[tuple[str, float]] | None = None
         self._saturated: bool = False
         self._fold_cache: dict[int, FoldSplit] = {}
@@ -409,7 +742,7 @@ class ContinuousLearner:
                     "saturation latched — subsequent rounds will use reduced trials"
                 )
             self._saturated = self._saturated or saturated
-            if self._log_subgroup and round_num % 5 == 0:
+            if self._log_subgroup and (self._cell_filter is not None or round_num % 5 == 0):
                 self._log_subgroup_diagnostics()
             if self._saturated:
                 _logger.info(
@@ -710,18 +1043,23 @@ class ContinuousLearner:
         )
 
     def _log_subgroup_diagnostics(self) -> None:
-        """Evaluate the active feature set per validation fold and log per-subgroup metrics.
-
-        Predictions come from re-training the active set on each fold; the ground-truth
-        side (incl. ``track_code`` / ``kyori`` used to derive subgroup keys) is taken
-        from the full ``self._df`` rather than the feature-filtered fold, so subgrouping
-        is unaffected by which features the active set happens to keep.
-        """
         active = self._registry.get_active_entry()
         if active is None:
             _logger.info("subgroup diagnostics: no active entry — skipping")
             return
         feature_names = active["feature_names"]
+        feature_set_hash = compute_feature_set_hash(feature_names)
+
+        already_evaluated: set[str] = set()
+        if self._cell_accuracy_store is not None:
+            already_evaluated = self._cell_accuracy_store.evaluated_cells(feature_set_hash)
+            if already_evaluated:
+                _logger.info(
+                    "cell accuracy store: %d cells already evaluated for hash %s",
+                    len(already_evaluated),
+                    feature_set_hash[:12],
+                )
+
         predictions = self._collect_active_predictions(feature_names)
         if predictions.is_empty():
             _logger.info("subgroup diagnostics: no predictions produced — skipping")
@@ -730,10 +1068,18 @@ class ContinuousLearner:
         if not metrics:
             _logger.info("subgroup diagnostics: no subgroups to report")
             return
+
+        new_metrics: list[SubgroupMetrics] = []
+        skipped = 0
         _logger.info(
             "subgroup diagnostics (active set, %d features):", len(feature_names)
         )
         for m in metrics:
+            cell_key = f"{m['category']}_{m['surface']}_{m['distance_band']}_{m['class_label']}_{m['season']}_{m['venue']}"
+            if cell_key in already_evaluated:
+                skipped += 1
+                continue
+            new_metrics.append(m)
             _logger.info(
                 "│  %-8s %-6s %-14s %-8s %-8s %-8s  races=%5d  "
                 "ndcg@3=%.4f  top1=%.4f  p2=%.4f  p3=%.4f  p4=%.4f  p5=%.4f  p6=%.4f  top3_box=%.4f",
@@ -753,6 +1099,15 @@ class ContinuousLearner:
                 m["place6_accuracy"],
                 m["top3_box_accuracy"],
             )
+        if skipped:
+            _logger.info("│  (%d cells skipped — already evaluated)", skipped)
+
+        if self._cell_accuracy_store is not None and new_metrics:
+            saved = self._cell_accuracy_store.save_cell_metrics(
+                feature_set_hash, len(feature_names), new_metrics, feature_names
+            )
+            _logger.info("cell accuracy store: saved %d cell evaluations", saved)
+
         self._log_surface_summary(metrics)
 
     def _log_surface_summary(self, metrics: list[SubgroupMetrics]) -> None:
@@ -772,27 +1127,16 @@ class ContinuousLearner:
             weighted_top1 = (
                 sum(m["top1_accuracy"] * m["race_count"] for m in group) / total_races
             )
-            wp2 = sum(m["place2_accuracy"] * m["race_count"] for m in group) / total_races
-            wp3 = sum(m["place3_accuracy"] * m["race_count"] for m in group) / total_races
-            wp4 = sum(m["place4_accuracy"] * m["race_count"] for m in group) / total_races
-            wp5 = sum(m["place5_accuracy"] * m["race_count"] for m in group) / total_races
-            wp6 = sum(m["place6_accuracy"] * m["race_count"] for m in group) / total_races
             weighted_top3 = (
                 sum(m["top3_box_accuracy"] * m["race_count"] for m in group)
                 / total_races
             )
             _logger.info(
-                "│  surface=%-6s  races=%5d  ndcg@3=%.4f  top1=%.4f  "
-                "p2=%.4f  p3=%.4f  p4=%.4f  p5=%.4f  p6=%.4f  top3_box=%.4f",
+                "│  surface=%-6s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
                 surface,
                 total_races,
                 weighted_ndcg,
                 weighted_top1,
-                wp2,
-                wp3,
-                wp4,
-                wp5,
-                wp6,
                 weighted_top3,
             )
 
@@ -1081,6 +1425,22 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--auto-tune", dest="auto_tune", action="store_true", default=True)
     parser.add_argument("--no-auto-tune", dest="auto_tune", action="store_false")
     parser.add_argument("--per-trial-timeout", type=float, default=None)
+    parser.add_argument(
+        "--keibajo-codes",
+        nargs="*",
+        default=None,
+    )
+    parser.add_argument(
+        "--season-bands",
+        nargs="*",
+        default=None,
+    )
+    parser.add_argument(
+        "--pg-url",
+        type=str,
+        default=_LOCAL_PG_URL,
+        help="PostgreSQL URL for cell accuracy persistence",
+    )
     args = parser.parse_args(argv)
     setup_logging()
 
@@ -1091,6 +1451,13 @@ def main(argv: list[str] | None = None) -> None:
         else _CATEGORY_TRAIN_START.get(category, DEFAULT_TRAIN_START)
     )
     df = _load_features_dataframe(args.features_parquet, train_start)
+    cell_filter: CellFilter | None = None
+    if args.keibajo_codes or args.season_bands:
+        cell_filter = CellFilter()
+        if args.keibajo_codes:
+            cell_filter["keibajo_codes"] = [str(c) for c in args.keibajo_codes]
+        if args.season_bands:
+            cell_filter["season_bands"] = [str(s) for s in args.season_bands]
     backends = _resolve_backends(args.backends, category)
     scripts_dir = Path(__file__).parent.parent
 
@@ -1099,6 +1466,11 @@ def main(argv: list[str] | None = None) -> None:
         min_n_trials=int(args.min_trials),
         max_n_trials=int(args.max_trials),
     )
+
+    cell_store: CellAccuracyStore | None = None
+    if args.log_subgroup:
+        cell_store = CellAccuracyStore(pg_url=str(args.pg_url))
+        cell_store.open()
 
     with FeatureRegistry(args.registry_path) as registry:
         learner = ContinuousLearner(
@@ -1125,9 +1497,14 @@ def main(argv: list[str] | None = None) -> None:
                 if args.per_trial_timeout is not None
                 else None
             ),
+            cell_filter=cell_filter,
+            cell_accuracy_store=cell_store,
+            pg_url=str(args.pg_url),
         )
         _setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)
+        if cell_store is not None:
+            cell_store.close()
 
 
 if __name__ == "__main__":

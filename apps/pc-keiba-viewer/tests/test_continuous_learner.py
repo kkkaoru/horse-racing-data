@@ -14,6 +14,7 @@ import pytest
 import polars as pl
 
 import learning.continuous_learner as subject
+from learning.continuous_learner import CellAccuracyStore, CellFilter, compute_feature_set_hash, compute_sire_venue_bias_features, filter_dataframe_by_cell
 from learning.feature_explorer import select_round_validation_years
 from learning.feature_registry import FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import split_walk_forward
@@ -83,6 +84,7 @@ def _make_learner(
     skip_enrichment: bool = False,
     load_controller: subject.AdaptiveLoadController | None = None,
     auto_tune: bool = True,
+    cell_filter: CellFilter | None = None,
 ) -> subject.ContinuousLearner:
     return subject.ContinuousLearner(
         registry=registry
@@ -104,6 +106,7 @@ def _make_learner(
         skip_enrichment=skip_enrichment,
         load_controller=load_controller,
         auto_tune=auto_tune,
+        cell_filter=cell_filter,
     )
 
 
@@ -3811,11 +3814,11 @@ def test_log_subgroup_diagnostics_logs_each_subgroup(
             "race_count": 12,
             "ndcg_at_3": 0.61,
             "top1_accuracy": 0.5,
-            "place2_accuracy": 0.33,
-            "place3_accuracy": 0.25,
-            "place4_accuracy": 0.17,
-            "place5_accuracy": 0.08,
-            "place6_accuracy": 0.0,
+            "place2_accuracy": 0.4,
+            "place3_accuracy": 0.35,
+            "place4_accuracy": 0.3,
+            "place5_accuracy": 0.25,
+            "place6_accuracy": 0.2,
             "top3_box_accuracy": 0.25,
         }
     ]
@@ -3882,11 +3885,6 @@ def test_log_surface_summary_logs_turf_and_dirt_groups(
                 "race_count": 10,
                 "ndcg_at_3": 0.6,
                 "top1_accuracy": 0.5,
-                "place2_accuracy": 0.4,
-                "place3_accuracy": 0.3,
-                "place4_accuracy": 0.2,
-                "place5_accuracy": 0.1,
-                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.25,
             },
             {
@@ -3900,11 +3898,6 @@ def test_log_surface_summary_logs_turf_and_dirt_groups(
                 "race_count": 20,
                 "ndcg_at_3": 0.4,
                 "top1_accuracy": 0.3,
-                "place2_accuracy": 0.2,
-                "place3_accuracy": 0.15,
-                "place4_accuracy": 0.1,
-                "place5_accuracy": 0.05,
-                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.15,
             },
         ],
@@ -3952,11 +3945,6 @@ def test_log_surface_summary_weights_average_by_race_count(
                 "race_count": 10,
                 "ndcg_at_3": 0.6,
                 "top1_accuracy": 0.6,
-                "place2_accuracy": 0.6,
-                "place3_accuracy": 0.6,
-                "place4_accuracy": 0.6,
-                "place5_accuracy": 0.6,
-                "place6_accuracy": 0.6,
                 "top3_box_accuracy": 0.6,
             },
             {
@@ -3970,11 +3958,6 @@ def test_log_surface_summary_weights_average_by_race_count(
                 "race_count": 30,
                 "ndcg_at_3": 0.2,
                 "top1_accuracy": 0.2,
-                "place2_accuracy": 0.2,
-                "place3_accuracy": 0.2,
-                "place4_accuracy": 0.2,
-                "place5_accuracy": 0.2,
-                "place6_accuracy": 0.2,
                 "top3_box_accuracy": 0.2,
             },
         ],
@@ -3987,7 +3970,7 @@ def test_log_surface_summary_weights_average_by_race_count(
         if "surface=turf" in r.getMessage()
     ]
     assert turf_lines == [
-        "│  surface=turf    races=   40  ndcg@3=0.3000  top1=0.3000  p2=0.3000  p3=0.3000  p4=0.3000  p5=0.3000  p6=0.3000  top3_box=0.3000"
+        "│  surface=turf    races=   40  ndcg@3=0.3000  top1=0.3000  top3_box=0.3000"
     ]
 
 
@@ -4013,11 +3996,6 @@ def test_log_surface_summary_skips_zero_race_surface(
                 "race_count": 0,
                 "ndcg_at_3": 0.0,
                 "top1_accuracy": 0.0,
-                "place2_accuracy": 0.0,
-                "place3_accuracy": 0.0,
-                "place4_accuracy": 0.0,
-                "place5_accuracy": 0.0,
-                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.0,
             }
         ],
@@ -4830,3 +4808,426 @@ def test_last_enrichment_initialized_to_none() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         assert learner._last_enrichment is None
+
+
+# ---------------------------------------------------------------------------
+# filter_dataframe_by_cell / CellFilter
+# ---------------------------------------------------------------------------
+
+
+def test_filter_by_keibajo_codes_keeps_matching_rows() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "05", "10", "03"],
+        "kaisai_tsukihi": ["0601", "0601", "0701", "0801"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(keibajo_codes=["10"]))
+    assert result["target"].to_list() == [1, 3]
+
+
+def test_filter_by_keibajo_codes_excludes_non_matching() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["05", "06"],
+        "kaisai_tsukihi": ["0601", "0701"],
+        "target": [1, 2],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(keibajo_codes=["10"]))
+    assert result.is_empty()
+
+
+def test_filter_by_season_bands_summer() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "10", "10", "10"],
+        "kaisai_tsukihi": ["0315", "0615", "0915", "1215"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(season_bands=["summer"]))
+    assert result["target"].to_list() == [2]
+
+
+def test_filter_by_season_bands_winter() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "10", "10"],
+        "kaisai_tsukihi": ["0115", "0215", "1215"],
+        "target": [1, 2, 3],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(season_bands=["winter"]))
+    assert result["target"].to_list() == [1, 2, 3]
+
+
+def test_filter_combined_keibajo_and_season() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "10", "05", "10"],
+        "kaisai_tsukihi": ["0615", "0315", "0615", "0715"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(
+        df, CellFilter(keibajo_codes=["10"], season_bands=["summer"])
+    )
+    assert result["target"].to_list() == [1, 4]
+
+
+def test_filter_empty_cell_filter() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "05"],
+        "kaisai_tsukihi": ["0615", "0715"],
+        "target": [1, 2],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter())
+    assert len(result) == 2
+
+
+def test_filter_multiple_codes() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "02", "05", "03"],
+        "kaisai_tsukihi": ["0615", "0615", "0615", "0615"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(
+        df, CellFilter(keibajo_codes=["10", "02", "03"])
+    )
+    assert result["target"].to_list() == [1, 2, 4]
+
+
+def test_filter_multiple_season_bands() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "10", "10", "10"],
+        "kaisai_tsukihi": ["0315", "0615", "0915", "1215"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(
+        df, CellFilter(season_bands=["spring", "autumn"])
+    )
+    assert result["target"].to_list() == [1, 3]
+
+
+def test_filter_season_spring_months() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10"] * 4,
+        "kaisai_tsukihi": ["0315", "0415", "0515", "0615"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(season_bands=["spring"]))
+    assert result["target"].to_list() == [1, 2, 3]
+
+
+def test_filter_season_autumn_months() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10"] * 4,
+        "kaisai_tsukihi": ["0815", "0915", "1015", "1115"],
+        "target": [1, 2, 3, 4],
+    })
+    result = filter_dataframe_by_cell(df, CellFilter(season_bands=["autumn"]))
+    assert result["target"].to_list() == [2, 3, 4]
+
+
+# ---------------------------------------------------------------------------
+# CellFilter integration with ContinuousLearner
+# ---------------------------------------------------------------------------
+
+
+def test_learner_init_with_cell_filter_raises_on_empty() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["05", "06"],
+        "kaisai_tsukihi": ["0615", "0715"],
+        "race_id": ["r1", "r2"],
+        "race_year": [2023, 2023],
+        "finish_position": [1, 2],
+    })
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    with pytest.raises(ValueError, match="cell filter produced empty DataFrame"):
+        _make_learner(
+            registry=mock_registry,
+            df=df,
+            cell_filter=CellFilter(keibajo_codes=["10"]),
+        )
+
+
+def test_learner_init_with_cell_filter_applies_filtering() -> None:
+    df = pl.DataFrame({
+        "keibajo_code": ["10", "05", "10"],
+        "kaisai_tsukihi": ["0615", "0615", "0715"],
+        "race_id": ["r1", "r2", "r3"],
+        "race_year": [2023, 2023, 2023],
+        "finish_position": [1, 2, 3],
+    })
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = None
+    mock_registry.is_saturated.return_value = True
+    learner = _make_learner(
+        registry=mock_registry,
+        df=df,
+        cell_filter=CellFilter(keibajo_codes=["10"]),
+    )
+    assert len(learner._df) == 2
+
+
+# ---------------------------------------------------------------------------
+# compute_feature_set_hash
+# ---------------------------------------------------------------------------
+
+
+def test_compute_feature_set_hash_deterministic() -> None:
+    h1 = compute_feature_set_hash(["feat_a", "feat_b", "feat_c"])
+    h2 = compute_feature_set_hash(["feat_a", "feat_b", "feat_c"])
+    assert h1 == h2
+
+
+def test_compute_feature_set_hash_order_independent() -> None:
+    h1 = compute_feature_set_hash(["feat_c", "feat_a", "feat_b"])
+    h2 = compute_feature_set_hash(["feat_a", "feat_b", "feat_c"])
+    assert h1 == h2
+
+
+def test_compute_feature_set_hash_different_sets() -> None:
+    h1 = compute_feature_set_hash(["feat_a", "feat_b"])
+    h2 = compute_feature_set_hash(["feat_a", "feat_c"])
+    assert h1 != h2
+
+
+def test_compute_feature_set_hash_format() -> None:
+    h = compute_feature_set_hash(["feat_a"])
+    assert len(h) == 64
+    assert all(c in "0123456789abcdef" for c in h)
+
+
+def test_compute_feature_set_hash_empty() -> None:
+    h = compute_feature_set_hash([])
+    assert len(h) == 64
+
+
+# ---------------------------------------------------------------------------
+# CellAccuracyStore
+# ---------------------------------------------------------------------------
+
+
+def test_cell_accuracy_store_evaluated_cells_empty(tmp_path: Path) -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    result = store.evaluated_cells("abc123")
+    assert result == set()
+
+
+def test_cell_accuracy_store_evaluated_cells_returns_keys(tmp_path: Path) -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("jra", "turf", "mile", "E", "summer", "10"),
+    ]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    result = store.evaluated_cells("abc123")
+    assert result == {"jra_turf_mile_E_summer_10"}
+
+
+def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    metrics: list[SubgroupMetrics] = [
+        SubgroupMetrics(
+            subgroup="jra_turf_mile_E_summer_10",
+            category="jra",
+            surface="turf",
+            distance_band="mile",
+            class_label="E",
+            season="summer",
+            venue="10",
+            race_count=50,
+            ndcg_at_3=0.85,
+            top1_accuracy=0.42,
+            place2_accuracy=0.38,
+            place3_accuracy=0.35,
+            place4_accuracy=0.30,
+            place5_accuracy=0.25,
+            place6_accuracy=0.20,
+            top3_box_accuracy=0.15,
+        ),
+    ]
+    saved = store.save_cell_metrics("abc123", 120, metrics)
+    assert saved == 1
+    assert mock_cursor.execute.call_count == 1
+    assert mock_conn.commit.call_count == 1
+    call_args = mock_cursor.execute.call_args[0]
+    params = call_args[1]
+    assert len(params) == 20
+    assert params[17] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[18] == []
+    assert params[19] == ["jra", "turf", "mile", "E", "summer", "10"]
+
+
+def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    metrics: list[SubgroupMetrics] = [
+        SubgroupMetrics(
+            subgroup="jra_turf_mile_E_summer_10",
+            category="jra",
+            surface="turf",
+            distance_band="mile",
+            class_label="E",
+            season="summer",
+            venue="10",
+            race_count=50,
+            ndcg_at_3=0.85,
+            top1_accuracy=0.42,
+            place2_accuracy=0.38,
+            place3_accuracy=0.35,
+            place4_accuracy=0.30,
+            place5_accuracy=0.25,
+            place6_accuracy=0.20,
+            top3_box_accuracy=0.15,
+        ),
+    ]
+    saved = store.save_cell_metrics("abc123", 120, metrics, ["feat_b", "feat_a"])
+    assert saved == 1
+    call_args = mock_cursor.execute.call_args[0]
+    params = call_args[1]
+    assert len(params) == 20
+    assert params[17] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[18] == ["feat_a", "feat_b"]
+    assert params[19] == ["jra", "turf", "mile", "E", "summer", "10"]
+
+
+def test_sire_venue_bias_adds_five_columns() -> None:
+    df = pl.DataFrame({
+        "ketto_toroku_bango": ["H1", "H2", "H3", "H4"],
+        "keibajo_code": ["03", "03", "03", "03"],
+        "track_code": ["10", "10", "10", "10"],
+        "kyori": [1200, 1200, 1200, 1200],
+        "finish_position": [1, 3, 2, 5],
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "race_year": [2023, 2023, 2024, 2024],
+    })
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("H1", "S1"), ("H2", "S1"), ("H3", "S2"), ("H4", "S1"),
+    ]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    import builtins
+    real_import = builtins.__import__
+    with patch("builtins.__import__", side_effect=lambda name, *a, **kw: mock_psycopg if name == "psycopg" else real_import(name, *a, **kw)):
+        result = compute_sire_venue_bias_features(df, "postgresql://test")
+    assert "sire_venue_surface_dist_win_rate" in result.columns
+    assert "sire_venue_surface_dist_place_rate" in result.columns
+    assert "sire_venue_surface_dist_runs" in result.columns
+    assert "sire_venue_surface_win_rate" in result.columns
+    assert "sire_venue_surface_place_rate" in result.columns
+    assert "_sire_id" not in result.columns
+    assert "_surface_type" not in result.columns
+    assert len(result) == 4
+
+
+def test_sire_venue_bias_no_data_leakage() -> None:
+    df = pl.DataFrame({
+        "ketto_toroku_bango": ["H1", "H1", "H1"],
+        "keibajo_code": ["03", "03", "03"],
+        "track_code": ["10", "10", "10"],
+        "kyori": [1200, 1200, 1200],
+        "finish_position": [1, 2, 1],
+        "race_id": ["r1", "r2", "r3"],
+        "race_year": [2022, 2023, 2024],
+    })
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("H1", "SIRE_A")]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    import builtins
+    real_import = builtins.__import__
+    with patch("builtins.__import__", side_effect=lambda name, *a, **kw: mock_psycopg if name == "psycopg" else real_import(name, *a, **kw)):
+        result = compute_sire_venue_bias_features(df, "postgresql://test")
+    result = result.sort("race_year")
+    runs = result["sire_venue_surface_dist_runs"].to_list()
+    assert runs[0] == 0
+    assert runs[1] == 1
+    assert runs[2] == 2
+
+
+def test_sire_venue_bias_empty_sire_produces_null() -> None:
+    df = pl.DataFrame({
+        "ketto_toroku_bango": ["H_UNKNOWN"],
+        "keibajo_code": ["03"],
+        "track_code": ["10"],
+        "kyori": [1200],
+        "finish_position": [1],
+        "race_id": ["r1"],
+        "race_year": [2023],
+    })
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    import builtins
+    real_import = builtins.__import__
+    with patch("builtins.__import__", side_effect=lambda name, *a, **kw: mock_psycopg if name == "psycopg" else real_import(name, *a, **kw)):
+        result = compute_sire_venue_bias_features(df, "postgresql://test")
+    assert result["sire_venue_surface_dist_win_rate"][0] is None
+
+
+def test_sire_venue_bias_surface_classification() -> None:
+    df = pl.DataFrame({
+        "ketto_toroku_bango": ["H1", "H1"],
+        "keibajo_code": ["03", "03"],
+        "track_code": ["10", "23"],
+        "kyori": [1200, 1200],
+        "finish_position": [1, 2],
+        "race_id": ["r1", "r2"],
+        "race_year": [2023, 2024],
+    })
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("H1", "SIRE_A")]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    import builtins
+    real_import = builtins.__import__
+    with patch("builtins.__import__", side_effect=lambda name, *a, **kw: mock_psycopg if name == "psycopg" else real_import(name, *a, **kw)):
+        result = compute_sire_venue_bias_features(df, "postgresql://test")
+    assert result["sire_venue_surface_dist_runs"][0] == 0
+    assert result["sire_venue_surface_dist_runs"][1] == 0
