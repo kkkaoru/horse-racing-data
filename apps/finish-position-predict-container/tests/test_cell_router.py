@@ -9,7 +9,6 @@ from predict_lib.cell_router import (
     CategoryRouting,
     CellRouter,
     CellRouteRule,
-    base_architecture_for,
     build_base_metadata_r2_key,
     build_base_model_r2_key,
     load_cell_router,
@@ -21,6 +20,7 @@ def _banei_router() -> CellRouter:
         sim_model_version="banei-cb-v9-sim-2011",
         base_model_version="banei-cb-v8-window2011-wf-15y",
         base_feature_count=111,
+        base_architecture="catboost",
         default_variant="sim",
         rules=(CellRouteRule(dimension="grade_code", values=frozenset({"E"}), variant="base"),),
     )
@@ -49,6 +49,7 @@ def test_routing_for_returns_category_routing() -> None:
     assert routing.sim_model_version == "banei-cb-v9-sim-2011"
     assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y"
     assert routing.base_feature_count == 111
+    assert routing.base_architecture == "catboost"
     assert routing.default_variant == "sim"
 
 
@@ -94,6 +95,7 @@ def test_load_cell_router_real_config_has_ban_ei_routing() -> None:
     assert routing.sim_model_version == "banei-cb-v9-sim-2011"
     assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y"
     assert routing.base_feature_count == 111
+    assert routing.base_architecture == "catboost"
     assert routing.default_variant == "sim"
     assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
 
@@ -112,6 +114,7 @@ def test_load_cell_router_custom_path(tmp_path: Path) -> None:
             "sim_model_version": "banei-cb-v9-sim-2011",
             "base_model_version": "banei-cb-v8-window2011-wf-15y",
             "base_feature_count": 111,
+            "base_architecture": "catboost",
             "default_variant": "sim",
             "rules": [{"dimension": "grade_code", "values": ["E"], "variant": "base"}],
         }
@@ -135,6 +138,7 @@ def test_resolve_variant_first_matching_rule_wins(tmp_path: Path) -> None:
             "sim_model_version": "banei-cb-v9-sim-2011",
             "base_model_version": "banei-cb-v8-window2011-wf-15y",
             "base_feature_count": 111,
+            "base_architecture": "catboost",
             "default_variant": "sim",
             "rules": [
                 {"dimension": "grade_code", "values": ["E"], "variant": "base"},
@@ -168,6 +172,7 @@ def test_load_cell_router_rejects_non_array_rules(tmp_path: Path) -> None:
             "sim_model_version": "s",
             "base_model_version": "b",
             "base_feature_count": 111,
+            "base_architecture": "catboost",
             "default_variant": "sim",
             "rules": "nope",
         }
@@ -178,8 +183,28 @@ def test_load_cell_router_rejects_non_array_rules(tmp_path: Path) -> None:
         load_cell_router(config_path)
 
 
-def test_base_architecture_for_ban_ei() -> None:
-    assert base_architecture_for("ban-ei") == "catboost"
+def test_category_routing_base_architecture_accessible() -> None:
+    router = _banei_router()
+    routing = router.routing_for("ban-ei")
+    assert routing.base_architecture == "catboost"
+
+
+def test_routing_for_returns_base_architecture_xgboost(tmp_path: Path) -> None:
+    config = {
+        "nar": {
+            "sim_model_version": "nar-sim",
+            "base_model_version": "nar-base",
+            "base_feature_count": 138,
+            "base_architecture": "xgboost",
+            "default_variant": "sim",
+            "rules": [{"dimension": "nar_subclass", "values": ["C"], "variant": "base"}],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    router = load_cell_router(config_path)
+    routing = router.routing_for("nar")
+    assert routing.base_architecture == "xgboost"
 
 
 def test_build_base_metadata_r2_key() -> None:

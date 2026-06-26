@@ -21,9 +21,6 @@ from typing import Final
 from .model_meta import (
     METADATA_FILE_NAME,
     R2_KEY_PREFIX,
-    Architecture,
-    Category,
-    architecture_for,
 )
 
 CONFIG_FILE_NAME: Final[str] = "cell_routing.json"
@@ -44,6 +41,7 @@ class CategoryRouting:
     sim_model_version: str
     base_model_version: str
     base_feature_count: int
+    base_architecture: str
     default_variant: str
     rules: tuple[CellRouteRule, ...]
 
@@ -103,6 +101,7 @@ def _parse_category_routing(payload: Mapping[str, object]) -> CategoryRouting:
         sim_model_version=str(payload["sim_model_version"]),
         base_model_version=str(payload["base_model_version"]),
         base_feature_count=int(str(payload["base_feature_count"])),
+        base_architecture=str(payload["base_architecture"]),
         default_variant=str(payload["default_variant"]),
         rules=rules,
     )
@@ -118,10 +117,6 @@ def load_cell_router(config_path: Path | None = None) -> CellRouter:
         for category, entry in payload.items()
     }
     return CellRouter(routing)
-
-
-def base_architecture_for(category: Category) -> Architecture:
-    return architecture_for(category)
 
 
 def build_base_model_r2_key(

@@ -52,7 +52,7 @@ import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final, override
+from typing import final, get_args, override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -81,6 +81,7 @@ from predict_lib.model_meta import (
     MODEL_FILE_NAME,
     NAR_ETOP2_ENABLED,
     NAR_ETOP2_MODEL_VERSION,
+    Architecture,
     Category,
     architecture_for,
     build_r2_nar_etop2_key,
@@ -320,6 +321,7 @@ def _score_one_race(
     category: Category,
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
+    architecture: Architecture,
 ) -> list[list[object]]:
     class_code = extract_race_class_code(category, entries)
     resolution = resolve_per_class_resolution(models_dir, category, class_code)
@@ -328,7 +330,7 @@ def _score_one_race(
         race_id=race_id,
         entries=entries,
         feature_names=feature_names,
-        architecture=architecture_for(category),
+        architecture=architecture,
         pool=pool,
         fallback_booster=fallback_booster,
         fallback_model_version=model_version_for(category),
@@ -509,6 +511,13 @@ def _record_audit(
     execute(connection, build_audit_insert_sql(), audit_params(record), database_url)
 
 
+def _as_architecture(value: str) -> Architecture:
+    for candidate in get_args(Architecture):
+        if value == candidate:
+            return candidate
+    raise ValueError(f"unknown base_architecture: {value!r}")
+
+
 def score_races(
     races: Mapping[str, Sequence[Mapping[str, object]]],
     category: Category,
@@ -528,12 +537,14 @@ def score_races(
     cell_router = load_cell_router()
     base_cell_booster: BoosterLike | None = None
     base_cell_feature_names: Sequence[str] | None = None
+    base_cell_architecture: Architecture | None = None
     if cell_router.has_routing(category):
         routing_config = cell_router.routing_for(category)
+        base_cell_architecture = _as_architecture(routing_config.base_architecture)
         base_model_path = models_dir / build_base_model_r2_key(
             category, routing_config.base_model_version, MODEL_FILE_NAME
         )
-        if architecture_for(category) == "xgboost":
+        if routing_config.base_architecture == "xgboost":
             from xgboost_adapter import load_xgboost_booster  # bundled in image
 
             base_cell_booster = load_xgboost_booster(str(base_model_path))
@@ -563,11 +574,17 @@ def score_races(
     for race_id, entries in races.items():
         effective_booster = fallback_booster
         effective_feature_names = feature_names
-        if base_cell_booster is not None and base_cell_feature_names is not None:
+        effective_architecture = architecture_for(category)
+        if (
+            base_cell_booster is not None
+            and base_cell_feature_names is not None
+            and base_cell_architecture is not None
+        ):
             variant = cell_router.resolve_variant(category, entries)
             if variant == "base":
                 effective_booster = base_cell_booster
                 effective_feature_names = base_cell_feature_names
+                effective_architecture = base_cell_architecture
                 print(
                     f"[cell-routing] race={race_id} category={category} -> base",
                     file=sys.stderr,
@@ -598,6 +615,7 @@ def score_races(
                 category,
                 entries,
                 effective_feature_names,
+                effective_architecture,
             )
         scored.append(rows)
     return scored
