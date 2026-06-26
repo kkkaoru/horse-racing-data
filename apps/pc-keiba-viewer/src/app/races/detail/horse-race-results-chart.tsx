@@ -129,6 +129,9 @@ type ChartYAxisDomain = [number, "auto"] | ["auto", "auto"];
 // Realtime weight change sign that flips the (already decoded) change amount
 // negative; matches HorseWeightEntry.changeSign emitted by the weight stream.
 const WEIGHT_NEGATIVE_SIGN = "-";
+// Sentinel formatRunnerNumber returns for a blank / non-positive umaban; such
+// keys can never match a runner, so they are dropped from the override union.
+const EMPTY_UMABAN_KEY: string = "-";
 const CHART_PANEL_HEIGHT = 260;
 const CHART_GRID_STROKE = "#d8e0da";
 const CHART_GRID_DASH = "3 3";
@@ -305,21 +308,38 @@ const signedWeightDelta = (entry: HorseWeightEntry): number | null =>
 const buildPopularityByUmaban = (tansho: RealtimeTanshoRow[]): Map<string, number | null> =>
   new Map(tansho.map((row) => [formatRunnerNumber(row.combination), row.rank ?? null]));
 
-// Convert one realtime weight snapshot into the numeric upcoming overrides the
-// chart-data lib consumes. The weight + changeAmount arrive already decoded (kg);
-// the delta sign is applied here so the lib never re-parses strings. The upcoming
-// popularity for each horse is read from the realtime tansho map by umaban (null
-// when no tansho rank matched the horse number).
+// Convert the realtime weight snapshot + tansho popularity map into the upcoming
+// overrides the chart-data lib consumes, emitting one override per umaban in the
+// UNION of (a) the weight snapshot and (b) the popularity map. A horse with
+// popularity but no weight yet (e.g. a future race before the weigh-in while odds
+// are already open) still gets an override (weight/weightDelta null, popularity
+// set); a horse with weight but no popularity still gets one (popularity null).
+// The weight + changeAmount arrive already decoded (kg); the delta sign is applied
+// here so the lib never re-parses strings. The override umaban uses the normalized
+// runner-number key so it matches the runner the chart-data lib re-normalizes.
 const toUpcomingWeightOverrides = (
   horses: HorseWeightEntry[],
   popularityByUmaban: Map<string, number | null>,
-): UpcomingWeightOverride[] =>
-  horses.map((horse) => ({
-    popularity: popularityByUmaban.get(formatRunnerNumber(horse.horseNumber)) ?? null,
-    umaban: horse.horseNumber,
-    weight: horse.weight,
-    weightDelta: signedWeightDelta(horse),
-  }));
+): UpcomingWeightOverride[] => {
+  const weightByUmaban = new Map<string, HorseWeightEntry>();
+  horses.forEach((horse) => {
+    const key = formatRunnerNumber(horse.horseNumber);
+    if (key !== EMPTY_UMABAN_KEY) {
+      weightByUmaban.set(key, horse);
+    }
+  });
+  const umabanKeys = new Set<string>([...weightByUmaban.keys(), ...popularityByUmaban.keys()]);
+  umabanKeys.delete(EMPTY_UMABAN_KEY);
+  return [...umabanKeys].map((umaban) => {
+    const horse = weightByUmaban.get(umaban);
+    return {
+      popularity: popularityByUmaban.get(umaban) ?? null,
+      umaban,
+      weight: horse?.weight ?? null,
+      weightDelta: horse === undefined ? null : signedWeightDelta(horse),
+    };
+  });
+};
 
 // Empty upcoming context for the 馬別相関 chart when the selected horse is not an
 // entered runner, so the paddock chart simply omits the synthetic latest point.

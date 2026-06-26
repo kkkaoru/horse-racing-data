@@ -531,6 +531,60 @@ test("renders no upcoming popularity point when the realtime odds have no tansho
   expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
 });
 
+test("plots the upcoming popularity point without a weight point when the weight snapshot is empty but the tansho rank is open", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [],
+  });
+  mockTanshoPayload([{ combination: "5", rank: 2 }]);
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
+      results={[chartResult({ currentUmaban: "05", kettoTorokuBango: "2022100005", umaban: "05" })]}
+      runners={[chartRunner({ bataiju: "000", kettoTorokuBango: "2022100005", umaban: "05" })]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+});
+
+test("plots the upcoming weight point without a popularity point when the snapshot has a horse but no tansho rank", () => {
+  vi.mocked(useHorseWeightStream).mockReturnValue({
+    fetchedAt: "2026-06-13T09:01:00Z",
+    horses: [
+      { changeAmount: 2, changeSign: null, horseName: "アルファ", horseNumber: "1", weight: 444 },
+    ],
+  });
+  mockTanshoPayload([]);
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+  expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+});
+
 test("seeds the upcoming weight and popularity points from the realtime context payload on first paint", () => {
   vi.mocked(useHorseWeightStream).mockImplementation((params) => params.initial);
   vi.mocked(useRealtimeRacePayload).mockReturnValue({
