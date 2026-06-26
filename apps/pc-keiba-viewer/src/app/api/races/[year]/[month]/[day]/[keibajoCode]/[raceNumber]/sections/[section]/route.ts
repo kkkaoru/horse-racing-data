@@ -53,6 +53,8 @@ const SECTIONS = [
   "training",
 ] as const satisfies readonly DetailSection[];
 
+const NON_EMPTY_MODEL_PREDICTION_FEATURES_MARKER = '"modelPredictionFeatures":[{';
+
 const isValidSection = (section: string): section is DetailSection =>
   SECTIONS.some((candidate) => candidate === section);
 
@@ -90,6 +92,12 @@ const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
     return false;
   }
 };
+
+const hasFinishPredictionModelFeatures = (body: string): boolean =>
+  body.includes(NON_EMPTY_MODEL_PREDICTION_FEATURES_MARKER);
+
+const shouldCacheFinishPrediction = (section: string, body: string): boolean =>
+  section !== "finish-prediction" || hasFinishPredictionModelFeatures(body);
 
 interface ComputeSectionParams {
   cacheKey: string | null;
@@ -186,7 +194,8 @@ const computeAndStoreSection = async (
     race &&
     payload.type === "finish-prediction" &&
     "inputs" in payload &&
-    "evaluation" in payload
+    "evaluation" in payload &&
+    shouldCacheFinishPrediction(section, body)
   ) {
     await putFinishPredictionInputsCache({
       body: JSON.stringify({
@@ -200,7 +209,8 @@ const computeAndStoreSection = async (
   if (
     cacheKey &&
     race &&
-    !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body))
+    !(section === "premium-data-top" && isEmptyPremiumDataTopSectionBody(body)) &&
+    shouldCacheFinishPrediction(section, body)
   ) {
     await putDetailSectionCache({ body, cacheKey, race });
   }
@@ -246,11 +256,19 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
   const cacheKey = cacheableDefaultRequest
     ? buildDetailSectionCacheKey({ day, keibajoCode, month, raceNumber, section, year })
     : null;
-  const cachedResponse = cacheKey ? await getCachedDetailSectionResponse(cacheKey) : null;
+  const skipPredictionRefresh =
+    section === "finish-prediction" && requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM);
+  const cachedResponse =
+    cacheKey && !skipPredictionRefresh ? await getCachedDetailSectionResponse(cacheKey) : null;
   if (cachedResponse) {
     if (section === "premium-data-top") {
       const cachedBody = await cachedResponse.clone().text();
       if (!isEmptyPremiumDataTopSectionBody(cachedBody)) {
+        return cachedResponse;
+      }
+    } else if (section === "finish-prediction") {
+      const cachedBody = await cachedResponse.clone().text();
+      if (hasFinishPredictionModelFeatures(cachedBody)) {
         return cachedResponse;
       }
     } else {
@@ -267,7 +285,11 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
       staleBody !== null &&
       section === "premium-data-top" &&
       isEmptyPremiumDataTopSectionBody(staleBody);
-    if (staleBody && !staleEmpty) {
+    const staleFinishPredictionEmpty =
+      staleBody !== null &&
+      section === "finish-prediction" &&
+      !hasFinishPredictionModelFeatures(staleBody);
+    if (staleBody && !staleEmpty && !skipPredictionRefresh && !staleFinishPredictionEmpty) {
       const ctx = await getExecutionContext();
       ctx?.waitUntil(
         computeAndStoreSection({
