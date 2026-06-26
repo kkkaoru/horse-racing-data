@@ -42,6 +42,13 @@ const LOG_DEDUPE_HASH_PRIME = 16777619;
 const LOG_DEDUPE_HASH_MASK = 0xffffffff;
 const LOG_DEDUPE_NULL_TOKEN = "null";
 const LOG_DEDUPE_HEX_RADIX = 16;
+// Content-hash dedup for premium stable_comments + training_reviews rewrites.
+// SHA-1 truncated to 16 hex chars is collision-resistant enough for a per-race
+// "did the scraped HTML change" check while keeping the hash row small.
+const PREMIUM_PADDOCK_CONTENT_HASH_ALGORITHM = "SHA-1";
+const PREMIUM_PADDOCK_CONTENT_HASH_HEX_LENGTH = 16;
+const PREMIUM_PADDOCK_CONTENT_HASH_BYTE_RADIX = 16;
+const PREMIUM_PADDOCK_CONTENT_HASH_BYTE_PAD_LENGTH = 2;
 
 const parsePremiumDataTopReasons = (value: string): string[] => {
   try {
@@ -259,6 +266,15 @@ export interface JraVenueTrackConditionSchedule {
 
 export interface PremiumRaceDataFetchCandidate {
   raceKey: string;
+}
+
+export interface PremiumPaddockContentHashInput {
+  stableComments?: readonly PremiumStableComment[];
+  trainingReviews?: readonly PremiumTrainingReview[];
+}
+
+interface PremiumPaddockContentHashRow {
+  content_hash: string;
 }
 
 const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
@@ -1349,6 +1365,55 @@ export const getPremiumRaceLink = async (
   return row ? { entryUrl: row.entry_url, sourceRaceId: row.source_race_id } : null;
 };
 
+const compareStableCommentsForHash = (
+  left: PremiumStableComment,
+  right: PremiumStableComment,
+): number => left.horseNumber.localeCompare(right.horseNumber);
+
+const compareTrainingReviewsForHash = (
+  left: PremiumTrainingReview,
+  right: PremiumTrainingReview,
+): number =>
+  `${left.horseNumber}:${left.trainingDate}`.localeCompare(
+    `${right.horseNumber}:${right.trainingDate}`,
+  );
+
+const toPremiumPaddockContentHashHexByte = (byte: number): string =>
+  byte
+    .toString(PREMIUM_PADDOCK_CONTENT_HASH_BYTE_RADIX)
+    .padStart(PREMIUM_PADDOCK_CONTENT_HASH_BYTE_PAD_LENGTH, "0");
+
+export const computePremiumPaddockContentHash = async (
+  input: PremiumPaddockContentHashInput,
+): Promise<string> => {
+  const sortedStableComments = (input.stableComments ?? []).toSorted(compareStableCommentsForHash);
+  const sortedTrainingReviews = (input.trainingReviews ?? []).toSorted(
+    compareTrainingReviewsForHash,
+  );
+  const payload = JSON.stringify({
+    stableComments: sortedStableComments,
+    trainingReviews: sortedTrainingReviews,
+  });
+  const digest = await crypto.subtle.digest(
+    PREMIUM_PADDOCK_CONTENT_HASH_ALGORITHM,
+    new TextEncoder().encode(payload),
+  );
+  return Array.from(new Uint8Array(digest), toPremiumPaddockContentHashHexByte)
+    .join("")
+    .slice(0, PREMIUM_PADDOCK_CONTENT_HASH_HEX_LENGTH);
+};
+
+const getPremiumPaddockContentHash = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<string | null> => {
+  const row = await db
+    .prepare("select content_hash from premium_paddock_content_hashes where race_key = ?")
+    .bind(raceKey)
+    .first<PremiumPaddockContentHashRow>();
+  return row ? row.content_hash : null;
+};
+
 export const replacePremiumRaceData = async (
   db: D1Database,
   params: {
@@ -1362,11 +1427,36 @@ export const replacePremiumRaceData = async (
   },
 ): Promise<void> => {
   const now = toJstIsoString();
+  // Dedup the stable_comments + training_reviews rewrites when the scraped
+  // content hasn't changed since the last fetch. paddockBulletins and
+  // dataTopHorses are still rewritten unconditionally because they live in
+  // separate tables and the paddock job doesn't pass review/comment fields.
+  const hasReviewOrComment =
+    params.trainingReviews !== undefined || params.stableComments !== undefined;
+  const newContentHash = hasReviewOrComment
+    ? await computePremiumPaddockContentHash({
+        stableComments: params.stableComments,
+        trainingReviews: params.trainingReviews,
+      })
+    : null;
+  const previousContentHash = hasReviewOrComment
+    ? await getPremiumPaddockContentHash(db, params.raceKey)
+    : null;
+  const skipReviewAndCommentWrites =
+    newContentHash !== null &&
+    previousContentHash !== null &&
+    previousContentHash === newContentHash;
+  const trainingReviewsForInsert: PremiumTrainingReview[] = skipReviewAndCommentWrites
+    ? []
+    : (params.trainingReviews ?? []);
+  const stableCommentsForInsert: PremiumStableComment[] = skipReviewAndCommentWrites
+    ? []
+    : (params.stableComments ?? []);
   const statements: D1PreparedStatement[] = [
-    ...(params.trainingReviews
+    ...(params.trainingReviews && !skipReviewAndCommentWrites
       ? [db.prepare("delete from premium_training_reviews where race_key = ?").bind(params.raceKey)]
       : []),
-    ...(params.stableComments
+    ...(params.stableComments && !skipReviewAndCommentWrites
       ? [db.prepare("delete from premium_stable_comments where race_key = ?").bind(params.raceKey)]
       : []),
     ...(params.dataTopHorses
@@ -1379,7 +1469,7 @@ export const replacePremiumRaceData = async (
             .bind(params.raceKey),
         ]
       : []),
-    ...(params.trainingReviews ?? []).map((row) =>
+    ...trainingReviewsForInsert.map((row) =>
       db
         .prepare(
           `
@@ -1413,7 +1503,7 @@ export const replacePremiumRaceData = async (
           now,
         ),
     ),
-    ...(params.stableComments ?? []).map((row) =>
+    ...stableCommentsForInsert.map((row) =>
       db
         .prepare(
           `
@@ -1507,6 +1597,21 @@ export const replacePremiumRaceData = async (
           now,
         ),
     ),
+    ...(newContentHash !== null
+      ? [
+          db
+            .prepare(
+              `
+                insert into premium_paddock_content_hashes (race_key, content_hash, updated_at)
+                values (?, ?, ?)
+                on conflict(race_key) do update set
+                  content_hash = excluded.content_hash,
+                  updated_at = excluded.updated_at
+              `,
+            )
+            .bind(params.raceKey, newContentHash, now),
+        ]
+      : []),
   ];
   await runD1Batches(db, statements);
 };

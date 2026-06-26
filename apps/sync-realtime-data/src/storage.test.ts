@@ -6,6 +6,7 @@ import {
   claimTrackConditionFetch,
   completeResultFetch,
   completeTrackConditionFetch,
+  computePremiumPaddockContentHash,
   countJraRaceSourcesMissingRaceDateFieldsByDate,
   countRaceSourcesByDate,
   failResultFetch,
@@ -1040,7 +1041,8 @@ it("buildRealtimePayload maps populated batch results into raceEntries / horseWe
 });
 
 it("replacePremiumRaceData batches deletes and inserts for every section provided", async () => {
-  const bind = vi.fn(() => ({ run: vi.fn(), bind: vi.fn() }));
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first, run: vi.fn(), bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -1086,7 +1088,8 @@ it("replacePremiumRaceData batches deletes and inserts for every section provide
 });
 
 it("replacePremiumRaceData supports partial sections (only training reviews)", async () => {
-  const bind = vi.fn(() => ({ run: vi.fn(), bind: vi.fn() }));
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first, run: vi.fn(), bind: vi.fn() }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
@@ -1107,6 +1110,233 @@ it("replacePremiumRaceData supports partial sections (only training reviews)", a
     ],
   });
   expect(batch).toHaveBeenCalled();
+});
+
+it("replacePremiumRaceData inserts a new content_hash row when no prior hash exists", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first, run: vi.fn(), bind: vi.fn() }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    raceKey: "jra:2026:0512:08:01",
+    stableComments: [
+      {
+        commentText: "厩舎コメント",
+        evaluationGrade: 1,
+        evaluationText: "◎",
+        frameNumber: "1",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "良い動き",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "rider",
+        trainingDate: "2026-05-10",
+      },
+    ],
+  });
+  const preparedSqls = prepare.mock.calls.map((args) => String(args[0]));
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_training_reviews"))).toBe(
+    true,
+  );
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_stable_comments"))).toBe(
+    true,
+  );
+  expect(
+    preparedSqls.some((sql) => sql.includes("insert into premium_paddock_content_hashes")),
+  ).toBe(true);
+});
+
+it("replacePremiumRaceData skips review+comment writes when content_hash matches the prior row", async () => {
+  const sameInput = {
+    stableComments: [
+      {
+        commentText: "厩舎コメント",
+        evaluationGrade: 1,
+        evaluationText: "◎",
+        frameNumber: "1",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "良い動き",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "rider",
+        trainingDate: "2026-05-10",
+      },
+    ],
+  };
+  const matchingHash = await computePremiumPaddockContentHash(sameInput);
+  const first = vi.fn(async () => ({ content_hash: matchingHash }));
+  const bind = vi.fn(() => ({ first, run: vi.fn(), bind: vi.fn() }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    raceKey: "jra:2026:0512:08:01",
+    ...sameInput,
+  });
+  const preparedSqls = prepare.mock.calls.map((args) => String(args[0]));
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_training_reviews"))).toBe(
+    false,
+  );
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_stable_comments"))).toBe(
+    false,
+  );
+  expect(preparedSqls.some((sql) => sql.includes("insert into premium_training_reviews"))).toBe(
+    false,
+  );
+  expect(preparedSqls.some((sql) => sql.includes("insert into premium_stable_comments"))).toBe(
+    false,
+  );
+  expect(
+    preparedSqls.some((sql) => sql.includes("insert into premium_paddock_content_hashes")),
+  ).toBe(true);
+});
+
+it("replacePremiumRaceData performs full delete+insert when content_hash differs from prior row", async () => {
+  const first = vi.fn(async () => ({ content_hash: "deadbeefcafebabe" }));
+  const bind = vi.fn(() => ({ first, run: vi.fn(), bind: vi.fn() }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await replacePremiumRaceData(db, {
+    fetchedAt: "2026-05-12T11:00:00+09:00",
+    link: { entryUrl: "https://x.test/race", sourceRaceId: "202605120801" },
+    raceKey: "jra:2026:0512:08:01",
+    stableComments: [
+      {
+        commentText: "厩舎コメント変更",
+        evaluationGrade: 2,
+        evaluationText: "○",
+        frameNumber: "2",
+        horseName: "h2",
+        horseNumber: "2",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "違う動き",
+        evaluationGrade: "B",
+        evaluationText: "普通",
+        horseName: "h2",
+        horseNumber: "2",
+        riderName: "rider2",
+        trainingDate: "2026-05-11",
+      },
+    ],
+  });
+  const preparedSqls = prepare.mock.calls.map((args) => String(args[0]));
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_training_reviews"))).toBe(
+    true,
+  );
+  expect(preparedSqls.some((sql) => sql.includes("delete from premium_stable_comments"))).toBe(
+    true,
+  );
+  expect(
+    preparedSqls.some((sql) => sql.includes("insert into premium_paddock_content_hashes")),
+  ).toBe(true);
+});
+
+it("computePremiumPaddockContentHash returns the same hex digest regardless of input ordering", async () => {
+  const ordered = await computePremiumPaddockContentHash({
+    stableComments: [
+      {
+        commentText: "c1",
+        evaluationGrade: 1,
+        evaluationText: "◎",
+        frameNumber: "1",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+      {
+        commentText: "c2",
+        evaluationGrade: 2,
+        evaluationText: "○",
+        frameNumber: "2",
+        horseName: "h2",
+        horseNumber: "2",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "t1",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "r1",
+        trainingDate: "2026-05-10",
+      },
+      {
+        commentText: "t2",
+        evaluationGrade: "B",
+        evaluationText: "普通",
+        horseName: "h2",
+        horseNumber: "2",
+        riderName: "r2",
+        trainingDate: "2026-05-11",
+      },
+    ],
+  });
+  const shuffled = await computePremiumPaddockContentHash({
+    stableComments: [
+      {
+        commentText: "c2",
+        evaluationGrade: 2,
+        evaluationText: "○",
+        frameNumber: "2",
+        horseName: "h2",
+        horseNumber: "2",
+      },
+      {
+        commentText: "c1",
+        evaluationGrade: 1,
+        evaluationText: "◎",
+        frameNumber: "1",
+        horseName: "h1",
+        horseNumber: "1",
+      },
+    ],
+    trainingReviews: [
+      {
+        commentText: "t2",
+        evaluationGrade: "B",
+        evaluationText: "普通",
+        horseName: "h2",
+        horseNumber: "2",
+        riderName: "r2",
+        trainingDate: "2026-05-11",
+      },
+      {
+        commentText: "t1",
+        evaluationGrade: "A",
+        evaluationText: "良好",
+        horseName: "h1",
+        horseNumber: "1",
+        riderName: "r1",
+        trainingDate: "2026-05-10",
+      },
+    ],
+  });
+  expect(ordered).toBe(shuffled);
+  expect(ordered.length).toBe(16);
 });
 
 it("getPremiumRacePayload aggregates rows from premium tables in a single Promise.all batch", async () => {
@@ -1674,7 +1904,12 @@ it("countJraRaceSourcesMissingRaceDateFieldsByDate falls back to 0 when row is n
 
 it("replacePremiumRaceData defaults trainingReviews to [] when omitted", async () => {
   const run = vi.fn(async () => ({}));
-  const bind = vi.fn((..._args: unknown[]) => ({ run, bind: vi.fn(() => ({ run })) }));
+  const first = vi.fn(async () => null);
+  const bind = vi.fn((..._args: unknown[]) => ({
+    first,
+    run,
+    bind: vi.fn(() => ({ run })),
+  }));
   const prepare = vi.fn(() => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;

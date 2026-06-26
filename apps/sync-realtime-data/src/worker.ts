@@ -3695,6 +3695,13 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "fetch-premium-paddock") {
+      // Defensive: planPremiumPaddockFetchesForDate already gates to source==="jra",
+      // but a manual enqueue or future code path could land a non-JRA job here. Skip
+      // it before fetchAndStorePremiumPaddock does an HTTP fetch / D1 write loop.
+      if (!job.raceKey.startsWith("jra:")) {
+        await logFetch(env.REALTIME_DB, job.type, "skip:non-jra", job.raceKey, null);
+        return;
+      }
       await fetchAndStorePremiumPaddock(env, job.raceKey);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;

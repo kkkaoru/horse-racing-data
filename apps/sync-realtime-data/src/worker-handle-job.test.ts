@@ -471,6 +471,20 @@ it("handleJob fetch-premium-paddock returns ok when config incomplete", async ()
   );
 });
 
+it("handleJob fetch-premium-paddock logs skip:non-jra and does not call the fetcher for non-JRA race keys", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, getRaceSource } = await import("./storage");
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:06:01", type: "fetch-premium-paddock" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-paddock",
+    "skip:non-jra",
+    "nar:2026:0512:06:01",
+    null,
+  );
+  expect(getRaceSource).not.toHaveBeenCalled();
+});
+
 it("handleJob plan-premium-race-data-fetches with config + races + candidates enqueues jobs", async () => {
   const { handleJob } = await import("./worker");
   const {
