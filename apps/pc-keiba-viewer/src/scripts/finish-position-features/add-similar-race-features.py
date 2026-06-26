@@ -942,11 +942,23 @@ def main() -> None:
         stage_race_level_features(con)
         stage_entity_features(con)
         stage_target_entities(con, args.from_date, args.category)
-        year_dir = output_dir / f"race_year={year}"
-        year_dir.mkdir(parents=True, exist_ok=True)
         sql = append_features_sql(year_glob)
+        # partition_by (race_year) makes DuckDB emit the
+        # race_year=<year>/data_*.parquet hive layout AND, critically, OMIT
+        # the race_year column from the file body. Every sibling layer (race-
+        # internal / near-miss / lineage / trainer / pacestyle / relationship)
+        # and the DuckDB base build write this way, so pyarrow's schema merge
+        # in pipeline_runner.py:`pd.read_parquet(final_dir)` sees ONE shape:
+        # race_year as a path-derived dictionary<int32>. The previous manual
+        # per-year write kept race_year as an int64 column inside the file,
+        # which then collided with the dictionary<int32> partition column at
+        # merge time and broke the predict container's final read.
+        # overwrite_or_ignore=true tolerates the output_dir already existing
+        # on the second-onwards iteration (per-partition writes stay
+        # year-scoped because each iteration's SELECT only emits its year).
         con.execute(
-            f"copy ({sql}) to '{(year_dir / 'data_0.parquet').as_posix()}' (format parquet)"
+            f"copy ({sql}) to '{output_dir.as_posix()}' "
+            "(format parquet, partition_by (race_year), overwrite_or_ignore true)"
         )
         drop_staging_tables(con)
     con.close()

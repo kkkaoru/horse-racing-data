@@ -959,18 +959,86 @@ def test_main_end_to_end_clears_preexisting_output_and_writes_hive_partition(
     assert not stale_file.exists()
     assert (output_dir / "race_year=2025" / "data_0.parquet").exists()
 
-    # The output is written into a race_year=<year>/ hive directory and keeps the
-    # race_year column in the file body (matching the input + sibling scripts).
-    verify_con = duckdb.connect(":memory:")
+    # partition_by (race_year) writes the year-partitioned hive layout AND
+    # OMITS race_year from the file body (matching the base build + every
+    # sibling layer). Keeping race_year as an int64 column inside the file
+    # would re-introduce the pyarrow schema-merge collision against the
+    # path-derived dictionary<int32> partition column that broke
+    # pipeline_runner.py's `pd.read_parquet(final_dir)`. We inspect the raw
+    # parquet file schema (NOT via DuckDB's read_parquet, which transparently
+    # backfills hive partition columns from the path) so we are checking the
+    # actual file body.
+    import pyarrow.parquet as pq
+
     file_cols = {
-        c[0]
-        for c in verify_con.execute(
-            f"select * from read_parquet('{output_dir.as_posix()}/race_year=2025/data_0.parquet') limit 0"
-        ).description
+        field.name
+        for field in pq.ParquetFile(
+            (output_dir / "race_year=2025" / "data_0.parquet").as_posix()
+        ).schema_arrow
     }
-    verify_con.close()
     assert "sim_race_count" in file_cols
-    assert "race_year" in file_cols
+    assert "race_year" not in file_cols
+
+
+def test_main_end_to_end_output_dir_is_pd_read_parquet_mergeable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for the pipeline_runner.py:`pd.read_parquet(final_dir)` crash.
+
+    The predict container's pipeline_runner reads the final layer's output via
+    ``pd.read_parquet(final_dir)``, which delegates to pyarrow's dataset
+    reader. pyarrow auto-detects the hive ``race_year=YYYY`` partition,
+    materialises that column as ``dictionary<int32>``, and then merges in each
+    file's body schema. If the file body also carries a plain int64
+    ``race_year`` column, pyarrow raises::
+
+        pyarrow.lib.ArrowTypeError: Unable to merge: Field race_year has
+        incompatible types: int64 vs dictionary<values=int32, ...>
+
+    This regression test seeds the layer end-to-end, then re-reads the output
+    directory with pyarrow's dataset reader (the same code path
+    ``pd.read_parquet`` takes for a directory) and asserts the merge
+    succeeds with race_year typed as the path-derived dictionary.
+    """
+    import pandas as pd
+
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+        ],
+    )
+    subject.main()
+
+    # The predict container's `pd.read_parquet(final_dir)` call against the
+    # final layer's output is the exact code path that was broken: it has to
+    # merge the path-derived hive partition column with each file body's
+    # schema. The previous manual write left race_year inside the file as
+    # int64, which collided with the dictionary<int32> partition column at
+    # merge time. After the fix this read succeeds and returns the per-horse
+    # rows seeded into the input.
+    frame = pd.read_parquet(output_dir)
+    assert len(frame) == 3
+    assert "race_year" in frame.columns
+    assert "sim_race_count" in frame.columns
 
 
 def test_staging_pipeline_level4_caps_pool_to_most_recent_races(
