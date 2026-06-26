@@ -43,11 +43,13 @@ type GetFinishPositionBucketEvaluationFn = (args: {
 const {
   getRaceDetailMock,
   getRaceRunnersMock,
+  getRaceTrainingsMock,
   getRunningStyleBucketEvaluationMock,
   getFinishPositionBucketEvaluationMock,
 } = vi.hoisted(() => ({
   getRaceDetailMock: vi.fn<GetRaceDetailFn>(),
   getRaceRunnersMock: vi.fn<GetRaceRunnersFn>(),
+  getRaceTrainingsMock: vi.fn<() => Promise<unknown[]>>(),
   getRunningStyleBucketEvaluationMock: vi.fn<GetRunningStyleBucketEvaluationFn>(),
   getFinishPositionBucketEvaluationMock: vi.fn<GetFinishPositionBucketEvaluationFn>(),
 }));
@@ -68,7 +70,7 @@ vi.mock("../../../db/queries", () => ({
   getRacePaceSimilarityFeatures: vi.fn<() => Promise<unknown[]>>(),
   getRaceRunners: getRaceRunnersMock,
   getRaceTimeStats: vi.fn<() => Promise<unknown>>(),
-  getRaceTrainings: vi.fn<() => Promise<unknown[]>>(),
+  getRaceTrainings: getRaceTrainingsMock,
   getRunningStyleBucketEvaluation: getRunningStyleBucketEvaluationMock,
   getSimilarRaceStats: vi.fn<() => Promise<unknown[]>>(),
   getTimeScoreRows: vi.fn<() => Promise<unknown[]>>(),
@@ -224,6 +226,7 @@ const FINISH_HAPPY_METRICS: FinishPositionBucketMetrics = {
 beforeEach(() => {
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
+  getRaceTrainingsMock.mockReset();
   getRunningStyleBucketEvaluationMock.mockReset();
   getFinishPositionBucketEvaluationMock.mockReset();
 });
@@ -876,4 +879,136 @@ it("finish-position bucket returns a null evaluation when every tier misses", as
   expect(data.bucketEvaluation).toBe(null);
   expect(data.bucketScope).toBe(null);
   expect(data.bucketModelVersion).toBe("jra-cb-v7-lineage-wf-21y");
+});
+
+it("training payload decodes netkeiba oikiri.html as utf-8 and merges parsed reviews into trainings", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceTrainingsMock.mockResolvedValueOnce([
+    {
+      babamawari: null,
+      bamei: "テストホース",
+      chokyoJikoku: "0500",
+      chokyoNengappi: "20251225",
+      course: null,
+      lapTime10f: null,
+      lapTime1f: null,
+      lapTime2f: null,
+      lapTime3f: null,
+      lapTime4f: null,
+      lapTime5f: null,
+      lapTime6f: null,
+      lapTime7f: null,
+      lapTime8f: null,
+      lapTime9f: null,
+      timeGokei10f: null,
+      timeGokei2f: null,
+      timeGokei3f: null,
+      timeGokei4f: null,
+      timeGokei5f: null,
+      timeGokei6f: null,
+      timeGokei7f: null,
+      timeGokei8f: null,
+      timeGokei9f: null,
+      tracenKubun: null,
+      trainingType: "通常",
+      umaban: "5",
+    },
+  ]);
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ stableComments: [], trainingReviews: [] }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        '<tr class="OikiriDataHead1"><td class="Umaban">5</td><td class="Training_Critic">気配上昇</td><td class="Rank_S">S</td></tr>',
+        { headers: { "content-type": "text/html; charset=UTF-8" }, status: 200 },
+      ),
+    );
+  const payload = await getDetailSectionPayload("training", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(payload).toStrictEqual({
+    sourceLabel: "JRA 中央競馬",
+    stableComments: [],
+    trainings: [
+      {
+        babamawari: null,
+        bamei: "テストホース",
+        chokyoJikoku: "0500",
+        chokyoNengappi: "20251225",
+        course: null,
+        lapTime10f: null,
+        lapTime1f: null,
+        lapTime2f: null,
+        lapTime3f: null,
+        lapTime4f: null,
+        lapTime5f: null,
+        lapTime6f: null,
+        lapTime7f: null,
+        lapTime8f: null,
+        lapTime9f: null,
+        premiumCommentText: null,
+        premiumEvaluationGrade: "S",
+        premiumEvaluationText: "気配上昇",
+        timeGokei10f: null,
+        timeGokei2f: null,
+        timeGokei3f: null,
+        timeGokei4f: null,
+        timeGokei5f: null,
+        timeGokei6f: null,
+        timeGokei7f: null,
+        timeGokei8f: null,
+        timeGokei9f: null,
+        tracenKubun: null,
+        trainingRiderName: undefined,
+        trainingType: "通常",
+        umaban: "5",
+      },
+    ],
+    type: "training",
+  });
+  expect(fetchMock.mock.calls[1]?.[0]).toBe(
+    "https://race.netkeiba.com/race/oikiri.html?race_id=2025063811",
+  );
+  fetchMock.mockRestore();
+});
+
+it("training payload returns empty trainingReviews when netkeiba oikiri.html returns non-ok", async () => {
+  getRaceDetailMock.mockResolvedValueOnce(JRA_RACE);
+  getRaceTrainingsMock.mockResolvedValueOnce([]);
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ stableComments: [], trainingReviews: [] }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    )
+    .mockResolvedValueOnce(new Response("error", { status: 500 }));
+  const payload = await getDetailSectionPayload("training", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+  expect(payload).toStrictEqual({
+    sourceLabel: "JRA 中央競馬",
+    stableComments: [],
+    trainings: [],
+    type: "training",
+  });
+  fetchMock.mockRestore();
 });

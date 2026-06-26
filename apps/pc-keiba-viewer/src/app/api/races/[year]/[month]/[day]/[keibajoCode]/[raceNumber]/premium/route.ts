@@ -67,7 +67,7 @@ const fetchNetkeibaTrainingReviews = async ({
   if (!response.ok) {
     return [];
   }
-  const html = new TextDecoder("euc-jp").decode(await response.arrayBuffer());
+  const html = await response.text();
   return parseNetkeibaTrainingReviews(html);
 };
 
