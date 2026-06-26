@@ -3235,8 +3235,12 @@ fieldset.paddock-chip-row {
 }
 
 .runner-blinker-cell {
+  align-items: center;
   color: var(--text);
+  display: flex;
+  flex-direction: column;
   font-variant-numeric: tabular-nums;
+  gap: var(--space-3px-22);
   text-align: center;
 }
 
@@ -3327,6 +3331,58 @@ fieldset.paddock-chip-row {
   background: var(--blinker-pattern-f-bg);
   border-color: var(--blinker-pattern-f-border);
   color: var(--blinker-pattern-f-fg);
+}
+
+/* Runner table: blinker header two-line display.
+   Must beat `.runner-table th { white-space: nowrap }` (specificity 0,1,1). */
+.runner-table th.runner-blinker-header {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.runner-blinker-header span {
+  display: block;
+  line-height: var(--number-1-25-20);
+}
+
+/* Surface switch badge (shared between runners table and paddock) */
+.runner-surface-switch-badge,
+.paddock-surface-switch-badge {
+  align-items: center;
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  display: inline-flex;
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+  gap: var(--space-5px-17);
+  line-height: var(--number-1-35-27);
+  padding: var(--space-2px-25) var(--space-8px-28);
+  white-space: nowrap;
+  width: fit-content;
+}
+
+.runner-surface-switch-badge strong,
+.paddock-surface-switch-badge strong {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+/* 芝替わり: green (turf) */
+.runner-surface-switch-badge.surface-turf,
+.paddock-surface-switch-badge.surface-turf {
+  background: var(--surface-switch-turf-bg);
+  border-color: var(--surface-switch-turf-border);
+  color: var(--surface-switch-turf-fg);
+}
+
+/* ダート替わり: brown (dirt) */
+.runner-surface-switch-badge.surface-dirt,
+.paddock-surface-switch-badge.surface-dirt {
+  background: var(--surface-switch-dirt-bg);
+  border-color: var(--surface-switch-dirt-border);
+  color: var(--surface-switch-dirt-fg);
 }
 
 .paddock-status-badge,

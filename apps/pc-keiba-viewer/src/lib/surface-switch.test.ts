@@ -1,7 +1,7 @@
 // Run with bun (exercised via `bunx vitest run`).
 import { expect, test } from "vitest";
 
-import { classifySurfaceSwitch } from "./surface-switch";
+import { classifySurfaceSwitch, getSurfaceSwitchClassName } from "./surface-switch";
 
 test("returns null for null raceTrackCode", () => {
   expect(classifySurfaceSwitch(null, ["23", "24"])).toStrictEqual(null);
@@ -45,4 +45,12 @@ test("returns 芝替わり for single past race on dirt and current race on turf
 
 test("returns null when past has only null and undefined entries", () => {
   expect(classifySurfaceSwitch("11", [null, undefined])).toStrictEqual(null);
+});
+
+test('getSurfaceSwitchClassName returns "surface-turf" for 芝替わり', () => {
+  expect(getSurfaceSwitchClassName("芝替わり")).toStrictEqual("surface-turf");
+});
+
+test('getSurfaceSwitchClassName returns "surface-dirt" for ダート替わり', () => {
+  expect(getSurfaceSwitchClassName("ダート替わり")).toStrictEqual("surface-dirt");
 });

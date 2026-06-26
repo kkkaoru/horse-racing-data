@@ -25,7 +25,7 @@ import {
   formatRunnerValue,
   formatSexAge,
 } from "../../../lib/runner-format";
-import type { SurfaceSwitch } from "../../../lib/surface-switch";
+import { getSurfaceSwitchClassName, type SurfaceSwitch } from "../../../lib/surface-switch";
 import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import type { RealtimeRaceRequest } from "./realtime-client";
 import { useRealtimeRacePayload } from "./realtime-client";
@@ -407,7 +407,11 @@ export function RunnersTable({
             </span>
           ) : null}
           {surfaceSwitch ? (
-            <span className="runner-surface-switch-badge">{surfaceSwitch}</span>
+            <span
+              className={`runner-surface-switch-badge ${getSurfaceSwitchClassName(surfaceSwitch)}`}
+            >
+              <strong>{surfaceSwitch}</strong>
+            </span>
           ) : null}
           {!blinkerPattern && !surfaceSwitch ? "-" : null}
         </td>

@@ -19,7 +19,6 @@ import {
   type BlinkerPattern,
 } from "../../../lib/blinker-pattern";
 import type { RaceSource } from "../../../lib/codes";
-import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import { fetchWithRetry } from "../../../lib/fetch-with-retry";
 import {
   cleanText,
@@ -55,6 +54,11 @@ import {
   formatSexAge,
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
+import {
+  classifySurfaceSwitch,
+  getSurfaceSwitchClassName,
+  type SurfaceSwitch,
+} from "../../../lib/surface-switch";
 import { getOrCreateUserId } from "../../../lib/user-identity-indexeddb";
 import { FrameNumberBadge, HorseNameBadge } from "./frame-number-badge";
 import { PaddockRecentResultsChart } from "./paddock-recent-results-chart";
@@ -1107,7 +1111,7 @@ const PaddockHorseRow = memo(function PaddockHorseRow({
           {surfaceSwitch ? (
             <span
               aria-label={`転向 ${surfaceSwitch}`}
-              className="paddock-surface-switch-badge"
+              className={`paddock-surface-switch-badge ${getSurfaceSwitchClassName(surfaceSwitch)}`}
             >
               <strong>{surfaceSwitch}</strong>
             </span>

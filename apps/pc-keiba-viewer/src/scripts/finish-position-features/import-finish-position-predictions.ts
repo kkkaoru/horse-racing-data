@@ -40,6 +40,11 @@ interface PredictionRecord {
   umaban: number;
   predicted_score: number;
   predicted_rank: number;
+  distance_band: string | null;
+  field_size_band: string | null;
+  season_band: string | null;
+  class_code: string | null;
+  surface: string | null;
 }
 
 interface RaceIdParts {
@@ -105,6 +110,13 @@ export const parseRaceId = (raceId: string): RaceIdParts => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const readOptionalLabel = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 export const parsePredictionLine = (line: string): PredictionRecord => {
   const raw: unknown = JSON.parse(line);
   if (!isRecord(raw)) throw new Error(`Prediction line is not an object: ${line}`);
@@ -125,6 +137,11 @@ export const parsePredictionLine = (line: string): PredictionRecord => {
     predicted_score: raw.predicted_score,
     race_id: raw.race_id,
     umaban: raw.umaban,
+    distance_band: readOptionalLabel(raw.distance_band),
+    field_size_band: readOptionalLabel(raw.field_size_band),
+    season_band: readOptionalLabel(raw.season_band),
+    class_code: readOptionalLabel(raw.class_code),
+    surface: readOptionalLabel(raw.surface),
   };
 };
 
@@ -138,6 +155,13 @@ export const dedupeBatch = (batch: readonly PredictionRecord[]): PredictionRecor
 
 export const flattenForInsert = (record: PredictionRecord, modelVersion: string): unknown[] => {
   const parts = parseRaceId(record.race_id);
+  // Order must match INSERT_COLUMNS in import-predictions-sql.ts:
+  // 7 PK cols, umaban, predicted_score, predicted_rank, predicted_top1_prob,
+  // predicted_top3_prob, predicted_finish_position, then 5 SUBGROUP_COLUMNS
+  // (distance_band, field_size_band, season_band, class_code, surface).
+  // Subgroup labels are produced by the Python predict container (see
+  // apps/finish-position-predict-container/src/predict_lib/subgroup.py) and
+  // mirrored by finish_position_xgboost_predict_only.py for WIN5 overlays.
   return [
     modelVersion,
     parts.source,
@@ -152,6 +176,11 @@ export const flattenForInsert = (record: PredictionRecord, modelVersion: string)
     null,
     null,
     record.predicted_rank,
+    record.distance_band,
+    record.field_size_band,
+    record.season_band,
+    record.class_code,
+    record.surface,
   ];
 };
 

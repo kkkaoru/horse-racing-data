@@ -448,6 +448,14 @@
   --value-blinker-pattern-f-bg: #ecf2f8;
   --value-blinker-pattern-f-fg: #3f6188;
   --value-blinker-pattern-f-border: #d3e0ee;
+  /* Surface switch (転向) pills: 芝替わり uses a grass-green tint,
+     ダート替わり uses a warm earth-brown tint. */
+  --value-surface-switch-turf-bg: #e8f5e9;
+  --value-surface-switch-turf-fg: #2e7d32;
+  --value-surface-switch-turf-border: #a5d6a7;
+  --value-surface-switch-dirt-bg: #efebe9;
+  --value-surface-switch-dirt-fg: #795548;
+  --value-surface-switch-dirt-border: #bcaaa4;
 }
 
 :root {
@@ -603,6 +611,12 @@
   --blinker-pattern-f-bg: var(--value-blinker-pattern-f-bg);
   --blinker-pattern-f-fg: var(--value-blinker-pattern-f-fg);
   --blinker-pattern-f-border: var(--value-blinker-pattern-f-border);
+  --surface-switch-turf-bg: var(--value-surface-switch-turf-bg);
+  --surface-switch-turf-fg: var(--value-surface-switch-turf-fg);
+  --surface-switch-turf-border: var(--value-surface-switch-turf-border);
+  --surface-switch-dirt-bg: var(--value-surface-switch-dirt-bg);
+  --surface-switch-dirt-fg: var(--value-surface-switch-dirt-fg);
+  --surface-switch-dirt-border: var(--value-surface-switch-dirt-border);
   --gold: var(--value-gold);
   --ink: var(--value-ink);
   --line: var(--value-line);

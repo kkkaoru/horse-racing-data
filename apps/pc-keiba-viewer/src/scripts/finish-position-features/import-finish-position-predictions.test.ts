@@ -68,10 +68,15 @@ test("parsePredictionLine returns a typed prediction record", () => {
     predicted_rank: 2,
   });
   expect(parsePredictionLine(line)).toStrictEqual({
+    class_code: null,
+    distance_band: null,
+    field_size_band: null,
     ketto_toroku_bango: "2020100501",
     predicted_rank: 2,
     predicted_score: 0.4,
     race_id: "jra:2024:0114:05:11",
+    season_band: null,
+    surface: null,
     umaban: 7,
   });
 });
@@ -107,6 +112,11 @@ test("flattenForInsert returns the row in INSERT_COLUMNS order", () => {
       umaban: 7,
       predicted_score: 1.234,
       predicted_rank: 3,
+      distance_band: null,
+      field_size_band: null,
+      season_band: null,
+      class_code: null,
+      surface: null,
     },
     "lambdarank-jra-v1",
   );
@@ -124,6 +134,11 @@ test("flattenForInsert returns the row in INSERT_COLUMNS order", () => {
     null,
     null,
     3,
+    null,
+    null,
+    null,
+    null,
+    null,
   ]);
 });
 

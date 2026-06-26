@@ -543,9 +543,7 @@ describe("runners table", () => {
     render(
       <RunnersTable
         surfaceSwitches={[{ kettoTorokuBango: "2023100001", surfaceSwitch: "芝替わり" }]}
-        runners={[
-          runner({ bamei: "芝替わり馬", kettoTorokuBango: "2023100001", umaban: "01" }),
-        ]}
+        runners={[runner({ bamei: "芝替わり馬", kettoTorokuBango: "2023100001", umaban: "01" })]}
       />,
     );
 
@@ -563,16 +561,11 @@ describe("runners table", () => {
       <RunnersTable
         blinkerPatterns={[{ kettoTorokuBango: "2023100001", pattern: "A" }]}
         surfaceSwitches={[{ kettoTorokuBango: "2023100001", surfaceSwitch: "ダート替わり" }]}
-        runners={[
-          runner({ bamei: "両方馬", kettoTorokuBango: "2023100001", umaban: "01" }),
-        ]}
+        runners={[runner({ bamei: "両方馬", kettoTorokuBango: "2023100001", umaban: "01" })]}
       />,
     );
 
-    const cell = screen
-      .getByText("両方馬")
-      .closest("tr")
-      ?.querySelector(".runner-blinker-cell");
+    const cell = screen.getByText("両方馬").closest("tr")?.querySelector(".runner-blinker-cell");
     expect(cell?.querySelector(".runner-blinker-pattern-badge")).toBeTruthy();
     expect(cell?.querySelector(".runner-surface-switch-badge")?.textContent).toStrictEqual(
       "ダート替わり",
@@ -586,10 +579,7 @@ describe("runners table", () => {
       />,
     );
 
-    const cell = screen
-      .getByText("なし馬")
-      .closest("tr")
-      ?.querySelector(".runner-blinker-cell");
+    const cell = screen.getByText("なし馬").closest("tr")?.querySelector(".runner-blinker-cell");
     expect(cell?.textContent).toStrictEqual("-");
   });
 

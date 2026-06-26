@@ -2,6 +2,14 @@
 
 export type SurfaceSwitch = "ダート替わり" | "芝替わり";
 
+const SURFACE_SWITCH_CLASS_MAP: Record<SurfaceSwitch, string> = {
+  芝替わり: "surface-turf",
+  ダート替わり: "surface-dirt",
+};
+
+export const getSurfaceSwitchClassName = (value: SurfaceSwitch): string =>
+  SURFACE_SWITCH_CLASS_MAP[value];
+
 type PastSurface = "dirt" | "other" | "turf";
 
 const TURF_TRACK_CODES: ReadonlySet<string> = new Set([
