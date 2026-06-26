@@ -395,27 +395,6 @@ export function resolveStrategy(input: ResolveStrategyInput): SyncStrategy {
   return "pk-incremental";
 }
 
-const UNKNOWN_PROFILE_SKIP_REASON =
-  "skipped — no sync profile (strategy=unknown). Inspect loadTableProfileMap to add support.";
-
-export interface SkipUnknownDecision {
-  skip: boolean;
-  reason?: string;
-}
-
-export interface DecideSkipForUnknownProfileInput {
-  profile: TableProfile | undefined;
-}
-
-export function decideSkipForUnknownProfile(
-  input: DecideSkipForUnknownProfileInput,
-): SkipUnknownDecision {
-  if (input.profile === undefined) {
-    return { skip: true, reason: UNKNOWN_PROFILE_SKIP_REASON };
-  }
-  return { skip: false };
-}
-
 export function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }

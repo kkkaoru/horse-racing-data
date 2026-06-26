@@ -19,7 +19,6 @@ import {
   computeBackoffDelayMs,
   computeChunkEtaSeconds,
   computeChunkPlan,
-  decideSkipForUnknownProfile,
   decideVerifyMismatchAction,
   formatRowsPerSecond,
   isVerifyMismatchSkipError,
@@ -1551,7 +1550,6 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   const verifyMismatchPolicy = resolveVerifyMismatchPolicy(env);
   const skipTables = resolveSkipTables(env);
   const skippedTables: VerifyMismatchSkipError[] = [];
-  const skippedUnknownTables: string[] = [];
 
   await runPushSync(
     tables,
@@ -1571,7 +1569,6 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
           verifyMismatchPolicy,
           skipTables,
           skippedTables,
-          skippedUnknownTables,
         }),
       report: reportProgress,
     },
@@ -1580,7 +1577,6 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   await syncAnalyticsIndexes(env);
   await warmViewerCaches(env);
   reportSkippedTables(skippedTables);
-  reportSkippedUnknownTables(skippedUnknownTables);
 }
 
 function loadViewerEnv(): Record<string, string | undefined> {
@@ -1603,7 +1599,6 @@ async function warmViewerCaches(env: Record<string, string | undefined>): Promis
 interface SyncTableWithSkipTrackingOptions extends SyncTableOptions {
   skipTables: ReadonlySet<string>;
   skippedTables: VerifyMismatchSkipError[];
-  skippedUnknownTables: string[];
 }
 
 async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptions): Promise<void> {
@@ -1611,12 +1606,6 @@ async function syncTableWithSkipTracking(options: SyncTableWithSkipTrackingOptio
     writeLine(
       `[${formatNow()}] ⊘ ${options.table.tableName}: skipped via REPLICA_SYNC_SKIP_TABLES`,
     );
-    return;
-  }
-  const unknownDecision = decideSkipForUnknownProfile({ profile: options.profile });
-  if (unknownDecision.skip) {
-    writeLine(`[${formatNow()}] ⚠ ${options.table.tableName}: ${unknownDecision.reason}`);
-    options.skippedUnknownTables.push(options.table.tableName);
     return;
   }
   try {
@@ -1651,19 +1640,12 @@ function reportSkippedTables(skipped: VerifyMismatchSkipError[]): void {
   process.exitCode = 1;
 }
 
-function reportSkippedUnknownTables(tableNames: readonly string[]): void {
-  if (tableNames.length === 0) return;
-  writeLine(
-    `[${formatNow()}] ⚠ skipped ${tableNames.length} table(s) with strategy=unknown: ${tableNames.join(", ")}. Add timestamp/PK columns or extend loadTableProfileMap.`,
-  );
-}
-
 function logStrategySummary(profileMap: Map<string, TableProfile>, tables: TableMetadata[]): void {
-  const counts = { timestampIncremental: 0, pkIncremental: 0, fullReplace: 0, unknown: 0 };
+  const counts = { timestampIncremental: 0, pkIncremental: 0, fullReplace: 0 };
   for (const table of tables) {
     const profile = profileMap.get(table.tableName);
     if (!profile) {
-      counts.unknown += 1;
+      counts.fullReplace += 1;
       continue;
     }
     if (profile.strategy === "timestamp-incremental") counts.timestampIncremental += 1;
@@ -1671,7 +1653,7 @@ function logStrategySummary(profileMap: Map<string, TableProfile>, tables: Table
     else counts.fullReplace += 1;
   }
   writeLine(
-    `[${formatNow()}] strategy: timestamp-incremental=${counts.timestampIncremental}, pk-incremental=${counts.pkIncremental}, full-replace=${counts.fullReplace}, unknown=${counts.unknown}`,
+    `[${formatNow()}] strategy: timestamp-incremental=${counts.timestampIncremental}, pk-incremental=${counts.pkIncremental}, full-replace=${counts.fullReplace}`,
   );
 }
 

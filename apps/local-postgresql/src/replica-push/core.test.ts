@@ -17,7 +17,6 @@ import {
   computeBackoffDelayMs,
   computeChunkEtaSeconds,
   computeChunkPlan,
-  decideSkipForUnknownProfile,
   decideVerifyMismatchAction,
   formatRowsPerSecond,
   incrementalComparatorForTimestampColumn,
@@ -2527,45 +2526,5 @@ describe("resolveSkipTables", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,,table_b" })).toStrictEqual(
       new Set(["table_a", "table_b"]),
     );
-  });
-});
-
-describe("decideSkipForUnknownProfile", () => {
-  it("returns skip=true with reason when profile is undefined", () => {
-    expect(decideSkipForUnknownProfile({ profile: undefined })).toStrictEqual({
-      skip: true,
-      reason:
-        "skipped — no sync profile (strategy=unknown). Inspect loadTableProfileMap to add support.",
-    });
-  });
-
-  it("returns skip=false when a full-replace profile is provided", () => {
-    expect(
-      decideSkipForUnknownProfile({
-        profile: {
-          tableName: "cell_training_evaluations",
-          rowCount: 0,
-          hasUpdateChurn: false,
-          timestampColumn: null,
-          hasPrimaryKey: false,
-          strategy: "full-replace",
-        },
-      }),
-    ).toStrictEqual({ skip: false });
-  });
-
-  it("returns skip=false when a timestamp-incremental profile is provided", () => {
-    expect(
-      decideSkipForUnknownProfile({
-        profile: {
-          tableName: "jvd_se",
-          rowCount: 5_000_000,
-          hasUpdateChurn: true,
-          timestampColumn: "updated_at",
-          hasPrimaryKey: true,
-          strategy: "timestamp-incremental",
-        },
-      }),
-    ).toStrictEqual({ skip: false });
   });
 });
