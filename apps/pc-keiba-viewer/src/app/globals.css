@@ -3235,12 +3235,8 @@ fieldset.paddock-chip-row {
 }
 
 .runner-blinker-cell {
-  align-items: center;
   color: var(--text);
-  display: flex;
-  flex-direction: column;
   font-variant-numeric: tabular-nums;
-  gap: var(--space-3px-22);
   text-align: center;
 }
 
@@ -3344,6 +3340,15 @@ fieldset.paddock-chip-row {
 .runner-blinker-header span {
   display: block;
   line-height: var(--number-1-25-20);
+}
+
+/* Runner table badges: center within the td and add spacing between stacked badges */
+.runner-blinker-pattern-badge {
+  margin: var(--number-0-2) auto;
+}
+
+.runner-surface-switch-badge {
+  margin: var(--space-3px-22) auto var(--number-0-2);
 }
 
 /* Surface switch badge (shared between runners table and paddock) */
