@@ -18,7 +18,7 @@ set +a
 : "${REPLICA_PUBLICATION:=horse_racing_publication}"
 : "${REPLICA_SUBSCRIPTION:=horse_racing_local_subscription}"
 
-docker run --rm postgres:18-alpine psql "$NEON_DIRECT_DATABASE_URL" \
+container run --rm docker.io/postgres:18-alpine psql "$NEON_DIRECT_DATABASE_URL" \
   -v ON_ERROR_STOP=1 \
   -v subscription="$REPLICA_SUBSCRIPTION" \
   -v publication="$REPLICA_PUBLICATION" \

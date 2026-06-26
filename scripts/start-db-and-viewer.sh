@@ -56,11 +56,7 @@ should_start_postgres() {
 }
 
 is_postgres_running() {
-  docker compose \
-    --env-file "$POSTGRES_APP_DIR/.env" \
-    --project-directory "$POSTGRES_APP_DIR" \
-    ps --status running --services 2>/dev/null |
-    grep -qx "postgres"
+  container list --quiet 2>/dev/null | grep -q "horse-racing-local-postgresql"
 }
 
 is_viewer_running() {

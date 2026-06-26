@@ -8,4 +8,5 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
   exit 1
 fi
 
-docker compose --env-file "$APP_DIR/.env" --project-directory "$APP_DIR" down
+container stop horse-racing-local-postgresql 2>/dev/null || true
+container delete horse-racing-local-postgresql 2>/dev/null || true

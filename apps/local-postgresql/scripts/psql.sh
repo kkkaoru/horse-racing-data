@@ -14,11 +14,11 @@ set -a
 set +a
 
 exec_args=()
-if [[ ! -t 0 || $# -gt 0 ]]; then
-  exec_args=(-T)
+if [[ -t 0 && $# -eq 0 ]]; then
+  exec_args=(-i -t)
 fi
 
-docker compose --env-file "$APP_DIR/.env" --project-directory "$APP_DIR" exec "${exec_args[@]}" postgres psql \
+container exec "${exec_args[@]}" horse-racing-local-postgresql psql \
   -U "${POSTGRES_USER}" \
   -d "${POSTGRES_DB}" \
   "$@"
