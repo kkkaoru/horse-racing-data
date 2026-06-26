@@ -7,7 +7,10 @@ import type { ReactElement, ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import type { HorseRaceChartRunner } from "../../../lib/horse-race-results-chart-data";
-import type { HorseWeightSnapshot } from "../../../lib/horse-weight-stream-client";
+import type {
+  HorseWeightSnapshot,
+  UseHorseWeightStreamParams,
+} from "../../../lib/horse-weight-stream-client";
 import { useHorseWeightStream } from "../../../lib/horse-weight-stream-client";
 import type { HorseRaceResult } from "../../../lib/race-types";
 import { HorseRaceResultsChart, OverviewChartDot } from "./horse-race-results-chart";
@@ -139,7 +142,9 @@ vi.mock("./paddock-recent-results-chart", () => ({
 }));
 
 vi.mock("../../../lib/horse-weight-stream-client", () => ({
-  useHorseWeightStream: vi.fn<() => HorseWeightSnapshot | null>(() => null),
+  useHorseWeightStream: vi.fn<(params: UseHorseWeightStreamParams) => HorseWeightSnapshot | null>(
+    () => null,
+  ),
 }));
 
 vi.mock("./realtime-client", () => ({
@@ -524,6 +529,62 @@ test("renders no upcoming popularity point when the realtime odds have no tansho
   const lines = screen.getAllByTestId("line-stub");
   expect(lines[1]?.getAttribute("data-total-points")).toStrictEqual("1");
   expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("0");
+});
+
+test("seeds the upcoming weight and popularity points from the realtime context payload on first paint", () => {
+  vi.mocked(useHorseWeightStream).mockImplementation((params) => params.initial);
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({
+    error: null,
+    payload: {
+      horseWeights: {
+        fetchedAt: "2026-06-13T09:01:00Z",
+        horses: [
+          {
+            changeAmount: 4,
+            changeSign: "+",
+            horseName: "アルファ",
+            horseNumber: "1",
+            weight: 472,
+          },
+        ],
+      },
+      odds: {
+        fetchedAt: "2026-06-13T09:01:00Z",
+        horseTrends: [],
+        history: [],
+        latest: { tansho: [{ combination: "1", rank: 2 }] },
+      },
+      raceEntries: null,
+      raceKey: "jra:20260613:09:01",
+      raceResults: null,
+      source: null,
+    },
+  });
+  render(
+    <HorseRaceResultsChart
+      day="13"
+      keibajoCode="09"
+      month="06"
+      raceNumber="01"
+      realtimeApiBaseUrl="https://example.com"
+      results={[chartResult({})]}
+      runners={[chartRunner({})]}
+      source="jra"
+      targetKeibajoCode="09"
+      targetRaceDate="20260613"
+      year="2026"
+    />,
+  );
+  const lines = screen.getAllByTestId("line-stub");
+  // Weight panel (index 2): past 480kg plus the context-seeded upcoming 472kg
+  // override (sums to 952), proving the stream was seeded from horseWeights rather
+  // than falling back to the static runner bataiju (which would sum to 966).
+  expect(lines[2]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
+  expect(lines[2]?.getAttribute("data-value-sum")).toStrictEqual("952");
+  // Popularity panel (index 1): the seeded snapshot horse carries the tansho rank,
+  // which only appears as an upcoming point when the override exists (no static
+  // popularity fallback exists), so this confirms the seed reached the overrides.
+  expect(lines[1]?.getAttribute("data-upcoming-points")).toStrictEqual("1");
 });
 
 test("renders distance and jockey in the finish and popularity tooltips only", () => {

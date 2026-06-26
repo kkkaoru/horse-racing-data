@@ -518,19 +518,6 @@ export const HorseRaceResultsChart = ({
   // span so the slider defaults to 全期間 without hardcoding a literal default.
   const [selectedMonths, setSelectedMonths] = useState<number | null>(null);
   const [combineFutan, setCombineFutan] = useState<boolean>(false);
-  // Mirror runners-table: subscribe to the realtime 馬体重 stream so the upcoming
-  // weight/delta come from the live snapshot (the static results payload leaves
-  // them blank). `initial: null` lets the hook self-fetch via SSE on mount, the
-  // same source the runners table resolves weight from in dev.
-  const horseWeightSnapshot = useHorseWeightStream({
-    day: day ?? "",
-    initial: null,
-    keibajoCode: keibajoCode ?? "",
-    month: month ?? "",
-    raceNumber: raceNumber ?? "",
-    source: source ?? "",
-    year: year ?? "",
-  });
   // Subscribe to the realtime 単勝 odds so the target-race popularity (tansho
   // rank) seeds the newest point on the 人気 panel + the 馬別相関 paddock chart.
   const realtimeRequest = useMemo(
@@ -546,6 +533,19 @@ export const HorseRaceResultsChart = ({
     [day, keibajoCode, month, raceNumber, realtimeApiBaseUrl, source, year],
   );
   const { payload: realtimePayload } = useRealtimeRacePayload(realtimeRequest, null);
+  // Mirror the paddock: seed the realtime 馬体重 stream from the SSR/context-seeded
+  // payload (realtimePayload.horseWeights, the same source paddock-section reads)
+  // so the upcoming weight/delta render on the first paint instead of waiting for
+  // the SSE self-fetch; the stream still updates the snapshot live afterwards.
+  const horseWeightSnapshot = useHorseWeightStream({
+    day: day ?? "",
+    initial: realtimePayload?.horseWeights ?? null,
+    keibajoCode: keibajoCode ?? "",
+    month: month ?? "",
+    raceNumber: raceNumber ?? "",
+    source: source ?? "",
+    year: year ?? "",
+  });
   const popularityByUmaban = useMemo(
     () => buildPopularityByUmaban(realtimePayload?.odds?.latest.tansho ?? []),
     [realtimePayload],
