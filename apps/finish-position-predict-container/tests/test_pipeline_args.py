@@ -17,6 +17,10 @@ from predict_lib.pipeline_args import (
     RELATIONSHIP_SCRIPT,
     SCRIPTS_WITH_FROM_DATE,
     SCRIPTS_WITH_PG_URL,
+    SIMILAR_RACE_CATEGORY_BY_CATEGORY,
+    SIMILAR_RACE_MEMORY_LIMIT,
+    SIMILAR_RACE_SCRIPT,
+    SIMILAR_RACE_THREADS,
     build_base_argv,
     build_layer_argv,
     layer_chain_for,
@@ -366,6 +370,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8_plus_kohan3f() 
         "add-course-numerical-features.py",
         "add-relationship-r1-features.py",
         "add_kohan3f_going_features.py",
+        "add-similar-race-features.py",
     ]
 
 
@@ -380,6 +385,7 @@ def test_layer_chain_nar_is_light_v6_plus_v7_plus_trainer_plus_pacestyle() -> No
         "add-trainer-stable-affinity-features.py",
         "add-pacestyle-features.py",
         "add-relationship-r1-features.py",
+        "add-similar-race-features.py",
     ]
 
 
@@ -391,6 +397,7 @@ def test_layer_chain_ban_ei_appends_futan_and_grade_career() -> None:
         "add-baba-pedigree-affinity-features.py",
         "add-banei-futan-class-features.py",
         "add-banei-grade-career-features.py",
+        "add-similar-race-features.py",
     ]
 
 
@@ -633,9 +640,9 @@ def test_build_layer_argv_exotic_passes_pg_url_from_date_and_category_for_nar() 
 # ---------------------------------------------------------------------------
 
 
-def test_layer_chain_jra_has_kohan3f_going_as_last_script() -> None:
+def test_layer_chain_jra_has_kohan3f_going_before_similar_race() -> None:
     chain = layer_chain_for("jra")
-    assert chain[-1] == KOHAN3F_GOING_SCRIPT
+    assert chain[-2] == KOHAN3F_GOING_SCRIPT
 
 
 def test_build_layer_argv_kohan3f_going_passes_pg_url_only_no_from_date() -> None:
@@ -714,3 +721,118 @@ def test_build_base_argv_with_both_realtime_odds_and_venue_weather() -> None:
     )
     assert "--realtime-odds" in argv
     assert "--venue-weather-dir" in argv
+
+
+# ---------------------------------------------------------------------------
+# similar-race context layer (sim_* features)
+# ---------------------------------------------------------------------------
+
+
+def test_layer_chain_jra_has_similar_race_as_last_script() -> None:
+    chain = layer_chain_for("jra")
+    assert chain[-1] == SIMILAR_RACE_SCRIPT
+
+
+def test_layer_chain_nar_has_similar_race_as_last_script() -> None:
+    chain = layer_chain_for("nar")
+    assert chain[-1] == SIMILAR_RACE_SCRIPT
+
+
+def test_layer_chain_ban_ei_has_similar_race_as_last_script() -> None:
+    chain = layer_chain_for("ban-ei")
+    assert chain[-1] == SIMILAR_RACE_SCRIPT
+
+
+def test_similar_race_script_is_in_scripts_with_pg_url() -> None:
+    assert SIMILAR_RACE_SCRIPT in SCRIPTS_WITH_PG_URL
+
+
+def test_similar_race_script_is_in_scripts_with_from_date() -> None:
+    assert SIMILAR_RACE_SCRIPT in SCRIPTS_WITH_FROM_DATE
+
+
+def test_similar_race_category_map_has_all_three_categories() -> None:
+    assert set(SIMILAR_RACE_CATEGORY_BY_CATEGORY.keys()) == {"jra", "nar", "ban-ei"}
+
+
+def test_build_layer_argv_similar_race_full_flags_for_jra() -> None:
+    argv = build_layer_argv(
+        SIMILAR_RACE_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-similar-race-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+        "--from-date",
+        HISTORY_FROM_DATE,
+        "--category",
+        "jra",
+        "--threads",
+        SIMILAR_RACE_THREADS,
+        "--memory-limit",
+        SIMILAR_RACE_MEMORY_LIMIT,
+    ]
+
+
+def test_build_layer_argv_similar_race_passes_nar_category() -> None:
+    argv = build_layer_argv(
+        SIMILAR_RACE_SCRIPT,
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv[argv.index("--category") + 1] == "nar"
+    assert argv[argv.index("--threads") + 1] == SIMILAR_RACE_THREADS
+    assert argv[argv.index("--memory-limit") + 1] == SIMILAR_RACE_MEMORY_LIMIT
+
+
+def test_build_layer_argv_similar_race_passes_ban_ei_category() -> None:
+    argv = build_layer_argv(
+        SIMILAR_RACE_SCRIPT,
+        "ban-ei",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv[argv.index("--category") + 1] == "ban-ei"
+
+
+def test_similar_race_threads_and_memory_limit_are_oom_safe_caps() -> None:
+    assert SIMILAR_RACE_THREADS == "4"
+    assert SIMILAR_RACE_MEMORY_LIMIT == "6GB"
+
+
+def test_build_layer_argv_non_similar_race_script_omits_similar_race_flags() -> None:
+    argv = build_layer_argv(
+        "add-course-numerical-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert "--threads" not in argv
+    assert "--memory-limit" not in argv
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-course-numerical-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--course-lookup",
+        str(COURSE_LOOKUP_PATH),
+    ]

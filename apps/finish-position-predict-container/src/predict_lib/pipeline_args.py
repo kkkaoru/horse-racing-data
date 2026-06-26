@@ -82,6 +82,24 @@ EXOTIC_SCRIPT: Final[str] = "add_exotic_odds_features.py"
 # verified signal). Uses underscore naming (matches the actual filename).
 KOHAN3F_GOING_SCRIPT: Final[str] = "add_kohan3f_going_features.py"
 
+# similar-race context layer (19 sim_* cols: odds correlation, fav win rate,
+# entity stats pulled from historically-similar races). Runs on EVERY category
+# as the LAST layer (it reads PG history and appends 19 columns to the already
+# built parquet). The per-class router then routes only the effective cells
+# (JRA class 999, NAR B/C, Ban-ei pooled place) to the sim_*-trained models; the
+# columns are present for every race but carry near-zero importance elsewhere.
+# Takes ``--category {jra,nar,ban-ei}`` (jra -> jvd_se, nar/ban-ei -> nvd_se),
+# ``--pg-url`` + ``--from-date`` to bound the history scan, and DuckDB resource
+# caps (``--threads`` / ``--memory-limit``) to stay inside the container budget.
+SIMILAR_RACE_SCRIPT: Final[str] = "add-similar-race-features.py"
+
+# DuckDB resource caps for the similar-race layer inside the prediction
+# container (standard-4 / 12 GiB) — mirror the per-year OOM-safe limits used by
+# the offline store build so the pairwise similarity scan spills to disk instead
+# of OOM-killing the pipeline.
+SIMILAR_RACE_THREADS: Final[str] = "4"
+SIMILAR_RACE_MEMORY_LIMIT: Final[str] = "6GB"
+
 HISTORY_FROM_DATE: Final[str] = "20100101"
 
 # Baked course-numerical lookup parquet. Mirrors the
@@ -115,6 +133,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         COURSE_NUMERICAL_SCRIPT,
         RELATIONSHIP_SCRIPT,
         KOHAN3F_GOING_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -125,6 +144,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         TRAINER_SCRIPT,
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
     ),
     "ban-ei": (
         LINEAGE_SCRIPT,
@@ -132,6 +152,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         BABA_PEDIGREE_SCRIPT,
         BANEI_FUTAN_CLASS_SCRIPT,
         BANEI_GRADE_CAREER_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
     ),
 }
 
@@ -157,6 +178,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         RELATIONSHIP_SCRIPT,
         EXOTIC_SCRIPT,
         KOHAN3F_GOING_SCRIPT,  # reads PG but uses --history-from-year, NOT --from-date
+        SIMILAR_RACE_SCRIPT,
     }
 )
 
@@ -180,6 +202,7 @@ SCRIPTS_WITH_FROM_DATE: Final[frozenset[str]] = frozenset(
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
         EXOTIC_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
     }
 )
 
@@ -215,6 +238,17 @@ RELATIONSHIP_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
 # Only NAR runs this layer currently, so only "nar" has an entry.
 EXOTIC_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "nar": "nar",
+}
+
+# The similar-race layer takes ``--category {jra,nar,ban-ei}`` to pick the PG
+# source table (jra -> jvd_se, nar/ban-ei -> nvd_se). Unlike trainer / pacestyle
+# / relationship (which only run on jra+nar), this layer runs on ALL THREE
+# chains, so the map carries every category — including ban-ei, which the script
+# accepts directly as a ``--category`` choice.
+SIMILAR_RACE_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+    "ban-ei": "ban-ei",
 }
 
 
@@ -324,6 +358,26 @@ def _exotic_category_args(script: str, category: Category) -> list[str]:
     return []
 
 
+def _similar_race_args(script: str, category: Category) -> list[str]:
+    """``--category`` + DuckDB resource caps for the similar-race layer.
+
+    The script reads PG history (so it already gets ``--pg-url`` / ``--from-date``
+    from the shared helpers) and additionally needs the source-table selector and
+    the OOM-safe ``--threads`` / ``--memory-limit`` caps so the pairwise
+    similarity scan spills to disk inside the container budget.
+    """
+    if script != SIMILAR_RACE_SCRIPT:
+        return []
+    return [
+        "--category",
+        SIMILAR_RACE_CATEGORY_BY_CATEGORY[category],
+        "--threads",
+        SIMILAR_RACE_THREADS,
+        "--memory-limit",
+        SIMILAR_RACE_MEMORY_LIMIT,
+    ]
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -342,7 +396,9 @@ def build_layer_argv(
     * the lineage layer additionally takes ``--config``;
     * the trainer + pacestyle + relationship layers additionally take
       ``--category``;
-    * the course-numerical layer additionally takes ``--course-lookup``.
+    * the course-numerical layer additionally takes ``--course-lookup``;
+    * the similar-race layer additionally takes ``--category`` plus the DuckDB
+      ``--threads`` / ``--memory-limit`` resource caps.
     """
     base = [
         PYTHON_BIN,
@@ -362,6 +418,7 @@ def build_layer_argv(
         + _relationship_category_args(script, category)
         + _course_lookup_args(script)
         + _exotic_category_args(script, category)
+        + _similar_race_args(script, category)
     )
 
 

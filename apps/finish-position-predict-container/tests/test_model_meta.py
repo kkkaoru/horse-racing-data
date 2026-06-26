@@ -1,6 +1,6 @@
-"""Tests for the container-baked model metadata mapping (v8 production deploy:
-JRA=iter20-jra-cb-2013-v8, NAR=iter12-nar-xgb-hpo-v8, Ban-ei
-unchanged from v7-lineage)."""
+"""Tests for the container-baked model metadata mapping (v9 sim_* deploy:
+JRA=jra-cb-v9-sim-2013, NAR=iter12-nar-xgb-hpo-v8 (sim_* REJECT),
+Ban-ei=banei-cb-v9-sim-2011)."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ NAR_CB_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
 
 
 def test_model_version_jra() -> None:
-    assert model_version_for("jra") == "iter20-jra-cb-2013-v8"
+    assert model_version_for("jra") == "jra-cb-v9-sim-2013"
 
 
 def test_model_version_nar() -> None:
@@ -39,7 +39,7 @@ def test_model_version_nar() -> None:
 
 
 def test_model_version_banei() -> None:
-    assert model_version_for("ban-ei") == "banei-cb-v8-window2011-wf-15y"
+    assert model_version_for("ban-ei") == "banei-cb-v9-sim-2011"
 
 
 def test_architecture_jra_catboost() -> None:
@@ -55,7 +55,7 @@ def test_architecture_banei_catboost() -> None:
 
 
 def test_feature_count_jra() -> None:
-    assert feature_count_for("jra") == 244
+    assert feature_count_for("jra") == 263
 
 
 def test_feature_count_nar() -> None:
@@ -63,18 +63,18 @@ def test_feature_count_nar() -> None:
 
 
 def test_feature_count_banei() -> None:
-    assert feature_count_for("ban-ei") == 111
+    assert feature_count_for("ban-ei") == 130
 
 
 def test_build_r2_object_key_model() -> None:
     assert build_r2_object_key("jra", "model.json") == (
-        "finish-position/jra/iter20-jra-cb-2013-v8/model.json"
+        "finish-position/jra/jra-cb-v9-sim-2013/model.json"
     )
 
 
 def test_build_r2_object_key_metadata() -> None:
     assert build_r2_object_key("ban-ei", "metadata.json") == (
-        "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y/metadata.json"
+        "finish-position/ban-ei/banei-cb-v9-sim-2011/metadata.json"
     )
 
 

@@ -2,7 +2,7 @@
 
 Single source of truth for the model the daily-prediction container LOADS and
 SCORES TODAY's upcoming races with. As of 2026-06-18 the v8 production deploy is
-JRA=iter20-jra-cb-2013-v8 (244 features, base-only; train start 20130101),
+JRA=jra-cb-v9-sim-2013 (263 features, base-only; train start 20130101),
 NAR=iter12-nar-xgb-hpo-v8.
 The historical PG predictions table + ``finish_position_active_models``
 were flipped, the iter12/iter20 BOOSTERS are baked under
@@ -87,12 +87,11 @@ MODEL_FILE_NAME: Final[str] = "model.json"
 # ---------------------------------------------------------------------------
 # E-top2 place-preserving override (iter22-jra-etop2, STAGED 2026-06-18)
 # ---------------------------------------------------------------------------
-# True = dual-model loading is ACTIVE at container startup: the predict loop
-# loads both CB iter20 AND XGB xgb-jra-2013-v8 for JRA, applies the E-top2
-# score override per race (see predict_lib.etop2_override), and writes
-# predictions under JRA_ETOP2_MODEL_VERSION instead of MODEL_VERSION_BY_CATEGORY
-# ["jra"]. Flipped to True by orchestrator after smoke2 PASS (2026-06-18).
-JRA_ETOP2_ENABLED: Final[bool] = True
+# False since v9-sim deploy: sim_* CB model has 263 features but the XGB
+# override model (xgb-jra-2013-v8) expects 244. sim_* CB alone gives +1.34pp
+# top1 (comparable to E-top2's +1.36pp). Re-enable after retraining XGB with
+# 263 features or adding per-model feature_names support.
+JRA_ETOP2_ENABLED: Final[bool] = False
 
 # The XGB model version baked at models/finish-position/jra/xgb-jra-2013-v8/.
 # Used to build the R2 object key for the XGB model file at startup when

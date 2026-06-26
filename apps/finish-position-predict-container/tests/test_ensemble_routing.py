@@ -54,7 +54,7 @@ from predict_lib.model_meta import Architecture
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
-JRA_FALLBACK_MODEL_VERSION: str = "iter20-jra-cb-2013-v8"
+JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013"
 # iter 25/26 JRA per-class ensembles were active through 2026-06-12; iter 19
 # (2026-06-13) dropped all JRA per-class entries from the registry (base-only).
 # Tests that exercise the JRA ensemble code path inject the registry via
@@ -575,7 +575,7 @@ def test_init_member_pool_loads_registered_members(
     )
 
     def fake_load(model_path: str) -> BoosterLike:
-        return _StubBooster(0.0 if "iter20" in model_path else 0.5)
+        return _StubBooster(0.0 if "v9-sim" in model_path else 0.5)
 
     _install_fake_catboost_adapter(monkeypatch, fake_load)
 
@@ -583,8 +583,8 @@ def test_init_member_pool_loads_registered_members(
 
     assert pool.has(JRA_FALLBACK_MODEL_VERSION) is True
     assert pool.has(ITER22_RESIDUAL_703) is True
-    # Sorted: 'iter14-' (...) before 'iter22-' (...).
-    assert pool.model_versions() == (JRA_FALLBACK_MODEL_VERSION, ITER22_RESIDUAL_703)
+    # Sorted: 'iter22-' before 'jra-cb-v9-'.
+    assert pool.model_versions() == (ITER22_RESIDUAL_703, JRA_FALLBACK_MODEL_VERSION)
     # Both JRA members are CatBoost.
     baseline_record = pool.get_record(JRA_FALLBACK_MODEL_VERSION)
     residual_record = pool.get_record(ITER22_RESIDUAL_703)
@@ -695,7 +695,7 @@ def test_init_member_pool_skips_other_categories_registry_entries(
 
     # NAR's registered entry never produced a manifest load and never inflated
     # the JRA pool.
-    assert pool.model_versions() == (JRA_FALLBACK_MODEL_VERSION, ITER22_RESIDUAL_703)
+    assert pool.model_versions() == (ITER22_RESIDUAL_703, JRA_FALLBACK_MODEL_VERSION)
 
 
 # ---------------------------------------------------------------------------
@@ -1719,7 +1719,7 @@ def test_init_member_pool_drops_order_mismatched_member(
     def fake_load(model_path: str) -> BoosterLike:
         # The baseline booster reports the matching order; the residual booster
         # reports a PERMUTED order so the post-load assertion drops it.
-        if "iter20" in model_path:
+        if "v9-sim" in model_path:
             return _NamedBooster(BASELINE_METADATA_FEATURE_NAMES)
         return _NamedBooster(["feature_b", "feature_a", "iter14_score"])
 
