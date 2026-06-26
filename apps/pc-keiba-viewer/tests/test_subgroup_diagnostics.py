@@ -432,6 +432,50 @@ def test_compute_race_top3_box_excludes_null_predicted_rank():
     assert subject.compute_race_top3_box(group) is False
 
 
+def test_placeN_per_race_perfect_prediction():
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 5,
+        "ketto_toroku_bango": ["a", "b", "c", "d", "e"],
+        "predicted_rank": [1, 2, 3, 4, 5],
+        "finish_position": [1, 2, 3, 4, 5],
+    })
+    assert subject._placeN_per_race(joined, 2)["place2"].to_list() == [True]
+    assert subject._placeN_per_race(joined, 3)["place3"].to_list() == [True]
+    assert subject._placeN_per_race(joined, 4)["place4"].to_list() == [True]
+    assert subject._placeN_per_race(joined, 5)["place5"].to_list() == [True]
+
+
+def test_placeN_per_race_wrong_prediction():
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [1, 3, 2],
+    })
+    assert subject._placeN_per_race(joined, 2)["place2"].to_list() == [False]
+
+
+def test_placeN_per_race_null_predicted_rank():
+    # Horse "b" with null predicted_rank is excluded; "c" becomes the predicted-#2 slot.
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1.0, None, 2.0],
+        "finish_position": [1.0, 2.0, 3.0],
+    })
+    assert subject._placeN_per_race(joined, 2)["place2"].to_list() == [False]
+
+
+def test_placeN_per_race_no_horse_at_rank_n_gives_false():
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 3,
+        "ketto_toroku_bango": ["a", "b", "c"],
+        "predicted_rank": [1, 2, 3],
+        "finish_position": [1, 2, 3],
+    })
+    assert subject._placeN_per_race(joined, 4)["place4"].to_list() == [False]
+
+
 def test_evaluate_subgroup_empty_df_returns_zero_race_count():
     empty = pl.DataFrame(
         schema={
@@ -445,6 +489,11 @@ def test_evaluate_subgroup_empty_df_returns_zero_race_count():
     assert result["race_count"] == 0
     assert result["ndcg_at_3"] == 0.0
     assert result["top1_accuracy"] == 0.0
+    assert result["place2_accuracy"] == 0.0
+    assert result["place3_accuracy"] == 0.0
+    assert result["place4_accuracy"] == 0.0
+    assert result["place5_accuracy"] == 0.0
+    assert result["place6_accuracy"] == 0.0
     assert result["top3_box_accuracy"] == 0.0
 
 
@@ -526,6 +575,11 @@ def test_evaluate_subgroup_single_race_perfect():
     assert result["race_count"] == 1
     assert abs(result["ndcg_at_3"] - 1.0) < 1e-9
     assert result["top1_accuracy"] == 1.0
+    assert result["place2_accuracy"] == 1.0
+    assert result["place3_accuracy"] == 1.0
+    assert result["place4_accuracy"] == 1.0
+    assert result["place5_accuracy"] == 1.0
+    assert result["place6_accuracy"] == 0.0
     assert result["top3_box_accuracy"] == 1.0
 
 
@@ -565,6 +619,11 @@ def test_evaluate_subgroup_two_races_mixed_results():
     result = subject.evaluate_subgroup(joined)
     assert result["race_count"] == 2
     assert result["top1_accuracy"] == 0.5
+    assert result["place2_accuracy"] == 0.5
+    assert result["place3_accuracy"] == 0.5
+    assert result["place4_accuracy"] == 0.5
+    assert result["place5_accuracy"] == 0.0
+    assert result["place6_accuracy"] == 0.0
     assert result["top3_box_accuracy"] == 0.5
 
 
@@ -1099,13 +1158,30 @@ def test_compute_subgroup_diagnostics_perfect_prediction_scores_one():
     results = subject.compute_subgroup_diagnostics(predictions, ground_truth)
     assert results[0]["ndcg_at_3"] == 1.0
     assert results[0]["top1_accuracy"] == 1.0
+    assert results[0]["place2_accuracy"] == 1.0
+    assert results[0]["place3_accuracy"] == 1.0
+    assert results[0]["place4_accuracy"] == 0.0
+    assert results[0]["place5_accuracy"] == 0.0
+    assert results[0]["place6_accuracy"] == 0.0
     assert results[0]["top3_box_accuracy"] == 1.0
 
 
-def _reference_metrics(joined: pl.DataFrame) -> tuple[float, float, float]:
+def _reference_placeN(group: pl.DataFrame, n: int) -> bool:
+    # Horse at predicted ordinal rank N (among non-null predicted_rank) finishes Nth.
+    valid = group.filter(pl.col("predicted_rank").is_not_null()).sort("predicted_rank")
+    if valid.height < n:
+        return False
+    fp = valid.row(n - 1, named=True)["finish_position"]
+    return fp is not None and int(fp) == n
+
+
+def _reference_metrics(
+    joined: pl.DataFrame,
+) -> tuple[float, float, dict[int, float], float]:
     # Scalar per-race reference, mirroring the pre-vectorization loop body.
     ndcg_scores: list[float] = []
     top1_hits = 0
+    place_hits = {2: 0, 3: 0, 4: 0, 5: 0, 6: 0}
     top3_hits = 0
     race_count = 0
     for (_race_id,), group in joined.group_by("race_id", maintain_order=True):
@@ -1113,6 +1189,9 @@ def _reference_metrics(joined: pl.DataFrame) -> tuple[float, float, float]:
         ndcg_scores.append(subject.compute_race_ndcg(group))
         if subject.compute_race_top1(group):
             top1_hits += 1
+        for n in (2, 3, 4, 5, 6):
+            if _reference_placeN(group, n):
+                place_hits[n] += 1
         if (
             group["finish_position"].is_not_null().sum() >= 3
             and group["predicted_rank"].is_not_null().sum() >= 3
@@ -1121,7 +1200,8 @@ def _reference_metrics(joined: pl.DataFrame) -> tuple[float, float, float]:
             top3_hits += 1
     safe = max(race_count, 1)
     ndcg = float(np.mean(ndcg_scores)) if ndcg_scores else 0.0
-    return ndcg, top1_hits / safe, top3_hits / safe
+    place_acc = {n: place_hits[n] / safe for n in (2, 3, 4, 5, 6)}
+    return ndcg, top1_hits / safe, place_acc, top3_hits / safe
 
 
 def test_evaluate_subgroup_matches_scalar_reference_on_messy_multi_race():
@@ -1131,12 +1211,41 @@ def test_evaluate_subgroup_matches_scalar_reference_on_messy_multi_race():
         "predicted_rank": [1.0, 2.0, 3.0, None, 1.0, 2.0, None, 3.0, 1.0, 2.0, 4.0],
         "finish_position": [2.0, 1.0, 3.0, 4.0, None, 1.0, 2.0, 1.0, 3.0, 2.0, 4.0],
     })
-    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    ref_ndcg, ref_top1, ref_place, ref_top3 = _reference_metrics(joined)
     result = subject.evaluate_subgroup(joined)
     assert result["race_count"] == 3
     assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
     assert result["top1_accuracy"] == ref_top1
+    assert result["place2_accuracy"] == ref_place[2]
+    assert result["place3_accuracy"] == ref_place[3]
+    assert result["place4_accuracy"] == ref_place[4]
+    assert result["place5_accuracy"] == ref_place[5]
+    assert result["place6_accuracy"] == ref_place[6]
     assert result["top3_box_accuracy"] == ref_top3
+
+
+def test_evaluate_subgroup_place_metrics_match_reference():
+    joined = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1", "r1", "r1", "r2", "r2", "r2", "r2", "r2", "r2"],
+        "ketto_toroku_bango": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"],
+        "predicted_rank": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        "finish_position": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+    })
+    ref_ndcg, ref_top1, ref_place, ref_top3 = _reference_metrics(joined)
+    result = subject.evaluate_subgroup(joined)
+    assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["top1_accuracy"] == ref_top1
+    assert result["top3_box_accuracy"] == ref_top3
+    assert result["place2_accuracy"] == ref_place[2]
+    assert result["place3_accuracy"] == ref_place[3]
+    assert result["place4_accuracy"] == ref_place[4]
+    assert result["place5_accuracy"] == ref_place[5]
+    assert result["place6_accuracy"] == ref_place[6]
+    assert result["place2_accuracy"] == 0.5
+    assert result["place3_accuracy"] == 0.5
+    assert result["place4_accuracy"] == 0.5
+    assert result["place5_accuracy"] == 0.5
+    assert result["place6_accuracy"] == 0.5
 
 
 def test_evaluate_subgroup_top1_tie_uses_first_in_stable_order():
@@ -1147,11 +1256,13 @@ def test_evaluate_subgroup_top1_tie_uses_first_in_stable_order():
         "predicted_rank": [1.0, 1.0, 2.0],
         "finish_position": [1.0, 2.0, 3.0],
     })
-    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    ref_ndcg, ref_top1, ref_place, ref_top3 = _reference_metrics(joined)
     result = subject.evaluate_subgroup(joined)
     assert result["top1_accuracy"] == 1.0
     assert result["top1_accuracy"] == ref_top1
     assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["place2_accuracy"] == ref_place[2]
+    assert result["place3_accuracy"] == ref_place[3]
     assert result["top3_box_accuracy"] == ref_top3
 
 
@@ -1164,11 +1275,13 @@ def test_evaluate_subgroup_top3_box_tie_uses_stable_order():
         "predicted_rank": [1.0, 2.0, 3.0, 3.0],
         "finish_position": [1.0, 2.0, 3.0, 3.0],
     })
-    ref_ndcg, ref_top1, ref_top3 = _reference_metrics(joined)
+    ref_ndcg, ref_top1, ref_place, ref_top3 = _reference_metrics(joined)
     result = subject.evaluate_subgroup(joined)
     assert result["top3_box_accuracy"] == ref_top3
     assert result["top1_accuracy"] == ref_top1
     assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["place2_accuracy"] == ref_place[2]
+    assert result["place3_accuracy"] == ref_place[3]
 
 
 def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():

@@ -38,6 +38,11 @@ class SubgroupMetrics(TypedDict):
     race_count: int
     ndcg_at_3: float
     top1_accuracy: float
+    place2_accuracy: float
+    place3_accuracy: float
+    place4_accuracy: float
+    place5_accuracy: float
+    place6_accuracy: float
     top3_box_accuracy: float
 
 
@@ -312,6 +317,22 @@ def _top1_per_race(joined: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _placeN_per_race(joined: pl.DataFrame, n: int) -> pl.DataFrame:
+    """Per-race placeN hit: the predicted-#N horse finishes Nth."""
+    col_name = f"place{n}"
+    races = joined.select("race_id").unique()
+    hits = (
+        joined.filter(pl.col("predicted_rank").is_not_null())
+        .with_columns(_slot=pl.col("predicted_rank").rank("ordinal").over("race_id"))
+        .filter(pl.col("_slot") == n)
+        .group_by("race_id")
+        .agg((pl.col("finish_position").first() == n).fill_null(value=False).alias(col_name))
+    )
+    return races.join(hits, on="race_id", how="left").with_columns(
+        pl.col(col_name).fill_null(value=False)
+    )
+
+
 def _top3_box_per_race(joined: pl.DataFrame) -> pl.DataFrame:
     """Per-race top3-box hit: predicted top-3 horse set == actual top-3 set.
 
@@ -374,11 +395,20 @@ def evaluate_subgroup(
             race_count=0,
             ndcg_at_3=0.0,
             top1_accuracy=0.0,
+            place2_accuracy=0.0,
+            place3_accuracy=0.0,
+            place4_accuracy=0.0,
+            place5_accuracy=0.0,
+            place6_accuracy=0.0,
             top3_box_accuracy=0.0,
         )
     ndcg_mean = float(cast(SupportsFloat, _ndcg_per_race(joined)["_ndcg"].mean()))
     top1_hits = int(cast(SupportsInt, _top1_per_race(joined)["top1"].sum()))
     top3_hits = int(cast(SupportsInt, _top3_box_per_race(joined)["top3"].sum()))
+    place_hits = {
+        n: int(cast(SupportsInt, _placeN_per_race(joined, n)[f"place{n}"].sum()))
+        for n in range(2, 7)
+    }
     return SubgroupMetrics(
         subgroup="",
         category=category,
@@ -390,6 +420,11 @@ def evaluate_subgroup(
         race_count=race_count,
         ndcg_at_3=ndcg_mean,
         top1_accuracy=top1_hits / race_count,
+        place2_accuracy=place_hits[2] / race_count,
+        place3_accuracy=place_hits[3] / race_count,
+        place4_accuracy=place_hits[4] / race_count,
+        place5_accuracy=place_hits[5] / race_count,
+        place6_accuracy=place_hits[6] / race_count,
         top3_box_accuracy=top3_hits / race_count,
     )
 

@@ -735,7 +735,8 @@ class ContinuousLearner:
         )
         for m in metrics:
             _logger.info(
-                "│  %-8s %-6s %-14s %-8s %-8s %-8s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                "│  %-8s %-6s %-14s %-8s %-8s %-8s  races=%5d  "
+                "ndcg@3=%.4f  top1=%.4f  p2=%.4f  p3=%.4f  p4=%.4f  p5=%.4f  p6=%.4f  top3_box=%.4f",
                 m["category"],
                 m["surface"],
                 m["distance_band"],
@@ -745,6 +746,11 @@ class ContinuousLearner:
                 m["race_count"],
                 m["ndcg_at_3"],
                 m["top1_accuracy"],
+                m["place2_accuracy"],
+                m["place3_accuracy"],
+                m["place4_accuracy"],
+                m["place5_accuracy"],
+                m["place6_accuracy"],
                 m["top3_box_accuracy"],
             )
         self._log_surface_summary(metrics)
@@ -766,16 +772,27 @@ class ContinuousLearner:
             weighted_top1 = (
                 sum(m["top1_accuracy"] * m["race_count"] for m in group) / total_races
             )
+            wp2 = sum(m["place2_accuracy"] * m["race_count"] for m in group) / total_races
+            wp3 = sum(m["place3_accuracy"] * m["race_count"] for m in group) / total_races
+            wp4 = sum(m["place4_accuracy"] * m["race_count"] for m in group) / total_races
+            wp5 = sum(m["place5_accuracy"] * m["race_count"] for m in group) / total_races
+            wp6 = sum(m["place6_accuracy"] * m["race_count"] for m in group) / total_races
             weighted_top3 = (
                 sum(m["top3_box_accuracy"] * m["race_count"] for m in group)
                 / total_races
             )
             _logger.info(
-                "│  surface=%-6s  races=%5d  ndcg@3=%.4f  top1=%.4f  top3_box=%.4f",
+                "│  surface=%-6s  races=%5d  ndcg@3=%.4f  top1=%.4f  "
+                "p2=%.4f  p3=%.4f  p4=%.4f  p5=%.4f  p6=%.4f  top3_box=%.4f",
                 surface,
                 total_races,
                 weighted_ndcg,
                 weighted_top1,
+                wp2,
+                wp3,
+                wp4,
+                wp5,
+                wp6,
                 weighted_top3,
             )
 

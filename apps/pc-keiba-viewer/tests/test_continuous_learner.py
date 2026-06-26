@@ -3811,6 +3811,11 @@ def test_log_subgroup_diagnostics_logs_each_subgroup(
             "race_count": 12,
             "ndcg_at_3": 0.61,
             "top1_accuracy": 0.5,
+            "place2_accuracy": 0.33,
+            "place3_accuracy": 0.25,
+            "place4_accuracy": 0.17,
+            "place5_accuracy": 0.08,
+            "place6_accuracy": 0.0,
             "top3_box_accuracy": 0.25,
         }
     ]
@@ -3877,6 +3882,11 @@ def test_log_surface_summary_logs_turf_and_dirt_groups(
                 "race_count": 10,
                 "ndcg_at_3": 0.6,
                 "top1_accuracy": 0.5,
+                "place2_accuracy": 0.4,
+                "place3_accuracy": 0.3,
+                "place4_accuracy": 0.2,
+                "place5_accuracy": 0.1,
+                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.25,
             },
             {
@@ -3890,6 +3900,11 @@ def test_log_surface_summary_logs_turf_and_dirt_groups(
                 "race_count": 20,
                 "ndcg_at_3": 0.4,
                 "top1_accuracy": 0.3,
+                "place2_accuracy": 0.2,
+                "place3_accuracy": 0.15,
+                "place4_accuracy": 0.1,
+                "place5_accuracy": 0.05,
+                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.15,
             },
         ],
@@ -3937,6 +3952,11 @@ def test_log_surface_summary_weights_average_by_race_count(
                 "race_count": 10,
                 "ndcg_at_3": 0.6,
                 "top1_accuracy": 0.6,
+                "place2_accuracy": 0.6,
+                "place3_accuracy": 0.6,
+                "place4_accuracy": 0.6,
+                "place5_accuracy": 0.6,
+                "place6_accuracy": 0.6,
                 "top3_box_accuracy": 0.6,
             },
             {
@@ -3950,6 +3970,11 @@ def test_log_surface_summary_weights_average_by_race_count(
                 "race_count": 30,
                 "ndcg_at_3": 0.2,
                 "top1_accuracy": 0.2,
+                "place2_accuracy": 0.2,
+                "place3_accuracy": 0.2,
+                "place4_accuracy": 0.2,
+                "place5_accuracy": 0.2,
+                "place6_accuracy": 0.2,
                 "top3_box_accuracy": 0.2,
             },
         ],
@@ -3962,7 +3987,7 @@ def test_log_surface_summary_weights_average_by_race_count(
         if "surface=turf" in r.getMessage()
     ]
     assert turf_lines == [
-        "│  surface=turf    races=   40  ndcg@3=0.3000  top1=0.3000  top3_box=0.3000"
+        "│  surface=turf    races=   40  ndcg@3=0.3000  top1=0.3000  p2=0.3000  p3=0.3000  p4=0.3000  p5=0.3000  p6=0.3000  top3_box=0.3000"
     ]
 
 
@@ -3988,6 +4013,11 @@ def test_log_surface_summary_skips_zero_race_surface(
                 "race_count": 0,
                 "ndcg_at_3": 0.0,
                 "top1_accuracy": 0.0,
+                "place2_accuracy": 0.0,
+                "place3_accuracy": 0.0,
+                "place4_accuracy": 0.0,
+                "place5_accuracy": 0.0,
+                "place6_accuracy": 0.0,
                 "top3_box_accuracy": 0.0,
             }
         ],
