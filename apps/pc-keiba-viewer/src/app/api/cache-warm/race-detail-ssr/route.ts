@@ -8,12 +8,13 @@
 
 import { NextResponse } from "next/server";
 
+// Use getRacesByDate so the warmer hits the same KV key as page SSR.
 import {
   getHorseRaceResults,
   getRaceCourseInfo,
   getRaceDetail,
   getRaceRunners,
-  getRacesByDateWithoutJockeyNames,
+  getRacesByDate,
   getSameVenueRacesByDate,
 } from "../../../../db/queries";
 import type { RaceSource } from "../../../../lib/codes";
@@ -138,7 +139,7 @@ export async function POST(request: Request) {
   }
 
   const target = getTargetDateParts(searchParams);
-  const races = await getRacesByDateWithoutJockeyNames(target.year, target.month, target.day);
+  const races = await getRacesByDate(target.year, target.month, target.day);
   const raceParams: WarmRaceParams[] = races
     .filter((race): race is typeof race & { source: RaceSource } => isRaceSource(race.source))
     .map((race) => ({

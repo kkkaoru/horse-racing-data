@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
+// Use getRacesByDate so the warmer hits the same KV key as page SSR.
+import { getRacesByDate } from "../../../../db/queries";
 import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
 import {
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
 
   const nowMs = parseNowMs(searchParams);
   const target = getTargetDateParts(searchParams, nowMs);
-  const races = await getRacesByDateWithoutJockeyNames(target.year, target.month, target.day);
+  const races = await getRacesByDate(target.year, target.month, target.day);
   const messages = races.flatMap(
     (race): { delaySeconds: number; message: RaceTrendCacheWarmMessage }[] => {
       const delaySeconds = getWarmDelaySeconds(race, nowMs);

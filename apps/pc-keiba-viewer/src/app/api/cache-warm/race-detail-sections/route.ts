@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
+// Use getRacesByDate so the warmer hits the same KV key as page SSR.
+import { getRacesByDate } from "../../../../db/queries";
 import { safeGetCloudflareEnv } from "../../../../lib/cloudflare-context.server";
 import {
   DEFAULT_RACE_DETAIL_CACHE_WARM_SECTIONS,
@@ -71,7 +72,7 @@ export async function POST(request: Request) {
   }
 
   const target = getTargetDateParts(searchParams);
-  const races = await getRacesByDateWithoutJockeyNames(target.year, target.month, target.day);
+  const races = await getRacesByDate(target.year, target.month, target.day);
   const messages = races.flatMap((race): DetailSectionCacheWarmMessage[] =>
     getRaceSections({
       distance: race.kyori,
