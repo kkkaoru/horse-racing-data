@@ -2733,6 +2733,12 @@ fieldset.paddock-chip-row {
 
 .paddock-section-edit {
   gap: var(--space-20px-52);
+}
+
+/* Prevent double-tap zoom on the entire paddock edit screen so rapid
+   score-button taps don't accidentally zoom on mobile. */
+.paddock-section-edit,
+.paddock-section-edit * {
   touch-action: manipulation;
 }
 
