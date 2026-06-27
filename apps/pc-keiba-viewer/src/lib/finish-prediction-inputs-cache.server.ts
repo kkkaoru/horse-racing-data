@@ -17,6 +17,8 @@ export interface FinishPredictionStaticPayload {
 const getDefaultCache = (): Cache | null =>
   typeof caches === "undefined" || !caches.default ? null : caches.default;
 
+const swallowCacheRejection = (): undefined => undefined;
+
 const getRaceStartTimeMs = (race: RaceDetail): number | null => {
   const normalizedTime = race.hassoJikoku?.trim().padStart(4, "0");
   if (!normalizedTime || !/^\d{4}$/u.test(normalizedTime)) {
@@ -75,11 +77,18 @@ const getCacheRequest = (cacheKey: string): Request =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const hasNonEmptyModelPredictionFeatures = (inputs: Record<string, unknown>): boolean =>
+  Array.isArray(inputs.modelPredictionFeatures) && inputs.modelPredictionFeatures.length > 0;
+
 const isFinishPredictionStaticPayload = (
   value: unknown,
 ): value is FinishPredictionStaticPayload => {
   if (!isRecord(value)) return false;
-  return isRecord(value.evaluation) && isRecord(value.inputs);
+  return (
+    isRecord(value.evaluation) &&
+    isRecord(value.inputs) &&
+    hasNonEmptyModelPredictionFeatures(value.inputs)
+  );
 };
 
 const readPayloadFromResponse = async (
@@ -172,4 +181,13 @@ export const putFinishPredictionInputsCache = async ({
     return;
   }
   await putCaches;
+};
+
+export const deleteFinishPredictionInputsCache = async (cacheKey: string): Promise<void> => {
+  const defaultCache = getDefaultCache();
+  const { env } = await safeGetCloudflareRuntime();
+  await Promise.all([
+    defaultCache?.delete(getCacheRequest(cacheKey)).catch(swallowCacheRejection),
+    env?.DETAIL_SECTION_CACHE_KV?.delete(cacheKey).catch(swallowCacheRejection),
+  ]);
 };
