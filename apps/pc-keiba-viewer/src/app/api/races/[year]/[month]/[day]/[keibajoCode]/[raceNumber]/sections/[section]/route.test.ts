@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   buildDetailSectionCacheKeyMock: vi.fn<(...args: never[]) => unknown>(),
   buildFinishPredictionInputsCacheKeyMock: vi.fn<(...args: never[]) => unknown>(),
   buildStaleDetailSectionResponseMock: vi.fn<(...args: never[]) => unknown>(),
+  deleteFinishPredictionInputsCacheMock: vi.fn<(...args: never[]) => unknown>(),
   getCachedDetailSectionResponseMock: vi.fn<(...args: never[]) => unknown>(),
   getCachedFinishPredictionInputsMock: vi.fn<(...args: never[]) => unknown>(),
   getDetailSectionPayloadMock: vi.fn<(...args: never[]) => unknown>(),
@@ -32,6 +33,7 @@ vi.mock("../../../../../../../../../../lib/cloudflare-context.server", () => ({
 
 vi.mock("../../../../../../../../../../lib/finish-prediction-inputs-cache.server", () => ({
   buildFinishPredictionInputsCacheKey: mocks.buildFinishPredictionInputsCacheKeyMock,
+  deleteFinishPredictionInputsCache: mocks.deleteFinishPredictionInputsCacheMock,
   getCachedFinishPredictionInputs: mocks.getCachedFinishPredictionInputsMock,
   putFinishPredictionInputsCache: mocks.putFinishPredictionInputsCacheMock,
 }));
@@ -68,7 +70,7 @@ const {
   stripDetailSectionCacheWarmParamsMock,
 } = mocks;
 
-import { GET } from "./route";
+import { DELETE, GET } from "./route";
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -619,6 +621,9 @@ it("returns cached finish-prediction section response when cached body has model
     }),
   });
   expect(response.status).toBe(200);
+  expect(response.headers.get("Cache-Control")).toBe(
+    "private, no-cache, max-age=0, must-revalidate",
+  );
   const body: unknown = await response.json();
   expect(body).toStrictEqual({
     inputs: { modelPredictionFeatures: [{ horseNumber: "01" }] },
@@ -805,4 +810,55 @@ it("skips stale finish-prediction snapshot and recomputes when stale body lacks 
   expect(response.status).toBe(200);
   expect(mocks.buildStaleDetailSectionResponseMock).not.toHaveBeenCalled();
   expect(getDetailSectionPayloadMock).toHaveBeenCalledTimes(1);
+});
+
+it("purges finish-prediction inputs cache and returns 204 on DELETE", async () => {
+  mocks.deleteFinishPredictionInputsCacheMock.mockResolvedValue(true);
+  const response = await DELETE(
+    new Request("https://example.com/api/races/2026/06/03/43/12/sections/finish-prediction", {
+      method: "DELETE",
+    }),
+    {
+      params: Promise.resolve({
+        day: "03",
+        keibajoCode: "43",
+        month: "06",
+        raceNumber: "12",
+        section: "finish-prediction",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(buildFinishPredictionInputsCacheKeyMock).toHaveBeenCalledWith({
+    day: "03",
+    keibajoCode: "43",
+    month: "06",
+    raceNumber: "12",
+    year: "2026",
+  });
+  expect(mocks.deleteFinishPredictionInputsCacheMock).toHaveBeenCalledWith(
+    "finish-prediction-cache-key",
+  );
+});
+
+it("returns 405 on DELETE for non-finish-prediction section without purging", async () => {
+  const response = await DELETE(
+    new Request("https://example.com/api/races/2026/06/03/43/12/sections/ability", {
+      method: "DELETE",
+    }),
+    {
+      params: Promise.resolve({
+        day: "03",
+        keibajoCode: "43",
+        month: "06",
+        raceNumber: "12",
+        section: "ability",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(405);
+  expect(mocks.deleteFinishPredictionInputsCacheMock).not.toHaveBeenCalled();
+  expect(buildFinishPredictionInputsCacheKeyMock).not.toHaveBeenCalled();
 });

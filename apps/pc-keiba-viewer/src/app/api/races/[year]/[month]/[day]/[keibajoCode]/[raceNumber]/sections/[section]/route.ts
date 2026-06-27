@@ -4,6 +4,7 @@ import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../../../
 import { safeGetCloudflareExecutionContext } from "../../../../../../../../../../lib/cloudflare-context.server";
 import {
   buildFinishPredictionInputsCacheKey,
+  deleteFinishPredictionInputsCache,
   type FinishPredictionStaticPayload,
   getCachedFinishPredictionInputs,
   putFinishPredictionInputsCache,
@@ -55,6 +56,11 @@ const SECTIONS = [
 
 const NON_EMPTY_MODEL_PREDICTION_FEATURES_MARKER = '"modelPredictionFeatures":[{';
 
+const FINISH_PREDICTION_BROWSER_CACHE_CONTROL = "private, no-cache, max-age=0, must-revalidate";
+
+const HTTP_STATUS_NO_CONTENT = 204;
+const HTTP_STATUS_METHOD_NOT_ALLOWED = 405;
+
 const isValidSection = (section: string): section is DetailSection =>
   SECTIONS.some((candidate) => candidate === section);
 
@@ -98,6 +104,13 @@ const hasFinishPredictionModelFeatures = (body: string): boolean =>
 
 const shouldCacheFinishPrediction = (section: string, body: string): boolean =>
   section !== "finish-prediction" || hasFinishPredictionModelFeatures(body);
+
+const withFinishPredictionCacheControl = (response: Response, section: string): Response => {
+  if (section !== "finish-prediction") return response;
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", FINISH_PREDICTION_BROWSER_CACHE_CONTROL);
+  return new Response(response.body, { headers, status: response.status });
+};
 
 interface ComputeSectionParams {
   cacheKey: string | null;
@@ -250,7 +263,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
           year,
         })
       : null;
-    if (cacheHitResponse) return cacheHitResponse;
+    if (cacheHitResponse) return withFinishPredictionCacheControl(cacheHitResponse, section);
   }
 
   const cacheKey = cacheableDefaultRequest
@@ -269,7 +282,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     } else if (section === "finish-prediction") {
       const cachedBody = await cachedResponse.clone().text();
       if (hasFinishPredictionModelFeatures(cachedBody)) {
-        return cachedResponse;
+        return withFinishPredictionCacheControl(cachedResponse, section);
       }
     } else {
       return cachedResponse;
@@ -306,7 +319,7 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
           console.error(`background refresh of section ${section} failed`, error);
         }),
       );
-      return buildStaleDetailSectionResponse(staleBody);
+      return withFinishPredictionCacheControl(buildStaleDetailSectionResponse(staleBody), section);
     }
   }
 
@@ -328,7 +341,10 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     if (cacheKey) {
       const staleBody = await getStaleDetailSectionBody(cacheKey).catch(() => null);
       if (staleBody) {
-        return buildStaleDetailSectionResponse(staleBody);
+        return withFinishPredictionCacheControl(
+          buildStaleDetailSectionResponse(staleBody),
+          section,
+        );
       }
     }
     return NextResponse.json(
@@ -346,15 +362,37 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     return NextResponse.json({ error: "not_found" }, { status: 404 });
   }
 
-  return new NextResponse(result.body, {
-    headers: {
-      "Cache-Control": "private, max-age=0, no-store",
-      "Content-Type": "application/json; charset=utf-8",
-      "X-Detail-Section-Cache": finishPredictionInputsCacheKey
-        ? "FINISH-INPUTS-MISS"
-        : cacheKey
-          ? "MISS-STORED"
-          : "BYPASS",
-    },
+  return withFinishPredictionCacheControl(
+    new NextResponse(result.body, {
+      headers: {
+        "Cache-Control": "private, max-age=0, no-store",
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Detail-Section-Cache": finishPredictionInputsCacheKey
+          ? "FINISH-INPUTS-MISS"
+          : cacheKey
+            ? "MISS-STORED"
+            : "BYPASS",
+      },
+    }),
+    section,
+  );
+}
+
+export async function DELETE(
+  _request: Request,
+  { params }: DetailSectionRouteProps,
+): Promise<Response> {
+  const { day, keibajoCode, month, raceNumber, section, year } = await params;
+  if (section !== "finish-prediction") {
+    return new Response(null, { status: HTTP_STATUS_METHOD_NOT_ALLOWED });
+  }
+  const inputsCacheKey = buildFinishPredictionInputsCacheKey({
+    day,
+    keibajoCode,
+    month,
+    raceNumber,
+    year,
   });
+  await deleteFinishPredictionInputsCache(inputsCacheKey);
+  return new Response(null, { status: HTTP_STATUS_NO_CONTENT });
 }
