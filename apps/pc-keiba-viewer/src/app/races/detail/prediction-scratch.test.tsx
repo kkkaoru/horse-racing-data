@@ -166,7 +166,7 @@ const rowTexts = (): string[] =>
 afterEach(cleanup);
 
 describe("prediction tables scratched runners", () => {
-  it("moves scratched finish prediction rows last and hides score and probabilities", () => {
+  it("excludes scratched runners from the finish prediction table", () => {
     renderWithRealtime(
       <FinishPositionPredictionTable
         evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.nar}
@@ -175,12 +175,11 @@ describe("prediction tables scratched runners", () => {
       />,
     );
 
-    expect(rowTexts()[0]).toContain("通常馬");
-    expect(rowTexts()[1]).toContain("取消馬");
-    expect(rowTexts()[1]).toContain("出走取消");
-    expect(rowTexts()[1]).toContain("対象外");
-    expect(rowTexts()[1]).not.toContain("0.99");
-    expect(rowTexts()[1]).not.toContain("99.9");
+    expect(rowTexts().length).toBe(1);
+    expect(screen.getByText("通常馬")).toBeDefined();
+    expect(screen.queryByText("取消馬")).toBeNull();
+    expect(screen.queryByText("出走取消")).toBeNull();
+    expect(screen.queryByText("99.9")).toBeNull();
   });
 
   it("moves scratched overall score rows last and hides score and realtime odds", () => {

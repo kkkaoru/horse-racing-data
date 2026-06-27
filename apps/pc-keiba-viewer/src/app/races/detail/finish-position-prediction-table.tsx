@@ -248,7 +248,6 @@ interface FinishPredictionCombinedScoreData {
 interface FinishPredictionTableRowProps {
   combinedScore: CombinedScoreRow | null;
   combinedScoreLoading: boolean;
-  entryStatus: string;
   isExpanded: boolean;
   jockeyName: string;
   onToggle: (horseNumber: string) => void;
@@ -270,6 +269,14 @@ const formatPercent = (value: number): string => `${value.toFixed(2)}%`;
 const formatRaceCount = (value: number): string => value.toLocaleString("ja-JP");
 
 const formatScore = (value: number): string => value.toFixed(2);
+
+// Sort comparator for the finish-prediction table: ascending predicted rank,
+// then ascending horse number as the tie-breaker.
+export const compareFinishPredictionRows = (
+  left: FinishPredictionRow,
+  right: FinishPredictionRow,
+): number =>
+  left.predictedRank - right.predictedRank || Number(left.horseNumber) - Number(right.horseNumber);
 
 const normalizeScoreRange = (value: number, min: number, max: number): number => {
   if (max <= min) {
@@ -457,7 +464,6 @@ export function WrappedFinishPredictionEvaluation({
 const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
   combinedScore,
   combinedScoreLoading,
-  entryStatus,
   isExpanded,
   jockeyName,
   onToggle,
@@ -468,63 +474,41 @@ const FinishPredictionTableRow = memo(function FinishPredictionTableRow({
 }: FinishPredictionTableRowProps) {
   const displayedPopularity = realtimePopularity ?? row.storedPopularity;
   const displayedOdds = realtimeOdds ?? row.storedOdds;
-  const isScratched = entryStatus !== "";
 
   return (
     <Fragment>
-      <tr
-        className={[
-          isExpanded ? "stats-row-expanded" : "",
-          isScratched ? "stats-row-scratched" : "",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-        data-entry-status={entryStatus || undefined}
-      >
+      <tr className={isExpanded ? "stats-row-expanded" : undefined}>
         <td>
-          {isScratched ? (
-            formatRunnerNumber(row.horseNumber)
-          ) : (
-            <span className="time-score-actions">
-              <span>{formatRunnerNumber(row.horseNumber)}</span>
-              <button
-                aria-expanded={isExpanded}
-                aria-label={`${row.horseName || row.horseNumber}の着順予測詳細`}
-                className="stats-detail-toggle"
-                type="button"
-                onClick={() => {
-                  onToggle(row.horseNumber);
-                }}
-              />
-            </span>
-          )}
+          <span className="time-score-actions">
+            <span>{formatRunnerNumber(row.horseNumber)}</span>
+            <button
+              aria-expanded={isExpanded}
+              aria-label={`${row.horseName || row.horseNumber}の着順予測詳細`}
+              className="stats-detail-toggle"
+              type="button"
+              onClick={() => {
+                onToggle(row.horseNumber);
+              }}
+            />
+          </span>
         </td>
-        <td className="stats-name-cell">
-          {row.horseName || "-"}
-          {entryStatus ? <span className="runner-status-badge">{entryStatus}</span> : null}
-        </td>
+        <td className="stats-name-cell">{row.horseName || "-"}</td>
         <td className="stats-name-cell">{jockeyName || "-"}</td>
-        <td>{isScratched ? "対象外" : row.predictedRank}</td>
-        <td>{isScratched ? "-" : formatPopularity(displayedPopularity)}</td>
-        <td>{isScratched ? "-" : formatOdds(displayedOdds)}</td>
-        <td className="stats-score-cell">{isScratched ? "-" : formatScore(row.score)}</td>
+        <td>{row.predictedRank}</td>
+        <td>{formatPopularity(displayedPopularity)}</td>
+        <td>{formatOdds(displayedOdds)}</td>
+        <td className="stats-score-cell">{formatScore(row.score)}</td>
         <td className="stats-score-cell">
-          {isScratched
-            ? "-"
-            : combinedScore
-              ? formatScore(combinedScore.score)
-              : combinedScoreLoading
-                ? ""
-                : "-"}
+          {combinedScore ? formatScore(combinedScore.score) : combinedScoreLoading ? "" : "-"}
         </td>
         <td className="stats-score-cell">
-          {isScratched ? "-" : paddockScore === null ? "-" : formatScore(paddockScore)}
+          {paddockScore === null ? "-" : formatScore(paddockScore)}
         </td>
-        <td>{isScratched ? "-" : row.winProbability.toFixed(2)}</td>
-        <td>{isScratched ? "-" : row.showProbability.toFixed(2)}</td>
-        <td>{isScratched ? "-" : row.confidence.toFixed(2)}</td>
+        <td>{row.winProbability.toFixed(2)}</td>
+        <td>{row.showProbability.toFixed(2)}</td>
+        <td>{row.confidence.toFixed(2)}</td>
       </tr>
-      {isExpanded && !isScratched ? (
+      {isExpanded ? (
         <tr className="stats-detail-row">
           <td colSpan={12} aria-label="着順予測詳細内訳">
             <div className="stats-detail-panel">
@@ -676,19 +660,13 @@ export function FinishPositionPredictionTable({
     () => buildPaddockScoreByHorse(displayRows, paddockState),
     [displayRows, paddockState],
   );
+  // Exclude scratched / non-starting horses (non-empty realtime entry status):
+  // they cannot receive odds, so their prediction row is not meaningful to show.
   const sortedDisplayRows = useMemo(
     () =>
-      displayRows.toSorted((left, right) => {
-        const leftStatus = entryStatusByHorse.get(formatRunnerNumber(left.horseNumber)) ?? "";
-        const rightStatus = entryStatusByHorse.get(formatRunnerNumber(right.horseNumber)) ?? "";
-        if (leftStatus !== "" || rightStatus !== "") {
-          return leftStatus === rightStatus ? 0 : leftStatus ? 1 : -1;
-        }
-        return (
-          left.predictedRank - right.predictedRank ||
-          Number(left.horseNumber) - Number(right.horseNumber)
-        );
-      }),
+      displayRows
+        .filter((row) => (entryStatusByHorse.get(formatRunnerNumber(row.horseNumber)) ?? "") === "")
+        .toSorted(compareFinishPredictionRows),
     [displayRows, entryStatusByHorse],
   );
   const toggleExpandedHorse = useCallback((horseNumber: string) => {
@@ -881,7 +859,6 @@ export function FinishPositionPredictionTable({
                 <FinishPredictionTableRow
                   combinedScore={combinedScoreByHorse.get(horseNumber) ?? null}
                   combinedScoreLoading={combinedScoreLoading}
-                  entryStatus={entryStatusByHorse.get(horseNumber) ?? ""}
                   isExpanded={expandedHorseNumber === row.horseNumber}
                   jockeyName={getPreferredJockeyName(
                     row.jockeyName,

@@ -1,13 +1,22 @@
 // Run with: bunx vitest run src/app/races/detail/finish-position-prediction-table.test.tsx
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { RealtimeRacePayload } from "horse-racing-realtime/types";
 import React from "react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { FINISH_POSITION_PREDICTION_EVALUATIONS } from "../../../lib/finish-position-prediction-evaluation";
 
+interface MockRealtimePayloadResult {
+  error: string | null;
+  payload: RealtimeRacePayload | null;
+}
+
 vi.mock("./realtime-client", () => ({
-  useRealtimeRacePayload: () => ({ error: null, payload: null }),
+  useRealtimeRacePayload: vi.fn<() => MockRealtimePayloadResult>(() => ({
+    error: null,
+    payload: null,
+  })),
 }));
 
 vi.mock("../../../lib/fetch-with-retry", () => ({
@@ -17,20 +26,27 @@ vi.mock("../../../lib/fetch-with-retry", () => ({
 }));
 
 import type { FinishPredictionBuildInputs } from "../../../lib/finish-position-prediction";
-import type { Runner } from "../../../lib/race-types";
+import type { FinishPredictionRow, Runner } from "../../../lib/race-types";
 import {
   buildAllOffToggles,
   buildAllOnToggles,
   buildTogglesFromStored,
+  compareFinishPredictionRows,
   CorrectionMasterCheckbox,
   FinishPositionPredictionTable,
   getCorrectionTogglesSnapshot,
   WrappedFinishPredictionEvaluation,
 } from "./finish-position-prediction-table";
-import type { RealtimeRaceRequest } from "./realtime-client";
+import { useRealtimeRacePayload, type RealtimeRaceRequest } from "./realtime-client";
 
 interface MockMediaQueryEvent {
   matches: boolean;
+}
+
+interface MockEntryStatuses {
+  alpha: string | null;
+  beta: string | null;
+  gamma: string | null;
 }
 
 const installMatchMediaMock = (initialMatches: boolean) => {
@@ -94,6 +110,70 @@ const sampleRequest: RealtimeRaceRequest = {
   source: "jra",
   year: "2026",
 };
+
+const buildThreeRunnerInputs = (): FinishPredictionBuildInputs => ({
+  currentDistance: "1600",
+  currentKeibajoCode: "05",
+  currentRaceDate: "20260607",
+  currentSource: "jra",
+  results: [],
+  runners: [
+    { ...sampleRunner, bamei: "アルファ", tanshoNinkijun: "05", tanshoOdds: "0050", umaban: "01" },
+    { ...sampleRunner, bamei: "ベータ", tanshoNinkijun: "02", tanshoOdds: "0020", umaban: "02" },
+    { ...sampleRunner, bamei: "ガンマ", tanshoNinkijun: "01", tanshoOdds: "0010", umaban: "03" },
+  ],
+});
+
+const buildRealtimePayload = (statuses: MockEntryStatuses): RealtimeRacePayload => ({
+  horseWeights: null,
+  odds: {
+    fetchedAt: "2026-06-07T09:01:00Z",
+    history: [],
+    horseTrends: [],
+    latest: {
+      tansho: [
+        { combination: "1", odds: 5, rank: 5 },
+        { combination: "2", odds: 2, rank: 2 },
+        { combination: "3", odds: 1, rank: 1 },
+      ],
+    },
+  },
+  raceEntries: {
+    fetchedAt: "2026-06-07T09:01:00Z",
+    horses: [
+      {
+        fetchedAt: "2026-06-07T09:01:00Z",
+        horseName: "アルファ",
+        horseNumber: "1",
+        jockeyName: null,
+        status: statuses.alpha,
+      },
+      {
+        fetchedAt: "2026-06-07T09:01:00Z",
+        horseName: "ベータ",
+        horseNumber: "2",
+        jockeyName: "騎手ベータ",
+        status: statuses.beta,
+      },
+      {
+        fetchedAt: "2026-06-07T09:01:00Z",
+        horseName: "ガンマ",
+        horseNumber: "3",
+        jockeyName: "騎手ガンマ",
+        status: statuses.gamma,
+      },
+    ],
+  },
+  raceKey: "jra:20260607:05:01",
+  raceResults: null,
+  source: null,
+});
+
+const renderedHorseNames = (): string[] =>
+  screen
+    .getAllByRole("row")
+    .slice(1)
+    .map((row) => row.querySelectorAll("td")[1]?.textContent ?? "");
 
 const getCheckboxByQuery = (selector: string): HTMLInputElement => {
   const el = document.querySelector(selector);
@@ -499,4 +579,129 @@ test("FinishPositionPredictionTable shows the combined past-form label", () => {
   );
   const label = document.querySelector('label[for="correction-checkbox-formEnabled"]');
   expect(label?.getAttribute("title")).toStrictEqual("過去成績補正（競走成績・近走・類似レース）");
+});
+
+test("FinishPositionPredictionTable removes a scratched horse from the rendered prediction rows", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({
+    error: null,
+    payload: buildRealtimePayload({ alpha: null, beta: "出走取消", gamma: "" }),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={buildThreeRunnerInputs()}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(screen.queryByText("ベータ")).toStrictEqual(null);
+  expect(screen.getByText("アルファ").textContent).toStrictEqual("アルファ");
+  expect(screen.getByText("ガンマ").textContent).toStrictEqual("ガンマ");
+});
+
+test("FinishPositionPredictionTable renders only non-scratched horses in predicted-rank order", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({
+    error: null,
+    payload: buildRealtimePayload({ alpha: "", beta: "出走取消", gamma: "" }),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={buildThreeRunnerInputs()}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(renderedHorseNames()).toStrictEqual(["ガンマ", "アルファ"]);
+});
+
+test("FinishPositionPredictionTable renders no prediction rows when every horse is scratched", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({
+    error: null,
+    payload: buildRealtimePayload({ alpha: "出走取消", beta: "出走取消", gamma: "出走取消" }),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={buildThreeRunnerInputs()}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(screen.queryByText("アルファ")).toStrictEqual(null);
+  expect(screen.queryByText("ベータ")).toStrictEqual(null);
+  expect(screen.queryByText("ガンマ")).toStrictEqual(null);
+  expect(screen.getAllByRole("row").length).toStrictEqual(1);
+});
+
+test("compareFinishPredictionRows orders by ascending predicted rank", () => {
+  const first: FinishPredictionRow = {
+    confidence: 0.5,
+    details: [],
+    horseName: "アルファ",
+    horseNumber: "7",
+    jockeyName: "騎手",
+    predictedRank: 1,
+    score: 0.9,
+    showProbability: 0.5,
+    storedOdds: null,
+    storedPopularity: null,
+    winProbability: 0.5,
+  };
+  const second: FinishPredictionRow = {
+    confidence: 0.5,
+    details: [],
+    horseName: "ガンマ",
+    horseNumber: "2",
+    jockeyName: "騎手",
+    predictedRank: 3,
+    score: 0.7,
+    showProbability: 0.5,
+    storedOdds: null,
+    storedPopularity: null,
+    winProbability: 0.5,
+  };
+  expect(compareFinishPredictionRows(first, second)).toStrictEqual(-2);
+});
+
+test("compareFinishPredictionRows breaks an equal predicted-rank tie by horse number", () => {
+  const first: FinishPredictionRow = {
+    confidence: 0.5,
+    details: [],
+    horseName: "アルファ",
+    horseNumber: "5",
+    jockeyName: "騎手",
+    predictedRank: 2,
+    score: 0.9,
+    showProbability: 0.5,
+    storedOdds: null,
+    storedPopularity: null,
+    winProbability: 0.5,
+  };
+  const second: FinishPredictionRow = {
+    confidence: 0.5,
+    details: [],
+    horseName: "ガンマ",
+    horseNumber: "3",
+    jockeyName: "騎手",
+    predictedRank: 2,
+    score: 0.9,
+    showProbability: 0.5,
+    storedOdds: null,
+    storedPopularity: null,
+    winProbability: 0.5,
+  };
+  expect(compareFinishPredictionRows(first, second)).toStrictEqual(2);
 });
