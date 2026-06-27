@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
@@ -429,7 +430,7 @@ class TestOpenDb:
 
 
 class TestUpsertRecords:
-    _TS = "2023-01-02T00:00:00+00:00"
+    _TS: str = "2023-01-02T00:00:00+00:00"
 
     def test_empty_list_returns_zero(self, tmp_path: Path) -> None:
         conn = rw.open_db(tmp_path / "w.duckdb")
@@ -573,7 +574,7 @@ class TestUpsertRecords:
 class TestFetchVenue:
     _VENUE: rw.VenueInfo = {"name": "東京", "lat": 35.6622, "lon": 139.4856}
 
-    def _mock_response(self, data: dict[str, object]) -> MagicMock:
+    def _mock_response(self, data: object) -> MagicMock:
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(data).encode()
         mock_resp.__enter__ = lambda s: mock_resp
@@ -650,7 +651,7 @@ class TestSyncAllVenues:
 
         def side_effect(
             keibajo_code: str, *_args: object, **_kwargs: object
-        ) -> list[tuple[object, ...]]:
+        ) -> Sequence[tuple[object, ...]]:
             return sample_rec if keibajo_code == "01" else []
 
         with patch("racing_venue_weather.fetch_venue", side_effect=side_effect):
@@ -675,7 +676,7 @@ class TestSyncAllVenues:
 
         def raise_on_first(
             *_args: object, **_kwargs: object
-        ) -> list[tuple[object, ...]]:
+        ) -> Sequence[tuple[object, ...]]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -713,7 +714,7 @@ class TestSyncAllVenues:
         conn = rw.open_db(tmp_path / "w.duckdb")
         call_count = 0
 
-        def raise_os(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        def raise_os(*_args: object, **_kwargs: object) -> Sequence[tuple[object, ...]]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:

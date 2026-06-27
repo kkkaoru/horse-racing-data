@@ -27,6 +27,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TypedDict
 from urllib.error import URLError
 from urllib.parse import urlencode
@@ -207,7 +208,7 @@ def open_db(db_path: Path) -> duckdb.DuckDBPyConnection:
 
 def upsert_records(
     conn: duckdb.DuckDBPyConnection,
-    records: list[tuple[object, ...]],
+    records: Sequence[tuple[object, ...]],
 ) -> int:
     if not records:
         return 0
