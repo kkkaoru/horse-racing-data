@@ -12,7 +12,6 @@ import {
 } from "../../../db/queries";
 import { getRaceFinishPositionsFromD1 } from "../../../db/race-finish-d1.server";
 import { type BlinkerPattern, classifyBlinkerPattern } from "../../../lib/blinker-pattern";
-import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import {
   safeGetCloudflareEnv,
   safeGetCloudflareExecutionContext,
@@ -61,6 +60,7 @@ import {
   formatSexAge,
   isBanEiKeibajoCode,
 } from "../../../lib/runner-format";
+import { classifySurfaceSwitch, type SurfaceSwitch } from "../../../lib/surface-switch";
 import { AiJsonExportSection } from "./ai-json-export-section";
 import {
   LazyDetailSections,
