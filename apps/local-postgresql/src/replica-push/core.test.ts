@@ -29,6 +29,7 @@ import {
   parsePositiveInteger,
   parseSelectedTables,
   parseStrategyMode,
+  parseReincrementalRollbackSteps,
   parseTableMetadata,
   parseTableProfiles,
   pkExpression,
@@ -41,14 +42,19 @@ import {
   resolvePerTableIdleMs,
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
+  resolveReincrementalRollbackSteps,
   resolveRetryBackoffConfig,
   resolveSkipTables,
   resolveStrategy,
   resolveVerifyMismatchPolicy,
+  rollbackDateOnlyMarker,
+  rollbackIsoTimestampMarker,
+  rollbackTimestampMarker,
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
+  DEFAULT_REINCREMENTAL_ROLLBACK_STEPS,
   LOCAL_CONTAINER_NAME,
   shouldRefreshInclusiveIncrementalMarker,
   timestampKeyExpression,
@@ -2525,6 +2531,275 @@ describe("resolveSkipTables", () => {
   it("ignores empty entries produced by consecutive commas", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,,table_b" })).toStrictEqual(
       new Set(["table_a", "table_b"]),
+    );
+  });
+});
+
+describe("DEFAULT_REINCREMENTAL_ROLLBACK_STEPS", () => {
+  it("exposes the documented 7/30/90 escalation ladder", () => {
+    expect(DEFAULT_REINCREMENTAL_ROLLBACK_STEPS).toStrictEqual([7, 30, 90]);
+  });
+});
+
+describe("parseReincrementalRollbackSteps", () => {
+  it("returns the default ladder when raw is undefined", () => {
+    expect(parseReincrementalRollbackSteps(undefined)).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when raw is an empty string", () => {
+    expect(parseReincrementalRollbackSteps("")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when raw is whitespace only", () => {
+    expect(parseReincrementalRollbackSteps("   ")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when raw is only commas", () => {
+    expect(parseReincrementalRollbackSteps(",,,")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns a single-step ladder when raw is one positive integer", () => {
+    expect(parseReincrementalRollbackSteps("60")).toStrictEqual([60]);
+  });
+
+  it("returns three sorted steps when raw is three positive integers", () => {
+    expect(parseReincrementalRollbackSteps("7,30,90")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("sorts steps ascending regardless of input order", () => {
+    expect(parseReincrementalRollbackSteps("90,7,30")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("dedupes repeated steps", () => {
+    expect(parseReincrementalRollbackSteps("7,7,30")).toStrictEqual([7, 30]);
+  });
+
+  it("trims surrounding whitespace from each entry", () => {
+    expect(parseReincrementalRollbackSteps("  7 , 30 ,90  ")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("drops non-integer tokens but keeps valid integers", () => {
+    expect(parseReincrementalRollbackSteps("7,abc,30")).toStrictEqual([7, 30]);
+  });
+
+  it("drops zero and negative values but keeps valid positive integers", () => {
+    expect(parseReincrementalRollbackSteps("-5,0,7")).toStrictEqual([7]);
+  });
+
+  it("returns the default ladder when every token is non-integer", () => {
+    expect(parseReincrementalRollbackSteps("abc,def")).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when every token is a fractional number", () => {
+    expect(parseReincrementalRollbackSteps("7.5,30.1")).toStrictEqual([7, 30, 90]);
+  });
+});
+
+describe("resolveReincrementalRollbackSteps", () => {
+  it("returns the default ladder when neither env var is set", () => {
+    expect(resolveReincrementalRollbackSteps({})).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the parsed ladder when the steps env var is set", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS: "14,60,180",
+      }),
+    ).toStrictEqual([14, 60, 180]);
+  });
+
+  it("returns a single-step ladder when only the legacy days env var is set", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "60",
+      }),
+    ).toStrictEqual([60]);
+  });
+
+  it("prefers the steps env var when both env vars are set", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS: "7,30",
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "60",
+      }),
+    ).toStrictEqual([7, 30]);
+  });
+
+  it("falls back to legacy when the steps env var is empty", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS: "",
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "45",
+      }),
+    ).toStrictEqual([45]);
+  });
+
+  it("falls back to legacy when the steps env var is whitespace only", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS: "  ",
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "21",
+      }),
+    ).toStrictEqual([21]);
+  });
+
+  it("returns the default ladder when the legacy days env var is empty", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "",
+      }),
+    ).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when the legacy days env var is non-integer", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "abc",
+      }),
+    ).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when the legacy days env var is zero", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "0",
+      }),
+    ).toStrictEqual([7, 30, 90]);
+  });
+
+  it("returns the default ladder when the legacy days env var is negative", () => {
+    expect(
+      resolveReincrementalRollbackSteps({
+        REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS: "-5",
+      }),
+    ).toStrictEqual([7, 30, 90]);
+  });
+});
+
+describe("rollbackDateOnlyMarker", () => {
+  it("subtracts days from a YYYYMMDD marker", () => {
+    expect(rollbackDateOnlyMarker("20260628", 30)).toBe("20260529");
+  });
+
+  it("subtracts a single day correctly", () => {
+    expect(rollbackDateOnlyMarker("20260628", 1)).toBe("20260627");
+  });
+
+  it("crosses month boundaries correctly", () => {
+    expect(rollbackDateOnlyMarker("20260301", 7)).toBe("20260222");
+  });
+
+  it("crosses year boundaries correctly", () => {
+    expect(rollbackDateOnlyMarker("20260101", 1)).toBe("20251231");
+  });
+
+  it("returns null for non-YYYYMMDD markers", () => {
+    expect(rollbackDateOnlyMarker("2026-06-28", 7)).toBe(null);
+  });
+
+  it("returns null for an empty marker", () => {
+    expect(rollbackDateOnlyMarker("", 7)).toBe(null);
+  });
+
+  it("returns null when days is zero", () => {
+    expect(rollbackDateOnlyMarker("20260628", 0)).toBe(null);
+  });
+
+  it("returns null when days is negative", () => {
+    expect(rollbackDateOnlyMarker("20260628", -1)).toBe(null);
+  });
+
+  it("returns null when days is fractional", () => {
+    expect(rollbackDateOnlyMarker("20260628", 1.5)).toBe(null);
+  });
+});
+
+describe("rollbackIsoTimestampMarker", () => {
+  it("subtracts days from a valid ISO timestamp marker", () => {
+    expect(rollbackIsoTimestampMarker("2026-06-28T03:00:00.000Z", 7)).toBe(
+      "2026-06-21T03:00:00.000Z",
+    );
+  });
+
+  it("crosses month boundaries correctly", () => {
+    expect(rollbackIsoTimestampMarker("2026-03-01T00:00:00.000Z", 7)).toBe(
+      "2026-02-22T00:00:00.000Z",
+    );
+  });
+
+  it("returns null for a malformed marker", () => {
+    expect(rollbackIsoTimestampMarker("not-a-date", 7)).toBe(null);
+  });
+
+  it("returns null when days is zero", () => {
+    expect(rollbackIsoTimestampMarker("2026-06-28T03:00:00.000Z", 0)).toBe(null);
+  });
+
+  it("returns null when days is negative", () => {
+    expect(rollbackIsoTimestampMarker("2026-06-28T03:00:00.000Z", -1)).toBe(null);
+  });
+
+  it("returns null when days is fractional", () => {
+    expect(rollbackIsoTimestampMarker("2026-06-28T03:00:00.000Z", 1.5)).toBe(null);
+  });
+});
+
+describe("rollbackTimestampMarker", () => {
+  it("routes data_sakusei_nengappi to the date-only rollback", () => {
+    expect(
+      rollbackTimestampMarker({
+        marker: "20260628",
+        tsColumn: "data_sakusei_nengappi",
+        days: 30,
+      }),
+    ).toBe("20260529");
+  });
+
+  it("routes other timestamp columns to the ISO rollback", () => {
+    expect(
+      rollbackTimestampMarker({
+        marker: "2026-06-28T03:00:00.000Z",
+        tsColumn: "updated_at",
+        days: 7,
+      }),
+    ).toBe("2026-06-21T03:00:00.000Z");
+  });
+
+  it("returns null when the marker is empty", () => {
+    expect(rollbackTimestampMarker({ marker: "", tsColumn: "updated_at", days: 7 })).toBe(null);
+  });
+
+  it("returns null when days is zero", () => {
+    expect(
+      rollbackTimestampMarker({ marker: "20260628", tsColumn: "data_sakusei_nengappi", days: 0 }),
+    ).toBe(null);
+  });
+
+  it("returns null when days is negative", () => {
+    expect(
+      rollbackTimestampMarker({ marker: "20260628", tsColumn: "data_sakusei_nengappi", days: -1 }),
+    ).toBe(null);
+  });
+
+  it("returns null when days is fractional", () => {
+    expect(
+      rollbackTimestampMarker({ marker: "20260628", tsColumn: "data_sakusei_nengappi", days: 1.5 }),
+    ).toBe(null);
+  });
+
+  it("returns null when the date-only marker is malformed", () => {
+    expect(
+      rollbackTimestampMarker({
+        marker: "2026-06-28",
+        tsColumn: "data_sakusei_nengappi",
+        days: 7,
+      }),
+    ).toBe(null);
+  });
+
+  it("returns null when the ISO marker is malformed", () => {
+    expect(rollbackTimestampMarker({ marker: "not-a-date", tsColumn: "updated_at", days: 7 })).toBe(
+      null,
     );
   });
 });

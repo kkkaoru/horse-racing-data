@@ -81,6 +81,15 @@ const TIMESTAMP_COLUMN_PRIORITY: readonly string[] = [
   "generated_at",
 ];
 const INCLUSIVE_INCREMENTAL_TIMESTAMP_COLUMNS = new Set(["data_sakusei_nengappi"]);
+const DATE_ONLY_INCREMENTAL_TIMESTAMP_COLUMNS = new Set(["data_sakusei_nengappi"]);
+const DATE_ONLY_MARKER_PATTERN = /^\d{8}$/;
+const DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE = [7, 30, 90] satisfies number[];
+const REINCREMENTAL_ROLLBACK_STEPS_ENV_KEY = "REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS";
+const REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY = "REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS";
+const ROLLBACK_STEPS_SEPARATOR = ",";
+
+export const DEFAULT_REINCREMENTAL_ROLLBACK_STEPS: readonly number[] =
+  DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE;
 
 export type ProgressEvent =
   | {
@@ -474,6 +483,84 @@ export function incrementalComparatorForTimestampColumn(tsColumn: string | null)
 
 export function shouldRefreshInclusiveIncrementalMarker(tsColumn: string | null): boolean {
   return tsColumn !== null && INCLUSIVE_INCREMENTAL_TIMESTAMP_COLUMNS.has(tsColumn);
+}
+
+export interface RollbackTimestampMarkerInput {
+  marker: string;
+  tsColumn: string;
+  days: number;
+}
+
+export function rollbackTimestampMarker(input: RollbackTimestampMarkerInput): string | null {
+  if (input.marker === "") return null;
+  if (!Number.isInteger(input.days) || input.days <= 0) return null;
+  if (DATE_ONLY_INCREMENTAL_TIMESTAMP_COLUMNS.has(input.tsColumn)) {
+    return rollbackDateOnlyMarker(input.marker, input.days);
+  }
+  return rollbackIsoTimestampMarker(input.marker, input.days);
+}
+
+export function rollbackDateOnlyMarker(marker: string, days: number): string | null {
+  if (!DATE_ONLY_MARKER_PATTERN.test(marker)) return null;
+  if (!Number.isInteger(days) || days <= 0) return null;
+  const year = Number(marker.slice(0, 4));
+  const month = Number(marker.slice(4, 6));
+  const day = Number(marker.slice(6, 8));
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() - days);
+  const yyyy = date.getUTCFullYear().toString().padStart(4, "0");
+  const mm = (date.getUTCMonth() + 1).toString().padStart(2, "0");
+  const dd = date.getUTCDate().toString().padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
+export function rollbackIsoTimestampMarker(marker: string, days: number): string | null {
+  if (!Number.isInteger(days) || days <= 0) return null;
+  const parsed = new Date(marker);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setUTCDate(parsed.getUTCDate() - days);
+  return parsed.toISOString();
+}
+
+function compareNumberAscending(left: number, right: number): number {
+  return left - right;
+}
+
+function dedupeSortedNumbers(values: readonly number[]): readonly number[] {
+  return values.filter((value, index) => index === 0 || value !== values[index - 1]);
+}
+
+export function parseReincrementalRollbackSteps(raw: string | undefined): readonly number[] {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE;
+  const tokens = raw
+    .split(ROLLBACK_STEPS_SEPARATOR)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+  if (tokens.length === 0) return DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE;
+  const valid = tokens
+    .map((token) => Number(token))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  if (valid.length === 0) return DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE;
+  return dedupeSortedNumbers(valid.slice().sort(compareNumberAscending));
+}
+
+function parseLegacyReincrementalRollbackDays(raw: string | undefined): number | null {
+  if (raw === undefined || raw === "") return null;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+export function resolveReincrementalRollbackSteps(
+  env: Record<string, string | undefined>,
+): readonly number[] {
+  const explicit = env[REINCREMENTAL_ROLLBACK_STEPS_ENV_KEY];
+  if (explicit !== undefined && explicit.trim() !== "") {
+    return parseReincrementalRollbackSteps(explicit);
+  }
+  const legacy = parseLegacyReincrementalRollbackDays(env[REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY]);
+  if (legacy !== null) return [legacy];
+  return DEFAULT_REINCREMENTAL_ROLLBACK_STEPS_VALUE;
 }
 
 export function buildIncrementalApplySql(

@@ -33,9 +33,11 @@ import {
   resolvePerTableIdleMs,
   resolvePerTableWallClockMs,
   resolvePositiveIntegerEnv,
+  resolveReincrementalRollbackSteps,
   resolveRetryBackoffConfig,
   resolveSkipTables,
   resolveVerifyMismatchPolicy,
+  rollbackTimestampMarker,
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
@@ -67,8 +69,6 @@ const defaultExcludedLogTables = new Set([
 ]);
 const DEFAULT_MAX_ATTEMPTS = 5;
 const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
-const DEFAULT_REINCREMENTAL_ROLLBACK_DAYS = 7;
-const REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY = "REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS";
 const JSONL_LOG_ENV_KEY = "REPLICA_SYNC_LOG_JSONL";
 const TIMEOUT_WARN_INTERVAL_MS = 30_000;
 
@@ -602,9 +602,16 @@ Environment:
                                   strictly below this percent of max(local, neon).
                                   Default: 1 (i.e. 1% drift).
   REPLICA_SYNC_REINCREMENTAL_ROLLBACK_DAYS
-                                  How many days the timestamp marker is rolled back before
-                                  re-running an incremental copy on verify mismatch.
-                                  Default: 7.
+                                  Legacy single-value rollback (days). When set without
+                                  REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS, the re-incremental
+                                  replay tries exactly this rollback before falling back to
+                                  full-replace. Default: unset (use *_STEPS).
+  REPLICA_SYNC_REINCREMENTAL_ROLLBACK_STEPS
+                                  Comma-separated escalation ladder (days) used by the
+                                  re-incremental replay on verify mismatch. Each step rolls
+                                  the timestamp marker back further and retries until the
+                                  Neon row count catches up to local; full-replace fallback
+                                  fires only after every step exhausts. Default: 7,30,90.
   REPLICA_SYNC_LOG_JSONL          When set to 1 or true, append one JSON line per progress
                                   event to tmp/push-neon-sync.jsonl. Default: off.
   REPLICA_SYNC_NEON_PSQL_CONTAINER
@@ -877,12 +884,13 @@ async function syncTableIncrementally(options: SyncTableIncrementallyOptions): P
         profile,
         tsColumn,
         neonFp,
+        localCount: localFp.count,
         retry,
         message: action.message,
       });
       if (reincrementalHandled) return;
       writeLine(
-        `[${formatNow()}] ⚠ ${table.tableName}: re-incremental skipped (marker rollback not supported for this strategy) — falling back to full-replace`,
+        `[${formatNow()}] ⚠ ${table.tableName}: re-incremental escalation exhausted (or marker rollback unsupported) — falling back to full-replace`,
       );
     } else {
       writeLine(`[${formatNow()}] ⚠ ${action.message}`);
@@ -1428,77 +1436,123 @@ interface TryReincrementalReplayOptions {
   profile: TableProfile;
   tsColumn: string | null;
   neonFp: { count: number; marker: string };
+  localCount: number;
   retry: { maxAttempts: number; backoff: RetryBackoffConfig };
   message: string;
 }
 
+interface ReincrementalEscalationOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  tsColumn: string;
+  neonMarker: string;
+  localCount: number;
+  retry: { maxAttempts: number; backoff: RetryBackoffConfig };
+  message: string;
+  steps: readonly number[];
+  stepIndex: number;
+}
+
+interface ReincrementalReplayStepOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  tsColumn: string;
+  neonMarker: string;
+  localCount: number;
+  retry: { maxAttempts: number; backoff: RetryBackoffConfig };
+  message: string;
+  days: number;
+}
+
 async function tryReincrementalReplay(options: TryReincrementalReplayOptions): Promise<boolean> {
-  const { env, table, profile, tsColumn, neonFp, retry, message } = options;
+  const { env, table, profile, tsColumn, neonFp, localCount, retry, message } = options;
   if (profile.strategy !== "timestamp-incremental" || tsColumn === null) return false;
-  const rolledBackMarker = rollbackTimestampMarker(env, neonFp.marker, tsColumn);
-  if (rolledBackMarker === null) return false;
+  if (neonFp.marker === "") return false;
+  const steps = resolveReincrementalRollbackSteps(env);
+  if (steps.length === 0) return false;
   writeLine(
-    `[${formatNow()}] ↻ ${table.tableName}: re-incremental replay — ${message}; rolled marker from ${truncateMarker(neonFp.marker)} to ${truncateMarker(rolledBackMarker)}`,
+    `[${formatNow()}] ↻ ${table.tableName}: re-incremental replay — ${message}; steps=[${steps.join(",")}]d, baseMarker=${truncateMarker(neonFp.marker)}, localCount=${localCount}, neonCount=${neonFp.count}`,
   );
-  const keyExpression = timestampKeyExpression(tsColumn);
+  return runReincrementalEscalation({
+    env,
+    table,
+    tsColumn,
+    neonMarker: neonFp.marker,
+    localCount,
+    retry,
+    message,
+    steps,
+    stepIndex: 0,
+  });
+}
+
+async function runReincrementalEscalation(
+  options: ReincrementalEscalationOptions,
+): Promise<boolean> {
+  if (options.stepIndex >= options.steps.length) {
+    writeLine(
+      `[${formatNow()}] ↻ ${options.table.tableName}: re-incremental escalation exhausted after steps=[${options.steps.join(",")}]d, falling back to full-replace`,
+    );
+    return false;
+  }
+  const days = options.steps[options.stepIndex]!;
+  const handled = await runReincrementalReplayStep({
+    env: options.env,
+    table: options.table,
+    tsColumn: options.tsColumn,
+    neonMarker: options.neonMarker,
+    localCount: options.localCount,
+    retry: options.retry,
+    message: options.message,
+    days,
+  });
+  if (handled) return true;
+  return runReincrementalEscalation({ ...options, stepIndex: options.stepIndex + 1 });
+}
+
+async function runReincrementalReplayStep(
+  options: ReincrementalReplayStepOptions,
+): Promise<boolean> {
+  const rolledMarker = rollbackTimestampMarker({
+    marker: options.neonMarker,
+    tsColumn: options.tsColumn,
+    days: options.days,
+  });
+  if (rolledMarker === null) return false;
+  writeLine(
+    `[${formatNow()}] ↺ ${options.table.tableName}: re-incremental rollback ${options.days}d — rolled marker from ${truncateMarker(options.neonMarker)} to ${truncateMarker(rolledMarker)}`,
+  );
+  const keyExpression = timestampKeyExpression(options.tsColumn);
   const stageTableName = buildStageTableName({
     kind: "reincremental",
     pid: process.pid,
-    tableName: table.tableName,
+    tableName: options.table.tableName,
   });
-  const incSql = buildIncrementalApplySql(table, stageTableName, false);
-  const localCopySql = buildIncrementalCopyFromSql(table, {
+  const incSql = buildIncrementalApplySql(options.table, stageTableName, false);
+  const localCopySql = buildIncrementalCopyFromSql(options.table, {
     keyExpression,
-    neonMarker: rolledBackMarker,
-    comparator: incrementalComparatorForTimestampColumn(tsColumn),
+    neonMarker: rolledMarker,
+    comparator: incrementalComparatorForTimestampColumn(options.tsColumn),
   });
-  await runIncrementalCopyWithRetry({ env, table, incSql, localCopySql, retry });
-  const verifyFp = await loadFingerprint(env, table, "neon", tsColumn);
-  if (verifyFp.count !== profile.rowCount && verifyFp.count !== neonFp.count) {
+  await runIncrementalCopyWithRetry({
+    env: options.env,
+    table: options.table,
+    incSql,
+    localCopySql,
+    retry: options.retry,
+  });
+  const verifyFp = await loadFingerprint(options.env, options.table, "neon", options.tsColumn);
+  if (verifyFp.count >= options.localCount) {
     writeLine(
-      `[${formatNow()}] ↻ ${table.tableName}: re-incremental verified neon=${verifyFp.count}`,
+      `[${formatNow()}] ✚ ${options.table.tableName}: re-incremental verified neon=${verifyFp.count} after ${options.days}d rollback (local=${options.localCount})`,
     );
+    return true;
   }
-  return true;
-}
-
-function resolveReincrementalRollbackDays(env: Record<string, string | undefined>): number {
-  const raw = env[REINCREMENTAL_ROLLBACK_DAYS_ENV_KEY];
-  if (raw === undefined || raw === "") return DEFAULT_REINCREMENTAL_ROLLBACK_DAYS;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) return DEFAULT_REINCREMENTAL_ROLLBACK_DAYS;
-  return parsed;
-}
-
-function rollbackTimestampMarker(
-  env: Record<string, string | undefined>,
-  marker: string,
-  tsColumn: string,
-): string | null {
-  if (marker === "") return null;
-  const days = resolveReincrementalRollbackDays(env);
-  if (tsColumn === "data_sakusei_nengappi") return rollbackDateOnlyMarker(marker, days);
-  return rollbackIsoTimestampMarker(marker, days);
-}
-
-function rollbackDateOnlyMarker(marker: string, days: number): string | null {
-  if (!/^\d{8}$/.test(marker)) return null;
-  const year = Number(marker.slice(0, 4));
-  const month = Number(marker.slice(4, 6));
-  const day = Number(marker.slice(6, 8));
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() - days);
-  const yyyy = date.getUTCFullYear().toString().padStart(4, "0");
-  const mm = (date.getUTCMonth() + 1).toString().padStart(2, "0");
-  const dd = date.getUTCDate().toString().padStart(2, "0");
-  return `${yyyy}${mm}${dd}`;
-}
-
-function rollbackIsoTimestampMarker(marker: string, days: number): string | null {
-  const parsed = new Date(marker);
-  if (Number.isNaN(parsed.getTime())) return null;
-  parsed.setUTCDate(parsed.getUTCDate() - days);
-  return parsed.toISOString();
+  const residual = options.localCount - verifyFp.count;
+  writeLine(
+    `[${formatNow()}] ↺ ${options.table.tableName}: re-incremental rollback ${options.days}d residual=${residual} (neon=${verifyFp.count}, local=${options.localCount}) — escalating`,
+  );
+  return false;
 }
 
 async function main(): Promise<void> {
