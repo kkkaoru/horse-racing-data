@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pipeline-health-monitor",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-05-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+  // Every 15 min across the JST race-day window (JST 09:00–22:45 = UTC 00–13).
+  "triggers": {
+    "crons": ["0,15,30,45 0-13 * * *"],
+  },
+  "queues": {
+    "producers": [
+      {
+        "binding": "ALERT_QUEUE",
+        "queue": "pipeline-health-alerts",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "pipeline-health-alerts",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_concurrency": 1,
+        "max_retries": 3,
+      },
+    ],
+  },
+  "services": [
+    {
+      "binding": "REALTIME",
+      "service": "sync-realtime-data",
+    },
+  ],
+  // Operator must run:
+  //   wrangler kv namespace create pipeline-health-monitor-state
+  // then replace `REPLACE_WITH_KV_ID` below with the returned `id` value.
+  "kv_namespaces": [
+    {
+      "binding": "STATE_KV",
+      "id": "REPLACE_WITH_KV_ID",
+    },
+  ],
+}

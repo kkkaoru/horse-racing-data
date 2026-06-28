@@ -48,6 +48,14 @@ pre-commit:
     test-sync-realtime-data-features:
       glob: "apps/sync-realtime-data-features/**/*.ts"
       run: bun run --filter sync-realtime-data-features test:coverage
+    tsc-pipeline-health-monitor:
+      glob: "apps/pipeline-health-monitor/**/*.ts"
+      run: bun run --filter pipeline-health-monitor tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
+    test-pipeline-health-monitor:
+      glob: "apps/pipeline-health-monitor/**/*.ts"
+      run: bun run --filter pipeline-health-monitor test:coverage
     tsc-finish-position-cron:
       glob: "apps/finish-position-cron/**/*.ts"
       run: bun run --filter finish-position-cron tsc
