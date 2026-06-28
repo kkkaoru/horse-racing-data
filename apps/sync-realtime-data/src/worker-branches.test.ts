@@ -894,6 +894,29 @@ it("fetch-results still busts trend cache when partial-final (inserted > 0 but <
   );
 });
 
+// 2026-06-28 (D1 cost optimization): plan-result-fetches summary log forwards
+// the KV namespace so identical (enqueued/eligible/skipped) summaries dedupe
+// within LOG_DEDUPE_TTL_SECONDS instead of writing one row per */2 cron tick.
+it("planResultFetchesOnly forwards the KV namespace to logFetch for summary dedupe", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([]);
+  const kv = { get: vi.fn(), put: vi.fn() } as unknown as KVNamespace;
+  const env = buildEnv({
+    DETAIL_SECTION_CACHE_KV: kv,
+    REALTIME_TEST_NOW: "2026-05-12T02:00:00.000Z",
+  });
+  await planResultFetchesOnly(env, "20260512");
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "plan-result-fetches-summary",
+    null,
+    '{"enqueued":0,"eligible":0,"skipped_too_recent":0}',
+    kv,
+  );
+});
+
 // Covers planResultFetchesOnly running the hourly discover-urls recovery
 // when the tick lands inside the first minute of an hour, plus the queued
 // race path so both the discovery side effect and job enqueue land.

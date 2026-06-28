@@ -951,5 +951,6 @@ it("scheduled triggers the weight watchdog for the every-minute cron", async () 
     "ok",
     null,
     "no stale weight races",
+    undefined,
   );
 });

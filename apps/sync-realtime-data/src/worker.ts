@@ -1433,11 +1433,26 @@ export const findStaleWeightFetchRaces = async (
 // path on the hot worker. The watchdog only touches a single D1 read and
 // the queue, so a Hyperdrive saturation that opens the planner circuit
 // breaker still leaves weight fetches flowing here.
+//
+// 2026-06-28 (D1 cost optimization): every logFetch call here passes the
+// shared KV namespace so storage.shouldSkipFetchLog dedupes identical rows
+// (same jobType + status + raceKey + message hash) within
+// LOG_DEDUPE_TTL_SECONDS (60s). Without dedupe the */1 watchdog wrote 60
+// "no stale weight races" rows / hour during the quiet 00:00-08:59 JST
+// window. With dedupe it writes 1 row / hour while still surfacing distinct
+// outcomes (enqueued counts, error messages) immediately.
 export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
   try {
     const stale = await findStaleWeightFetchRaces(env.REALTIME_DB, now);
     if (stale.length === 0) {
-      await logFetch(env.REALTIME_DB, "weight-watchdog", "ok", null, "no stale weight races");
+      await logFetch(
+        env.REALTIME_DB,
+        "weight-watchdog",
+        "ok",
+        null,
+        "no stale weight races",
+        env.DETAIL_SECTION_CACHE_KV,
+      );
       return;
     }
     const jobs: Job[] = stale.map((race) => ({
@@ -1451,9 +1466,17 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
       "ok",
       null,
       JSON.stringify({ enqueued: jobs.length }),
+      env.DETAIL_SECTION_CACHE_KV,
     );
   } catch (error: unknown) {
-    await logFetch(env.REALTIME_DB, "weight-watchdog", "error", null, formatError(error));
+    await logFetch(
+      env.REALTIME_DB,
+      "weight-watchdog",
+      "error",
+      null,
+      formatError(error),
+      env.DETAIL_SECTION_CACHE_KV,
+    );
   }
 };
 
@@ -2505,6 +2528,12 @@ export const planResultFetchesOnly = async (env: Env, targetDate: string): Promi
       eligible: breakdown.eligible,
       skipped_too_recent: breakdown.skippedTooRecent,
     }),
+    // 2026-06-28 (D1 cost optimization): the */2 cron emits a summary row
+    // every 2 min. Identical summary payloads (same enqueued / eligible /
+    // skipped triple) repeat through quiet windows; KV dedupe collapses
+    // those to 1 row / LOG_DEDUPE_TTL_SECONDS while still landing rows on
+    // first transition to a new payload.
+    env.DETAIL_SECTION_CACHE_KV,
   );
   await markResultFetchQueued(
     env.REALTIME_DB,
@@ -3335,7 +3364,19 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
   const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
   const claimed = await claimResultFetch(env.REALTIME_DB, raceKey, lockUntil, toJstIsoString(now));
   if (!claimed) {
-    await logFetch(env.REALTIME_DB, "fetch-results", SKIP_STATUS.claimFailed, raceKey, null);
+    // 2026-06-28 (D1 cost optimization): fetch-results runs every 2 min and
+    // claim-failed fires every tick a race is locked by another consumer.
+    // Forward the KV namespace so identical (raceKey + skip:claim-failed)
+    // pairs dedupe within LOG_DEDUPE_TTL_SECONDS while still landing one
+    // row per distinct race so an operator can still see lock contention.
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-results",
+      SKIP_STATUS.claimFailed,
+      raceKey,
+      null,
+      env.DETAIL_SECTION_CACHE_KV,
+    );
     return;
   }
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
@@ -3345,7 +3386,14 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
   }
   if (!isRaceFinished(race, now)) {
     await failResultFetch(env.REALTIME_DB, raceKey);
-    await logFetch(env.REALTIME_DB, "fetch-results", SKIP_STATUS.notFinished, raceKey, null);
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-results",
+      SKIP_STATUS.notFinished,
+      raceKey,
+      null,
+      env.DETAIL_SECTION_CACHE_KV,
+    );
     return;
   }
 
@@ -3721,7 +3769,18 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     currentState?.retryAfter &&
     new Date(currentState.retryAfter).getTime() > getNow(env).getTime()
   ) {
-    await logFetch(env.REALTIME_DB, "fetch-premium-paddock", SKIP_STATUS.lockHeld, raceKey, null);
+    // 2026-06-28 (D1 cost optimization): paddock fetch retries every */2 min
+    // while a race is in cooldown; without dedupe each retry writes a
+    // distinct lock-held row even though the underlying state has not
+    // changed. KV dedupe keeps one row per (raceKey + status) window.
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-paddock",
+      SKIP_STATUS.lockHeld,
+      raceKey,
+      null,
+      env.DETAIL_SECTION_CACHE_KV,
+    );
     return;
   }
   const config = getPremiumRaceConfig(env);
@@ -3732,6 +3791,7 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
       SKIP_STATUS.configMissing,
       raceKey,
       null,
+      env.DETAIL_SECTION_CACHE_KV,
     );
     return;
   }

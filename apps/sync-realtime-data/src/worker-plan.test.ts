@@ -2333,9 +2333,35 @@ it("runWeightWatchdog logs the no-stale path when there are no candidates", asyn
     "ok",
     null,
     "no stale weight races",
+    undefined,
   );
   expect(send).not.toHaveBeenCalled();
   expect(sendBatch).not.toHaveBeenCalled();
+});
+
+it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when bound", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const kv = { get: vi.fn(), put: vi.fn() } as unknown as KVNamespace;
+  const env = {
+    DETAIL_SECTION_CACHE_KV: kv,
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  await runWeightWatchdog(env, new Date("2026-06-07T03:00:00.000Z"));
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog",
+    "ok",
+    null,
+    "no stale weight races",
+    kv,
+  );
 });
 
 it("runWeightWatchdog enqueues fetch-weights jobs for stale races and logs the enqueued count", async () => {
@@ -2370,6 +2396,7 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale races and logs the e
     "ok",
     null,
     '{"enqueued":2}',
+    undefined,
   );
   expect(sendBatch).toHaveBeenCalledWith([
     { body: { raceKey: "jra:2026:0607:05:06", type: "fetch-weights" } },
@@ -2398,6 +2425,7 @@ it("runWeightWatchdog logs an error when the d1 query throws and does not enqueu
     "error",
     null,
     "d1 saturation",
+    undefined,
   );
   expect(send).not.toHaveBeenCalled();
   expect(sendBatch).not.toHaveBeenCalled();
