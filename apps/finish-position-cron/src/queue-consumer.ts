@@ -97,7 +97,11 @@ const isPerRaceRescore = (
 // touched (completeRun is not called) so concurrent full/per-category runs are
 // unaffected. racesPredicted > 0 and racesPredicted === 0 (cache_miss) both ack —
 // the container already produced an NDJSON result, so retry would be futile.
-// Fetch / stream / DO errors retry via the queue's DLQ machinery.
+// Fetch / stream / DO errors retry via the queue's DLQ machinery. After a
+// successful ack the viewer Cache API is warmed for the same race so the
+// event-driven horse-weight trigger surfaces fresh predictions on the race
+// detail page without waiting for cache TTL — mirrors the JRA per-race rescore
+// path. Warm is fire-and-forget: failures are swallowed inside the warm helper.
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -121,6 +125,13 @@ const processContainerPerRaceRescore = async (
       `Rescore NAR(container) runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted}`,
     );
     message.ack();
+    void warmPredictionCacheForRace({
+      day: runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
+      keibajoCode,
+      month: runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
+      raceNumber: raceBango,
+      year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
+    });
   } catch (err) {
     console.error(
       `Container per-race rescore failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}:`,

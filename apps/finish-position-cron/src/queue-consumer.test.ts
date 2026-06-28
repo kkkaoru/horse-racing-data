@@ -630,3 +630,93 @@ test("does not warm the category cache when a skipDedup rescore fails", async ()
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
+
+test("warms the viewer cache for the race after a NAR container per-race rescore succeeds", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260629",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "29",
+    keibajoCode: "44",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
+  consoleSpy.mockRestore();
+});
+
+test("warms the viewer cache for the race after a Ban-ei container per-race rescore succeeds", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "ban-ei",
+        daysAhead: 0,
+        keibajoCode: "83",
+        mode: "rescore",
+        raceBango: "07",
+        runYmd: "20260629",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "29",
+    keibajoCode: "83",
+    month: "06",
+    raceNumber: "07",
+    year: "2026",
+  });
+  consoleSpy.mockRestore();
+});
+
+test("does not warm the race cache when a container per-race rescore fetch throws", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(new Error("container down"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260629",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("does not warm the race cache when a container per-race rescore response body is null", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260629",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
