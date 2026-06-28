@@ -2599,3 +2599,61 @@ it("deleteRaceRunningStylesChunk falls back to rowids.length when rows_written i
   const result = await deleteRaceRunningStylesChunk(db, { chunkSize: 500, sinceRowid: 0 });
   expect(result.deletedRowCount).toBe(1);
 });
+
+// 2026-06-28 observability: getQueueHealthMetrics surfaces the four signals
+// the /api/internal/queue-health endpoint exposes. Tests cover the
+// happy-path where all four signals are present.
+it("getQueueHealthMetrics returns the four queue-health signals when D1 returns rows", async () => {
+  const firstByJobType = vi.fn((jobType: string) =>
+    jobType === "fetch-results"
+      ? Promise.resolve({ created_at: "2026-06-28T15:42:00+09:00" })
+      : Promise.resolve({ created_at: "2026-06-28T15:35:00+09:00" }),
+  );
+  const firstCount = vi.fn((sql: string) =>
+    sql.includes("queued_at is not null") ? Promise.resolve({ c: 7 }) : Promise.resolve({ c: 3 }),
+  );
+  const prepare = vi.fn((sql: string) => {
+    if (sql.includes("from fetch_logs")) {
+      return {
+        bind: (jobType: string) => ({ first: () => firstByJobType(jobType) }),
+      };
+    }
+    return {
+      bind: () => ({ first: () => firstCount(sql) }),
+    };
+  });
+  const db = { prepare } as unknown as D1Database;
+  const { getQueueHealthMetrics } = await import("./storage");
+  const result = await getQueueHealthMetrics(db, {
+    thirtyMinutesAgoIso: "2026-06-28T16:00:00+09:00",
+    todayYmd: "20260628",
+  });
+  expect(result).toStrictEqual({
+    lastSuccessfulFetchResultsAt: "2026-06-28T15:42:00+09:00",
+    lastSuccessfulFetchWeightsAt: "2026-06-28T15:35:00+09:00",
+    racesQueuedNotFetchedToday: 7,
+    racesStuckOverThirtyMin: 3,
+  });
+});
+
+// 2026-06-28 observability: when D1 has no fetch_logs rows and zero stuck
+// races, getQueueHealthMetrics must return nulls for the timestamps and
+// zero counts (defensive: the queue-health endpoint must NEVER throw or
+// 500 because an operator was checking after a fresh deploy).
+it("getQueueHealthMetrics returns nulls and zero counts when D1 has no rows", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn(() => ({ first }));
+  const prepare = vi.fn(() => ({ bind, first }));
+  const db = { prepare } as unknown as D1Database;
+  const { getQueueHealthMetrics } = await import("./storage");
+  const result = await getQueueHealthMetrics(db, {
+    thirtyMinutesAgoIso: "2026-06-28T16:00:00+09:00",
+    todayYmd: "20260628",
+  });
+  expect(result).toStrictEqual({
+    lastSuccessfulFetchResultsAt: null,
+    lastSuccessfulFetchWeightsAt: null,
+    racesQueuedNotFetchedToday: 0,
+    racesStuckOverThirtyMin: 0,
+  });
+});

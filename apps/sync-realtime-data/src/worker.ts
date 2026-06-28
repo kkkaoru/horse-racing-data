@@ -16,6 +16,7 @@ import {
   parseRaceResultHorseWeights,
   type KeibaGoRaceLink,
 } from "./keiba-go";
+import { PLAN_RESULT_FETCHES_SUMMARY_STATUS, SKIP_STATUS } from "./fetchLogStatuses";
 import { formatError } from "./format-error";
 import { QUEUE_HANDLER_TIMEOUT_MS, withHandlerTimeout } from "./handler-timeout";
 import { mergeJsonHeaders } from "./http";
@@ -75,6 +76,7 @@ import {
   getPremiumPaddockFetchState,
   getPremiumPaddockNotificationState,
   getPremiumRaceDataFetchState,
+  getQueueHealthMetrics,
   getRaceSource,
   deleteDailyRaceEntriesChunk,
   deleteOddsSnapshotsChunk,
@@ -177,6 +179,12 @@ import type {
 } from "./types";
 
 const QUEUE_SEND_BATCH_SIZE = 100;
+// /api/internal/queue-health treats races whose last result-fetch was longer
+// than this threshold ago AND that never completed as "stuck". 30 minutes is
+// the operational tolerance: the planner re-claims every 2 minutes and the
+// upstream rarely publishes results > 25 minutes after post time, so a row
+// stale > 30 min is a signal something is wrong, not a normal late publish.
+const QUEUE_HEALTH_STUCK_THRESHOLD_MINUTES = 30;
 // True at most once per hour so the discover-urls fallback only fires off
 // the first result-poller tick of each JST hour. Without this guard the
 // cron would re-discover every 2 minutes, which is wasteful.
@@ -2389,32 +2397,80 @@ const shouldRunHourlyDiscoveryRecovery = (now: Date): boolean => {
   return Number(minute) < HOURLY_RECOVERY_MINUTE_THRESHOLD;
 };
 
-const buildResultFetchJobIfDue = (
+export type ResultFetchEligibility = "due" | "too-recent" | "ineligible";
+
+// 2026-06-28 observability: the planner needs to distinguish "this race is in
+// principle a fetch-results candidate but its cooldown is still active"
+// (too-recent) from "this race is structurally not a candidate" (ineligible:
+// future-dated race, completed race, currently locked, currently queued).
+// Without that split the plan-result-fetches-summary row cannot tell the
+// difference between "happy path — nothing to do" and "every race is silently
+// suppressed by the cooldown".
+export const classifyResultFetchEligibility = (
   race: SchedulableRaceSource,
   now: Date,
-): Extract<Job, { type: "fetch-results" }> | null => {
+): ResultFetchEligibility => {
   const minutes = minutesUntilRace(race, now);
   if (minutes === null) {
-    return null;
+    return "ineligible";
+  }
+  if (minutes > 0) {
+    return "ineligible";
+  }
+  if (race.source !== "nar" && race.source !== "jra") {
+    return "ineligible";
+  }
+  if (race.resultCompleteAt) {
+    return "ineligible";
   }
   const resultLockUntil = race.resultFetchLockUntil
     ? new Date(race.resultFetchLockUntil).getTime()
     : Number.NaN;
+  if (!Number.isNaN(resultLockUntil) && resultLockUntil > now.getTime()) {
+    return "ineligible";
+  }
   const queuedAtMs = race.lastResultQueuedAt
     ? new Date(race.lastResultQueuedAt).getTime()
     : Number.NaN;
   const queuedTooLongAgo =
     !Number.isNaN(queuedAtMs) &&
     now.getTime() - queuedAtMs > RESULT_FETCH_QUEUE_STALE_MINUTES * 60_000;
-  const isResultFetchEligible =
-    minutes <= 0 &&
-    (race.source === "nar" || race.source === "jra") &&
-    !race.resultCompleteAt &&
-    isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) &&
-    (Number.isNaN(resultLockUntil) || resultLockUntil <= now.getTime()) &&
-    (!race.lastResultQueuedAt || queuedTooLongAgo);
-  return isResultFetchEligible ? { raceKey: race.raceKey, type: "fetch-results" } : null;
+  if (race.lastResultQueuedAt && !queuedTooLongAgo) {
+    return "ineligible";
+  }
+  return isDue(race.lastResultFetchAt, RESULT_FETCH_INTERVAL_MINUTES, now) ? "due" : "too-recent";
 };
+
+const buildResultFetchJobIfDue = (
+  race: SchedulableRaceSource,
+  now: Date,
+): Extract<Job, { type: "fetch-results" }> | null =>
+  classifyResultFetchEligibility(race, now) === "due"
+    ? { raceKey: race.raceKey, type: "fetch-results" }
+    : null;
+
+interface ResultFetchEligibilityBreakdown {
+  eligible: number;
+  skippedTooRecent: number;
+}
+
+export const summariseResultFetchEligibility = (
+  races: readonly SchedulableRaceSource[],
+  now: Date,
+): ResultFetchEligibilityBreakdown =>
+  races.reduce<ResultFetchEligibilityBreakdown>(
+    (acc, race) => {
+      const eligibility = classifyResultFetchEligibility(race, now);
+      if (eligibility === "due") {
+        return { eligible: acc.eligible + 1, skippedTooRecent: acc.skippedTooRecent };
+      }
+      if (eligibility === "too-recent") {
+        return { eligible: acc.eligible, skippedTooRecent: acc.skippedTooRecent + 1 };
+      }
+      return acc;
+    },
+    { eligible: 0, skippedTooRecent: 0 },
+  );
 
 // Result-poller-only planner. Used by the "*/2 0-13 * * *" cron so the
 // race-result `fetch-results` jobs fire every 2 minutes without re-running
@@ -2437,6 +2493,18 @@ export const planResultFetchesOnly = async (env: Env, targetDate: string): Promi
     .map((race) => buildResultFetchJobIfDue(race, now))
     .filter((job): job is Extract<Job, { type: "fetch-results" }> => job !== null);
   await enqueueJobs(env, jobs);
+  const breakdown = summariseResultFetchEligibility(races, now);
+  await logFetch(
+    env.REALTIME_DB,
+    "plan-result-fetches",
+    PLAN_RESULT_FETCHES_SUMMARY_STATUS,
+    null,
+    JSON.stringify({
+      enqueued: jobs.length,
+      eligible: breakdown.eligible,
+      skipped_too_recent: breakdown.skippedTooRecent,
+    }),
+  );
   await markResultFetchQueued(
     env.REALTIME_DB,
     jobs.map((job) => job.raceKey),
@@ -2707,8 +2775,12 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
     assertNarHorseWeightsComplete(raceKey, entries, weights);
   }
   if (weights.length > 0 && weights.length < MIN_HORSE_WEIGHT_ROWS_PER_RACE) {
-    console.warn(
-      `horse weight rows are sparse, skipping write: ${raceKey} count=${weights.length}`,
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-weights",
+      SKIP_STATUS.weightsSparse,
+      raceKey,
+      `count=${weights.length}`,
     );
     return;
   }
@@ -3218,6 +3290,18 @@ const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput)
   if (input.inserted > 0) {
     await runTrendCacheBust(input.env, input.raceKey, input.race);
   }
+  // Force-completion (24h give-up) is the highest-severity silent finish: the
+  // planner stops re-enqueuing forever, so an operator MUST be able to see
+  // that this race finalised with fewer horses than the field had.
+  if (input.outcome === "give-up") {
+    await logFetch(
+      input.env.REALTIME_DB,
+      "fetch-results",
+      SKIP_STATUS.giveUp,
+      input.raceKey,
+      `inserted=${input.inserted} expected=${input.expectedHorseCount}`,
+    );
+  }
 };
 
 const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> => {
@@ -3225,6 +3309,7 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
   const lockUntil = toJstIsoString(new Date(now.getTime() + RESULT_FETCH_LOCK_MINUTES * 60_000));
   const claimed = await claimResultFetch(env.REALTIME_DB, raceKey, lockUntil, toJstIsoString(now));
   if (!claimed) {
+    await logFetch(env.REALTIME_DB, "fetch-results", SKIP_STATUS.claimFailed, raceKey, null);
     return;
   }
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
@@ -3234,6 +3319,7 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
   }
   if (!isRaceFinished(race, now)) {
     await failResultFetch(env.REALTIME_DB, raceKey);
+    await logFetch(env.REALTIME_DB, "fetch-results", SKIP_STATUS.notFinished, raceKey, null);
     return;
   }
 
@@ -3383,10 +3469,24 @@ const fetchAndStoreJraTrackCondition = async (
 const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || !isPremiumRaceDataTarget(race)) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-race-data",
+      SKIP_STATUS.raceNotFound,
+      raceKey,
+      null,
+    );
     return;
   }
   const config = getPremiumRaceConfig(env);
   if (!hasPremiumRaceFetchConfig(config)) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-race-data",
+      SKIP_STATUS.configMissing,
+      raceKey,
+      null,
+    );
     return;
   }
   const link = await ensurePremiumRaceLink(env, race);
@@ -3571,6 +3671,13 @@ const resolveAuthRetryDelaySeconds = (exhausted: boolean): number =>
 const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || race.source !== "jra") {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-paddock",
+      SKIP_STATUS.raceNotFound,
+      raceKey,
+      null,
+    );
     return;
   }
   const currentState = await getPremiumPaddockFetchState(env.REALTIME_DB, raceKey);
@@ -3578,10 +3685,18 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     currentState?.retryAfter &&
     new Date(currentState.retryAfter).getTime() > getNow(env).getTime()
   ) {
+    await logFetch(env.REALTIME_DB, "fetch-premium-paddock", SKIP_STATUS.lockHeld, raceKey, null);
     return;
   }
   const config = getPremiumRaceConfig(env);
   if (!hasPremiumRaceFetchConfig(config)) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-paddock",
+      SKIP_STATUS.configMissing,
+      raceKey,
+      null,
+    );
     return;
   }
   const link = await ensurePremiumRaceLink(env, race);
@@ -3592,6 +3707,13 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     sourceRaceId: link.sourceRaceId,
   });
   if (!paddockUrl) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-paddock",
+      SKIP_STATUS.paddockUrlMissing,
+      raceKey,
+      null,
+    );
     return;
   }
   let attempts: Awaited<ReturnType<typeof fetchPremiumHtmlAttempts>>;
@@ -3636,6 +3758,13 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   const parsed = selectedAttempt.parsed;
   const fetchedAt = toJstIsoString();
   if (parsed.authRequired) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-premium-paddock",
+      SKIP_STATUS.authRequired,
+      raceKey,
+      selectedAttempt.mode,
+    );
     await clearCachedPremiumPaddock(env, raceKey);
     const retryAfter = getPremiumPaddockRetryAfter(env, race);
     const payloadSignature = await buildPremiumPaddockSignature([]);
@@ -4175,6 +4304,23 @@ export default {
 
     if (url.pathname === "/health") {
       return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/internal/queue-health" && request.method === "GET") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const now = getNow(env);
+      const todayYmd = getTodayJst(now);
+      const thirtyMinutesAgoIso = toJstIsoString(
+        new Date(now.getTime() - QUEUE_HEALTH_STUCK_THRESHOLD_MINUTES * 60_000),
+      );
+      const metrics = await getQueueHealthMetrics(env.REALTIME_DB, {
+        thirtyMinutesAgoIso,
+        todayYmd,
+      });
+      return json(metrics);
     }
 
     if (url.pathname === "/api/internal/export-odds-chunk" && request.method === "POST") {

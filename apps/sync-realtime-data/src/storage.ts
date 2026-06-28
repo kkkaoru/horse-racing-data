@@ -1,3 +1,4 @@
+import { FETCH_LOG_SUCCESS } from "./fetchLogStatuses";
 import { BABA_CODE_TO_LOCAL_KEIBAJO, buildRaceKey, type KeibaGoRaceLink } from "./keiba-go";
 import { buildRealtimeRaceKey } from "./race-key";
 import { formatRaceStartJst, toJstIsoString } from "./time";
@@ -2634,6 +2635,67 @@ export const getSameDayVenueJockeyWins = async (
     latestRaceNumber: row.latest_race_bango,
     winCount: row.win_count,
   }));
+};
+
+export interface QueueHealthMetrics {
+  lastSuccessfulFetchResultsAt: string | null;
+  lastSuccessfulFetchWeightsAt: string | null;
+  racesQueuedNotFetchedToday: number;
+  racesStuckOverThirtyMin: number;
+}
+
+export interface GetQueueHealthMetricsParams {
+  todayYmd: string;
+  thirtyMinutesAgoIso: string;
+}
+
+interface LastFetchLogRow {
+  created_at: string;
+}
+
+interface CountRow {
+  c: number;
+}
+
+const LAST_SUCCESSFUL_FETCH_LOG_SQL =
+  "select created_at from fetch_logs where job_type = ? and status = ? order by created_at desc limit 1";
+
+// Counts races discovered for today whose result-fetch job was enqueued but
+// where no `fetch-results` `ok` row was ever written. Today's race rows are
+// identified by `kaisai_nen || kaisai_tsukihi` matching the JST yyyymmdd, so
+// the count survives D1 retention (which only trims fetch_logs).
+const RACES_QUEUED_NOT_FETCHED_TODAY_SQL =
+  "select count(*) as c from realtime_race_sources where (kaisai_nen || kaisai_tsukihi) = ? and last_result_queued_at is not null and last_result_fetch_at is null";
+
+// Counts races whose last result-fetch attempt landed > 30 minutes ago but
+// the race never completed. This is the signature failure mode the
+// 2026-06-28 outage left in D1 — a stuck row stays here until the planner
+// re-claims it or an operator force-completes it.
+const RACES_STUCK_OVER_THIRTY_MIN_SQL =
+  "select count(*) as c from realtime_race_sources where last_result_fetch_at is not null and last_result_fetch_at < ? and result_complete_at is null";
+
+export const getQueueHealthMetrics = async (
+  db: D1Database,
+  params: GetQueueHealthMetricsParams,
+): Promise<QueueHealthMetrics> => {
+  const [lastResultsRow, lastWeightsRow, queuedNotFetchedRow, stuckOver30Row] = await Promise.all([
+    db
+      .prepare(LAST_SUCCESSFUL_FETCH_LOG_SQL)
+      .bind(FETCH_LOG_SUCCESS.fetchResultsJobType, FETCH_LOG_SUCCESS.okStatus)
+      .first<LastFetchLogRow>(),
+    db
+      .prepare(LAST_SUCCESSFUL_FETCH_LOG_SQL)
+      .bind(FETCH_LOG_SUCCESS.fetchWeightsJobType, FETCH_LOG_SUCCESS.okStatus)
+      .first<LastFetchLogRow>(),
+    db.prepare(RACES_QUEUED_NOT_FETCHED_TODAY_SQL).bind(params.todayYmd).first<CountRow>(),
+    db.prepare(RACES_STUCK_OVER_THIRTY_MIN_SQL).bind(params.thirtyMinutesAgoIso).first<CountRow>(),
+  ]);
+  return {
+    lastSuccessfulFetchResultsAt: lastResultsRow ? lastResultsRow.created_at : null,
+    lastSuccessfulFetchWeightsAt: lastWeightsRow ? lastWeightsRow.created_at : null,
+    racesQueuedNotFetchedToday: queuedNotFetchedRow ? queuedNotFetchedRow.c : 0,
+    racesStuckOverThirtyMin: stuckOver30Row ? stuckOver30Row.c : 0,
+  };
 };
 
 export const buildRealtimePayload = async (

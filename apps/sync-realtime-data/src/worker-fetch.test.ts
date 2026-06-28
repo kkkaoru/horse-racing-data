@@ -72,6 +72,12 @@ vi.mock("./storage", () => ({
   getLatestRaceResults: vi.fn(async () => null),
   getLatestTrackConditionForRace: vi.fn(async () => null),
   insertJraTrackConditionSnapshot: vi.fn(async () => []),
+  getQueueHealthMetrics: vi.fn(async () => ({
+    lastSuccessfulFetchResultsAt: null,
+    lastSuccessfulFetchWeightsAt: null,
+    racesQueuedNotFetchedToday: 0,
+    racesStuckOverThirtyMin: 0,
+  })),
   getSameDayVenueJockeyWins: vi.fn(async () => []),
   buildRealtimePayload: vi.fn(async () => ({
     horseWeights: null,
@@ -1472,4 +1478,58 @@ it("fetch GET /internal/race-trend-daily-track returns 404 when query parameters
     buildCtx(),
   );
   expect(response.status).toBe(404);
+});
+
+// 2026-06-28 observability: /api/internal/queue-health is gated by the same
+// REALTIME_ADMIN_TOKEN bearer pattern as the other internal endpoints. A
+// missing or mismatched header must return 403, never leak the queue state.
+it("fetch GET /api/internal/queue-health returns 403 when authorization mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/queue-health", {
+      headers: { authorization: "Bearer wrong" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch GET /api/internal/queue-health returns 403 when REALTIME_ADMIN_TOKEN is unset", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/queue-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch GET /api/internal/queue-health returns the four queue-health fields when auth matches", async () => {
+  const { default: worker } = await import("./worker");
+  const { getQueueHealthMetrics } = await import("./storage");
+  vi.mocked(getQueueHealthMetrics).mockResolvedValueOnce({
+    lastSuccessfulFetchResultsAt: "2026-06-28T15:42:00+09:00",
+    lastSuccessfulFetchWeightsAt: "2026-06-28T15:35:00+09:00",
+    racesQueuedNotFetchedToday: 7,
+    racesStuckOverThirtyMin: 3,
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/queue-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    lastSuccessfulFetchResultsAt: "2026-06-28T15:42:00+09:00",
+    lastSuccessfulFetchWeightsAt: "2026-06-28T15:35:00+09:00",
+    racesQueuedNotFetchedToday: 7,
+    racesStuckOverThirtyMin: 3,
+  });
 });
