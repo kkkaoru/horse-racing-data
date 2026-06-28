@@ -194,15 +194,6 @@ def target_date_arg(raw: str) -> str:
     return raw
 
 
-def target_race_arg(raw: str) -> tuple[str, str]:
-    parts = raw.split(":")
-    if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise argparse.ArgumentTypeError(
-            f"--target-race must be keibajo_code:race_bango, got {raw}"
-        )
-    return parts[0], parts[1]
-
-
 def add_days(date_yyyymmdd: str, days: int) -> str:
     base = datetime.strptime(date_yyyymmdd, DATE_FORMAT).replace(tzinfo=timezone.utc)
     return (base + timedelta(days=days)).strftime(DATE_FORMAT)
@@ -248,17 +239,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=non_negative_int,
         default=0,
         help="Extra days after --target-date to include (default 0 = that day only).",
-    )
-    parser.add_argument(
-        "--target-race",
-        type=target_race_arg,
-        default=None,
-        help=(
-            "keibajo_code:race_bango — build features for a single race only. "
-            "Restricts the rec history scan to the target race's horses / jockeys "
-            "/ trainers (paired with --target-date), cutting PG transfer from "
-            "millions of rows to ~100K for the per-race CF Container path."
-        ),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--pg-url", type=str, default=None)
@@ -438,12 +418,29 @@ def signed_zogen_sa_sql(fugo_expr: str, sa_expr: str) -> str:
     )
 
 
-def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
+def _rec_select_from_corner_features(history_start: str, to_date: str, entity_filter: str = "") -> str:
     """Build rec SELECT from race_entry_corner_features (no bataiju enrichment).
 
     bataiju lookup is done separately via stage_se_table / weight_cte to avoid
     a heavy PG-side double LEFT JOIN that would dominate stage time.
     """
+    where_clause = f"race_date between '{history_start}' and '{to_date}'{entity_filter}"
+    if entity_filter:
+        from_source = (
+            f"postgres_query('pg', $PQ$"
+            f" SELECT source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
+            f" ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,"
+            f" kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,"
+            f" finish_position, finish_norm, time_sa, kohan_3f,"
+            f" corner1_norm, corner3_norm, corner4_norm,"
+            f" babajotai_code_shiba, babajotai_code_dirt,"
+            f" tansho_ninkijun, tansho_odds, seibetsu_code, barei"
+            f" FROM race_entry_corner_features WHERE {where_clause}"
+            f" $PQ$)"
+        )
+    else:
+        from_source = "pg.race_entry_corner_features"
+    where_sql = "" if entity_filter else f"where {where_clause}"
     return f"""
     select
       source, race_date,
@@ -463,14 +460,81 @@ def _rec_select_from_corner_features(history_start: str, to_date: str) -> str:
       babajotai_code_shiba, babajotai_code_dirt,
       tansho_ninkijun, tansho_odds,
       cast(null as int) as bataiju,
-      try_cast(nullif(trim(seibetsu_code), '') as int) as seibetsu_code,
-      try_cast(barei as int) as barei
-    from pg.race_entry_corner_features
-    where race_date between '{history_start}' and '{to_date}'
+      try_cast(nullif(trim(cast(seibetsu_code as varchar)), '') as int) as seibetsu_code,
+      try_cast(cast(barei as varchar) as int) as barei
+    from {from_source}
+    {where_sql}
     """
 
 
-def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
+def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str = "") -> str:
+    where_clause = (
+        f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
+        f" and se.kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'"
+        f" and (se.kaisai_nen || se.kaisai_tsukihi) between '{history_start}' and '{to_date}'"
+        f" and se.ketto_toroku_bango is not null{entity_filter}"
+    )
+    if entity_filter:
+        from_source = (
+            f"postgres_query('pg', $PQ$"
+            f" SELECT 'nar' as source,"
+            f" se.kaisai_nen || se.kaisai_tsukihi as race_date,"
+            f" se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,"
+            f" se.ketto_toroku_bango, se.umaban,"
+            f" se.kishumei_ryakusho, se.chokyoshimei_ryakusho,"
+            f" ra.kyori, ra.track_code, ra.grade_code, ra.kyoso_joken_code,"
+            f" ra.shusso_tosu,"
+            f" se.kakutei_chakujun,"
+            f" se.time_sa, se.kohan_3f,"
+            f" ra.babajotai_code_shiba, ra.babajotai_code_dirt,"
+            f" se.tansho_ninkijun, se.tansho_odds,"
+            f" se.bataiju, se.seibetsu_code, se.barei"
+            f" FROM nvd_se se JOIN nvd_ra ra"
+            f" ON ra.kaisai_nen = se.kaisai_nen"
+            f" AND ra.kaisai_tsukihi = se.kaisai_tsukihi"
+            f" AND ra.keibajo_code = se.keibajo_code"
+            f" AND ra.race_bango = se.race_bango"
+            f" WHERE {where_clause}"
+            f" $PQ$)"
+        )
+        return f"""
+    select
+      source, race_date,
+      strptime(race_date, '%Y%m%d')::date as race_dt,
+      kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+      ketto_toroku_bango,
+      try_cast(nullif(trim(cast(umaban as varchar)), '') as int) as umaban,
+      kishumei_ryakusho, chokyoshimei_ryakusho,
+      try_cast(nullif(trim(cast(kyori as varchar)), '') as int) as kyori,
+      track_code, grade_code, kyoso_joken_code,
+      coalesce(
+        nullif(try_cast(nullif(trim(cast(shusso_tosu as varchar)), '') as int), 0),
+        count(*) over (
+          partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
+        )
+      ) as shusso_tosu,
+      try_cast(nullif(nullif(trim(cast(kakutei_chakujun as varchar)), ''), '00') as int) as finish_position,
+      case
+        when try_cast(nullif(nullif(trim(cast(kakutei_chakujun as varchar)), ''), '00') as double) is not null
+             and try_cast(nullif(trim(cast(shusso_tosu as varchar)), '') as double) is not null
+             and try_cast(nullif(trim(cast(shusso_tosu as varchar)), '') as double) > 0
+        then try_cast(nullif(nullif(trim(cast(kakutei_chakujun as varchar)), ''), '00') as double)
+             / try_cast(nullif(trim(cast(shusso_tosu as varchar)), '') as double)
+        else null
+      end as finish_norm,
+      try_cast(nullif(trim(cast(time_sa as varchar)), '') as double) as time_sa,
+      try_cast(nullif(trim(cast(kohan_3f as varchar)), '') as double) as kohan_3f,
+      cast(null as double) as corner1_norm,
+      cast(null as double) as corner3_norm,
+      cast(null as double) as corner4_norm,
+      babajotai_code_shiba, babajotai_code_dirt,
+      try_cast(nullif(trim(cast(tansho_ninkijun as varchar)), '') as int) as tansho_ninkijun,
+      try_cast(nullif(trim(cast(tansho_odds as varchar)), '') as double) / 10 as tansho_odds,
+      try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+      try_cast(nullif(trim(cast(seibetsu_code as varchar)), '') as int) as seibetsu_code,
+      try_cast(nullif(trim(cast(barei as varchar)), '') as int) as barei
+    from {from_source}
+    """
     return f"""
     select
       'nar' as source,
@@ -515,10 +579,7 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str) -> str:
       and ra.kaisai_tsukihi = se.kaisai_tsukihi
       and ra.keibajo_code = se.keibajo_code
       and ra.race_bango = se.race_bango
-    where se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'
-      and se.kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'
-      and (se.kaisai_nen || se.kaisai_tsukihi) between '{history_start}' and '{to_date}'
-      and se.ketto_toroku_bango is not null
+    where {where_clause}
     """
 
 
@@ -653,12 +714,13 @@ def build_rec_select_sql(
     history_start: str,
     to_date: str,
     upcoming_window: tuple[str, str] | None = None,
+    entity_filter: str = "",
 ) -> str:
     if category == CATEGORY_BAN_EI:
-        base = _rec_select_from_ban_ei(history_start, to_date)
+        base = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
     else:
-        corner_sql = _rec_select_from_corner_features(history_start, to_date)
-        ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date)
+        corner_sql = _rec_select_from_corner_features(history_start, to_date, entity_filter)
+        ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
         base = f"{corner_sql}\nunion all\n{ban_ei_sql}"
     if upcoming_window is None:
         return base
@@ -683,47 +745,6 @@ def build_rec_select_sql(
     """
 
 
-def _query_target_race_entity_filter(
-    con: duckdb.DuckDBPyConnection,
-    keibajo_code: str,
-    race_bango: str,
-    target_from: str,
-    target_to: str,
-) -> str:
-    """WHERE-clause fragment restricting rec to the target race's entities.
-
-    Queries the raw source table (jvd_se for JRA keibajo codes, nvd_se for NAR /
-    Ban-ei) for the horses / jockeys / trainers entered in the target race, then
-    returns ``and (horse in (...) or jockey in (...) or trainer in (...))``. The
-    target race is UPCOMING, so it lives in the raw source table — the derived
-    race_entry_corner_features lags and may not yet contain it. Returns "" when
-    the race has no entries, leaving rec unfiltered.
-    """
-    se_table = "jvd_se" if keibajo_code in JRA_KEIBAJO_CODES else "nvd_se"
-    rows = con.execute(
-        f"""
-        select distinct ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho
-        from pg.{se_table}
-        where keibajo_code = '{keibajo_code}'
-          and race_bango = '{race_bango}'
-          and (kaisai_nen || kaisai_tsukihi) between '{target_from}' and '{target_to}'
-        """
-    ).fetchall()
-    horses = [f"'{r[0]}'" for r in rows if r[0]]
-    jockeys = [f"'{r[1]}'" for r in rows if r[1]]
-    trainers = [f"'{r[2]}'" for r in rows if r[2]]
-    parts: list[str] = []
-    if horses:
-        parts.append(f"ketto_toroku_bango in ({', '.join(horses)})")
-    if jockeys:
-        parts.append(f"kishumei_ryakusho in ({', '.join(jockeys)})")
-    if trainers:
-        parts.append(f"chokyoshimei_ryakusho in ({', '.join(trainers)})")
-    if not parts:
-        return ""
-    return " and (" + " or ".join(parts) + ")"
-
-
 def stage_rec_table(
     con: duckdb.DuckDBPyConnection,
     history_start: str,
@@ -733,16 +754,6 @@ def stage_rec_table(
     target_race: tuple[str, str] | None = None,
 ) -> None:
     select_sql = build_rec_select_sql(category, history_start, to_date, upcoming_window)
-    if target_race is not None and upcoming_window is not None:
-        keibajo_code, race_bango = target_race
-        target_from, target_to = upcoming_window
-        entity_filter = _query_target_race_entity_filter(
-            con, keibajo_code, race_bango, target_from, target_to
-        )
-        if entity_filter:
-            select_sql = (
-                f"select * from ({select_sql}) _rec_target where true{entity_filter}"
-            )
     run_staged_sql(
         con,
         "source.rec",
@@ -758,6 +769,34 @@ def stage_rec_table(
     log_event("source.rec.indexes", "done", perf_counter() - started)
 
 
+def _build_horse_filter_from_rec(con: duckdb.DuckDBPyConnection) -> str:
+    """Return ``and ketto_toroku_bango in (...)`` from the staged rec table."""
+    rows = con.execute(
+        "select distinct ketto_toroku_bango from rec where ketto_toroku_bango is not null"
+    ).fetchall()
+    if not rows:
+        return ""
+    ids_str = ", ".join(f"'{r[0]}'" for r in rows)
+    return f" and ketto_toroku_bango in ({ids_str})"
+
+
+def _build_race_filter_from_rec(con: duckdb.DuckDBPyConnection, source: str) -> str:
+    """Return ``and (keibajo_code, ...) in (...)`` from the staged rec table."""
+    rows = con.execute(
+        f"select distinct keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi "
+        f"from rec where source = '{source}'"
+    ).fetchall()
+    if not rows:
+        return ""
+    tuples_str = ", ".join(
+        f"('{r[0]}', '{r[1]}', '{r[2]}', '{r[3]}')" for r in rows
+    )
+    return (
+        f" and (keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi) "
+        f"in ({tuples_str})"
+    )
+
+
 def stage_se_table(
     con: duckdb.DuckDBPyConnection,
     stage: str,
@@ -766,10 +805,27 @@ def stage_se_table(
     history_start: str,
     to_date: str,
     keibajo_filter: str | None = None,
+    entity_filter: str = "",
 ) -> None:
     keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
     history_year = history_start[:4]
     to_year = to_date[:4]
+    where_clause = (
+        f"kaisai_nen between '{history_year}' and '{to_year}'"
+        f" and (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'"
+        f" {keibajo_clause}{entity_filter}"
+    )
+    if entity_filter:
+        from_source = (
+            f"postgres_query('pg', $PQ$"
+            f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
+            f" ketto_toroku_bango, bataiju, zogen_sa, zogen_fugo"
+            f" FROM {pg_table} WHERE {where_clause}"
+            f" $PQ$)"
+        )
+    else:
+        from_source = f"pg.{pg_table}"
+    where_sql = "" if entity_filter else f"where {where_clause}"
     run_staged_sql(
         con,
         stage,
@@ -779,10 +835,8 @@ def stage_se_table(
                try_cast(nullif(trim(bataiju), '') as int) as bataiju,
                cast(zogen_sa as varchar) as zogen_sa,
                cast(zogen_fugo as varchar) as zogen_fugo
-        from pg.{pg_table}
-        where kaisai_nen between '{history_year}' and '{to_year}'
-          and (kaisai_nen || kaisai_tsukihi) between '{history_start}' and '{to_date}'
-          {keibajo_clause}
+        from {from_source}
+        {where_sql}
         """,
         row_count_table=table,
     )
@@ -796,17 +850,39 @@ def stage_se_table(
 
 
 def stage_um_table(
-    con: duckdb.DuckDBPyConnection, stage: str, table: str, pg_table: str
+    con: duckdb.DuckDBPyConnection,
+    stage: str,
+    table: str,
+    pg_table: str,
+    entity_filter: str = "",
 ) -> None:
-    run_staged_sql(
-        con,
-        stage,
-        f"""
-        create or replace temp table {table} as
-        select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.{pg_table}
-        """,
-        row_count_table=table,
-    )
+    if entity_filter:
+        where_clause = f"true{entity_filter}"
+        from_source = (
+            f"postgres_query('pg', $PQ$"
+            f" SELECT ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b"
+            f" FROM {pg_table} WHERE {where_clause}"
+            f" $PQ$)"
+        )
+        run_staged_sql(
+            con,
+            stage,
+            f"""
+            create or replace temp table {table} as
+            select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from {from_source}
+            """,
+            row_count_table=table,
+        )
+    else:
+        run_staged_sql(
+            con,
+            stage,
+            f"""
+            create or replace temp table {table} as
+            select ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b from pg.{pg_table}
+            """,
+            row_count_table=table,
+        )
 
 
 def stage_ra_table(
@@ -817,10 +893,27 @@ def stage_ra_table(
     from_date: str,
     to_date: str,
     keibajo_filter: str | None = None,
+    entity_filter: str = "",
 ) -> None:
     keibajo_clause = f"and keibajo_code = '{keibajo_filter}'" if keibajo_filter else ""
     from_year = from_date[:4]
     to_year = to_date[:4]
+    where_clause = (
+        f"kaisai_nen between '{from_year}' and '{to_year}'"
+        f" and (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'"
+        f" {keibajo_clause}{entity_filter}"
+    )
+    if entity_filter:
+        from_source = (
+            f"postgres_query('pg', $PQ$"
+            f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
+            f" tenko_code, kyoso_joken_meisho"
+            f" FROM {pg_table} WHERE {where_clause}"
+            f" $PQ$)"
+        )
+    else:
+        from_source = f"pg.{pg_table}"
+    where_sql = "" if entity_filter else f"where {where_clause}"
     run_staged_sql(
         con,
         stage,
@@ -828,10 +921,8 @@ def stage_ra_table(
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, tenko_code,
                kyoso_joken_meisho
-        from pg.{pg_table}
-        where kaisai_nen between '{from_year}' and '{to_year}'
-          and (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
-          {keibajo_clause}
+        from {from_source}
+        {where_sql}
         """,
         row_count_table=table,
     )
@@ -990,39 +1081,42 @@ def stage_source_tables(
     else:
         create_empty_realtime_odds_stub(con)
     stage_rec_table(con, history_start, to_date, category, upcoming_window, target_race)
+    horse_filter = ""
+    nar_race_filter = ""
+    jra_race_filter = ""
+    if target_race is not None:
+        horse_filter = _build_horse_filter_from_rec(con)
+        nar_race_filter = _build_race_filter_from_rec(con, "nar")
+        if category != CATEGORY_BAN_EI:
+            jra_race_filter = _build_race_filter_from_rec(con, "jra")
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
-        con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter
+        con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter,
+        entity_filter=horse_filter,
     )
-    stage_um_table(con, "source.nar_um", "nar_um", "nvd_um")
-    stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu")
+    stage_um_table(con, "source.nar_um", "nar_um", "nvd_um", entity_filter=horse_filter)
+    stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu", entity_filter=horse_filter)
     stage_ra_table(
-        con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter
+        con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter,
+        entity_filter=nar_race_filter,
     )
     if category == CATEGORY_BAN_EI:
         _stage_empty_jra_stubs(con)
         return
-    stage_se_table(con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date)
-    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um")
-    stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
+    stage_se_table(
+        con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date,
+        entity_filter=horse_filter,
+    )
+    stage_um_table(con, "source.jra_um", "jra_um", "jvd_um", entity_filter=horse_filter)
+    stage_ra_table(
+        con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date,
+        entity_filter=jra_race_filter,
+    )
 
 
-def build_target_table(
-    con: duckdb.DuckDBPyConnection,
-    category: str,
-    from_date: str,
-    to_date: str,
-    target_race: tuple[str, str] | None = None,
-) -> None:
+def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> None:
     filter_clause = category_source_filter(category, "rec")
     cat_expr = category_expression(category)
-    race_filter = ""
-    if target_race is not None:
-        keibajo_code, race_bango = target_race
-        race_filter = (
-            f"\n          and rec.keibajo_code = '{keibajo_code}'"
-            f"\n          and rec.race_bango = '{race_bango}'"
-        )
     con.execute(
         f"""
         create or replace temp table target as
@@ -1069,7 +1163,7 @@ def build_target_table(
         from rec
         where rec.race_date between '{from_date}' and '{to_date}'
           and {filter_clause}
-          and rec.ketto_toroku_bango is not null{race_filter}
+          and rec.ketto_toroku_bango is not null
         """
     )
     con.execute(
@@ -2892,27 +2986,18 @@ def stage_source(
     category: str,
     upcoming_window: tuple[str, str] | None = None,
     realtime_odds_path: Path | None = None,
-    target_race: tuple[str, str] | None = None,
 ) -> None:
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(
-        con, from_date, to_date, category, upcoming_window, realtime_odds_path, target_race
-    )
+    stage_source_tables(con, from_date, to_date, category, upcoming_window, realtime_odds_path)
     log_event("source.stage", "done", perf_counter() - started)
 
 
-def stage_target(
-    con: duckdb.DuckDBPyConnection,
-    category: str,
-    from_date: str,
-    to_date: str,
-    target_race: tuple[str, str] | None = None,
-) -> int:
+def stage_target(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> int:
     log_event("target.build", "start", 0.0)
     started = perf_counter()
-    build_target_table(con, category, from_date, to_date, target_race)
+    build_target_table(con, category, from_date, to_date)
     target_row_result = con.execute("select count(*) from target").fetchone()
     target_rows = int(target_row_result[0]) if target_row_result is not None else 0
     log_event("target.build", "done", perf_counter() - started, target_rows)
@@ -3589,18 +3674,11 @@ def run_stage_source(
         return years
     controller.cascade_invalidate_from(CHECKPOINT_SOURCE)
     stage_source(
-        con,
-        pg_url,
-        from_date,
-        to_date,
-        args.category,
-        upcoming_window,
-        args.realtime_odds,
-        args.target_race,
+        con, pg_url, from_date, to_date, args.category, upcoming_window, args.realtime_odds
     )
     controller.spill_and_record(con, CHECKPOINT_SOURCE, [])
     heartbeat.set_stage("target.build")
-    stage_target(con, args.category, from_date, to_date, args.target_race)
+    stage_target(con, args.category, from_date, to_date)
     years = get_target_years(con)
     # SOURCE / TARGET hashes are computed with years=[] because ``years`` is
     # derived FROM target — it is an output, not an input, so it must not feed

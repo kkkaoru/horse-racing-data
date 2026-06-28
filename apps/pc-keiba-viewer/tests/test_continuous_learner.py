@@ -3874,6 +3874,8 @@ def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
     with (
+        patch.object(subject, "CellAccuracyStore"),
+        patch.object(subject, "TrialExplorationStore"),
         patch.object(
             subject.ContinuousLearner,
             "__init__",
