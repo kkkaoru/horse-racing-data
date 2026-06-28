@@ -8,6 +8,40 @@
 // that if anyone ever re-enables a cron and uses a different schedule by
 // mistake, scheduled() stays a no-op until PREDICT_CRON itself is changed.
 
+import type { PredictCategory } from "./types";
+
+// A row of realtime_race_sources (sync-realtime-data D1) projected to the columns
+// the feature-build fan-out needs: the underlying source (jra/nar) plus the
+// keibajo / race identifiers.
+interface RaceSourceRow {
+  source: string;
+  keibajo_code: string;
+  race_bango: string;
+}
+
+// One race the feature-build cron should fan a per-race full build out to.
+// keibajoCode / raceBango are zero-padded to width 2 (matching the per-race
+// coordinator + the container race_id scope).
+export interface RaceEntry {
+  category: PredictCategory;
+  keibajoCode: string;
+  raceBango: string;
+}
+
+const ENUMERATE_RACES_SQL =
+  "SELECT DISTINCT source, keibajo_code, race_bango FROM realtime_race_sources WHERE kaisai_nen = ? AND kaisai_tsukihi = ? ORDER BY source, keibajo_code, race_bango";
+const RUN_YMD_YEAR_START = 0;
+const RUN_YMD_YEAR_END = 4;
+const RUN_YMD_LENGTH = 8;
+const JRA_SOURCE = "jra";
+const BAN_EI_KEIBAJO_CODE = "83";
+const JRA_CATEGORY: PredictCategory = "jra";
+const NAR_CATEGORY: PredictCategory = "nar";
+const BAN_EI_CATEGORY: PredictCategory = "ban-ei";
+const KEIBAJO_PAD_WIDTH = 2;
+const RACE_BANGO_PAD_WIDTH = 2;
+const PAD_CHAR = "0";
+
 // The historical schedule preserved as the canonical "predict cron" name.
 // "0 18 * * *" is 18:00 UTC == JST 03:00. Re-enabling it in wrangler.jsonc is
 // NOT recommended (Container reap window); use launchd.
@@ -66,3 +100,37 @@ export const shouldRunCoordinatorCron = (cron: string): boolean => COORDINATOR_C
 
 // Returns true when the cron string matches the feature-build (Container full pipeline) schedule.
 export const shouldRunFeatureBuildCron = (cron: string): boolean => FEATURE_BUILD_CRONS.has(cron);
+
+const pad = (value: string, width: number): string => value.padStart(width, PAD_CHAR);
+
+// jra source -> jra; otherwise keibajo 83 (帯広) is ban-ei and every other
+// nar-source keibajo is plain nar. Mirrors how the predict pipeline categorises
+// realtime_race_sources rows.
+const resolveRaceCategory = (source: string, keibajoCode: string): PredictCategory => {
+  if (source === JRA_SOURCE) return JRA_CATEGORY;
+  if (keibajoCode === BAN_EI_KEIBAJO_CODE) return BAN_EI_CATEGORY;
+  return NAR_CATEGORY;
+};
+
+const toRaceEntry = (row: RaceSourceRow): RaceEntry => {
+  const keibajoCode = pad(row.keibajo_code, KEIBAJO_PAD_WIDTH);
+  return {
+    category: resolveRaceCategory(row.source, keibajoCode),
+    keibajoCode,
+    raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+  };
+};
+
+// Enumerate today's races from the sync-realtime-data D1 (realtime_race_sources)
+// so the feature-build cron can fan out one per-race full build per race instead
+// of one 21y full-batch scan. runYmd is the JST "YYYYMMDD" calendar date;
+// kaisai_nen is the 4-digit year and kaisai_tsukihi the "MMDD" tail.
+export const enumerateTodaysRaces = async (
+  db: D1Database,
+  runYmd: string,
+): Promise<readonly RaceEntry[]> => {
+  const year = runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END);
+  const monthDay = runYmd.slice(RUN_YMD_YEAR_END, RUN_YMD_LENGTH);
+  const result = await db.prepare(ENUMERATE_RACES_SQL).bind(year, monthDay).all<RaceSourceRow>();
+  return result.results.map(toRaceEntry);
+};

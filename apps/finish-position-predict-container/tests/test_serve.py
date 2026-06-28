@@ -29,6 +29,7 @@ import pytest
 
 from predict_lib.serve import (
     CacheMissError,
+    PredictCategoryFn,
     PredictParams,
     R2Config,
     SleepFn,
@@ -67,7 +68,13 @@ def _make_time_fn(increments: list[float]) -> Callable[[], float]:
     return _tick
 
 
-def _mock_predict_ok(category: str, run_date: str, days_ahead: int) -> int:
+def _mock_predict_ok(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     return 42
 
 
@@ -345,7 +352,13 @@ def test_iter_predict_chunks_predict_progress_emitted() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mock_predict_raises(category: str, run_date: str, days_ahead: int) -> int:
+def _mock_predict_raises(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     raise RuntimeError("feature build failed: postgresql://user:pw@host/db")
 
 
@@ -383,7 +396,13 @@ def test_iter_predict_chunks_exception_error_includes_exception_type() -> None:
 def test_iter_predict_chunks_never_raises() -> None:
     """The generator must not propagate any exception from predict_fn."""
 
-    def _explode(category: str, run_date: str, days_ahead: int) -> int:
+    def _explode(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         raise ValueError("unexpected kaboom")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
@@ -703,7 +722,13 @@ def test_cache_miss_error_can_be_raised_and_caught() -> None:
 def test_iter_predict_chunks_mode_full_default_calls_predict_fn() -> None:
     called = [False]
 
-    def _fn(category: str, run_date: str, days_ahead: int) -> int:
+    def _fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         called[0] = True
         return 5
 
@@ -720,7 +745,13 @@ def test_iter_predict_chunks_mode_full_default_calls_predict_fn() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mock_rescore_ok(category: str, run_date: str, days_ahead: int) -> int:
+def _mock_rescore_ok(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     return 7
 
 
@@ -728,7 +759,13 @@ def test_iter_predict_chunks_mode_rescore_calls_rescore_fn() -> None:
     """When mode=rescore and rescore_fn succeeds, predict_fn is NOT called."""
     full_called = [False]
 
-    def _full_fn(category: str, run_date: str, days_ahead: int) -> int:
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         full_called[0] = True
         return 99  # should not be reached
 
@@ -761,7 +798,13 @@ def test_iter_predict_chunks_mode_rescore_result_has_correct_fields() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mock_rescore_cache_miss(category: str, run_date: str, days_ahead: int) -> int:
+def _mock_rescore_cache_miss(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     raise CacheMissError(f"no cache for {category}/{run_date}")
 
 
@@ -816,7 +859,13 @@ def test_iter_predict_chunks_rescore_no_fn_emits_fallback_progress() -> None:
 def test_iter_predict_chunks_rescore_non_cache_miss_propagates_as_error() -> None:
     """Non-CacheMissError exceptions from rescore_fn must yield an error result."""
 
-    def _rescore_runtime_err(category: str, run_date: str, days_ahead: int) -> int:
+    def _rescore_runtime_err(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         raise RuntimeError("unexpected DB error")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
@@ -834,11 +883,23 @@ def test_iter_predict_chunks_rescore_non_cache_miss_does_not_call_full_fn() -> N
     """Non-CacheMissError from rescore_fn must NOT fall back to predict_fn."""
     full_called = [False]
 
-    def _full_fn(category: str, run_date: str, days_ahead: int) -> int:
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         full_called[0] = True
         return 99
 
-    def _rescore_runtime_err(category: str, run_date: str, days_ahead: int) -> int:
+    def _rescore_runtime_err(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         raise RuntimeError("unexpected")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
@@ -864,7 +925,13 @@ def test_threaded_predict_fn_result_is_returned_in_success_line() -> None:
 def test_threaded_predict_fn_exception_surfaces_as_error_result() -> None:
     """An exception raised by predict_fn in its thread must yield an error result line."""
 
-    def _raise(category: str, run_date: str, days_ahead: int) -> int:
+    def _raise(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         raise ValueError("thread boom")
 
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0)
@@ -879,7 +946,13 @@ def test_threaded_predict_fn_does_not_block_generator_indefinitely() -> None:
     done = threading.Event()
     done.set()  # immediately unblocked
 
-    def _unblocked(category: str, run_date: str, days_ahead: int) -> int:
+    def _unblocked(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         done.wait()
         return 7
 
@@ -897,10 +970,16 @@ def test_threaded_predict_fn_does_not_block_generator_indefinitely() -> None:
 
 def _make_blocking_predict(
     done_event: threading.Event, return_value: int = 55
-) -> Callable[[str, str, int], int]:
+) -> PredictCategoryFn:
     """Return a predict_fn that blocks until *done_event* is set."""
 
-    def _predict(category: str, run_date: str, days_ahead: int) -> int:
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         done_event.wait()
         return return_value
 
@@ -1043,9 +1122,7 @@ def test_build_result_line_with_per_race_parquets() -> None:
             "parquetKey": "feat-cache/jra/20260619/05/10/features.parquet",
         },
     ]
-    line = build_result_line(
-        "jra", "20260619", 2, status="success", per_race_parquets=per_race
-    )
+    line = build_result_line("jra", "20260619", 2, status="success", per_race_parquets=per_race)
     parsed = json.loads(line.decode())
     assert parsed["perRaceParquets"] == per_race
 
@@ -1148,9 +1225,7 @@ def test_iter_predict_chunks_parquet_payload_fn_none_result() -> None:
 def test_iter_predict_chunks_no_parquet_payload_fn_no_fields() -> None:
     """When parquet_payload_fn is not provided (None), result has no parquet fields."""
     params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
-    chunks = list(
-        iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep)
-    )
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
     last = json.loads(chunks[-1].decode())
     assert "parquetBase64" not in last
 
@@ -1344,7 +1419,13 @@ def test_iter_predict_chunks_keepalive_exception_in_thread_yields_error_result()
     """
     done = threading.Event()
 
-    def _predict_raise(category: str, run_date: str, days_ahead: int) -> int:
+    def _predict_raise(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         done.wait()
         raise RuntimeError("thread crash: postgresql://user:pw@host/db")
 
@@ -1391,11 +1472,23 @@ def test_iter_predict_chunks_keepalive_rescore_cache_miss_fallback_with_progress
     rescore_done = threading.Event()
     predict_done = threading.Event()
 
-    def _rescore_miss(category: str, run_date: str, days_ahead: int) -> int:
+    def _rescore_miss(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         rescore_done.wait()
         raise CacheMissError("no cache")
 
-    def _predict_full(category: str, run_date: str, days_ahead: int) -> int:
+    def _predict_full(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         predict_done.wait()
         return 77
 
@@ -1453,10 +1546,22 @@ def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None
     """When the fallback predict_fn raises after CacheMissError, yield an error result."""
     done = threading.Event()
 
-    def _rescore_miss(category: str, run_date: str, days_ahead: int) -> int:
+    def _rescore_miss(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         raise CacheMissError("miss")
 
-    def _predict_raise(category: str, run_date: str, days_ahead: int) -> int:
+    def _predict_raise(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         done.wait()
         raise RuntimeError("fallback exploded")
 

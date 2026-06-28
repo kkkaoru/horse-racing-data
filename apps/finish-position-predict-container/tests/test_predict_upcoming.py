@@ -28,17 +28,27 @@ from predict_lib.model_meta import (
     METADATA_FILE_NAME,
     NAR_ETOP2_MODEL_VERSION,
     Architecture,
+    Category,
     model_version_for,
 )
 from predict_lib.rescore import RaceScope
 from predict_lib.scorer import BoosterLike
-from predict_lib.serve import ParquetPayloadFn, PerRaceParquetPayloadFn, PredictCategoryFn
+from predict_lib.serve import (
+    ParquetPayloadFn,
+    PerRaceParquetPayloadFn,
+    PredictCategoryFn,
+    PredictParams,
+    iter_predict_chunks,
+    parse_predict_params,
+)
 from predict_upcoming import (
+    PredictWindow,
     VariantModel,
     execute,
     extract_race_class_code,
     flush_predictions,
     make_handler_class,
+    predict_category,
     score_one_race_nar_etop2,
     score_races,
 )
@@ -336,11 +346,17 @@ def test_flush_predictions_returns_fresh_conn_after_reconnect() -> None:
 # ``predict_fn(self, category, run_date, days_ahead)``.
 #
 # The fix wraps the callables with ``staticmethod`` at class-definition time.
-# These tests pin that contract: the class attributes must remain plain 3-arg
+# These tests pin that contract: the class attributes must remain plain
 # callables callable without any instance, i.e. NOT bound methods.
 
 
-def _fake_predict(category: str, run_date: str, days_ahead: int) -> int:
+def _fake_predict(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     """Dummy predict_fn that returns the length of category as a sentinel."""
     return len(category)
 
@@ -355,7 +371,13 @@ def _fake_per_race_parquet_payload() -> list[dict[str, str]] | None:
     return None
 
 
-def _fake_rescore(category: str, run_date: str, days_ahead: int) -> int:
+def _fake_rescore(
+    category: str,
+    run_date: str,
+    days_ahead: int,
+    keibajo_code: str | None = None,
+    race_bango: str | None = None,
+) -> int:
     """Dummy rescore_fn that returns a fixed sentinel value."""
     return 99
 
@@ -378,7 +400,7 @@ def test_make_handler_class_predict_fn_callable_without_instance() -> None:
         _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
     )
     # Call directly on the class (no instance) — must NOT inject self.
-    result = handler_cls.predict_fn("nar", "20260618", 0)
+    result = handler_cls.predict_fn("nar", "20260618", 0, None, None)
     assert result == len("nar")
 
 
@@ -410,7 +432,7 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     factory = handler_cls.rescore_factory
     assert factory is not None
     rescore, per_race = factory(RaceScope())
-    result = rescore("jra", "20260618", 1)
+    result = rescore("jra", "20260618", 1, None, None)
     assert result == 99
     assert per_race() is None
 
@@ -436,8 +458,13 @@ def test_make_handler_class_predict_fn_not_bound_method() -> None:
     )
 
 
-def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
-    """Directly verify that predict_fn does NOT silently accept a 4th positional arg."""
+def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
+    """Verify predict_fn exposes the 5-arg contract and no injected ``self``.
+
+    The staticmethod wrapping must keep the signature at exactly five parameters
+    (category, run_date, days_ahead, keibajo_code, race_bango) — if ``self`` were
+    injected by the descriptor protocol the count would be six.
+    """
     import inspect
 
     handler_cls = make_handler_class(
@@ -445,8 +472,9 @@ def test_make_handler_class_predict_fn_accepts_exactly_3_args() -> None:
     )
     sig = inspect.signature(handler_cls.predict_fn)
     params = list(sig.parameters.values())
-    assert len(params) == 3, (
-        f"predict_fn must have exactly 3 parameters (category, run_date, days_ahead), "
+    assert len(params) == 5, (
+        f"predict_fn must have exactly 5 parameters "
+        f"(category, run_date, days_ahead, keibajo_code, race_bango), "
         f"got {len(params)}: {[p.name for p in params]}"
     )
 
@@ -597,9 +625,7 @@ class _FakeVariantSpec:
 class _FakeRouting:
     """Stand-in for ``CategoryRouting`` carrying a variants map + default variant."""
 
-    def __init__(
-        self, variants: dict[str, _FakeVariantSpec], default_variant: str
-    ) -> None:
+    def __init__(self, variants: dict[str, _FakeVariantSpec], default_variant: str) -> None:
         self.variants = variants
         self.default_variant = default_variant
 
@@ -620,9 +646,7 @@ class _FakeRouter:
         del category
         return self._routing
 
-    def resolve_variant(
-        self, category: str, entries: Sequence[Mapping[str, object]]
-    ) -> str:
+    def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
         del category, entries
         return self._resolved
 
@@ -726,3 +750,119 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1, "the fallback booster must drive the ranking for the default variant"
+
+
+# ---------------------------------------------------------------------------
+# Per-race mode=full feature generation (target_race wiring)
+# ---------------------------------------------------------------------------
+#
+# When mode=full carries keibajoCode + raceBango, the Container builds features
+# for a single race (DuckDB --target-race) instead of scanning the whole day.
+# predict_category forwards a "keibajo:bango" target_race string straight to the
+# pipeline; the HTTP handler parses the scope and the shared PredictCategoryFn
+# contract carries it from iter_predict_chunks into the predict fn.
+
+
+def _noop_sleep(_seconds: float) -> None:
+    """No-op sleep injected so the keepalive loop never blocks the test."""
+
+
+def testpredict_category_forwards_target_race_to_pipeline() -> None:
+    """predict_category passes its target_race straight through to the pipeline."""
+    import pipeline_runner
+
+    captured: dict[str, object] = {}
+
+    def _fake_build(
+        category: Category,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        target_race: str | None = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        captured["target_race"] = target_race
+        return {}
+
+    with (
+        patch.object(pipeline_runner, "build_upcoming_feature_rows", side_effect=_fake_build),
+        patch("predict_upcoming._score_and_flush_races", return_value=3),
+    ):
+        window = PredictWindow(target_date="20260628", days_ahead=0, database_url=_DB_URL)
+        written = predict_category(_DB_URL, "jra", Path("/models"), window, target_race="01:05")
+
+    assert captured["target_race"] == "01:05"
+    assert written == 3
+
+
+def testpredict_category_target_race_defaults_to_none() -> None:
+    """The whole-window full path forwards target_race=None (no per-race filter)."""
+    import pipeline_runner
+
+    captured: dict[str, object] = {"target_race": "sentinel"}
+
+    def _fake_build(
+        category: Category,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        target_race: str | None = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        captured["target_race"] = target_race
+        return {}
+
+    with (
+        patch.object(pipeline_runner, "build_upcoming_feature_rows", side_effect=_fake_build),
+        patch("predict_upcoming._score_and_flush_races", return_value=0),
+    ):
+        window = PredictWindow(target_date="20260628", days_ahead=2, database_url=_DB_URL)
+        predict_category(_DB_URL, "nar", Path("/models"), window)
+
+    assert captured["target_race"] is None
+
+
+def test_parse_predict_params_full_mode_keeps_race_scope() -> None:
+    """A full-mode request carries keibajoCode / raceBango as the per-race scope."""
+    result = parse_predict_params(
+        "category=jra&runDate=20260628&daysAhead=0&mode=full&keibajoCode=01&raceBango=05"
+    )
+    assert not isinstance(result, str)
+    assert result.mode == "full"
+    assert result.keibajo_code == "01"
+    assert result.race_bango == "05"
+
+
+def test_full_mode_handler_flow_passes_race_scope_to_predict_fn() -> None:
+    """Mirror _PredictHandler.do_GET: parse a full-mode query, then drive the stream.
+
+    Proves keibajoCode / raceBango parsed from a full-mode request reach the
+    predict fn (the per-race feature-generation scope), exactly as the handler
+    wires ``parse_predict_params`` -> ``iter_predict_chunks(result, predict_fn)``.
+    """
+    parsed = parse_predict_params(
+        "category=jra&runDate=20260628&daysAhead=0&mode=full&keibajoCode=01&raceBango=05"
+    )
+    assert not isinstance(parsed, str)
+
+    recorded: list[tuple[str, str, int, str | None, str | None]] = []
+
+    def _recording_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        recorded.append((category, run_date, days_ahead, keibajo_code, race_bango))
+        return 1
+
+    list(iter_predict_chunks(parsed, _recording_predict, sleep_fn=_noop_sleep))
+
+    assert recorded == [("jra", "20260628", 0, "01", "05")]
+
+
+def test_predict_params_default_full_mode_has_no_race_scope() -> None:
+    """The whole-window full request leaves keibajoCode / raceBango unset (None)."""
+    params = PredictParams(category="jra", run_date="20260628", days_ahead=0)
+    assert params.mode == "full"
+    assert params.keibajo_code is None
+    assert params.race_bango is None

@@ -283,6 +283,7 @@ def build_base_argv(
     output_dir: Path,
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
+    target_race: str | None = None,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
@@ -300,6 +301,11 @@ def build_base_argv(
     appended so the DuckDB builder probes the per-year
     ``venue_weather_{year}.duckdb`` files in that directory for hourly weather.
     Absent → the builder falls back to the current NULL-weather path unchanged.
+
+    When ``target_race`` (``keibajo_code:race_bango``) is provided the
+    ``--target-race`` flag is appended so the DuckDB builder restricts the
+    upcoming target set to that single race. Absent → all races on
+    ``target_date`` are built as before.
     """
     argv = [
         PYTHON_BIN,
@@ -320,6 +326,8 @@ def build_base_argv(
         argv += ["--realtime-odds", str(realtime_odds_path)]
     if venue_weather_dir is not None:
         argv += ["--venue-weather-dir", str(venue_weather_dir)]
+    if target_race is not None:
+        argv += ["--target-race", target_race]
     return argv
 
 

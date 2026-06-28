@@ -194,6 +194,15 @@ def target_date_arg(raw: str) -> str:
     return raw
 
 
+def target_race_arg(raw: str) -> tuple[str, str]:
+    parts = raw.split(":")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise argparse.ArgumentTypeError(
+            f"--target-race must be keibajo_code:race_bango, got {raw}"
+        )
+    return parts[0], parts[1]
+
+
 def add_days(date_yyyymmdd: str, days: int) -> str:
     base = datetime.strptime(date_yyyymmdd, DATE_FORMAT).replace(tzinfo=timezone.utc)
     return (base + timedelta(days=days)).strftime(DATE_FORMAT)
@@ -239,6 +248,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=non_negative_int,
         default=0,
         help="Extra days after --target-date to include (default 0 = that day only).",
+    )
+    parser.add_argument(
+        "--target-race",
+        type=target_race_arg,
+        default=None,
+        help=(
+            "keibajo_code:race_bango — build features for a single race only. "
+            "Restricts the rec history scan to the target race's horses / jockeys "
+            "/ trainers (paired with --target-date), cutting PG transfer from "
+            "millions of rows to ~100K for the per-race CF Container path."
+        ),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--pg-url", type=str, default=None)
@@ -663,14 +683,66 @@ def build_rec_select_sql(
     """
 
 
+def _query_target_race_entity_filter(
+    con: duckdb.DuckDBPyConnection,
+    keibajo_code: str,
+    race_bango: str,
+    target_from: str,
+    target_to: str,
+) -> str:
+    """WHERE-clause fragment restricting rec to the target race's entities.
+
+    Queries the raw source table (jvd_se for JRA keibajo codes, nvd_se for NAR /
+    Ban-ei) for the horses / jockeys / trainers entered in the target race, then
+    returns ``and (horse in (...) or jockey in (...) or trainer in (...))``. The
+    target race is UPCOMING, so it lives in the raw source table — the derived
+    race_entry_corner_features lags and may not yet contain it. Returns "" when
+    the race has no entries, leaving rec unfiltered.
+    """
+    se_table = "jvd_se" if keibajo_code in JRA_KEIBAJO_CODES else "nvd_se"
+    rows = con.execute(
+        f"""
+        select distinct ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho
+        from pg.{se_table}
+        where keibajo_code = '{keibajo_code}'
+          and race_bango = '{race_bango}'
+          and (kaisai_nen || kaisai_tsukihi) between '{target_from}' and '{target_to}'
+        """
+    ).fetchall()
+    horses = [f"'{r[0]}'" for r in rows if r[0]]
+    jockeys = [f"'{r[1]}'" for r in rows if r[1]]
+    trainers = [f"'{r[2]}'" for r in rows if r[2]]
+    parts: list[str] = []
+    if horses:
+        parts.append(f"ketto_toroku_bango in ({', '.join(horses)})")
+    if jockeys:
+        parts.append(f"kishumei_ryakusho in ({', '.join(jockeys)})")
+    if trainers:
+        parts.append(f"chokyoshimei_ryakusho in ({', '.join(trainers)})")
+    if not parts:
+        return ""
+    return " and (" + " or ".join(parts) + ")"
+
+
 def stage_rec_table(
     con: duckdb.DuckDBPyConnection,
     history_start: str,
     to_date: str,
     category: str,
     upcoming_window: tuple[str, str] | None = None,
+    target_race: tuple[str, str] | None = None,
 ) -> None:
     select_sql = build_rec_select_sql(category, history_start, to_date, upcoming_window)
+    if target_race is not None and upcoming_window is not None:
+        keibajo_code, race_bango = target_race
+        target_from, target_to = upcoming_window
+        entity_filter = _query_target_race_entity_filter(
+            con, keibajo_code, race_bango, target_from, target_to
+        )
+        if entity_filter:
+            select_sql = (
+                f"select * from ({select_sql}) _rec_target where true{entity_filter}"
+            )
     run_staged_sql(
         con,
         "source.rec",
@@ -905,6 +977,7 @@ def stage_source_tables(
     category: str,
     upcoming_window: tuple[str, str] | None = None,
     realtime_odds_path: Path | None = None,
+    target_race: tuple[str, str] | None = None,
 ) -> None:
     history_start = compute_history_start(from_date, HISTORY_LOOKBACK_YEARS)
     _log_source_config(category, history_start, from_date, to_date)
@@ -916,7 +989,7 @@ def stage_source_tables(
         stage_realtime_odds_table(con, realtime_odds_path)
     else:
         create_empty_realtime_odds_stub(con)
-    stage_rec_table(con, history_start, to_date, category, upcoming_window)
+    stage_rec_table(con, history_start, to_date, category, upcoming_window, target_race)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
         con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter
@@ -934,9 +1007,22 @@ def stage_source_tables(
     stage_ra_table(con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date)
 
 
-def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> None:
+def build_target_table(
+    con: duckdb.DuckDBPyConnection,
+    category: str,
+    from_date: str,
+    to_date: str,
+    target_race: tuple[str, str] | None = None,
+) -> None:
     filter_clause = category_source_filter(category, "rec")
     cat_expr = category_expression(category)
+    race_filter = ""
+    if target_race is not None:
+        keibajo_code, race_bango = target_race
+        race_filter = (
+            f"\n          and rec.keibajo_code = '{keibajo_code}'"
+            f"\n          and rec.race_bango = '{race_bango}'"
+        )
     con.execute(
         f"""
         create or replace temp table target as
@@ -983,7 +1069,7 @@ def build_target_table(con: duckdb.DuckDBPyConnection, category: str, from_date:
         from rec
         where rec.race_date between '{from_date}' and '{to_date}'
           and {filter_clause}
-          and rec.ketto_toroku_bango is not null
+          and rec.ketto_toroku_bango is not null{race_filter}
         """
     )
     con.execute(
@@ -2806,18 +2892,27 @@ def stage_source(
     category: str,
     upcoming_window: tuple[str, str] | None = None,
     realtime_odds_path: Path | None = None,
+    target_race: tuple[str, str] | None = None,
 ) -> None:
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(con, from_date, to_date, category, upcoming_window, realtime_odds_path)
+    stage_source_tables(
+        con, from_date, to_date, category, upcoming_window, realtime_odds_path, target_race
+    )
     log_event("source.stage", "done", perf_counter() - started)
 
 
-def stage_target(con: duckdb.DuckDBPyConnection, category: str, from_date: str, to_date: str) -> int:
+def stage_target(
+    con: duckdb.DuckDBPyConnection,
+    category: str,
+    from_date: str,
+    to_date: str,
+    target_race: tuple[str, str] | None = None,
+) -> int:
     log_event("target.build", "start", 0.0)
     started = perf_counter()
-    build_target_table(con, category, from_date, to_date)
+    build_target_table(con, category, from_date, to_date, target_race)
     target_row_result = con.execute("select count(*) from target").fetchone()
     target_rows = int(target_row_result[0]) if target_row_result is not None else 0
     log_event("target.build", "done", perf_counter() - started, target_rows)
@@ -3494,11 +3589,18 @@ def run_stage_source(
         return years
     controller.cascade_invalidate_from(CHECKPOINT_SOURCE)
     stage_source(
-        con, pg_url, from_date, to_date, args.category, upcoming_window, args.realtime_odds
+        con,
+        pg_url,
+        from_date,
+        to_date,
+        args.category,
+        upcoming_window,
+        args.realtime_odds,
+        args.target_race,
     )
     controller.spill_and_record(con, CHECKPOINT_SOURCE, [])
     heartbeat.set_stage("target.build")
-    stage_target(con, args.category, from_date, to_date)
+    stage_target(con, args.category, from_date, to_date, args.target_race)
     years = get_target_years(con)
     # SOURCE / TARGET hashes are computed with years=[] because ``years`` is
     # derived FROM target — it is an output, not an input, so it must not feed

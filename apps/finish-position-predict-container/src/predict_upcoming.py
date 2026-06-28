@@ -675,18 +675,21 @@ def _score_and_flush_races(
     return _flush_scored(database_url, category, scored)
 
 
-def _predict_category(
+def predict_category(
     database_url: str,
     category: Category,
     models_dir: Path,
     window: PredictWindow,
+    target_race: str | None = None,
 ) -> int:
     # Score all races before opening the Neon write connection. The feature
     # build is the longest step (DuckDB base build + 14 layer scripts, typically
     # 2-5 min) and Neon autosuspends after ~60s of idle — connecting before the
     # build would cause AdminShutdown on the first UPSERT. Scoring is CPU-bound
     # and connection-free, so we defer the Neon connect until the first write.
-    races = _build_feature_rows(category, window)
+    # ``target_race`` ("keibajo:bango") restricts the DuckDB build to one race so
+    # the Container can generate features per race instead of scanning the day.
+    races = _build_feature_rows(category, window, target_race=target_race)
     return _score_and_flush_races(database_url, category, models_dir, races)
 
 
@@ -740,18 +743,25 @@ def _load_cb_nar_etop2_booster(models_dir: Path) -> BoosterLike:
 def _build_feature_rows(
     category: Category,
     window: PredictWindow,
+    target_race: str | None = None,
 ) -> Mapping[str, list[Mapping[str, object]]]:
     """Run the repo feature pipeline and load the resulting parquet per race.
 
     Delegated to the bundled pipeline scripts (DuckDB base build in
     ``--target-date`` mode + v7 layers); see ``DEPLOY.md`` for the exact
     subprocess invocation chain. Returns a map of ``race_id`` -> ordered entry
-    feature dicts for today's races (incl. UPCOMING).
+    feature dicts for today's races (incl. UPCOMING). When ``target_race``
+    ("keibajo:bango") is set it is forwarded to the DuckDB builder's
+    ``--target-race`` so only that one race is built.
     """
     from pipeline_runner import build_upcoming_feature_rows  # bundled in image
 
     return build_upcoming_feature_rows(
-        category, window.target_date, window.days_ahead, window.database_url
+        category,
+        window.target_date,
+        window.days_ahead,
+        window.database_url,
+        target_race=target_race,
     )
 
 
@@ -1032,12 +1042,21 @@ def _make_predict_fn(
     """
     _last_run: list[tuple[str, str]] = []
 
-    def _predict(category_str: str, run_date: str, days_ahead: int) -> int:
+    def _predict(
+        category_str: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
+        target_race = f"{keibajo_code}:{race_bango}" if keibajo_code and race_bango else None
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
-        written = _predict_category(database_url, category, models_dir, window)
+        written = predict_category(
+            database_url, category, models_dir, window, target_race=target_race
+        )
         # Record the last successful run so parquet_payload_fn can retrieve it.
         if _last_run:
             _last_run.clear()
@@ -1246,8 +1265,18 @@ def _make_rescore_fn(
     del source_url  # no Neon feature scan on the rescore path
     _last: list[tuple[str, str]] = []
 
-    def _rescore(category_str: str, run_date: str, days_ahead: int) -> int:
-        del days_ahead  # the cache already spans the morning build window
+    def _rescore(
+        category_str: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        # ``days_ahead`` is unused (the cache already spans the morning build
+        # window); the per-race scope is bound by the rescore factory, so the
+        # ``keibajo_code`` / ``race_bango`` args carried by the shared
+        # PredictCategoryFn contract are ignored here.
+        del days_ahead, keibajo_code, race_bango
         from pipeline_runner import WORK_DIR  # bundled in image
         from predict_lib.model_meta import resolve_category
 
@@ -1513,7 +1542,7 @@ def main() -> int:
     failures: list[str] = []
     for category in categories:
         try:
-            races_predicted += _predict_category(database_url, category, models_dir, window)
+            races_predicted += predict_category(database_url, category, models_dir, window)
         except BaseException as category_error:
             # Per-category isolation: one category's failure (e.g. Neon SSL
             # idle-timeout during the long-running DuckDB postgres_scanner) must

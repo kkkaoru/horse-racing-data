@@ -204,6 +204,7 @@ def build_upcoming_feature_rows(
     target_date: str,
     days_ahead: int,
     database_url: str,
+    target_race: str | None = None,
 ) -> Mapping[str, list[Mapping[str, object]]]:
     """Run the pipeline and return ``race_id`` -> ordered entry feature dicts.
 
@@ -239,6 +240,7 @@ def build_upcoming_feature_rows(
         final_dir,
         realtime_odds_path,
         venue_weather_dir,
+        target_race,
     )
     if not built:
         return {}
@@ -270,6 +272,7 @@ def build_pipeline(
     final_dir: Path,
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
+    target_race: str | None = None,
 ) -> bool:
     """Run the DuckDB base build then each v7 layer into ``final_dir``.
 
@@ -282,6 +285,10 @@ def build_pipeline(
     flow into ``odds_score`` / ``popularity_score``. When ``venue_weather_dir``
     is provided it is forwarded via ``--venue-weather-dir`` so the per-year
     ``venue_weather_{year}.duckdb`` files supply hourly weather features.
+
+    When ``target_race`` (``keibajo_code:race_bango``) is provided it is
+    forwarded to the base build via ``--target-race`` so only that single race
+    is built instead of every race on ``target_date``.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     base_dir = WORK_DIR / f"feat-{category}-base"
@@ -295,6 +302,7 @@ def build_pipeline(
             base_dir,
             realtime_odds_path,
             venue_weather_dir,
+            target_race,
         )
     )
     if not has_parquet_output(base_dir):

@@ -116,6 +116,26 @@ def test_build_pipeline_signature_accepts_venue_weather_dir():
     assert "venue_weather_dir" in inspect.signature(build_pipeline).parameters
 
 
+def test_build_pipeline_signature_accepts_target_race():
+    import inspect
+
+    from pipeline_runner import build_pipeline
+
+    param = inspect.signature(build_pipeline).parameters.get("target_race")
+    assert param is not None
+    assert param.default is None
+
+
+def test_build_upcoming_feature_rows_signature_accepts_target_race():
+    import inspect
+
+    from pipeline_runner import build_upcoming_feature_rows
+
+    param = inspect.signature(build_upcoming_feature_rows).parameters.get("target_race")
+    assert param is not None
+    assert param.default is None
+
+
 def test_fetch_venue_weather_dir_is_importable_from_weather_fetcher():
     from weather_fetcher import fetch_venue_weather_dir
 

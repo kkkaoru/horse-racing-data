@@ -729,6 +729,33 @@ def test_build_base_argv_with_both_realtime_odds_and_venue_weather() -> None:
 
 
 # ---------------------------------------------------------------------------
+# build_base_argv — target-race optional arg
+# ---------------------------------------------------------------------------
+
+
+def test_build_base_argv_without_target_race_omits_flag() -> None:
+    argv = build_base_argv(BUILDER, "jra", "20260628", 0, URL, Path("/tmp/base"))
+    assert "--target-race" not in argv
+
+
+def test_build_base_argv_with_target_race_appends_flag() -> None:
+    argv = build_base_argv(
+        BUILDER, "jra", "20260628", 0, URL, Path("/tmp/base"),
+        target_race="01:05",
+    )
+    assert "--target-race" in argv
+    assert argv[argv.index("--target-race") + 1] == "01:05"
+
+
+def test_build_base_argv_target_race_none_same_as_omitted() -> None:
+    argv_implicit = build_base_argv(BUILDER, "nar", "20260628", 0, URL, Path("/tmp/base"))
+    argv_explicit_none = build_base_argv(
+        BUILDER, "nar", "20260628", 0, URL, Path("/tmp/base"), target_race=None
+    )
+    assert argv_implicit == argv_explicit_none
+
+
+# ---------------------------------------------------------------------------
 # similar-race context layer (sim_* features)
 # ---------------------------------------------------------------------------
 

@@ -56,6 +56,11 @@ const runMock = vi.fn(async () => ({ success: true }));
 const bindMock = vi.fn(() => ({ run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const predictQueueSendMock = vi.fn(async () => undefined);
+const realtimeAllMock = vi.fn(async () => ({
+  results: [{ keibajo_code: "05", race_bango: "11", source: "jra" }],
+}));
+const realtimeBindMock = vi.fn(() => ({ all: realtimeAllMock }));
+const realtimePrepareMock = vi.fn(() => ({ bind: realtimeBindMock }));
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -65,7 +70,7 @@ const makeEnv = (): Env => ({
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: { send: predictQueueSendMock } as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
-  REALTIME_DB: {} as unknown as D1Database,
+  REALTIME_DB: { prepare: realtimePrepareMock } as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
 });
 
@@ -93,6 +98,9 @@ beforeEach(() => {
   coordinatorTickMock.mockClear();
   claimRescoreRaceMock.mockClear();
   predictQueueSendMock.mockClear();
+  realtimeAllMock.mockClear();
+  realtimeBindMock.mockClear();
+  realtimePrepareMock.mockClear();
   enqueueMock.mockResolvedValue(["jra", "nar", "ban-ei"]);
   coordinatorTickMock.mockResolvedValue([]);
   claimRescoreRaceMock.mockResolvedValue({ proceed: true });
@@ -258,17 +266,31 @@ test("handleScheduled does not run the coordinator for the rescore cron", async 
   expect(coordinatorTickMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled enqueues full-mode for all categories for the feature-build cron", async () => {
+test("handleScheduled enqueues one full-mode build per race for the feature-build cron", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({ daysAhead: 2, mode: "full", runDate: "2026-06-03" }),
+    expect.objectContaining({
+      category: "jra",
+      daysAhead: 2,
+      keibajoCode: "05",
+      mode: "full",
+      raceBango: "11",
+      runDate: "2026-06-03",
+    }),
   );
 });
 
-test("handleScheduled feature-build cron enqueues without a single-category target", async () => {
+test("handleScheduled feature-build cron reads today's races from REALTIME_DB", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(enqueueMock.mock.calls[0]?.[0]?.category).toBe(undefined);
+  expect(realtimePrepareMock).toHaveBeenCalledTimes(1);
+  expect(realtimeBindMock).toHaveBeenCalledWith("2026", "0603");
+});
+
+test("handleScheduled feature-build cron enqueues nothing when no races run today", async () => {
+  realtimeAllMock.mockResolvedValueOnce({ results: [] });
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled feature-build cron does not start container or warm or coordinate", async () => {

@@ -346,8 +346,7 @@ def build_r2_per_race_feat_cache_key(
     Key format: ``feat-cache/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet``
     """
     return (
-        f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/"
-        f"{keibajo_code}/{race_bango}/features.parquet"
+        f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/{keibajo_code}/{race_bango}/features.parquet"
     )
 
 
@@ -376,13 +375,20 @@ class CacheMissError(Exception):
 # Core streaming generator
 # ---------------------------------------------------------------------------
 
-PredictCategoryFn = Callable[[str, str, int], int]
+PredictCategoryFn = Callable[[str, str, int, str | None, str | None], int]
 """Signature of the ``_predict_category`` adapter passed to :func:`iter_predict_chunks`.
 
 Args:
-    category:   One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
-    run_date:   YYYYMMDD date string.
-    days_ahead: Non-negative integer window extension.
+    category:     One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
+    run_date:     YYYYMMDD date string.
+    days_ahead:   Non-negative integer window extension.
+    keibajo_code: Optional per-race scope keibajo code (``None`` = all races).
+    race_bango:   Optional per-race scope race number (``None`` = all races).
+
+When ``keibajo_code`` and ``race_bango`` are both set, the full path builds and
+scores only that one race (``mode=full`` per-race feature generation); both
+``None`` is the whole-window default.  The rescore path ignores these args
+because its race scope is bound by the rescore factory.
 
 Returns:
     Number of races predicted (written to Neon).
@@ -412,12 +418,20 @@ def _run_predict_fn(
     predict_fn: PredictCategoryFn,
     params: PredictParams,
 ) -> int:
-    """Call *predict_fn* with the category / run_date / days_ahead from *params*.
+    """Call *predict_fn* with the category / run_date / days_ahead + race scope.
 
     Thin wrapper so the call-site in ``iter_predict_chunks`` stays concise and
-    the signature is the same whether we are on the full or rescore path.
+    the signature is the same whether we are on the full or rescore path.  The
+    optional ``keibajo_code`` / ``race_bango`` scope is forwarded so the full
+    path can build + score a single race; the rescore path ignores them.
     """
-    return predict_fn(params.category, params.run_date, params.days_ahead)
+    return predict_fn(
+        params.category,
+        params.run_date,
+        params.days_ahead,
+        params.keibajo_code,
+        params.race_bango,
+    )
 
 
 def _run_in_thread(

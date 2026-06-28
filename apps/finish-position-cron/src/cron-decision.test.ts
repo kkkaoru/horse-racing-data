@@ -1,8 +1,9 @@
 // Run with bun. Tests for the cron gate.
 
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   COORDINATOR_CRON_RACE_HOURS,
+  enumerateTodaysRaces,
   FEATURE_BUILD_CRON,
   PREDICT_CRON,
   RESCORE_CRON_RACE_HOURS,
@@ -164,4 +165,85 @@ test("shouldRunRescoreCron rejects the feature-build cron", () => {
 
 test("shouldRunPredictCron rejects the feature-build cron", () => {
   expect(shouldRunPredictCron("30 0 * * *")).toBe(false);
+});
+
+test("enumerateTodaysRaces maps a jra source row to the jra category", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [{ keibajo_code: "05", race_bango: "11", source: "jra" }],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([{ category: "jra", keibajoCode: "05", raceBango: "11" }]);
+});
+
+test("enumerateTodaysRaces maps a nar-source keibajo 83 row to the ban-ei category", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [{ keibajo_code: "83", race_bango: "07", source: "nar" }],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([{ category: "ban-ei", keibajoCode: "83", raceBango: "07" }]);
+});
+
+test("enumerateTodaysRaces maps a nar-source non-83 keibajo row to the nar category", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [{ keibajo_code: "44", race_bango: "12", source: "nar" }],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([{ category: "nar", keibajoCode: "44", raceBango: "12" }]);
+});
+
+test("enumerateTodaysRaces zero-pads single-digit keibajo_code and race_bango to width 2", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [{ keibajo_code: "5", race_bango: "1", source: "jra" }],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([{ category: "jra", keibajoCode: "05", raceBango: "01" }]);
+});
+
+test("enumerateTodaysRaces binds the kaisai_nen and kaisai_tsukihi parsed from runYmd", async () => {
+  const allMock = vi.fn(async () => ({ results: [] }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  await enumerateTodaysRaces(db, "20260628");
+  expect(bindMock).toHaveBeenCalledWith("2026", "0628");
+});
+
+test("enumerateTodaysRaces returns an empty array when no races run today", async () => {
+  const allMock = vi.fn(async () => ({ results: [] }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([]);
+});
+
+test("enumerateTodaysRaces maps every row to a per-race entry", async () => {
+  const allMock = vi.fn(async () => ({
+    results: [
+      { keibajo_code: "05", race_bango: "11", source: "jra" },
+      { keibajo_code: "44", race_bango: "01", source: "nar" },
+      { keibajo_code: "83", race_bango: "09", source: "nar" },
+    ],
+  }));
+  const bindMock = vi.fn(() => ({ all: allMock }));
+  const prepareMock = vi.fn(() => ({ bind: bindMock }));
+  const db = { prepare: prepareMock } as unknown as D1Database;
+  const races = await enumerateTodaysRaces(db, "20260628");
+  expect(races).toStrictEqual([
+    { category: "jra", keibajoCode: "05", raceBango: "11" },
+    { category: "nar", keibajoCode: "44", raceBango: "01" },
+    { category: "ban-ei", keibajoCode: "83", raceBango: "09" },
+  ]);
 });

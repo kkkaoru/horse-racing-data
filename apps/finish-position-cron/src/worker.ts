@@ -4,6 +4,7 @@ import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
 import {
+  enumerateTodaysRaces,
   PREDICT_CRON,
   shouldRunCoordinatorCron,
   shouldRunFeatureBuildCron,
@@ -267,6 +268,30 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   return healthResponse();
 };
 
+// Fan out one full-mode per-race build per race in today's realtime_race_sources
+// so the Container builds features + predicts a single race at a time instead of
+// one 21y full-batch scan. Enqueues nothing when no races run today.
+const enqueuePerRaceFeatureBuilds = async (env: Env, scheduledAt: Date): Promise<void> => {
+  const runDate = getRunDateJst(scheduledAt);
+  const runYmd = getRunYmdJst(scheduledAt);
+  const races = await enumerateTodaysRaces(env.REALTIME_DB, runYmd);
+  const daysAhead = Number(env.PREDICT_DAYS_AHEAD);
+  await Promise.all(
+    races.map((race) =>
+      enqueuePredict({
+        category: race.category,
+        daysAhead,
+        env,
+        keibajoCode: race.keibajoCode,
+        mode: FULL_MODE,
+        raceBango: race.raceBango,
+        runDate,
+        runYmd,
+      }),
+    ),
+  );
+};
+
 export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<void> => {
   if (shouldRunWarmCron(event.cron)) {
     await warmNeon(env.NEON_DATABASE_URL);
@@ -285,17 +310,11 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     return;
   }
   if (shouldRunFeatureBuildCron(event.cron)) {
-    // Enqueue the full-mode Container pipeline for all categories so per-race
-    // feature parquets are generated and uploaded to R2 before race hours.
-    // Omitting category fans out to every category in a single call.
-    const scheduledAt = new Date(event.scheduledTime);
-    await enqueuePredict({
-      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
-      env,
-      mode: FULL_MODE,
-      runDate: getRunDateJst(scheduledAt),
-      runYmd: getRunYmdJst(scheduledAt),
-    });
+    // Enqueue one full-mode build per race in today's realtime_race_sources so
+    // the Container builds + scores a single race at a time (no 21y full-batch
+    // scan). COORDINATOR_ENABLED does not gate this path (it only gates the
+    // per-race rescore coordinator).
+    await enqueuePerRaceFeatureBuilds(env, new Date(event.scheduledTime));
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {

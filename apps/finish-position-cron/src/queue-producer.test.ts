@@ -122,6 +122,30 @@ test("enqueuePredict attaches keibajoCode and raceBango for a per-race rescore",
   });
 });
 
+test("enqueuePredict attaches keibajoCode and raceBango for a per-race full build", async () => {
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-06-28",
+    runYmd: "20260628",
+  });
+  expect(categories).toStrictEqual(["jra"]);
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-06-28",
+    runDateIso: "2026-06-28",
+    runYmd: "20260628",
+  });
+});
+
 test("enqueuePredict omits per-race fields when only keibajoCode is provided", async () => {
   await enqueuePredict({
     category: "nar",

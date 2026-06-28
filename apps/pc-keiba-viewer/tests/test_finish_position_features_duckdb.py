@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+import duckdb
 import pytest
 
 import finish_position_features_duckdb as subject
@@ -3725,3 +3726,313 @@ def test_checkpoint_pedigree_stage_owns_pedigree_features_only() -> None:
 
 def test_spill_after_pedigree_is_just_pedigree_features() -> None:
     assert subject.SPILL_AFTER_PEDIGREE == ("pedigree_features",)
+
+
+# ---------------------------------------------------------------------------
+# --target-race per-race build: arg parsing, entity filter, rec + target filter
+# ---------------------------------------------------------------------------
+
+
+def test_target_race_arg_parses_keibajo_and_race_bango() -> None:
+    assert subject.target_race_arg("05:11") == ("05", "11")
+
+
+def test_target_race_arg_rejects_missing_colon() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_race_arg("0511")
+
+
+def test_target_race_arg_rejects_empty_keibajo() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_race_arg(":11")
+
+
+def test_target_race_arg_rejects_empty_race_bango() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_race_arg("05:")
+
+
+def test_parse_args_target_race_defaults_to_none() -> None:
+    args = subject.parse_args([])
+    assert args.target_race is None
+
+
+def test_parse_args_parses_target_race_into_tuple() -> None:
+    args = subject.parse_args(["--target-race", "44:03"])
+    assert args.target_race == ("44", "03")
+
+
+def test_query_target_race_entity_filter_jra_reads_jvd_se() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se as select * from (values
+          ('2020100001', 'jockey_a', 'trainer_a', '05', '11', '2026', '0628')
+        ) as v(
+          ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
+          keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi
+        )
+        """
+    )
+    fragment = subject._query_target_race_entity_filter(con, "05", "11", "20260628", "20260628")
+    con.close()
+    assert fragment == (
+        " and (ketto_toroku_bango in ('2020100001')"
+        " or kishumei_ryakusho in ('jockey_a')"
+        " or chokyoshimei_ryakusho in ('trainer_a'))"
+    )
+
+
+def test_query_target_race_entity_filter_nar_reads_nvd_se() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.nvd_se as select * from (values
+          ('2019100009', 'kishu_nar', 'choky_nar', '44', '03', '2026', '0628')
+        ) as v(
+          ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
+          keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi
+        )
+        """
+    )
+    fragment = subject._query_target_race_entity_filter(con, "44", "03", "20260628", "20260628")
+    con.close()
+    assert fragment == (
+        " and (ketto_toroku_bango in ('2019100009')"
+        " or kishumei_ryakusho in ('kishu_nar')"
+        " or chokyoshimei_ryakusho in ('choky_nar'))"
+    )
+
+
+def test_query_target_race_entity_filter_skips_null_jockey_and_trainer() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se as select * from (values
+          ('2020100001', null::varchar, null::varchar, '05', '11', '2026', '0628')
+        ) as v(
+          ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
+          keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi
+        )
+        """
+    )
+    fragment = subject._query_target_race_entity_filter(con, "05", "11", "20260628", "20260628")
+    con.close()
+    assert fragment == " and (ketto_toroku_bango in ('2020100001'))"
+
+
+def test_query_target_race_entity_filter_returns_empty_when_no_entries() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se(
+          ketto_toroku_bango varchar, kishumei_ryakusho varchar,
+          chokyoshimei_ryakusho varchar, keibajo_code varchar,
+          race_bango varchar, kaisai_nen varchar, kaisai_tsukihi varchar
+        )
+        """
+    )
+    fragment = subject._query_target_race_entity_filter(con, "05", "11", "20260628", "20260628")
+    con.close()
+    assert fragment == ""
+
+
+def _seed_rec_base_for_stage(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(
+        """
+        create table _base as select * from (values
+          ('jra', '2020100001', '20240101', 'jockey_a', 'trainer_a', '05'),
+          ('jra', '9999999999', '20240101', 'jockey_z', 'trainer_z', '05')
+        ) as v(
+          source, ketto_toroku_bango, race_date,
+          kishumei_ryakusho, chokyoshimei_ryakusho, keibajo_code
+        )
+        """
+    )
+
+
+def test_stage_rec_table_filters_rec_to_target_race_entities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se as select * from (values
+          ('2020100001', 'jockey_a', 'trainer_a', '05', '11', '2026', '0628')
+        ) as v(
+          ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
+          keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi
+        )
+        """
+    )
+    _seed_rec_base_for_stage(con)
+    monkeypatch.setattr(subject, "build_rec_select_sql", lambda *_a, **_k: "select * from _base")
+    subject.stage_rec_table(
+        con,
+        "20160101",
+        "20260628",
+        "jra",
+        upcoming_window=("20260628", "20260628"),
+        target_race=("05", "11"),
+    )
+    rows = con.execute("select ketto_toroku_bango from rec order by 1").fetchall()
+    con.close()
+    assert rows == [("2020100001",)]
+
+
+def test_stage_rec_table_keeps_all_rows_when_target_race_has_no_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.jvd_se(
+          ketto_toroku_bango varchar, kishumei_ryakusho varchar,
+          chokyoshimei_ryakusho varchar, keibajo_code varchar,
+          race_bango varchar, kaisai_nen varchar, kaisai_tsukihi varchar
+        )
+        """
+    )
+    _seed_rec_base_for_stage(con)
+    monkeypatch.setattr(subject, "build_rec_select_sql", lambda *_a, **_k: "select * from _base")
+    subject.stage_rec_table(
+        con,
+        "20160101",
+        "20260628",
+        "jra",
+        upcoming_window=("20260628", "20260628"),
+        target_race=("05", "11"),
+    )
+    count = con.execute("select count(*) from rec").fetchone()
+    con.close()
+    assert count == (2,)
+
+
+def test_stage_rec_table_skips_entity_filter_without_upcoming_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    _seed_rec_base_for_stage(con)
+    monkeypatch.setattr(subject, "build_rec_select_sql", lambda *_a, **_k: "select * from _base")
+    subject.stage_rec_table(
+        con,
+        "20160101",
+        "20260628",
+        "jra",
+        upcoming_window=None,
+        target_race=("05", "11"),
+    )
+    count = con.execute("select count(*) from rec").fetchone()
+    con.close()
+    assert count == (2,)
+
+
+def _seed_two_race_rec(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute(
+        """
+        create or replace temp table rec as
+        select * from (values
+          ('jra', '20260628', date '2026-06-28', '2026', '0628', '05', '01',
+            '2020100001', 3, 1600, '11', 'A', 16, 1, 1.0/16,
+            'jockey_a', 'trainer_a', '99', '1', '1',
+            0.0, 0.3, 0.4, 50.0, 1, 1, 3),
+          ('jra', '20260628', date '2026-06-28', '2026', '0628', '05', '02',
+            '2020100002', 5, 1600, '11', 'A', 16, 2, 2.0/16,
+            'jockey_b', 'trainer_b', '99', '1', '1',
+            0.2, 0.5, 0.6, 100.0, 2, 1, 4)
+        ) as v(
+          source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, umaban, kyori, track_code, grade_code, shusso_tosu,
+          finish_position, finish_norm, kishumei_ryakusho, chokyoshimei_ryakusho,
+          kyoso_joken_code, babajotai_code_shiba, babajotai_code_dirt,
+          corner1_norm, corner3_norm, corner4_norm, tansho_odds, tansho_ninkijun,
+          seibetsu_code, barei
+        )
+        """
+    )
+
+
+def test_build_target_table_restricts_to_target_race_when_set() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    _seed_two_race_rec(con)
+    subject.build_target_table(con, "jra", "20260628", "20260628", ("05", "01"))
+    rows = con.execute(
+        "select ketto_toroku_bango, race_bango from target order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    assert rows == [("2020100001", "01")]
+
+
+def test_build_target_table_keeps_all_races_when_target_race_none() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    _seed_two_race_rec(con)
+    subject.build_target_table(con, "jra", "20260628", "20260628")
+    count = con.execute("select count(*) from target").fetchone()
+    con.close()
+    assert count == (2,)
+
+
+def test_stage_source_tables_passes_target_race_to_stage_rec_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    captured: dict[str, object] = {}
+
+    def fake_stage_rec_table(*args: object) -> None:
+        captured["target_race"] = args[5]
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda *_: None)
+    monkeypatch.setattr(subject, "stage_rec_table", fake_stage_rec_table)
+    monkeypatch.setattr(subject, "stage_se_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_um_table", lambda *_, **__: None)
+    monkeypatch.setattr(subject, "stage_ra_table", lambda *_, **__: None)
+    subject.stage_source_tables(
+        con, "20260628", "20260628", "jra", ("20260628", "20260628"), None, ("05", "11")
+    )
+    con.close()
+    assert captured["target_race"] == ("05", "11")
+
+
+def test_stage_target_passes_target_race_to_build_target_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("create or replace temp table target as select 1 as x")
+    captured: dict[str, object] = {}
+
+    def fake_build_target_table(*args: object) -> None:
+        captured["target_race"] = args[4]
+
+    monkeypatch.setattr(subject, "build_target_table", fake_build_target_table)
+    monkeypatch.setattr(subject, "shrink_se_tables_to_target_horses", lambda *_, **__: None)
+    subject.stage_target(con, "jra", "20260628", "20260628", ("05", "11"))
+    con.close()
+    assert captured["target_race"] == ("05", "11")
