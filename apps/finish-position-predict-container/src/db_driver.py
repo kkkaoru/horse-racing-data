@@ -10,15 +10,24 @@ unit-tested; exercised at deploy time per DEPLOY.md.
 
 Retry logic: ``connect_postgres_with_retry`` wraps ``connect_postgres`` with
 exponential backoff for transient failures (DNS resolution failures, Neon
-autosuspend during idle, lost/closed connection errors). Three failure modes
+autosuspend during idle, lost/closed connection errors). Failure modes
 observed in production (June 2026):
   1. ``psycopg.errors.AdminShutdown``: Neon compute autosuspended during the
      long feature build; the write connection finds a dead socket.
-  2. ``psycopg.OperationalError`` / "Name or service not known": transient DNS
-     failure at container startup (Docker bridge resolver blip).
-  3. "connection is lost" / "connection is closed": Neon closed the TCP
-     connection between connect and first use (race condition).
-All three are transient and resolve on a fresh connect attempt.
+  2. ``psycopg.OperationalError`` / "Name or service not known" (gai errno -2,
+     EAI_NONAME): transient DNS failure at container startup (Docker bridge
+     resolver blip).
+  3. ``psycopg.OperationalError`` / "Temporary failure in name resolution"
+     (gai errno -3, EAI_AGAIN): upstream DNS server timed out / momentarily
+     unavailable — distinct from EAI_NONAME but equally transient. Observed
+     on 2026-06-28 when NAR was the only category to fall into this gap
+     between Ban-ei (succeeded) and the next retry window.
+  4. "failed to resolve host" (psycopg wrapper prefix surrounding both
+     EAI_NONAME and EAI_AGAIN messages): future-proofs against new glibc /
+     musl error string variants.
+  5. "connection is lost" / "connection is closed" / SSL eof: Neon closed
+     the TCP connection between connect and first use (race condition).
+All are transient and resolve on a fresh connect attempt.
 """
 
 from __future__ import annotations
@@ -33,13 +42,28 @@ from typing import Protocol, cast
 # check in connect_postgres_with_retry. The string tokens here cover the
 # OperationalError + "connection is lost/closed" family.
 _TRANSIENT_ERROR_TOKENS: tuple[str, ...] = (
+    # DNS gai errno -2 (EAI_NONAME): "Name or service not known".
     "name or service not known",
+    # DNS gai errno -3 (EAI_AGAIN): "Temporary failure in name resolution"
+    # — distinct from EAI_NONAME but equally transient (upstream resolver
+    # timeout / momentary unavailability). Added 2026-06-29 after the
+    # 2026-06-28 NAR failure where the prior token list missed this variant.
+    "temporary failure in name resolution",
+    # psycopg's gaierror wrapper prefixes both EAI_NONAME and EAI_AGAIN
+    # messages with this string. Matching the prefix future-proofs against
+    # other glibc / musl gai error variants we have not yet observed.
+    "failed to resolve host",
     "connection is lost",
     "connection is closed",
     "connection refused",
     "could not connect to server",
     "server closed the connection unexpectedly",
     "ssl connection has been closed",
+    # psycopg surfaces a mid-query SSL hangup as "consuming input failed:
+    # SSL error: unexpected eof while reading" — also transient (Neon TCP
+    # closed mid-stream); observed 2026-06-28 alongside DNS gap.
+    "consuming input failed",
+    "unexpected eof",
 )
 
 CONNECT_MAX_RETRIES: int = 4

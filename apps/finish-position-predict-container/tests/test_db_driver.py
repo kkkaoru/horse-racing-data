@@ -38,6 +38,30 @@ def test_is_transient_name_or_service_not_known() -> None:
     assert is_transient_error(exc) is True
 
 
+def test_is_transient_temporary_failure_in_name_resolution() -> None:
+    # gai errno -3 (EAI_AGAIN) variant — distinct error string from EAI_NONAME.
+    # Reproduces the 2026-06-28 NAR launchd failure that motivated this fix.
+    exc = Exception(
+        "failed to resolve host 'ep-frosty-cloud-ao28v17l.c-2.ap-southeast-1.aws.neon.tech': "
+        "[Errno -3] Temporary failure in name resolution"
+    )
+    assert is_transient_error(exc) is True
+
+
+def test_is_transient_failed_to_resolve_host_prefix() -> None:
+    # Matches the psycopg wrapper prefix even when the inner errno differs from
+    # the two known gai variants — guards against new glibc / musl gai messages.
+    exc = Exception("failed to resolve host 'ep.neon.tech': [Errno -99] some new variant")
+    assert is_transient_error(exc) is True
+
+
+def test_is_transient_consuming_input_failed_ssl_eof() -> None:
+    # 2026-06-28 secondary NAR failure: mid-query SSL hangup. Same family as
+    # "ssl connection has been closed" but with the modern psycopg phrasing.
+    exc = Exception("consuming input failed: SSL error: unexpected eof while reading")
+    assert is_transient_error(exc) is True
+
+
 def test_is_transient_connection_is_lost() -> None:
     exc = Exception("the connection is lost")
     assert is_transient_error(exc) is True
@@ -114,6 +138,25 @@ def test_connect_retries_on_dns_failure_then_succeeds() -> None:
     assert patched.call_count == 3
     # Two sleeps before the third attempt (attempt 0, attempt 1 fail → sleep).
     assert mock_sleep.call_count == 2
+
+
+def test_connect_retries_on_temporary_failure_in_name_resolution_then_succeeds() -> None:
+    # EAI_AGAIN variant must also drive the retry loop, not just EAI_NONAME.
+    # Mirrors the 2026-06-28 NAR failure scenario.
+    dns_exc = Exception(
+        "failed to resolve host 'ep.neon.tech': "
+        "[Errno -3] Temporary failure in name resolution"
+    )
+    mock_conn = _make_mock_connection()
+    side_effects: list[Exception | MagicMock] = [dns_exc, mock_conn]
+    with (
+        patch("db_driver.connect_postgres", side_effect=side_effects) as patched,
+        patch("db_driver.time.sleep") as mock_sleep,
+    ):
+        result = connect_postgres_with_retry("postgresql://h/db", max_retries=3)
+    assert result is mock_conn
+    assert patched.call_count == 2
+    assert mock_sleep.call_count == 1
 
 
 def test_connect_retries_on_admin_shutdown_then_succeeds() -> None:

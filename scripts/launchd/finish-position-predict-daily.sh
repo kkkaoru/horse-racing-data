@@ -137,6 +137,42 @@ if [ -z "$NEON_DATABASE_URL" ]; then
 fi
 log "NEON_DATABASE_URL=$(printf '%s' "$NEON_DATABASE_URL" | mask)"
 
+# Pre-flight 4b: DNS prewarm for the Neon host.
+#
+# Background (2026-06-28): NAR category failed with "[Errno -3] Temporary
+# failure in name resolution" (EAI_AGAIN) inside the container while Ban-ei
+# in the same docker run succeeded. The container retry path now treats
+# EAI_AGAIN as transient (see apps/finish-position-predict-container/src/
+# db_driver.py _TRANSIENT_ERROR_TOKENS), but a host-side prewarm gives the
+# system resolver a fresh cache entry BEFORE docker starts — eliminating
+# most EAI_AGAIN windows entirely for the launchd cron.
+#
+# Mac scutil and the Colima VM share DNS via ``--network=host``, so resolving
+# on the Mac side warms the path the container will use. Failure here is
+# non-fatal — the in-container retry layer handles the residual case.
+NEON_HOST="$(printf '%s' "$NEON_DATABASE_URL" \
+  | sed -nE 's#^[a-zA-Z]+://[^@]*@([^/:?]+).*#\1#p')"
+if [ -n "$NEON_HOST" ]; then
+  log "DNS prewarm: resolving $NEON_HOST (best-effort, non-fatal)"
+  # Two attempts with a 1 s gap. dscacheutil is the canonical macOS resolver
+  # query — it warms the same DirectoryServices cache the docker bridge will
+  # consult. nslookup would also work; dscacheutil is faster and exits 0/1.
+  for prewarm_attempt in 1 2; do
+    if /usr/bin/dscacheutil -q host -a name "$NEON_HOST" >/dev/null 2>&1; then
+      log "DNS prewarm: $NEON_HOST resolved on attempt $prewarm_attempt"
+      break
+    fi
+    if [ "$prewarm_attempt" = "1" ]; then
+      log "DNS prewarm: attempt 1 failed, retrying in 1 s"
+      sleep 1
+    else
+      log "WARN: DNS prewarm failed twice for $NEON_HOST (container retry will handle it)"
+    fi
+  done
+else
+  log "WARN: could not parse host from NEON_DATABASE_URL — skipping DNS prewarm"
+fi
+
 # Pre-flight 5: SOURCE_DATABASE_URL — env override > default local Colima PG.
 SRC="${SOURCE_DATABASE_URL:-$SOURCE_DATABASE_URL_DEFAULT}"
 log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
