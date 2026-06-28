@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the pc-keiba pipeline daily health monitor.
+
+  WHY THIS EXISTS:
+    On 2026-06-28 the sync-realtime-data fetch-results pipeline stopped
+    processing at JST 15:42 and the regression was not discovered until
+    ~22:30 JST (visually, in the viewer). Nothing in the pipeline paged
+    the operator — there was no alert, no log threshold, no automation
+    that noticed jobs had stalled. This LaunchAgent is the post-mortem
+    control: it fires the wrapper script
+    `scripts/launchd/pc-keiba-health-monitor.sh` every 15 min during the
+    JST racing-day window (09:00-22:59) and pages on patterns of three
+    consecutive check failures (~45 min cumulative).
+
+  SCHEDULE:
+    StartCalendarInterval entries fire at minute=0,15,30,45 of every JST
+    hour from 09 through 22 inclusive (= 14 hours x 4 = 56 fires/day).
+    Outside that window the racing pipeline is naturally quiet (deep
+    overnight before NAR fixtures land) and we want to avoid alerting on
+    expected silence.
+
+    NOTE: macOS launchd's StartCalendarInterval uses the system's local
+    timezone (no `TZ` field exists). This plist assumes the Mac is set to
+    Asia/Tokyo (JST). The wrapper computes its own JST time via UTC+9 so
+    the checks themselves are timezone-safe; only the FIRING TIMES depend
+    on system TZ.
+
+  CATCH-UP BEHAVIOUR:
+    StartCalendarInterval queues a missed firing on next wake. We do not
+    want a flood of replays after a long sleep — the wrapper holds a
+    /tmp/pc-keiba-health-monitor.lock so concurrent fires from catch-up
+    + the next scheduled tick coalesce.
+
+  STDOUT/STDERR PATHS:
+    Literal absolute paths under /Users/kkk4oru/Library/Logs/pc-keiba-health/.
+
+  SECRETS:
+    No secrets live in this plist. The wrapper reads
+    CLOUDFLARE_DEBUG_TOKEN, CLOUDFLARE_ACCOUNT_ID from
+    /Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/.env,
+    PC_KEIBA_ACCESS_CLIENT_ID/SECRET from
+    apps/pc-keiba-viewer/.env.local, and NEON_DATABASE_URL from
+    apps/local-postgresql/.env.replica at runtime. All credentials are
+    masked in the dated log.
+
+  SILENCER:
+    `touch /tmp/pc-keiba-health-silenced` to suppress notifications while
+    leaving log capture intact. `rm /tmp/pc-keiba-health-silenced` to
+    re-arm.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kkk4oru.pc-keiba-health-monitor</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/pc-keiba-health-monitor.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <!-- JST 09:00,09:15,09:30,09:45 ... 22:00,22:15,22:30,22:45 (14h x 4 = 56). -->
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>15</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>45</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>45</integer></dict>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/pc-keiba-health/stdout.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/pc-keiba-health/stderr.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>
