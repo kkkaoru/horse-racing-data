@@ -1,4 +1,0 @@
-{
-  "result": [{ "queue_id": "abc", "queue_name": "sync-realtime-data-jobs", "backlog_size": 1450 }],
-  "success": true
-}
