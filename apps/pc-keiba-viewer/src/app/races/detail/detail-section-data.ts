@@ -77,7 +77,6 @@ import type {
   SimilarRaceStatsSettings,
   TimeScoreRow,
   PremiumDataTopHorse,
-  Training,
 } from "../../../lib/race-types";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "../../../lib/runner-format";
 import { getRaceRunningStylesWithCache } from "../../../lib/running-style-cache.server";
@@ -91,6 +90,7 @@ import {
   type RunningStyleDimensionFlags,
 } from "../../../lib/running-style-prediction-dimensions";
 import type { FinishPositionBucketRace } from "./finish-position-bucket-section";
+import { mergePremiumTrainingReviews, type PremiumTrainingReview } from "./premium-training-merge";
 
 export type DetailSection =
   | "ability"
@@ -267,15 +267,6 @@ const isSameDayVenueJockeyWinsPayload = (
 const getRealtimeApiBaseUrl = (): string =>
   process.env.NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL ?? "https://sync-realtime-data.kkk4oru.com";
 
-interface PremiumTrainingReview {
-  commentText: string | null;
-  evaluationGrade: string | null;
-  evaluationText: string | null;
-  horseNumber: string;
-  riderName?: string | null;
-  trainingDate: string;
-}
-
 const isPremiumTrainingReview = (value: unknown): value is PremiumTrainingReview => {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -372,46 +363,6 @@ const fetchNetkeibaTrainingReviews = async (race: RaceDetail): Promise<PremiumTr
   } catch {
     return [];
   }
-};
-
-const normalizeTrainingDate = (value: string): string => value.replace(/[^\d]/gu, "");
-
-const mergePremiumTrainingReviews = (
-  trainings: Training[],
-  reviews: Awaited<ReturnType<typeof fetchPremiumRacePayload>>["trainingReviews"],
-): Training[] => {
-  if (reviews.length === 0) {
-    return trainings;
-  }
-  const reviewByHorseAndDate = new Map(
-    reviews
-      .filter((review) => normalizeTrainingDate(review.trainingDate))
-      .map((review) => [
-        `${review.horseNumber}-${normalizeTrainingDate(review.trainingDate)}`,
-        review,
-      ]),
-  );
-  const reviewByHorse = new Map(
-    reviews
-      .filter((review) => !normalizeTrainingDate(review.trainingDate))
-      .map((review) => [review.horseNumber, review]),
-  );
-  return trainings.map((training) => {
-    const horseNumber = training.umaban ? String(Number(training.umaban)) : "";
-    const key = `${training.umaban ? String(Number(training.umaban)) : ""}-${normalizeTrainingDate(
-      training.chokyoNengappi,
-    )}`;
-    const review = reviewByHorseAndDate.get(key) ?? reviewByHorse.get(horseNumber);
-    return review
-      ? {
-          ...training,
-          premiumCommentText: review.commentText,
-          premiumEvaluationGrade: review.evaluationGrade,
-          premiumEvaluationText: review.evaluationText,
-          trainingRiderName: review.riderName ?? training.trainingRiderName,
-        }
-      : training;
-  });
 };
 
 const fetchSameDayVenueJockeyWins = async (
