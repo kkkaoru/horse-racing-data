@@ -488,6 +488,34 @@ it("handleJob fetch-premium-paddock logs skip:non-jra and does not call the fetc
   expect(getRaceSource).not.toHaveBeenCalled();
 });
 
+it("handleJob fetch-premium-race-data logs skip:non-jra and does not call the fetcher for non-JRA race keys", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, getRaceSource } = await import("./storage");
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0629:44:01", type: "fetch-premium-race-data" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-race-data",
+    "skip:non-jra",
+    "nar:2026:0629:44:01",
+    null,
+  );
+  expect(getRaceSource).not.toHaveBeenCalled();
+});
+
+it("handleJob fetch-premium-race-data logs skip:non-jra for Ban-ei nar race keys (keibajo 83)", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, getRaceSource } = await import("./storage");
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0628:83:04", type: "fetch-premium-race-data" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-premium-race-data",
+    "skip:non-jra",
+    "nar:2026:0628:83:04",
+    null,
+  );
+  expect(getRaceSource).not.toHaveBeenCalled();
+});
+
 it("handleJob plan-premium-race-data-fetches with config + races + candidates enqueues jobs", async () => {
   const { handleJob } = await import("./worker");
   const {

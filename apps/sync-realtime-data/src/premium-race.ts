@@ -103,10 +103,13 @@ const HTML_ENTITY_MAP: Record<string, string> = {
 
 export const BAN_EI_KEIBAJO_CODE = "83";
 
+// 2026-06-28: restricted from "jra or non-Ban-ei nar" to "jra only".
+// NAR premium scraping returns no data from netkeiba and the failing
+// fetches clog the main jobs queue, blocking fetch-results / fetch-weights
+// for hours during race-day. Same JRA-only gate as fetch-premium-paddock.
 export const isPremiumRaceDataTarget = (
   race: Pick<NarRaceSource, "keibajoCode" | "source">,
-): boolean =>
-  race.source === "jra" || (race.source === "nar" && race.keibajoCode !== BAN_EI_KEIBAJO_CODE);
+): boolean => race.source === "jra";
 
 const DEFAULT_NAR_PREMIUM_ORIGIN = "https://nar.netkeiba.com";
 

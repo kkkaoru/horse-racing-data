@@ -3858,6 +3858,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "fetch-premium-race-data") {
+      // Defensive: isPremiumRaceDataTarget already gates planning + discovery to
+      // source==="jra" (2026-06-28), but legacy queue entries enqueued before the
+      // gate or a future manual enqueue could land a non-JRA job here. Skip it
+      // before fetchAndStorePremiumRaceData does an HTTP fetch / D1 write loop —
+      // the failing NAR fetches were clogging the main jobs queue and blocking
+      // fetch-results / fetch-weights for hours during race-day.
+      if (!job.raceKey.startsWith("jra:")) {
+        await logFetch(env.REALTIME_DB, job.type, "skip:non-jra", job.raceKey, null);
+        return;
+      }
       await fetchAndStorePremiumRaceData(env, job.raceKey);
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;
