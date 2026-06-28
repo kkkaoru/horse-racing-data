@@ -936,6 +936,29 @@ it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placehol
   );
 });
 
+// 2026-06-28: contract test ensuring the SQL keeps NAR rows out of the
+// candidate set. The `isPremiumRaceDataTarget` JRA-only gate at the handler
+// layer (commit d72de7ca) only blocks WORK when a job lands; the planner
+// queries this SQL to decide which rows to enqueue. Before this guard the
+// SQL `where rs.source in ('jra', 'nar')` clause still emitted NAR
+// candidates that already had a `premium_race_links` row, so the planner
+// re-enqueued thousands of NAR `skip:non-jra` jobs every 2 min — clogging
+// the queue and starving today's `fetch-results`. Validate that the SQL
+// fragment scopes to source='jra' by matching it against a regex.
+const PREMIUM_RACE_DATA_CANDIDATE_JRA_FILTER_REGEX = /rs\.source\s*=\s*'jra'/u;
+const PREMIUM_RACE_DATA_CANDIDATE_LEGACY_FILTER_REGEX = /rs\.source\s+in\s*\(/u;
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL restricts source to JRA only", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260628", "2026-06-28T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_JRA_FILTER_REGEX);
+  expect(PREMIUM_RACE_DATA_CANDIDATE_LEGACY_FILTER_REGEX.test(sql)).toBe(false);
+});
+
 it("getLatestHorseWeights returns null when results are empty", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));

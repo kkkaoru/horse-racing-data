@@ -1781,6 +1781,18 @@ export const getPremiumRacePayload = async (
   };
 };
 
+// 2026-06-28: source filter tightened from `('jra', 'nar')` to `'jra'` to
+// match the `isPremiumRaceDataTarget` JRA-only gate (commit d72de7ca).
+// Without this SQL-level gate the planner kept emitting NAR `race_key`s
+// whose `premium_race_links` row was created BEFORE the gate, so every
+// 2 min `plan-premium-race-data-fetches` cycle re-enqueued thousands of
+// NAR `fetch-premium-race-data` jobs that all immediately log
+// `skip:non-jra` and ack. Observed 2026-06-28 evening: 5.5 h with zero
+// `fetch-results` consumer activity while the planner enqueued ~10
+// skip-jobs / min — the viewer's race-trend section for all today races
+// dropped finish positions for siblings whose result-fetch was starving
+// behind the backlog. Keeping `keibajo_code != '83'` as defense-in-depth
+// in case Ban-ei keibajo codes ever migrate into `source='jra'`.
 export const listPremiumRaceDataFetchCandidatesByDate = async (
   db: D1Database,
   targetDate: string,
@@ -1793,7 +1805,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
         from realtime_race_sources rs
         inner join premium_race_links link on link.race_key = rs.race_key
         left join premium_race_data_fetch_state state on state.race_key = rs.race_key
-        where rs.source in ('jra', 'nar')
+        where rs.source = 'jra'
           and rs.keibajo_code != '83'
           and rs.kaisai_nen = ?
           and rs.kaisai_tsukihi = ?
