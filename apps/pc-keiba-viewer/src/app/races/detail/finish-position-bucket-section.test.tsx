@@ -348,8 +348,8 @@ test("builds an exact JRA scope label from every active dimension including grad
       source="jra"
     />,
   );
-  expect(screen.getByText(/東京新聞杯/u)).toBeTruthy();
-  expect(screen.getByText(/2000m/u)).toBeTruthy();
+  expect(screen.getAllByText(/東京新聞杯/u).length).toBe(2);
+  expect(screen.getAllByText(/2000m/u).length).toBe(2);
 });
 
 test("falls back to the condition placeholder when a NAR race has no condition name", () => {
@@ -559,4 +559,169 @@ test("renders the NAR condition label in the exact scope when the condition flag
   );
   expect(screen.getByText("58.5%")).toBeTruthy();
   expect(screen.getByText("モデル: nar-xgb-v7-lineage-wf-21y")).toBeTruthy();
+});
+
+test("renders the race cell classification label with all applicable dimensions on a JRA category fallback", () => {
+  render(
+    <FinishPositionBucketEvaluationPanel
+      evaluation={{
+        ndcgAt3Avg: 0.63,
+        pairScoreAvg: 0.7,
+        place1Accuracy: 0.52,
+        place2Accuracy: 0.28,
+        place3Accuracy: 0.2,
+        predictionCount: 1500,
+        raceCount: 120,
+        smallSampleWarning: false,
+        top1Accuracy: 0.525,
+        top1AccuracyCI: { lower: 0.49, upper: 0.56 },
+        top3BoxAccuracy: 0.12,
+        top3ExactAccuracy: 0.03,
+        top3PlaceRelationAvg: 0.57,
+        top3WinnerCaptureRate: 0.71,
+        top5WinnerCaptureRate: 0.86,
+      }}
+      gradeCode={null}
+      modelVersion={null}
+      race={{
+        gradeCode: null,
+        keibajoCode: "05",
+        kyori: 2000,
+        kyosoJokenCode: "010",
+        kyosoJokenMeisho: null,
+        kyosomeiHondai: null,
+        kyosoShubetsuCode: "13",
+        source: "jra",
+        trackCode: "10",
+      }}
+      scope={{
+        flags: {
+          condition: false,
+          distance: false,
+          grade: false,
+          keibajo: false,
+          kyosoJoken: false,
+          kyosoShubetsu: false,
+          raceName: false,
+          track: false,
+        },
+        level: "category",
+      }}
+      source="jra"
+    />,
+  );
+  expect(screen.getByText(/レース分類/u)).toBeTruthy();
+  expect(screen.getByText(/東京/u)).toBeTruthy();
+  expect(screen.getByText(/2000m/u)).toBeTruthy();
+  expect(screen.getByText(/2勝クラス/u)).toBeTruthy();
+});
+
+test("renders the race cell classification label for a NAR category fallback", () => {
+  render(
+    <FinishPositionBucketEvaluationPanel
+      evaluation={{
+        ndcgAt3Avg: 0.6,
+        pairScoreAvg: 0.7,
+        place1Accuracy: 0.58,
+        place2Accuracy: 0.35,
+        place3Accuracy: 0.27,
+        predictionCount: 3000,
+        raceCount: 300,
+        smallSampleWarning: false,
+        top1Accuracy: 0.585,
+        top1AccuracyCI: { lower: 0.56, upper: 0.61 },
+        top3BoxAccuracy: 0.34,
+        top3ExactAccuracy: 0.05,
+        top3PlaceRelationAvg: 0.61,
+        top3WinnerCaptureRate: 0.77,
+        top5WinnerCaptureRate: 0.9,
+      }}
+      gradeCode={null}
+      modelVersion={null}
+      race={{
+        gradeCode: null,
+        keibajoCode: "44",
+        kyori: 1800,
+        kyosoJokenCode: null,
+        kyosoJokenMeisho: "B3",
+        kyosomeiHondai: null,
+        kyosoShubetsuCode: "11",
+        source: "nar",
+        trackCode: "10",
+      }}
+      scope={{
+        flags: {
+          condition: false,
+          distance: false,
+          grade: false,
+          keibajo: false,
+          kyosoJoken: false,
+          kyosoShubetsu: false,
+          raceName: false,
+          track: false,
+        },
+        level: "category",
+      }}
+      source="nar"
+    />,
+  );
+  expect(screen.getByText(/レース分類/u)).toBeTruthy();
+  expect(screen.getByText(/大井/u)).toBeTruthy();
+  expect(screen.getByText(/1800m/u)).toBeTruthy();
+  expect(screen.getByText(/B3/u)).toBeTruthy();
+});
+
+test("skips the track dimension in the cell label for a Ban-ei race with a null track code", () => {
+  render(
+    <FinishPositionBucketEvaluationPanel
+      evaluation={{
+        ndcgAt3Avg: 0.6,
+        pairScoreAvg: 0.7,
+        place1Accuracy: 0.5,
+        place2Accuracy: 0.3,
+        place3Accuracy: 0.22,
+        predictionCount: 1200,
+        raceCount: 100,
+        smallSampleWarning: false,
+        top1Accuracy: 0.5,
+        top1AccuracyCI: { lower: 0.47, upper: 0.53 },
+        top3BoxAccuracy: 0.2,
+        top3ExactAccuracy: 0.04,
+        top3PlaceRelationAvg: 0.55,
+        top3WinnerCaptureRate: 0.7,
+        top5WinnerCaptureRate: 0.85,
+      }}
+      gradeCode="F"
+      modelVersion={null}
+      race={{
+        gradeCode: "F",
+        keibajoCode: "83",
+        kyori: 200,
+        kyosoJokenCode: null,
+        kyosoJokenMeisho: null,
+        kyosomeiHondai: null,
+        kyosoShubetsuCode: "13",
+        source: "nar",
+        trackCode: null,
+      }}
+      scope={{
+        flags: {
+          condition: false,
+          distance: false,
+          grade: false,
+          keibajo: false,
+          kyosoJoken: false,
+          kyosoShubetsu: false,
+          raceName: false,
+          track: false,
+        },
+        level: "category",
+      }}
+      source="nar"
+    />,
+  );
+  expect(screen.getByText(/レース分類/u)).toBeTruthy();
+  expect(screen.getByText(/帯広/u)).toBeTruthy();
+  expect(screen.getByText(/Jpn1/u)).toBeTruthy();
+  expect(screen.queryByText(/芝/u)).toBe(null);
 });

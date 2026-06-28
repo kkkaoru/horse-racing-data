@@ -1382,6 +1382,13 @@ fieldset.running-style-tabs {
   margin: var(--number-0-2);
 }
 
+.finish-position-bucket-cell-label {
+  color: var(--ink);
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+  margin: var(--number-0-2);
+}
+
 .finish-position-bucket-empty-notice {
   color: var(--muted);
   font-size: var(--space-13px-92);

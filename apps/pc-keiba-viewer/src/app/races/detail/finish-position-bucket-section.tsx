@@ -45,10 +45,17 @@ interface ResolvedPanelInput {
   modelVersion: string | null;
 }
 
+interface CellLabelInput {
+  race: FinishPositionBucketRace;
+  source: "jra" | "nar";
+  gradeCode: string | null;
+}
+
 const PERCENT_DECIMALS = 1;
 const NDCG_DECIMALS = 3;
 const SCOPE_LABEL_SEPARATOR = " / ";
 const PANEL_HEADLINE_SUFFIX = " の着順予測精度";
+const CELL_LABEL_PREFIX = "レース分類: ";
 const SCOPE_NOTICE_PREFIX = "該当条件のデータが無いため";
 const SCOPE_NOTICE_SUFFIX = "で集計しています";
 const ALL_MISS_NOTICE = "該当する分類の精度データがまだ蓄積されていません";
@@ -169,6 +176,26 @@ const buildPanelHeadline = (scopeLabel: string): string => `${scopeLabel}${PANEL
 const buildScopeNotice = (scopeLabel: string): string =>
   `${SCOPE_NOTICE_PREFIX}${scopeLabel}${SCOPE_NOTICE_SUFFIX}`;
 
+const resolveTrackLabelSafe = (race: FinishPositionBucketRace): string | null =>
+  race.trackCode === null ? null : resolveTrackLabel(race);
+
+const buildRaceCellLabel = (input: CellLabelInput): string => {
+  const conditionLabel =
+    input.source === "nar"
+      ? resolveNarConditionLabel(input.race)
+      : resolveJraConditionLabel(input.race);
+  const dimensionLabels = [
+    resolveKeibajoLabel(input.race),
+    resolveTrackLabelSafe(input.race),
+    resolveDistanceLabel(input.race),
+    resolveAgeLabel(input.race),
+    conditionLabel,
+    isGradeShown(input.gradeCode) ? resolveGradeLabel(input.race, input.source) : null,
+    isRaceNameShown(input.gradeCode) ? resolveRaceNameLabel(input.race) : null,
+  ].flatMap((label) => (label === null || label === "" ? [] : [label]));
+  return dimensionLabels.join(SCOPE_LABEL_SEPARATOR);
+};
+
 const renderResolvedPanel = (input: ResolvedPanelInput): ReactElement => {
   const { evaluation } = input;
   const scopeLabel = buildScopeLabel({
@@ -178,9 +205,18 @@ const renderResolvedPanel = (input: ResolvedPanelInput): ReactElement => {
     source: input.source,
   });
   const isFallback = input.scope.level !== "exact";
+  const cellLabel = buildRaceCellLabel({
+    gradeCode: input.gradeCode,
+    race: input.race,
+    source: input.source,
+  });
   const metricCards = buildMetricCards(evaluation);
   return (
     <div className="finish-position-bucket-evaluation-panel" aria-label="着順予測の検証結果">
+      <p className="finish-position-bucket-cell-label">
+        {CELL_LABEL_PREFIX}
+        {cellLabel}
+      </p>
       <div className="finish-position-bucket-evaluation-summary">
         <span>{buildPanelHeadline(scopeLabel)}</span>
         <strong>
