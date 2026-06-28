@@ -1107,3 +1107,88 @@ it("race-runners-null-when-both-bloodline-tables-empty", async () => {
   expect(runners[0]?.sireSireName).toBe(null);
   expect(runners[0]?.damSireName).toBe(null);
 });
+
+// Regression guards for the 2026-06-28 NAR bataiju mismatch incident.
+// A prior `left join lateral (... latest_weight)` (introduced commit cacf868c)
+// silently substituted the horse's most-recent past-race bataiju for today's
+// blank value. The fix (commit e679cb55) removed the lateral so today's null
+// passes through and the viewer renders "-". Do NOT add any past-race
+// fallback (lateral subquery or coalesce to a different race row) for ANY
+// today-value column in this query — see the incident note in queries.ts.
+it("race-runners-nar-sql-has-no-past-race-lateral-join", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("nar", "2026", "06", "28", "44", "01");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(/left join lateral/iu.test(queryText)).toBe(false);
+});
+
+it("race-runners-nar-sql-does-not-coalesce-bataiju-to-past-row", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("nar", "2026", "06", "28", "44", "01");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(/coalesce\([^)]*se\.bataiju/iu.test(queryText)).toBe(false);
+});
+
+it("race-runners-nar-sql-references-se-bataiju-directly-without-fallback", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("nar", "2026", "06", "28", "44", "01");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(/se\.bataiju,/u.test(queryText)).toBe(true);
+});
+
+it("race-runners-nar-passes-null-bataiju-through-when-today-row-blank", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        bamei: "未計量馬",
+        banushimei: null,
+        barei: "4",
+        bataiju: null,
+        chokyoshimeiRyakusho: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        damSireName: null,
+        futanJuryo: "560",
+        kakuteiChakujun: null,
+        kettoTorokuBango: "2020100099",
+        kishumeiRyakusho: null,
+        kohan3f: null,
+        moshokuCode: null,
+        seibetsuCode: "1",
+        sireName: null,
+        sireSireName: null,
+        sohaTime: null,
+        tanshoNinkijun: null,
+        tanshoOdds: null,
+        timeSa: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  });
+  const runners = await getRaceRunners("nar", "2026", "06", "28", "44", "01");
+  expect(runners[0]?.bataiju).toBe(null);
+});
+
+it("race-runners-jra-sql-has-no-past-race-lateral-join", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("jra", "2026", "06", "28", "05", "11");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(/left join lateral/iu.test(queryText)).toBe(false);
+});
+
+it("race-runners-jra-sql-does-not-coalesce-bataiju-to-past-row", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceRunners("jra", "2026", "06", "28", "05", "11");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(/coalesce\([^)]*se\.bataiju/iu.test(queryText)).toBe(false);
+});
