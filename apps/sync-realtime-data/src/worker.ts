@@ -23,7 +23,7 @@ import { mergeJsonHeaders } from "./http";
 import {
   buildJraEntryUrlFromRace,
   buildJraResultUrlFromRaceSource,
-  fetchJraResultHtmlWithPlaywright,
+  fetchJraResultHtmlWithFallback,
   isJraScratchStatus,
   parseJraRaceResultExcludedHorseNumbers,
   parseJraRaceResults,
@@ -3360,10 +3360,20 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     }
     const [entryHtml, resultHtml] = await Promise.all([
       race.source === "jra"
-        ? fetchJraResultHtmlWithPlaywright(env.JRA_BROWSER, race.debaUrl)
+        ? fetchJraResultHtmlWithFallback({
+            browserBinding: env.JRA_BROWSER,
+            needsParse: (html) => parseJraRaceEntries(html).length > 0,
+            url: race.debaUrl,
+          })
         : fetchRacePage(race.debaUrl),
       race.source === "jra"
-        ? fetchJraResultHtmlWithPlaywright(env.JRA_BROWSER, resultUrl)
+        ? fetchJraResultHtmlWithFallback({
+            browserBinding: env.JRA_BROWSER,
+            needsParse: (html) =>
+              parseJraRaceResults(html).length > 0 ||
+              parseJraRaceResultExcludedHorseNumbers(html).length > 0,
+            url: resultUrl,
+          })
         : fetchRacePage(resultUrl),
     ]);
     const entries =

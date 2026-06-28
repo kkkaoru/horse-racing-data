@@ -1,7 +1,10 @@
 // run with: bun run test
 import { expect, it, vi } from "vitest";
+import { fetchRacePage } from "./keiba-go";
 import {
+  fetchJraHtmlViaHttp,
   fetchJraOddsWithPlaywright,
+  fetchJraResultHtmlWithFallback,
   fetchJraResultHtmlWithPlaywright,
   isJraScratchStatus,
   parseJraHorseWeights,
@@ -10,6 +13,8 @@ import {
   parseJraRaceResultExcludedHorseNumbers,
   parseJraRaceResults,
 } from "./jra";
+
+vi.mock("./keiba-go", () => ({ fetchRacePage: vi.fn(async () => "<html></html>") }));
 
 interface LocatorMockOptions {
   count?: number;
@@ -776,4 +781,55 @@ it("fetchJraOddsWithPlaywright breaks out of the wait loop when probe.url change
   await setMockLaunch(browser);
   const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
   expect(result.entryHtml).toBe("<html>entry</html>");
+});
+
+it("fetchJraHtmlViaHttp returns the HTML returned by fetchRacePage", async () => {
+  vi.mocked(fetchRacePage).mockResolvedValueOnce("<html>http</html>");
+  const html = await fetchJraHtmlViaHttp("https://x.test/jra");
+  expect(html).toBe("<html>http</html>");
+});
+
+it("fetchJraResultHtmlWithFallback returns HTTP HTML when needsParse returns true", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  vi.mocked(fetchRacePage).mockResolvedValueOnce("<html>ok</html>");
+  const browser = makeBrowser({ content: "<html>fallback</html>" });
+  await setMockLaunch(browser);
+  const html = await fetchJraResultHtmlWithFallback({
+    browserBinding: {} as never,
+    needsParse: () => true,
+    url: "https://x.test/jra",
+  });
+  expect(html).toBe("<html>ok</html>");
+  expect(browser.close).toHaveBeenCalledTimes(0);
+});
+
+it("fetchJraResultHtmlWithFallback falls back to Playwright when needsParse returns false", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  vi.mocked(fetchRacePage).mockResolvedValueOnce("<html>http-empty</html>");
+  const browser = makeBrowser({ content: "<html>playwright</html>" });
+  await setMockLaunch(browser);
+  const html = await fetchJraResultHtmlWithFallback({
+    browserBinding: {} as never,
+    needsParse: () => false,
+    url: "https://x.test/jra",
+  });
+  expect(html).toBe("<html>playwright</html>");
+  expect(browser.close).toHaveBeenCalledTimes(1);
+});
+
+it("fetchJraResultHtmlWithFallback falls back to Playwright when HTTP throws", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  vi.mocked(fetchRacePage).mockRejectedValueOnce(new Error("network down"));
+  const browser = makeBrowser({ content: "<html>recovered</html>" });
+  await setMockLaunch(browser);
+  const html = await fetchJraResultHtmlWithFallback({
+    browserBinding: {} as never,
+    needsParse: () => true,
+    url: "https://x.test/jra",
+  });
+  expect(html).toBe("<html>recovered</html>");
+  expect(browser.close).toHaveBeenCalledTimes(1);
 });

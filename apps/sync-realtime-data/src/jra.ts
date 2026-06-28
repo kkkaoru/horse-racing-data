@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext, BrowserWorker, Page, Route } from "@cloudflare/playwright";
 
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../pc-keiba-viewer/src/lib/jra-url";
+import { fetchRacePage } from "./keiba-go";
 import type { LocalRaceRow } from "./storage";
 import type {
   HorseWeight,
@@ -10,6 +11,12 @@ import type {
   RaceEntry,
   RaceResult,
 } from "./types";
+
+export interface FetchJraResultHtmlWithFallbackArgs {
+  browserBinding: BrowserWorker | undefined;
+  needsParse: (html: string) => boolean;
+  url: string;
+}
 
 const ODDS_LIST_SELECTOR = "#odds_list";
 const NAVIGATION_TIMEOUT_MS = 15_000;
@@ -703,5 +710,31 @@ export const fetchJraResultHtmlWithPlaywright = async (
     return await page.content();
   } finally {
     await browser?.close();
+  }
+};
+
+// HTTP-based JRA HTML fetcher. JRA accessS.html / accessD.html endpoints are
+// server-rendered (verified via curl returning 200 with Shift_JIS HTML and the
+// expected place/num/horse/time selectors). Avoids spawning a Playwright browser
+// on the happy path, which is the dominant cost driver under queue concurrency.
+export const fetchJraHtmlViaHttp = async (url: string): Promise<string> => fetchRacePage(url);
+
+// HTTP-first JRA result HTML fetcher with Playwright fallback. Tries the cheap
+// HTTP path first and validates the parsed structure via the caller-provided
+// needsParse predicate. Falls back to Playwright when HTTP throws or when the
+// HTML fails to parse — preserves feature parity if JRA HTML structure changes.
+export const fetchJraResultHtmlWithFallback = async (
+  args: FetchJraResultHtmlWithFallbackArgs,
+): Promise<string> => {
+  const fallback = (): Promise<string> =>
+    fetchJraResultHtmlWithPlaywright(args.browserBinding, args.url);
+  try {
+    const html = await fetchJraHtmlViaHttp(args.url);
+    if (args.needsParse(html)) {
+      return html;
+    }
+    return await fallback();
+  } catch {
+    return await fallback();
   }
 };

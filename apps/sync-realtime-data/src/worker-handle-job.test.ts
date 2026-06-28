@@ -141,6 +141,7 @@ vi.mock("./jra", async () => {
   return {
     ...actual,
     fetchJraResultHtmlWithPlaywright: vi.fn(async () => "<html></html>"),
+    fetchJraResultHtmlWithFallback: vi.fn(async () => "<html></html>"),
     fetchJraOddsWithPlaywright: vi.fn(async () => ({ entryHtml: "", latest: {} })),
     parseJraHorseWeights: vi.fn(() => []),
     parseJraRaceEntries: vi.fn(() => []),
