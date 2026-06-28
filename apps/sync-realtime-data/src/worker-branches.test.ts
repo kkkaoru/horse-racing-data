@@ -1879,3 +1879,86 @@ it("fetch-results pushes one starter row per entry, including unranked horses", 
     null,
   ]);
 });
+
+// 2026-06-28: queue-stall preventive fix. fetchAndStoreResults wrapping with
+// withHandlerTimeout must surface a HandlerTimeoutError via logFetch when the
+// Playwright path hangs longer than QUEUE_HANDLER_TIMEOUT_MS so the Workers
+// runtime cancel does not silently poison the queue.
+it("fetch-results logs and rethrows a HandlerTimeoutError when the inner fetch hangs past the deadline", async () => {
+  vi.useFakeTimers();
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getRaceSource, logFetch } = await import("./storage");
+  const { fetchJraResultHtmlWithPlaywright } = await import("./jra");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
+  vi.mocked(fetchJraResultHtmlWithPlaywright).mockImplementationOnce(
+    () => new Promise<string>(() => {}),
+  );
+  vi.mocked(fetchJraResultHtmlWithPlaywright).mockImplementationOnce(
+    () => new Promise<string>(() => {}),
+  );
+  const pending = handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
+    raceKey: "jra:2026:0512:08:01",
+    type: "fetch-results",
+  });
+  const settled = pending.catch((error: unknown) => error);
+  await vi.advanceTimersByTimeAsync(25_000);
+  const captured = await settled;
+  vi.useRealTimers();
+  expect(captured instanceof Error ? captured.message : "").toBe("handler timeout: fetch-results");
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "error",
+    "jra:2026:0512:08:01",
+    "handler timeout: fetch-results",
+    undefined,
+  );
+});
+
+// 2026-06-28: queue-stall preventive fix. fetchAndStoreWeights wrapping with
+// withHandlerTimeout must surface a HandlerTimeoutError when a NAR upstream
+// scrape hangs. The race must not be silently retried by the runtime cancel.
+it("fetch-weights logs and rethrows a HandlerTimeoutError when the upstream scrape hangs past the deadline", async () => {
+  vi.useFakeTimers();
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, logFetch } = await import("./storage");
+  const { fetchRacePage } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockImplementationOnce(() => new Promise<string>(() => {}));
+  const pending = handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-weights",
+  });
+  const settled = pending.catch((error: unknown) => error);
+  await vi.advanceTimersByTimeAsync(25_000);
+  const captured = await settled;
+  vi.useRealTimers();
+  expect(captured instanceof Error ? captured.message : "").toBe("handler timeout: fetch-weights");
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "error",
+    "nar:2026:0512:55:01",
+    "handler timeout: fetch-weights",
+    undefined,
+  );
+});
+
+// 2026-06-28: queue-stall preventive fix. An unknown job.type must hit the
+// explicit guard rather than falling through into fetchAndStoreWeights.
+it("handleJob logs unknown-job-type and skips fetchAndStoreWeights when the type does not match any branch", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch, getRaceSource } = await import("./storage");
+  vi.mocked(getRaceSource).mockClear();
+  const bogus = { raceKey: "jra:2026:0512:08:01", type: "fetch-mystery" };
+  await handleJob(buildEnv(), bogus satisfies { raceKey: string; type: string } as unknown as Job);
+  expect(getRaceSource).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "unknown-job-type",
+    "error",
+    "jra:2026:0512:08:01",
+    JSON.stringify({ type: "fetch-mystery" }),
+  );
+});

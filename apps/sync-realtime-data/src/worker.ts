@@ -17,6 +17,7 @@ import {
   type KeibaGoRaceLink,
 } from "./keiba-go";
 import { formatError } from "./format-error";
+import { QUEUE_HANDLER_TIMEOUT_MS, withHandlerTimeout } from "./handler-timeout";
 import { mergeJsonHeaders } from "./http";
 import {
   buildJraEntryUrlFromRace,
@@ -3775,6 +3776,62 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   await notifyPremiumPaddockIfNeeded(env, race, parsed.bulletins, fetchedAt);
 };
 
+// 2026-06-28: queue-stall preventive guard. Previously the tail of
+// `handleJob` fell through to `fetchAndStoreWeights(env, job.raceKey)` for any
+// `Job.type` not matched above. Adding a future variant without a handler
+// would silently route it into the NAR weight scrape path. Be explicit:
+// fetch-weights goes through the timeout wrapper; anything else logs as an
+// unknown type and returns. The argument is intentionally typed `unknown` so
+// TypeScript's exhaustive narrowing in `handleJob` does not collapse this to
+// `never` -- this guard is a runtime safety net against malformed messages,
+// not a type-level fallthrough handler.
+const handleFetchWeightsOrUnknown = async (env: Env, job: unknown): Promise<void> => {
+  const fetchWeightsJob = pickFetchWeightsJob(job);
+  if (!fetchWeightsJob) {
+    await logFetch(
+      env.REALTIME_DB,
+      "unknown-job-type",
+      "error",
+      pickRaceKey(job),
+      JSON.stringify({ type: pickJobType(job) }),
+    );
+    return;
+  }
+  // 2026-06-28: NAR weight scrapes can hang on dead or rate-limited NAR
+  // upstreams. Same 30s runtime cancel concern as fetch-results above.
+  await withHandlerTimeout({
+    label: "fetch-weights",
+    ms: QUEUE_HANDLER_TIMEOUT_MS,
+    task: fetchAndStoreWeights(env, fetchWeightsJob.raceKey),
+  });
+  await logFetch(env.REALTIME_DB, fetchWeightsJob.type, "ok", fetchWeightsJob.raceKey, null);
+};
+
+interface FetchWeightsJobShape {
+  raceKey: string;
+  type: "fetch-weights";
+}
+
+const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const pickFetchWeightsJob = (job: unknown): FetchWeightsJobShape | null => {
+  if (!isObjectRecord(job)) return null;
+  if (job.type !== "fetch-weights") return null;
+  if (typeof job.raceKey !== "string") return null;
+  return { raceKey: job.raceKey, type: "fetch-weights" };
+};
+
+const pickRaceKey = (job: unknown): string | null => {
+  if (!isObjectRecord(job)) return null;
+  return typeof job.raceKey === "string" ? job.raceKey : null;
+};
+
+const pickJobType = (job: unknown): string | null => {
+  if (!isObjectRecord(job)) return null;
+  return typeof job.type === "string" ? job.type : null;
+};
+
 export const handleJob = async (env: Env, job: Job): Promise<void> => {
   try {
     if (job.type === "discover-urls") {
@@ -3885,7 +3942,16 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "fetch-results") {
-      await fetchAndStoreResults(env, job.raceKey);
+      // 2026-06-28: wrap the JRA Playwright path so a hung Browser binding
+      // (10 concurrent / 10-minute paid-plan caps) does not let the Workers
+      // runtime cancel the whole handler at ~30s, which previously left the
+      // message to silently retry without a fetch_logs entry. The thrown
+      // HandlerTimeoutError is caught below and logged + retried explicitly.
+      await withHandlerTimeout({
+        label: "fetch-results",
+        ms: QUEUE_HANDLER_TIMEOUT_MS,
+        task: fetchAndStoreResults(env, job.raceKey),
+      });
       await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
       return;
     }
@@ -3960,8 +4026,7 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
       return;
     }
-    await fetchAndStoreWeights(env, job.raceKey);
-    await logFetch(env.REALTIME_DB, job.type, "ok", job.raceKey, null);
+    await handleFetchWeightsOrUnknown(env, job);
   } catch (error) {
     if (job.type === "plan-realtime-fetches" && isD1OverloadError(error)) {
       await tripPlanRealtimeCircuitBreaker(env).catch(() => {});
