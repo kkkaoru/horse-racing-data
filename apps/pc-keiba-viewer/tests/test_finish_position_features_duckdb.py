@@ -3728,7 +3728,7 @@ def test_spill_after_pedigree_is_just_pedigree_features() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _build_horse_filter_from_rec / _build_race_filter_from_rec
+# _build_horse_filter_from_rec
 # ---------------------------------------------------------------------------
 
 
@@ -3761,38 +3761,6 @@ def test_build_horse_filter_from_rec_returns_empty_when_rec_has_no_horses() -> N
     con.close()
     assert result == ""
 
-
-def test_build_race_filter_from_rec_returns_filter() -> None:
-    import duckdb
-
-    con = duckdb.connect()
-    con.execute(
-        "create temp table rec as select * from (values "
-        "('jra', '05', '01', '2026', '0628'), "
-        "('jra', '05', '02', '2026', '0628')"
-        ") as v(source, keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi)"
-    )
-    result = subject._build_race_filter_from_rec(con, "jra")
-    con.close()
-    assert "(keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi)" in result
-    assert "('05', '01', '2026', '0628')" in result
-    assert "('05', '02', '2026', '0628')" in result
-    assert result.startswith(" and ")
-
-
-def test_build_race_filter_from_rec_returns_empty_when_no_rows() -> None:
-    import duckdb
-
-    con = duckdb.connect()
-    con.execute(
-        "create temp table rec as select cast(null as varchar) as source, "
-        "cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango, "
-        "cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi "
-        "where false"
-    )
-    result = subject._build_race_filter_from_rec(con, "jra")
-    con.close()
-    assert result == ""
 
 
 # ---------------------------------------------------------------------------
@@ -4009,7 +3977,7 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
     con.close()
     assert all(f != "" for f in captured_se)
     assert all(f != "" for f in captured_um)
-    assert all(f != "" for f in captured_ra)
+    assert all(f == "" for f in captured_ra)
 
 
 def test_stage_source_tables_passes_empty_filter_when_target_race_none(
@@ -4113,3 +4081,44 @@ def test_rec_select_from_ban_ei_uses_pg_dot_without_entity_filter() -> None:
     sql = subject._rec_select_from_ban_ei("20060101", "20260628")
     assert "pg.nvd_se" in sql
     assert "postgres_query" not in sql
+
+
+def test_target_race_arg_valid() -> None:
+    result = subject.target_race_arg("05:11")
+    assert result == ("05", "11")
+
+
+def test_target_race_arg_invalid_format() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_race_arg("invalid")
+
+
+def test_target_race_arg_missing_part() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        subject.target_race_arg("05:")
+
+
+def test_stage_source_passes_target_race(monkeypatch: pytest.MonkeyPatch) -> None:
+    import duckdb
+    con = duckdb.connect()
+    captured: dict[str, object] = {}
+
+    def fake_install(*_a: object) -> None:
+        pass
+
+    def fake_stage_source_tables(
+        _con: object,
+        _fd: str,
+        _td: str,
+        _cat: str,
+        _uw: object = None,
+        _rp: object = None,
+        tr: object = None,
+    ) -> None:
+        captured["target_race"] = tr
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", fake_install)
+    monkeypatch.setattr(subject, "stage_source_tables", fake_stage_source_tables)
+    subject.stage_source(con, "pg://test", "20260628", "20260628", "jra", target_race=("05", "11"))
+    con.close()
+    assert captured["target_race"] == ("05", "11")

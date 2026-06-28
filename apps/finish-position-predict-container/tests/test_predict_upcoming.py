@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import final, override
 from unittest.mock import patch
@@ -23,6 +23,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
+import predict_upcoming
 from predict_lib.cell_router import build_base_model_r2_key
 from predict_lib.model_meta import (
     METADATA_FILE_NAME,
@@ -42,13 +43,11 @@ from predict_lib.serve import (
     parse_predict_params,
 )
 from predict_upcoming import (
-    PredictWindow,
     VariantModel,
     execute,
     extract_race_class_code,
     flush_predictions,
     make_handler_class,
-    predict_category,
     score_one_race_nar_etop2,
     score_races,
 )
@@ -758,20 +757,35 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
 #
 # When mode=full carries keibajoCode + raceBango, the Container builds features
 # for a single race (DuckDB --target-race) instead of scanning the whole day.
-# predict_category forwards a "keibajo:bango" target_race string straight to the
-# pipeline; the HTTP handler parses the scope and the shared PredictCategoryFn
-# contract carries it from iter_predict_chunks into the predict fn.
+# The production full-pipeline predict fn builds a "keibajo:bango" target_race
+# string from the scope and forwards it through to the DuckDB feature builder;
+# the HTTP handler parses the scope and the shared PredictCategoryFn contract
+# carries it from iter_predict_chunks into the predict fn.
+#
+# The orchestration fns that wire this are module-private, so the tests reach
+# the production predict fn through the module object (``getattr``) rather than
+# importing the private name, which the strict type checker forbids.
 
 
 def _noop_sleep(_seconds: float) -> None:
     """No-op sleep injected so the keepalive loop never blocks the test."""
 
 
-def testpredict_category_forwards_target_race_to_pipeline() -> None:
-    """predict_category passes its target_race straight through to the pipeline."""
-    import pipeline_runner
+def _build_real_full_predict_fn() -> Callable[..., int]:
+    """Return the production full-pipeline predict fn (R2 disabled).
 
-    captured: dict[str, object] = {}
+    Drives the real per-category orchestration so the test exercises the actual
+    ``keibajo:bango`` target_race construction and its forward to the pipeline.
+    """
+    make_fn: Callable[..., tuple[Callable[..., int], object, object]] = vars(predict_upcoming)[
+        "_make_predict_fn"
+    ]
+    predict_fn, _payload_fn, _per_race_fn = make_fn(_DB_URL, Path("/models"), _DB_URL, None)
+    return predict_fn
+
+
+def _capture_target_race(captured: dict[str, object]) -> Callable[..., Mapping[str, object]]:
+    """Build a fake ``build_upcoming_feature_rows`` that records its target_race."""
 
     def _fake_build(
         category: Category,
@@ -783,41 +797,47 @@ def testpredict_category_forwards_target_race_to_pipeline() -> None:
         captured["target_race"] = target_race
         return {}
 
+    return _fake_build
+
+
+def test_full_predict_fn_builds_target_race_from_scope() -> None:
+    """A per-race full request forwards "keibajo:bango" to the DuckDB builder."""
+    import pipeline_runner
+
+    captured: dict[str, object] = {}
+    predict_fn = _build_real_full_predict_fn()
     with (
-        patch.object(pipeline_runner, "build_upcoming_feature_rows", side_effect=_fake_build),
+        patch.object(
+            pipeline_runner,
+            "build_upcoming_feature_rows",
+            side_effect=_capture_target_race(captured),
+        ),
         patch("predict_upcoming._score_and_flush_races", return_value=3),
     ):
-        window = PredictWindow(target_date="20260628", days_ahead=0, database_url=_DB_URL)
-        written = predict_category(_DB_URL, "jra", Path("/models"), window, target_race="01:05")
+        written = predict_fn("jra", "20260628", 0, "01", "05")
 
     assert captured["target_race"] == "01:05"
     assert written == 3
 
 
-def testpredict_category_target_race_defaults_to_none() -> None:
-    """The whole-window full path forwards target_race=None (no per-race filter)."""
+def test_full_predict_fn_target_race_none_without_scope() -> None:
+    """The whole-window full request forwards target_race=None (no per-race filter)."""
     import pipeline_runner
 
     captured: dict[str, object] = {"target_race": "sentinel"}
-
-    def _fake_build(
-        category: Category,
-        target_date: str,
-        days_ahead: int,
-        database_url: str,
-        target_race: str | None = None,
-    ) -> Mapping[str, list[Mapping[str, object]]]:
-        captured["target_race"] = target_race
-        return {}
-
+    predict_fn = _build_real_full_predict_fn()
     with (
-        patch.object(pipeline_runner, "build_upcoming_feature_rows", side_effect=_fake_build),
+        patch.object(
+            pipeline_runner,
+            "build_upcoming_feature_rows",
+            side_effect=_capture_target_race(captured),
+        ),
         patch("predict_upcoming._score_and_flush_races", return_value=0),
     ):
-        window = PredictWindow(target_date="20260628", days_ahead=2, database_url=_DB_URL)
-        predict_category(_DB_URL, "nar", Path("/models"), window)
+        written = predict_fn("nar", "20260628", 2)
 
     assert captured["target_race"] is None
+    assert written == 0
 
 
 def test_parse_predict_params_full_mode_keeps_race_scope() -> None:

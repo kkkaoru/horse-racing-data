@@ -1269,7 +1269,7 @@ def test_main_passes_skip_count_to_run(
 def test_run_returns_empty_result_when_no_years(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         con.execute("create or replace temp table rec (source varchar, race_date varchar)")
         con.execute("create or replace temp table jra_um (ketto_toroku_bango varchar, ketto_joho_01b varchar, ketto_joho_05b varchar)")
         con.execute("create or replace temp table nar_um (ketto_toroku_bango varchar, ketto_joho_01b varchar, ketto_joho_05b varchar)")
@@ -1278,7 +1278,7 @@ def test_run_returns_empty_result_when_no_years(
         con.execute("create or replace temp table jra_ra (kaisai_nen varchar)")
         con.execute("create or replace temp table nar_ra (kaisai_nen varchar)")
 
-    def fake_stage_target(con: duckdb.DuckDBPyConnection, *_args: object) -> int:
+    def fake_stage_target(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> int:
         con.execute(
             "create or replace temp table target (race_year integer, kaisai_nen varchar)"
         )
@@ -1309,7 +1309,7 @@ def test_run_returns_empty_result_when_no_years(
 def test_run_empty_years_cleans_stale_partitions(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         con.execute("create or replace temp table rec (source varchar)")
         con.execute("create or replace temp table jra_um (ketto_toroku_bango varchar)")
         con.execute("create or replace temp table nar_um (ketto_toroku_bango varchar)")
@@ -1318,7 +1318,7 @@ def test_run_empty_years_cleans_stale_partitions(
         con.execute("create or replace temp table jra_ra (kaisai_nen varchar)")
         con.execute("create or replace temp table nar_ra (kaisai_nen varchar)")
 
-    def fake_stage_target(con: duckdb.DuckDBPyConnection, *_args: object) -> int:
+    def fake_stage_target(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> int:
         con.execute(
             "create or replace temp table target (race_year integer, kaisai_nen varchar)"
         )
@@ -1377,7 +1377,7 @@ def test_install_and_attach_pg_raises_on_invalid_url():
 def test_run_full_pipeline_with_seeded_sources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         _seed_rec(con)
         _seed_horse_masters(con)
         _seed_weight_tables(con)
@@ -1410,7 +1410,7 @@ def test_run_full_pipeline_with_seeded_sources(
 def test_run_full_pipeline_with_venue_weather_dir_populates_columns(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         _seed_rec(con)
         _seed_horse_masters(con)
         _seed_weight_tables(con)
@@ -1462,7 +1462,7 @@ def test_assemble_final_select_emits_race_internal_rank_values(
     captured_columns: dict[str, list[str]] = {}
     captured_values: dict[str, list[float]] = {}
 
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         _seed_rec(con)
         _seed_horse_masters(con)
         _seed_weight_tables(con)
@@ -1929,7 +1929,7 @@ def test_run_stage_weather_active_restore_drops_rec_view(
 def test_run_resume_skips_recompute_on_second_pass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object) -> None:
+    def fake_stage_source(con: duckdb.DuckDBPyConnection, *_args: object, **_kwargs: object) -> None:
         _seed_rec(con)
         _seed_horse_masters(con)
         _seed_weight_tables(con)
