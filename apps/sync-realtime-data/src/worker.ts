@@ -80,10 +80,12 @@ import {
   deleteRaceRunningStylesChunk,
   getLatestTrackConditionForRace,
   getSameDayVenueJockeyWins,
+  incrementEmptyResultAttempts,
   insertRaceEntrySnapshot,
   insertRaceResultSnapshot,
   insertHorseWeightSnapshot,
   insertJraTrackConditionSnapshot,
+  markEmptyResultGiveUp,
   listJraVenueTrackConditionSchedulesByDate,
   listOddsSnapshotsForExport,
   listPremiumRaceDataFetchCandidatesByDate,
@@ -99,6 +101,7 @@ import {
   recordPartialResultFetch,
   recordPremiumPaddockNotificationEvent,
   replacePremiumRaceData,
+  resetEmptyResultAttempts,
   runD1Retention,
   toHorseTrends,
   toOddsTrendsByType,
@@ -215,6 +218,19 @@ const RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES = 60;
 // saved so far so the planner stops re-enqueuing forever. 24h covers every
 // observed real-world late-publish gap on keiba.go.jp / JRA.
 const RESULT_FETCH_GIVE_UP_HOURS = 24;
+// 2026-06-28: empty-result circuit breaker threshold. When the upstream
+// result HTML parses to zero rows for the same race this many times in a
+// row, fetchAndStoreResults force-completes the race with
+// `result_complete_at = now` so the planner stops re-enqueueing it (logged
+// as `empty_giveup:race_count_exceeded`). Without this guard a single
+// permanently-broken race (entry HTML parses fine, result HTML is empty)
+// re-queues every 2 minutes from RESULT_POLL_CRON until
+// RESULT_FETCH_GIVE_UP_HOURS = 24h hits, which on a Saturday race-day
+// backed the queue up to 6300+ messages and starved newer races. 20
+// attempts is ~40 minutes of cron ticks — long enough to cover a real
+// upstream republish delay while still finite. A non-empty fetch resets
+// the counter (storage.resetEmptyResultAttempts).
+const RESULT_FETCH_EMPTY_GIVEUP_COUNT = 20;
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -3031,6 +3047,57 @@ export const resolveResultFetchIsComplete = (input: ResolveResultFetchIsComplete
   return input.expectedHorseCount === 0 && input.source === "nar";
 };
 
+interface ResolveEmptyResultGiveupInput {
+  attemptCount: number;
+}
+
+interface HandleEmptyResultFetchInput {
+  env: Env;
+  now: Date;
+  raceKey: string;
+}
+
+export type EmptyResultFetchOutcome = "give-up" | "throw";
+
+// 2026-06-28: logFetch status emitted when the empty-result circuit breaker
+// trips. Exported so callers can grep telemetry by a single constant string
+// and unit tests can assert it without re-typing the literal.
+export const EMPTY_RESULT_GIVEUP_LOG_STATUS = "empty_giveup:race_count_exceeded";
+
+// 2026-06-28: pure helper for the empty-result circuit breaker. Returns true
+// when the per-race counter has hit RESULT_FETCH_EMPTY_GIVEUP_COUNT — at
+// that point fetchAndStoreResults force-completes the race so the planner
+// stops re-enqueueing a race whose upstream result HTML keeps coming back
+// empty. Split out as a standalone helper so the threshold decision can be
+// unit-tested without mocking the D1 binding or the upstream fetcher.
+export const resolveEmptyResultGiveup = (input: ResolveEmptyResultGiveupInput): boolean =>
+  input.attemptCount >= RESULT_FETCH_EMPTY_GIVEUP_COUNT;
+
+// 2026-06-28: integration helper for the empty-result circuit breaker.
+// Increments the per-race counter, and either force-completes the race +
+// emits the EMPTY_RESULT_GIVEUP_LOG_STATUS telemetry row when the breaker
+// trips (returns "give-up" so the caller stops re-throwing) or returns
+// "throw" so fetchAndStoreResults re-throws the existing "race result rows
+// are empty" error path — which keeps the failResultFetch + planner re-
+// enqueue loop intact below the breaker threshold.
+export const handleEmptyResultFetch = async (
+  input: HandleEmptyResultFetchInput,
+): Promise<EmptyResultFetchOutcome> => {
+  const attemptCount = await incrementEmptyResultAttempts(input.env.REALTIME_DB, input.raceKey);
+  if (!resolveEmptyResultGiveup({ attemptCount })) {
+    return "throw";
+  }
+  await markEmptyResultGiveUp(input.env.REALTIME_DB, input.raceKey, toJstIsoString(input.now));
+  await logFetch(
+    input.env.REALTIME_DB,
+    "fetch-results",
+    EMPTY_RESULT_GIVEUP_LOG_STATUS,
+    input.raceKey,
+    `attempts=${attemptCount}`,
+  );
+  return "give-up";
+};
+
 const RETRY_LOCK_MINUTES_BY_OUTCOME: ReadonlyMap<ResultFetchOutcome, number> = new Map([
   ["retry-short", RESULT_FETCH_RETRY_LOCK_MINUTES],
   ["retry-medium", RESULT_FETCH_RETRY_MEDIUM_LOCK_MINUTES],
@@ -3220,8 +3287,13 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       throw new Error(`race entry rows are empty: ${raceKey}`);
     }
     if (expectedHorseCount > 0 && results.length === 0) {
+      const outcome = await handleEmptyResultFetch({ env, now, raceKey });
+      if (outcome === "give-up") {
+        return;
+      }
       throw new Error(`race result rows are empty: ${raceKey}`);
     }
+    await resetEmptyResultAttempts(env.REALTIME_DB, raceKey);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
     // isRaceFinished above guarantees minutesUntilRace(race, now) is non-null and
     // <= 0, so the non-null assertion here is provably safe (same pattern as the

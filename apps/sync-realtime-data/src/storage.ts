@@ -75,6 +75,7 @@ const normalizeStoredJockeyName = (value: string | null | undefined): string | n
 interface RaceSourceRow {
   baba_code: string;
   deba_url: string;
+  empty_result_attempts: number;
   kaisai_kai: string | null;
   kaisai_nichime: string | null;
   kaisai_nen: string;
@@ -96,6 +97,10 @@ interface RaceSourceRow {
   result_fetch_lock_until: string | null;
   result_saved_horse_count: number | null;
   source: "jra" | "nar";
+}
+
+interface EmptyResultAttemptsRow {
+  count: number;
 }
 
 interface WeightSnapshotRow {
@@ -837,6 +842,77 @@ export const recordPartialResultFetch = async (
       now,
       raceKey,
     )
+    .run();
+};
+
+// Empty-result circuit breaker (2026-06-28). Increments the per-race counter
+// of consecutive empty result-fetch attempts and returns the new count. The
+// caller compares it against RESULT_FETCH_EMPTY_GIVEUP_COUNT (worker.ts) and
+// either keeps retrying (re-throw the empty-result error → failResultFetch
+// clears the lock and the planner re-enqueues on the next cron tick) or
+// marks the race as force-completed via markEmptyResultGiveUp.
+export const incrementEmptyResultAttempts = async (
+  db: D1Database,
+  raceKey: string,
+): Promise<number> => {
+  const row = await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set empty_result_attempts = empty_result_attempts + 1,
+            updated_at = ?
+        where race_key = ?
+        returning empty_result_attempts as count
+      `,
+    )
+    .bind(toJstIsoString(), raceKey)
+    .first<EmptyResultAttemptsRow>();
+  return row ? Number(row.count) : 0;
+};
+
+// Empty-result give-up (2026-06-28). Force-completes a race after the
+// circuit-breaker counter trips so the planner stops re-enqueueing it.
+// Mirrors completeResultFetch with isComplete=true but keeps the counts at
+// zero because no result rows ever landed for this race. Clears the lock so
+// follow-up SELECTs treat the row as terminal.
+export const markEmptyResultGiveUp = async (
+  db: D1Database,
+  raceKey: string,
+  completedAt: string,
+): Promise<void> => {
+  const now = toJstIsoString();
+  await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set result_complete_at = ?,
+            last_result_fetch_at = ?,
+            last_result_queued_at = null,
+            result_fetch_lock_until = null,
+            updated_at = ?
+        where race_key = ?
+      `,
+    )
+    .bind(completedAt, completedAt, now, raceKey)
+    .run();
+};
+
+// Empty-result counter reset (2026-06-28). Called when a result fetch lands
+// any non-empty result rows so a transient empty followed by a real publish
+// does not trip the breaker. Guarded with `empty_result_attempts > 0` so a
+// race that has never had an empty attempt is a no-op write.
+export const resetEmptyResultAttempts = async (db: D1Database, raceKey: string): Promise<void> => {
+  await db
+    .prepare(
+      `
+        update realtime_race_sources
+        set empty_result_attempts = 0,
+            updated_at = ?
+        where race_key = ?
+          and empty_result_attempts > 0
+      `,
+    )
+    .bind(toJstIsoString(), raceKey)
     .run();
 };
 

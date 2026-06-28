@@ -87,15 +87,20 @@
     ],
     "consumers": [
       {
-        // Capped at 3 (was 6) so the D1 binding doesn't fan out 6 parallel
-        // INSERT / UPSERT / SELECT batches while a build-daily-features tick
-        // (5500+ rows) or an odds-snapshot insert is running. Lower numbers
-        // trade per-second throughput for fewer "D1 DB is overloaded" events
-        // — the queue keeps backlog so nothing gets dropped.
+        // 2026-06-28: bumped from 3 to 10 (Cloudflare Queues per-consumer max).
+        // Saturday/Sunday racing enqueues 30+ fetch-results jobs every 2 minutes
+        // (result poller cron). With concurrency 3 the queue backed up to 6300
+        // messages and today's NAR result fetches sat behind ~12h of stale jobs.
+        // Previous note (kept for context): capped at 3 (was 6) so the D1
+        // binding doesn't fan out parallel INSERT / UPSERT / SELECT batches
+        // while a build-daily-features tick (5500+ rows) or an odds-snapshot
+        // insert is running. The empty-result circuit breaker (see
+        // RESULT_FETCH_EMPTY_GIVEUP_COUNT in worker.ts) plus the +2 of head-
+        // sampling observability now keeps D1 write pressure flat even at 10.
         "queue": "sync-realtime-data-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 3,
+        "max_concurrency": 10,
       },
       {
         "queue": "sync-realtime-data-premium-race-jobs",

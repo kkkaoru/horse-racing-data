@@ -11,6 +11,9 @@ import {
   countRaceSourcesByDate,
   failResultFetch,
   failTrackConditionFetch,
+  incrementEmptyResultAttempts,
+  markEmptyResultGiveUp,
+  resetEmptyResultAttempts,
   getLatestHorseWeights,
   getLatestRaceEntries,
   getLatestRaceResults,
@@ -175,6 +178,72 @@ it("recordPartialResultFetch invokes run once", async () => {
     savedHorseCount: 0,
   });
   expect(run).toHaveBeenCalledTimes(1);
+});
+
+it("incrementEmptyResultAttempts returns the new counter from the RETURNING row", async () => {
+  const first = vi.fn(async () => ({ count: 3 }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await incrementEmptyResultAttempts(db, "nar:2026:0628:55:11")).toBe(3);
+});
+
+it("incrementEmptyResultAttempts binds raceKey as the second parameter", async () => {
+  const first = vi.fn(async () => ({ count: 1 }));
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await incrementEmptyResultAttempts(db, "jra:2026:0628:03:02");
+  expect(bind.mock.calls[0]![1]).toBe("jra:2026:0628:03:02");
+});
+
+it("incrementEmptyResultAttempts returns 0 when the row is missing", async () => {
+  const first = vi.fn(async () => null);
+  const bind = vi.fn((..._args: unknown[]) => ({ first }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  expect(await incrementEmptyResultAttempts(db, "nar:2026:0628:55:99")).toBe(0);
+});
+
+it("markEmptyResultGiveUp binds completedAt as result_complete_at and last_result_fetch_at", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await markEmptyResultGiveUp(db, "nar:2026:0628:55:11", "2026-06-28T15:00:00+09:00");
+  const args = bind.mock.calls[0]!;
+  expect(args[0]).toBe("2026-06-28T15:00:00+09:00");
+  expect(args[1]).toBe("2026-06-28T15:00:00+09:00");
+  expect(args[3]).toBe("nar:2026:0628:55:11");
+});
+
+it("markEmptyResultGiveUp prepares a single UPDATE statement", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await markEmptyResultGiveUp(db, "jra:2026:0628:03:02", "2026-06-28T15:00:00+09:00");
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+it("resetEmptyResultAttempts binds raceKey and runs once", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await resetEmptyResultAttempts(db, "nar:2026:0628:55:11");
+  expect(bind.mock.calls[0]![1]).toBe("nar:2026:0628:55:11");
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+it("claimResultFetch SQL excludes races whose result_complete_at is set", async () => {
+  const run = vi.fn(async () => ({ meta: { changes: 0 } }));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await claimResultFetch(db, "key", "2026-06-28T15:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql.includes("result_complete_at is null")).toBe(true);
 });
 
 it("completeTrackConditionFetch binds fetchedAt and keibajoCode", async () => {
