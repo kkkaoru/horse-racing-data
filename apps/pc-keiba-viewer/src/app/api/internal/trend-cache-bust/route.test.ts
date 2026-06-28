@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
+  bustRaceCachesForRaceMock: vi.fn<(...args: never[]) => unknown>(),
   bustRaceTrendCachesForDayMock: vi.fn<(...args: never[]) => unknown>(),
   getRacesByDateWithoutJockeyNamesMock: vi.fn<(...args: never[]) => unknown>(),
   notifyRaceTrendRoomMock: vi.fn<(...args: never[]) => unknown>(),
@@ -21,7 +22,12 @@ vi.mock("../../../../lib/race-trend-room.server", () => ({
   notifyRaceTrendRoom: mocks.notifyRaceTrendRoomMock,
 }));
 
+vi.mock("../../../../lib/race-cache-bust.server", () => ({
+  bustRaceCachesForRace: mocks.bustRaceCachesForRaceMock,
+}));
+
 const {
+  bustRaceCachesForRaceMock,
   bustRaceTrendCachesForDayMock,
   getRacesByDateWithoutJockeyNamesMock,
   notifyRaceTrendRoomMock,
@@ -37,6 +43,7 @@ interface BustResponseBody {
   keys: string[];
   notified: number;
   ok: boolean;
+  sectionBusted: number;
 }
 
 interface ErrorResponseBody {
@@ -48,7 +55,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isBustResponseBody = (value: unknown): value is BustResponseBody => {
   if (!isRecord(value)) return false;
-  return Array.isArray(value.keys) && typeof value.notified === "number" && value.ok === true;
+  return (
+    Array.isArray(value.keys) &&
+    typeof value.notified === "number" &&
+    value.ok === true &&
+    typeof value.sectionBusted === "number"
+  );
 };
 
 const isErrorResponseBody = (value: unknown): value is ErrorResponseBody => {
@@ -162,10 +174,12 @@ const buildNarDayRow = (overrides: Partial<DayRaceRow> = {}): DayRaceRow => ({
 });
 
 beforeEach(() => {
+  bustRaceCachesForRaceMock.mockReset();
   bustRaceTrendCachesForDayMock.mockReset();
   getRacesByDateWithoutJockeyNamesMock.mockReset();
   notifyRaceTrendRoomMock.mockReset();
   vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", INTERNAL_TOKEN);
+  bustRaceCachesForRaceMock.mockResolvedValue({ busted: 0, generation: 1 });
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
   getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([]);
   notifyRaceTrendRoomMock.mockResolvedValue(true);
@@ -275,14 +289,21 @@ it("POST returns 200 with keys and notified count for valid JRA body", async () 
     buildJraDayRow({ keibajoCode: "05", raceBango: "02" }),
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: ["k-1", "k-2"] });
+  bustRaceCachesForRaceMock.mockResolvedValue({ busted: 10, generation: 2 });
   notifyRaceTrendRoomMock.mockResolvedValue(true);
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: ["k-1", "k-2"], notified: 2, ok: true });
+  expect(body).toStrictEqual({
+    keys: ["k-1", "k-2"],
+    notified: 2,
+    ok: true,
+    sectionBusted: 20,
+  });
   expect(getRacesByDateWithoutJockeyNamesMock).toHaveBeenCalledWith("2026", "05", "29");
   expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledTimes(1);
   expect(notifyRaceTrendRoomMock).toHaveBeenCalledTimes(2);
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(2);
 });
 
 it("POST passes source jra and target races to bustRaceTrendCachesForDay", async () => {
@@ -303,15 +324,28 @@ it("POST returns 200 for valid NAR body with NAR-only rows", async () => {
     buildNarDayRow({ keibajoCode: "42", raceBango: "03" }),
   ]);
   bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: ["nar-k"] });
+  bustRaceCachesForRaceMock.mockResolvedValue({ busted: 5, generation: 3 });
   notifyRaceTrendRoomMock.mockResolvedValue(true);
   const response = await POST(buildAuthedRequest({ source: "nar", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: ["nar-k"], notified: 1, ok: true });
+  expect(body).toStrictEqual({
+    keys: ["nar-k"],
+    notified: 1,
+    ok: true,
+    sectionBusted: 5,
+  });
   expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledWith({
     races: [{ keibajoCode: "42", raceBango: "03" }],
     source: "nar",
     targetYmd: "20260529",
+  });
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledWith({
+    keibajoCode: "42",
+    mmdd: "0529",
+    raceBango: "03",
+    source: "nar",
+    year: "2026",
   });
 });
 
@@ -335,7 +369,7 @@ it("POST recovers with empty races when getRacesByDateWithoutJockeyNames rejects
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: [], notified: 0, ok: true });
+  expect(body).toStrictEqual({ keys: [], notified: 0, ok: true, sectionBusted: 0 });
   expect(bustRaceTrendCachesForDayMock).toHaveBeenCalledWith({
     races: [],
     source: "jra",
@@ -363,7 +397,12 @@ it("POST returns 200 with notified=0 when notifyRaceTrendRoom rejects for every 
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: ["k-1", "k-2"], notified: 0, ok: true });
+  expect(body).toStrictEqual({
+    keys: ["k-1", "k-2"],
+    notified: 0,
+    ok: true,
+    sectionBusted: 0,
+  });
 });
 
 it("POST counts only races where notifyRaceTrendRoom resolved true", async () => {
@@ -380,7 +419,25 @@ it("POST counts only races where notifyRaceTrendRoom resolved true", async () =>
   const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
   expect(response.status).toBe(200);
   const body = await readJsonAsBustResponse(response);
-  expect(body).toStrictEqual({ keys: [], notified: 2, ok: true });
+  expect(body).toStrictEqual({ keys: [], notified: 2, ok: true, sectionBusted: 0 });
+});
+
+it("POST swallows bustRaceCachesForRace rejection and returns sectionBusted=0", async () => {
+  getRacesByDateWithoutJockeyNamesMock.mockResolvedValue([
+    buildJraDayRow({ keibajoCode: "05", raceBango: "01" }),
+  ]);
+  bustRaceTrendCachesForDayMock.mockResolvedValue({ keys: [] });
+  bustRaceCachesForRaceMock.mockRejectedValue(new Error("section bust boom"));
+  notifyRaceTrendRoomMock.mockResolvedValue(true);
+  const response = await POST(buildAuthedRequest({ source: "jra", targetYmd: "20260529" }));
+  expect(response.status).toBe(200);
+  const body = await readJsonAsBustResponse(response);
+  expect(body).toStrictEqual({
+    keys: [],
+    notified: 1,
+    ok: true,
+    sectionBusted: 0,
+  });
 });
 
 it("POST calls notifyRaceTrendRoom with split year/month/day plus source and cacheKey", async () => {

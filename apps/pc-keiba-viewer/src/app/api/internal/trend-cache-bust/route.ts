@@ -1,12 +1,14 @@
 // Run with bun (Next.js route).
 // Internal endpoint hit by sync-realtime-data when a race finishes. Busts the
-// day-level trend caches (race-trend + d1-daily + d1-snapshot) so the very next
-// fetch from any open trend page returns fresh data without waiting for the
-// hourly daily-feature-build cron.
+// day-level trend caches (race-trend + d1-daily + d1-snapshot) plus every
+// detail-section cache (main + stale tier) for every race on the day so the
+// very next fetch from any open trend page returns fresh data without waiting
+// for the hourly daily-feature-build cron.
 import { NextResponse } from "next/server";
 
 import { getRacesByDateWithoutJockeyNames } from "../../../../db/queries";
 import type { RaceSource } from "../../../../lib/codes";
+import { bustRaceCachesForRace } from "../../../../lib/race-cache-bust.server";
 import {
   bustRaceTrendCachesForDay,
   type BustRaceTrendCachesParams,
@@ -94,6 +96,31 @@ const notifyAllRoomsForDay = async (
   return outcomes.filter(Boolean).length;
 };
 
+interface BustDetailSectionsForDayParams {
+  races: ReadonlyArray<DayRaceRef>;
+  source: RaceSource;
+  targetYmd: string;
+}
+
+const bustDetailSectionsForDay = async ({
+  races,
+  source,
+  targetYmd,
+}: BustDetailSectionsForDayParams): Promise<number> => {
+  const outcomes = await Promise.all(
+    races.map((race) =>
+      bustRaceCachesForRace({
+        keibajoCode: race.keibajoCode,
+        mmdd: targetYmd.slice(4, 8),
+        raceBango: race.raceBango,
+        source,
+        year: targetYmd.slice(0, 4),
+      }).catch(() => ({ busted: 0, generation: 0 })),
+    ),
+  );
+  return outcomes.reduce((sum, outcome) => sum + outcome.busted, 0);
+};
+
 export async function POST(request: Request): Promise<Response> {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
@@ -110,6 +137,14 @@ export async function POST(request: Request): Promise<Response> {
     targetYmd: body.targetYmd,
   };
   const result = await bustRaceTrendCachesForDay(params);
-  const notified = await notifyAllRoomsForDay(body.source, body.targetYmd, races);
-  return NextResponse.json({ keys: result.keys, notified, ok: true });
+  const [notified, sectionBusted] = await Promise.all([
+    notifyAllRoomsForDay(body.source, body.targetYmd, races),
+    bustDetailSectionsForDay({ races, source: body.source, targetYmd: body.targetYmd }),
+  ]);
+  return NextResponse.json({
+    keys: result.keys,
+    notified,
+    ok: true,
+    sectionBusted,
+  });
 }

@@ -156,6 +156,7 @@ import {
 export { RaceTrendDailyTrackDO } from "./durable-objects/race-trend-daily-track-do";
 import type { RaceTrendDailyTrackRow } from "horse-racing-realtime/race-trend-daily-track-types";
 import { buildTrendBustFromRaceContext, requestTrendCacheBust } from "./viewer-trend-cache-bust";
+import { triggerRaceCacheBust } from "./viewer-race-cache-bust";
 import {
   getJraAdvanceOddsFetchSlotAt,
   getJstDateParts,
@@ -2995,6 +2996,29 @@ const runTrendCacheBust = async (env: Env, raceKey: string, race: NarRaceSource)
   }
 };
 
+// Per-race cache-bust signal. Fires alongside the day-level trend bust so
+// the viewer drops both the main and stale-tier KV entries for every
+// detail-section variant of the finished race plus bumps the generation
+// counter that defeats the Cache API tier. fire-and-forget vs the
+// surrounding `fetchAndStoreResults` flow — any failure is logged but
+// never thrown so a viewer outage cannot abort result persistence.
+const runRaceCacheBust = async (env: Env, raceKey: string, race: NarRaceSource): Promise<void> => {
+  const outcome = await triggerRaceCacheBust(env, {
+    keibajoCode: race.keibajoCode,
+    mmdd: race.kaisaiTsukihi,
+    raceBango: race.raceBango,
+    source: race.source,
+    year: race.kaisaiNen,
+  });
+  if (outcome.status === "error") {
+    await logFetch(env.REALTIME_DB, "race-cache-bust", "error", raceKey, outcome.message);
+    return;
+  }
+  if (outcome.status === "skipped") {
+    await logFetch(env.REALTIME_DB, "race-cache-bust", "skipped", raceKey, outcome.message);
+  }
+};
+
 // The DO push is intentionally fire-and-forget for the surrounding
 // `fetchAndStoreResults` flow — a 5xx from the DO must not abort result
 // persistence or trigger a `failResultFetch` rollback. But silently
@@ -3246,6 +3270,7 @@ const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): P
   );
   if (input.inserted > 0) {
     await runTrendCacheBust(input.env, input.raceKey, input.race);
+    await runRaceCacheBust(input.env, input.raceKey, input.race);
   }
   await logFetch(
     input.env.REALTIME_DB,
@@ -3289,6 +3314,7 @@ const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput)
   // as unfinished" failure mode this commit targets.
   if (input.inserted > 0) {
     await runTrendCacheBust(input.env, input.raceKey, input.race);
+    await runRaceCacheBust(input.env, input.raceKey, input.race);
   }
   // Force-completion (24h give-up) is the highest-severity silent finish: the
   // planner stops re-enqueuing forever, so an operator MUST be able to see

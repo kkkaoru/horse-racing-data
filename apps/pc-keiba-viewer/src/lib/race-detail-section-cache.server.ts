@@ -5,6 +5,12 @@ import {
   buildDetailSectionCacheKey,
   type DetailSectionCacheWarmMessage,
 } from "./race-detail-section-cache";
+import {
+  STALE_DETAIL_SECTION_MAX_AGE_MS,
+  getJstMidnightMsForToday,
+  parseStaleDetailSectionEnvelope,
+  serializeStaleDetailSectionEnvelope,
+} from "./race-detail-section-stale";
 import type { RaceDetail } from "./race-types";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
@@ -15,6 +21,9 @@ const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 // race start + 6h). Past races are immutable, and for upcoming races we
 // only need stale to last long enough that the next visitor can serve it
 // while the background refresh runs.
+// NOTE: a separate read-time max-stale cap (4h + same-JST-day window) is
+// enforced in `getStaleDetailSectionBody` so a long-lived KV entry cannot
+// keep serving a payload that is hours past the most recent D1 write.
 const STALE_CACHE_KEY_PREFIX = "stale";
 const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -109,11 +118,36 @@ export const getCachedDetailSectionResponse = async (
 
 const getStaleCacheKey = (cacheKey: string): string => `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
 
-export const getStaleDetailSectionBody = async (cacheKey: string): Promise<string | null> => {
+// Read-time freshness gate.  Cached envelope is rejected when:
+//   1. Body is not a `{ payload, writtenAt }` envelope (legacy raw entry =
+//      treated as expired — caller will recompute).
+//   2. writtenAt is more than 4h old (max-stale cap).
+//   3. writtenAt is older than the most recent JST midnight (so yesterday's
+//      payload never wins for today's races).
+const isEnvelopeStillFresh = (writtenAt: number, nowMs: number): boolean => {
+  if (nowMs - writtenAt >= STALE_DETAIL_SECTION_MAX_AGE_MS) {
+    return false;
+  }
+  return writtenAt >= getJstMidnightMsForToday(nowMs);
+};
+
+export const getStaleDetailSectionBody = async (
+  cacheKey: string,
+  nowMs = Date.now(),
+): Promise<string | null> => {
   const { env } = await safeGetCloudflareRuntime();
-  return (
-    (await env?.DETAIL_SECTION_CACHE_KV?.get(getStaleCacheKey(cacheKey)).catch(() => null)) ?? null
-  );
+  const raw = await env?.DETAIL_SECTION_CACHE_KV?.get(getStaleCacheKey(cacheKey)).catch(() => null);
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+  const envelope = parseStaleDetailSectionEnvelope(raw);
+  if (envelope === null) {
+    return null;
+  }
+  if (!isEnvelopeStillFresh(envelope.writtenAt, nowMs)) {
+    return null;
+  }
+  return envelope.payload;
 };
 
 export const buildStaleDetailSectionResponse = (body: string): Response =>
@@ -139,8 +173,11 @@ export const putDetailSectionCache = async ({
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   // The 30-day stale snapshot is written even when fresh TTL is already
   // 0 (the race finished more than 6h ago) so future visits still get an
-  // instant render via the SWR path.
-  const stalePut = env?.DETAIL_SECTION_CACHE_KV?.put(getStaleCacheKey(cacheKey), body, {
+  // instant render via the SWR path.  Stored as `{ payload, writtenAt }`
+  // so the read path can enforce a max-stale cap + JST-midnight boundary
+  // without depending on KV's `expirationTtl` for freshness.
+  const staleEnvelope = serializeStaleDetailSectionEnvelope(body, Date.now());
+  const stalePut = env?.DETAIL_SECTION_CACHE_KV?.put(getStaleCacheKey(cacheKey), staleEnvelope, {
     expirationTtl: STALE_TTL_SECONDS,
   }).catch(() => undefined);
   if (ttlSeconds <= 0) {
