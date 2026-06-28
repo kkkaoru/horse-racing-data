@@ -2,7 +2,8 @@
 import { VENUE_COORDS } from "./venue-coords";
 import type { Env, WeatherJob, WeatherType } from "./types";
 
-const FORECAST_CRON = "30 21 * * *";
+// JST 01:30 (16:30 UTC). Forecast must populate D1 BEFORE the finish-position launchd cron fires at JST 03:00 (scripts/launchd/com.kkk4oru.finish-position-predict.plist).
+const FORECAST_CRON = "30 16 * * *";
 
 export const getTodayJst = (): string => {
   const now = new Date();

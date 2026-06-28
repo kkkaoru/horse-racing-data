@@ -91,7 +91,7 @@ it("dispatchWeatherJobs wraps each job in a body object", async () => {
 });
 
 it("handleScheduled dispatches forecast jobs for forecast cron", async () => {
-  const mockEvent = { cron: "30 21 * * *" } as ScheduledController;
+  const mockEvent = { cron: "30 16 * * *" } as ScheduledController;
 
   vi.setSystemTime(new Date("2026-06-22T12:00:00.000Z"));
   await handleScheduled(mockEvent, mockEnv);
@@ -119,7 +119,7 @@ it("handleScheduled dispatches actual jobs for non-forecast cron", async () => {
 });
 
 it("handleScheduled uses JST today as raceDate", async () => {
-  const mockEvent = { cron: "30 21 * * *" } as ScheduledController;
+  const mockEvent = { cron: "30 16 * * *" } as ScheduledController;
 
   vi.setSystemTime(new Date("2026-06-22T12:00:00.000Z")); // JST: 2026-06-22 21:00
   await handleScheduled(mockEvent, mockEnv);
