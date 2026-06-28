@@ -370,6 +370,31 @@ describe("runners table", () => {
     expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("shows '-' for 馬体重 when bataiju is null and no realtime weight is provided", () => {
+    render(
+      <RunnersTable
+        runners={[
+          runner({
+            bamei: "未計量馬",
+            bataiju: null,
+            umaban: "01",
+            zogenFugo: null,
+            zogenSa: null,
+          }),
+        ]}
+      />,
+    );
+
+    const headers = screen.getAllByRole("columnheader").map((cell) => cell.textContent ?? "");
+    const weightColumnIndex = headers.indexOf("馬体重");
+    expect(weightColumnIndex >= 0).toStrictEqual(true);
+    const dataRow = screen.getAllByRole("row")[1];
+    const weightCellText = dataRow
+      ? (Array.from(dataRow.querySelectorAll("td"))[weightColumnIndex]?.textContent ?? "")
+      : "";
+    expect(weightCellText).toStrictEqual("-");
+  });
+
   it("uses realtime race results for finish order display and default sort", () => {
     render(
       <RunnersTable

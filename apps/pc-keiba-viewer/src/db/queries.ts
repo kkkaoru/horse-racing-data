@@ -529,9 +529,16 @@ export const getRaceRunners = cache(
               se.kishumei_ryakusho as "kishumeiRyakusho",
               se.chokyoshimei_ryakusho as "chokyoshimeiRyakusho",
               se.banushimei,
-              coalesce(nullif(btrim(se.bataiju), ''), latest_weight.bataiju) as bataiju,
-              coalesce(nullif(btrim(se.zogen_fugo), ''), latest_weight.zogen_fugo) as "zogenFugo",
-              coalesce(nullif(btrim(se.zogen_sa), ''), latest_weight.zogen_sa) as "zogenSa",
+              -- Do NOT fall back to the horse's most recent past-race bataiju.
+              -- For not-yet-scraped NAR races the feed leaves se.bataiju blank,
+              -- and a coalesce to past values surfaced the prior race's weight
+              -- (e.g. 473kg from a different track) as if it were today's. The
+              -- realtime SSE/DO/D1 path supplies the current weight once the
+              -- sync-realtime-data worker has fetched it; when it has not, the
+              -- viewer renders "-" which is the truthful unknown.
+              se.bataiju,
+              se.zogen_fugo as "zogenFugo",
+              se.zogen_sa as "zogenSa",
               se.kakutei_chakujun as "kakuteiChakujun",
               se.tansho_odds as "tanshoOdds",
               se.tansho_ninkijun as "tanshoNinkijun",
@@ -560,49 +567,6 @@ export const getRaceRunners = cache(
               on primary_um.ketto_toroku_bango = se.ketto_toroku_bango
             left join ${nvdUm} secondary_um
               on secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
-            left join lateral (
-              -- JRA-transfer NAR runners (e.g. アローグレイシャー at 門別) have
-              -- no nvd_se past races, so without the jvd_se arm the SSR
-              -- bataiju is null and the row reads "-" whenever realtime
-              -- /api/.../realtime is unavailable (D1 CPU throttle on the
-              -- sync-realtime-data worker observed during race-day peaks).
-              select bataiju, zogen_fugo, zogen_sa
-              from (
-                select
-                  hist.bataiju,
-                  hist.zogen_fugo,
-                  hist.zogen_sa,
-                  hist.kaisai_nen,
-                  hist.kaisai_tsukihi,
-                  hist.race_bango
-                from ${nvdSe} hist
-                where
-                  hist.ketto_toroku_bango = se.ketto_toroku_bango
-                  and hist.ketto_toroku_bango is not null
-                  and btrim(hist.ketto_toroku_bango) <> ''
-                  and (hist.kaisai_nen, hist.kaisai_tsukihi, hist.race_bango) < (${year}, ${monthDay}, ${raceNumber})
-                  and nullif(btrim(hist.bataiju), '') is not null
-                  and upper(btrim(hist.bataiju)) <> 'FFF'
-                union all
-                select
-                  jra.bataiju,
-                  jra.zogen_fugo,
-                  jra.zogen_sa,
-                  jra.kaisai_nen,
-                  jra.kaisai_tsukihi,
-                  jra.race_bango
-                from ${jvdSe} jra
-                where
-                  jra.ketto_toroku_bango = se.ketto_toroku_bango
-                  and jra.ketto_toroku_bango is not null
-                  and btrim(jra.ketto_toroku_bango) <> ''
-                  and (jra.kaisai_nen, jra.kaisai_tsukihi, jra.race_bango) < (${year}, ${monthDay}, ${raceNumber})
-                  and nullif(btrim(jra.bataiju), '') is not null
-                  and upper(btrim(jra.bataiju)) <> 'FFF'
-              ) combined
-              order by combined.kaisai_nen desc, combined.kaisai_tsukihi desc, combined.race_bango desc
-              limit 1
-            ) latest_weight on true
             where
               se.kaisai_nen = ${year}
               and se.kaisai_tsukihi = ${monthDay}
