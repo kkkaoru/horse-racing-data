@@ -143,11 +143,8 @@ def _distance_band_expr() -> pl.Expr:
     )
 
 
-def _season_expr(df: pl.DataFrame) -> pl.Expr:
-    """Map kaisai_nengappi (YYYYMMDD int/str) to season label."""
-    if "kaisai_nengappi" not in df.columns:
-        return pl.lit("unknown")
-    month = pl.col("kaisai_nengappi").cast(pl.Utf8).str.slice(4, 2).cast(pl.Int64)
+def _month_to_season(month: pl.Expr) -> pl.Expr:
+    """Map a month integer expression to a season label."""
     return (
         pl.when(month.is_in([3, 4, 5]))
         .then(pl.lit("spring"))
@@ -159,11 +156,27 @@ def _season_expr(df: pl.DataFrame) -> pl.Expr:
     )
 
 
+def _season_expr(df: pl.DataFrame) -> pl.Expr:
+    """Map kaisai_nengappi or race_date (YYYYMMDD int/str) to season label."""
+    if "kaisai_nengappi" in df.columns:
+        month = pl.col("kaisai_nengappi").cast(pl.Utf8).str.slice(4, 2).cast(pl.Int64)
+        return _month_to_season(month)
+    if "race_date" in df.columns:
+        month = pl.col("race_date").cast(pl.Utf8).str.slice(4, 2).cast(pl.Int64)
+        return _month_to_season(month)
+    return pl.lit("unknown")
+
+
 def _class_expr(df: pl.DataFrame) -> pl.Expr:
     """Return grade_code as-is, or 'unknown' if the column is absent."""
     if "grade_code" not in df.columns:
         return pl.lit("unknown")
-    return pl.col("grade_code").cast(pl.Utf8).fill_null("unknown")
+    cleaned = pl.col("grade_code").cast(pl.Utf8).str.strip_chars().fill_null("")
+    return (
+        pl.when(cleaned == pl.lit(""))
+        .then(pl.lit("unknown"))
+        .otherwise(cleaned)
+    )
 
 
 def _venue_expr() -> pl.Expr:
@@ -451,7 +464,7 @@ def compute_subgroup_diagnostics(
         "race_id", "ketto_toroku_bango", "finish_position",
         "source", "keibajo_code", "track_code", "kyori",
     ]
-    for optional_col in ("kaisai_nengappi", "grade_code"):
+    for optional_col in ("kaisai_nengappi", "race_date", "grade_code"):
         if optional_col in ground_truth.columns:
             gt_cols.append(optional_col)
     joined = ground_truth.select(gt_cols).join(

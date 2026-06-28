@@ -10,7 +10,7 @@ import type { PerRaceParquetEntry, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
-const SLEEP_AFTER = "1m";
+const SLEEP_AFTER = "15m";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
 const RESULT_LINE_TYPE = "result";
@@ -119,24 +119,25 @@ export class FinishPositionPredictContainer extends Container<Env> {
   override enableInternet = true;
 
   override async fetch(request: Request): Promise<Response> {
-    // Inject Worker runtime secrets into container env before containerFetch
-    // starts the container. The Dockerfile default PREDICT_SERVE_MODE=http
-    // activates the HTTP /predict server mode. NEON_DATABASE_URL is required
-    // at container bootstrap time.
     this.envVars = {
       MODELS_DIR: MODELS_DIR_DEFAULT,
       NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
       PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
-      // R2 S3 credentials forwarded for the rescore GET path (read-only token is
-      // sufficient for GET). The full-run PUT is proxied via FEATURES_CACHE binding
-      // above, so the S3 token write-access gap is bypassed.
       R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
       R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,
       R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY ?? EMPTY_ENV_VALUE,
       R2_BUCKET: this.env.R2_BUCKET ?? EMPTY_ENV_VALUE,
       VENUE_WEATHER_URL: this.env.VENUE_WEATHER_URL ?? EMPTY_ENV_VALUE,
     };
-    const response = await this.containerFetch(request);
-    return proxyParquetFromNdjson(response, this.env);
+    try {
+      const response = await this.containerFetch(request);
+      return proxyParquetFromNdjson(response, this.env);
+    } catch (err) {
+      console.error(`[container-class] containerFetch failed: ${String(err)}`);
+      return Response.json(
+        { error: "Container start failed", detail: String(err) },
+        { status: 502 },
+      );
+    }
   }
 }

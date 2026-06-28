@@ -151,6 +151,11 @@ test("dedupeBatch keeps every distinct primary key intact", () => {
         umaban: 1,
         predicted_score: 0.1,
         predicted_rank: 1,
+        distance_band: null,
+        field_size_band: null,
+        season_band: null,
+        class_code: null,
+        surface: null,
       },
       {
         race_id: "nar:2025:0906:48:02",
@@ -158,6 +163,11 @@ test("dedupeBatch keeps every distinct primary key intact", () => {
         umaban: 2,
         predicted_score: 0.2,
         predicted_rank: 2,
+        distance_band: null,
+        field_size_band: null,
+        season_band: null,
+        class_code: null,
+        surface: null,
       },
     ]),
   ).toStrictEqual([
@@ -167,6 +177,11 @@ test("dedupeBatch keeps every distinct primary key intact", () => {
       umaban: 1,
       predicted_score: 0.1,
       predicted_rank: 1,
+      distance_band: null,
+      field_size_band: null,
+      season_band: null,
+      class_code: null,
+      surface: null,
     },
     {
       race_id: "nar:2025:0906:48:02",
@@ -174,7 +189,104 @@ test("dedupeBatch keeps every distinct primary key intact", () => {
       umaban: 2,
       predicted_score: 0.2,
       predicted_rank: 2,
+      distance_band: null,
+      field_size_band: null,
+      season_band: null,
+      class_code: null,
+      surface: null,
     },
+  ]);
+});
+
+test("parsePredictionLine preserves subgroup labels emitted by the Python predict path", () => {
+  const line = JSON.stringify({
+    race_id: "jra:2026:0627:05:11",
+    ketto_toroku_bango: "2023106583",
+    umaban: 4,
+    predicted_score: 1.2,
+    predicted_rank: 1,
+    distance_band: "mile",
+    field_size_band: "large",
+    season_band: "summer",
+    class_code: "016",
+    surface: "turf",
+  });
+  expect(parsePredictionLine(line)).toStrictEqual({
+    class_code: "016",
+    distance_band: "mile",
+    field_size_band: "large",
+    ketto_toroku_bango: "2023106583",
+    predicted_rank: 1,
+    predicted_score: 1.2,
+    race_id: "jra:2026:0627:05:11",
+    season_band: "summer",
+    surface: "turf",
+    umaban: 4,
+  });
+});
+
+test("parsePredictionLine ignores blank or non-string subgroup label values", () => {
+  const line = JSON.stringify({
+    race_id: "jra:2026:0627:05:11",
+    ketto_toroku_bango: "2023106583",
+    umaban: 4,
+    predicted_score: 0.9,
+    predicted_rank: 5,
+    distance_band: "   ",
+    field_size_band: "",
+    season_band: "spring",
+    class_code: null,
+    surface: 999,
+  });
+  expect(parsePredictionLine(line)).toStrictEqual({
+    class_code: null,
+    distance_band: null,
+    field_size_band: null,
+    ketto_toroku_bango: "2023106583",
+    predicted_rank: 5,
+    predicted_score: 0.9,
+    race_id: "jra:2026:0627:05:11",
+    season_band: "spring",
+    surface: null,
+    umaban: 4,
+  });
+});
+
+test("flattenForInsert forwards populated subgroup labels in INSERT_COLUMNS order", () => {
+  const flat = flattenForInsert(
+    {
+      race_id: "jra:2026:0627:05:11",
+      ketto_toroku_bango: "2023106583",
+      umaban: 4,
+      predicted_score: 1.2,
+      predicted_rank: 1,
+      distance_band: "mile",
+      field_size_band: "large",
+      season_band: "summer",
+      class_code: "016",
+      surface: "turf",
+    },
+    "win5-xgb-v7-lineage-v1-rs-overlay-20260627",
+  );
+  expect(flat).toStrictEqual([
+    "win5-xgb-v7-lineage-v1-rs-overlay-20260627",
+    "jra",
+    "2026",
+    "0627",
+    "05",
+    "11",
+    "2023106583",
+    4,
+    1.2,
+    1,
+    null,
+    null,
+    1,
+    "mile",
+    "large",
+    "summer",
+    "016",
+    "turf",
   ]);
 });
 

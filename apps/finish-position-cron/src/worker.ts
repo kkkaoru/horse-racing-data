@@ -36,6 +36,7 @@ const MODE_FIELD = "mode";
 const CATEGORY_FIELD = "category";
 const KEIBAJO_CODE_FIELD = "keibajoCode";
 const RACE_BANGO_FIELD = "raceBango";
+const SKIP_DEDUP_FIELD = "skipDedup";
 const RUN_YMD_FIELD = "runYmd";
 const DEFAULT_MODE: PredictMode = "full";
 const FULL_MODE: PredictMode = "full";
@@ -142,6 +143,7 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   const body = await parseBody(request);
   const dates = resolveTriggerDates(body);
   const mode = resolveMode(body);
+  const skipDedup = body[SKIP_DEDUP_FIELD] === true;
   const queued = await enqueuePredict({
     category: resolveCategory(body),
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
@@ -151,6 +153,7 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
     raceBango: resolveRaceTargetField(body, RACE_BANGO_FIELD),
     runDate: dates.runDate,
     runYmd: dates.runYmd,
+    ...(skipDedup ? { skipDedup: true } : {}),
   });
   return Response.json({ ok: true, queued, runDate: dates.runDate }, { status: HTTP_ACCEPTED });
 };

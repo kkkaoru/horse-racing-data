@@ -1,4 +1,4 @@
-"""Continuous self-improving Walk-Forward learning loop with auto-deploy."""
+"""Continuous self-improving Walk-Forward learning loop with opt-in auto-deploy."""
 
 from __future__ import annotations
 
@@ -46,6 +46,7 @@ from finish_position_lightgbm import (
     LABEL_COLUMNS,
     META_COLUMNS,
     FoldSplit,
+    resolve_feature_columns,
     split_walk_forward,
 )
 from walk_forward_common import atomic_write_metadata
@@ -191,6 +192,67 @@ DO UPDATE SET
     feature_names_array = EXCLUDED.feature_names_array,
     cell_vector = EXCLUDED.cell_vector,
     evaluated_at = NOW()
+"""
+
+_CELL_EVAL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_cell_eval_category_season
+    ON cell_training_evaluations (category, season);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_category_venue
+    ON cell_training_evaluations (category, venue);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_feature_hash
+    ON cell_training_evaluations (feature_set_hash);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_category_season_venue
+    ON cell_training_evaluations (category, season, venue);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_top1
+    ON cell_training_evaluations (category, top1_accuracy DESC);
+"""
+
+_TRIAL_LOG_TABLE: Final[str] = "trial_exploration_log"
+
+_TRIAL_LOG_DDL = """
+CREATE TABLE IF NOT EXISTS trial_exploration_log (
+    trial_id            TEXT NOT NULL,
+    feature_set_hash    TEXT NOT NULL,
+    category            TEXT NOT NULL,
+    method              TEXT NOT NULL,
+    ndcg_at_3           DOUBLE PRECISION NOT NULL,
+    feature_count       INTEGER NOT NULL,
+    feature_names_array TEXT[] NOT NULL,
+    feature_mask_vector BOOLEAN[] NOT NULL,
+    importance_vector   DOUBLE PRECISION[],
+    params_json         JSONB,
+    explored_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (feature_set_hash, category, method)
+)
+"""
+
+_TRIAL_LOG_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_trial_log_category_method
+    ON trial_exploration_log (category, method);
+CREATE INDEX IF NOT EXISTS idx_trial_log_ndcg
+    ON trial_exploration_log (category, ndcg_at_3 DESC);
+CREATE INDEX IF NOT EXISTS idx_trial_log_feature_hash
+    ON trial_exploration_log (feature_set_hash);
+"""
+
+_TRIAL_LOG_UPSERT = """
+INSERT INTO trial_exploration_log (
+    trial_id, feature_set_hash, category, method, ndcg_at_3,
+    feature_count, feature_names_array, feature_mask_vector,
+    importance_vector, params_json
+) VALUES (
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+)
+ON CONFLICT (feature_set_hash, category, method)
+DO UPDATE SET
+    trial_id = EXCLUDED.trial_id,
+    ndcg_at_3 = EXCLUDED.ndcg_at_3,
+    feature_count = EXCLUDED.feature_count,
+    feature_names_array = EXCLUDED.feature_names_array,
+    feature_mask_vector = EXCLUDED.feature_mask_vector,
+    importance_vector = EXCLUDED.importance_vector,
+    params_json = EXCLUDED.params_json,
+    explored_at = NOW()
 """
 
 _SEASON_MONTHS: Final[dict[str, set[int]]] = {
@@ -387,6 +449,7 @@ class CellAccuracyStore:
         con = _psycopg.connect(self._pg_url)
         with con.cursor() as cur:
             cur.execute(_CELL_EVAL_DDL)
+            cur.execute(_CELL_EVAL_INDEXES)
         con.commit()
         self._con = con
 
@@ -471,6 +534,162 @@ class CellAccuracyStore:
                 saved += 1
         self._con.commit()
         return saved
+
+
+class TrialExplorationStore:
+    """Dedup cache + dense-vector log for feature-set exploration trials.
+
+    Implements the explorer's ``TrialDeduplicator`` protocol (``get_cached_ndcg`` +
+    ``record_trial``) so the objective skips retraining a feature set already scored
+    under the same method, and persists a row per ``(feature_set_hash, category,
+    method)`` carrying mask/importance vectors aligned to ``all_features``.
+    """
+
+    def __init__(self, pg_url: str, category: str, all_features: list[str]) -> None:
+        self._pg_url: str = pg_url
+        self._category: str = category
+        # Canonical feature order: every mask/importance vector is built against this
+        # so a hash's vector is comparable across trials regardless of selection order.
+        self._all_features: list[str] = sorted(all_features)
+        self._con: psycopg.Connection[tuple[object, ...]] | None = None
+
+    def open(self) -> None:
+        _psycopg = __import__("psycopg")
+        con = _psycopg.connect(self._pg_url)
+        with con.cursor() as cur:
+            cur.execute(_TRIAL_LOG_DDL)
+            cur.execute(_TRIAL_LOG_INDEXES)
+        con.commit()
+        self._con = con
+
+    def close(self) -> None:
+        if self._con is not None:
+            self._con.close()
+            self._con = None
+
+    def __enter__(self) -> "TrialExplorationStore":
+        self.open()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def get_cached_ndcg(self, feature_set_hash: str, method: str) -> float | None:
+        assert self._con is not None
+        with self._con.cursor() as cur:
+            cur.execute(
+                "SELECT ndcg_at_3 FROM trial_exploration_log "
+                "WHERE feature_set_hash = %s AND category = %s AND method = %s",
+                (feature_set_hash, self._category, method),
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return cast("float", row[0])
+
+    def record_trial(
+        self,
+        feature_set_hash: str,
+        method: str,
+        ndcg: float,
+        feature_names: list[str],
+        importance: dict[str, float] | None = None,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        assert self._con is not None
+        selected = set(feature_names)
+        feature_mask_vector = [f in selected for f in self._all_features]
+        importance_vector = (
+            [float(importance.get(f, 0.0)) for f in self._all_features]
+            if importance is not None
+            else None
+        )
+        params_json = json.dumps(params) if params is not None else None
+        trial_id = f"{method}-{feature_set_hash[:16]}"
+        with self._con.cursor() as cur:
+            cur.execute(
+                _TRIAL_LOG_UPSERT,
+                (
+                    trial_id,
+                    feature_set_hash,
+                    self._category,
+                    method,
+                    ndcg,
+                    len(feature_names),
+                    sorted(feature_names),
+                    feature_mask_vector,
+                    importance_vector,
+                    params_json,
+                ),
+            )
+        self._con.commit()
+
+    def get_explored_hashes(self, method: str | None = None) -> set[str]:
+        assert self._con is not None
+        with self._con.cursor() as cur:
+            if method is None:
+                cur.execute(
+                    "SELECT DISTINCT feature_set_hash FROM trial_exploration_log "
+                    "WHERE category = %s",
+                    (self._category,),
+                )
+            else:
+                cur.execute(
+                    "SELECT DISTINCT feature_set_hash FROM trial_exploration_log "
+                    "WHERE category = %s AND method = %s",
+                    (self._category, method),
+                )
+            return {cast("str", row[0]) for row in cur.fetchall()}
+
+    def get_best_trials(
+        self, method: str | None = None, top_k: int = 10
+    ) -> list[dict[str, object]]:
+        assert self._con is not None
+        with self._con.cursor() as cur:
+            if method is None:
+                cur.execute(
+                    "SELECT trial_id, feature_set_hash, method, ndcg_at_3, "
+                    "feature_count, feature_names_array FROM trial_exploration_log "
+                    "WHERE category = %s ORDER BY ndcg_at_3 DESC LIMIT %s",
+                    (self._category, top_k),
+                )
+            else:
+                cur.execute(
+                    "SELECT trial_id, feature_set_hash, method, ndcg_at_3, "
+                    "feature_count, feature_names_array FROM trial_exploration_log "
+                    "WHERE category = %s AND method = %s "
+                    "ORDER BY ndcg_at_3 DESC LIMIT %s",
+                    (self._category, method, top_k),
+                )
+            return [
+                {
+                    "trial_id": row[0],
+                    "feature_set_hash": row[1],
+                    "method": row[2],
+                    "ndcg_at_3": row[3],
+                    "feature_count": row[4],
+                    "feature_names": row[5],
+                }
+                for row in cur.fetchall()
+            ]
+
+    def trial_count(self, method: str | None = None) -> int:
+        assert self._con is not None
+        with self._con.cursor() as cur:
+            if method is None:
+                cur.execute(
+                    "SELECT COUNT(*) FROM trial_exploration_log WHERE category = %s",
+                    (self._category,),
+                )
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM trial_exploration_log "
+                    "WHERE category = %s AND method = %s",
+                    (self._category, method),
+                )
+            row = cur.fetchone()
+        assert row is not None
+        return cast("int", row[0])
 
 
 def write_filtered_parquet(
@@ -579,6 +798,7 @@ class ContinuousLearner:
         docker_build: bool = False,
         cf_deploy: bool = False,
         cf_deploy_dir: Path | None = None,
+        auto_deploy: bool = False,
         log_subgroup: bool = False,
         skip_inverse: bool = False,
         skip_enrichment: bool = False,
@@ -588,6 +808,8 @@ class ContinuousLearner:
         cell_filter: CellFilter | None = None,
         cell_accuracy_store: CellAccuracyStore | None = None,
         pg_url: str = _LOCAL_PG_URL,
+        exploration_method: str = "block_tpe",
+        trial_store: TrialExplorationStore | None = None,
     ) -> None:
         if category not in _TRAINING_SCRIPT:
             raise ValueError(
@@ -623,6 +845,7 @@ class ContinuousLearner:
         self._docker_build: bool = docker_build
         self._cf_deploy: bool = cf_deploy
         self._cf_deploy_dir: Path | None = cf_deploy_dir
+        self._auto_deploy: bool = auto_deploy
         self._log_subgroup: bool = log_subgroup
         self._skip_inverse: bool = skip_inverse
         self._skip_enrichment: bool = skip_enrichment
@@ -633,6 +856,8 @@ class ContinuousLearner:
         self._cell_filter: CellFilter | None = cell_filter
         self._cell_accuracy_store: CellAccuracyStore | None = cell_accuracy_store
         self._pg_url: str = pg_url
+        self._exploration_method: str = exploration_method
+        self._trial_store: TrialExplorationStore | None = trial_store
         if cell_filter:
             original_len = len(self._df)
             self._df = filter_dataframe_by_cell(self._df, cell_filter)
@@ -704,6 +929,7 @@ class ContinuousLearner:
             round_label,
             self._n_trials,
         )
+        self._warn_auto_deploy_artifacts()
         round_num = 0
         while not self._stop:
             if max_rounds is not None and round_num >= max_rounds:
@@ -736,7 +962,7 @@ class ContinuousLearner:
             _logger.info("─── round %s started (trials: %d) ───", progress, actual_trials)
             _round_t0 = time.perf_counter()
             self._explore_round(round_num, n_trials=actual_trials)
-            saturated = self._maybe_deploy()
+            saturated = self._check_deploy_readiness()
             if saturated and not self._saturated:
                 _logger.info(
                     "saturation latched — subsequent rounds will use reduced trials"
@@ -806,6 +1032,23 @@ class ContinuousLearner:
             round_years,
             self._blind_holdout_year,
         )
+        if self._exploration_method == "combined":
+            from learning.feature_explorer import run_combined_exploration
+
+            run_combined_exploration(
+                df=self._df,
+                registry=self._registry,
+                study_name=study_name,
+                n_trials=n_trials,
+                validation_years=round_years,
+                train_start=self._train_start,
+                params=DEFAULT_PARAMS,
+                backends=self._backends,
+                per_trial_timeout_s=self._per_trial_timeout_s,
+                screening=True,
+                trial_store=self._trial_store,
+            )
+            return
         run_exploration(
             df=self._df,
             registry=self._registry,
@@ -817,6 +1060,7 @@ class ContinuousLearner:
             per_trial_timeout_s=self._per_trial_timeout_s,
             enqueue_subsets=self._priority_subsets(),
             screening=True,
+            trial_dedup=self._trial_store,
         )
 
     def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
@@ -971,8 +1215,36 @@ class ContinuousLearner:
             screening=True,
         )
 
-    def _maybe_deploy(self) -> bool:
-        """Deploy when the active entry beats the deployed one; return True if saturated.
+    def _warn_auto_deploy_artifacts(self) -> None:
+        """Log a warning for any ``auto-*`` model dirs left in the working tree.
+
+        These directories are produced only by the opt-in auto-deploy path; their
+        presence means a previous auto-deploy staged artifacts and (when enabled)
+        rewrote ``model_meta.json`` without a commit, leaving the working tree pointing
+        at an ``auto-*`` version instead of the committed production model. They are
+        never removed here (data is not deleted) — only surfaced so the operator can
+        reconcile the working tree against the committed production models.
+        """
+        models_root = self._repo_root / _CONTAINER_MODELS_ROOT / self._category
+        if not models_root.is_dir():
+            return
+        for path in sorted(p for p in models_root.glob("auto-*") if p.is_dir()):
+            _logger.warning(
+                "auto-deploy artifact present in working tree: %s — remove or reconcile "
+                "before committing (production model_meta.json must point to the "
+                "committed model, not an auto-* version)",
+                path,
+            )
+
+    def _check_deploy_readiness(self) -> bool:
+        """Evaluate whether the active entry is a deploy candidate; return True if saturated.
+
+        This never modifies files or staged artifacts on its own. When the active entry
+        clears the deploy threshold and the blind holdout confirms it, the entry is
+        logged as a DEPLOY CANDIDATE and recorded in the registry so the same entry is
+        not re-flagged every round, but deployment stays manual. Only when the learner
+        was constructed with ``auto_deploy=True`` does the (dangerous, NDCG-only) deploy
+        path run, overwriting ``model_meta.json`` and staging model artifacts.
 
         A True return signals the round loop that the search space is exhausted, so the
         per-round inverse and enrichment phases can be skipped — they cannot help once
@@ -980,19 +1252,19 @@ class ContinuousLearner:
         """
         if self._registry.is_saturated(SATURATION_LOOKBACK):
             _logger.info(
-                "deploy skipped: registry saturated (last %d trials showed no improvement)",
+                "deploy check skipped: registry saturated (last %d trials showed no improvement)",
                 SATURATION_LOOKBACK,
             )
             return True
         active = self._registry.get_active_entry()
         if active is None:
-            _logger.debug("no active entry — skipping deploy")
+            _logger.debug("no active entry — skipping deploy check")
             return False
         deployed_ndcg = self._registry.get_deployed_ndcg()
         delta = active["ndcg_at_3"] - deployed_ndcg
         if delta < self._deploy_threshold:
             _logger.info(
-                "deploy skipped: improvement below threshold  "
+                "deploy check: improvement below threshold  "
                 "current: %.4f | deployed: %.4f | delta: %+.4f | gap to threshold: %.4f",
                 active["ndcg_at_3"],
                 deployed_ndcg,
@@ -1001,7 +1273,7 @@ class ContinuousLearner:
             )
             return False
         _logger.info(
-            "NDCG@3 improved by %+.4f (%.4f → %.4f) — triggering deploy",
+            "NDCG@3 improved by %+.4f (%.4f → %.4f) — evaluating blind holdout",
             delta,
             deployed_ndcg,
             active["ndcg_at_3"],
@@ -1010,7 +1282,7 @@ class ContinuousLearner:
         blind_delta = blind_ndcg - deployed_ndcg
         if blind_delta < self._deploy_threshold:
             _logger.info(
-                "deploy skipped: blind holdout %d did not confirm  "
+                "deploy check: blind holdout %d did not confirm  "
                 "blind ndcg: %.4f | deployed: %.4f | blind delta: %+.4f",
                 self._blind_holdout_year,
                 blind_ndcg,
@@ -1019,12 +1291,26 @@ class ContinuousLearner:
             )
             return False
         _logger.info(
-            "blind holdout %d confirmed (%.4f, delta %+.4f) — proceeding to deploy",
+            "blind holdout %d confirmed (%.4f, delta %+.4f)",
             self._blind_holdout_year,
             blind_ndcg,
             blind_delta,
         )
-        self._deploy(active)
+        if self._auto_deploy:
+            _logger.warning(
+                "auto_deploy enabled — running NDCG-only deploy path (overwrites "
+                "model_meta.json and stages artifacts without the multi-metric gate)"
+            )
+            self._deploy(active)
+            return False
+        feature_count = len(active["feature_names"])
+        _logger.info(
+            "DEPLOY CANDIDATE: %s with NDCG@3=%.4f, features=%d. Manual deployment required.",
+            self._make_model_version(),
+            active["ndcg_at_3"],
+            feature_count,
+        )
+        self._registry.record_deployment(active["ndcg_at_3"], feature_count)
         return False
 
     def _evaluate_blind_holdout(self, entry: FeatureEntry) -> float:
@@ -1398,7 +1684,10 @@ def _setup_signal_handler(learner: ContinuousLearner) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Continuous Walk-Forward feature exploration and auto-deploy loop."
+        description=(
+            "Continuous Walk-Forward feature exploration loop. Logs deploy readiness; "
+            "deployment is manual unless --auto-deploy is set."
+        )
     )
     parser.add_argument("--features-parquet", type=Path, required=True)
     parser.add_argument("--category", type=str, required=True)
@@ -1416,6 +1705,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-trials", type=int, default=50)
     parser.add_argument("--backends", type=str, default=None)
     parser.add_argument("--train-start", type=str, default=None)
+    parser.add_argument(
+        "--auto-deploy",
+        action="store_true",
+        help=(
+            "DANGEROUS: enable the NDCG-only auto-deploy path that overwrites "
+            "model_meta.json and stages model artifacts without the multi-metric "
+            "(top1/place2/place3/place4-6/top3_box per cell) gate, cell routing, or "
+            "sim/E-top2 awareness. Off by default; readiness is logged but deployment "
+            "stays manual. --docker-build / --cf-deploy are ignored unless this is set."
+        ),
+    )
     parser.add_argument("--docker-build", action="store_true")
     parser.add_argument("--cf-deploy", action="store_true")
     parser.add_argument("--cf-deploy-dir", type=Path, default=None)
@@ -1441,6 +1741,13 @@ def main(argv: list[str] | None = None) -> None:
         default=_LOCAL_PG_URL,
         help="PostgreSQL URL for cell accuracy persistence",
     )
+    parser.add_argument(
+        "--exploration-method",
+        type=str,
+        default="combined",
+        choices=["block_tpe", "combined"],
+        help="block_tpe (block TPE only) or combined (SHAP stepwise + block TPE)",
+    )
     args = parser.parse_args(argv)
     setup_logging()
 
@@ -1459,6 +1766,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.season_bands:
             cell_filter["season_bands"] = [str(s) for s in args.season_bands]
     backends = _resolve_backends(args.backends, category)
+    auto_deploy = bool(args.auto_deploy)
     scripts_dir = Path(__file__).parent.parent
 
     load_controller = AdaptiveLoadController(
@@ -1468,9 +1776,16 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     cell_store: CellAccuracyStore | None = None
+    trial_store: TrialExplorationStore | None = None
     if args.log_subgroup:
         cell_store = CellAccuracyStore(pg_url=str(args.pg_url))
         cell_store.open()
+        trial_store = TrialExplorationStore(
+            pg_url=str(args.pg_url),
+            category=category,
+            all_features=resolve_feature_columns(list(df.columns)),
+        )
+        trial_store.open()
 
     with FeatureRegistry(args.registry_path) as registry:
         learner = ContinuousLearner(
@@ -1484,9 +1799,10 @@ def main(argv: list[str] | None = None) -> None:
             train_start=train_start,
             deploy_threshold=float(args.deploy_threshold),
             backends=backends,
-            docker_build=bool(args.docker_build),
-            cf_deploy=bool(args.cf_deploy),
+            docker_build=auto_deploy and bool(args.docker_build),
+            cf_deploy=auto_deploy and bool(args.cf_deploy),
             cf_deploy_dir=args.cf_deploy_dir,
+            auto_deploy=auto_deploy,
             log_subgroup=bool(args.log_subgroup),
             skip_inverse=bool(args.skip_inverse),
             skip_enrichment=bool(args.skip_enrichment),
@@ -1500,11 +1816,15 @@ def main(argv: list[str] | None = None) -> None:
             cell_filter=cell_filter,
             cell_accuracy_store=cell_store,
             pg_url=str(args.pg_url),
+            exploration_method=str(args.exploration_method),
+            trial_store=trial_store,
         )
         _setup_signal_handler(learner)
         learner.run(max_rounds=args.max_rounds)
         if cell_store is not None:
             cell_store.close()
+        if trial_store is not None:
+            trial_store.close()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,9 @@ the small helpers.
 
 from __future__ import annotations
 
+import json
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import final, override
 from unittest.mock import patch
@@ -21,11 +23,18 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
-from predict_lib.model_meta import NAR_ETOP2_MODEL_VERSION
+from predict_lib.cell_router import build_base_model_r2_key
+from predict_lib.model_meta import (
+    METADATA_FILE_NAME,
+    NAR_ETOP2_MODEL_VERSION,
+    Architecture,
+    model_version_for,
+)
 from predict_lib.rescore import RaceScope
 from predict_lib.scorer import BoosterLike
 from predict_lib.serve import ParquetPayloadFn, PerRaceParquetPayloadFn, PredictCategoryFn
 from predict_upcoming import (
+    VariantModel,
     execute,
     extract_race_class_code,
     flush_predictions,
@@ -559,3 +568,161 @@ def test_score_races_loads_cb_override_booster_for_nar() -> None:
     assert all(row[0] == NAR_ETOP2_MODEL_VERSION for row in rows)
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "override must promote XGB#2 (umaban 2) to rank-1"
+
+
+# ---------------------------------------------------------------------------
+# Cell-routing variant pool (score_races)
+# ---------------------------------------------------------------------------
+#
+# score_races builds a dict[str, VariantModel] from the routing config's
+# ``variants`` map: every non-default variant is loaded into the pool, the
+# default variant is served by the already-loaded category-global fallback.
+# A race whose resolved variant is in the pool scores against that variant's
+# booster + feature order + architecture; otherwise the fallback scores it.
+# These tests duck-type the routing config so they exercise the pool logic
+# without depending on the concrete cell_router dataclasses.
+
+
+@final
+class _FakeVariantSpec:
+    """Stand-in for ``cell_router.VariantSpec`` (model_version/feature_count/architecture)."""
+
+    def __init__(self, model_version: str, feature_count: int, architecture: str) -> None:
+        self.model_version = model_version
+        self.feature_count = feature_count
+        self.architecture = architecture
+
+
+@final
+class _FakeRouting:
+    """Stand-in for ``CategoryRouting`` carrying a variants map + default variant."""
+
+    def __init__(
+        self, variants: dict[str, _FakeVariantSpec], default_variant: str
+    ) -> None:
+        self.variants = variants
+        self.default_variant = default_variant
+
+
+@final
+class _FakeRouter:
+    """Stand-in for ``CellRouter`` that always routes a ban-ei race to ``resolved``."""
+
+    def __init__(self, routing: _FakeRouting, resolved: str) -> None:
+        self._routing = routing
+        self._resolved = resolved
+
+    def has_routing(self, category: str) -> bool:
+        del category
+        return True
+
+    def routing_for(self, category: str) -> _FakeRouting:
+        del category
+        return self._routing
+
+    def resolve_variant(
+        self, category: str, entries: Sequence[Mapping[str, object]]
+    ) -> str:
+        del category, entries
+        return self._resolved
+
+
+def _banei_entries() -> list[dict[str, object]]:
+    """Three Ban-ei entries (umaban 1/2/3) carrying the single ``feat`` column."""
+    return [
+        {"ketto_toroku_bango": "B1", "umaban": 1, "feat": 0.1},
+        {"ketto_toroku_bango": "B2", "umaban": 2, "feat": 0.2},
+        {"ketto_toroku_bango": "B3", "umaban": 3, "feat": 0.3},
+    ]
+
+
+def _write_variant_metadata(
+    models_dir: Path, category: str, model_version: str, feature_names: list[str]
+) -> None:
+    meta_path = models_dir / build_base_model_r2_key(category, model_version, METADATA_FILE_NAME)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps({"feature_names": feature_names}), encoding="utf-8")
+
+
+def test_variant_model_holds_booster_and_feature_contract() -> None:
+    """VariantModel is a frozen carrier for the booster + feature order + arch."""
+    booster = _ScoreByUmaban([0.1])
+    vm = VariantModel(booster=booster, feature_names=["a", "b"], architecture="catboost")
+    assert vm.booster is booster
+    assert list(vm.feature_names) == ["a", "b"]
+    assert vm.architecture == "catboost"
+
+
+def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) -> None:
+    """A non-default variant is loaded into the pool and scores its routed race.
+
+    The Ban-ei ``base`` variant (catboost) is loaded; the ``sim`` default is
+    skipped (served by the fallback). The race routes to ``base`` so the variant
+    booster — not the fallback — drives the ranking.
+    """
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="base")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])  # would rank umaban 1 first
+    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])  # ranks umaban 2 first
+    loaded: list[str] = []
+
+    def _fake_load_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
+        del architecture
+        loaded.append(str(model_path))
+        return variant_booster
+
+    races = {"ban-ei:20260620:65:01:01": _banei_entries()}
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
+    ):
+        scored = score_races(races, "ban-ei", tmp_path, ["feat"])
+
+    assert len(loaded) == 1, "only the non-default variant should be loaded"
+    assert "banei-base-v8" in loaded[0], "the loaded variant must be the base model"
+    assert "banei-sim-v9" not in loaded[0], "the default variant must be served by the fallback"
+    rows = scored[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
+    assert all(row[0] == model_version_for("ban-ei") for row in rows)
+
+
+def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path) -> None:
+    """When the resolved variant is the default (not pooled), the fallback scores."""
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="sim")  # default -> not in pool
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])  # ranks umaban 1 first
+    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])
+
+    def _fake_load_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
+        del model_path, architecture
+        return variant_booster
+
+    races = {"ban-ei:20260620:65:01:01": _banei_entries()}
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
+    ):
+        scored = score_races(races, "ban-ei", tmp_path, ["feat"])
+
+    rows = scored[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 1, "the fallback booster must drive the ranking for the default variant"

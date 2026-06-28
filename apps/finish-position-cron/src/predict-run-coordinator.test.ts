@@ -45,12 +45,12 @@ test("claim returns proceed:true for a new runYmd/category", async () => {
   expect(storageMock.put).toHaveBeenCalledTimes(1);
 });
 
-test("claim returns proceed:false when status is started", async () => {
+test("claim returns proceed:true when status is started (retry allowed after crash)", async () => {
   storageMap.set("run:20260603:jra", { status: "started", timestamp: 1000 });
   const coordinator = makeCoordinator();
   const result = await coordinator.claim("20260603", "jra");
-  expect(result).toStrictEqual({ proceed: false, state: "started" });
-  expect(storageMock.put).not.toHaveBeenCalled();
+  expect(result).toStrictEqual({ proceed: true });
+  expect(storageMock.put).toHaveBeenCalledTimes(1);
 });
 
 test("claim returns proceed:false when status is success", async () => {
@@ -116,7 +116,7 @@ test("fetch POST /claim returns proceed:true for new run", async () => {
   expect(body.proceed).toBe(true);
 });
 
-test("fetch POST /claim returns proceed:false when already started", async () => {
+test("fetch POST /claim returns proceed:true when already started (retry after crash)", async () => {
   storageMap.set("run:20260603:jra", { status: "started", timestamp: 1000 });
   const coordinator = makeCoordinator();
   const request = new Request("http://do/claim", {
@@ -126,9 +126,8 @@ test("fetch POST /claim returns proceed:false when already started", async () =>
   });
   const response = await coordinator.fetch(request);
   expect(response.status).toBe(200);
-  const body = (await response.json()) as { proceed: boolean; state: string };
-  expect(body.proceed).toBe(false);
-  expect(body.state).toBe("started");
+  const body = (await response.json()) as { proceed: boolean };
+  expect(body.proceed).toBe(true);
 });
 
 test("fetch POST /complete writes state and returns ok", async () => {

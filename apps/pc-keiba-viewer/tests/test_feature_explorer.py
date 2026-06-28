@@ -16,6 +16,7 @@ import pytest
 import learning.feature_explorer as subject
 from learning.feature_registry import FeatureRegistry
 from finish_position_lightgbm import LABEL_COLUMNS, META_COLUMNS, FoldSplit, split_walk_forward
+from learning.subgroup_diagnostics import SubgroupMetrics
 
 
 def _make_df() -> pl.DataFrame:
@@ -862,7 +863,7 @@ def test_build_objective_triggers_run_fold_with_backend_and_maybe_promote() -> N
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             result = objective(trial)
         assert mock_rfwb.call_count >= 1
@@ -899,7 +900,7 @@ def test_build_objective_pre_splits_folds_once_not_per_trial() -> None:
                 for trial_number in range(3):
                     trial = MagicMock()
                     trial.number = trial_number
-                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
                     trial.should_prune.return_value = False
                     objective(trial)
         # Running 3 trials must not trigger any additional split_walk_forward calls.
@@ -927,7 +928,7 @@ def test_build_objective_skips_none_backend_scores_in_trial() -> None:
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             result = objective(trial)
     assert result == pytest.approx(0.80)
@@ -954,7 +955,7 @@ def test_build_objective_returns_zero_when_all_backend_scores_none() -> None:
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             result = objective(trial)
     assert result == pytest.approx(0.0)
@@ -981,7 +982,7 @@ def test_build_objective_records_delta_pp_in_definition_json() -> None:
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             objective(trial)
         recorded = registry.list_trials()[0]
@@ -1013,7 +1014,7 @@ def test_build_objective_records_negative_delta_pp_against_active_entry() -> Non
             )
             trial = MagicMock()
             trial.number = 1
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             objective(trial)
         # Non-promoting trial: buffered in deferred_trials, not yet in the registry.
@@ -1058,7 +1059,7 @@ def test_build_objective_reports_intermediate_value_per_fold() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.should_prune.return_value = False
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             objective(trial)
     assert trial.report.call_count == 2
     assert trial.report.call_args_list[0].args == (0.70, 0)
@@ -1098,7 +1099,7 @@ def test_build_objective_aggregates_all_folds_after_per_fold_subset_release() ->
             trial = MagicMock()
             trial.number = 0
             trial.should_prune.return_value = False
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             result = objective(trial)
     # One score per fold, both retained → mean(0.60, 0.80) = 0.70.
     assert mock_rfwb.call_count == 2
@@ -1135,7 +1136,7 @@ def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> Non
                 trial = MagicMock()
                 trial.number = 1
                 trial.should_prune.return_value = False
-                trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
                 objective(trial)
     assert spy_promote.call_count == 1
     assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.50)
@@ -1171,7 +1172,7 @@ def test_build_objective_reads_active_entry_once_at_build_not_per_trial() -> Non
                 for trial_number in range(3):
                     trial = MagicMock()
                     trial.number = trial_number
-                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                    trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
                     trial.should_prune.return_value = False
                     objective(trial)
                 calls_after_trials = spy_active.call_count
@@ -1203,12 +1204,12 @@ def test_build_objective_promotion_updates_cached_active_for_next_trial_delta() 
             )
             trial0 = MagicMock()
             trial0.number = 0
-            trial0.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial0.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial0.should_prune.return_value = False
             objective(trial0)
             trial1 = MagicMock()
             trial1.number = 1
-            trial1.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial1.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial1.should_prune.return_value = False
             objective(trial1)
         registry.bulk_record_trials(objective.deferred_trials)
@@ -1245,7 +1246,7 @@ def test_build_objective_does_not_update_cache_when_maybe_promote_returns_false(
                 )
                 trial0 = MagicMock()
                 trial0.number = 0
-                trial0.suggest_categorical.side_effect = [True, True, True, True, True, True]
+                trial0.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
                 trial0.should_prune.return_value = False
                 objective(trial0)
     trial0.set_user_attr.assert_called_once_with("promoted", False)
@@ -1274,7 +1275,7 @@ def test_build_objective_raises_trial_pruned_when_should_prune_true() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.should_prune.return_value = True
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             with pytest.raises(optuna.TrialPruned):
                 objective(trial)
 
@@ -1301,7 +1302,7 @@ def test_build_objective_does_not_report_when_fold_has_no_scores() -> None:
             trial = MagicMock()
             trial.number = 0
             trial.should_prune.return_value = False
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             result = objective(trial)
     trial.report.assert_not_called()
     assert result == pytest.approx(0.0)
@@ -1387,7 +1388,7 @@ def test_build_objective_returns_zero_when_selected_below_min_features() -> None
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [False, False]
+            trial.suggest_categorical.side_effect = [False]
             result = objective(trial)
         mock_fold.assert_not_called()
     assert result == 0.0
@@ -1823,15 +1824,24 @@ def test_mask_to_params_sets_true_for_selected_false_for_rest() -> None:
     params, distributions = subject._mask_to_params(
         ["feat_a", "feat_b", "feat_c"], {"feat_a", "feat_c"}
     )
-    assert params == {"use_feat_a": True, "use_feat_b": False, "use_feat_c": True}
-    assert set(distributions.keys()) == {"use_feat_a", "use_feat_b", "use_feat_c"}
+    # All 3 features are in the "other" group; group is active because feat_a and feat_c are selected
+    assert params == {
+        "group_other": True,
+        "use_feat_a": True,
+        "use_feat_b": False,
+        "use_feat_c": True,
+    }
+    assert set(distributions.keys()) == {"group_other", "use_feat_a", "use_feat_b", "use_feat_c"}
 
 
 def test_mask_to_params_distribution_is_boolean_categorical() -> None:
     _, distributions = subject._mask_to_params(["feat_a"], {"feat_a"})
-    distribution = distributions["use_feat_a"]
+    distribution = distributions["group_other"]
     assert isinstance(distribution, optuna.distributions.CategoricalDistribution)
     assert distribution.choices == (True, False)
+    feat_distribution = distributions["use_feat_a"]
+    assert isinstance(feat_distribution, optuna.distributions.CategoricalDistribution)
+    assert feat_distribution.choices == (True, False)
 
 
 def test_build_warm_start_trials_reconstructs_prior_trial_as_frozen_trial() -> None:
@@ -1844,6 +1854,7 @@ def test_build_warm_start_trials_reconstructs_prior_trial_as_frozen_trial() -> N
     assert len(warm) == 1
     assert warm[0].value == pytest.approx(0.82)
     assert warm[0].params == {
+        "group_other": True,
         "use_feat_a": True,
         "use_feat_b": True,
         "use_feat_c": True,
@@ -1861,6 +1872,7 @@ def test_build_warm_start_trials_drops_features_absent_from_candidates() -> None
         )
         warm = subject.build_warm_start_trials(registry, candidate_features)
     assert "use_feat_old" not in warm[0].params
+    assert warm[0].params["group_other"] is True
 
 
 def test_build_warm_start_trials_skips_trial_below_min_features() -> None:
@@ -1930,6 +1942,7 @@ def test_enqueue_feature_subsets_drops_non_candidate_features() -> None:
     enqueued_params = study.enqueue_trial.call_args[0][0]
     assert "use_feat_gone" not in enqueued_params
     assert enqueued_params["use_feat_a"] is True
+    assert enqueued_params["group_other"] is True
 
 
 def test_make_per_trial_timeout_callback_stops_study_when_over_budget() -> None:
@@ -2339,7 +2352,7 @@ def test_build_objective_defers_non_promoting_trial_and_flush_records_it() -> No
             )
             trial = MagicMock()
             trial.number = 3
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             objective(trial)
         # Nothing written yet for this trial; the tuple is buffered in deferred_trials.
@@ -2380,7 +2393,7 @@ def test_build_objective_promoting_trial_is_active_before_any_flush() -> None:
             )
             trial = MagicMock()
             trial.number = 0
-            trial.suggest_categorical.side_effect = [True, True, True, True, True, True]
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
             trial.should_prune.return_value = False
             objective(trial)
         active = registry.get_active_entry()
@@ -2444,3 +2457,928 @@ def test_run_exploration_flushes_non_promoting_trials_and_best_is_readable() -> 
     non_promoting = [e for e in recorded if e["trial_id"] != "flush_study_trial_0"]
     assert all(e["ndcg_at_3"] == pytest.approx(0.50) for e in non_promoting)
     assert all(e["is_active"] is False for e in non_promoting)
+
+
+# --- FEATURE_GROUPS / assign_feature_group / group_features ---
+
+
+def test_feature_groups_constant_has_expected_groups() -> None:
+    assert "odds" in subject.FEATURE_GROUPS
+    assert "jockey" in subject.FEATURE_GROUPS
+    assert "pedigree" in subject.FEATURE_GROUPS
+    assert "running_style" in subject.FEATURE_GROUPS
+    assert "career" in subject.FEATURE_GROUPS
+    assert "trainer" in subject.FEATURE_GROUPS
+
+
+def test_assign_feature_group_exact_match() -> None:
+    assert subject.assign_feature_group("tansho_odds") == "odds"
+    assert subject.assign_feature_group("zogen_sa") == "weight"
+    assert subject.assign_feature_group("kyori") == "race_condition"
+    assert subject.assign_feature_group("seibetsu_code") == "horse_identity"
+
+
+def test_assign_feature_group_prefix_match() -> None:
+    assert subject.assign_feature_group("jockey_win_rate") == "jockey"
+    assert subject.assign_feature_group("pedigree_speed") == "pedigree"
+    assert subject.assign_feature_group("sim_distance") == "similar_race"
+    assert subject.assign_feature_group("trainer_strike_rate") == "trainer"
+
+
+def test_assign_feature_group_no_match_returns_other() -> None:
+    assert subject.assign_feature_group("feat_a") == "other"
+    assert subject.assign_feature_group("unknown_column") == "other"
+
+
+def test_group_features_groups_candidate_list() -> None:
+    candidates = ["jockey_win", "pedigree_sire", "feat_x", "sim_dist"]
+    groups = subject.group_features(candidates)
+    assert groups["jockey"] == ["jockey_win"]
+    assert groups["pedigree"] == ["pedigree_sire"]
+    assert groups["other"] == ["feat_x"]
+    assert groups["similar_race"] == ["sim_dist"]
+
+
+def test_group_features_all_other_when_no_match() -> None:
+    candidates = ["feat_a", "feat_b", "feat_c"]
+    groups = subject.group_features(candidates)
+    assert list(groups.keys()) == ["other"]
+    assert groups["other"] == ["feat_a", "feat_b", "feat_c"]
+
+
+# --- compute_feature_importance / _extract_fold_importance / get_importance_ranked_features ---
+
+
+def test_compute_feature_importance_catboost_returns_per_feature_scores() -> None:
+    df = _make_df()
+    mock_model = MagicMock()
+    mock_model.get_feature_importance.return_value = [0.5, 0.3]
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"model": mock_model, "valid_predictions": pl.DataFrame()},
+    ):
+        result = subject.compute_feature_importance(
+            df, ["feat_speed", "feat_jockey"], [2023], "20160101", ("catboost",)
+        )
+    assert "feat_speed" in result
+    assert "feat_jockey" in result
+    assert result["feat_speed"] == pytest.approx(0.5)
+    assert result["feat_jockey"] == pytest.approx(0.3)
+
+
+def test_compute_feature_importance_xgboost_returns_per_feature_scores() -> None:
+    df = _make_df()
+    mock_model = MagicMock()
+    mock_model.get_score.return_value = {"feat_speed": 0.8, "feat_jockey": 0.2}
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(mock_model, {"valid_predictions": pl.DataFrame()}),
+    ):
+        result = subject.compute_feature_importance(
+            df, ["feat_speed", "feat_jockey"], [2023], "20160101", ("xgboost",)
+        )
+    assert result["feat_speed"] == pytest.approx(0.8)
+    assert result["feat_jockey"] == pytest.approx(0.2)
+
+
+def test_compute_feature_importance_empty_fold_returns_empty() -> None:
+    df = _make_df()
+    result = subject.compute_feature_importance(
+        df, ["feat_speed"], [2020], "20250101", ("catboost",)
+    )
+    assert result == {}
+
+
+def test_compute_feature_importance_lightgbm_returns_empty() -> None:
+    df = _make_df()
+    result = subject.compute_feature_importance(
+        df, ["feat_speed"], [2023], "20160101", ("lightgbm",)
+    )
+    assert result == {}
+
+
+def test_extract_fold_importance_catboost_no_model_returns_empty() -> None:
+    fold = _make_fold()
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"model": None, "valid_predictions": pl.DataFrame()},
+    ):
+        result = subject._extract_fold_importance(fold, ["feat_speed"], "catboost")
+    assert result == {}
+
+
+def test_extract_fold_importance_catboost_exception_returns_empty() -> None:
+    fold = _make_fold()
+    mock_model = MagicMock()
+    mock_model.get_feature_importance.side_effect = RuntimeError("boom")
+    with patch(
+        "learning.feature_explorer.train_catboost_ranker",
+        return_value={"model": mock_model, "valid_predictions": pl.DataFrame()},
+    ):
+        result = subject._extract_fold_importance(fold, ["feat_speed"], "catboost")
+    assert result == {}
+
+
+def test_extract_fold_importance_xgboost_exception_returns_empty() -> None:
+    fold = _make_fold()
+    mock_model = MagicMock()
+    mock_model.get_score.side_effect = RuntimeError("boom")
+    with patch(
+        "learning.feature_explorer.train_xgboost_ranker",
+        return_value=(mock_model, {"valid_predictions": pl.DataFrame()}),
+    ):
+        result = subject._extract_fold_importance(fold, ["feat_speed"], "xgboost")
+    assert result == {}
+
+
+def test_extract_fold_importance_catboost_no_feature_cols_returns_empty() -> None:
+    fold = _make_meta_only_fold()
+    result = subject._extract_fold_importance(fold, ["feat_speed"], "catboost")
+    assert result == {}
+
+
+def test_extract_fold_importance_xgboost_no_numeric_cols_returns_empty() -> None:
+    fold = _make_meta_only_fold()
+    result = subject._extract_fold_importance(fold, ["feat_speed"], "xgboost")
+    assert result == {}
+
+
+def test_get_importance_ranked_features_sorts_by_accumulated_score() -> None:
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+    subject._IMPORTANCE_ACCUMULATOR["feat_a"] = [0.1, 0.2]
+    subject._IMPORTANCE_ACCUMULATOR["feat_b"] = [0.5, 0.6]
+    subject._IMPORTANCE_ACCUMULATOR["feat_c"] = [0.3]
+    result = subject.get_importance_ranked_features(["feat_a", "feat_b", "feat_c"])
+    assert result == ["feat_b", "feat_c", "feat_a"]
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+
+
+def test_get_importance_ranked_features_unknown_features_sort_to_end() -> None:
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+    subject._IMPORTANCE_ACCUMULATOR["feat_a"] = [0.5]
+    result = subject.get_importance_ranked_features(["feat_a", "feat_b"])
+    assert result == ["feat_a", "feat_b"]
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+
+
+def test_get_importance_ranked_features_empty_accumulator() -> None:
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+    result = subject.get_importance_ranked_features(["feat_a", "feat_b"])
+    assert set(result) == {"feat_a", "feat_b"}
+    subject._IMPORTANCE_ACCUMULATOR.clear()
+
+
+# --- compute_cell_weights_from_accuracy ---
+
+
+def _make_subgroup_metrics(
+    venue: str = "10",
+    surface: str = "turf",
+    distance_band: str = "middle",
+    class_label: str = "A",
+    season: str = "spring",
+    top1_accuracy: float = 0.5,
+) -> SubgroupMetrics:
+    return SubgroupMetrics(
+        subgroup=f"{venue}_{surface}_{distance_band}_{class_label}_{season}",
+        category="jra",
+        surface=surface,
+        distance_band=distance_band,
+        class_label=class_label,
+        season=season,
+        venue=venue,
+        race_count=10,
+        ndcg_at_3=0.8,
+        top1_accuracy=top1_accuracy,
+        place2_accuracy=0.4,
+        place3_accuracy=0.3,
+        place4_accuracy=0.2,
+        place5_accuracy=0.1,
+        place6_accuracy=0.05,
+        top3_box_accuracy=0.7,
+    )
+
+
+def test_compute_cell_weights_empty_returns_empty() -> None:
+    result = subject.compute_cell_weights_from_accuracy([])
+    assert result == {}
+
+
+def test_compute_cell_weights_single_cell_returns_weight_one() -> None:
+    metrics = [_make_subgroup_metrics(top1_accuracy=0.5)]
+    result = subject.compute_cell_weights_from_accuracy(metrics)
+    assert len(result) == 1
+    weight = list(result.values())[0]
+    assert weight == pytest.approx(1.0)
+
+
+def test_compute_cell_weights_low_accuracy_gets_higher_weight() -> None:
+    metrics = [
+        _make_subgroup_metrics(venue="10", top1_accuracy=0.2),
+        _make_subgroup_metrics(venue="20", top1_accuracy=0.8),
+    ]
+    result = subject.compute_cell_weights_from_accuracy(metrics)
+    key_low = "10_turf_middle_A_spring"
+    key_high = "20_turf_middle_A_spring"
+    assert result[key_low] > result[key_high]
+
+
+def test_compute_cell_weights_near_zero_accuracy_clamped() -> None:
+    metrics = [_make_subgroup_metrics(top1_accuracy=0.0)]
+    result = subject.compute_cell_weights_from_accuracy(metrics)
+    weight = list(result.values())[0]
+    assert weight == pytest.approx(1.0)
+
+
+def test_compute_cell_weights_mean_is_one() -> None:
+    metrics = [
+        _make_subgroup_metrics(venue="10", top1_accuracy=0.3),
+        _make_subgroup_metrics(venue="20", top1_accuracy=0.5),
+        _make_subgroup_metrics(venue="30", top1_accuracy=0.7),
+    ]
+    result = subject.compute_cell_weights_from_accuracy(metrics)
+    mean_weight = sum(result.values()) / len(result)
+    assert mean_weight == pytest.approx(1.0)
+
+
+# --- weighted_ndcg_at_3 ---
+
+
+def testweighted_ndcg_at_3_empty_returns_zero() -> None:
+    df = pl.DataFrame(schema={
+        "race_id": pl.Utf8,
+        "predicted_rank": pl.Int64,
+        "finish_position": pl.Int64,
+        "keibajo_code": pl.Utf8,
+        "track_code": pl.Utf8,
+        "kyori": pl.Int64,
+    })
+    result = subject.weighted_ndcg_at_3(df, {"key": 2.0})
+    assert result == pytest.approx(0.0)
+
+
+def testweighted_ndcg_at_3_uniform_weights_matches_unweighted() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+        "keibajo_code": ["10", "10", "10", "10"],
+        "track_code": ["1", "1", "1", "1"],
+        "kyori": [1600, 1600, 1600, 1600],
+    })
+    unweighted = subject._ndcg_at_3_from_valid_df(df)
+    weighted = subject.weighted_ndcg_at_3(df, {"10_1_1600": 1.0})
+    assert weighted == pytest.approx(unweighted)
+
+
+def testweighted_ndcg_at_3_falls_back_when_cols_missing() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+    })
+    result = subject.weighted_ndcg_at_3(df, {"key": 2.0})
+    expected = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(expected)
+
+
+def testweighted_ndcg_at_3_default_weight_for_unknown_cell() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+        "keibajo_code": ["10", "10", "10", "10"],
+        "track_code": ["1", "1", "1", "1"],
+        "kyori": [1600, 1600, 1600, 1600],
+    })
+    result = subject.weighted_ndcg_at_3(df, {})
+    assert result == pytest.approx(1.0)
+
+
+def testweighted_ndcg_at_3_all_irrelevant_finishers_returns_zero() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1"],
+        "predicted_rank": [1, 2],
+        "finish_position": [5, 6],
+        "keibajo_code": ["10", "10"],
+        "track_code": ["1", "1"],
+        "kyori": [1600, 1600],
+    })
+    result = subject.weighted_ndcg_at_3(df, {"10_1_1600": 2.0})
+    assert result == pytest.approx(0.0)
+
+
+# --- _mask_to_params with groups inactive ---
+
+
+def test_mask_to_params_inactive_group_omits_individual_params() -> None:
+    params, distributions = subject._mask_to_params(
+        ["feat_a", "feat_b", "feat_c"], set()
+    )
+    # No features selected -> group_other is False -> no use_* params
+    assert params == {"group_other": False}
+    assert set(distributions.keys()) == {"group_other"}
+
+
+# --- co_optimize_hp ---
+
+
+def test_build_objective_co_optimize_hp_suggests_hp_params() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+                co_optimize_hp=True,
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True, 300]
+            trial.suggest_float.side_effect = [0.05, 1.0]
+            trial.suggest_int.return_value = 6
+            trial.should_prune.return_value = False
+            result = objective(trial)
+    assert result == pytest.approx(0.75)
+    assert trial.suggest_float.call_count == 2
+    assert trial.suggest_int.call_count == 1
+
+
+def test_build_objective_co_optimize_hp_false_does_not_suggest_hp_params() -> None:
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            return_value=0.75,
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+                co_optimize_hp=False,
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
+            trial.should_prune.return_value = False
+            result = objective(trial)
+    assert result == pytest.approx(0.75)
+    trial.suggest_float.assert_not_called()
+    trial.suggest_int.assert_not_called()
+
+
+def test_run_exploration_passes_co_optimize_hp_to_build_objective() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda t: 0.5, []),
+            ) as mock_build,
+        ):
+            subject.run_exploration(
+                df, registry, n_trials=1, warm_start=False, co_optimize_hp=True
+            )
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["co_optimize_hp"] is True
+
+
+# --- two-stage objective with group_other off returns 0 ---
+
+
+def test_build_objective_group_off_skips_all_features_returns_zero() -> None:
+    df = _make_df()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_speed", "feat_jockey"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch("learning.feature_explorer.run_fold_with_backend") as mock_rfwb:
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                params,
+                registry,
+                "test_study",
+            )
+            trial = MagicMock()
+            trial.number = 0
+            # group_other = False -> no individual feature calls -> 0 selected
+            trial.suggest_categorical.side_effect = [False]
+            result = objective(trial)
+        mock_rfwb.assert_not_called()
+    assert result == 0.0
+
+
+# --- _feature_set_hash ---
+
+
+def test_feature_set_hash_is_deterministic_and_order_independent() -> None:
+    first = subject._feature_set_hash(["feat_b", "feat_a"])
+    second = subject._feature_set_hash(["feat_a", "feat_b"])
+    assert first == second
+
+
+def test_feature_set_hash_differs_for_different_sets() -> None:
+    left = subject._feature_set_hash(["feat_a"])
+    right = subject._feature_set_hash(["feat_b"])
+    assert left != right
+
+
+# --- importance_to_vector / feature_mask_to_vector ---
+
+
+def test_importance_to_vector_aligns_with_sorted_features() -> None:
+    result = subject.importance_to_vector(
+        {"feat_b": 0.9, "feat_a": 0.1}, ["feat_b", "feat_a", "feat_c"]
+    )
+    assert result == [0.1, 0.9, 0.0]
+
+
+def test_importance_to_vector_empty_importance_is_all_zero() -> None:
+    result = subject.importance_to_vector({}, ["feat_b", "feat_a"])
+    assert result == [0.0, 0.0]
+
+
+def test_feature_mask_to_vector_marks_selected_in_sorted_order() -> None:
+    result = subject.feature_mask_to_vector(
+        ["feat_c", "feat_a"], ["feat_b", "feat_a", "feat_c"]
+    )
+    assert result == [True, False, True]
+
+
+def test_feature_mask_to_vector_none_selected_is_all_false() -> None:
+    result = subject.feature_mask_to_vector([], ["feat_a", "feat_b"])
+    assert result == [False, False]
+
+
+# --- run_forward_selection ---
+
+
+def test_run_forward_selection_keeps_improving_candidates() -> None:
+    df = _make_df_6feats()
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        side_effect=[0.5, 0.6, 0.7],
+    ):
+        result = subject.run_forward_selection(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+        )
+    assert result == ["feat_a", "feat_b", "feat_c"]
+
+
+def test_run_forward_selection_drops_non_improving_candidate() -> None:
+    df = _make_df_6feats()
+    # feat_b scores below the running best so it is rejected; feat_c lifts it again.
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        side_effect=[0.5, 0.4, 0.6],
+    ):
+        result = subject.run_forward_selection(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+        )
+    assert result == ["feat_a", "feat_c"]
+
+
+def test_run_forward_selection_respects_max_features() -> None:
+    df = _make_df_6feats()
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        side_effect=[0.5, 0.6],
+    ) as mock_eval:
+        result = subject.run_forward_selection(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            max_features=2,
+        )
+    assert result == ["feat_a", "feat_b"]
+    assert mock_eval.call_count == 2
+
+
+def test_run_forward_selection_visits_candidates_in_importance_order() -> None:
+    df = _make_df_6feats()
+    seen: list[list[str]] = []
+
+    def fake_eval(
+        _df: pl.DataFrame, feature_set: list[str], *_a: object, **_k: object
+    ) -> float:
+        seen.append(list(feature_set))
+        return 0.0
+
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set", side_effect=fake_eval
+    ):
+        result = subject.run_forward_selection(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            importance_scores={"feat_a": 0.1, "feat_b": 0.9, "feat_c": 0.5},
+        )
+    assert seen == [["feat_b"], ["feat_c"], ["feat_a"]]
+    assert result == []
+
+
+# --- run_backward_elimination ---
+
+
+def test_run_backward_elimination_keeps_harmful_and_drops_harmless() -> None:
+    df = _make_df_6feats()
+    # baseline 0.6; drop feat_a (0.65>=0.6); keep feat_b (0.50<0.65); drop feat_c (0.65>=0.65).
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        side_effect=[0.6, 0.65, 0.50, 0.65],
+    ):
+        result = subject.run_backward_elimination(
+            df,
+            ["feat_a", "feat_b", "feat_c", "feat_d"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            min_features=2,
+        )
+    assert result == ["feat_b", "feat_d"]
+
+
+def test_run_backward_elimination_respects_min_features() -> None:
+    df = _make_df_6feats()
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        return_value=0.6,
+    ) as mock_eval:
+        result = subject.run_backward_elimination(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            min_features=3,
+        )
+    assert result == ["feat_a", "feat_b", "feat_c"]
+    assert mock_eval.call_count == 1
+
+
+def test_run_backward_elimination_iterates_all_features_when_min_features_zero() -> None:
+    df = _make_df_6feats()
+    # min_features=0 means the break never fires, so the loop runs to completion and
+    # every feature is dropped (each removal holds the 0.0 baseline).
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set",
+        return_value=0.0,
+    ) as mock_eval:
+        result = subject.run_backward_elimination(
+            df,
+            ["feat_a", "feat_b"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            min_features=0,
+        )
+    assert result == []
+    assert mock_eval.call_count == 3
+
+
+def test_run_backward_elimination_eliminates_lowest_importance_first() -> None:
+    df = _make_df_6feats()
+    seen: list[list[str]] = []
+
+    def fake_eval(
+        _df: pl.DataFrame, feature_set: list[str], *_a: object, **_k: object
+    ) -> float:
+        seen.append(list(feature_set))
+        return 0.0
+
+    with patch(
+        "learning.feature_explorer.evaluate_feature_set", side_effect=fake_eval
+    ):
+        result = subject.run_backward_elimination(
+            df,
+            ["feat_a", "feat_b", "feat_c"],
+            [2023],
+            "20160101",
+            subject.DEFAULT_PARAMS,
+            ("lightgbm",),
+            min_features=1,
+            importance_scores={"feat_a": 0.9, "feat_b": 0.1, "feat_c": 0.5},
+        )
+    assert seen[0] == ["feat_a", "feat_b", "feat_c"]
+    assert seen[1] == ["feat_a", "feat_c"]
+    assert seen[2] == ["feat_a"]
+    assert result == ["feat_a"]
+
+
+# --- trial deduplication in build_objective ---
+
+
+class _DedupHit:
+    def get_cached_ndcg(self, feature_set_hash: str, method: str) -> float | None:
+        return 0.42
+
+    def record_trial(
+        self, feature_set_hash: str, method: str, ndcg: float, feature_names: list[str]
+    ) -> None:
+        raise AssertionError("record_trial must not run on a cache hit")
+
+
+class _DedupMiss:
+    def __init__(self) -> None:
+        self.recorded: list[tuple[str, str, float, list[str]]] = []
+
+    def get_cached_ndcg(self, feature_set_hash: str, method: str) -> float | None:
+        return None
+
+    def record_trial(
+        self, feature_set_hash: str, method: str, ndcg: float, feature_names: list[str]
+    ) -> None:
+        self.recorded.append((feature_set_hash, method, ndcg, feature_names))
+
+
+def test_build_objective_dedup_cache_hit_returns_cached_without_training() -> None:
+    df = _make_df_6feats()
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch("learning.feature_explorer.run_fold_with_backend") as mock_rfwb:
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                subject.DEFAULT_PARAMS,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+                trial_dedup=_DedupHit(),
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
+            trial.should_prune.return_value = False
+            result = objective(trial)
+        mock_rfwb.assert_not_called()
+    assert result == pytest.approx(0.42)
+    trial.set_user_attr.assert_called_once_with("promoted", False)
+
+
+def test_build_objective_dedup_cache_miss_records_after_training() -> None:
+    df = _make_df_6feats()
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    store = _DedupMiss()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend", return_value=0.75
+        ):
+            objective = subject.build_objective(
+                df,
+                candidate_features,
+                [2023],
+                "20160101",
+                subject.DEFAULT_PARAMS,
+                registry,
+                "test_study",
+                backends=("lightgbm",),
+                trial_dedup=store,
+            )
+            trial = MagicMock()
+            trial.number = 0
+            trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
+            trial.should_prune.return_value = False
+            result = objective(trial)
+    assert result == pytest.approx(0.75)
+    assert len(store.recorded) == 1
+    assert store.recorded[0][0] == subject._feature_set_hash(candidate_features)
+    assert store.recorded[0][1] == subject.BLOCK_METHOD
+    assert store.recorded[0][2] == pytest.approx(0.75)
+    assert store.recorded[0][3] == candidate_features
+
+
+def test_run_exploration_passes_trial_dedup_to_build_objective() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    store = _DedupMiss()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda _t: 0.5, []),
+            ) as mock_build,
+        ):
+            subject.run_exploration(
+                df, registry, n_trials=1, warm_start=False, trial_dedup=store
+            )
+    assert mock_build.call_args.kwargs["trial_dedup"] is store
+
+
+# --- run_combined_exploration ---
+
+
+class _DedupNoop:
+    def get_cached_ndcg(self, feature_set_hash: str, method: str) -> float | None:
+        return None
+
+    def record_trial(
+        self, feature_set_hash: str, method: str, ndcg: float, feature_names: list[str]
+    ) -> None: ...
+
+
+def test_run_combined_exploration_runs_stepwise_then_block_with_active_importance() -> None:
+    df = _make_df()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        active_id = registry.record_trial("seed", 0.80, ["feat_speed"], "{}")
+        registry.activate(active_id)
+        with (
+            patch(
+                "learning.feature_explorer.compute_feature_importance",
+                return_value={"feat_speed": 0.9},
+            ) as mock_imp,
+            patch(
+                "learning.feature_explorer.run_forward_selection",
+                return_value=["feat_speed", "feat_jockey"],
+            ) as mock_fwd,
+            patch(
+                "learning.feature_explorer.run_backward_elimination",
+                return_value=["feat_speed"],
+            ) as mock_bwd,
+            patch(
+                "learning.feature_explorer.run_exploration", return_value=[]
+            ) as mock_explore,
+        ):
+            result = subject.run_combined_exploration(
+                df,
+                registry,
+                n_trials=3,
+                validation_years=[2023],
+                train_start="20160101",
+                params=subject.DEFAULT_PARAMS,
+                study_name="combo",
+                backends=("lightgbm",),
+            )
+    assert result == []
+    mock_imp.assert_called_once()
+    assert mock_fwd.call_args.kwargs["importance_scores"] == {"feat_speed": 0.9}
+    assert mock_bwd.call_args.args[1] == ["feat_speed", "feat_jockey"]
+    assert mock_explore.call_args.kwargs["enqueue_subsets"] == [{"feat_speed"}]
+
+
+def test_run_combined_exploration_skips_importance_when_no_active_entry() -> None:
+    df = _make_df()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.compute_feature_importance"
+            ) as mock_imp,
+            patch(
+                "learning.feature_explorer.run_forward_selection",
+                return_value=["feat_speed"],
+            ) as mock_fwd,
+            patch(
+                "learning.feature_explorer.run_backward_elimination",
+                return_value=["feat_speed"],
+            ),
+            patch("learning.feature_explorer.run_exploration", return_value=[]),
+        ):
+            subject.run_combined_exploration(
+                df,
+                registry,
+                n_trials=2,
+                validation_years=[2023],
+                train_start="20160101",
+                params=subject.DEFAULT_PARAMS,
+                study_name="combo",
+                backends=("lightgbm",),
+            )
+    mock_imp.assert_not_called()
+    assert mock_fwd.call_args.kwargs["importance_scores"] is None
+
+
+def test_run_combined_exploration_enqueues_none_when_pruned_empty() -> None:
+    df = _make_df()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.run_forward_selection", return_value=[]
+            ),
+            patch(
+                "learning.feature_explorer.run_backward_elimination", return_value=[]
+            ),
+            patch(
+                "learning.feature_explorer.run_exploration", return_value=[]
+            ) as mock_explore,
+        ):
+            subject.run_combined_exploration(
+                df,
+                registry,
+                n_trials=2,
+                validation_years=[2023],
+                train_start="20160101",
+                params=subject.DEFAULT_PARAMS,
+                study_name="combo",
+                backends=("lightgbm",),
+            )
+    assert mock_explore.call_args.kwargs["enqueue_subsets"] is None
+
+
+def test_run_combined_exploration_passes_trial_store_as_dedup() -> None:
+    df = _make_df()
+    store = _DedupNoop()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.run_forward_selection",
+                return_value=["feat_speed"],
+            ),
+            patch(
+                "learning.feature_explorer.run_backward_elimination",
+                return_value=["feat_speed"],
+            ),
+            patch(
+                "learning.feature_explorer.run_exploration", return_value=[]
+            ) as mock_explore,
+        ):
+            subject.run_combined_exploration(
+                df,
+                registry,
+                n_trials=2,
+                validation_years=[2023],
+                train_start="20160101",
+                params=subject.DEFAULT_PARAMS,
+                study_name="combo",
+                backends=("lightgbm",),
+                trial_store=store,
+            )
+    assert mock_explore.call_args.kwargs["trial_dedup"] is store
+
+
+def test_run_combined_exploration_forwards_kwargs_to_run_exploration() -> None:
+    df = _make_df()
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.run_forward_selection",
+                return_value=["feat_speed"],
+            ),
+            patch(
+                "learning.feature_explorer.run_backward_elimination",
+                return_value=["feat_speed"],
+            ),
+            patch(
+                "learning.feature_explorer.run_exploration", return_value=[]
+            ) as mock_explore,
+        ):
+            subject.run_combined_exploration(
+                df,
+                registry,
+                n_trials=2,
+                validation_years=[2023],
+                train_start="20160101",
+                params=subject.DEFAULT_PARAMS,
+                study_name="combo",
+                backends=("lightgbm",),
+                warm_start=False,
+            )
+    assert mock_explore.call_args.kwargs["warm_start"] is False

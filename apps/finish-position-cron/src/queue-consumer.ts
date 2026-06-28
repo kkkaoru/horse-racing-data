@@ -108,6 +108,10 @@ const processContainerPerRaceRescore = async (
       new Request(buildPerRaceRescoreUrl({ category, daysAhead, keibajoCode, raceBango, runYmd })),
     );
     if (!response.body) throw new Error("Empty response from predict DO");
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Container DO returned ${response.status}: ${text}`);
+    }
     const result = await parseNdjsonStream(response.body);
     console.log(
       `Rescore NAR(container) runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted}`,
@@ -182,6 +186,10 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       new Request(buildPredictUrl({ category, daysAhead, mode, runYmd })),
     );
     if (!response.body) throw new Error("Empty response from predict DO");
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Container DO returned ${response.status}: ${text}`);
+    }
     const result = await parseNdjsonStream(response.body);
     await completeRun({
       category,

@@ -10,6 +10,7 @@ from predict_lib.cell_router import (
     CellCondition,
     CellRouter,
     CellRouteRule,
+    VariantSpec,
     all_conditions_match,
     build_base_metadata_r2_key,
     build_base_model_r2_key,
@@ -24,11 +25,19 @@ from predict_lib.cell_router import (
 
 def _banei_router() -> CellRouter:
     routing = CategoryRouting(
-        sim_model_version="banei-cb-v9-sim-2011",
-        base_model_version="banei-cb-v8-window2011-wf-15y",
-        base_feature_count=111,
-        base_architecture="catboost",
         default_variant="sim",
+        variants={
+            "sim": VariantSpec(
+                model_version="banei-cb-v9-sim-2011",
+                feature_count=130,
+                architecture="catboost",
+            ),
+            "base": VariantSpec(
+                model_version="banei-cb-v8-window2011-wf-15y",
+                feature_count=111,
+                architecture="catboost",
+            ),
+        },
         rules=(
             CellRouteRule(
                 conditions=(CellCondition(dimension="grade_code", values=frozenset({"E"})),),
@@ -269,13 +278,186 @@ def test_build_base_metadata_r2_key() -> None:
     assert key == "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y/metadata.json"
 
 
+def test_variant_spec_fields_accessible() -> None:
+    spec = VariantSpec(model_version="m", feature_count=130, architecture="catboost")
+    assert spec.model_version == "m"
+    assert spec.feature_count == 130
+    assert spec.architecture == "catboost"
+
+
+def test_variants_dict_access_pattern() -> None:
+    router = _banei_router()
+    routing = router.routing_for("ban-ei")
+    assert routing.variants["base"].model_version == "banei-cb-v8-window2011-wf-15y"
+    assert routing.variants["base"].feature_count == 111
+    assert routing.variants["base"].architecture == "catboost"
+    assert routing.variants["sim"].model_version == "banei-cb-v9-sim-2011"
+    assert routing.variants["sim"].feature_count == 130
+
+
+def test_backward_compat_properties_derive_from_variants() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=200, architecture="catboost"),
+            "base": VariantSpec(model_version="base-v", feature_count=150, architecture="xgboost"),
+        },
+        rules=(),
+    )
+    assert routing.sim_model_version == "sim-v"
+    assert routing.base_model_version == "base-v"
+    assert routing.base_feature_count == 150
+    assert routing.base_architecture == "xgboost"
+
+
+def test_load_cell_router_new_format_variants(tmp_path: Path) -> None:
+    config = {
+        "ban-ei": {
+            "default_variant": "sim",
+            "variants": {
+                "sim": {
+                    "model_version": "banei-cb-v9-sim-2011",
+                    "feature_count": 130,
+                    "architecture": "catboost",
+                },
+                "base": {
+                    "model_version": "banei-cb-v8-window2011-wf-15y",
+                    "feature_count": 111,
+                    "architecture": "catboost",
+                },
+            },
+            "rules": [
+                {
+                    "conditions": [{"dimension": "grade_code", "values": ["E"]}],
+                    "variant": "base",
+                }
+            ],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    router = load_cell_router(config_path)
+    routing = router.routing_for("ban-ei")
+    assert routing.variants["sim"].feature_count == 130
+    assert routing.variants["base"].feature_count == 111
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y"
+    assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
+    assert router.resolve_variant("ban-ei", [{"grade_code": "A"}]) == "sim"
+
+
+def test_load_cell_router_new_format_three_variants(tmp_path: Path) -> None:
+    config = {
+        "jra": {
+            "default_variant": "sim",
+            "variants": {
+                "sim": {
+                    "model_version": "jra-sim",
+                    "feature_count": 263,
+                    "architecture": "catboost",
+                },
+                "base": {
+                    "model_version": "jra-base",
+                    "feature_count": 142,
+                    "architecture": "catboost",
+                },
+                "etop2": {
+                    "model_version": "jra-etop2",
+                    "feature_count": 244,
+                    "architecture": "xgboost",
+                },
+            },
+            "rules": [
+                {
+                    "conditions": [{"dimension": "venue", "values": ["05"]}],
+                    "variant": "etop2",
+                }
+            ],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    router = load_cell_router(config_path)
+    routing = router.routing_for("jra")
+    assert set(routing.variants) == {"sim", "base", "etop2"}
+    assert routing.variants["etop2"].model_version == "jra-etop2"
+    assert routing.variants["etop2"].feature_count == 244
+    assert routing.variants["etop2"].architecture == "xgboost"
+
+
+def test_resolve_variant_routes_to_third_variant(tmp_path: Path) -> None:
+    config = {
+        "jra": {
+            "default_variant": "sim",
+            "variants": {
+                "sim": {
+                    "model_version": "jra-sim",
+                    "feature_count": 263,
+                    "architecture": "catboost",
+                },
+                "base": {
+                    "model_version": "jra-base",
+                    "feature_count": 142,
+                    "architecture": "catboost",
+                },
+                "etop2": {
+                    "model_version": "jra-etop2",
+                    "feature_count": 244,
+                    "architecture": "xgboost",
+                },
+            },
+            "rules": [
+                {
+                    "conditions": [{"dimension": "venue", "values": ["05"]}],
+                    "variant": "etop2",
+                }
+            ],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    router = load_cell_router(config_path)
+    assert router.resolve_variant("jra", [{"keibajo_code": "05"}]) == "etop2"
+    assert router.resolve_variant("jra", [{"keibajo_code": "03"}]) == "sim"
+
+
+def test_load_cell_router_old_format_auto_detected(tmp_path: Path) -> None:
+    config = {
+        "ban-ei": {
+            "sim_model_version": "banei-cb-v9-sim-2011",
+            "base_model_version": "banei-cb-v8-window2011-wf-15y",
+            "base_feature_count": 111,
+            "base_architecture": "catboost",
+            "default_variant": "sim",
+            "rules": [
+                {
+                    "conditions": [{"dimension": "grade_code", "values": ["E"]}],
+                    "variant": "base",
+                }
+            ],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    router = load_cell_router(config_path)
+    routing = router.routing_for("ban-ei")
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y"
+    assert routing.base_feature_count == 111
+    assert routing.base_architecture == "catboost"
+    assert set(routing.variants) == {"sim", "base"}
+    assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
+
+
 def _jra_multi_condition_router() -> CellRouter:
     routing = CategoryRouting(
-        sim_model_version="jra-sim",
-        base_model_version="jra-base",
-        base_feature_count=142,
-        base_architecture="catboost",
         default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="jra-sim", feature_count=263, architecture="catboost"),
+            "base": VariantSpec(
+                model_version="jra-base", feature_count=142, architecture="catboost"
+            ),
+        },
         rules=(
             CellRouteRule(
                 conditions=(
@@ -303,11 +485,13 @@ def test_multi_condition_partial_match_returns_default() -> None:
 
 def test_conditions_with_venue_and_season() -> None:
     routing = CategoryRouting(
-        sim_model_version="jra-sim",
-        base_model_version="jra-base",
-        base_feature_count=142,
-        base_architecture="catboost",
         default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="jra-sim", feature_count=263, architecture="catboost"),
+            "base": VariantSpec(
+                model_version="jra-base", feature_count=142, architecture="catboost"
+            ),
+        },
         rules=(
             CellRouteRule(
                 conditions=(

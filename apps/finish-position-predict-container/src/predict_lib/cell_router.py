@@ -49,13 +49,33 @@ class CellRouteRule:
 
 
 @dataclass(frozen=True)
+class VariantSpec:
+    model_version: str
+    feature_count: int
+    architecture: str
+
+
+@dataclass(frozen=True)
 class CategoryRouting:
-    sim_model_version: str
-    base_model_version: str
-    base_feature_count: int
-    base_architecture: str
     default_variant: str
+    variants: dict[str, VariantSpec]
     rules: tuple[CellRouteRule, ...]
+
+    @property
+    def sim_model_version(self) -> str:
+        return self.variants[VARIANT_SIM].model_version
+
+    @property
+    def base_model_version(self) -> str:
+        return self.variants[VARIANT_BASE].model_version
+
+    @property
+    def base_feature_count(self) -> int:
+        return self.variants[VARIANT_BASE].feature_count
+
+    @property
+    def base_architecture(self) -> str:
+        return self.variants[VARIANT_BASE].architecture
 
 
 def derive_surface(track_code: str, category: str) -> str:
@@ -94,9 +114,7 @@ def derive_class(grade_code: str) -> str:
     return grade_code if grade_code else "unknown"
 
 
-def resolve_dimension(
-    entry: Mapping[str, object], dimension: str, category: str
-) -> str | None:
+def resolve_dimension(entry: Mapping[str, object], dimension: str, category: str) -> str | None:
     if dimension == "venue":
         raw = entry.get("keibajo_code")
         return str(raw).strip() if raw is not None else None
@@ -157,9 +175,7 @@ class CellRouter:
     def routing_for(self, category: str) -> CategoryRouting:
         return self._routing[category]
 
-    def resolve_variant(
-        self, category: str, entries: Sequence[Mapping[str, object]]
-    ) -> str:
+    def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
         if category not in self._routing:
             return VARIANT_SIM
         routing = self._routing[category]
@@ -188,29 +204,58 @@ def _parse_condition(value: object) -> CellCondition:
     condition = _as_mapping(value, "condition")
     return CellCondition(
         dimension=str(condition["dimension"]),
-        values=frozenset(
-            str(v) for v in _as_sequence(condition["values"], "values")
-        ),
+        values=frozenset(str(v) for v in _as_sequence(condition["values"], "values")),
     )
 
 
 def _parse_rule(value: object) -> CellRouteRule:
     rule = _as_mapping(value, "rule")
     conditions = tuple(
-        _parse_condition(condition)
-        for condition in _as_sequence(rule["conditions"], "conditions")
+        _parse_condition(condition) for condition in _as_sequence(rule["conditions"], "conditions")
     )
     return CellRouteRule(conditions=conditions, variant=str(rule["variant"]))
+
+
+def _parse_variant_spec(value: object) -> VariantSpec:
+    spec = _as_mapping(value, "variant")
+    return VariantSpec(
+        model_version=str(spec["model_version"]),
+        feature_count=int(str(spec["feature_count"])),
+        architecture=str(spec["architecture"]),
+    )
+
+
+def _parse_variants(payload: Mapping[str, object]) -> dict[str, VariantSpec]:
+    """Parse the per-category variant table, auto-detecting old vs new format.
+
+    New format carries an explicit ``variants`` object keyed by variant name. The
+    legacy flat format only records ``base_feature_count`` / ``base_architecture``
+    for the base variant, so the sim variant's feature count is unknown and stored
+    as ``0`` (the serve path reads it from ``model_meta`` for the default variant).
+    """
+    if "variants" in payload:
+        variants = _as_mapping(payload["variants"], "variants")
+        return {name: _parse_variant_spec(spec) for name, spec in variants.items()}
+    base_architecture = str(payload["base_architecture"])
+    return {
+        VARIANT_SIM: VariantSpec(
+            model_version=str(payload["sim_model_version"]),
+            feature_count=0,
+            architecture=base_architecture,
+        ),
+        VARIANT_BASE: VariantSpec(
+            model_version=str(payload["base_model_version"]),
+            feature_count=int(str(payload["base_feature_count"])),
+            architecture=base_architecture,
+        ),
+    }
 
 
 def _parse_category_routing(payload: Mapping[str, object]) -> CategoryRouting:
     rules = tuple(_parse_rule(rule) for rule in _as_sequence(payload["rules"], "rules"))
     return CategoryRouting(
-        sim_model_version=str(payload["sim_model_version"]),
-        base_model_version=str(payload["base_model_version"]),
-        base_feature_count=int(str(payload["base_feature_count"])),
-        base_architecture=str(payload["base_architecture"]),
         default_variant=str(payload["default_variant"]),
+        variants=_parse_variants(payload),
         rules=rules,
     )
 
@@ -227,9 +272,7 @@ def load_cell_router(config_path: Path | None = None) -> CellRouter:
     return CellRouter(routing)
 
 
-def build_base_model_r2_key(
-    category: str, base_model_version: str, file_name: str
-) -> str:
+def build_base_model_r2_key(category: str, base_model_version: str, file_name: str) -> str:
     return f"{R2_KEY_PREFIX}/{category}/{base_model_version}/{file_name}"
 
 

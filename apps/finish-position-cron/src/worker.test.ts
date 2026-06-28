@@ -398,6 +398,37 @@ test("handleFetch treats a non-string raceBango as absent", async () => {
   );
 });
 
+test("handleFetch passes skipDedup true when body specifies skipDedup true", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603", skipDedup: true })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ skipDedup: true }));
+});
+
+test("handleFetch omits skipDedup when body specifies skipDedup as string true", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603", skipDedup: "true" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.not.objectContaining({ skipDedup: expect.anything() }),
+  );
+});
+
+test("handleFetch omits skipDedup when body does not specify skipDedup", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.not.objectContaining({ skipDedup: expect.anything() }),
+  );
+});
+
 test("handleFetch omits per-race fields for the per-category path", async () => {
   await handleFetch(
     triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),

@@ -1468,3 +1468,84 @@ def test_season_expr_december_is_winter():
     })
     keys = subject.assign_subgroup_keys(df).to_list()
     assert keys[0] == "jra_turf_mile_A_winter_10"
+
+
+def test_season_expr_falls_back_to_race_date_when_no_kaisai_nengappi():
+    df = pl.DataFrame({
+        "source": ["jra"] * 4,
+        "keibajo_code": ["10"] * 4,
+        "track_code": ["10"] * 4,
+        "kyori": [1400] * 4,
+        "grade_code": ["A"] * 4,
+        "race_date": ["20130308", "20130608", "20131015", "20131220"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_A_spring_10"
+    assert keys[1] == "jra_turf_mile_A_summer_10"
+    assert keys[2] == "jra_turf_mile_A_autumn_10"
+    assert keys[3] == "jra_turf_mile_A_winter_10"
+
+
+def test_season_expr_prefers_kaisai_nengappi_over_race_date():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": ["A"],
+        "kaisai_nengappi": ["20260715"],
+        "race_date": ["20260115"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_A_summer_10"
+
+
+def test_season_expr_unknown_when_neither_date_column_exists():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": ["A"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_A_unknown_10"
+
+
+def test_class_expr_space_grade_code_becomes_unknown():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": [" "],
+        "kaisai_nengappi": ["20260615"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_unknown_summer_10"
+
+
+def test_class_expr_empty_string_grade_code_becomes_unknown():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": [""],
+        "kaisai_nengappi": ["20260615"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_unknown_summer_10"
+
+
+def test_class_expr_padded_grade_code_is_stripped():
+    df = pl.DataFrame({
+        "source": ["jra"],
+        "keibajo_code": ["10"],
+        "track_code": ["10"],
+        "kyori": [1400],
+        "grade_code": [" A "],
+        "kaisai_nengappi": ["20260615"],
+    })
+    keys = subject.assign_subgroup_keys(df).to_list()
+    assert keys[0] == "jra_turf_mile_A_summer_10"

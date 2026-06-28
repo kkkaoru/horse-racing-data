@@ -15,7 +15,7 @@ import polars as pl
 
 import learning.continuous_learner as subject
 from learning.continuous_learner import CellAccuracyStore, CellFilter, compute_feature_set_hash, compute_sire_venue_bias_features, filter_dataframe_by_cell
-from learning.feature_explorer import select_round_validation_years
+from learning.feature_explorer import DEFAULT_PARAMS, select_round_validation_years
 from learning.feature_registry import FeatureEntry, FeatureRegistry
 from finish_position_lightgbm import split_walk_forward
 
@@ -80,11 +80,14 @@ def _make_learner(
     train_start: str = "20160101",
     deploy_threshold: float = subject.DEFAULT_DEPLOY_THRESHOLD,
     docker_build: bool = False,
+    auto_deploy: bool = False,
     skip_inverse: bool = False,
     skip_enrichment: bool = False,
     load_controller: subject.AdaptiveLoadController | None = None,
     auto_tune: bool = True,
     cell_filter: CellFilter | None = None,
+    exploration_method: str = "block_tpe",
+    trial_store: subject.TrialExplorationStore | None = None,
 ) -> subject.ContinuousLearner:
     return subject.ContinuousLearner(
         registry=registry
@@ -102,11 +105,14 @@ def _make_learner(
         train_start=train_start,
         deploy_threshold=deploy_threshold,
         docker_build=docker_build,
+        auto_deploy=auto_deploy,
         skip_inverse=skip_inverse,
         skip_enrichment=skip_enrichment,
         load_controller=load_controller,
         auto_tune=auto_tune,
         cell_filter=cell_filter,
+        exploration_method=exploration_method,
+        trial_store=trial_store,
     )
 
 
@@ -291,7 +297,7 @@ def test_run_with_max_rounds_two_calls_explore_twice() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round") as mock_explore,
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
         ):
             learner.run(max_rounds=2)
             assert mock_explore.call_count == 2
@@ -318,14 +324,14 @@ def test_run_stops_when_stop_flag_set_mid_loop() -> None:
 
         with (
             patch.object(learner, "_explore_round", side_effect=_fake_explore),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
         ):
             learner.run(max_rounds=None)
 
         assert call_count == 1
 
 
-def test_run_calls_maybe_deploy_after_each_explore() -> None:
+def test_run_calls_check_deploy_readiness_after_each_explore() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         order: list[str] = []
@@ -337,7 +343,7 @@ def test_run_calls_maybe_deploy_after_each_explore() -> None:
                 side_effect=lambda *a, **kw: order.append("explore"),
             ),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
+                learner, "_check_deploy_readiness", side_effect=lambda: order.append("deploy")
             ),
         ):
             learner.run(max_rounds=2)
@@ -351,12 +357,12 @@ def test_learner_saturated_defaults_to_false() -> None:
         assert learner._saturated is False
 
 
-def test_run_sets_saturated_from_maybe_deploy_return() -> None:
+def test_run_sets_saturated_from_check_deploy_readiness_return() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
         ):
             learner.run(max_rounds=1)
         assert learner._saturated is True
@@ -372,7 +378,7 @@ def test_run_halves_trials_after_saturation_detected() -> None:
 
         with (
             patch.object(learner, "_explore_round", side_effect=_record),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
         ):
             learner.run(max_rounds=2)
 
@@ -389,7 +395,7 @@ def test_run_does_not_halve_trials_when_not_saturated() -> None:
 
         with (
             patch.object(learner, "_explore_round", side_effect=_record),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
         ):
             learner.run(max_rounds=2)
 
@@ -406,21 +412,21 @@ def test_run_saturated_trials_floor_is_min_saturated_trials() -> None:
 
         with (
             patch.object(learner, "_explore_round", side_effect=_record),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
         ):
             learner.run(max_rounds=2)
 
         assert trials_seen == [8, subject._MIN_SATURATED_TRIALS]
 
 
-def test_run_saturation_latches_and_does_not_reset_when_maybe_deploy_returns_false() -> None:
+def test_run_saturation_latches_and_does_not_reset_when_check_deploy_readiness_returns_false() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         returns = iter([True, False])
         with (
             patch.object(learner, "_explore_round"),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+                learner, "_check_deploy_readiness", side_effect=lambda: next(returns)
             ),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
@@ -441,7 +447,7 @@ def test_run_latched_saturation_halves_trials_in_later_round() -> None:
         with (
             patch.object(learner, "_explore_round", side_effect=_record),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+                learner, "_check_deploy_readiness", side_effect=lambda: next(returns)
             ),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
@@ -457,7 +463,7 @@ def test_run_latched_saturation_skips_inverse_and_enrichment_in_later_round() ->
         with (
             patch.object(learner, "_explore_round"),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: next(returns)
+                learner, "_check_deploy_readiness", side_effect=lambda: next(returns)
             ),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
@@ -474,7 +480,7 @@ def test_run_logs_saturation_latched_message_on_first_saturation(
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
             caplog.at_level("INFO", logger="learning.continuous_learner"),
         ):
             learner.run(max_rounds=1)
@@ -491,7 +497,7 @@ def test_run_logs_saturation_latched_only_once_across_rounds(
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             caplog.at_level("INFO", logger="learning.continuous_learner"),
@@ -704,19 +710,19 @@ def test_priority_subsets_caches_empty_enrichment() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _maybe_deploy
+# _check_deploy_readiness
 # ---------------------------------------------------------------------------
 
 
-def test_maybe_deploy_does_nothing_when_no_active_entry() -> None:
+def test_check_deploy_readiness_does_nothing_when_no_active_entry() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         with patch.object(learner, "_deploy") as mock_deploy:
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
             mock_deploy.assert_not_called()
 
 
-def test_maybe_deploy_does_not_deploy_when_below_threshold() -> None:
+def test_check_deploy_readiness_does_not_deploy_when_below_threshold() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.50, ["feat_speed"])
         reg.activate(1)
@@ -727,44 +733,112 @@ def test_maybe_deploy_does_not_deploy_when_below_threshold() -> None:
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
             mock_deploy.assert_not_called()
 
 
-def test_maybe_deploy_deploys_when_above_threshold() -> None:
+def test_check_deploy_readiness_does_not_deploy_above_threshold_by_default() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
-        # deployed_ndcg = 0.0, active = 0.80, threshold = 0.005 → 0.80 > 0.005 → deploy
+        # default auto_deploy is False → readiness only, no file-touching deploy
         learner = _make_learner(registry=reg, deploy_threshold=0.005)
         with (
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
+            mock_deploy.assert_not_called()
+
+
+def test_check_deploy_readiness_logs_candidate_when_blind_confirms(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            caplog.at_level("INFO", logger="learning.continuous_learner"),
+        ):
+            learner._check_deploy_readiness()
+        candidate_logs = [
+            r.message for r in caplog.records if "DEPLOY CANDIDATE" in r.message
+        ]
+        assert len(candidate_logs) == 1
+
+
+def test_check_deploy_readiness_records_deployment_when_blind_confirms() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            patch.object(reg, "record_deployment") as mock_record,
+        ):
+            learner._check_deploy_readiness()
+        mock_record.assert_called_once_with(0.80, 1)
+
+
+def test_check_deploy_readiness_records_when_delta_equals_threshold() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.505, ["feat_speed"])
+        reg.activate(1)
+        reg.record_deployment(0.50, 1)
+        # delta = 0.005 == threshold → passes (strict < comparison)
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.505),
+            patch.object(reg, "record_deployment") as mock_record,
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            learner._check_deploy_readiness()
+        mock_deploy.assert_not_called()
+        mock_record.assert_called_once_with(0.505, 1)
+
+
+def test_check_deploy_readiness_deploys_above_threshold_when_auto_deploy() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(
+            registry=reg, deploy_threshold=0.005, auto_deploy=True
+        )
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            patch.object(learner, "_deploy") as mock_deploy,
+        ):
+            learner._check_deploy_readiness()
             mock_deploy.assert_called_once()
             entry = mock_deploy.call_args.args[0]
             assert entry["trial_id"] == "t1"
 
 
-def test_maybe_deploy_deploys_when_delta_equals_threshold() -> None:
+def test_check_deploy_readiness_auto_deploy_does_not_record_in_readiness_path() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
-        reg.record_trial("t1", 0.505, ["feat_speed"])
+        reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
-        reg.record_deployment(0.50, 1)
-        # delta = 0.005 == threshold → deploys (strict < comparison)
-        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        learner = _make_learner(
+            registry=reg, deploy_threshold=0.005, auto_deploy=True
+        )
         with (
             patch.object(reg, "is_saturated", return_value=False),
-            patch.object(learner, "_evaluate_blind_holdout", return_value=0.505),
-            patch.object(learner, "_deploy") as mock_deploy,
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+            patch.object(learner, "_deploy"),
+            patch.object(reg, "record_deployment") as mock_record,
         ):
-            learner._maybe_deploy()
-            mock_deploy.assert_called_once()
+            learner._check_deploy_readiness()
+        mock_record.assert_not_called()
 
 
-def test_maybe_deploy_skips_when_blind_holdout_not_confirmed() -> None:
+def test_check_deploy_readiness_skips_when_blind_holdout_not_confirmed() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
@@ -774,27 +848,31 @@ def test_maybe_deploy_skips_when_blind_holdout_not_confirmed() -> None:
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.0),
             patch.object(learner, "_deploy") as mock_deploy,
+            patch.object(reg, "record_deployment") as mock_record,
         ):
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
             mock_deploy.assert_not_called()
+            mock_record.assert_not_called()
 
 
-def test_maybe_deploy_deploys_when_blind_holdout_confirms() -> None:
+def test_check_deploy_readiness_deploys_when_blind_confirms_and_auto_deploy() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
         # active 0.80, deployed 0.0, blind 0.79 → blind delta 0.79 >= threshold
-        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        learner = _make_learner(
+            registry=reg, deploy_threshold=0.005, auto_deploy=True
+        )
         with (
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.79),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
             mock_deploy.assert_called_once()
 
 
-def test_maybe_deploy_skips_when_registry_saturated() -> None:
+def test_check_deploy_readiness_skips_when_registry_saturated() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
@@ -803,29 +881,29 @@ def test_maybe_deploy_skips_when_registry_saturated() -> None:
             patch.object(reg, "is_saturated", return_value=True),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
-            learner._maybe_deploy()
+            learner._check_deploy_readiness()
             mock_deploy.assert_not_called()
 
 
-def test_maybe_deploy_returns_true_when_saturated() -> None:
+def test_check_deploy_readiness_returns_true_when_saturated() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
         learner = _make_learner(registry=reg)
         with patch.object(reg, "is_saturated", return_value=True):
-            result = learner._maybe_deploy()
+            result = learner._check_deploy_readiness()
         assert result is True
 
 
-def test_maybe_deploy_returns_false_when_no_active_entry() -> None:
+def test_check_deploy_readiness_returns_false_when_no_active_entry() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(registry=reg)
         with patch.object(reg, "is_saturated", return_value=False):
-            result = learner._maybe_deploy()
+            result = learner._check_deploy_readiness()
         assert result is False
 
 
-def test_maybe_deploy_returns_false_when_below_threshold() -> None:
+def test_check_deploy_readiness_returns_false_when_below_threshold() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.50, ["feat_speed"])
         reg.activate(1)
@@ -835,11 +913,11 @@ def test_maybe_deploy_returns_false_when_below_threshold() -> None:
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_deploy"),
         ):
-            result = learner._maybe_deploy()
+            result = learner._check_deploy_readiness()
         assert result is False
 
 
-def test_maybe_deploy_returns_false_when_blind_holdout_not_confirmed() -> None:
+def test_check_deploy_readiness_returns_false_when_blind_holdout_not_confirmed() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
@@ -849,11 +927,11 @@ def test_maybe_deploy_returns_false_when_blind_holdout_not_confirmed() -> None:
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.0),
             patch.object(learner, "_deploy"),
         ):
-            result = learner._maybe_deploy()
+            result = learner._check_deploy_readiness()
         assert result is False
 
 
-def test_maybe_deploy_returns_false_after_successful_deploy() -> None:
+def test_check_deploy_readiness_returns_false_in_readiness_mode() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         reg.record_trial("t1", 0.80, ["feat_speed"])
         reg.activate(1)
@@ -861,11 +939,74 @@ def test_maybe_deploy_returns_false_after_successful_deploy() -> None:
         with (
             patch.object(reg, "is_saturated", return_value=False),
             patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
+        ):
+            result = learner._check_deploy_readiness()
+        assert result is False
+
+
+def test_check_deploy_readiness_returns_false_after_auto_deploy() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(
+            registry=reg, deploy_threshold=0.005, auto_deploy=True
+        )
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout", return_value=0.80),
             patch.object(learner, "_deploy") as mock_deploy,
         ):
-            result = learner._maybe_deploy()
+            result = learner._check_deploy_readiness()
         mock_deploy.assert_called_once()
         assert result is False
+
+
+def test_learner_auto_deploy_defaults_to_false() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = subject.ContinuousLearner(
+            registry=reg,
+            df=_make_df(),
+            category="jra",
+            repo_root=Path("/fake/repo"),
+            scripts_dir=Path("/fake/scripts"),
+        )
+        assert learner._auto_deploy is False
+
+
+def test_learner_auto_deploy_stored_when_true() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, auto_deploy=True)
+        assert learner._auto_deploy is True
+
+
+def test_warn_auto_deploy_artifacts_no_warning_when_dir_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, category="jra", repo_root=Path("/fake/repo")
+        )
+        with caplog.at_level("WARNING", logger="learning.continuous_learner"):
+            learner._warn_auto_deploy_artifacts()
+        assert caplog.records == []
+
+
+def test_warn_auto_deploy_artifacts_logs_warning_for_auto_dirs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    models_root = tmp_path / subject._CONTAINER_MODELS_ROOT / "jra"
+    models_root.mkdir(parents=True)
+    (models_root / "auto-jra-20260627125340").mkdir()
+    (models_root / "auto-stray.json").write_text("{}", encoding="utf-8")
+    (models_root / "jra-cb-v9-sim-2013").mkdir()
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, category="jra", repo_root=tmp_path)
+        with caplog.at_level("WARNING", logger="learning.continuous_learner"):
+            learner._warn_auto_deploy_artifacts()
+    warnings = [
+        r.message for r in caplog.records if "auto-deploy artifact" in r.message
+    ]
+    assert len(warnings) == 1
 
 
 def test_evaluate_blind_holdout_calls_evaluate_feature_set_with_holdout_year() -> None:
@@ -1122,7 +1263,7 @@ def test_main_resolves_training_script_to_existing_file(tmp_path: Path) -> None:
     with (
         patch.object(subject.ContinuousLearner, "__init__", capturing_init),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -1452,7 +1593,7 @@ def test_main_runs_and_stops_after_max_rounds(tmp_path: Path) -> None:
         patch.object(
             subject.ContinuousLearner, "_explore_round", side_effect=fake_explore
         ),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(
             subject.AdaptiveLoadController,
             "_cpu_percent",
@@ -1513,6 +1654,132 @@ def test_main_wires_per_trial_timeout_into_learner(tmp_path: Path) -> None:
     assert captured["per_trial_timeout_s"] == pytest.approx(90.0)
 
 
+def test_main_auto_deploy_defaults_to_false(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, bool] = {}
+
+    def capture_flags(self: subject.ContinuousLearner, max_rounds: int | None = None) -> None:
+        _ = max_rounds
+        captured["auto_deploy"] = self._auto_deploy
+
+    with patch.object(subject.ContinuousLearner, "run", capture_flags):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["auto_deploy"] is False
+
+
+def test_main_auto_deploy_flag_enables_auto_deploy(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, bool] = {}
+
+    def capture_flags(self: subject.ContinuousLearner, max_rounds: int | None = None) -> None:
+        _ = max_rounds
+        captured["auto_deploy"] = self._auto_deploy
+
+    with patch.object(subject.ContinuousLearner, "run", capture_flags):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--auto-deploy",
+            ]
+        )
+
+    assert captured["auto_deploy"] is True
+
+
+def test_main_docker_build_ignored_without_auto_deploy(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, bool] = {}
+
+    def capture_flags(self: subject.ContinuousLearner, max_rounds: int | None = None) -> None:
+        _ = max_rounds
+        captured["docker_build"] = self._docker_build
+        captured["cf_deploy"] = self._cf_deploy
+
+    with patch.object(subject.ContinuousLearner, "run", capture_flags):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--docker-build",
+                "--cf-deploy",
+            ]
+        )
+
+    assert captured["docker_build"] is False
+    assert captured["cf_deploy"] is False
+
+
+def test_main_docker_build_wired_with_auto_deploy(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, bool] = {}
+
+    def capture_flags(self: subject.ContinuousLearner, max_rounds: int | None = None) -> None:
+        _ = max_rounds
+        captured["docker_build"] = self._docker_build
+        captured["cf_deploy"] = self._cf_deploy
+
+    with patch.object(subject.ContinuousLearner, "run", capture_flags):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--auto-deploy",
+                "--docker-build",
+                "--cf-deploy",
+            ]
+        )
+
+    assert captured["docker_build"] is True
+    assert captured["cf_deploy"] is True
+
+
 def test_main_default_constants() -> None:
     assert subject.DEFAULT_DOCKER_TAG == "finish-position-predict-local:split2"
     assert subject.DEFAULT_DEPLOY_THRESHOLD == 0.005
@@ -1538,7 +1805,7 @@ def test_main_wires_trial_counts_into_controller(tmp_path: Path) -> None:
     with (
         patch.object(subject.AdaptiveLoadController, "__init__", capturing_init),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -1726,7 +1993,7 @@ def test_run_with_controller_calls_round_params() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
         ):
             learner.run(max_rounds=1)
         ctrl.round_params.assert_called_once()
@@ -1741,7 +2008,7 @@ def test_run_with_controller_sleeps_when_nonzero() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch("learning.continuous_learner.time.sleep") as mock_sleep,
         ):
             learner.run(max_rounds=1)
@@ -1753,7 +2020,7 @@ def test_run_without_controller_no_sleep() -> None:
         learner = _make_learner(registry=reg, load_controller=None)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch("learning.continuous_learner.time.sleep") as mock_sleep,
         ):
             learner.run(max_rounds=2)
@@ -2457,7 +2724,7 @@ def test_run_calls_check_inverses_after_each_round() -> None:
                 side_effect=lambda *a, **kw: order.append("explore"),
             ),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
+                learner, "_check_deploy_readiness", side_effect=lambda: order.append("deploy")
             ),
             patch.object(
                 learner,
@@ -2478,7 +2745,7 @@ def test_run_passes_actual_trials_to_check_inverses() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment"),
         ):
@@ -2507,7 +2774,7 @@ def test_run_calls_analyze_enrichment_after_inverses() -> None:
                 side_effect=lambda *a, **kw: order.append("explore"),
             ),
             patch.object(
-                learner, "_maybe_deploy", side_effect=lambda: order.append("deploy")
+                learner, "_check_deploy_readiness", side_effect=lambda: order.append("deploy")
             ),
             patch.object(
                 learner,
@@ -2529,7 +2796,7 @@ def test_run_passes_round_num_to_analyze_enrichment() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -2976,7 +3243,7 @@ def test_run_skips_check_inverses_when_skip_inverse_true() -> None:
         learner = _make_learner(registry=reg, skip_inverse=True)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment"),
         ):
@@ -2989,7 +3256,7 @@ def test_run_skips_analyze_enrichment_when_skip_enrichment_true() -> None:
         learner = _make_learner(registry=reg, skip_enrichment=True)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -3002,7 +3269,7 @@ def test_run_still_calls_inverses_and_enrichment_by_default() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -3016,7 +3283,7 @@ def test_run_skips_inverse_and_enrichment_when_saturated() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -3030,7 +3297,7 @@ def test_run_runs_inverse_and_enrichment_when_not_saturated() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -3046,7 +3313,7 @@ def test_run_skips_inverse_when_saturated_even_with_skip_flags_false() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
             patch.object(learner, "_check_and_try_inverses") as mock_check,
             patch.object(learner, "_analyze_feature_enrichment") as mock_enrich,
         ):
@@ -3062,7 +3329,7 @@ def test_run_logs_skip_message_when_saturated(
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=True),
+            patch.object(learner, "_check_deploy_readiness", return_value=True),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             caplog.at_level("INFO", logger="learning.continuous_learner"),
@@ -3083,7 +3350,7 @@ def test_run_does_not_log_skip_message_when_not_saturated(
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy", return_value=False),
+            patch.object(learner, "_check_deploy_readiness", return_value=False),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             caplog.at_level("INFO", logger="learning.continuous_learner"),
@@ -3208,7 +3475,7 @@ def test_main_resolves_train_start_for_jra_when_omitted(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3243,7 +3510,7 @@ def test_main_resolves_train_start_for_nar_when_omitted(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3278,7 +3545,7 @@ def test_main_resolves_train_start_for_banei_when_omitted(tmp_path: Path) -> Non
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3313,7 +3580,7 @@ def test_main_train_start_arg_overrides_category_default(tmp_path: Path) -> None
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3350,7 +3617,7 @@ def test_main_resolves_backends_for_jra_when_omitted(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3385,7 +3652,7 @@ def test_main_backends_arg_overrides_category_default(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3422,7 +3689,7 @@ def test_main_forwards_docker_build_and_skip_flags(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3436,6 +3703,7 @@ def test_main_forwards_docker_build_and_skip_flags(tmp_path: Path) -> None:
                 str(tmp_path),
                 "--registry-path",
                 str(registry_path),
+                "--auto-deploy",
                 "--docker-build",
                 "--skip-inverse",
                 "--skip-enrichment",
@@ -3462,7 +3730,7 @@ def test_main_docker_build_and_skip_flags_default_false(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3612,7 +3880,7 @@ def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3626,6 +3894,7 @@ def test_main_forwards_cf_deploy_and_log_subgroup_flags(tmp_path: Path) -> None:
                 str(tmp_path),
                 "--registry-path",
                 str(registry_path),
+                "--auto-deploy",
                 "--cf-deploy",
                 "--log-subgroup",
                 "--max-rounds",
@@ -3650,7 +3919,7 @@ def test_main_cf_deploy_and_log_subgroup_default_false(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -3709,7 +3978,7 @@ def test_run_calls_log_subgroup_when_enabled() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
@@ -3730,7 +3999,7 @@ def test_run_skips_log_subgroup_on_non_fifth_round() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
@@ -3744,7 +4013,7 @@ def test_run_skips_log_subgroup_when_disabled() -> None:
         learner = _make_learner(registry=reg)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
@@ -4312,7 +4581,7 @@ def test_run_does_not_auto_tune_when_disabled() -> None:
         learner = _make_learner(registry=reg, auto_tune=False)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_auto_tune_resources") as mock_tune,
         ):
             learner.run(max_rounds=1)
@@ -4324,7 +4593,7 @@ def test_run_auto_tunes_once_per_round_when_enabled() -> None:
         learner = _make_learner(registry=reg, auto_tune=True)
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(
                 learner, "_auto_tune_resources", return_value=4
             ) as mock_tune,
@@ -4352,7 +4621,7 @@ def test_main_no_auto_tune_flag_disables_auto_tune(tmp_path: Path) -> None:
 
     with (
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.ContinuousLearner, "_auto_tune_resources") as mock_tune,
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
@@ -4383,7 +4652,7 @@ def test_main_default_enables_auto_tune(tmp_path: Path) -> None:
 
     with (
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(
             subject.ContinuousLearner, "_auto_tune_resources", return_value=4
         ) as mock_tune,
@@ -4671,7 +4940,7 @@ def test_main_forwards_cf_deploy_dir(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -4709,7 +4978,7 @@ def test_main_cf_deploy_dir_default_is_none(tmp_path: Path) -> None:
             _capture_learner_kwargs(captured),
         ),
         patch.object(subject.ContinuousLearner, "_explore_round"),
-        patch.object(subject.ContinuousLearner, "_maybe_deploy"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
         patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
         patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
     ):
@@ -4767,7 +5036,7 @@ def test_run_calls_subgroup_diagnostics_on_round_5() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
@@ -4789,7 +5058,7 @@ def test_run_calls_subgroup_diagnostics_on_round_10() -> None:
         )
         with (
             patch.object(learner, "_explore_round"),
-            patch.object(learner, "_maybe_deploy"),
+            patch.object(learner, "_check_deploy_readiness"),
             patch.object(learner, "_check_and_try_inverses"),
             patch.object(learner, "_analyze_feature_enrichment"),
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
@@ -5231,3 +5500,464 @@ def test_sire_venue_bias_surface_classification() -> None:
         result = compute_sire_venue_bias_features(df, "postgresql://test")
     assert result["sire_venue_surface_dist_runs"][0] == 0
     assert result["sire_venue_surface_dist_runs"][1] == 0
+
+
+# ---------------------------------------------------------------------------
+# CellAccuracyStore.open — indexes
+# ---------------------------------------------------------------------------
+
+
+def _mock_psycopg_conn() -> tuple[MagicMock, MagicMock, MagicMock]:
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    return mock_psycopg, mock_conn, mock_cursor
+
+
+def test_cell_accuracy_store_open_creates_table_and_indexes() -> None:
+    mock_psycopg, mock_conn, mock_cursor = _mock_psycopg_conn()
+    store = CellAccuracyStore(pg_url="postgresql://test")
+    import builtins
+
+    real_import = builtins.__import__
+    with patch(
+        "builtins.__import__",
+        side_effect=lambda name, *a, **kw: mock_psycopg
+        if name == "psycopg"
+        else real_import(name, *a, **kw),
+    ):
+        store.open()
+    executed = [c.args[0] for c in mock_cursor.execute.call_args_list]
+    assert subject._CELL_EVAL_DDL in executed
+    assert subject._CELL_EVAL_INDEXES in executed
+    assert mock_conn.commit.call_count == 1
+    assert store._con is mock_conn
+
+
+# ---------------------------------------------------------------------------
+# TrialExplorationStore
+# ---------------------------------------------------------------------------
+
+
+def test_trial_store_init_sorts_all_features() -> None:
+    store = subject.TrialExplorationStore(
+        "postgresql://test", "jra", ["fc", "fa", "fb"]
+    )
+    assert store._all_features == ["fa", "fb", "fc"]
+    assert store._category == "jra"
+    assert store._con is None
+
+
+def test_trial_store_open_creates_table_and_indexes() -> None:
+    mock_psycopg, mock_conn, mock_cursor = _mock_psycopg_conn()
+    store = subject.TrialExplorationStore("postgresql://test", "jra", ["fa"])
+    import builtins
+
+    real_import = builtins.__import__
+    with patch(
+        "builtins.__import__",
+        side_effect=lambda name, *a, **kw: mock_psycopg
+        if name == "psycopg"
+        else real_import(name, *a, **kw),
+    ):
+        store.open()
+    executed = [c.args[0] for c in mock_cursor.execute.call_args_list]
+    assert subject._TRIAL_LOG_DDL in executed
+    assert subject._TRIAL_LOG_INDEXES in executed
+    assert mock_conn.commit.call_count == 1
+    assert store._con is mock_conn
+
+
+def test_trial_store_context_manager_opens_and_closes() -> None:
+    mock_psycopg, mock_conn, _ = _mock_psycopg_conn()
+    store = subject.TrialExplorationStore("postgresql://test", "jra", ["fa"])
+    import builtins
+
+    real_import = builtins.__import__
+    with patch(
+        "builtins.__import__",
+        side_effect=lambda name, *a, **kw: mock_psycopg
+        if name == "psycopg"
+        else real_import(name, *a, **kw),
+    ):
+        with store as opened:
+            assert opened is store
+            assert store._con is mock_conn
+    assert store._con is None
+    mock_conn.close.assert_called_once()
+
+
+def test_trial_store_close_when_open() -> None:
+    mock_conn = MagicMock()
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store.close()
+    assert store._con is None
+    mock_conn.close.assert_called_once()
+
+
+def test_trial_store_close_when_not_open_is_noop() -> None:
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = None
+    store.close()
+    assert store._con is None
+
+
+def test_trial_store_get_cached_ndcg_hit() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (0.73,)
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.get_cached_ndcg("h1", "block") == 0.73
+    assert mock_cursor.execute.call_args[0][1] == ("h1", "jra", "block")
+
+
+def test_trial_store_get_cached_ndcg_miss_returns_none() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = None
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.get_cached_ndcg("h1", "block") is None
+
+
+def test_trial_store_record_trial_with_importance_and_params() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    store._all_features = ["fa", "fb", "fc"]
+    store.record_trial(
+        "h1", "block", 0.5, ["fa", "fc"], importance={"fa": 2.0}, params={"d": 6}
+    )
+    params = mock_cursor.execute.call_args[0][1]
+    assert params[0] == "block-h1"
+    assert params[1] == "h1"
+    assert params[2] == "jra"
+    assert params[3] == "block"
+    assert params[4] == 0.5
+    assert params[5] == 2
+    assert params[6] == ["fa", "fc"]
+    assert params[7] == [True, False, True]
+    assert params[8] == [2.0, 0.0, 0.0]
+    assert params[9] == json.dumps({"d": 6})
+    assert mock_conn.commit.call_count == 1
+
+
+def test_trial_store_record_trial_without_importance_or_params() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "nar"
+    store._all_features = ["fa", "fb"]
+    store.record_trial("h2", "combined", 0.6, ["fb"])
+    params = mock_cursor.execute.call_args[0][1]
+    assert params[7] == [False, True]
+    assert params[8] is None
+    assert params[9] is None
+
+
+def test_trial_store_get_explored_hashes_all() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("h1",), ("h2",)]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.get_explored_hashes() == {"h1", "h2"}
+    assert mock_cursor.execute.call_args[0][1] == ("jra",)
+
+
+def test_trial_store_get_explored_hashes_by_method() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("h1",)]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.get_explored_hashes("block") == {"h1"}
+    assert mock_cursor.execute.call_args[0][1] == ("jra", "block")
+
+
+def test_trial_store_get_best_trials_maps_rows() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [("t1", "h1", "block", 0.8, 5, ["fa", "fb"])]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    best = store.get_best_trials(top_k=3)
+    assert best == [
+        {
+            "trial_id": "t1",
+            "feature_set_hash": "h1",
+            "method": "block",
+            "ndcg_at_3": 0.8,
+            "feature_count": 5,
+            "feature_names": ["fa", "fb"],
+        }
+    ]
+    assert mock_cursor.execute.call_args[0][1] == ("jra", 3)
+
+
+def test_trial_store_get_best_trials_by_method() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = []
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.get_best_trials(method="combined", top_k=7) == []
+    assert mock_cursor.execute.call_args[0][1] == ("jra", "combined", 7)
+
+
+def test_trial_store_trial_count_all() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (4,)
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.trial_count() == 4
+    assert mock_cursor.execute.call_args[0][1] == ("jra",)
+
+
+def test_trial_store_trial_count_by_method() -> None:
+    mock_cursor = MagicMock()
+    mock_cursor.fetchone.return_value = (2,)
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = subject.TrialExplorationStore.__new__(subject.TrialExplorationStore)
+    store._con = mock_conn
+    store._category = "jra"
+    assert store.trial_count("block") == 2
+    assert mock_cursor.execute.call_args[0][1] == ("jra", "block")
+
+
+# ---------------------------------------------------------------------------
+# exploration_method / trial_store wiring
+# ---------------------------------------------------------------------------
+
+
+def test_learner_exploration_method_defaults_to_block_tpe() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        assert learner._exploration_method == "block_tpe"
+        assert learner._trial_store is None
+
+
+def test_learner_exploration_method_custom_stored() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, exploration_method="combined")
+        assert learner._exploration_method == "combined"
+
+
+def test_explore_round_block_tpe_passes_trial_dedup() -> None:
+    store = cast(
+        subject.TrialExplorationStore, MagicMock(spec=subject.TrialExplorationStore)
+    )
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg, trial_store=store)
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=5)
+        assert mock_run.call_args.kwargs["trial_dedup"] is store
+
+
+def test_explore_round_combined_calls_run_combined_exploration() -> None:
+    store = cast(
+        subject.TrialExplorationStore, MagicMock(spec=subject.TrialExplorationStore)
+    )
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, exploration_method="combined", trial_store=store
+        )
+        with (
+            patch("learning.feature_explorer.run_combined_exploration") as mock_comb,
+            patch("learning.continuous_learner.run_exploration") as mock_run,
+        ):
+            learner._explore_round(0, n_trials=7)
+        mock_comb.assert_called_once()
+        mock_run.assert_not_called()
+        kwargs = mock_comb.call_args.kwargs
+        assert kwargs["n_trials"] == 7
+        assert kwargs["params"] is DEFAULT_PARAMS
+        assert kwargs["trial_store"] is store
+
+
+def test_main_forwards_exploration_method(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner, "__init__", _capture_learner_kwargs(captured)
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--exploration-method",
+                "block_tpe",
+            ]
+        )
+
+    assert captured["exploration_method"] == "block_tpe"
+
+
+def test_main_exploration_method_default_is_combined(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner, "__init__", _capture_learner_kwargs(captured)
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["exploration_method"] == "combined"
+
+
+def test_main_creates_and_closes_trial_store_when_log_subgroup(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+    fake_trial = MagicMock()
+    fake_cell = MagicMock()
+
+    with (
+        patch.object(subject, "CellAccuracyStore", return_value=fake_cell),
+        patch.object(subject, "TrialExplorationStore", return_value=fake_trial),
+        patch.object(
+            subject.ContinuousLearner, "__init__", _capture_learner_kwargs(captured)
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+                "--log-subgroup",
+            ]
+        )
+
+    fake_trial.open.assert_called_once()
+    fake_trial.close.assert_called_once()
+    assert captured["trial_store"] is fake_trial
+
+
+def test_main_no_trial_store_when_log_subgroup_disabled(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().write_parquet(parquet_path)
+    registry_path = tmp_path / "reg.duckdb"
+    captured: dict[str, object] = {}
+
+    with (
+        patch.object(
+            subject.ContinuousLearner, "__init__", _capture_learner_kwargs(captured)
+        ),
+        patch.object(subject.ContinuousLearner, "_explore_round"),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet",
+                str(parquet_path),
+                "--category",
+                "jra",
+                "--repo-root",
+                str(tmp_path),
+                "--registry-path",
+                str(registry_path),
+                "--max-rounds",
+                "1",
+            ]
+        )
+
+    assert captured["trial_store"] is None

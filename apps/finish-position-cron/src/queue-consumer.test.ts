@@ -216,6 +216,20 @@ test("calls completeRun with error and retries when response.body is null", asyn
   expect(ackMock).not.toHaveBeenCalled();
 });
 
+test("calls completeRun with error and retries when container DO returns 502", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValue(
+    Response.json({ error: "Container start failed", detail: "timeout" }, { status: 502 }),
+  );
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", racesPredicted: 0 }),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
 test("routes a JRA per-race rescore to the Worker-native consumer (no container)", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
@@ -392,6 +406,29 @@ test("retries a NAR per-race rescore when the container fetch throws", async () 
 test("retries a NAR per-race rescore when the container response body is null", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   stubFetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("retries a NAR per-race rescore when the container DO returns 502", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValue(
+    Response.json({ error: "Container start failed", detail: "timeout" }, { status: 502 }),
+  );
   await handleQueue(
     makeBatch([
       makeMessage({

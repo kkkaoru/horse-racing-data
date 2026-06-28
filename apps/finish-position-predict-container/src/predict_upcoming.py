@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Container entrypoint: daily finish-position prediction for UPCOMING races.
+"""Container entrypoint: daily finish-position prediction for UPCOMING races (N-variant).
 
 This is the heavy orchestration that the Cloudflare Cron Trigger Worker starts
 as a batch container job. It is intentionally thin — every decision lives in the
@@ -518,6 +518,22 @@ def _as_architecture(value: str) -> Architecture:
     raise ValueError(f"unknown base_architecture: {value!r}")
 
 
+@dataclass(frozen=True)
+class VariantModel:
+    """A loaded cell-routing variant: its booster plus its feature contract.
+
+    ``score_races`` builds a ``dict[str, VariantModel]`` keyed by variant name for
+    every non-default variant in the category's routing config, so a race routed
+    to a variant scores against that variant's model, feature order, and
+    architecture. The default variant is served by the already-loaded
+    category-global ``fallback_booster`` and never enters the pool.
+    """
+
+    booster: BoosterLike
+    feature_names: Sequence[str]
+    architecture: Architecture
+
+
 def score_races(
     races: Mapping[str, Sequence[Mapping[str, object]]],
     category: Category,
@@ -535,35 +551,31 @@ def score_races(
     fallback_booster = _load_booster(models_dir, category)
     pool = init_member_pool(models_dir, category)
     cell_router = load_cell_router()
-    base_cell_booster: BoosterLike | None = None
-    base_cell_feature_names: Sequence[str] | None = None
-    base_cell_architecture: Architecture | None = None
+    variant_pool: dict[str, VariantModel] = {}
     if cell_router.has_routing(category):
         routing_config = cell_router.routing_for(category)
-        base_cell_architecture = _as_architecture(routing_config.base_architecture)
-        base_model_path = models_dir / build_base_model_r2_key(
-            category, routing_config.base_model_version, MODEL_FILE_NAME
-        )
-        if routing_config.base_architecture == "xgboost":
-            from xgboost_adapter import load_xgboost_booster  # bundled in image
-
-            base_cell_booster = load_xgboost_booster(str(base_model_path))
-        else:
-            from catboost_adapter import load_catboost_booster  # bundled in image
-
-            base_cell_booster = load_catboost_booster(str(base_model_path))
-        base_meta_path = models_dir / build_base_model_r2_key(
-            category, routing_config.base_model_version, METADATA_FILE_NAME
-        )
-        base_metadata = json.loads(base_meta_path.read_text(encoding="utf-8"))
-        base_cell_feature_names = list(base_metadata["feature_names"])
-        assert_feature_count(base_cell_feature_names, routing_config.base_feature_count)
-        print(
-            f"[cell-routing] loaded base model category={category} "
-            f"version={routing_config.base_model_version} "
-            f"features={routing_config.base_feature_count}",
-            file=sys.stderr,
-        )
+        for vname, vspec in routing_config.variants.items():
+            if vname == routing_config.default_variant:
+                continue  # the default variant is served by fallback_booster
+            arch = _as_architecture(vspec.architecture)
+            model_path = models_dir / build_base_model_r2_key(
+                category, vspec.model_version, MODEL_FILE_NAME
+            )
+            booster = _load_booster_by_arch(model_path, arch)
+            meta_path = models_dir / build_base_model_r2_key(
+                category, vspec.model_version, METADATA_FILE_NAME
+            )
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            fnames = list(metadata["feature_names"])
+            assert_feature_count(fnames, vspec.feature_count)
+            variant_pool[vname] = VariantModel(
+                booster=booster, feature_names=fnames, architecture=arch
+            )
+            print(
+                f"[cell-routing] loaded variant={vname} category={category} "
+                f"version={vspec.model_version} features={vspec.feature_count}",
+                file=sys.stderr,
+            )
     xgb_etop2_booster: BoosterLike | None = None
     if JRA_ETOP2_ENABLED and category == "jra":
         xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
@@ -575,18 +587,15 @@ def score_races(
         effective_booster = fallback_booster
         effective_feature_names = feature_names
         effective_architecture = architecture_for(category)
-        if (
-            base_cell_booster is not None
-            and base_cell_feature_names is not None
-            and base_cell_architecture is not None
-        ):
+        if variant_pool:
             variant = cell_router.resolve_variant(category, entries)
-            if variant == "base":
-                effective_booster = base_cell_booster
-                effective_feature_names = base_cell_feature_names
-                effective_architecture = base_cell_architecture
+            if variant in variant_pool:
+                vm = variant_pool[variant]
+                effective_booster = vm.booster
+                effective_feature_names = vm.feature_names
+                effective_architecture = vm.architecture
                 print(
-                    f"[cell-routing] race={race_id} category={category} -> base",
+                    f"[cell-routing] race={race_id} category={category} -> {variant}",
                     file=sys.stderr,
                 )
         if xgb_etop2_booster is not None:
@@ -681,15 +690,25 @@ def _predict_category(
     return _score_and_flush_races(database_url, category, models_dir, races)
 
 
-def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
-    model_path = models_dir / build_r2_object_key(category, MODEL_FILE_NAME)
-    if architecture_for(category) == "xgboost":
+def _load_booster_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
+    """Load a booster from ``model_path`` using the right native adapter.
+
+    The XGBoost / CatBoost adapters are imported lazily because they pull in the
+    bundled native libraries; isolating the dispatch here lets the category
+    fallback and every cell-routing variant share one load path (and lets tests
+    patch this single seam without importing the heavy adapters)."""
+    if architecture == "xgboost":
         from xgboost_adapter import load_xgboost_booster  # bundled in image
 
         return load_xgboost_booster(str(model_path))
     from catboost_adapter import load_catboost_booster  # bundled in image
 
     return load_catboost_booster(str(model_path))
+
+
+def _load_booster(models_dir: Path, category: Category) -> BoosterLike:
+    model_path = models_dir / build_r2_object_key(category, MODEL_FILE_NAME)
+    return _load_booster_by_arch(model_path, architecture_for(category))
 
 
 def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:

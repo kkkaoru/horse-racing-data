@@ -162,6 +162,66 @@ test("enqueuePredict omits per-race fields when only raceBango is provided", asy
   });
 });
 
+test("enqueuePredict attaches skipDedup when skipDedup is true", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+    skipDedup: true,
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+    skipDedup: true,
+  });
+});
+
+test("enqueuePredict omits skipDedup when skipDedup is false", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+    skipDedup: false,
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
+test("enqueuePredict omits skipDedup when skipDedup is undefined", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
 test("enqueuePredict multi-category path has no per-race fields", async () => {
   await enqueuePredict({
     daysAhead: 2,

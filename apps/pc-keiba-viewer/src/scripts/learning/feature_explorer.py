@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
 from collections.abc import Callable, Sequence
-from typing import Final, Literal, TypedDict, cast, final
+from typing import Final, Literal, Protocol, TypedDict, cast, final
 
 import optuna
 import polars as pl
@@ -32,6 +33,7 @@ from finish_position_lightgbm import (
     split_walk_forward,
 )
 from finish_position_xgboost import train_xgboost_ranker
+from learning.subgroup_diagnostics import SubgroupMetrics
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -51,6 +53,12 @@ SAMPLER_SEED: Final[int] = 42
 # How many of the registry's best prior trials to feed back into a resumed study so
 # TPE models the known-good region instead of relearning it from random draws.
 DEFAULT_WARM_START_TOP_K: Final[int] = 20
+# Method label recorded with a deduplicated trial so the block-TPE objective's
+# cached scores never collide with forward/backward stepwise entries in a store
+# keyed by (feature_set_hash, method).
+BLOCK_METHOD: Final[str] = "block"
+DEFAULT_STEPWISE_MAX_FEATURES: Final[int] = 50
+DEFAULT_BACKWARD_MIN_FEATURES: Final[int] = 10
 DEFAULT_BACKENDS: Final[tuple[ModelBackend, ...]] = ("lightgbm", "xgboost", "catboost")
 CATEGORY_BACKENDS: Final[dict[str, tuple[ModelBackend, ...]]] = {
     "jra": ("catboost",),
@@ -134,6 +142,223 @@ _ALLOWED_CATEGORICAL: Final[frozenset[str]] = frozenset(CATEGORICAL_FEATURE_COLU
 )
 
 _RELEVANCE_MAP: Final[dict[int, float]] = {1: 3.0, 2: 2.0, 3: 1.0}
+
+FEATURE_GROUPS: Final[dict[str, tuple[str, ...]]] = {
+    "odds": ("tansho_odds", "tansho_ninkijun", "odds_score", "popularity_score"),
+    "jockey": ("jockey_",),
+    "pedigree": ("pedigree_", "dam_sire_", "damsire_", "sire_"),
+    "running_style": ("past_nige_", "past_senkou_", "past_sashi_", "past_oikomi_", "past_dominant_"),
+    "corner": ("corner_pass_", "past_corner_", "horse_distance_corner_", "horse_grade_corner_", "horse_keibajo_corner_", "horse_track_corner_", "last_race_corner_"),
+    "speed": ("speed_index_", "field_strength_"),
+    "similar_race": ("sim_",),
+    "weather": ("venue_precipitation_", "venue_temperature", "venue_wind_", "weather_normalized", "rain_x_", "cold_x_", "wind_x_"),
+    "weight": ("weight_", "zogen_sa", "bataiju"),
+    "race_condition": ("kyori", "kyori_band", "track_code", "grade_code", "track_condition_", "track_bias_", "shusso_tosu", "field_size_", "season_band", "kaisai_month", "babajotai_"),
+    "recent_form": ("recent_", "last_race_", "last_3_", "finish_trend_", "consecutive_race_count", "days_since_last_race", "kohan3f_avg_5"),
+    "career": ("career_", "same_distance_", "same_grade_", "same_keibajo_", "same_track_", "avg_finish", "experience_", "is_grade_race", "place_count_in_grade", "top1_count_in_grade", "rival_count_"),
+    "trainer": ("trainer_",),
+    "horse_identity": ("seibetsu_code", "is_newcomer_race", "umaban_norm", "nar_subclass", "kyoso_joken_code"),
+}
+
+
+def assign_feature_group(col: str) -> str:
+    """Return the group name for a column, or 'other' if no match."""
+    for group_name, prefixes in FEATURE_GROUPS.items():
+        for prefix in prefixes:
+            if col == prefix or col.startswith(prefix):
+                return group_name
+    return "other"
+
+
+def group_features(candidate_features: list[str]) -> dict[str, list[str]]:
+    """Group all candidate features by their semantic group."""
+    groups: dict[str, list[str]] = {}
+    for col in candidate_features:
+        group = assign_feature_group(col)
+        groups.setdefault(group, []).append(col)
+    return groups
+
+
+_IMPORTANCE_ACCUMULATOR: dict[str, list[float]] = {}
+
+
+def compute_feature_importance(
+    df: pl.DataFrame,
+    feature_names: list[str],
+    validation_years: list[int],
+    train_start: str,
+    backends: tuple[ModelBackend, ...],
+) -> dict[str, float]:
+    """Train a model with the given features and return per-feature importance scores.
+
+    Uses CatBoost's get_feature_importance() or XGBoost's get_score().
+    Returns a dict of feature_name -> importance_score (higher = more important).
+    If training fails or no importance data is available, returns an empty dict.
+    """
+    importances: dict[str, float] = {}
+    count = 0
+    for year in validation_years:
+        fold = split_walk_forward(df, train_start, year)
+        if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
+            continue
+        for backend in backends:
+            fold_importances = _extract_fold_importance(fold, feature_names, backend)
+            if fold_importances:
+                for feat, score in fold_importances.items():
+                    importances[feat] = importances.get(feat, 0.0) + score
+                count += 1
+    if count > 0:
+        for feat in importances:
+            importances[feat] /= count
+    return importances
+
+
+def _extract_fold_importance(
+    fold: FoldSplit,
+    feature_names: list[str],
+    backend: ModelBackend,
+) -> dict[str, float]:
+    """Train one fold and extract feature importances from the model."""
+    if backend == "catboost":
+        safe = _model_safe_columns(fold["train_df"])
+        feature_cols = [
+            c for c in feature_names
+            if c not in _EXCLUDED_COLS and c in safe
+        ]
+        if not feature_cols:
+            return {}
+        result = train_catboost_ranker(
+            fold["train_df"], fold["valid_df"], feature_cols, _CB_ARGS,
+        )
+        model = result.get("model")
+        get_importance = getattr(model, "get_feature_importance", None)
+        if get_importance is None:
+            return {}
+        try:
+            raw_importance = get_importance()
+            return dict(zip(feature_cols, (float(v) for v in raw_importance), strict=False))
+        except Exception:
+            return {}
+    if backend == "xgboost":
+        numeric = _numeric_columns(fold["train_df"])
+        feature_cols = [c for c in feature_names if c in numeric]
+        if not feature_cols:
+            return {}
+        model, _ = train_xgboost_ranker(
+            fold["train_df"], fold["valid_df"], feature_cols, _XGB_ARGS,
+        )
+        get_score = getattr(model, "get_score", None)
+        if get_score is None:
+            return {}
+        try:
+            scores: dict[str, float] = get_score(importance_type="gain")
+            return {k: float(v) for k, v in scores.items() if k in feature_names}
+        except Exception:
+            return {}
+    return {}
+
+
+def get_importance_ranked_features(candidate_features: list[str]) -> list[str]:
+    """Return features sorted by accumulated importance (descending).
+
+    Features not in the accumulator are sorted to the end.
+    """
+    def sort_key(col: str) -> float:
+        scores = _IMPORTANCE_ACCUMULATOR.get(col, [])
+        if not scores:
+            return 0.0
+        return sum(scores) / len(scores)
+    return sorted(candidate_features, key=sort_key, reverse=True)
+
+
+def compute_cell_weights_from_accuracy(
+    cell_metrics: list[SubgroupMetrics],
+) -> dict[str, float]:
+    """Inverse-accuracy weighting: underperforming cells get higher weight.
+
+    Cell key is f"{venue}_{surface}_{distance_band}_{class_label}_{season}".
+    Weight = 1 / max(accuracy, 0.01) normalized so mean weight = 1.0.
+    """
+    if not cell_metrics:
+        return {}
+    cell_weights: dict[str, float] = {}
+    for m in cell_metrics:
+        key = f"{m['venue']}_{m['surface']}_{m['distance_band']}_{m['class_label']}_{m['season']}"
+        accuracy = m["top1_accuracy"]
+        cell_weights[key] = 1.0 / max(accuracy, 0.01)
+    mean_weight = sum(cell_weights.values()) / len(cell_weights)
+    for key in cell_weights:
+        cell_weights[key] /= mean_weight
+    return cell_weights
+
+
+def weighted_ndcg_at_3(
+    valid_df: pl.DataFrame, cell_weights: dict[str, float]
+) -> float:
+    """NDCG@3 with per-race cell-based weighting."""
+    if valid_df.is_empty():
+        return 0.0
+
+    required_cols = {"keibajo_code", "track_code", "kyori"}
+    available = set(valid_df.columns)
+    if not required_cols.issubset(available):
+        return _ndcg_at_3_from_valid_df(valid_df)
+
+    dcg = (
+        valid_df.drop_nulls(subset=["predicted_rank", "finish_position"])
+        .with_columns(
+            _slot=pl.col("predicted_rank").rank("ordinal").over("race_id")
+        )
+        .filter(pl.col("_slot") <= 3)
+        .with_columns(
+            _contrib=_relevance_expr(pl.col("finish_position"))
+            * _discount_expr(pl.col("_slot"))
+        )
+        .group_by("race_id")
+        .agg(pl.col("_contrib").sum().alias("dcg"))
+    )
+    ideal = (
+        valid_df.drop_nulls(subset=["finish_position"])
+        .with_columns(_rel=_relevance_expr(pl.col("finish_position")))
+        .with_columns(
+            _slot=pl.col("_rel").rank("ordinal", descending=True).over("race_id")
+        )
+        .filter(pl.col("_slot") <= 3)
+        .with_columns(_contrib=pl.col("_rel") * _discount_expr(pl.col("_slot")))
+        .group_by("race_id")
+        .agg(pl.col("_contrib").sum().alias("ideal_dcg"))
+    )
+
+    race_cells = (
+        valid_df.select(["race_id", "keibajo_code", "track_code", "kyori"])
+        .unique(subset=["race_id"])
+        .with_columns(
+            _cell_key=pl.concat_str(
+                [pl.col("keibajo_code").cast(pl.Utf8),
+                 pl.col("track_code").cast(pl.Utf8),
+                 pl.col("kyori").cast(pl.Utf8)],
+                separator="_"
+            )
+        )
+        .select(["race_id", "_cell_key"])
+    )
+
+    per_race = (
+        ideal.join(dcg, on="race_id", how="left")
+        .filter(pl.col("ideal_dcg") > 0.0)
+        .with_columns(_ndcg=pl.col("dcg").fill_null(0.0) / pl.col("ideal_dcg"))
+        .join(race_cells, on="race_id", how="left")
+    )
+    if per_race.is_empty():
+        return 0.0
+
+    keys = per_race["_cell_key"].to_list()
+    ndcg_values = per_race["_ndcg"].to_list()
+    weights = [cell_weights.get(str(k), 1.0) for k in keys]
+    total_weight = sum(weights)
+    weighted_sum = sum(n * w for n, w in zip(ndcg_values, weights, strict=False))
+    return weighted_sum / total_weight
+
 
 # DCG@3 position discounts 1/log2(rank+1) for ranks 1, 2, 3 — constant per race,
 # so precompute once instead of recomputing log2 per element on every race.
@@ -541,6 +766,122 @@ def evaluate_feature_set(
     return sum(ndcg_scores) / len(ndcg_scores)
 
 
+def run_forward_selection(
+    df: pl.DataFrame,
+    candidate_features: list[str],
+    validation_years: list[int],
+    train_start: str,
+    params: TrainingParams,
+    backends: tuple[ModelBackend, ...],
+    max_features: int = DEFAULT_STEPWISE_MAX_FEATURES,
+    importance_scores: dict[str, float] | None = None,
+) -> list[str]:
+    """Greedily grow a feature set, keeping each candidate only if it lifts NDCG@3.
+
+    Candidates are visited in descending importance order when ``importance_scores``
+    is given, so the strongest columns are admitted first; otherwise the input order
+    is used. The set stops growing at ``max_features`` columns.
+    """
+    ordered = (
+        sorted(candidate_features, key=lambda c: importance_scores.get(c, 0.0), reverse=True)
+        if importance_scores is not None
+        else list(candidate_features)
+    )
+    selected: list[str] = []
+    best_ndcg = 0.0
+    for candidate in ordered:
+        if len(selected) >= max_features:
+            break
+        trial_set = [*selected, candidate]
+        ndcg = evaluate_feature_set(
+            df, trial_set, validation_years, train_start, params, backends
+        )
+        if ndcg > best_ndcg:
+            selected = trial_set
+            best_ndcg = ndcg
+    return selected
+
+
+def run_backward_elimination(
+    df: pl.DataFrame,
+    feature_names: list[str],
+    validation_years: list[int],
+    train_start: str,
+    params: TrainingParams,
+    backends: tuple[ModelBackend, ...],
+    min_features: int = DEFAULT_BACKWARD_MIN_FEATURES,
+    importance_scores: dict[str, float] | None = None,
+) -> list[str]:
+    """Drop features one at a time while NDCG@3 holds, pruning redundant columns.
+
+    Features are tried lowest-importance first when ``importance_scores`` is given so
+    the weakest are removed before the rest, and a removal is kept whenever the score
+    does not fall. Elimination stops once ``min_features`` columns remain.
+    """
+    selected = list(feature_names)
+    best_ndcg = evaluate_feature_set(
+        df, selected, validation_years, train_start, params, backends
+    )
+    order = (
+        sorted(feature_names, key=lambda c: importance_scores.get(c, 0.0))
+        if importance_scores is not None
+        else list(feature_names)
+    )
+    for feature in order:
+        if len(selected) <= min_features:
+            break
+        trial_set = [c for c in selected if c != feature]
+        ndcg = evaluate_feature_set(
+            df, trial_set, validation_years, train_start, params, backends
+        )
+        if ndcg >= best_ndcg:
+            selected = trial_set
+            best_ndcg = ndcg
+    return selected
+
+
+def _feature_set_hash(feature_names: list[str]) -> str:
+    """Order-independent content hash of a feature set, used as a dedup cache key.
+
+    Sorting before serialising makes the hash invariant to selection order, so two
+    trials that pick the same columns in a different sequence collide and share one
+    cached NDCG instead of retraining.
+    """
+    canonical = json.dumps(sorted(feature_names), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class TrialDeduplicator(Protocol):
+    """Cache of already-evaluated feature sets, keyed by (hash, method).
+
+    A store implementing this lets the objective skip retraining a feature set it
+    has already scored under the same exploration method — the dominant cost in a
+    feature search is the GBDT fit, so a hit returns in microseconds.
+    """
+
+    def get_cached_ndcg(self, feature_set_hash: str, method: str) -> float | None: ...
+    def record_trial(
+        self, feature_set_hash: str, method: str, ndcg: float, feature_names: list[str]
+    ) -> None: ...
+
+
+def importance_to_vector(
+    importance: dict[str, float],
+    all_features: list[str],
+) -> list[float]:
+    """Convert sparse importance dict to dense vector aligned with all_features order."""
+    return [importance.get(f, 0.0) for f in sorted(all_features)]
+
+
+def feature_mask_to_vector(
+    selected: list[str],
+    all_features: list[str],
+) -> list[bool]:
+    """Convert feature selection to boolean vector aligned with all_features order."""
+    selected_set = set(selected)
+    return [f in selected_set for f in sorted(all_features)]
+
+
 def build_objective(
     df: pl.DataFrame,
     candidate_features: list[str],
@@ -552,6 +893,8 @@ def build_objective(
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
     xgb_args: argparse.Namespace | None = None,
     cb_args: argparse.Namespace | None = None,
+    co_optimize_hp: bool = False,
+    trial_dedup: TrialDeduplicator | None = None,
 ) -> FeatureObjective:
     fold_plans: list[_FoldPlan] = []
     for year in validation_years:
@@ -572,20 +915,67 @@ def build_objective(
     }
 
     def objective(trial: optuna.Trial) -> float:
-        feature_mask = {
-            col: trial.suggest_categorical(f"use_{col}", [True, False])
-            for col in candidate_features
-        }
+        grouped = group_features(candidate_features)
+        feature_mask: dict[str, bool] = {}
+        for group_name, group_cols in sorted(grouped.items()):
+            group_active = trial.suggest_categorical(f"group_{group_name}", [True, False])
+            if group_active:
+                for col in group_cols:
+                    feature_mask[col] = trial.suggest_categorical(f"use_{col}", [True, False])
+            else:
+                for col in group_cols:
+                    feature_mask[col] = False
         selected = [col for col, keep in feature_mask.items() if keep]
         if len(selected) < MIN_FEATURES:
             return 0.0
+        feature_set_hash: str | None = None
+        if trial_dedup is not None:
+            feature_set_hash = _feature_set_hash(selected)
+            cached = trial_dedup.get_cached_ndcg(feature_set_hash, BLOCK_METHOD)
+            if cached is not None:
+                trial.set_user_attr("promoted", False)
+                return cached
         feature_set = set(selected)
+        if co_optimize_hp:
+            hp_learning_rate = trial.suggest_float("hp_learning_rate", 0.01, 0.1, log=True)
+            hp_depth = trial.suggest_int("hp_depth", 4, 8)
+            hp_l2 = trial.suggest_float("hp_l2_reg", 0.1, 10.0, log=True)
+            hp_iterations = trial.suggest_categorical("hp_iterations", [150, 300, 500])
+            trial_xgb_args = argparse.Namespace(
+                learning_rate=hp_learning_rate,
+                max_depth=hp_depth,
+                min_child_weight=1,
+                reg_lambda=hp_l2,
+                seed=42,
+                num_rounds=hp_iterations,
+                early_stopping_rounds=50,
+                relevance_rank1=3,
+                relevance_rank2=2,
+                relevance_rank3=1,
+                presorted=True,
+            )
+            trial_cb_args = argparse.Namespace(
+                learning_rate=hp_learning_rate,
+                depth=hp_depth,
+                l2_leaf_reg=hp_l2,
+                seed=42,
+                iterations=hp_iterations,
+                early_stopping_rounds=50,
+                relevance_rank1=3,
+                relevance_rank2=2,
+                relevance_rank3=1,
+                no_cat_features=False,
+                presorted=True,
+            )
+        else:
+            trial_xgb_args = xgb_args
+            trial_cb_args = cb_args
         ndcg_scores: list[float] = []
         for step, plan in enumerate(fold_plans):
             fold_with_features = plan.select(feature_set)
             fold_scores: list[float] = []
             for backend in backends:
-                score = run_fold_with_backend(fold_with_features, backend, params, xgb_args, cb_args)
+                score = run_fold_with_backend(fold_with_features, backend, params, trial_xgb_args, trial_cb_args)
                 if score is not None:
                     fold_scores.append(score)
             if fold_scores:
@@ -599,6 +989,8 @@ def build_objective(
             # maybe_promote call below.
             del fold_with_features
         ndcg = sum(ndcg_scores) / len(ndcg_scores) if ndcg_scores else 0.0
+        if trial_dedup is not None and feature_set_hash is not None:
+            trial_dedup.record_trial(feature_set_hash, BLOCK_METHOD, ndcg, selected)
         trial_id = f"{study_name}_trial_{trial.number}"
         active_ndcg = active_state["ndcg"]
         delta_pp = (ndcg - active_ndcg) * 100
@@ -656,10 +1048,17 @@ def _mask_to_params(
     distribution = CategoricalDistribution([True, False])
     params: dict[str, bool] = {}
     distributions: dict[str, BaseDistribution] = {}
-    for col in candidate_features:
-        key = f"use_{col}"
-        params[key] = col in selected
-        distributions[key] = distribution
+    grouped = group_features(list(candidate_features))
+    for group_name, group_cols in sorted(grouped.items()):
+        group_key = f"group_{group_name}"
+        group_has_selected = any(col in selected for col in group_cols)
+        params[group_key] = group_has_selected
+        distributions[group_key] = distribution
+        if group_has_selected:
+            for col in group_cols:
+                key = f"use_{col}"
+                params[key] = col in selected
+                distributions[key] = distribution
     return params, distributions
 
 
@@ -752,7 +1151,9 @@ def run_exploration(
     per_trial_timeout_s: float | None = None,
     warm_start: bool = True,
     enqueue_subsets: Sequence[set[str]] | None = None,
+    co_optimize_hp: bool = False,
     screening: bool = False,
+    trial_dedup: TrialDeduplicator | None = None,
 ) -> list[ExplorationResult]:
     """Run one Optuna feature-selection study and return its scored trials.
 
@@ -779,6 +1180,8 @@ def run_exploration(
         backends,
         xgb_args=screen_xgb,
         cb_args=screen_cb,
+        co_optimize_hp=co_optimize_hp,
+        trial_dedup=trial_dedup,
     )
     study = optuna.create_study(
         direction="maximize",
@@ -828,3 +1231,80 @@ def run_exploration(
             )
         )
     return results
+
+
+def run_combined_exploration(
+    df: pl.DataFrame,
+    registry: FeatureRegistry,
+    n_trials: int,
+    validation_years: list[int],
+    train_start: str,
+    params: TrainingParams,
+    study_name: str,
+    backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+    stepwise_max_features: int = DEFAULT_STEPWISE_MAX_FEATURES,
+    trial_store: object | None = None,
+    co_optimize_hp: bool = False,
+    storage: str | None = None,
+    n_jobs: int = 1,
+    study_timeout_s: float | None = None,
+    per_trial_timeout_s: float | None = None,
+    warm_start: bool = True,
+    screening: bool = False,
+) -> list[ExplorationResult]:
+    """Stepwise warm-start followed by block TPE exploration.
+
+    Importance is read off the registry's current best (only when one exists, since a
+    cold registry has no model to rank columns by). Forward selection grows an
+    importance-guided set, backward elimination prunes its redundant columns, and the
+    survivors are enqueued so the TPE block search spends its budget refining that
+    proven mask first. ``trial_store`` is threaded through as the dedup cache.
+    """
+    candidate_features = resolve_feature_columns(list(df.columns))
+    active = registry.get_active_entry()
+    importance_scores = (
+        compute_feature_importance(
+            df, candidate_features, validation_years, train_start, backends
+        )
+        if active is not None
+        else None
+    )
+    forward = run_forward_selection(
+        df,
+        candidate_features,
+        validation_years,
+        train_start,
+        params,
+        backends,
+        max_features=stepwise_max_features,
+        importance_scores=importance_scores,
+    )
+    pruned = run_backward_elimination(
+        df,
+        forward,
+        validation_years,
+        train_start,
+        params,
+        backends,
+        importance_scores=importance_scores,
+    )
+    enqueue = [set(pruned)] if pruned else None
+    return run_exploration(
+        df,
+        registry,
+        n_trials=n_trials,
+        validation_years=validation_years,
+        train_start=train_start,
+        params=params,
+        study_name=study_name,
+        storage=storage,
+        backends=backends,
+        n_jobs=n_jobs,
+        study_timeout_s=study_timeout_s,
+        per_trial_timeout_s=per_trial_timeout_s,
+        warm_start=warm_start,
+        enqueue_subsets=enqueue,
+        co_optimize_hp=co_optimize_hp,
+        screening=screening,
+        trial_dedup=cast("TrialDeduplicator | None", trial_store),
+    )

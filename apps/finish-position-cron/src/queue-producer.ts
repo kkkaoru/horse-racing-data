@@ -16,6 +16,7 @@ interface EnqueuePredictParams {
   // Absent on the legacy per-category path, keeping those messages unchanged.
   keibajoCode?: string;
   raceBango?: string;
+  skipDedup?: boolean;
 }
 
 // Spread the per-race target only when both fields are defined so the
@@ -41,6 +42,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
         runDateIso: params.runDate,
         runYmd: params.runYmd,
         ...perRaceTarget,
+        ...(params.skipDedup ? { skipDedup: true } : {}),
       } satisfies PredictQueueMessage),
     ),
   );

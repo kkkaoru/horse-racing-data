@@ -50,7 +50,7 @@ const buildKey = (runYmd: string, category: string): string =>
 const buildRaceKey = (params: ClaimRaceParams): string =>
   `${RESCORE_KEY_PREFIX}:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`;
 
-const TERMINAL_STATUSES = new Set(["started", "success"]);
+const TERMINAL_STATUSES = new Set(["success"]);
 
 export class PredictRunCoordinator extends DurableObject<Env> {
   constructor(state: DurableObjectState, env: Env) {
