@@ -166,6 +166,35 @@ test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDa
   );
 });
 
+test("calls stub.fetch with keibajoCode and raceBango in URL for per-race full mode", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
+  );
+});
+
+test("omits keibajoCode and raceBango from URL when absent in message", async () => {
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).not.toContain("keibajoCode");
+  expect(fetchRequest.url).not.toContain("raceBango");
+});
+
 test("calls stub.fetch with mode=rescore when message has mode rescore using YYYYMMDD", async () => {
   await handleQueue(
     makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),

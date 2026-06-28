@@ -33,7 +33,9 @@ const CONTAINER_PER_RACE_CATEGORIES = new Set<string>([NAR_CATEGORY, BAN_EI_CATE
 interface PredictUrlParams {
   category: string;
   daysAhead: number;
+  keibajoCode?: string;
   mode: string;
+  raceBango?: string;
   // runYmd is the YYYYMMDD date string required by the container /predict endpoint.
   runYmd: string;
 }
@@ -62,6 +64,8 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
     mode: params.mode,
     runDate: params.runYmd,
   });
+  if (params.keibajoCode) searchParams.set("keibajoCode", params.keibajoCode);
+  if (params.raceBango) searchParams.set("raceBango", params.raceBango);
   return `${PREDICT_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
@@ -169,7 +173,7 @@ const processPerRaceRescore = (
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
-  const { category, runYmd, daysAhead, mode } = message.body;
+  const { category, runYmd, daysAhead, mode, keibajoCode, raceBango } = message.body;
   if (!message.body.skipDedup) {
     const claimed = await claimRun({ category, env, runYmd });
     if (!claimed.proceed) {
@@ -183,7 +187,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {
     const response = await stub.fetch(
-      new Request(buildPredictUrl({ category, daysAhead, mode, runYmd })),
+      new Request(buildPredictUrl({ category, daysAhead, keibajoCode, mode, raceBango, runYmd })),
     );
     if (!response.body) throw new Error("Empty response from predict DO");
     if (!response.ok) {
