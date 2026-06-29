@@ -22,6 +22,28 @@ sys.modules["add_near_miss_features"] = subject
 _spec.loader.exec_module(subject)
 
 
+class FakeConn:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, sql: str) -> None:
+        self.statements.append(sql)
+
+
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "05:11",
+        ]
+    )
+    assert args.target_race == "05:11"
+
+
 def test_append_features_sql_excludes_base_meta_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "exclude (kishumei_ryakusho, tansho_ninkijun, shusso_tosu)" in sql
@@ -74,6 +96,52 @@ def _seed_base_parquet(parquet_dir: Path) -> str:
     )
     seed_con.close()
     return f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+
+
+def _seed_base_parquet_without_jockey(parquet_dir: Path) -> str:
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('nar', '2025', '0415', '35', '01', 'horse_a', '20250415', 2025,
+              1200::integer, '1'::varchar),
+            ('nar', '2025', '0415', '35', '01', 'horse_b', '20250415', 2025,
+              1200::integer, '1'::varchar)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, race_date, race_year, kyori, track_code
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    return f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+
+
+def _seed_pg_race_entry_corner_features(con: duckdb.DuckDBPyConnection) -> None:
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('nar', '2025', '0415', '54', '11', 'horse_a', 'PG_JOCKEY_A'::varchar),
+            ('nar', '2025', '0415', '54', '11', 'horse_b', 'PG_JOCKEY_B'::varchar),
+            ('nar', '2025', '0415', '35', '01', 'horse_a', 'PG_JOCKEY_A'::varchar),
+            ('nar', '2025', '0415', '35', '01', 'horse_b', 'PG_JOCKEY_B'::varchar),
+            ('nar', '2025', '0415', '35', '02', 'horse_a', 'OTHER_JOCKEY'::varchar)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, kishumei_ryakusho
+        )
+        """
+    )
 
 
 def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
@@ -222,3 +290,88 @@ def test_append_features_sql_computes_fav_dominance_sql_from_base_cte() -> None:
     assert "fav_pivoted" in sql
     assert "race_favorite_dominance" in sql
     assert "from base" in sql.lower()
+
+
+def test_race_history_focus_filter_sql_unfocused_is_empty() -> None:
+    assert subject.race_history_focus_filter_sql(False) == ""
+
+
+def test_race_history_focus_filter_sql_uses_target_entities_and_pedigree() -> None:
+    sql = subject.race_history_focus_filter_sql(True)
+    assert "target_entities" in sql
+    assert "rec.ketto_toroku_bango" in sql
+    assert "rec.kishumei_ryakusho" in sql
+    assert "horse_pedigree" in sql
+    assert "te.sire_id" in sql
+    assert "te.damsire_id" in sql
+
+
+def test_stage_race_history_focused_appends_entity_filter() -> None:
+    conn = FakeConn()
+    subject.stage_race_history(conn, "20240101", focused_target=True)
+    body = " ".join(conn.statements)
+    assert "from pg.race_entry_corner_features rec" in body
+    assert "rec.race_date >= '20240101'" in body
+    assert "target_entities" in body
+
+
+def test_stage_target_entities_extracts_input_horse_jockey_and_pedigree(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_base_parquet(tmp_path / "input")
+    _seed_pg_race_entry_corner_features(con)
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (
+          values
+            ('horse_a', 'sire_a', 'damsire_a'),
+            ('horse_b', 'sire_b', 'damsire_b')
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    subject.stage_target_entities(con, input_glob)
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, kishumei_ryakusho, sire_id, damsire_id
+        from target_entities
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+    assert rows == [
+        ("horse_a", "PG_JOCKEY_A", "sire_a", "damsire_a"),
+        ("horse_b", "PG_JOCKEY_B", "sire_b", "damsire_b"),
+    ]
+
+
+def test_stage_target_entities_accepts_scoped_input_without_jockey_column(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_base_parquet_without_jockey(tmp_path / "input")
+    _seed_pg_race_entry_corner_features(con)
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (
+          values
+            ('horse_a', 'sire_a', 'damsire_a'),
+            ('horse_b', 'sire_b', 'damsire_b')
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    subject.stage_target_entities(con, input_glob)
+    rows = con.execute(
+        """
+        select ketto_toroku_bango, kishumei_ryakusho, sire_id, damsire_id
+        from target_entities
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+    assert rows == [
+        ("horse_a", "PG_JOCKEY_A", "sire_a", "damsire_a"),
+        ("horse_b", "PG_JOCKEY_B", "sire_b", "damsire_b"),
+    ]

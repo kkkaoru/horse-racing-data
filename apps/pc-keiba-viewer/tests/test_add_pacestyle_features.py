@@ -161,6 +161,22 @@ def test_parse_args_run_date_accepts_yyyymmdd(tmp_path: Path) -> None:
     assert args.run_date == "20260607"
 
 
+def test_parse_args_target_race_accepts_focused_scope(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--category",
+            "jra",
+            "--target-race",
+            "05:11",
+        ]
+    )
+    assert args.target_race == "05:11"
+
+
 def test_build_version_filter_sql_jra_includes_all_known_years() -> None:
     sql = subject.build_version_filter_sql("jra")
     assert "kaisai_nen = '2024'" in sql
@@ -307,12 +323,40 @@ def test_stage_rs_predictions_from_r2_creates_index() -> None:
     assert index_sql == "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
 
 
+def test_target_race_ids_filter_sql_false_is_empty() -> None:
+    assert subject.target_race_ids_filter_sql(False) == ""
+
+
+def test_target_race_ids_filter_sql_true_uses_staged_ids() -> None:
+    sql = subject.target_race_ids_filter_sql(True).format(category="jra")
+    assert "in (select race_id from target_race_ids)" in sql
+    assert "'jra:' || kaisai_nen" in sql
+
+
+def test_stage_rs_predictions_from_r2_focused_filters_to_target_race_ids() -> None:
+    con = MagicMock()
+    subject.stage_rs_predictions_from_r2(
+        con, "jra", "20260607", "pc-keiba-features-archive", focused_target=True
+    )
+    create_sql = con.execute.call_args_list[0].args[0]
+    assert "where true" in create_sql
+    assert "target_race_ids" in create_sql
+
+
 def test_stage_rs_predictions_from_pg_uses_pg_attach_table() -> None:
     con = MagicMock()
     subject.stage_rs_predictions_from_pg(con, "jra")
     create_sql = con.execute.call_args_list[0].args[0]
     assert "from pg.race_running_style_model_predictions" in create_sql
     assert "where source = 'jra'" in create_sql
+
+
+def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids() -> None:
+    con = MagicMock()
+    subject.stage_rs_predictions_from_pg(con, "nar", focused_target=True)
+    create_sql = con.execute.call_args_list[0].args[0]
+    assert "where source = 'nar'" in create_sql
+    assert "target_race_ids" in create_sql
 
 
 def test_stage_rs_predictions_pg_mode_skips_r2_and_attaches_pg(
@@ -332,7 +376,7 @@ def test_stage_rs_predictions_pg_mode_skips_r2_and_attaches_pg(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_pg",
-        lambda c, cat: install_calls.append(f"pg:{cat}"),
+        lambda c, cat, focused=False: install_calls.append(f"pg:{cat}"),
     )
     args = argparse.Namespace(
         rs_source="pg",
@@ -342,6 +386,28 @@ def test_stage_rs_predictions_pg_mode_skips_r2_and_attaches_pg(
     )
     subject.stage_rs_predictions(con, args)
     assert install_calls == ["postgresql://x", "pg:jra"]
+
+
+def test_stage_rs_predictions_pg_mode_forwards_focused_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[tuple[str, bool]] = []
+    con = MagicMock()
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda c, url: None)
+    monkeypatch.setattr(
+        subject,
+        "stage_rs_predictions_from_pg",
+        lambda c, cat, focused=False: captured.append((cat, focused)),
+    )
+    args = argparse.Namespace(
+        rs_source="pg",
+        run_date=None,
+        category="nar",
+        pg_url="postgresql://x",
+        target_race="44:08",
+    )
+    subject.stage_rs_predictions(con, args)
+    assert captured == [("nar", True)]
 
 
 def test_stage_rs_predictions_r2_mode_calls_setup_and_from_r2(
@@ -358,7 +424,7 @@ def test_stage_rs_predictions_r2_mode_calls_setup_and_from_r2(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk: order.append(f"r2:{cat}:{rd}:{bk}"),
+        lambda c, cat, rd, bk, focused=False: order.append(f"r2:{cat}:{rd}:{bk}"),
     )
     monkeypatch.setattr(
         subject,
@@ -385,7 +451,7 @@ def test_stage_rs_predictions_r2_mode_uses_custom_bucket_env(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk: captured.append(bk),
+        lambda c, cat, rd, bk, focused=False: captured.append(bk),
     )
     args = argparse.Namespace(
         rs_source="r2",
@@ -458,12 +524,14 @@ def test_stage_rs_predictions_auto_falls_back_to_pg_when_setup_raises(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_pg",
-        lambda c, cat: order.append(f"pg:{cat}"),
+        lambda c, cat, focused=False: order.append(f"pg:{cat}"),
     )
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk: pytest.fail("r2 loader must NOT run after setup raised"),
+        lambda c, cat, rd, bk, focused=False: pytest.fail(
+            "r2 loader must NOT run after setup raised"
+        ),
     )
     args = argparse.Namespace(
         rs_source="auto",
@@ -493,7 +561,7 @@ def test_stage_rs_predictions_auto_falls_back_to_pg_when_run_date_missing(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_pg",
-        lambda c, cat: order.append(f"pg:{cat}"),
+        lambda c, cat, focused=False: order.append(f"pg:{cat}"),
     )
     args = argparse.Namespace(
         rs_source="auto",
@@ -514,7 +582,7 @@ def test_stage_rs_predictions_auto_uses_r2_when_setup_succeeds(
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk: order.append(f"r2:{cat}:{rd}"),
+        lambda c, cat, rd, bk, focused=False: order.append(f"r2:{cat}:{rd}"),
     )
     monkeypatch.setattr(
         subject,
@@ -607,6 +675,15 @@ def test_main_invokes_stage_rs_predictions_with_args(
     assert seen["rs_source"] == "auto"
     assert seen["run_date"] == "20260607"
     assert seen["wrote"] is True
+
+
+def test_stage_target_race_ids_extracts_input_race_ids(tmp_path: Path) -> None:
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect(":memory:")
+    subject.stage_target_race_ids(con, input_glob, "jra")
+    rows = con.execute("select race_id from target_race_ids").fetchall()
+    con.close()
+    assert rows == [("jra:2024:0101:01:1",)]
 
 
 # ---------------------------------------------------------------------------

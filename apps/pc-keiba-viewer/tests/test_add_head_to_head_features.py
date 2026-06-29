@@ -31,6 +31,20 @@ def test_parse_args_requires_input_output(tmp_path: Path) -> None:
     assert args.output_dir == tmp_path / "out"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "30:01",
+        ]
+    )
+    assert args.target_race == "30:01"
+
+
 def test_append_features_sql_contains_h2h_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet")
     assert "h2h_encounter_count" in sql
@@ -81,6 +95,28 @@ def test_stage_target_races_loads_distinct_race_keys(tmp_path: Path) -> None:
     ).fetchall()
     assert len(rows) == 1
     assert rows[0] == ("nar", "2026", "0619", "30", "01")
+
+
+def test_stage_target_horses_loads_distinct_input_horses(tmp_path: Path) -> None:
+    input_glob = _make_target_parquet(tmp_path)
+    con = duckdb.connect(":memory:")
+    subject.stage_target_horses(con, input_glob)
+    rows = con.execute(
+        "select source, ketto_toroku_bango from target_horses"
+    ).fetchall()
+    con.close()
+    assert rows == [("nar", "HORSE1")]
+
+
+def test_target_pair_filter_sql_focused_uses_target_horses() -> None:
+    sql = subject.target_pair_filter_sql(True)
+    assert "target_horses" in sql
+    assert "h1.ketto_toroku_bango" in sql
+    assert "h2.ketto_toroku_bango" in sql
+
+
+def test_target_pair_filter_sql_unfocused_is_empty() -> None:
+    assert subject.target_pair_filter_sql(False) == ""
 
 
 def test_stage_target_races_multiple_races(tmp_path: Path) -> None:

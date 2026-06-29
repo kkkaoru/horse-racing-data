@@ -93,6 +93,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already race-scoped; this restricts history staging to target horses."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -192,8 +201,23 @@ def stage_base_input(
     )
 
 
+def race_history_focus_filter_sql(focused_target: bool) -> str:
+    if focused_target:
+        return """
+          and exists (
+            select 1 from base_input bi
+            where bi.source = rec.source
+              and bi.ketto_toroku_bango = rec.ketto_toroku_bango
+          )
+        """
+    return ""
+
+
 def stage_race_history(
-    con: duckdb.DuckDBPyConnection, from_date: str, category: str
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    category: str,
+    focused_target: bool = False,
 ) -> None:
     """horse past races + soha_time + kyori + bataiju + futan + barei + finish_position.
 
@@ -205,6 +229,7 @@ def stage_race_history(
     se_table = se_table_for(category)
     src_filter = source_filter_sql(category)
     bataiju_sql = safe_bataiju_cast_sql("se")
+    target_filter = race_history_focus_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -235,6 +260,7 @@ def stage_race_history(
           and rec.kyori > 0
           and rec.soha_time is not null
           and {src_filter}
+          {target_filter}
         """
     )
     con.execute(
@@ -431,7 +457,9 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_base_input(con, input_glob, args.category)
-    stage_race_history(con, args.from_date, args.category)
+    stage_race_history(
+        con, args.from_date, args.category, args.target_race is not None
+    )
     stage_race_relative(con)
     stage_history_normalized(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

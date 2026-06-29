@@ -111,6 +111,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "per-day Parquet shard to glob. Required when rs-source=r2."
         ),
     )
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already race-scoped; this switches PG/R2 staging to those race IDs."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -138,8 +147,34 @@ def build_version_filter_sql(category: str) -> str:
     return " or ".join(clauses)
 
 
+def stage_target_race_ids(
+    con: duckdb.DuckDBPyConnection, input_glob: str, category: str
+) -> None:
+    """Stage race IDs present in the input parquet for focused target-race mode."""
+    con.execute(
+        f"""
+        create or replace temp table target_race_ids as
+        select distinct
+          '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
+            || ':' || keibajo_code || ':' || race_bango as race_id
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        """
+    )
+    con.execute("create index target_race_ids_idx on target_race_ids (race_id)")
+
+
+def target_race_ids_filter_sql(focused_target: bool) -> str:
+    if focused_target:
+        return (
+            "and ('{category}:' || kaisai_nen || ':' || kaisai_tsukihi"
+            " || ':' || keibajo_code || ':' || race_bango)"
+            " in (select race_id from target_race_ids)"
+        )
+    return ""
+
+
 def stage_rs_predictions_from_pg(
-    con: duckdb.DuckDBPyConnection, category: str
+    con: duckdb.DuckDBPyConnection, category: str, focused_target: bool = False
 ) -> None:
     """Build a ``rs_preds`` temp keyed by (race_id, ketto_toroku_bango).
 
@@ -151,6 +186,7 @@ def stage_rs_predictions_from_pg(
     probability vector.
     """
     version_filter = build_version_filter_sql(category)
+    target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
     con.execute(
         f"""
         create or replace temp table rs_preds as
@@ -166,6 +202,7 @@ def stage_rs_predictions_from_pg(
         from pg.race_running_style_model_predictions
         where source = '{category}'
           and ({version_filter})
+          {target_filter}
         """
     )
     con.execute(
@@ -203,6 +240,7 @@ def stage_rs_predictions_from_r2(
     category: str,
     run_date_ymd: str,
     bucket: str,
+    focused_target: bool = False,
 ) -> None:
     """Build the ``rs_preds`` temp from the per-day R2 Parquet shard.
 
@@ -219,6 +257,7 @@ def stage_rs_predictions_from_r2(
         f"s3://{bucket}/{R2_PREDICTIONS_PREFIX}/"
         f"{yyyy}/{mm}/{dd}/{category}/*.parquet"
     )
+    target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
     con.execute(
         f"""
         create or replace temp table rs_preds as
@@ -232,6 +271,8 @@ def stage_rs_predictions_from_r2(
           cast(p_oikomi as double) as rs_p_oikomi,
           cast(predicted_class as integer) as rs_predicted_class
         from read_parquet('{glob}')
+        where true
+          {target_filter}
         """
     )
     con.execute(
@@ -326,6 +367,7 @@ def stage_rs_predictions(
     not block today's predictions. For ``pg`` the R2 path is never touched.
     """
     bucket = os.environ.get("R2_BUCKET", R2_BUCKET_DEFAULT)
+    focused_target = getattr(args, "target_race", None) is not None
     if args.rs_source in ("r2", "auto"):
         try:
             if not args.run_date:
@@ -333,13 +375,15 @@ def stage_rs_predictions(
                     "--run-date YYYYMMDD is required when --rs-source=r2 or auto"
                 )
             setup_r2_duckdb_secret(con)
-            stage_rs_predictions_from_r2(con, args.category, args.run_date, bucket)
+            stage_rs_predictions_from_r2(
+                con, args.category, args.run_date, bucket, focused_target
+            )
             return
         except Exception:
             if args.rs_source == "r2":
                 raise
     install_and_attach_pg(con, args.pg_url)
-    stage_rs_predictions_from_pg(con, args.category)
+    stage_rs_predictions_from_pg(con, args.category, focused_target)
 
 
 def main() -> None:
@@ -349,6 +393,8 @@ def main() -> None:
     con.execute("PRAGMA enable_object_cache=true")
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
+    if args.target_race is not None:
+        stage_target_race_ids(con, input_glob, args.category)
     stage_rs_predictions(con, args)
     write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
     con.close()

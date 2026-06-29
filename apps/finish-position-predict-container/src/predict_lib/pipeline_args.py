@@ -273,6 +273,21 @@ SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
     "ban-ei": "ban-ei",
 }
 
+# Scripts whose CLI accepts ``--target-race`` as a focused-mode switch. The
+# value is the same ``keibajo_code:race_bango`` used by the base DuckDB builder;
+# the layer scripts use their already target-scoped input parquet to derive the
+# exact horses/entities and keep historical context for those entities only.
+SCRIPTS_WITH_TARGET_RACE_SCOPE: Final[frozenset[str]] = frozenset(
+    {
+        HEAD_TO_HEAD_SCRIPT,
+        NEAR_MISS_SCRIPT,
+        PACESTYLE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
+    }
+)
+
 
 def build_base_argv(
     builder_path: Path,
@@ -367,6 +382,13 @@ def _pacestyle_category_args(script: str, category: Category) -> list[str]:
     return []
 
 
+def _pacestyle_run_date_args(script: str, target_date: str | None) -> list[str]:
+    """``--run-date`` for pacestyle's per-day running-style parquet source."""
+    if script == PACESTYLE_SCRIPT and target_date is not None:
+        return ["--run-date", target_date]
+    return []
+
+
 def _relationship_category_args(script: str, category: Category) -> list[str]:
     """``--category`` for the relationship layer (jvd_se vs nvd_se source filter)."""
     if script == RELATIONSHIP_SCRIPT:
@@ -415,6 +437,13 @@ def _sire_venue_bias_category_args(script: str, category: Category) -> list[str]
     return ["--category", SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY[category]]
 
 
+def _target_race_scope_args(script: str, target_race: str | None) -> list[str]:
+    """``--target-race`` for scripts that support focused PG staging."""
+    if target_race is not None and script in SCRIPTS_WITH_TARGET_RACE_SCOPE:
+        return ["--target-race", target_race]
+    return []
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -422,6 +451,8 @@ def build_layer_argv(
     input_dir: Path,
     output_dir: Path,
     database_url: str,
+    target_date: str | None = None,
+    target_race: str | None = None,
 ) -> list[str]:
     """Argv for one layer script (input/output dirs + only its declared flags).
 
@@ -433,6 +464,10 @@ def build_layer_argv(
     * the lineage layer additionally takes ``--config``;
     * the trainer + pacestyle + relationship layers additionally take
       ``--category``;
+    * the pacestyle layer additionally takes ``--run-date`` in production
+      target-date mode so it can prefer the per-day running-style parquet shard;
+    * focused single-race builds pass ``--target-race`` only to scripts that use
+      it to restrict their PG staging to input-derived target entities;
     * the course-numerical layer additionally takes ``--course-lookup``;
     * the similar-race layer additionally takes ``--category`` plus the DuckDB
       ``--threads`` / ``--memory-limit`` resource caps.
@@ -452,11 +487,13 @@ def build_layer_argv(
         + _config_args(script, category, layer_dir)
         + _trainer_category_args(script, category)
         + _pacestyle_category_args(script, category)
+        + _pacestyle_run_date_args(script, target_date)
         + _relationship_category_args(script, category)
         + _course_lookup_args(script)
         + _exotic_category_args(script, category)
         + _similar_race_args(script, category)
         + _sire_venue_bias_category_args(script, category)
+        + _target_race_scope_args(script, target_race)
     )
 
 

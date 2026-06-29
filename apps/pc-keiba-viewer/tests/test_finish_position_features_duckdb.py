@@ -264,6 +264,17 @@ def test_upcoming_target_union_sql_requires_numeric_umaban():
     assert "try_cast(nullif(trim(se.umaban), '') as int) is not null" in sql
 
 
+def test_upcoming_target_union_sql_target_race_filters_direct_source_rows():
+    sql = subject.upcoming_target_union_sql(
+        "nar",
+        "20260629",
+        "20260701",
+        ("35", "01"),
+    )
+    assert "se.keibajo_code = '35'" in sql
+    assert "se.race_bango = '01'" in sql
+
+
 def test_upcoming_target_union_sql_nar_excludes_ban_ei_keibajo():
     sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
     assert "pg.nvd_se se" in sql
@@ -307,6 +318,21 @@ def test_build_rec_select_sql_ban_ei_with_upcoming_window_uses_ban_ei_history():
     assert "from pg.nvd_se se" in sql
     assert "se.keibajo_code = '83'" in sql
     assert "_rec_priority" in sql
+
+
+def test_build_target_race_entities_sql_filters_to_target_race_and_category():
+    sql = subject.build_target_race_entities_sql(
+        "nar",
+        "20260629",
+        "20260701",
+        ("20260629", "20260701"),
+        ("35", "01"),
+    )
+    assert "create or replace temp table target_race_entities" in sql
+    assert "target_rec.race_date between '20260629' and '20260701'" in sql
+    assert "target_rec.source = 'nar'" in sql
+    assert "target_rec.keibajo_code = '35'" in sql
+    assert "target_rec.race_bango = '01'" in sql
 
 
 def test_jockey_cte_filters_on_kishumei_ryakusho():
@@ -2442,6 +2468,19 @@ def test_compute_stage_hash_changes_with_extra() -> None:
     assert without != with_dir
 
 
+def test_compute_stage_hash_changes_with_target_race_extra() -> None:
+    broad = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
+    scoped = subject.compute_stage_hash(
+        "source",
+        "jra",
+        "20200101",
+        "20201231",
+        [2020],
+        target_race_extra="35:01",
+    )
+    assert broad != scoped
+
+
 def test_compute_stage_hash_differs_per_stage() -> None:
     source = subject.compute_stage_hash("source", "jra", "20200101", "20201231", [2020])
     target = subject.compute_stage_hash("target", "jra", "20200101", "20201231", [2020])
@@ -3727,39 +3766,66 @@ def test_spill_after_pedigree_is_just_pedigree_features() -> None:
     assert subject.SPILL_AFTER_PEDIGREE == ("pedigree_features",)
 
 
-# ---------------------------------------------------------------------------
-# _build_horse_filter_from_rec
-# ---------------------------------------------------------------------------
+def test_sql_literal_escapes_single_quote() -> None:
+    assert subject.sql_literal("O'Brien") == "'O''Brien'"
 
 
-def test_build_horse_filter_from_rec_returns_filter_when_rec_has_horses() -> None:
+def test_target_race_filter_sql_uses_alias_and_literals() -> None:
+    result = subject.target_race_filter_sql("se", ("35", "01"))
+    assert result == "se.keibajo_code = '35' and se.race_bango = '01'"
+
+
+def test_target_race_hash_extra_formats_none_and_value() -> None:
+    assert subject.target_race_hash_extra(None) == ""
+    assert subject.target_race_hash_extra(("35", "01")) == "35:01"
+
+
+def test_build_rec_entity_filter_from_target_race_entities_uses_target_fields() -> None:
     import duckdb
 
     con = duckdb.connect()
     con.execute(
-        "create temp table rec as select * from (values "
-        "('jra', '2020100001'), ('jra', '2020100002'), ('jra', null)"
-        ") as v(source, ketto_toroku_bango)"
+        "create temp table target_race_entities as select * from (values "
+        "('jra', '20260629', 'h-target-1', 'j-target', 't-target'), "
+        "('jra', '20260629', 'h-target-2', null, '')"
+        ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
+        "chokyoshimei_ryakusho)"
     )
-    result = subject._build_horse_filter_from_rec(con)
+    result = subject._build_rec_entity_filter_from_target_race_entities(con)
     con.close()
-    assert "ketto_toroku_bango in (" in result
-    assert "'2020100001'" in result
-    assert "'2020100002'" in result
-    assert result.startswith(" and ")
+    assert "ketto_toroku_bango in ('h-target-1', 'h-target-2')" in result
+    assert "kishumei_ryakusho in ('j-target')" in result
+    assert "chokyoshimei_ryakusho in ('t-target')" in result
 
 
-def test_build_horse_filter_from_rec_returns_empty_when_rec_has_no_horses() -> None:
+def test_build_rec_entity_filter_from_target_race_entities_empty_is_false() -> None:
     import duckdb
 
     con = duckdb.connect()
     con.execute(
-        "create temp table rec as select cast(null as varchar) as ketto_toroku_bango, "
-        "cast(null as varchar) as source where false"
+        "create temp table target_race_entities as select "
+        "cast(null as varchar) as ketto_toroku_bango, "
+        "cast(null as varchar) as kishumei_ryakusho, "
+        "cast(null as varchar) as chokyoshimei_ryakusho where false"
     )
-    result = subject._build_horse_filter_from_rec(con)
+    result = subject._build_rec_entity_filter_from_target_race_entities(con)
     con.close()
-    assert result == ""
+    assert result == " and false"
+
+
+def test_build_horse_filter_from_target_race_entities_uses_target_horses_only() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        "create temp table target_race_entities as select * from (values "
+        "('jra', '20260629', 'h-target', 'j-target', 't-target')"
+        ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
+        "chokyoshimei_ryakusho)"
+    )
+    result = subject._build_horse_filter_from_target_race_entities(con)
+    con.close()
+    assert result == " and ketto_toroku_bango in ('h-target')"
 
 
 
@@ -3927,10 +3993,11 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
 
     def fake_stage_rec_table(*args: object, **kwargs: object) -> None:
         con.execute(
-            "create temp table rec as select * from (values "
-            "('jra', '2020100001', '05', '01', '2026', '0628'), "
-            "('nar', '2020100003', '44', '03', '2026', '0628')"
-            ") as v(source, ketto_toroku_bango, keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi)"
+            "create temp table target_race_entities as select * from (values "
+            "('jra', '20260628', '2020100001', 'j-target', 't-target'), "
+            "('jra', '20260628', '2020100002', 'j-other', 't-other')"
+            ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
+            "chokyoshimei_ryakusho)"
         )
 
     def fake_stage_se(
@@ -3977,7 +4044,11 @@ def test_stage_source_tables_passes_entity_filter_when_target_race_set(
     con.close()
     assert all(f != "" for f in captured_se)
     assert all(f != "" for f in captured_um)
-    assert all(f == "" for f in captured_ra)
+    assert all("2020100001" in f for f in captured_se)
+    assert all("2020100002" in f for f in captured_um)
+    assert all("j-target" not in f for f in captured_se)
+    assert all("keibajo_code = '05'" in f for f in captured_ra)
+    assert all("race_bango = '01'" in f for f in captured_ra)
 
 
 def test_stage_source_tables_passes_empty_filter_when_target_race_none(
@@ -4081,6 +4152,58 @@ def test_rec_select_from_ban_ei_uses_pg_dot_without_entity_filter() -> None:
     sql = subject._rec_select_from_ban_ei("20060101", "20260628")
     assert "pg.nvd_se" in sql
     assert "postgres_query" not in sql
+
+
+def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    captured_sql: list[str] = []
+
+    def fake_stage_target_entities(*_args: object, **_kwargs: object) -> None:
+        con.execute(
+            "create temp table target_race_entities as select * from (values "
+            "('nar', '20260629', 'h-target', 'j-target', 't-target')"
+            ") as v(source, race_date, ketto_toroku_bango, kishumei_ryakusho, "
+            "chokyoshimei_ryakusho)"
+        )
+
+    def capture_run(
+        con_inner: duckdb.DuckDBPyConnection,
+        stage: str,
+        sql: str,
+        **_kwargs: object,
+    ) -> None:
+        if stage == "source.rec":
+            captured_sql.append(sql)
+            con_inner.execute(
+                "create temp table rec as select "
+                "'nar' as source, 'h-target' as ketto_toroku_bango, "
+                "'20260629' as race_date, 'j-target' as kishumei_ryakusho, "
+                "'t-target' as chokyoshimei_ryakusho, '35' as keibajo_code"
+            )
+
+    monkeypatch.setattr(subject, "stage_target_race_entities", fake_stage_target_entities)
+    monkeypatch.setattr(subject, "run_staged_sql", capture_run)
+    subject.create_empty_realtime_odds_stub(con)
+    subject.stage_rec_table(
+        con,
+        "20160629",
+        "20260701",
+        "nar",
+        ("20260629", "20260701"),
+        ("35", "01"),
+        target_from="20260629",
+    )
+    con.close()
+    joined = "\n".join(captured_sql)
+    assert "ketto_toroku_bango in ('h-target')" in joined
+    assert "kishumei_ryakusho in ('j-target')" in joined
+    assert "chokyoshimei_ryakusho in ('t-target')" in joined
+    assert "se.keibajo_code = '35'" in joined
+    assert "se.race_bango = '01'" in joined
 
 
 def test_target_race_arg_valid() -> None:

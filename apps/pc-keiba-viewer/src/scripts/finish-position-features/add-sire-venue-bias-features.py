@@ -66,6 +66,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20000101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already race-scoped; this restricts sire history to target sires."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -103,8 +112,31 @@ def _surface_sql(track_code_col: str) -> str:
     )
 
 
+def stage_target_sires(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Stage the sire IDs needed by the scoped input parquet."""
+    con.execute(
+        f"""
+        create or replace temp table target_sires as
+        select distinct hp.sire_id
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) b
+        join horse_pedigree hp on hp.ketto_toroku_bango = b.ketto_toroku_bango
+        where hp.sire_id is not null
+        """
+    )
+    con.execute("create index target_sires_idx on target_sires (sire_id)")
+
+
+def sire_history_focus_filter_sql(focused_target: bool) -> str:
+    if focused_target:
+        return "and exists (select 1 from target_sires ts where ts.sire_id = p.sire_id)"
+    return ""
+
+
 def stage_sire_race_history(
-    con: duckdb.DuckDBPyConnection, from_date: str, category: str
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    category: str,
+    focused_target: bool = False,
 ) -> None:
     """Stage finished race rows joined to their sire, with venue / surface / dist.
 
@@ -112,6 +144,7 @@ def stage_sire_race_history(
     kyori + race_date + finish_position, filtered to the requested category.
     """
     source_value, keibajo_predicate = _category_predicates(category)
+    target_filter = sire_history_focus_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table sire_race_history as
@@ -130,6 +163,7 @@ def stage_sire_race_history(
           and h.finish_position is not null
           and h.ketto_toroku_bango is not null
           and {keibajo_predicate}
+          {target_filter}
         """
     )
     con.execute(
@@ -286,7 +320,11 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_horse_pedigree(con)
-    stage_sire_race_history(con, args.from_date, args.category)
+    if args.target_race is not None:
+        stage_target_sires(con, input_glob)
+    stage_sire_race_history(
+        con, args.from_date, args.category, args.target_race is not None
+    )
     stage_svsd_cumul(con)
     stage_svs_cumul(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

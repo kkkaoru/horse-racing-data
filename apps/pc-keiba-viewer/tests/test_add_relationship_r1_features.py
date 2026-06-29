@@ -74,6 +74,20 @@ def test_parse_args_accepts_all_category(tmp_path: Path) -> None:
     assert args.category == "all"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "05:11",
+        ]
+    )
+    assert args.target_race == "05:11"
+
+
 def test_parse_args_rejects_invalid_category(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         subject.parse_args(
@@ -269,6 +283,30 @@ def test_stage_race_history_uses_nvd_se_for_nar() -> None:
     assert "pg.nvd_se" in body
     assert "pg.jvd_se" not in body
     assert "rec.source = 'nar'" in body
+
+
+def test_race_history_focus_filter_sql_false_is_empty() -> None:
+    assert subject.race_history_focus_filter_sql(False) == ""
+
+
+def test_race_history_focus_filter_sql_true_uses_base_input_horses() -> None:
+    sql = subject.race_history_focus_filter_sql(True)
+    assert "base_input bi" in sql
+    assert "bi.source = rec.source" in sql
+    assert "bi.ketto_toroku_bango = rec.ketto_toroku_bango" in sql
+
+
+def test_stage_race_history_focused_filters_to_base_input_horses() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_race_history(FakeConn(), "20240101", "jra", focused_target=True)
+    body = " ".join(captured)
+    assert "base_input bi" in body
+    assert "bi.ketto_toroku_bango = rec.ketto_toroku_bango" in body
 
 
 def test_stage_race_history_filters_soha_time_and_kyori_for_leak_guard() -> None:

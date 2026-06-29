@@ -122,6 +122,20 @@ def test_parse_args_from_date_override(tmp_path: Path) -> None:
     assert args.from_date == "20150101"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "06:11",
+        ]
+    )
+    assert args.target_race == "06:11"
+
+
 def test_parse_args_accepts_resource_args(tmp_path: Path) -> None:
     args = subject.parse_args(
         [
@@ -296,6 +310,32 @@ def test_class_group_sql_nar_derives_label_from_meisho_in_duckdb() -> None:
     assert by_meisho["Ｂ２"] == "B"
     assert by_meisho["Ｃ２"] == "C"
     assert by_meisho["特別"] == "other"
+
+
+# ── focused target scope ───────────────────────────────────────────────────────
+
+
+def test_stage_target_similarity_scope_reads_input_similarity_keys() -> None:
+    conn = FakeConn()
+    subject.stage_target_similarity_scope(conn, "/tmp/in/race_year=*/*.parquet")
+    body = " ".join(conn.statements)
+    assert "create or replace temp table target_similarity_scope" in body
+    assert "read_parquet('/tmp/in/race_year=*/*.parquet'" in body
+    assert "left(coalesce(track_code, ''), 1)" in body
+    assert "kyori_band" in body
+
+
+def test_similar_history_focus_filter_sql_false_is_empty() -> None:
+    assert subject.similar_history_focus_filter_sql(False) == ""
+
+
+def test_similar_history_focus_filter_sql_true_preserves_level4_dims() -> None:
+    sql = subject.similar_history_focus_filter_sql(True)
+    assert "target_similarity_scope" in sql
+    assert "ts.surface = left(coalesce(rec.track_code, ''), 1)" in sql
+    assert "ts.kyori_band =" in sql
+    assert "rec.race_date <= ts.race_date" in sql
+    assert "- 10" in sql
 
 
 # ── _level_match_predicate ─────────────────────────────────────────────────────
@@ -485,6 +525,14 @@ def test_stage_similar_history_creates_index() -> None:
     assert any("create index similar_history_idx" in s for s in conn.statements)
 
 
+def test_stage_similar_history_focused_uses_target_similarity_scope() -> None:
+    conn = FakeConn()
+    subject.stage_similar_history(conn, "20000101", "jra", focused_target=True)
+    body = " ".join(conn.statements)
+    assert "target_similarity_scope" in body
+    assert "rec.race_date <= ts.race_date" in body
+
+
 # ── stage_target_entities (SQL shape) ──────────────────────────────────────────
 
 
@@ -509,6 +557,25 @@ def test_stage_target_entities_ban_ei_restricts_to_venue_83() -> None:
     subject.stage_target_entities(conn, "20000101", "ban-ei")
     body = " ".join(conn.statements)
     assert "rec.keibajo_code = '83'" in body
+
+
+def test_target_entities_focus_filter_sql_false_is_empty() -> None:
+    assert subject.target_entities_focus_filter_sql(False) == ""
+
+
+def test_target_entities_focus_filter_sql_true_uses_target_races() -> None:
+    sql = subject.target_entities_focus_filter_sql(True)
+    assert "target_races tr" in sql
+    assert "tr.keibajo_code = rec.keibajo_code" in sql
+    assert "tr.race_bango = rec.race_bango" in sql
+
+
+def test_stage_target_entities_focused_filters_to_target_races() -> None:
+    conn = FakeConn()
+    subject.stage_target_entities(conn, "20000101", "jra", focused_target=True)
+    body = " ".join(conn.statements)
+    assert "target_races tr" in body
+    assert "tr.race_bango = rec.race_bango" in body
 
 
 # ── append_features_sql ────────────────────────────────────────────────────────

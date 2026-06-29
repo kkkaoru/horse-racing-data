@@ -17,6 +17,7 @@ from predict_lib.pipeline_args import (
     RELATIONSHIP_SCRIPT,
     SCRIPTS_WITH_FROM_DATE,
     SCRIPTS_WITH_PG_URL,
+    SCRIPTS_WITH_TARGET_RACE_SCOPE,
     SIMILAR_RACE_CATEGORY_BY_CATEGORY,
     SIMILAR_RACE_MEMORY_LIMIT,
     SIMILAR_RACE_SCRIPT,
@@ -753,6 +754,71 @@ def test_build_base_argv_target_race_none_same_as_omitted() -> None:
         BUILDER, "nar", "20260628", 0, URL, Path("/tmp/base"), target_race=None
     )
     assert argv_implicit == argv_explicit_none
+
+
+def test_build_layer_argv_pacestyle_target_date_adds_run_date() -> None:
+    argv = build_layer_argv(
+        "add-pacestyle-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_date="20260629",
+    )
+    assert argv[argv.index("--run-date") + 1] == "20260629"
+
+
+def test_build_layer_argv_pacestyle_target_race_adds_focused_scope() -> None:
+    argv = build_layer_argv(
+        "add-pacestyle-features.py",
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_date="20260629",
+        target_race="44:08",
+    )
+    assert argv[argv.index("--run-date") + 1] == "20260629"
+    assert argv[argv.index("--target-race") + 1] == "44:08"
+
+
+def test_build_layer_argv_near_miss_target_race_adds_scope() -> None:
+    argv = build_layer_argv(
+        "add-near-miss-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="05:11",
+    )
+    assert argv[-2:] == ["--target-race", "05:11"]
+
+
+def test_build_layer_argv_unsupported_script_omits_target_race_scope() -> None:
+    argv = build_layer_argv(
+        "add-market-signal-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="05:11",
+    )
+    assert "--target-race" not in argv
+
+
+def test_target_race_scope_allowlist_is_only_supported_layer_scripts() -> None:
+    assert {
+        "add-head-to-head-features.py",
+        "add-near-miss-features.py",
+        "add-pacestyle-features.py",
+        "add-relationship-r1-features.py",
+        "add-similar-race-features.py",
+        "add-sire-venue-bias-features.py",
+    } == SCRIPTS_WITH_TARGET_RACE_SCOPE
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,7 @@ import sys
 import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import IO, Final
 
 from predict_lib.model_meta import Category
@@ -137,11 +138,16 @@ def _final_parquet_dir(category: Category) -> Path:
     return WORK_DIR / f"feat-{category}-v7-final"
 
 
+def _log_pipeline_progress(message: str) -> None:
+    print(f"[pipeline] {message}", file=sys.stderr, flush=True)
+
+
 def _query_upcoming_race_keys(
     database_url: str,
     target_date: str,
     days_ahead: int,
     category: Category,
+    target_race: str | None = None,
 ) -> list[tuple[str, str]]:
     """Query (keibajo_code, race_bango) for upcoming races from Neon.
 
@@ -174,6 +180,13 @@ def _query_upcoming_race_keys(
         else:
             se_table = "nvd_se"
             keibajo_filter = "keibajo_code = '83'"
+        target_race_filter = ""
+        if target_race is not None:
+            keibajo_code, race_bango = target_race.split(":", 1)
+            target_race_filter = (
+                f"and keibajo_code = '{keibajo_code}' "
+                f"and race_bango = '{race_bango}'"
+            )
 
         sql = f"""
             select distinct keibajo_code, race_bango
@@ -181,6 +194,7 @@ def _query_upcoming_race_keys(
             where kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
               and (kaisai_nen || kaisai_tsukihi) between '{target_from}' and '{target_to}'
               and {keibajo_filter}
+              {target_race_filter}
               and ketto_toroku_bango is not null
               and (kakutei_chakujun is null or trim(kakutei_chakujun) in ('', '00'))
             order by keibajo_code, race_bango
@@ -227,7 +241,9 @@ def build_upcoming_feature_rows(
     from weather_fetcher import fetch_venue_weather_dir  # bundled in image
 
     final_dir = _final_parquet_dir(category)
-    race_keys = _query_upcoming_race_keys(database_url, target_date, days_ahead, category)
+    race_keys = _query_upcoming_race_keys(
+        database_url, target_date, days_ahead, category, target_race
+    )
     realtime_odds_path = fetch_realtime_odds_parquet(
         category, target_date, WORK_DIR, race_keys
     )
@@ -292,34 +308,81 @@ def build_pipeline(
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     base_dir = WORK_DIR / f"feat-{category}-base"
-    run_with_stderr_capture(
-        build_base_argv(
-            DUCKDB_BUILDER,
-            category,
-            target_date,
-            days_ahead,
-            database_url,
-            base_dir,
-            realtime_odds_path,
-            venue_weather_dir,
-            target_race,
+    target_label = target_race if target_race is not None else "all"
+    base_start = perf_counter()
+    _log_pipeline_progress(
+        f"step=base index=0 status=start category={category} "
+        f"target_date={target_date} days_ahead={days_ahead} "
+        f"target_race={target_label} elapsed_seconds=0.000"
+    )
+    try:
+        run_with_stderr_capture(
+            build_base_argv(
+                DUCKDB_BUILDER,
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                base_dir,
+                realtime_odds_path,
+                venue_weather_dir,
+                target_race,
+            )
         )
+    except Exception:
+        _log_pipeline_progress(
+            f"step=base index=0 status=failed category={category} "
+            f"target_race={target_label} elapsed_seconds={perf_counter() - base_start:.3f}"
+        )
+        raise
+    _log_pipeline_progress(
+        f"step=base index=0 status=done category={category} "
+        f"target_race={target_label} elapsed_seconds={perf_counter() - base_start:.3f}"
     )
     if not has_parquet_output(base_dir):
+        _log_pipeline_progress(
+            f"step=layers index=0 status=skipped category={category} "
+            f"target_race={target_label} reason=no-parquet elapsed_seconds=0.000"
+        )
         return False
     current = base_dir
-    for index, script in enumerate(layer_chain_for(category)):
+    chain = layer_chain_for(category)
+    for index, script in enumerate(chain):
         nxt = WORK_DIR / f"feat-{category}-layer-{index}"
-        run_with_stderr_capture(
-            build_layer_argv(
-                script,
-                category,
-                LAYER_DIR,
-                current,
-                nxt,
-                database_url,
+        layer_start = perf_counter()
+        _log_pipeline_progress(
+            f"step=layer index={index + 1}/{len(chain)} status=start "
+            f"category={category} script={script} target_race={target_label} "
+            f"elapsed_seconds=0.000"
+        )
+        try:
+            run_with_stderr_capture(
+                build_layer_argv(
+                    script,
+                    category,
+                    LAYER_DIR,
+                    current,
+                    nxt,
+                    database_url,
+                    target_date=target_date,
+                    target_race=target_race,
+                )
             )
+        except Exception:
+            _log_pipeline_progress(
+                f"step=layer index={index + 1}/{len(chain)} status=failed "
+                f"category={category} script={script} target_race={target_label} "
+                f"elapsed_seconds={perf_counter() - layer_start:.3f}"
+            )
+            raise
+        _log_pipeline_progress(
+            f"step=layer index={index + 1}/{len(chain)} status=done "
+            f"category={category} script={script} target_race={target_label} "
+            f"elapsed_seconds={perf_counter() - layer_start:.3f}"
         )
         current = nxt
     current.rename(final_dir)
+    _log_pipeline_progress(
+        f"done pipeline category={category} target_race={target_label} output={final_dir}"
+    )
     return True

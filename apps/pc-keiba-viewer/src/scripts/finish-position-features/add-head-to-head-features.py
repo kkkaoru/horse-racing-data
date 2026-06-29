@@ -47,6 +47,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already race-scoped; this switches pair-history staging to target horses."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -81,14 +90,51 @@ def stage_race_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     )
 
 
-def stage_pair_history(con: duckdb.DuckDBPyConnection) -> None:
+def stage_target_horses(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Distinct target-field horses from the already scoped input parquet."""
+    con.execute(
+        f"""
+        create or replace temp table target_horses as
+        select distinct source, ketto_toroku_bango
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        where ketto_toroku_bango is not null
+        """
+    )
+    con.execute(
+        "create index target_horses_idx on target_horses (source, ketto_toroku_bango)"
+    )
+
+
+def target_pair_filter_sql(focused_target: bool) -> str:
+    if focused_target:
+        return """
+        where exists (
+          select 1 from target_horses th
+          where th.source = h1.source
+            and th.ketto_toroku_bango = h1.ketto_toroku_bango
+        )
+          and exists (
+          select 1 from target_horses th
+          where th.source = h2.source
+            and th.ketto_toroku_bango = h2.ketto_toroku_bango
+        )
+        """
+    return ""
+
+
+def stage_pair_history(
+    con: duckdb.DuckDBPyConnection, focused_target: bool = False
+) -> None:
     """過去同 race で走った unique 馬 pair (a < b) の finish_diff を materialize。
 
     Cardinality 制御: ketto_toroku_bango > 比較で重複除去。1 race あたり N×(N-1)/2 pairs。
     JRA 全期間で約 150M 行想定 (DuckDB 24GB で持つ)。
+    focused_target=True の production single-race mode では input parquet の
+    target field horses 同士に限定して同じ historical pair を作る。
     """
+    target_filter = target_pair_filter_sql(focused_target)
     con.execute(
-        """
+        f"""
         create or replace temp table pair_history as
         select
           h1.source,
@@ -104,6 +150,7 @@ def stage_pair_history(con: duckdb.DuckDBPyConnection) -> None:
           and h2.keibajo_code = h1.keibajo_code
           and h2.race_bango = h1.race_bango
           and h2.ketto_toroku_bango > h1.ketto_toroku_bango
+        {target_filter}
         """
     )
     con.execute(
@@ -296,8 +343,10 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_race_history(con, args.from_date)
-    stage_pair_history(con)
     stage_target_races(con, input_glob)
+    if args.target_race is not None:
+        stage_target_horses(con, input_glob)
+    stage_pair_history(con, args.target_race is not None)
     stage_current_pair_aggregates(con)
     stage_h2h_horse_summary(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

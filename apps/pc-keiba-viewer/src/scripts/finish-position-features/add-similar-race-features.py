@@ -107,6 +107,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20000101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already race-scoped; this restricts history to matching target "
+            "surface/distance/lookback candidates."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -166,8 +176,52 @@ def class_group_sql(category: str, joken_col: str, meisho_col: str) -> str:
     return f"coalesce(nullif(trim({joken_col}), ''), '000')"
 
 
+def stage_target_similarity_scope(con: _DuckDBConnectionLike, input_glob: str) -> None:
+    """Stage broad similarity keys from the scoped input parquet.
+
+    Focused mode must preserve the level-4 fallback, so this scope intentionally
+    keeps only the universal similarity dimensions: source, surface, kyori_band,
+    target race_date and target year. Venue/season/class are narrower fallback
+    levels and therefore are not used to prefilter history.
+    """
+    con.execute(
+        f"""
+        create or replace temp table target_similarity_scope as
+        select distinct
+          source,
+          race_date,
+          kaisai_nen,
+          {surface_sql("track_code")} as surface,
+          {kyori_band_sql("kyori")} as kyori_band
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
+        """
+    )
+    con.execute(
+        "create index target_similarity_scope_idx on target_similarity_scope "
+        "(source, surface, kyori_band, race_date)"
+    )
+
+
+def similar_history_focus_filter_sql(focused_target: bool) -> str:
+    if not focused_target:
+        return ""
+    return f"""
+          and exists (
+            select 1 from target_similarity_scope ts
+            where ts.source = rec.source
+              and ts.surface = {surface_sql("rec.track_code")}
+              and ts.kyori_band = {kyori_band_sql("rec.kyori")}
+              and rec.race_date <= ts.race_date
+              and cast(rec.kaisai_nen as int) >= cast(ts.kaisai_nen as int) - {HISTORY_LOOKBACK_YEARS}
+          )
+        """
+
+
 def stage_similar_history(
-    con: _DuckDBConnectionLike, from_date: str, category: str
+    con: _DuckDBConnectionLike,
+    from_date: str,
+    category: str,
+    focused_target: bool = False,
 ) -> None:
     """Stage the per-entry historical race rows used to build the similar-race pool.
 
@@ -187,6 +241,7 @@ def stage_similar_history(
     else:
         keibajo_predicate = "true"
     class_group = class_group_sql(category, "rec.kyoso_joken_code", "ra.kyoso_joken_meisho")
+    target_filter = similar_history_focus_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table similar_history as
@@ -229,6 +284,7 @@ def stage_similar_history(
           and rec.race_date >= '{from_date}'
           and rec.finish_position is not null
           and {keibajo_predicate}
+          {target_filter}
         """
     )
     con.execute(
@@ -738,7 +794,27 @@ def stage_entity_features(con: _DuckDBConnectionLike) -> None:
         )
 
 
-def stage_target_entities(con: _DuckDBConnectionLike, from_date: str, category: str) -> None:
+def target_entities_focus_filter_sql(focused_target: bool) -> str:
+    if focused_target:
+        return """
+          and exists (
+            select 1 from target_races tr
+            where tr.source = rec.source
+              and tr.kaisai_nen = rec.kaisai_nen
+              and tr.kaisai_tsukihi = rec.kaisai_tsukihi
+              and tr.keibajo_code = rec.keibajo_code
+              and tr.race_bango = rec.race_bango
+          )
+        """
+    return ""
+
+
+def stage_target_entities(
+    con: _DuckDBConnectionLike,
+    from_date: str,
+    category: str,
+    focused_target: bool = False,
+) -> None:
     """The target horses' own entity codes (for joining the Phase-2 stats back).
 
     Read straight from PG (rec + um) WITHOUT a finish_position filter so that
@@ -756,6 +832,7 @@ def stage_target_entities(con: _DuckDBConnectionLike, from_date: str, category: 
         )
     else:
         keibajo_predicate = "true"
+    target_filter = target_entities_focus_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table target_entities as
@@ -779,6 +856,7 @@ def stage_target_entities(con: _DuckDBConnectionLike, from_date: str, category: 
         where rec.source = '{source_value}'
           and rec.race_date >= '{from_date}'
           and {keibajo_predicate}
+          {target_filter}
         """
     )
     con.execute(
@@ -927,7 +1005,11 @@ def main() -> None:
     con.execute(f"SET temp_directory='{tmp_dir.as_posix()}'")
     con.execute("SET max_temp_directory_size='50GB'")
     install_and_attach_pg(con, args.pg_url)
-    stage_similar_history(con, args.from_date, args.category)
+    if args.target_race is not None:
+        stage_target_similarity_scope(con, input_glob)
+    stage_similar_history(
+        con, args.from_date, args.category, args.target_race is not None
+    )
     stage_race_summary(con)
     years = _get_years(con, input_glob)
     output_dir = args.output_dir
@@ -941,7 +1023,9 @@ def main() -> None:
         stage_similar_pool(con)
         stage_race_level_features(con)
         stage_entity_features(con)
-        stage_target_entities(con, args.from_date, args.category)
+        stage_target_entities(
+            con, args.from_date, args.category, args.target_race is not None
+        )
         sql = append_features_sql(year_glob)
         # partition_by (race_year) makes DuckDB emit the
         # race_year=<year>/data_*.parquet hive layout AND, critically, OMIT

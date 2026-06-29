@@ -203,6 +203,24 @@ def target_race_arg(raw: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def sql_literal(value: object) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def target_race_filter_sql(alias: str, target_race: tuple[str, str]) -> str:
+    return (
+        f"{alias}.keibajo_code = {sql_literal(target_race[0])}"
+        f" and {alias}.race_bango = {sql_literal(target_race[1])}"
+    )
+
+
+def target_race_table_filter_sql(target_race: tuple[str, str]) -> str:
+    return (
+        f" and keibajo_code = {sql_literal(target_race[0])}"
+        f" and race_bango = {sql_literal(target_race[1])}"
+    )
+
+
 def add_days(date_yyyymmdd: str, days: int) -> str:
     base = datetime.strptime(date_yyyymmdd, DATE_FORMAT).replace(tzinfo=timezone.utc)
     return (base + timedelta(days=days)).strftime(DATE_FORMAT)
@@ -610,6 +628,7 @@ def _rec_select_from_se_ra(
     target_from: str,
     target_to: str,
     keibajo_predicate: str,
+    target_race: tuple[str, str] | None = None,
 ) -> str:
     """Direct ``*_se`` x ``*_ra`` SELECT for the target window (UPCOMING mode).
 
@@ -630,6 +649,9 @@ def _rec_select_from_se_ra(
     every row, so the fallback path is always executed when no realtime data is
     available — preserving the existing behaviour exactly.
     """
+    race_filter = ""
+    if target_race is not None:
+        race_filter = f"      and {target_race_filter_sql('se', target_race)}\n"
     return f"""
     select
       '{source}' as source,
@@ -687,6 +709,7 @@ def _rec_select_from_se_ra(
       and rt.race_bango = se.race_bango
       and rt.umaban = try_cast(nullif(trim(se.umaban), '') as int)
     where {keibajo_predicate}
+{race_filter.rstrip()}
       and se.kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
       and (se.kaisai_nen || se.kaisai_tsukihi) between '{target_from}' and '{target_to}'
       and se.ketto_toroku_bango is not null
@@ -694,7 +717,12 @@ def _rec_select_from_se_ra(
     """
 
 
-def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -> str:
+def upcoming_target_union_sql(
+    category: str,
+    target_from: str,
+    target_to: str,
+    target_race: tuple[str, str] | None = None,
+) -> str:
     """Direct source select(s) for the UPCOMING target window, by category."""
     if category == CATEGORY_JRA:
         return _rec_select_from_se_ra(
@@ -704,6 +732,7 @@ def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -
             target_from,
             target_to,
             f"se.keibajo_code in {JRA_KEIBAJO_CODES_SQL}",
+            target_race,
         )
     if category == CATEGORY_NAR:
         return _rec_select_from_se_ra(
@@ -713,6 +742,7 @@ def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -
             target_from,
             target_to,
             f"(se.keibajo_code is null or se.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}')",
+            target_race,
         )
     if category == CATEGORY_BAN_EI:
         return _rec_select_from_se_ra(
@@ -722,10 +752,11 @@ def upcoming_target_union_sql(category: str, target_from: str, target_to: str) -
             target_from,
             target_to,
             f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'",
+            target_race,
         )
-    jra_sql = upcoming_target_union_sql(CATEGORY_JRA, target_from, target_to)
-    nar_sql = upcoming_target_union_sql(CATEGORY_NAR, target_from, target_to)
-    ban_ei_sql = upcoming_target_union_sql(CATEGORY_BAN_EI, target_from, target_to)
+    jra_sql = upcoming_target_union_sql(CATEGORY_JRA, target_from, target_to, target_race)
+    nar_sql = upcoming_target_union_sql(CATEGORY_NAR, target_from, target_to, target_race)
+    ban_ei_sql = upcoming_target_union_sql(CATEGORY_BAN_EI, target_from, target_to, target_race)
     return f"{jra_sql}\nunion all\n{nar_sql}\nunion all\n{ban_ei_sql}"
 
 
@@ -735,6 +766,7 @@ def build_rec_select_sql(
     to_date: str,
     upcoming_window: tuple[str, str] | None = None,
     entity_filter: str = "",
+    target_race: tuple[str, str] | None = None,
 ) -> str:
     if category == CATEGORY_BAN_EI:
         base = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
@@ -745,7 +777,7 @@ def build_rec_select_sql(
     if upcoming_window is None:
         return base
     target_from, target_to = upcoming_window
-    upcoming_sql = upcoming_target_union_sql(category, target_from, target_to)
+    upcoming_sql = upcoming_target_union_sql(category, target_from, target_to, target_race)
     # The direct source rows (priority 1) overlap the corner-feature / ban-ei
     # rows (priority 0) on the target window. Keep the corner-feature row when it
     # exists (it carries corner_* signals); fall back to the direct source row
@@ -765,6 +797,94 @@ def build_rec_select_sql(
     """
 
 
+def build_target_race_entities_sql(
+    category: str,
+    target_from: str,
+    target_to: str,
+    upcoming_window: tuple[str, str] | None,
+    target_race: tuple[str, str],
+) -> str:
+    target_select = build_rec_select_sql(category, target_from, target_to, upcoming_window)
+    category_filter = category_source_filter(category, "target_rec")
+    race_filter = target_race_filter_sql("target_rec", target_race)
+    return f"""
+    create or replace temp table target_race_entities as
+    select distinct
+      target_rec.source,
+      target_rec.race_date,
+      target_rec.ketto_toroku_bango,
+      target_rec.kishumei_ryakusho,
+      target_rec.chokyoshimei_ryakusho
+    from ({target_select}) target_rec
+    where target_rec.race_date between '{target_from}' and '{target_to}'
+      and {category_filter}
+      and target_rec.ketto_toroku_bango is not null
+      and {race_filter}
+    """
+
+
+def stage_target_race_entities(
+    con: duckdb.DuckDBPyConnection,
+    category: str,
+    target_from: str,
+    target_to: str,
+    upcoming_window: tuple[str, str] | None,
+    target_race: tuple[str, str],
+) -> None:
+    run_staged_sql(
+        con,
+        "source.target_race_entities",
+        build_target_race_entities_sql(
+            category,
+            target_from,
+            target_to,
+            upcoming_window,
+            target_race,
+        ),
+        row_count_table="target_race_entities",
+    )
+
+
+def _distinct_non_empty_values(con: duckdb.DuckDBPyConnection, table: str, column: str) -> list[str]:
+    rows = con.execute(
+        f"""
+        select distinct cast({column} as varchar) as value
+        from {table}
+        where {column} is not null and trim(cast({column} as varchar)) <> ''
+        order by 1
+        """
+    ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _in_filter(column: str, values: list[str]) -> str:
+    return f"{column} in ({', '.join(sql_literal(value) for value in values)})"
+
+
+def _build_rec_entity_filter_from_target_race_entities(
+    con: duckdb.DuckDBPyConnection,
+) -> str:
+    filters: list[str] = []
+    for column in (
+        "ketto_toroku_bango",
+        "kishumei_ryakusho",
+        "chokyoshimei_ryakusho",
+    ):
+        values = _distinct_non_empty_values(con, "target_race_entities", column)
+        if values:
+            filters.append(_in_filter(column, values))
+    if not filters:
+        return " and false"
+    return f" and ({' or '.join(filters)})"
+
+
+def _build_horse_filter_from_target_race_entities(con: duckdb.DuckDBPyConnection) -> str:
+    values = _distinct_non_empty_values(con, "target_race_entities", "ketto_toroku_bango")
+    if not values:
+        return " and false"
+    return f" and {_in_filter('ketto_toroku_bango', values)}"
+
+
 def stage_rec_table(
     con: duckdb.DuckDBPyConnection,
     history_start: str,
@@ -772,8 +892,32 @@ def stage_rec_table(
     category: str,
     upcoming_window: tuple[str, str] | None = None,
     target_race: tuple[str, str] | None = None,
+    target_from: str | None = None,
 ) -> None:
-    select_sql = build_rec_select_sql(category, history_start, to_date, upcoming_window)
+    entity_filter = ""
+    if target_race is not None:
+        entity_target_from = target_from
+        if entity_target_from is None and upcoming_window is not None:
+            entity_target_from = upcoming_window[0]
+        if entity_target_from is None:
+            entity_target_from = history_start
+        stage_target_race_entities(
+            con,
+            category,
+            entity_target_from,
+            to_date,
+            upcoming_window,
+            target_race,
+        )
+        entity_filter = _build_rec_entity_filter_from_target_race_entities(con)
+    select_sql = build_rec_select_sql(
+        category,
+        history_start,
+        to_date,
+        upcoming_window,
+        entity_filter,
+        target_race,
+    )
     run_staged_sql(
         con,
         "source.rec",
@@ -787,18 +931,6 @@ def stage_rec_table(
     con.execute("create index rec_trainer_date on rec (source, chokyoshimei_ryakusho, race_date)")
     con.execute("create index rec_keibajo_date on rec (source, keibajo_code, race_date)")
     log_event("source.rec.indexes", "done", perf_counter() - started)
-
-
-def _build_horse_filter_from_rec(con: duckdb.DuckDBPyConnection) -> str:
-    """Return ``and ketto_toroku_bango in (...)`` from the staged rec table."""
-    rows = con.execute(
-        "select distinct ketto_toroku_bango from rec where ketto_toroku_bango is not null"
-    ).fetchall()
-    if not rows:
-        return ""
-    ids_str = ", ".join(f"'{r[0]}'" for r in rows)
-    return f" and ketto_toroku_bango in ({ids_str})"
-
 
 
 def stage_se_table(
@@ -1084,10 +1216,20 @@ def stage_source_tables(
         stage_realtime_odds_table(con, realtime_odds_path)
     else:
         create_empty_realtime_odds_stub(con)
-    stage_rec_table(con, history_start, to_date, category, upcoming_window, target_race)
+    stage_rec_table(
+        con,
+        history_start,
+        to_date,
+        category,
+        upcoming_window,
+        target_race,
+        target_from=from_date,
+    )
     horse_filter = ""
+    race_filter = ""
     if target_race is not None:
-        horse_filter = _build_horse_filter_from_rec(con)
+        horse_filter = _build_horse_filter_from_target_race_entities(con)
+        race_filter = target_race_table_filter_sql(target_race)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
         con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter,
@@ -1097,6 +1239,7 @@ def stage_source_tables(
     stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu", entity_filter=horse_filter)
     stage_ra_table(
         con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter,
+        entity_filter=race_filter,
     )
     if category == CATEGORY_BAN_EI:
         _stage_empty_jra_stubs(con)
@@ -1108,6 +1251,7 @@ def stage_source_tables(
     stage_um_table(con, "source.jra_um", "jra_um", "jvd_um", entity_filter=horse_filter)
     stage_ra_table(
         con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date,
+        entity_filter=race_filter,
     )
 
 
@@ -1121,7 +1265,7 @@ def build_target_table(
     filter_clause = category_source_filter(category, "rec")
     race_filter = ""
     if target_race is not None:
-        race_filter = f"and rec.keibajo_code = '{target_race[0]}' and rec.race_bango = '{target_race[1]}'"
+        race_filter = f"and {target_race_filter_sql('rec', target_race)}"
     cat_expr = category_expression(category)
     con.execute(
         f"""
@@ -3406,6 +3550,12 @@ def build_target_fingerprint(category: str) -> str:
     return category_source_filter(category, "rec") + "||" + category_expression(category)
 
 
+def target_race_hash_extra(target_race: tuple[str, str] | None) -> str:
+    if target_race is None:
+        return ""
+    return f"{target_race[0]}:{target_race[1]}"
+
+
 def compute_stage_hash(
     stage_name: str,
     category: str,
@@ -3413,6 +3563,7 @@ def compute_stage_hash(
     to_date: str,
     years: list[int],
     extra: str = "",
+    target_race_extra: str = "",
 ) -> str:
     fingerprint = _stage_sql_fingerprint(
         stage_name,
@@ -3426,6 +3577,7 @@ def compute_stage_hash(
         to_date,
         ",".join(str(year) for year in years),
         extra,
+        target_race_extra,
         fingerprint,
     ]
     return hashlib.sha256(" ".join(parts).encode("utf-8")).hexdigest()
@@ -3526,6 +3678,7 @@ class CheckpointController:
     from_date: str
     to_date: str
     venue_weather_extra: str
+    target_race_extra: str = ""
 
     def stage_hash(self, stage_name: str, years: list[int]) -> str:
         return compute_stage_hash(
@@ -3535,6 +3688,7 @@ class CheckpointController:
             self.to_date,
             years,
             self.venue_weather_extra,
+            self.target_race_extra,
         )
 
     def should_skip(self, stage_name: str, years: list[int]) -> bool:
@@ -3611,6 +3765,7 @@ def make_checkpoint_controller(args: argparse.Namespace) -> CheckpointController
     venue_extra = (
         args.venue_weather_dir.as_posix() if args.venue_weather_dir is not None else ""
     )
+    target_race_extra = target_race_hash_extra(getattr(args, "target_race", None))
     return CheckpointController(
         active=active,
         incremental=bool(getattr(args, "incremental", False)),
@@ -3621,6 +3776,7 @@ def make_checkpoint_controller(args: argparse.Namespace) -> CheckpointController
         from_date=from_date,
         to_date=to_date,
         venue_weather_extra=venue_extra,
+        target_race_extra=target_race_extra,
     )
 
 
