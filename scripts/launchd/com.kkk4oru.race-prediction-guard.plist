@@ -1,15 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  LaunchAgent for the race-prediction freshness guard.
+  Deprecated LaunchAgent for the local race-prediction freshness guard.
 
-  WHY MAC LAUNCHD (NOT CLOUDFLARE CRON):
-    Cloudflare Containers reap batch instances at ~90-110 s regardless of
-    sleepAfter (see com.kkk4oru.finish-position-predict.plist for the full
-    backstory). The finish-position docker pipeline this guard re-invokes is
-    the same ~4 min workload, so the same launchd-on-Mac escape applies.
-    The running-style worker is itself Cloudflare-Worker friendly, but the
-    coordination ("kick only if today is incomplete / fresh") needs to run
-    somewhere that can talk to both Neon and D1 — that is most cleanly here.
+  DEPRECATED LOCAL/MANUAL TOOLING:
+    Production prediction scheduling and ordering are Cloudflare-only. This
+    LaunchAgent is retained for historical reference and optional local/manual
+    smoke operation; it must not be installed or treated as production
+    scheduler, authority, fallback, or ordering dependency.
 
   SCHEDULE (~46 fires/day in JST):
     * Hour 0..9   (Minute 0)        -> guard TODAY    JST (10 fires, hourly)

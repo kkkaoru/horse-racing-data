@@ -1,32 +1,34 @@
-# Mac launchd crons for race prediction
+# Deprecated Mac launchd local/manual race-prediction tooling
 
-Two LaunchAgents live here:
+> Production prediction scheduling is Cloudflare-only. These LaunchAgents are
+> retained for historical reference and optional local/manual smoke operation;
+> they must not be treated as production scheduler, authority, fallback, or
+> ordering dependency.
+
+Two deprecated LaunchAgents live here:
 
 1. `com.kkk4oru.finish-position-predict` — single daily JST 03:00 fire that
-   runs the proven local docker pipeline (finish-position predictions). This
-   one replaces the disabled Cloudflare Container cron.
+   can run the legacy local Docker pipeline for finish-position predictions.
+   This is not the production path.
 2. `com.kkk4oru.race-prediction-guard` — hourly completeness guard that
    compares D1 `realtime_race_sources` against Neon prediction tables and
-   kicks generation only when something is missing.
+   can exercise legacy local/manual recovery checks.
 
 See `apps/finish-position-predict-container/DEPLOY.md` for the architecture
 backstory and the Cloudflare-Container cron-disable rationale.
 
-## Why launchd instead of Cloudflare Cron
+## Historical launchd rationale
 
-Cloudflare Containers reap batch instances at ~90-110 s regardless of
-`sleepAfter`, but the DuckDB feature build + per-category CatBoost / XGBoost
-scoring needs ~10 min. The cron in
-`apps/finish-position-cron/wrangler.jsonc` is therefore set to `triggers.crons
-= []` (cron disabled) and the daily run is driven by the LaunchAgent below.
-The Worker is still deployed for the `/run` on-demand HTTP endpoint, `/health`,
-and the D1 audit table — those are unaffected.
+This directory was created when a monolithic Cloudflare Container cron could be
+idle-reaped before the DuckDB feature build completed. That rationale is
+historical. Current production must remain Cloudflare-owned via Cron / Queue /
+Worker / Container and `sync-realtime-data` coordination.
 
 ## Files
 
 - `com.kkk4oru.finish-position-predict.plist` — LaunchAgent definition.
-- `finish-position-predict-daily.sh` — wrapper script that runs the proven
-  local docker pipeline (`finish-position-predict-local:split2`) once. Reads
+- `finish-position-predict-daily.sh` — wrapper script that runs the legacy
+  local Docker pipeline (`finish-position-predict-local:split2`) once. Reads
   `NEON_DATABASE_URL` from `apps/local-postgresql/.env.replica`,
   defaults `SOURCE_DATABASE_URL` to `postgresql://horse_racing:horse_racing@host.docker.internal:15432/horse_racing`,
   and computes `RUN_DATE` as **today in JST** (`date -u -v+9H +%Y%m%d`).
@@ -198,9 +200,9 @@ Per tick:
        `https://sync-realtime-data.kkk4oru.com/api/jobs` with
        `{"type":"plan-running-style-predictions","date":"$TARGET_DATE"}` and the
        `REALTIME_ADMIN_TOKEN` from `apps/sync-realtime-data/.dev.vars`.
-     - **finish-position (着順):** `RUN_DATE=$TARGET_DATE PREDICT_DAYS_AHEAD=$TARGET_DAYS_AHEAD bash scripts/launchd/finish-position-predict-daily.sh`.
+     - **finish-position (着順, deprecated local/manual path):** `RUN_DATE=$TARGET_DATE PREDICT_DAYS_AHEAD=$TARGET_DAYS_AHEAD bash scripts/launchd/finish-position-predict-daily.sh`.
        If `/tmp/finish-position-predict.lock` is already held (by the JST
-       03:00 cron or a previous guard fire), the kick is skipped this tick.
+       03:00 local fire or a previous guard fire), the kick is skipped this tick.
 
 ### Idempotency
 
@@ -212,8 +214,8 @@ exits without kicking. No state file is needed.
 
 - `/tmp/race-prediction-guard.lock` — guard-level single-writer lock.
 - `/tmp/finish-position-predict.lock` — **shared** with
-  `finish-position-predict-daily.sh` so the 03:00 cron and any guard tick
-  can't run two docker pipelines concurrently.
+  `finish-position-predict-daily.sh` so local/manual fires and any guard tick
+  can't run two Docker pipelines concurrently.
 
 ### Install
 

@@ -6,7 +6,7 @@
   "compatibility_date": "2026-05-10",
   "compatibility_flags": ["nodejs_compat"],
   "triggers": {
-    // 16:30 UTC = JST 01:30 forecast (must precede JST 03:00 finish-position launchd); 11:00 UTC = JST 20:00 actual
+    // 16:30 UTC = JST 01:30 forecast (before finish-position production windows); 11:00 UTC = JST 20:00 actual
     "crons": ["30 16 * * *", "0 11 * * *"],
   },
   "queues": {

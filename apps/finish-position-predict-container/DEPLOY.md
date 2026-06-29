@@ -1,4 +1,12 @@
-# Deploy runbook — daily finish-position prediction (Mac launchd + local docker)
+# Deploy runbook — finish-position prediction container (Cloudflare production)
+
+> **Current production authority (2026-06-29): Cloudflare only.**
+> Production finish-position generation is owned by Cloudflare Cron / Queue /
+> Worker / Container, coordinated with `sync-realtime-data`. Mac launchd and
+> local Docker references in this file are historical or optional local/manual
+> smoke tooling only; they are not production scheduler, authority, fallback, or
+> ordering dependency. See `docs/finish-position-prediction-system.md` for the
+> current system specification.
 
 > **2026-06-04 status — v8 production deploy COMPLETE (Phase 2 cutover)**
 >
@@ -35,23 +43,20 @@
 >    `docker run --rm finish-position-predict-local:split2 python -c "from predict_lib.model_meta import MODEL_VERSION_BY_CATEGORY; print(MODEL_VERSION_BY_CATEGORY)"`
 >    Expect:
 >    `{'jra': 'iter14-jra-cb-pacestyle-course-v8', 'nar': 'iter12-nar-xgb-hpo-v8', 'ban-ei': 'banei-cb-v7-lineage-wf-21y'}`
-> 3. Manual smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
+> 3. Optional legacy local smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
 >    and verify the predictions table receives `iter12-nar-xgb-hpo-v8` /
 >    `iter14-jra-cb-pacestyle-course-v8` rows for today's UPCOMING races.
 
-Automated daily serving of UPCOMING-race finish-position predictions with the
+Automated serving of UPCOMING-race finish-position predictions with the
 **v8 production** models (`iter14-jra-cb-pacestyle-course-v8` JRA,
-`iter12-nar-xgb-hpo-v8` NAR, `banei-cb-v7-lineage-wf-21y` Ban-ei). **As of
-2026-06-04 the Cloudflare Container cron is disabled (`triggers.crons = []`
-in
-`apps/finish-position-cron/wrangler.jsonc`) because Cloudflare Containers reap
-batch instances at ~90-110 s regardless of `sleepAfter` and the DuckDB feature
-build + per-category scoring needs ~10 min — the workload cannot complete
-inside that window.** Scheduling is now a **Mac LaunchAgent** that runs the
-same docker image locally (see `scripts/launchd/` and the "Mac launchd cron"
-section below). GitHub Workflow for prediction remains FORBIDDEN by project
-rule. The Cloudflare Worker is still deployed for the `/run` on-demand HTTP
-endpoint, `/health`, and the D1 audit table — those are unaffected.
+`iter12-nar-xgb-hpo-v8` NAR, `banei-cb-v7-lineage-wf-21y` Ban-ei) is now
+Cloudflare-owned. The legacy monolithic container cron from 2026-06-04 remains
+disabled because start()-style batch instances could be idle-reaped before the
+DuckDB feature build completed. The production path is the Cloudflare per-race
+flow: `sync-realtime-data` completes feature/running-style work, calls
+`finish-position-cron` `POST /run`, and `finish-position-cron` fans work into
+Queues/Containers. GitHub Workflow for prediction remains FORBIDDEN by project
+rule.
 
 This file is a runbook. None of it has been run for you — **no `wrangler deploy`,
 no image push, no secrets set.** Run the steps below from your machine, logged in
@@ -62,27 +67,30 @@ to your own Cloudflare account, with Docker running.
 
 ---
 
-## Architecture (current — Mac launchd)
+## Architecture (current — Cloudflare production)
 
 ```
-Mac LaunchAgent (com.kkk4oru.finish-position-predict, JST 03:00 daily)
+sync-realtime-data Worker
+  feature generation + running-style per race
         │
         ▼
-scripts/launchd/finish-position-predict-daily.sh
-        │   - reads NEON_DATABASE_URL from apps/local-postgresql/.env.replica
-        │   - SOURCE_DATABASE_URL defaults to local Colima PG (127.0.0.1:15432)
-        │   - RUN_DATE = today in JST (date -u -v+9H +%Y%m%d)
+service binding POST /run (mode=full, race scope)
         ▼
-docker run --rm --network=host finish-position-predict-local:split2
-  (apps/finish-position-predict-container/Dockerfile)
-        │
-        ▼ predict_upcoming.py, per category (jra / nar / ban-ei):
+finish-position-cron Worker
+        │   - validates trigger
+        │   - enqueues focused per-race/container work
+        ▼
+Cloudflare Queue → FinishPositionPredictContainer
+        │   - per-race DuckDB feature build + score
+        │   - UPSERT race_finish_position_model_predictions
+        ▼
+Neon + viewer
 ```
 
-## Legacy Cloudflare Container architecture (cron disabled 2026-06-04)
+## Legacy monolithic Cloudflare Container architecture (historical)
 
 ```
-Cron Trigger ("0 18 * * *" = JST 03:00)   --  DISABLED, see Mac launchd above
+Cron Trigger ("0 18 * * *" = JST 03:00)   --  DISABLED; replaced by Cloudflare per-race production flow above
         │
         ▼
 finish-position-cron Worker   ── scheduled(event) ──►  getContainer(...).start({
@@ -332,13 +340,15 @@ the first scheduled run.
 
 ---
 
-## Mac launchd cron (current production scheduler)
+## Deprecated Mac launchd local/manual tooling
 
-All file paths + commands live under `scripts/launchd/`. See
-`scripts/launchd/README.md` for the full runbook. Quick reference:
+All file paths + commands live under `scripts/launchd/`. These commands are
+retained only for historical local smoke/manual operation. Do not install or
+enable them as production scheduler/authority. See `scripts/launchd/README.md`
+for the deprecated-tooling runbook. Quick reference:
 
 ```sh
-# Install (one-shot)
+# Install for local testing only
 launchctl bootstrap gui/$(id -u) \
   /Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/com.kkk4oru.finish-position-predict.plist
 
@@ -362,11 +372,11 @@ is idempotent.
 
 ## Rollback
 
-1. **Disable the cron** (stop new runs):
-   - **Mac launchd**: `launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict`.
-   - **Cloudflare** (already disabled): remove `triggers.crons` from
-     `apps/finish-position-cron/wrangler.jsonc` and `wrangler deploy`,
-     OR pause the trigger in the dashboard.
+1. **Stop new Cloudflare production runs**:
+   - Disable or gate the relevant Cloudflare Cron / Queue / `POST /run` path,
+     then `wrangler deploy` the change.
+   - Deprecated local launchd, if manually installed for testing only:
+     `launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict`.
 2. **Revert the active model** so the viewer serves the previous version
    (predictions already written stay; nothing is deleted):
    ```sql

@@ -291,7 +291,7 @@ per-category monolithic build（`--memory=12g`）の実測 wall-clock:
           (e) Neon UPSERT race_finish_position_model_predictions（既存 upsert_sql, idempotent）
 ```
 
-- **Stage 1 の heavy 21y Neon scan は 1 回/日**（per-category）。15 分超でも **Container held-fetch（wall-time 無制限, doc 07）**で完走可、または Mac launchd authority のまま。
+- **Stage 1 の heavy 21y Neon scan は 1 回/日**（per-category）。15 分超でも **Container held-fetch（wall-time 無制限, doc 07）**で完走させる。Mac launchd を production authority にしない。
 - **Stage 2 は Neon scan 無し**（R2 cache + HTTP fetch のみ）→ **数秒**で完了 → 15 分枠に余裕、SIGTERM 無し、OOM 無し。
 - **per-race timing の本質（bataiju/odds 鮮度）を Stage 2 が担う**。各 race の発走 T-X に最新値で score。
 - 既存 scaffold をそのまま使える: `PredictMode = "full" | "rescore"`（types.ts:8-10）、R2 cache binding（types.ts:22）、`shouldRunRescoreCron`（cron-decision.ts）、realtime fetcher（realtime_odds_fetcher.py）。**未実装は container/worker 側の rescore 本体（cache load + 5 列差替 + score）のみ**。
@@ -374,8 +374,8 @@ timing より「heavy build も per-race 化」したい場合は §6 の target
 
 ### 8.5 運用
 
-10. **Mac launchd authority は維持**（doc 04/05）。CF 2 段は parity 確認まで shadow 運用 → 確認後 flip。
-11. Stage 1 が 15 分超なら **Container held-fetch（wall-time 無制限）or Mac launchd**で実行（doc 07）。Stage 2 は短時間で枠内。
+10. **Production authority は Cloudflare のみ**。CF 2 段は parity 確認まで shadow 運用 → 確認後 flip。
+11. Stage 1 が 15 分超なら **Container held-fetch（wall-time 無制限）**を前提に Cloudflare path を調整する（doc 07）。Stage 2 は短時間で枠内。
 
 ---
 

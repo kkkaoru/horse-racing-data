@@ -1,5 +1,10 @@
 # Finish-position prediction on Cloudflare Worker Container — architecture design
 
+> **Superseded production note (2026-06-29):** Current production authority is
+> Cloudflare-only. Mac launchd/local Docker references below describe the
+> historical pre-cutover path and pilot comparison data; they are not production
+> scheduler, authority, fallback, or ordering dependency.
+
 > **Scope.** Design-only (read-only). No deploy, no image push, no secrets, no
 > wrangler config changes. This document records (1) the _current_ Cloudflare
 > Containers / Queues / Durable Objects / Workflows capabilities verified against
@@ -16,12 +21,12 @@
 
 ## 0. The problem in one paragraph
 
-The daily UPCOMING-race finish-position predictor (`predict_upcoming.py`) builds
+The historical daily UPCOMING-race finish-position predictor (`predict_upcoming.py`) builds
 a DuckDB+Postgres feature parquet and scores CatBoost/XGBoost models for three
 categories (JRA / NAR / Ban-ei), writing ~525 predictions in **~3.5 min** as a
-single batch. It currently runs on a **Mac launchd → local docker → Neon**
-schedule (proven reliable, `scripts/launchd/com.kkk4oru.finish-position-predict.plist`,
-JST 03:00). A 2026-06-03 attempt to run it as a Cloudflare Container cron failed
+single batch. At the time of this design it ran on a **Mac launchd → local docker → Neon**
+schedule (`scripts/launchd/com.kkk4oru.finish-position-predict.plist`,
+JST 03:00), now superseded by Cloudflare-only production. A 2026-06-03 attempt to run it as a Cloudflare Container cron failed
 because the container appeared to be reaped at ~90–110 s with no inbound HTTP
 traffic — silent failure, partial traceback. E-top2 (JRA CatBoost **+** XGBoost,
 task #39) makes the JRA leg even slower. The goal: can we make CF Containers a
@@ -375,7 +380,7 @@ clean refactor** if the DO watchdog logic grows.
 
 ## 5. Feasibility verdict + recommendation
 
-### Verdict: **VIABLE as a hybrid; do a measured pilot before any cutover. Keep Mac launchd as the authority until the pilot passes.**
+### Verdict (historical): **VIABLE as a hybrid; do a measured pilot before any cutover.**
 
 **Why viable now (changed since 6/3).** The single fact that made CF Containers
 "unusable for this batch" — a hard ~90 s reap with no inbound traffic, not
@@ -391,16 +396,16 @@ mode.
 
 **Why not a blind migrate.** The 90 s reap was _empirically observed_ on this exact
 image on 6/3; the docs strongly imply it's gone, but **we have not re-measured**.
-Until a pilot confirms a held `/predict` request survives a full JRA leg
-(incl. E-top2) on the real image against a Neon branch, the Mac launchd path — which
-is _proven_, currently serving production, and free — must remain the source of
-truth.
+At the time, the plan kept the legacy Mac launchd path enabled only until a
+pilot confirmed a held `/predict` request survived a full JRA leg (incl. E-top2)
+on the real image against a Neon branch. That pre-cutover authority statement is
+superseded; current production must remain Cloudflare-only.
 
 **Risks / costs (honest):**
 
 - **Re-measure risk (primary).** If some residual short-no-traffic reap still bites
   the held-request design, fall back to **per-venue chunking** (each unit <60 s) or
-  stay on Mac. Probe first (§6).
+  pause the Cloudflare cutover until the Cloudflare path is fixed. Probe first (§6).
 - **Hyperdrive ↔ DuckDB `postgres_scanner` compatibility** is unverified; if it
   doesn't take the Hyperdrive DSN, point straight at Neon (lose the latency win, not
   correctness).
@@ -415,25 +420,24 @@ truth.
 以下の Recommendation を具体化した pilot フローは 04 を参照。
 PHASE 1 (Neon pre-wake 先行 deploy) → PHASE 2 (held-request pilot, NAR category) →
 PHASE 3 (dual-run, 本番 Neon) → PHASE 4 (cutover) の順で実施。
-Mac launchd は PHASE 4 cutover 確認まで authority を維持する。
+当時は Mac launchd を PHASE 4 cutover 確認まで authority とする計画だった。
+現在は Cloudflare-only production に supersede 済み。
 
 **Recommendation (concrete):**
 
-1. **Keep Mac launchd as production now.** Do not disable it.
+1. **Historical pre-cutover step:** keep Mac launchd enabled only during the pilot window. Current production must not use it as scheduler or authority.
 2. **Pilot (read-only-ish, Neon branch):** implement the held-request `/predict`
    endpoint + per-category Queue fan-out behind the existing Worker, deploy to a
    **Neon branch / throwaway DB**, and run §6's measurement. This is the decisive
    test the 6/3 work never ran (it used `start()`-to-completion + a DO-alarm
    keepalive, not a held request + `renewActivityTimeout()`).
 3. **If the pilot passes** (full JRA-E-top2 leg completes via held request, ≥3 clean
-   runs, parity vs Mac output): cut the JRA 09:30 + NAR/Ban-ei 03:00 crons over to
-   CF, run **dual** (Mac + CF, idempotent UPSERT makes this safe) for ~1 week, then
-   retire the Mac plist. **CF wins decisively only because it removes the
-   single-Mac-must-be-awake dependency** (launchd loses a firing if the Mac is
-   powered off — the one real weakness of today's path).
+   runs, parity vs historical Mac output): cut the JRA 09:30 + NAR/Ban-ei 03:00 crons over to
+   CF, run dual only as a temporary comparison window, then retire the Mac plist.
+   CF wins decisively because production must have no single-Mac dependency.
 4. **If the pilot fails** (reap still bites even with held request): try **per-venue
-   chunking**; if that also fails, **stay on Mac launchd** and update the memory to
-   "CF Containers held-request also reaped — confirmed unsuitable as of <date>."
+   chunking**; if that also fails, stop the cutover and fix the Cloudflare path
+   rather than making launchd production authority again.
 
 The decision hinges entirely on **one measurement**, and the design is structured so
 that measurement is cheap and the production path is never at risk during it.
@@ -463,7 +467,7 @@ proceed to the dual-run cutover in §5.
 
 ## 7. Summary table
 
-| Concern     | Current Mac launchd         | Proposed CF (Cron→Queue→Container, DO-coordinated)                                                           |
+| Concern     | Legacy Mac launchd          | Proposed CF (Cron→Queue→Container, DO-coordinated)                                                           |
 | ----------- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Scheduler   | launchd JST 03:00           | **CF Cron Trigger** (03:00 NAR/Ban-ei, 09:30 JRA) ✔ rule-compliant                                           |
 | 90 s reap   | n/a                         | **Held request + `renewActivityTimeout()`** → not idle-reaped; 15 m graceful window; **re-measure required** |
@@ -472,4 +476,4 @@ proceed to the dual-run cutover in §5.
 | Idempotency | UPSERT                      | UPSERT (retries/re-enqueue safe)                                                                             |
 | DB latency  | local Colima→Neon           | Neon via **Hyperdrive** (≤90% less uncached latency, verify DuckDB DSN)                                      |
 | Cost        | free (Mac)                  | Container minutes + Queue ops + Neon (net Neon may drop w/ Hyperdrive)                                       |
-| Verdict     | keep as authority **now**   | **viable → pilot on Neon branch → dual-run → cut over**                                                      |
+| Verdict     | historical pre-cutover path | **viable → pilot on Neon branch → temporary comparison → cut over**                                          |

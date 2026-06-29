@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  LaunchAgent for the daily finish-position-prediction docker pipeline.
+  Deprecated LaunchAgent for the local finish-position-prediction docker pipeline.
 
-  WHY MAC LAUNCHD (NOT CLOUDFLARE CRON):
-    Cloudflare Containers reap batch instances at ~90-110 s regardless of
-    sleepAfter, but the DuckDB feature build + per-category CatBoost / XGBoost
-    scoring needs ~10 min. The Cloudflare Cron Trigger has therefore been
-    disabled in apps/finish-position-cron/wrangler.jsonc (triggers.crons = []),
-    and this LaunchAgent drives the proven local docker pipeline instead —
-    same Dockerfile (apps/finish-position-predict-container/Dockerfile), same
-    image (finish-position-predict-local:split2), same env vars
+  DEPRECATED LOCAL/MANUAL TOOLING:
+    Production prediction scheduling is Cloudflare-only. This LaunchAgent is
+    retained for historical reference and optional local/manual smoke operation;
+    it must not be installed or treated as production scheduler, authority,
+    fallback, or ordering dependency. It uses the same Dockerfile
+    (apps/finish-position-predict-container/Dockerfile), same image
+    (finish-position-predict-local:split2), and similar env vars
     (SOURCE_DATABASE_URL = local Colima PG, NEON_DATABASE_URL = Neon write
     target, RUN_DATE = today JST in YYYYMMDD form), idempotent UPSERT into
     race_finish_position_model_predictions.
@@ -33,8 +32,8 @@
        ~30s — harmless. On Sat/Sun it finds the day's JRA races and scores them
        with real odds.
 
-    The race-prediction-guard (10:00-20:40 JST, 20-min cadence) continues to
-    re-kick the pipeline during race hours for bataiju / odds freshness.
+    The race-prediction-guard path is also deprecated local/manual tooling.
+    Production freshness is handled by Cloudflare-side coordination.
 
   CATCH-UP BEHAVIOUR:
     StartCalendarInterval will fire on next wake if the scheduled time was

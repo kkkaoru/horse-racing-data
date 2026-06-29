@@ -1,16 +1,19 @@
-# Current Finish-Position Prediction Mechanism
+# Historical Finish-Position Prediction Mechanism (Superseded)
 
-**Date:** 2026-06-18  
-**Pipeline:** macOS launchd + Docker container (local Colima)  
-**Current Status:** ~525 predictions in ~3.5 min (proven); disabled from CF Containers due to 90-110s reap limit
+**Date:** 2026-06-18
+**Pipeline described here:** legacy macOS launchd + Docker container (local Colima)
+**Current Status:** superseded by Cloudflare-only production. Launchd/local Docker
+is historical or optional local/manual tooling only, not scheduler, authority,
+fallback, or ordering dependency.
 
 ---
 
 ## 1. Daily Schedule & Execution Model
 
-### Current Schedule (launchd-based)
+### Historical Schedule (launchd-based, superseded)
 
-The `com.kkk4oru.finish-position-predict.plist` defines two StartCalendarInterval entries:
+The deprecated `com.kkk4oru.finish-position-predict.plist` defined two
+StartCalendarInterval entries:
 
 1. **JST 03:00** — NAR + Ban-ei only (`PREDICT_CATEGORIES=nar,ban-ei`)
    - JRA mirror (`jvd_se` table) not yet available at 03:00 JST (arrives ~09:03 JST)
@@ -26,7 +29,7 @@ The `com.kkk4oru.finish-position-predict.plist` defines two StartCalendarInterva
 
 ### Race-Hours Guard (Intra-day)
 
-A separate launchd `race-prediction-guard` fires every 20 minutes (10:00–20:40 JST) during race hours. It may re-kick the prediction pipeline with `PREDICT_DAYS_AHEAD=1` for freshness, but locked by `mkdir` on `/tmp/finish-position-predict.lock`.
+Historically, a separate launchd `race-prediction-guard` fired every 20 minutes (10:00–20:40 JST) during race hours. It could re-kick the legacy local prediction pipeline with `PREDICT_DAYS_AHEAD=1` for freshness, locked by `mkdir` on `/tmp/finish-position-predict.lock`. This is not the production authority.
 
 ### Idempotency & Locking
 
@@ -409,7 +412,7 @@ INSERT INTO finish_position_cron_executions (
 ### Key Findings
 
 1. **Dominant bottleneck:** Feature build layer chain (~140 s NAR, ~200 s JRA cumulative). Not the scoring, not the UPSERT — the PG history scans and parquet rewrites.
-2. **Total workload:** 210–600 s depending on category. **Incompatible with CF Container 90–110 s reap limit.** This is the root cause of the macOS launchd fallback.
+2. **Total workload:** 210–600 s depending on category. The 2026-06-03 monolithic CF Container attempt appeared incompatible with a ~90–110 s idle reap. This was the historical reason for the temporary macOS launchd fallback, not current production authority.
 3. **Data path:** Feature build reads **all historical races (2.2M rows) from PG per category run**. No change to that volume without rewriting DuckDB base build (not recommended; it's the viewer's reused code).
 4. **Scaling:** Per-race time is O(1); total time is O(layer_chain_cost), not O(races). Adding more races has minimal impact; the bottleneck is the PG scans, not the output size.
 
@@ -439,7 +442,7 @@ INSERT INTO finish_position_cron_executions (
 - Cloudflare Containers have no published per-tier timeout adjustment (reap is global)
 - **Effort: BLOCKED (no control over reap timeout; Cloudflare infrastructure constraint)**
 
-**Option E: Keep macOS launchd; port orchestration logic to CF Worker (observer only)**
+**Option E (historical, rejected/superseded): Keep macOS launchd; port orchestration logic to CF Worker (observer only)**
 
 - macOS continues to run Docker (proven, 3.5 min); CF Worker polls for completion & logs
 - **Effort: LOW (adds CF Worker wrapper, no substantive change to prediction logic); Payoff: Observability, audit trail in D1**
@@ -452,7 +455,7 @@ INSERT INTO finish_position_cron_executions (
 - held `/predict` + `renewActivityTimeout()` による reap-safe Container 実行
 - Neon 直 feature-build cost 対策の評価(結論: cost 受容 + pre-wake で latency 最適化)
 - PHASE 1 (pre-wake) → PHASE 2 (pilot) → PHASE 3 (dual-run) → PHASE 4 (cutover) の go/no-go gate
-- Mac launchd を cutover 確認まで authority として維持する方針
+- 当時の計画では Mac launchd を cutover 確認まで authority として維持する方針だったが、現在は Cloudflare-only production に supersede 済み
 
 ### Recommendation (2026-06-03 時点)
 
@@ -462,7 +465,9 @@ INSERT INTO finish_position_cron_executions (
 2. Parallelize inter-category feature builds (spawn 3 DuckDB processes in parallel if resource-constrained)
 3. Reduce prediction-time logic to model load (~2s) + score (~10s) + upsert (~20s) = **~35 s per full run**, well under 90s
 
-Until then, **macOS launchd is the proven production path** (525 preds in 3.5 min, idempotent, audited, locked). CF Container would require substantial re-architecture.
+This recommendation is superseded. Current production authority is Cloudflare
+Cron / Queue / Worker / Container; macOS launchd is deprecated local/manual
+tooling only.
 
 ---
 

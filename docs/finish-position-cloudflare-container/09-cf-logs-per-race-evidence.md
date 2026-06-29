@@ -61,7 +61,7 @@ bunx wrangler d1 execute finish-position-cron-db --remote \
 
 - **granularity = per-run(1 日 = 1 `run_date`)**。`races_predicted` は run 集計値であり、per-race 1 行ではない。**per-race の証跡なし**。
 - 全 6 行が **`status="started"`、`races_predicted=0`、`duration_ms < 1.2s`**。これは container を `start()` した記録のみで、**`success`(races_predicted>0)に到達した行が 1 件も無い**。Cloudflare Containers の ~90-110s reap(DuckDB feature build ~10min 完走不能)と整合し、**この Worker 経由で着順予測が完走した記録は存在しない**。
-- per-race 的に多数 run/日が走っていた時期も**無い**(6 行・1 日のみ、しかも全部 `started`)。実運用の per-race 着順予測は **Mac launchd の local docker pipeline**(別系統、D1 audit 対象外)で行われており、この Worker D1 には記録されない。
+- per-race 的に多数 run/日が走っていた時期も**無い**(6 行・1 日のみ、しかも全部 `started`)。当時の実運用着順予測は **legacy Mac launchd の local Docker pipeline**(別系統、D1 audit 対象外)で行われており、この Worker D1 には記録されない。
 
 ## 2. wrangler tail(live)
 
@@ -85,7 +85,7 @@ timeout 35 bunx wrangler tail finish-position-cron --config apps/finish-position
 - `apps/sync-realtime-data*` を grep した結果、per-race の processing は **脚質(running-style)推論**:
   - `running-style-cron.ts`: `race_running_styles already has all runners, and queues per-race Worker` / L203 `the per-race worker handleRunningStylePredictionJob builds features` → **per-race は running-style であって finish-position ではない**。
 - これらのファイル中の `finish_position` / `getFinishPositionPool` は **実績着順の列・特徴量・共有 PG pool**(feature build / running-style 学習データ)であり、**着順予測スコアリング process ではない**。realtime worker で着順予測を per-race で回している箇所は**無い**。
-- → **「per-race で動いていた process」= 脚質(running-style)推論**。**着順予測(finish-position)は per-race では動いておらず**、Worker 経由では D1 に per-run の `started` 行が 6 件残るのみ、実運用予測は launchd(別系統)。
+- → **「per-race で動いていた process」= 脚質(running-style)推論**。**着順予測(finish-position)は per-race では動いておらず**、Worker 経由では D1 に per-run の `started` 行が 6 件残るのみ。当時の実運用予測は legacy launchd(別系統)。
 
 ## 付記(Hard rules 遵守)
 

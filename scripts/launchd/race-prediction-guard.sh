@@ -1,97 +1,35 @@
 #!/usr/bin/env bash
-# Race-prediction freshness guard.
+# Local/manual race-prediction diagnostic guard.
 #
-# Driven by the LaunchAgent at scripts/launchd/com.kkk4oru.race-prediction-guard.plist:
-#   * JST 00:00 .. 09:00 (10 hourly  fires) -> guard TODAY    JST
-#   * JST 10:00 .. 20:00 (33 20-min  fires) -> guard TODAY    JST (race-hours band)
-#   * JST 21:00 .. 23:00 ( 3 hourly  fires) -> guard TOMORROW JST + TODAY JST
-# Total ~46 fires/day. During race hours (10-20) the guard always re-kicks the
-# finish-position pipeline even when predictions already exist, so that fresh
-# bataiju (announced ~T-30..40 min) and updated odds flow into each race before
-# post. Outside race hours the skip-when-complete logic is preserved so we do
-# not waste compute when no new data is expected.
+# Production feature generation, running-style prediction, and finish-position
+# prediction are Cloudflare-side. This script is retained for local diagnostics
+# around Cloudflare D1/Worker job state and optional manual backfills. It must
+# not be treated as production scheduling or ordering authority.
 #
-# Freshness-aware re-prediction (PART 2 change):
-#   During JST 10:00-20:00 ("race hours") the finish-position guard ignores
-#   whether fp_actual >= expected_count and always kicks the pipeline, because
-#   bataiju/odds land in D1 ~30-40 min before post and the prediction should
-#   incorporate them. The concurrent-run lock (FINISH_LOCK_DIR) is still
-#   respected — two docker runs never race each other.
+# Optional local checks:
+#   * running-style (脚質): Cloudflare Worker job (POST /api/jobs).
+#   * finish-position (着順): skipped by default because Cloudflare
+#     finish-position-cron owns production per-race prediction. Set
+#     FINISH_POSITION_OFFLOADED_TO_CF=0 only for an explicit local Docker
+#     backfill via scripts/launchd/finish-position-predict-daily.sh.
 #
-# Two prediction kinds are guarded:
-#   1. running-style (脚質)   -> Cloudflare Worker job (POST /api/jobs).
-#   2. finish-position (着順)  -> local docker pipeline via
-#                                 scripts/launchd/finish-position-predict-daily.sh.
+# Reference data checked by this diagnostic:
+#   * expected races: Cloudflare D1 sync-realtime-data.realtime_race_sources.
+#   * prediction coverage: Neon race_running_style_model_predictions /
+#     race_finish_position_model_predictions.
 #
-# Source of truth for "expected races":
-#   Cloudflare D1 sync-realtime-data.realtime_race_sources where
-#   substr(race_start_at_jst, 1, 10) = TARGET_DATE_ISO. race_start_at_jst is
-#   ISO 8601 with +09:00 offset, so substr(...,1,10) is the JST calendar date.
-#
-# Source of truth for "actually predicted":
-#   Neon Postgres race_running_style_model_predictions /
-#   race_finish_position_model_predictions, both keyed by the quadruple
-#   (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango). The matching D1
-#   columns have the same names + same TEXT format (year=YYYY, monthDay=MMDD).
-#
-# When D1 has ZERO races for a target date, the guard kicks the worker
-# `discover-urls` job (UPSERT-idempotent on the worker side) so the next
-# tick has rows to plan against. No prediction kick fires that hour.
-#
-# Locks:
-#   /tmp/race-prediction-guard.lock  -- guard-level (single concurrent guard)
-#   /tmp/finish-position-predict.lock -- shared with finish-position-predict-daily.sh
-#                                        so JST 03:00 cron and the hourly kick
-#                                        cannot race the same docker run.
-#
-# Manual / dry-run:
+# Manual / dry-run examples:
 #   DRY_RUN=1 bash scripts/launchd/race-prediction-guard.sh
 #   DRY_RUN=1 FORCE_HOUR=05 bash scripts/launchd/race-prediction-guard.sh     # today
-#   DRY_RUN=1 FORCE_HOUR=14 bash scripts/launchd/race-prediction-guard.sh     # race hours (freshness mode)
+#   DRY_RUN=1 FORCE_HOUR=14 bash scripts/launchd/race-prediction-guard.sh     # race hours
 #   DRY_RUN=1 FORCE_HOUR=19 bash scripts/launchd/race-prediction-guard.sh     # today (evening)
 #   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
 #   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
 #     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
-#   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
-#   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
-#
-# Two prediction kinds are guarded:
-#   1. running-style (脚質)   -> Cloudflare Worker job (POST /api/jobs).
-#   2. finish-position (着順)  -> local docker pipeline via
-#                                 scripts/launchd/finish-position-predict-daily.sh.
-#
-# Source of truth for "expected races":
-#   Cloudflare D1 sync-realtime-data.realtime_race_sources where
-#   substr(race_start_at_jst, 1, 10) = TARGET_DATE_ISO. race_start_at_jst is
-#   ISO 8601 with +09:00 offset, so substr(...,1,10) is the JST calendar date.
-#
-# Source of truth for "actually predicted":
-#   Neon Postgres race_running_style_model_predictions /
-#   race_finish_position_model_predictions, both keyed by the quadruple
-#   (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango). The matching D1
-#   columns have the same names + same TEXT format (year=YYYY, monthDay=MMDD).
-#
-# When D1 has ZERO races for a target date, the guard kicks the worker
-# `discover-urls` job (UPSERT-idempotent on the worker side) so the next
-# hourly tick has rows to plan against. No prediction kick fires that hour.
-#
-# Locks:
-#   /tmp/race-prediction-guard.lock  -- guard-level (single concurrent guard)
-#   /tmp/finish-position-predict.lock -- shared with finish-position-predict-daily.sh
-#                                        so JST 03:00 cron and the hourly kick
-#                                        cannot race the same docker run.
-#
-# Manual / dry-run:
-#   DRY_RUN=1 bash scripts/launchd/race-prediction-guard.sh
-#   DRY_RUN=1 FORCE_HOUR=05 bash scripts/launchd/race-prediction-guard.sh     # today
-#   DRY_RUN=1 FORCE_HOUR=19 bash scripts/launchd/race-prediction-guard.sh     # today (evening)
-#   DRY_RUN=1 FORCE_HOUR=22 bash scripts/launchd/race-prediction-guard.sh     # today + tomorrow
-#   DRY_RUN=1 FORCE_HOUR=22 FORCE_TARGET_DATE=20300101 bash ...               # exercise discover-urls path
-#   DRY_RUN=1 FORCE_HOUR=05 FORCE_NO_CORNER_FEATURES=1 bash ...               # exercise corner-features build path
-#   DRY_RUN=1 FORCE_HOUR=05 FORCE_VENUE_COUNTS=44:7,30:12 \
-#     FORCE_EXPECTED_COUNT=42 FORCE_TARGET_DATE=20300101 bash ...             # exercise per-venue coverage check path
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=11 bash ... # exercise RS-before-FP order skip
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # exercise FP dry-run skip
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
 set -euo pipefail
@@ -128,17 +66,10 @@ CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
 EXPECTED_NAR_RACES_PER_VENUE=10
 EXPECTED_JRA_RACES_PER_VENUE=11
 
-# Finish-position offload flag (CF cutover). When FINISH_POSITION_OFFLOADED_TO_CF=1
-# the guard SKIPS the local docker finish-position (着順) kick entirely, because
-# the finish-position predictions are produced per-race by the Cloudflare
-# finish-position-cron Worker + container (per-race coordinator → queue →
-# predict-{category} DO held /predict → Neon UPSERT). All OTHER guard duties are
-# unchanged: running-style (脚質) worker kicks, discover-urls, and per-venue
-# coverage checks still run, so the Mac remains the source of truth for those.
-# Default (unset / any value != "1") = NOT offloaded → the local finish-position
-# kick runs exactly as before. This makes the cutover fully reversible: flip the
-# env var back (or remove it) to restore the local docker finish-position run.
-FINISH_POSITION_OFFLOADED_TO_CF="${FINISH_POSITION_OFFLOADED_TO_CF:-0}"
+# Finish-position is Cloudflare-owned by default. Leave this at 1 for normal
+# diagnostics so the local Docker runner cannot become production authority.
+# Set FINISH_POSITION_OFFLOADED_TO_CF=0 only for an explicit manual backfill.
+FINISH_POSITION_OFFLOADED_TO_CF="${FINISH_POSITION_OFFLOADED_TO_CF:-1}"
 
 # NAR major venue keibajo_codes (門別/盛岡/水沢/浦和/船橋/大井/川崎/金沢/笠松/
 # 名古屋/園田/姫路/高知/佐賀/帯広). Listed as a space-separated string so the
@@ -284,17 +215,15 @@ corner_features_check_and_build() {
 
   log "corner-features check ($CORNER_FEATURES_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
   local cf_count
-  cf_count="$(neon_corner_features_count "$target_nen" "$target_tsukihi" || true)"
-  if ! printf '%s' "$cf_count" | grep -Eq '^[0-9]+$'; then
-    log "ERROR: failed to parse corner-features count for $label from Neon (got: $cf_count)"
-    return 1
-  fi
-
-  # DRY_RUN-only override that simulates a missing corner-features state.
   if [ "${DRY_RUN:-0}" = "1" ] && [ "${FORCE_NO_CORNER_FEATURES:-0}" = "1" ]; then
-    log "corner-features[$label]: actual=$cf_count (FORCE_NO_CORNER_FEATURES=1 — treating as 0)"
     cf_count=0
+    log "DRY_RUN: FORCE_NO_CORNER_FEATURES=1 — treating corner-features[$label] as 0 (skipping Neon query)"
   else
+    cf_count="$(neon_corner_features_count "$target_nen" "$target_tsukihi" || true)"
+    if ! printf '%s' "$cf_count" | grep -Eq '^[0-9]+$'; then
+      log "ERROR: failed to parse corner-features count for $label from Neon (got: $cf_count)"
+      return 1
+    fi
     log "corner-features[$label]: actual=$cf_count"
   fi
 
@@ -507,30 +436,40 @@ guard_target() {
   log "querying D1 expected race_key count for $target_date_iso ..."
   local d1_query="SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}';"
   local d1_result
-  # DRY_RUN-only hook: FORCE_D1_FAIL=1 injects a fake error string so the
-  # D1-unavailable path can be exercised without touching real D1.
+  # DRY_RUN-only hooks:
+  #   FORCE_D1_FAIL=1 injects a fake error string so the D1-unavailable path
+  #     can be exercised without touching real D1.
+  #   FORCE_EXPECTED_COUNT=N bypasses D1 and supplies the parsed count so the
+  #     downstream order gates can be exercised offline.
   if [ "${DRY_RUN:-0}" = "1" ] && [ "${FORCE_D1_FAIL:-0}" = "1" ]; then
     d1_result="In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work"
     log "DRY_RUN: FORCE_D1_FAIL=1 — injecting fake D1 error response"
+  elif [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
+    d1_result=""
+    log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (skipping D1 expected-count query)"
   else
     d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
   fi
   local expected_count
-  expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ] && [ "${FORCE_D1_FAIL:-0}" != "1" ]; then
+    expected_count="$FORCE_EXPECTED_COUNT"
+  else
+    expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+  fi
 
   # --- D1 unavailability handling ---
   # If expected_count is empty/null (parse failure = D1 error), branch on
   # is_race_hours:
-  #   is_race_hours=1: finish-position kick does NOT need D1 (uses Neon +
-  #     realtime-odds HTTPS only), so we skip D1-dependent checks and proceed
-  #     directly to the finish-position guard with unconditional kick.
+  #   is_race_hours=1: older behavior kicked finish-position for freshness, but
+  #     that cannot prove running-style is complete. Order wins over freshness,
+  #     so finish-position is skipped below when D1 is unavailable.
   #   is_race_hours=0: we cannot determine expected_count, so we cannot make
   #     safe progress on any check — abort as before.
   local d1_unavailable=0
   if [ -z "$expected_count" ] || [ "$expected_count" = "null" ]; then
     if [ "$is_race_hours" = "1" ]; then
       log "WARN: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
-      log "WARN: D1 unavailable but is_race_hours=1 — skipping D1-dependent checks; finish-position kick will proceed unconditionally"
+      log "WARN: D1 unavailable and is_race_hours=1 — skipping D1-dependent checks; finish-position will also be skipped to preserve feature -> running-style -> finish-position order"
       d1_unavailable=1
     else
       log "ERROR: failed to parse expected race count for $label from D1 (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
@@ -539,13 +478,6 @@ guard_target() {
   fi
 
   if [ "$d1_unavailable" = "0" ]; then
-    # DRY_RUN-only override so the per-venue coverage path can be exercised
-    # without touching a real D1. FORCE_EXPECTED_COUNT is applied AFTER the
-    # live D1 query so any parse error is still surfaced above.
-    if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
-      log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (was: $expected_count)"
-      expected_count="$FORCE_EXPECTED_COUNT"
-    fi
     log "EXPECTED_COUNT[$label]=$expected_count (distinct race_key in realtime_race_sources)"
 
     if [ "$expected_count" = "0" ]; then
@@ -573,12 +505,19 @@ guard_target() {
       || corner_features_ok=0
 
     # --- running-style guard ---
+    local rs_complete_for_finish=0
+    local rs_kicked_this_tick=0
     if [ "$corner_features_ok" != "1" ]; then
       log "running-style[$label] SKIPPED — corner-features unavailable for $target_date"
     else
       log "checking running-style coverage in Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
       local rs_actual
-      rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+      if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_RS_ACTUAL:-}" ]; then
+        rs_actual="$FORCE_RS_ACTUAL"
+        log "DRY_RUN: FORCE_RS_ACTUAL=$FORCE_RS_ACTUAL override (skipping Neon running-style query)"
+      else
+        rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+      fi
       if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
         log "ERROR: failed to parse running-style count for $label from Neon (got: $rs_actual)"
         return 1
@@ -586,18 +525,22 @@ guard_target() {
       log "running-style[$label]: actual=$rs_actual expected=$expected_count"
       if [ "$rs_actual" -lt "$expected_count" ]; then
         log "running-style[$label] INCOMPLETE — kicking $RS_KICK_JOB_TYPE for date=$target_date"
+        rs_kicked_this_tick=1
         if [ "${DRY_RUN:-0}" = "1" ]; then
           log "DRY_RUN: would POST $JOBS_KICK_URL body={\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
         else
           kick_worker_job "running-style-$label" "{\"type\":\"$RS_KICK_JOB_TYPE\",\"date\":\"$target_date\"}"
         fi
       else
+        rs_complete_for_finish=1
         log "running-style[$label] COMPLETE — skip kick"
       fi
     fi
   else
     # d1_unavailable=1 (race hours only): D1-dependent checks skipped.
     local corner_features_ok=0
+    local rs_complete_for_finish=0
+    local rs_kicked_this_tick=0
     log "per-venue-coverage[$label] SKIPPED — D1 unavailable"
     log "corner-features[$label] SKIPPED — D1 unavailable"
     log "running-style[$label] SKIPPED — D1 unavailable"
@@ -608,20 +551,19 @@ guard_target() {
   # Freshness-aware skip logic:
   #   During race hours (JST 10:00-20:00) bataiju (馬体重) for upcoming races
   #   is typically announced ~T-30..40 min before post, and odds continue to
-  #   shift. We therefore ALWAYS re-kick the pipeline during race hours, even
-  #   when fp_actual >= expected_count, so predictions incorporate the latest
-  #   bataiju/odds. The concurrent-run lock (FINISH_LOCK_DIR) is still checked
-  #   — two docker runs never overlap.
+  #   shift. We therefore re-kick the pipeline during race hours, even when
+  #   fp_actual >= expected_count, after running-style completion has been
+  #   confirmed, so predictions incorporate the latest bataiju/odds. The
+  #   concurrent-run lock (FINISH_LOCK_DIR) is still checked — two docker runs
+  #   never overlap.
   #
   #   Outside race hours (0-9, 21-23) the old "skip when complete" logic is
   #   preserved: no new race data is expected, so a re-run would be pure
   #   compute waste.
   #
-  #   When D1 is unavailable (d1_unavailable=1), finish-position kick runs
-  #   because: (a) is_race_hours=1 is guaranteed at this branch, (b) the kick
-  #   itself uses only Neon + realtime-odds HTTPS and does NOT need D1.
-  #   expected_count comparison is skipped; fp_actual is still queried from
-  #   Neon (informational only).
+  #   When D1 is unavailable (d1_unavailable=1), finish-position is skipped.
+  #   The kick itself may not need D1, but this guard cannot prove the
+  #   running-style prerequisite is complete without the expected race count.
 
   # CF cutover: when finish-position is offloaded to the Cloudflare Worker +
   # container per-race pipeline, the local docker kick is skipped entirely. This
@@ -633,9 +575,30 @@ guard_target() {
     return 0
   fi
 
+  if [ "$d1_unavailable" = "1" ]; then
+    log "finish-position[$label] SKIPPED — D1 unavailable, so running-style completion cannot be verified; order takes priority over race-hours freshness"
+    log "guard_target done (label=$label target=$target_date_iso expected=D1_UNAVAILABLE rs=skipped fp=skipped cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable)"
+    return 0
+  fi
+
+  if [ "$rs_complete_for_finish" != "1" ]; then
+    if [ "$rs_kicked_this_tick" = "1" ]; then
+      log "finish-position[$label] SKIPPED — running-style was kicked asynchronously in this tick; next tick will re-check completion before docker"
+    else
+      log "finish-position[$label] SKIPPED — running-style is not confirmed complete for expected=$expected_count"
+    fi
+    log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=skipped cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable)"
+    return 0
+  fi
+
   log "checking finish-position coverage in Neon ($FP_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
   local fp_actual
-  fp_actual="$(neon_count "$FP_TABLE" "$target_nen" "$target_tsukihi" || true)"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_FP_ACTUAL:-}" ]; then
+    fp_actual="$FORCE_FP_ACTUAL"
+    log "DRY_RUN: FORCE_FP_ACTUAL=$FORCE_FP_ACTUAL override (skipping Neon finish-position query)"
+  else
+    fp_actual="$(neon_count "$FP_TABLE" "$target_nen" "$target_tsukihi" || true)"
+  fi
   if ! printf '%s' "$fp_actual" | grep -Eq '^[0-9]+$'; then
     log "ERROR: failed to parse finish-position count for $label from Neon (got: $fp_actual)"
     return 1
@@ -643,13 +606,10 @@ guard_target() {
   log "finish-position[$label]: actual=$fp_actual expected=${expected_count:-D1_UNAVAILABLE} is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable"
 
   # Decide whether to kick:
-  #   d1_unavailable=1 + is_race_hours=1: unconditional kick (no expected_count)
-  #   d1_unavailable=0: kick when incomplete OR when in race hours (freshness)
+  #   kick when incomplete OR when in race hours (freshness), but only after
+  #   running-style has been confirmed complete above.
   local should_kick=0
-  if [ "$d1_unavailable" = "1" ]; then
-    log "finish-position[$label] D1-unavailable race-hours — unconditional kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
-    should_kick=1
-  elif [ "$fp_actual" -lt "$expected_count" ]; then
+  if [ "$fp_actual" -lt "$expected_count" ]; then
     log "finish-position[$label] INCOMPLETE — will kick (RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead)"
     should_kick=1
   elif [ "$is_race_hours" = "1" ]; then
