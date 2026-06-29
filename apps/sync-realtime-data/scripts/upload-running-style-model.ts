@@ -3,16 +3,19 @@
 //   bun run running-style:upload-model -- --source nar --input tmp/nar-model.flatbin
 
 import {
+  buildRunningStyleCellModelKey,
   buildRunningStyleLatestModelKey,
   isRunningStyleModelSource,
   registerRunningStyleModel,
   RUNNING_STYLE_MODEL_BUCKET,
+  validateRunningStyleModelObjectKey,
   type RunningStyleModelSource,
 } from "../src/running-style-model-register";
 
 export interface UploadRunningStyleModelCliArgs {
   bucket: string;
   inputPath: string;
+  objectKey?: string;
   remote: boolean;
   source: RunningStyleModelSource;
   syncLocal: boolean;
@@ -22,10 +25,12 @@ const buildUsageText = (): string =>
   [
     "Usage:",
     "  bun run running-style:upload-model -- --source jra|nar --input <model.json|model.flatbin> \\",
+    "    [--object-key <running-style/models/<source>/...flatbin> | --variant-id <id>] \\",
     "    [--remote] [--sync-local] [--bucket <name>]",
     "",
     "Converts JSON models to flatbin when needed and uploads to",
-    "running-style/models/<source>/latest.flatbin in R2.",
+    "running-style/models/<source>/latest.flatbin in R2 by default.",
+    "Use --variant-id to upload running-style/models/<source>/cells/<id>.flatbin.",
     "Use --remote for production R2 and --sync-local to mirror into local wrangler R2.",
   ].join("\n");
 
@@ -41,9 +46,11 @@ export const parseUploadRunningStyleModelCliArgs = (
 ): UploadRunningStyleModelCliArgs => {
   let source: RunningStyleModelSource | undefined;
   let inputPath = "";
+  let objectKey: string | undefined;
   let remote = false;
   let syncLocal = true;
   let bucket = RUNNING_STYLE_MODEL_BUCKET;
+  let variantId: string | undefined;
 
   for (let index = 0; index < argv.length; index += 1) {
     const name = argv[index]!;
@@ -64,6 +71,16 @@ export const parseUploadRunningStyleModelCliArgs = (
     }
     if (name === "--bucket") {
       bucket = requireValue(name, value);
+      index += 1;
+      continue;
+    }
+    if (name === "--object-key") {
+      objectKey = requireValue(name, value);
+      index += 1;
+      continue;
+    }
+    if (name === "--variant-id") {
+      variantId = requireValue(name, value);
       index += 1;
       continue;
     }
@@ -92,22 +109,36 @@ export const parseUploadRunningStyleModelCliArgs = (
   if (inputPath.length === 0) {
     throw new Error("--input is required.");
   }
+  if (objectKey !== undefined && variantId !== undefined) {
+    throw new Error("Use either --object-key or --variant-id, not both.");
+  }
+  const resolvedObjectKey =
+    objectKey !== undefined
+      ? validateRunningStyleModelObjectKey(source, objectKey)
+      : variantId === undefined
+        ? undefined
+        : buildRunningStyleCellModelKey(source, variantId);
 
-  return {
+  const parsed: UploadRunningStyleModelCliArgs = {
     bucket,
     inputPath,
     remote,
     source,
     syncLocal,
   };
+  if (resolvedObjectKey !== undefined) {
+    parsed.objectKey = resolvedObjectKey;
+  }
+  return parsed;
 };
 
 export const run = async (): Promise<void> => {
   const args = parseUploadRunningStyleModelCliArgs(process.argv.slice(2));
-  const objectKey = buildRunningStyleLatestModelKey(args.source);
+  const objectKey = args.objectKey ?? buildRunningStyleLatestModelKey(args.source);
   const uploaded = await registerRunningStyleModel(
     {
       inputPath: args.inputPath,
+      objectKey: args.objectKey,
       remote: args.remote,
       source: args.source,
     },
@@ -119,7 +150,10 @@ export const run = async (): Promise<void> => {
 
   if (args.syncLocal && args.remote) {
     const { syncRunningStyleModel } = await import("../src/running-style-model-register");
-    await syncRunningStyleModel(args.source, { bucket: args.bucket });
+    await syncRunningStyleModel(args.source, {
+      bucket: args.bucket,
+      objectKey: uploaded.objectKey,
+    });
     console.log(`[running-style:upload-model] synced-local key=${objectKey}`);
   }
 };

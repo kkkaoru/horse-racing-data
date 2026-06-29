@@ -17,10 +17,13 @@ Run with:
     --validation-years 2024,2025 \\
     --output-predictions-dir ../../tmp/finish-position-eval/predictions-jra/running-style-lgbm
 """
+
 from __future__ import annotations
 
 import argparse
 import json
+import re
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, TypedDict
@@ -29,7 +32,10 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
-from running_style_field_features import FIELD_FEATURE_COLUMNS, enrich_dataframe_with_field_features
+from running_style_field_features import (
+    FIELD_FEATURE_COLUMNS,
+    enrich_dataframe_with_field_features,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -73,11 +79,50 @@ CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = (
 TARGET_COLUMN = "target_running_style_class"
 NUM_CLASSES = 4
 CLASS_LABELS: tuple[str, str, str, str] = ("nige", "senkou", "sashi", "oikomi")
-PROBABILITY_COLUMNS: tuple[str, str, str, str] = ("p_nige", "p_senkou", "p_sashi", "p_oikomi")
+PROBABILITY_COLUMNS: tuple[str, str, str, str] = (
+    "p_nige",
+    "p_senkou",
+    "p_sashi",
+    "p_oikomi",
+)
 
 # rs_p_* columns are running-style probability predictions derived from the target —
 # including them causes label leakage. Exclude explicitly from all training feature sets.
-LEAK_COLUMNS: tuple[str, str, str, str] = ("rs_p_nige", "rs_p_senkou", "rs_p_sashi", "rs_p_oikomi")
+LEAK_COLUMNS: tuple[str, str, str, str] = (
+    "rs_p_nige",
+    "rs_p_senkou",
+    "rs_p_sashi",
+    "rs_p_oikomi",
+)
+
+CELL_DERIVED_COLUMNS: tuple[str, ...] = (
+    "__rs_cell_category",
+    "__rs_cell_surface",
+    "__rs_cell_distance_band",
+    "__rs_cell_season",
+    "__rs_cell_class",
+    "__rs_cell_venue",
+    "__rs_cell_subgroup",
+)
+RUNNING_STYLE_DEFAULT_VARIANT_ID = "latest"
+BAN_EI_RUNNING_STYLE_KEIBAJO_CODES: frozenset[str] = frozenset({"65", "83"})
+DISTANCE_SPRINT_MAX = 1200
+DISTANCE_MILE_MAX = 1600
+DISTANCE_INTERMEDIATE_MAX = 2000
+DISTANCE_LONG_MAX = 2400
+DEFAULT_CELL_MIN_TRAIN_ROWS = 200
+DEFAULT_CELL_MIN_VALID_ROWS = 50
+DEFAULT_CELL_MIN_CLASSES = 2
+DEFAULT_CELL_ROUTING_DIMENSIONS: tuple[str, ...] = (
+    "class",
+    "distance_band",
+    "season",
+    "surface",
+    "venue",
+    "subgroup",
+)
+CELL_MODEL_KEY_ROOT = "running-style/models"
+CELL_VARIANT_ID_PATTERN = re.compile(r"[^0-9A-Za-z_.-]+")
 
 DEFAULT_NUM_LEAVES = 63
 DEFAULT_LEARNING_RATE = 0.05
@@ -137,6 +182,28 @@ class WalkForwardEvalMetrics(TypedDict):
     accuracy: float
 
 
+class RunningStyleCellMetrics(TypedDict):
+    accuracy: float
+    macro_f1: float
+    multi_log_loss: float
+    top2_accuracy: float
+    per_class_precision: dict[str, float]
+    per_class_recall: dict[str, float]
+    per_class_support: dict[str, int]
+    per_class_log_loss: dict[str, float]
+
+
+@dataclass(frozen=True, order=True)
+class RunningStyleCellKey:
+    category: str
+    class_label: str
+    distance_band: str | None
+    season: str | None
+    surface: str | None
+    venue: str
+    subgroup: str | None
+
+
 DEFAULT_WALK_FORWARD_WINDOWS = "2023,2024,2025,2026"
 WALK_FORWARD_PRECISION_GAP_THRESHOLD_PP = 30.0
 LOG_LOSS_EPS = 1e-15
@@ -164,12 +231,19 @@ def default_training_params() -> TrainingParams:
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
-    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS) | set(LEAK_COLUMNS)
+    excluded = (
+        set(META_COLUMNS)
+        | set(LABEL_COLUMNS)
+        | set(LEAK_COLUMNS)
+        | set(CELL_DERIVED_COLUMNS)
+    )
     return [column for column in df_columns if column not in excluded]
 
 
 def detect_categorical_features(feature_columns: list[str]) -> list[str]:
-    return [column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS]
+    return [
+        column for column in feature_columns if column in CATEGORICAL_FEATURE_COLUMNS
+    ]
 
 
 def _read_partitioned_parquet(child: Path) -> pl.DataFrame:
@@ -188,7 +262,8 @@ def load_dataset_parquet(path: Path) -> pl.DataFrame:
         partitioned = sorted(path.glob("race_year=*/*.parquet"))
         if partitioned:
             return pl.concat(
-                [_read_partitioned_parquet(child) for child in partitioned], how="diagonal_relaxed"
+                [_read_partitioned_parquet(child) for child in partitioned],
+                how="diagonal_relaxed",
             )
         flat = sorted(path.glob("*.parquet"))
         if flat:
@@ -203,7 +278,9 @@ def filter_labeled_rows(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(pl.col(TARGET_COLUMN).is_not_null())
 
 
-def split_by_year(df: pl.DataFrame, train_start: str, valid_year: int) -> tuple[pl.DataFrame, pl.DataFrame]:
+def split_by_year(
+    df: pl.DataFrame, train_start: str, valid_year: int
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     race_date = pl.col("race_date").str.to_datetime("%Y%m%d")
     train_mask = (race_date >= pl.lit(train_start).str.to_datetime("%Y%m%d")) & (
         pl.col("race_year") < valid_year
@@ -237,6 +314,378 @@ def resolve_sample_weights(labels: pl.Series, class_weight_scheme: str) -> np.nd
     return compute_inverse_frequency_weights(labels)
 
 
+def normalize_optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text == "" or text.lower() == "nan":
+        return None
+    return text
+
+
+def normalize_optional_number(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, str | int | float | np.integer | np.floating):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return numeric
+
+
+def normalize_keibajo_code(value: object) -> str:
+    normalized = normalize_optional_string(value)
+    if normalized is None:
+        return ""
+    return normalized.zfill(2)
+
+
+def derive_running_style_category(source: object, keibajo_code: object) -> str:
+    source_text = normalize_optional_string(source)
+    source_key = source_text.lower() if source_text is not None else None
+    if source_key == "jra":
+        return "jra"
+    if source_key == "ban-ei":
+        return "ban-ei"
+    normalized_keibajo = normalize_keibajo_code(keibajo_code)
+    if normalized_keibajo in BAN_EI_RUNNING_STYLE_KEIBAJO_CODES:
+        return "ban-ei"
+    return "nar"
+
+
+def derive_running_style_surface(track_code: object, category: str) -> str | None:
+    if category != "jra":
+        return "dirt"
+    normalized = normalize_optional_string(track_code)
+    if normalized is None:
+        return None
+    if normalized.startswith("1"):
+        return "turf"
+    if normalized.startswith("2"):
+        return "dirt"
+    return "other"
+
+
+def derive_running_style_distance_band(kyori: object) -> str | None:
+    numeric = normalize_optional_number(kyori)
+    if numeric is None:
+        return None
+    if numeric < DISTANCE_SPRINT_MAX:
+        return "sprint"
+    if numeric < DISTANCE_MILE_MAX:
+        return "mile"
+    if numeric < DISTANCE_INTERMEDIATE_MAX:
+        return "intermediate"
+    if numeric < DISTANCE_LONG_MAX:
+        return "long"
+    return "extended"
+
+
+def derive_running_style_season(kaisai_tsukihi: object) -> str | None:
+    normalized = normalize_optional_string(kaisai_tsukihi)
+    if normalized is None or len(normalized) < 2:
+        return None
+    month_text = normalized[:2]
+    if not month_text.isdigit():
+        return None
+    month = int(month_text)
+    if 3 <= month <= 5:
+        return "spring"
+    if 6 <= month <= 8:
+        return "summer"
+    if 9 <= month <= 11:
+        return "autumn"
+    return "winter"
+
+
+def _first_present_record_value(
+    record: dict[str, object], names: tuple[str, ...]
+) -> object:
+    for name in names:
+        if name in record:
+            return record[name]
+    return None
+
+
+def derive_running_style_cell_key(
+    record: dict[str, object],
+    *,
+    allow_target_class_label: bool = False,
+) -> RunningStyleCellKey:
+    source = _first_present_record_value(record, ("source", "category"))
+    keibajo_code = _first_present_record_value(record, ("keibajo_code",))
+    category = derive_running_style_category(source, keibajo_code)
+    grade_code = normalize_optional_string(
+        _first_present_record_value(record, ("grade_code",))
+    )
+    subgroup_source = (
+        _first_present_record_value(record, ("nar_subclass", "condition_key"))
+        if category == "nar"
+        else _first_present_record_value(record, ("kyoso_joken_code", "class_code"))
+    )
+    return RunningStyleCellKey(
+        category=category,
+        class_label=grade_code
+        if grade_code is not None
+        else derive_class_label_from_record(record)
+        if allow_target_class_label
+        else "unknown",
+        distance_band=derive_running_style_distance_band(
+            _first_present_record_value(record, ("kyori",))
+        )
+        or normalize_optional_string(
+            _first_present_record_value(record, ("kyori_band",))
+        ),
+        season=derive_running_style_season(
+            _first_present_record_value(record, ("kaisai_tsukihi",))
+        )
+        or normalize_optional_string(
+            _first_present_record_value(record, ("season_band",))
+        ),
+        surface=derive_running_style_surface(
+            _first_present_record_value(record, ("track_code",)),
+            category,
+        ),
+        venue=normalize_keibajo_code(keibajo_code),
+        subgroup=normalize_optional_string(subgroup_source),
+    )
+
+
+def derive_class_label_from_record(record: dict[str, object]) -> str:
+    numeric = normalize_optional_number(
+        _first_present_record_value(record, (TARGET_COLUMN,))
+    )
+    if numeric is None:
+        return "unknown"
+    class_idx = int(numeric)
+    if 0 <= class_idx < len(CLASS_LABELS):
+        return CLASS_LABELS[class_idx]
+    return "unknown"
+
+
+def derive_running_style_cell(record: dict[str, object]) -> dict[str, object]:
+    cell = derive_running_style_cell_key(record, allow_target_class_label=True)
+    derived: dict[str, object] = {
+        "category": cell.category,
+        "class_label": cell.class_label,
+        "distance_band": cell.distance_band,
+        "season": cell.season,
+        "surface": cell.surface,
+        "venue": cell.venue,
+    }
+    if cell.subgroup is not None:
+        derived["subgroup"] = cell.subgroup
+    return derived
+
+
+def attach_running_style_cell_columns(
+    df: pl.DataFrame,
+    *,
+    allow_target_class_label: bool = False,
+) -> pl.DataFrame:
+    cells = [
+        derive_running_style_cell_key(
+            dict(row), allow_target_class_label=allow_target_class_label
+        )
+        for row in df.iter_rows(named=True)
+    ]
+    return df.with_columns(
+        pl.Series(CELL_DERIVED_COLUMNS[0], [cell.category for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[1], [cell.surface for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[2], [cell.distance_band for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[3], [cell.season for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[4], [cell.class_label for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[5], [cell.venue for cell in cells]),
+        pl.Series(CELL_DERIVED_COLUMNS[6], [cell.subgroup for cell in cells]),
+    )
+
+
+def cell_key_from_derived_record(record: dict[str, object]) -> RunningStyleCellKey:
+    category = normalize_optional_string(record[CELL_DERIVED_COLUMNS[0]]) or "nar"
+    class_label = (
+        normalize_optional_string(record[CELL_DERIVED_COLUMNS[4]]) or "unknown"
+    )
+    venue = normalize_optional_string(record[CELL_DERIVED_COLUMNS[5]]) or ""
+    return RunningStyleCellKey(
+        category=category,
+        class_label=class_label,
+        distance_band=normalize_optional_string(record[CELL_DERIVED_COLUMNS[2]]),
+        season=normalize_optional_string(record[CELL_DERIVED_COLUMNS[3]]),
+        surface=normalize_optional_string(record[CELL_DERIVED_COLUMNS[1]]),
+        venue=venue,
+        subgroup=normalize_optional_string(record[CELL_DERIVED_COLUMNS[6]]),
+    )
+
+
+def build_cell_filter_expr(cell: RunningStyleCellKey) -> pl.Expr:
+    comparisons: list[pl.Expr] = [
+        pl.col(CELL_DERIVED_COLUMNS[0]) == cell.category,
+        pl.col(CELL_DERIVED_COLUMNS[4]) == cell.class_label,
+        pl.col(CELL_DERIVED_COLUMNS[5]) == cell.venue,
+    ]
+    optional_pairs = (
+        (CELL_DERIVED_COLUMNS[2], cell.distance_band),
+        (CELL_DERIVED_COLUMNS[3], cell.season),
+        (CELL_DERIVED_COLUMNS[1], cell.surface),
+        (CELL_DERIVED_COLUMNS[6], cell.subgroup),
+    )
+    for column, value in optional_pairs:
+        comparisons.append(
+            pl.col(column).is_null() if value is None else pl.col(column) == value
+        )
+    expr = comparisons[0]
+    for comparison in comparisons[1:]:
+        expr = expr & comparison
+    return expr
+
+
+def source_for_running_style_category(category: str) -> str:
+    if category == "jra":
+        return "jra"
+    return "nar"
+
+
+def build_default_running_style_model_key(category: str) -> str:
+    source = source_for_running_style_category(category)
+    return f"{CELL_MODEL_KEY_ROOT}/{source}/latest.flatbin"
+
+
+def sanitize_variant_token(value: str) -> str:
+    token = CELL_VARIANT_ID_PATTERN.sub("-", value.strip()).strip("-").lower()
+    return token if token else "none"
+
+
+def build_cell_variant_id(cell: RunningStyleCellKey) -> str:
+    parts = [
+        cell.category,
+        f"class-{cell.class_label}",
+        f"dist-{cell.distance_band or 'none'}",
+        f"season-{cell.season or 'none'}",
+        f"surface-{cell.surface or 'none'}",
+        f"venue-{cell.venue or 'none'}",
+        f"subgroup-{cell.subgroup or 'none'}",
+    ]
+    return "cell-" + "-".join(sanitize_variant_token(part) for part in parts)
+
+
+def build_cell_model_key(category: str, model_version: str, variant_id: str) -> str:
+    source = source_for_running_style_category(category)
+    version_token = sanitize_variant_token(model_version)
+    return f"{CELL_MODEL_KEY_ROOT}/{source}/cells/{version_token}-{variant_id}.flatbin"
+
+
+def cell_conditions(cell: RunningStyleCellKey) -> list[dict[str, object]]:
+    values_by_dimension: dict[str, str | None] = {
+        "class": cell.class_label,
+        "distance_band": cell.distance_band,
+        "season": cell.season,
+        "surface": cell.surface,
+        "venue": cell.venue,
+        "subgroup": cell.subgroup,
+    }
+    return [
+        {"dimension": dimension, "values": [value]}
+        for dimension in DEFAULT_CELL_ROUTING_DIMENSIONS
+        if (value := values_by_dimension[dimension]) is not None and value != ""
+    ]
+
+
+def compute_top2_accuracy(probabilities: np.ndarray, actual: np.ndarray) -> float:
+    if actual.size == 0:
+        return float("nan")
+    top2 = np.argpartition(probabilities, kth=-2, axis=1)[:, -2:]
+    hits = np.any(top2 == actual.reshape(-1, 1), axis=1)
+    return float(hits.mean())
+
+
+def compute_per_class_log_loss(
+    probabilities: np.ndarray, actual: np.ndarray
+) -> dict[str, float]:
+    losses: dict[str, float] = {}
+    clipped = np.clip(probabilities, LOG_LOSS_EPS, 1.0 - LOG_LOSS_EPS)
+    for class_idx, class_name in enumerate(CLASS_LABELS):
+        class_mask = actual == class_idx
+        if not np.any(class_mask):
+            losses[class_name] = float("nan")
+            continue
+        selected = clipped[class_mask, class_idx]
+        losses[class_name] = float(-np.log(selected).mean())
+    return losses
+
+
+def compute_running_style_metrics(
+    probabilities: np.ndarray,
+    actual: np.ndarray,
+) -> RunningStyleCellMetrics:
+    predicted = compute_predicted_labels(probabilities)
+    precision, recall, support = compute_per_class_precision_recall(predicted, actual)
+    return {
+        "accuracy": compute_accuracy(predicted, actual),
+        "macro_f1": macro_f1_from_precision_recall(precision, recall),
+        "multi_log_loss": compute_multi_log_loss(probabilities, actual),
+        "top2_accuracy": compute_top2_accuracy(probabilities, actual),
+        "per_class_precision": precision,
+        "per_class_recall": recall,
+        "per_class_support": support,
+        "per_class_log_loss": compute_per_class_log_loss(probabilities, actual),
+    }
+
+
+def json_ready(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(k): json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_ready(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_ready(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        numeric = float(value)
+        return numeric if np.isfinite(numeric) else None
+    if isinstance(value, float):
+        return value if np.isfinite(value) else None
+    return value
+
+
+def build_running_style_cell_routing_config(
+    trained_cells: list[dict[str, object]],
+) -> dict[str, object]:
+    categories = sorted({str(cell["category"]) for cell in trained_cells})
+    config: dict[str, object] = {}
+    for category in categories:
+        variants: dict[str, object] = {
+            RUNNING_STYLE_DEFAULT_VARIANT_ID: {
+                "modelKey": build_default_running_style_model_key(category)
+            }
+        }
+        rules: list[dict[str, object]] = []
+        category_cells = [
+            cell for cell in trained_cells if str(cell["category"]) == category
+        ]
+        for cell_record in sorted(
+            category_cells, key=lambda record: str(record["variant_id"])
+        ):
+            variant_id = str(cell_record["variant_id"])
+            variants[variant_id] = {"modelKey": str(cell_record["model_key"])}
+            rules.append(
+                {
+                    "conditions": cell_record["conditions"],
+                    "variantId": variant_id,
+                }
+            )
+        config[category] = {
+            "defaultVariantId": RUNNING_STYLE_DEFAULT_VARIANT_ID,
+            "rules": rules,
+            "variants": variants,
+        }
+    return config
+
+
 def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
     return {
         "objective": "multiclass",
@@ -254,7 +703,9 @@ def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
     }
 
 
-def encode_categoricals(frame: pl.DataFrame, categorical_features: list[str]) -> pl.DataFrame:
+def encode_categoricals(
+    frame: pl.DataFrame, categorical_features: list[str]
+) -> pl.DataFrame:
     present = [column for column in categorical_features if column in frame.columns]
     return frame.with_columns(pl.col(column).cast(pl.Categorical) for column in present)
 
@@ -274,7 +725,9 @@ def build_lgb_dataset(
     categorical_features: list[str],
     reference: lgb.Dataset | None = None,
 ) -> lgb.Dataset:
-    feature_frame = encode_categoricals(frame.select(feature_columns), categorical_features)
+    feature_frame = encode_categoricals(
+        frame.select(feature_columns), categorical_features
+    )
     return lgb.Dataset(
         to_lgb_frame(feature_frame),
         label=labels.to_numpy().astype(np.int64),
@@ -291,8 +744,12 @@ def predict_softmax(
     feature_columns: list[str],
     categorical_features: list[str],
 ) -> np.ndarray:
-    feature_frame = encode_categoricals(frame.select(feature_columns), categorical_features)
-    raw = booster.predict(to_lgb_frame(feature_frame), num_iteration=booster.best_iteration)
+    feature_frame = encode_categoricals(
+        frame.select(feature_columns), categorical_features
+    )
+    raw = booster.predict(
+        to_lgb_frame(feature_frame), num_iteration=booster.best_iteration
+    )
     return np.asarray(raw, dtype=np.float64)
 
 
@@ -318,13 +775,19 @@ def compute_per_class_precision_recall(
         tp = int((predicted_mask & actual_mask).sum())
         predicted_count = int(predicted_mask.sum())
         actual_count = int(actual_mask.sum())
-        precision[class_name] = float(tp / predicted_count) if predicted_count > 0 else float("nan")
-        recall[class_name] = float(tp / actual_count) if actual_count > 0 else float("nan")
+        precision[class_name] = (
+            float(tp / predicted_count) if predicted_count > 0 else float("nan")
+        )
+        recall[class_name] = (
+            float(tp / actual_count) if actual_count > 0 else float("nan")
+        )
         support[class_name] = actual_count
     return precision, recall, support
 
 
-def macro_f1_from_precision_recall(precision: dict[str, float], recall: dict[str, float]) -> float:
+def macro_f1_from_precision_recall(
+    precision: dict[str, float], recall: dict[str, float]
+) -> float:
     f1_scores: list[float] = []
     for class_name in CLASS_LABELS:
         p = precision[class_name]
@@ -337,7 +800,9 @@ def macro_f1_from_precision_recall(precision: dict[str, float], recall: dict[str
     return float(np.mean(f1_scores))
 
 
-def compute_binary_log_loss_nige(probabilities: np.ndarray, actual: np.ndarray) -> float:
+def compute_binary_log_loss_nige(
+    probabilities: np.ndarray, actual: np.ndarray
+) -> float:
     if actual.size == 0:
         return float("nan")
     p_nige = np.clip(probabilities[:, 0], LOG_LOSS_EPS, 1.0 - LOG_LOSS_EPS)
@@ -407,7 +872,9 @@ def maybe_enrich_with_field_features(df: pl.DataFrame, enabled: bool) -> pl.Data
     return enrich_dataframe_with_field_features(df)
 
 
-def extend_feature_columns(feature_columns: list[str], with_field_features: bool) -> list[str]:
+def extend_feature_columns(
+    feature_columns: list[str], with_field_features: bool
+) -> list[str]:
     if not with_field_features:
         return feature_columns
     merged = list(feature_columns)
@@ -423,18 +890,29 @@ def train_running_style_head(
     feature_columns: list[str],
     categorical_features: list[str],
     params: TrainingParams,
+    *,
+    class_weight_scheme: str = "inverse_freq",
 ) -> tuple[lgb.Booster, np.ndarray]:
     train_subset = filter_labeled_rows(train_df)
     valid_subset = filter_labeled_rows(valid_df)
-    train_weights = compute_inverse_frequency_weights(train_subset[TARGET_COLUMN])
+    train_weights = resolve_sample_weights(
+        train_subset[TARGET_COLUMN], class_weight_scheme
+    )
     valid_weights = np.ones(len(valid_subset), dtype=np.float64)
     train_dataset = build_lgb_dataset(
-        train_subset, train_subset[TARGET_COLUMN], train_weights,
-        feature_columns, categorical_features,
+        train_subset,
+        train_subset[TARGET_COLUMN],
+        train_weights,
+        feature_columns,
+        categorical_features,
     )
     valid_dataset = build_lgb_dataset(
-        valid_subset, valid_subset[TARGET_COLUMN], valid_weights,
-        feature_columns, categorical_features, reference=train_dataset,
+        valid_subset,
+        valid_subset[TARGET_COLUMN],
+        valid_weights,
+        feature_columns,
+        categorical_features,
+        reference=train_dataset,
     )
     booster = lgb.train(
         lgb_params_for_multiclass(params),
@@ -446,11 +924,15 @@ def train_running_style_head(
             lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
         ],
     )
-    probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
+    probabilities = predict_softmax(
+        booster, valid_df, feature_columns, categorical_features
+    )
     return booster, probabilities
 
 
-def build_predictions_df(valid_df: pl.DataFrame, probabilities: np.ndarray) -> pl.DataFrame:
+def build_predictions_df(
+    valid_df: pl.DataFrame, probabilities: np.ndarray
+) -> pl.DataFrame:
     output = valid_df.select(
         ["race_id", "ketto_toroku_bango", "umaban", "race_year", TARGET_COLUMN]
     )
@@ -461,7 +943,9 @@ def build_predictions_df(valid_df: pl.DataFrame, probabilities: np.ndarray) -> p
     ]
     return output.with_columns(
         *probability_columns,
-        pl.Series("predicted_label", [CLASS_LABELS[int(idx)] for idx in predicted_indices]),
+        pl.Series(
+            "predicted_label", [CLASS_LABELS[int(idx)] for idx in predicted_indices]
+        ),
         pl.Series("predicted_class", predicted_indices.astype(int)),
     )
 
@@ -518,27 +1002,41 @@ def write_predictions_jsonl(predictions: pl.DataFrame, output_path: Path) -> Non
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as handle:
         for raw_record in predictions.iter_rows(named=True):
-            record = _sanitize_record_for_json({str(k): v for k, v in raw_record.items()})
+            record = _sanitize_record_for_json(
+                {str(k): v for k, v in raw_record.items()}
+            )
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def write_walk_forward_report(metrics_per_fold: list[FoldMetrics], output_path: Path) -> None:
+def write_walk_forward_report(
+    metrics_per_fold: list[FoldMetrics], output_path: Path
+) -> None:
     aggregate = {
-        "accuracy_mean": float(np.nanmean([fold["accuracy"] for fold in metrics_per_fold])),
-        "macro_f1_mean": float(np.nanmean([fold["macro_f1"] for fold in metrics_per_fold])),
+        "accuracy_mean": float(
+            np.nanmean([fold["accuracy"] for fold in metrics_per_fold])
+        ),
+        "macro_f1_mean": float(
+            np.nanmean([fold["macro_f1"] for fold in metrics_per_fold])
+        ),
     }
     payload = {"folds": metrics_per_fold, "aggregate": aggregate}
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    output_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def _add_lgbm_hyperparam_arguments(subparser: argparse.ArgumentParser) -> None:
     subparser.add_argument("--num-leaves", type=int, default=DEFAULT_NUM_LEAVES)
     subparser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE)
-    subparser.add_argument("--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES)
+    subparser.add_argument(
+        "--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES
+    )
     subparser.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
     subparser.add_argument(
-        "--early-stopping-rounds", type=int, default=DEFAULT_EARLY_STOPPING_ROUNDS,
+        "--early-stopping-rounds",
+        type=int,
+        default=DEFAULT_EARLY_STOPPING_ROUNDS,
     )
     subparser.add_argument(
         "--bagging-fraction",
@@ -576,7 +1074,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="running_style_lightgbm")
     subparsers = parser.add_subparsers(dest="command", required=True)
     walk = subparsers.add_parser("walk-forward")
-    walk.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
+    walk.add_argument(
+        "--csv", type=Path, required=True, help="parquet directory or file"
+    )
     walk.add_argument("--train-start-date", type=str, default=DEFAULT_TRAIN_START_DATE)
     walk.add_argument("--validation-years", type=str, default="2024,2025")
     walk.add_argument("--output-predictions-dir", type=Path, required=True)
@@ -589,7 +1089,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Compute race-internal field_* features before training/prediction",
     )
     train_prod = subparsers.add_parser("train-production")
-    train_prod.add_argument("--csv", type=Path, required=True, help="parquet directory or file")
+    train_prod.add_argument(
+        "--csv", type=Path, required=True, help="parquet directory or file"
+    )
     train_prod.add_argument(
         "--train-start-date",
         type=str,
@@ -634,6 +1136,56 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["inverse_freq", "balanced2"],
         help="Sample weight scheme: inverse_freq (default) or balanced2 (nige×0.65, senkou×1.0, sashi×1.0, oikomi×0.85)",
     )
+    train_cells = subparsers.add_parser("train-cells")
+    train_cells.add_argument(
+        "--csv", type=Path, required=True, help="parquet directory or file"
+    )
+    train_cells.add_argument(
+        "--train-start-date",
+        type=str,
+        default=DEFAULT_TRAIN_START_DATE,
+        help="YYYYMMDD inclusive",
+    )
+    train_cells.add_argument(
+        "--train-end-date",
+        type=str,
+        default=DEFAULT_TRAIN_END_DATE,
+        help="YYYYMMDD inclusive",
+    )
+    train_cells.add_argument(
+        "--valid-start-date",
+        type=str,
+        default=DEFAULT_VALID_START_DATE,
+        help="Hold out races from this date onward for per-cell evaluation",
+    )
+    train_cells.add_argument("--model-version", type=str, required=True)
+    train_cells.add_argument("--output-root", type=Path, default=None)
+    train_cells.add_argument(
+        "--output-model-dir", type=Path, dest="output_root", default=None
+    )
+    train_cells.add_argument("--output-routing-json", type=Path, required=True)
+    train_cells.add_argument("--output-metrics-json", type=Path, default=None)
+    train_cells.add_argument(
+        "--min-train-rows", type=int, default=DEFAULT_CELL_MIN_TRAIN_ROWS
+    )
+    train_cells.add_argument(
+        "--min-valid-rows", type=int, default=DEFAULT_CELL_MIN_VALID_ROWS
+    )
+    train_cells.add_argument(
+        "--min-classes", type=int, default=DEFAULT_CELL_MIN_CLASSES
+    )
+    train_cells.add_argument(
+        "--with-field-features",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    train_cells.add_argument(
+        "--class-weight-scheme",
+        type=str,
+        default="inverse_freq",
+        choices=["inverse_freq", "balanced2"],
+    )
+    _add_lgbm_hyperparam_arguments(train_cells)
     return parser.parse_args(argv)
 
 
@@ -643,7 +1195,9 @@ def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
     base["learning_rate"] = args.learning_rate
     base["min_child_samples"] = args.min_child_samples
     base["num_iterations"] = args.num_iterations
-    base["early_stopping_rounds"] = getattr(args, "early_stopping_rounds", DEFAULT_EARLY_STOPPING_ROUNDS)
+    base["early_stopping_rounds"] = getattr(
+        args, "early_stopping_rounds", DEFAULT_EARLY_STOPPING_ROUNDS
+    )
     base["bagging_fraction"] = args.bagging_fraction
     base["bagging_freq"] = args.bagging_freq
     base["feature_fraction"] = args.feature_fraction
@@ -660,7 +1214,9 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     started = perf_counter()
     df = load_dataset_parquet(args.csv)
     base_feature_columns = resolve_feature_columns(list(df.columns))
-    feature_columns = extend_feature_columns(base_feature_columns, args.with_field_features)
+    feature_columns = extend_feature_columns(
+        base_feature_columns, args.with_field_features
+    )
     categorical_features = detect_categorical_features(feature_columns)
     params = training_params_from_args(args)
     validation_years = parse_validation_years(args.validation_years)
@@ -686,7 +1242,15 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     if args.output_report is not None:
         write_walk_forward_report(metrics_per_fold, args.output_report)
     elapsed = perf_counter() - started
-    print(json.dumps({"elapsed_seconds": elapsed, "predictions_jsonl": str(output_jsonl), "rows": len(combined)}))
+    print(
+        json.dumps(
+            {
+                "elapsed_seconds": elapsed,
+                "predictions_jsonl": str(output_jsonl),
+                "rows": len(combined),
+            }
+        )
+    )
 
 
 def filter_by_date_range(df: pl.DataFrame, start: str, end: str) -> pl.DataFrame:
@@ -718,16 +1282,27 @@ def train_full_dataset(
     if valid_start_date is not None:
         fit_df, valid_df = split_production_train_valid(train_subset, valid_start_date)
         if len(valid_df) == 0:
-            raise ValueError(f"production validation split is empty from {valid_start_date}")
-        train_weights = resolve_sample_weights(fit_df[TARGET_COLUMN], class_weight_scheme)
+            raise ValueError(
+                f"production validation split is empty from {valid_start_date}"
+            )
+        train_weights = resolve_sample_weights(
+            fit_df[TARGET_COLUMN], class_weight_scheme
+        )
         valid_weights = np.ones(len(valid_df), dtype=np.float64)
         train_dataset = build_lgb_dataset(
-            fit_df, fit_df[TARGET_COLUMN], train_weights,
-            feature_columns, categorical_features,
+            fit_df,
+            fit_df[TARGET_COLUMN],
+            train_weights,
+            feature_columns,
+            categorical_features,
         )
         valid_dataset = build_lgb_dataset(
-            valid_df, valid_df[TARGET_COLUMN], valid_weights,
-            feature_columns, categorical_features, reference=train_dataset,
+            valid_df,
+            valid_df[TARGET_COLUMN],
+            valid_weights,
+            feature_columns,
+            categorical_features,
+            reference=train_dataset,
         )
         return lgb.train(
             lgb_params_for_multiclass(params),
@@ -740,10 +1315,15 @@ def train_full_dataset(
             ],
         )
 
-    train_weights = resolve_sample_weights(train_subset[TARGET_COLUMN], class_weight_scheme)
+    train_weights = resolve_sample_weights(
+        train_subset[TARGET_COLUMN], class_weight_scheme
+    )
     train_dataset = build_lgb_dataset(
-        train_subset, train_subset[TARGET_COLUMN], train_weights,
-        feature_columns, categorical_features,
+        train_subset,
+        train_subset[TARGET_COLUMN],
+        train_weights,
+        feature_columns,
+        categorical_features,
     )
     return lgb.train(
         lgb_params_for_multiclass(params),
@@ -781,11 +1361,20 @@ def run_walk_forward_eval_for_year(
             "accuracy": float("nan"),
         }
     _booster, probabilities = train_running_style_head(
-        train_labeled, valid_labeled, feature_columns, categorical_features, params,
+        train_labeled,
+        valid_labeled,
+        feature_columns,
+        categorical_features,
+        params,
     )
     actual = valid_labeled[TARGET_COLUMN].to_numpy().astype(np.int64)
     return compute_walk_forward_eval_metrics(
-        probabilities, actual, holdout_year, train_start_date, train_end_date, int(len(train_labeled)),
+        probabilities,
+        actual,
+        holdout_year,
+        train_start_date,
+        train_end_date,
+        int(len(train_labeled)),
     )
 
 
@@ -800,7 +1389,12 @@ def run_walk_forward_eval_for_windows(
     results: dict[str, WalkForwardEvalMetrics] = {}
     for year in windows:
         metrics = run_walk_forward_eval_for_year(
-            df, year, train_start_date, feature_columns, categorical_features, params,
+            df,
+            year,
+            train_start_date,
+            feature_columns,
+            categorical_features,
+            params,
         )
         results[str(year)] = metrics
         print(json.dumps({"walk_forward_eval": metrics}, ensure_ascii=False))
@@ -818,7 +1412,9 @@ def compute_production_precision_nige(
     _, valid_df = split_production_train_valid(labeled, valid_start_date)
     if len(valid_df) == 0:
         return float("nan")
-    probabilities = predict_softmax(booster, valid_df, feature_columns, categorical_features)
+    probabilities = predict_softmax(
+        booster, valid_df, feature_columns, categorical_features
+    )
     predicted = compute_predicted_labels(probabilities)
     actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
     precision, _, _ = compute_per_class_precision_recall(predicted, actual)
@@ -832,7 +1428,8 @@ def emit_walk_forward_warnings(
     warnings: list[str] = []
     for year_key, metrics in walk_forward_results.items():
         if detect_walk_forward_precision_regression(
-            metrics["precision_nige"], production_precision_nige,
+            metrics["precision_nige"],
+            production_precision_nige,
         ):
             gap_pp = (production_precision_nige - metrics["precision_nige"]) * 100.0
             message = (
@@ -878,10 +1475,13 @@ def write_model_metadata(
         metadata["class_weight_scheme"] = class_weight_scheme
     if walk_forward_results is not None:
         metadata["walk_forward_results"] = walk_forward_results
-    if production_precision_nige is not None and not np.isnan(production_precision_nige):
+    if production_precision_nige is not None and not np.isnan(
+        production_precision_nige
+    ):
         metadata["production_precision_nige"] = production_precision_nige
     (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8",
+        json.dumps(metadata, indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
 
 
@@ -890,15 +1490,24 @@ def run_train_production_command(args: argparse.Namespace) -> None:
     df = load_dataset_parquet(args.csv)
     df = maybe_enrich_with_field_features(df, args.with_field_features)
     base_feature_columns = resolve_feature_columns(list(df.columns))
-    feature_columns = extend_feature_columns(base_feature_columns, args.with_field_features)
+    feature_columns = extend_feature_columns(
+        base_feature_columns, args.with_field_features
+    )
     categorical_features = detect_categorical_features(feature_columns)
     params = training_params_from_args(args)
-    train_subset_full = filter_by_date_range(df, args.train_start_date, args.train_end_date)
+    train_subset_full = filter_by_date_range(
+        df, args.train_start_date, args.train_end_date
+    )
     walk_forward_results: dict[str, WalkForwardEvalMetrics] | None = None
     if args.enable_walk_forward_eval:
         windows = parse_walk_forward_windows(args.walk_forward_windows)
         walk_forward_results = run_walk_forward_eval_for_windows(
-            df, windows, args.train_start_date, feature_columns, categorical_features, params,
+            df,
+            windows,
+            args.train_start_date,
+            feature_columns,
+            categorical_features,
+            params,
         )
     booster = train_full_dataset(
         train_subset_full,
@@ -911,16 +1520,24 @@ def run_train_production_command(args: argparse.Namespace) -> None:
     production_precision_nige: float | None = None
     if walk_forward_results is not None:
         production_precision_nige = compute_production_precision_nige(
-            booster, train_subset_full, feature_columns, categorical_features, args.valid_start_date,
+            booster,
+            train_subset_full,
+            feature_columns,
+            categorical_features,
+            args.valid_start_date,
         )
         emit_walk_forward_warnings(walk_forward_results, production_precision_nige)
     args.output_model_dir.mkdir(parents=True, exist_ok=True)
     model_path = args.output_model_dir / "model.txt"
     booster.save_model(str(model_path))
     write_model_metadata(
-        args.output_model_dir, args.model_version, feature_columns, categorical_features,
+        args.output_model_dir,
+        args.model_version,
+        feature_columns,
+        categorical_features,
         int(len(filter_labeled_rows(train_subset_full))),
-        args.train_start_date, args.train_end_date,
+        args.train_start_date,
+        args.train_end_date,
         with_field_features=args.with_field_features,
         walk_forward_results=walk_forward_results,
         production_precision_nige=production_precision_nige,
@@ -928,11 +1545,263 @@ def run_train_production_command(args: argparse.Namespace) -> None:
         class_weight_scheme=args.class_weight_scheme,
     )
     elapsed = perf_counter() - started
-    print(json.dumps({
-        "elapsed_seconds": elapsed,
+    print(
+        json.dumps(
+            {
+                "elapsed_seconds": elapsed,
+                "model_path": str(model_path),
+                "rows": int(len(train_subset_full)),
+            }
+        )
+    )
+
+
+def unique_running_style_cells(df: pl.DataFrame) -> list[RunningStyleCellKey]:
+    records = df.select(CELL_DERIVED_COLUMNS).unique().iter_rows(named=True)
+    cells = [cell_key_from_derived_record(dict(record)) for record in records]
+    return sorted(cells)
+
+
+def eligibility_rejections(
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
+    *,
+    min_train_rows: int,
+    min_valid_rows: int,
+    min_classes: int,
+) -> list[str]:
+    reasons: list[str] = []
+    if len(train_df) < min_train_rows:
+        reasons.append(f"train_rows {len(train_df)} < {min_train_rows}")
+    if len(valid_df) < min_valid_rows:
+        reasons.append(f"valid_rows {len(valid_df)} < {min_valid_rows}")
+    train_classes = int(train_df[TARGET_COLUMN].n_unique()) if len(train_df) > 0 else 0
+    if train_classes < min_classes:
+        reasons.append(f"train_classes {train_classes} < {min_classes}")
+    return reasons
+
+
+def write_cell_model_metadata(
+    output_dir: Path,
+    *,
+    model_version: str,
+    cell: RunningStyleCellKey,
+    variant_id: str,
+    model_key: str,
+    conditions: list[dict[str, object]],
+    feature_columns: list[str],
+    categorical_features: list[str],
+    train_rows: int,
+    valid_rows: int,
+    train_start_date: str,
+    train_end_date: str,
+    valid_start_date: str,
+    with_field_features: bool,
+    metrics: RunningStyleCellMetrics,
+    hyperparameters: TrainingParams,
+    class_weight_scheme: str,
+) -> None:
+    metadata = {
+        "model_version": model_version,
+        "variant_id": variant_id,
+        "model_key": model_key,
+        "cell": asdict(cell),
+        "conditions": conditions,
+        "num_classes": NUM_CLASSES,
+        "class_labels": list(CLASS_LABELS),
+        "feature_columns": feature_columns,
+        "categorical_features": categorical_features,
+        "train_rows": train_rows,
+        "valid_rows": valid_rows,
+        "train_start_date": train_start_date,
+        "train_end_date": train_end_date,
+        "valid_start_date": valid_start_date,
+        "feature_schema_version": "v2" if with_field_features else "v1",
+        "metrics": metrics,
+        "hyperparameters": dict(hyperparameters),
+        "class_weight_scheme": class_weight_scheme,
+    }
+    (output_dir / "metadata.json").write_text(
+        json.dumps(json_ready(metadata), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def train_one_running_style_cell(
+    cell: RunningStyleCellKey,
+    fit_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
+    feature_columns: list[str],
+    categorical_features: list[str],
+    params: TrainingParams,
+    args: argparse.Namespace,
+    variant_id: str,
+) -> dict[str, object]:
+    booster, probabilities = train_running_style_head(
+        fit_df,
+        valid_df,
+        feature_columns,
+        categorical_features,
+        params,
+        class_weight_scheme=args.class_weight_scheme,
+    )
+    actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
+    metrics = compute_running_style_metrics(probabilities, actual)
+    conditions = cell_conditions(cell)
+    model_key = build_cell_model_key(cell.category, args.model_version, variant_id)
+    output_dir = args.output_root / cell.category / variant_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = output_dir / "model.txt"
+    booster.save_model(str(model_path))
+    write_cell_model_metadata(
+        output_dir,
+        model_version=args.model_version,
+        cell=cell,
+        variant_id=variant_id,
+        model_key=model_key,
+        conditions=conditions,
+        feature_columns=feature_columns,
+        categorical_features=categorical_features,
+        train_rows=int(len(fit_df)),
+        valid_rows=int(len(valid_df)),
+        train_start_date=args.train_start_date,
+        train_end_date=args.train_end_date,
+        valid_start_date=args.valid_start_date,
+        with_field_features=args.with_field_features,
+        metrics=metrics,
+        hyperparameters=params,
+        class_weight_scheme=args.class_weight_scheme,
+    )
+    return {
+        "category": cell.category,
+        "variant_id": variant_id,
+        "model_key": model_key,
         "model_path": str(model_path),
-        "rows": int(len(train_subset_full)),
-    }))
+        "metadata_path": str(output_dir / "metadata.json"),
+        "cell": asdict(cell),
+        "conditions": conditions,
+        "train_rows": int(len(fit_df)),
+        "valid_rows": int(len(valid_df)),
+        "metrics": metrics,
+    }
+
+
+def reserve_variant_id(cell: RunningStyleCellKey, used: set[str]) -> str:
+    base = build_cell_variant_id(cell)
+    variant_id = base
+    suffix = 2
+    while variant_id in used:
+        variant_id = f"{base}-{suffix}"
+        suffix += 1
+    used.add(variant_id)
+    return variant_id
+
+
+def run_train_cells_command(args: argparse.Namespace) -> None:
+    started = perf_counter()
+    if args.output_root is None:
+        raise ValueError("train-cells requires --output-root or --output-model-dir")
+    output_metrics_json = (
+        args.output_metrics_json
+        if args.output_metrics_json is not None
+        else args.output_root / "cell_metrics.json"
+    )
+    df = load_dataset_parquet(args.csv)
+    df = maybe_enrich_with_field_features(df, args.with_field_features)
+    base_feature_columns = resolve_feature_columns(list(df.columns))
+    feature_columns = extend_feature_columns(
+        base_feature_columns, args.with_field_features
+    )
+    categorical_features = detect_categorical_features(feature_columns)
+    params = training_params_from_args(args)
+    train_subset_full = filter_by_date_range(
+        df, args.train_start_date, args.train_end_date
+    )
+    labeled = filter_labeled_rows(train_subset_full)
+    with_cells = attach_running_style_cell_columns(labeled)
+    fit_df, valid_df = split_production_train_valid(with_cells, args.valid_start_date)
+
+    trained_cells: list[dict[str, object]] = []
+    skipped_cells: list[dict[str, object]] = []
+    used_variant_ids: set[str] = set()
+    for cell in unique_running_style_cells(with_cells):
+        cell_expr = build_cell_filter_expr(cell)
+        cell_fit_df = fit_df.filter(cell_expr)
+        cell_valid_df = valid_df.filter(cell_expr)
+        rejections = eligibility_rejections(
+            cell_fit_df,
+            cell_valid_df,
+            min_train_rows=args.min_train_rows,
+            min_valid_rows=args.min_valid_rows,
+            min_classes=args.min_classes,
+        )
+        if rejections:
+            skipped_cells.append(
+                {
+                    "cell": asdict(cell),
+                    "train_rows": int(len(cell_fit_df)),
+                    "valid_rows": int(len(cell_valid_df)),
+                    "rejections": rejections,
+                }
+            )
+            continue
+        variant_id = reserve_variant_id(cell, used_variant_ids)
+        trained = train_one_running_style_cell(
+            cell,
+            cell_fit_df,
+            cell_valid_df,
+            feature_columns,
+            categorical_features,
+            params,
+            args,
+            variant_id,
+        )
+        trained_cells.append(trained)
+        print(json.dumps({"trained_cell": json_ready(trained)}, ensure_ascii=False))
+
+    routing = build_running_style_cell_routing_config(trained_cells)
+    args.output_routing_json.parent.mkdir(parents=True, exist_ok=True)
+    args.output_routing_json.write_text(
+        json.dumps(json_ready(routing), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    metrics_payload = {
+        "model_version": args.model_version,
+        "train_start_date": args.train_start_date,
+        "train_end_date": args.train_end_date,
+        "valid_start_date": args.valid_start_date,
+        "min_train_rows": args.min_train_rows,
+        "min_valid_rows": args.min_valid_rows,
+        "min_classes": args.min_classes,
+        "feature_columns": feature_columns,
+        "categorical_features": categorical_features,
+        "hyperparameters": dict(params),
+        "class_weight_scheme": args.class_weight_scheme,
+        "trained_cells": trained_cells,
+        "skipped_cells": skipped_cells,
+        "aggregate": {
+            "trained_count": len(trained_cells),
+            "skipped_count": len(skipped_cells),
+        },
+    }
+    output_metrics_json.parent.mkdir(parents=True, exist_ok=True)
+    output_metrics_json.write_text(
+        json.dumps(json_ready(metrics_payload), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    elapsed = perf_counter() - started
+    print(
+        json.dumps(
+            {
+                "elapsed_seconds": elapsed,
+                "trained_cells": len(trained_cells),
+                "skipped_cells": len(skipped_cells),
+                "routing_json": str(args.output_routing_json),
+                "metrics_json": str(output_metrics_json),
+            }
+        )
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -941,6 +1810,8 @@ def main(argv: list[str] | None = None) -> None:
         run_walk_forward_command(args)
     if args.command == "train-production":
         run_train_production_command(args)
+    if args.command == "train-cells":
+        run_train_cells_command(args)
 
 
 if __name__ == "__main__":

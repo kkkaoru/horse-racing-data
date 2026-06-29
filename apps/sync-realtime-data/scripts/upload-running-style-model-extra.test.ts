@@ -43,6 +43,71 @@ it("parseUploadRunningStyleModelCliArgs reads --bucket override", () => {
   expect(args.bucket).toBe("custom-bucket");
 });
 
+it("parseUploadRunningStyleModelCliArgs rejects object keys for another source", () => {
+  expect(() =>
+    parseUploadRunningStyleModelCliArgs([
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--object-key",
+      "running-style/models/nar/cells/ooi-dirt.flatbin",
+    ]),
+  ).toThrow("must start with running-style/models/jra/");
+});
+
+it("parseUploadRunningStyleModelCliArgs rejects object-key and variant-id together", () => {
+  expect(() =>
+    parseUploadRunningStyleModelCliArgs([
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--object-key",
+      "running-style/models/jra/cells/tokyo-turf.flatbin",
+      "--variant-id",
+      "tokyo-turf",
+    ]),
+  ).toThrow("Use either --object-key or --variant-id");
+});
+
+it("parseUploadRunningStyleModelCliArgs throws when --object-key value missing", () => {
+  expect(() =>
+    parseUploadRunningStyleModelCliArgs([
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--object-key",
+    ]),
+  ).toThrow("--object-key requires a value");
+});
+
+it("parseUploadRunningStyleModelCliArgs throws when --variant-id value missing", () => {
+  expect(() =>
+    parseUploadRunningStyleModelCliArgs([
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--variant-id",
+    ]),
+  ).toThrow("--variant-id requires a value");
+});
+
+it("parseUploadRunningStyleModelCliArgs rejects path-like variant ids", () => {
+  expect(() =>
+    parseUploadRunningStyleModelCliArgs([
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--variant-id",
+      "tokyo/turf",
+    ]),
+  ).toThrow("--variant-id");
+});
+
 it("parseUploadRunningStyleModelCliArgs accepts --sync-local and --no-sync-local toggles", () => {
   const enabled = parseUploadRunningStyleModelCliArgs([
     "--source",
@@ -159,6 +224,45 @@ it("run skips sync when --remote is set but --no-sync-local disables sync", asyn
   vi.mocked(syncRunningStyleModel).mockClear();
   await run();
   expect(syncRunningStyleModel).not.toHaveBeenCalled();
+});
+
+it("run uploads and syncs an explicit objectKey", async () => {
+  vi.stubGlobal("process", {
+    ...process,
+    argv: [
+      "bun",
+      "scripts/upload.ts",
+      "--source",
+      "jra",
+      "--input",
+      "tmp/model.flatbin",
+      "--object-key",
+      "running-style/models/jra/cells/tokyo-turf.flatbin",
+      "--remote",
+    ],
+  });
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { registerRunningStyleModel, syncRunningStyleModel } =
+    await import("../src/running-style-model-register");
+  vi.mocked(registerRunningStyleModel).mockResolvedValueOnce({
+    objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    sizeBytes: 2048,
+  });
+  vi.mocked(syncRunningStyleModel).mockClear();
+  await run();
+  expect(registerRunningStyleModel).toHaveBeenCalledWith(
+    {
+      inputPath: "tmp/model.flatbin",
+      objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      remote: true,
+      source: "jra",
+    },
+    { bucket: "pc-keiba-finish-position-models" },
+  );
+  expect(syncRunningStyleModel).toHaveBeenCalledWith("jra", {
+    bucket: "pc-keiba-finish-position-models",
+    objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+  });
 });
 
 it("parseUploadRunningStyleModelCliArgs prints usage and exits on --help", () => {

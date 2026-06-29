@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 from typing import cast
@@ -1260,3 +1261,227 @@ def test_run_train_production_command_enable_walk_forward_writes_results(tmp_pat
     metadata = json.loads((output_dir / "metadata.json").read_text(encoding="utf-8"))
     assert metadata["walk_forward_results"]["2024"]["precision_nige"] == pytest.approx(0.52)
     assert metadata["production_precision_nige"] == pytest.approx(0.93)
+
+
+def test_derive_running_style_cell_key_matches_production_router_dimensions():
+    derive_cell_key = cast(
+        Callable[[dict[str, object]], subject.RunningStyleCellKey],
+        getattr(subject, "derive_running_style_cell_key"),
+    )
+    cell = derive_cell_key(
+        {
+            "source": "jra",
+            "grade_code": "G1",
+            "kyori": 1599,
+            "kaisai_tsukihi": "0415",
+            "track_code": "1",
+            "keibajo_code": 5,
+            "kyoso_joken_code": "OPEN",
+        }
+    )
+    assert cell.category == "jra"
+    assert cell.class_label == "G1"
+    assert cell.distance_band == "mile"
+    assert cell.season == "spring"
+    assert cell.surface == "turf"
+    assert cell.venue == "05"
+    assert cell.subgroup == "OPEN"
+
+
+def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_values():
+    compute_metrics = cast(
+        Callable[[np.ndarray, np.ndarray], dict[str, object]],
+        getattr(subject, "compute_running_style_metrics"),
+    )
+    probabilities = np.array(
+        [
+            [0.70, 0.20, 0.05, 0.05],
+            [0.40, 0.35, 0.20, 0.05],
+            [0.10, 0.20, 0.60, 0.10],
+            [0.10, 0.10, 0.20, 0.60],
+        ]
+    )
+    actual = np.array([0, 1, 2, 3], dtype=np.int64)
+    metrics = compute_metrics(probabilities, actual)
+    per_class_precision = cast("dict[str, float]", metrics["per_class_precision"])
+    per_class_recall = cast("dict[str, float]", metrics["per_class_recall"])
+    per_class_support = cast("dict[str, int]", metrics["per_class_support"])
+    expected_log_loss = -(np.log(0.70) + np.log(0.35) + np.log(0.60) + np.log(0.60)) / 4.0
+
+    assert metrics["accuracy"] == pytest.approx(0.75)
+    assert metrics["top2_accuracy"] == pytest.approx(1.0)
+    assert metrics["multi_log_loss"] == pytest.approx(expected_log_loss)
+    assert per_class_precision["nige"] == pytest.approx(0.5)
+    assert per_class_recall["senkou"] == pytest.approx(0.0)
+    assert per_class_support == {"nige": 1, "senkou": 1, "sashi": 1, "oikomi": 1}
+
+
+def test_build_running_style_cell_routing_config_emits_default_variant_and_cell_rule_shape():
+    build_routing = cast(
+        Callable[[list[dict[str, object]]], dict[str, object]],
+        getattr(subject, "build_running_style_cell_routing_config"),
+    )
+    routing = build_routing(
+        [
+            {
+                "category": "jra",
+                "variant_id": "cell-jra-class-nige-dist-sprint-season-spring-surface-turf-venue-05-subgroup-open",
+                "model_key": "running-style/models/jra/cells/rs-cell-v1-cell-jra.flatbin",
+                "conditions": [
+                    {"dimension": "class", "values": ["nige"]},
+                    {"dimension": "distance_band", "values": ["sprint"]},
+                    {"dimension": "season", "values": ["spring"]},
+                    {"dimension": "surface", "values": ["turf"]},
+                    {"dimension": "venue", "values": ["05"]},
+                    {"dimension": "subgroup", "values": ["OPEN"]},
+                ],
+            }
+        ]
+    )
+    jra_routing = cast("dict[str, object]", routing["jra"])
+    variants = cast("dict[str, dict[str, str]]", jra_routing["variants"])
+    rules = cast("list[dict[str, object]]", jra_routing["rules"])
+    rule = rules[0]
+
+    assert jra_routing["defaultVariantId"] == "latest"
+    assert variants["latest"] == {"modelKey": "running-style/models/jra/latest.flatbin"}
+    assert variants["cell-jra-class-nige-dist-sprint-season-spring-surface-turf-venue-05-subgroup-open"] == {
+        "modelKey": "running-style/models/jra/cells/rs-cell-v1-cell-jra.flatbin",
+    }
+    assert rule == {
+        "conditions": [
+            {"dimension": "class", "values": ["nige"]},
+            {"dimension": "distance_band", "values": ["sprint"]},
+            {"dimension": "season", "values": ["spring"]},
+            {"dimension": "surface", "values": ["turf"]},
+            {"dimension": "venue", "values": ["05"]},
+            {"dimension": "subgroup", "values": ["OPEN"]},
+        ],
+        "variantId": "cell-jra-class-nige-dist-sprint-season-spring-surface-turf-venue-05-subgroup-open",
+    }
+
+
+def test_parse_args_train_cells_accepts_cells_json_and_routing_output():
+    args = subject.parse_args(
+        [
+            "train-cells",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "rs-cell-v1",
+            "--output-root",
+            "tmp/models",
+            "--output-routing-json",
+            "tmp/cell_routing.json",
+            "--output-metrics-json",
+            "tmp/cell_metrics.json",
+        ]
+    )
+    assert args.command == "train-cells"
+    assert args.train_start_date == "20050101"
+    assert args.train_end_date == "20261231"
+    assert args.valid_start_date == "20260101"
+    assert args.class_weight_scheme == "inverse_freq"
+    assert args.with_field_features is True
+
+
+def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    run_command = cast(
+        Callable[[object], None],
+        getattr(subject, "run_train_cells_command"),
+    )
+    df = pl.DataFrame(
+        {
+            "source": ["jra", "jra", "jra", "jra"],
+            "grade_code": ["G1", "G1", "G2", "G2"],
+            "target_running_style_class": [0, 0, 1, 1],
+            "kyori": [1000, 1000, 1500, 1500],
+            "kaisai_tsukihi": ["0415", "0416", "0715", "0716"],
+            "track_code": ["1", "1", "2", "2"],
+            "keibajo_code": ["05", "05", "06", "06"],
+            "kyoso_joken_code": ["OPEN", "OPEN", "OPEN", "OPEN"],
+            "race_date": ["20250101", "20260101", "20250102", "20260102"],
+            "feature_a": [1.0, 0.9, 0.2, 0.1],
+        }
+    )
+    trained_shapes: list[tuple[int, int]] = []
+    saved_paths: list[str] = []
+
+    class _FakeBooster:
+        def save_model(self, path: str) -> None:
+            saved_paths.append(path)
+            Path(path).write_text("fake-model", encoding="utf-8")
+
+    def _fake_train_head(
+        train_df: pl.DataFrame,
+        valid_df: pl.DataFrame,
+        _feature_columns: list[str],
+        _categorical_features: list[str],
+        _params: subject.TrainingParams,
+        *,
+        class_weight_scheme: str = "inverse_freq",
+    ) -> tuple[_FakeBooster, np.ndarray]:
+        assert class_weight_scheme == "balanced2"
+        trained_shapes.append((len(train_df), len(valid_df)))
+        probabilities = np.repeat(
+            np.array([[0.70, 0.20, 0.05, 0.05]], dtype=np.float64),
+            len(valid_df),
+            axis=0,
+        )
+        return _FakeBooster(), probabilities
+
+    output_root = tmp_path / "models"
+    routing_path = tmp_path / "cell_routing.json"
+    metrics_path = tmp_path / "cell_metrics.json"
+    monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.clone())
+    monkeypatch.setattr(subject, "maybe_enrich_with_field_features", lambda frame, _enabled: frame)
+    monkeypatch.setattr(subject, "train_running_style_head", _fake_train_head)
+    monkeypatch.setattr("builtins.print", lambda *_args, **_kwargs: None)
+    args = subject.parse_args(
+        [
+            "train-cells",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "rs-cell-v1",
+            "--output-root",
+            str(output_root),
+            "--output-routing-json",
+            str(routing_path),
+            "--output-metrics-json",
+            str(metrics_path),
+            "--train-start-date",
+            "20250101",
+            "--train-end-date",
+            "20261231",
+            "--valid-start-date",
+            "20260101",
+            "--min-train-rows",
+            "1",
+            "--min-valid-rows",
+            "1",
+            "--min-classes",
+            "1",
+            "--class-weight-scheme",
+            "balanced2",
+            "--no-with-field-features",
+        ]
+    )
+    run_command(args)
+
+    assert trained_shapes == [(1, 1), (1, 1)]
+    assert len(saved_paths) == 2
+    assert routing_path.exists()
+    assert metrics_path.exists()
+    routing = json.loads(routing_path.read_text(encoding="utf-8"))
+    jra_routing = routing["jra"]
+    model_keys = [
+        variant["modelKey"]
+        for variant_id, variant in jra_routing["variants"].items()
+        if variant_id != "latest"
+    ]
+    assert model_keys
+    assert all(str(model_key).endswith(".flatbin") for model_key in model_keys)

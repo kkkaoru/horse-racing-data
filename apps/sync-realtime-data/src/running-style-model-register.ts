@@ -15,6 +15,7 @@ export type RunningStyleModelSource = "jra" | "nar";
 
 export interface RunningStyleModelRegisterSpec {
   inputPath: string;
+  objectKey?: string;
   remote: boolean;
   source: RunningStyleModelSource;
 }
@@ -38,12 +39,54 @@ export type WranglerSpawner = (
 ) => Promise<{ exitCode: number; stderr: string }>;
 
 const SOURCE_SET = new Set<RunningStyleModelSource>(["jra", "nar"]);
+const VARIANT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export const isRunningStyleModelSource = (value: string): value is RunningStyleModelSource =>
   SOURCE_SET.has(value as RunningStyleModelSource);
 
 export const buildRunningStyleLatestModelKey = (source: RunningStyleModelSource): string =>
   buildRunningStyleFlatModelKey(source);
+
+export const buildRunningStyleCellModelKey = (
+  source: RunningStyleModelSource,
+  variantId: string,
+): string => {
+  if (!VARIANT_ID_PATTERN.test(variantId) || variantId.endsWith(".flatbin")) {
+    throw new Error(
+      "--variant-id must be one path-safe id without slashes, traversal, or .flatbin suffix.",
+    );
+  }
+  return `running-style/models/${source}/cells/${variantId}.flatbin`;
+};
+
+export const validateRunningStyleModelObjectKey = (
+  source: RunningStyleModelSource,
+  objectKey: string,
+): string => {
+  const sourcePrefix = `running-style/models/${source}/`;
+  if (!objectKey.startsWith(sourcePrefix)) {
+    throw new Error(`--object-key must start with ${sourcePrefix}.`);
+  }
+  if (!objectKey.endsWith(".flatbin")) {
+    throw new Error("--object-key must point to a .flatbin object.");
+  }
+  if (objectKey.includes("\\") || objectKey.split("/").some((part) => part.length === 0)) {
+    throw new Error("--object-key must not contain empty path segments or backslashes.");
+  }
+  if (objectKey.split("/").some((part) => part === "." || part === "..")) {
+    throw new Error("--object-key must not contain traversal segments.");
+  }
+  return objectKey;
+};
+
+export const resolveRunningStyleModelObjectKey = (
+  spec: Pick<RunningStyleModelRegisterSpec, "objectKey" | "source">,
+): string => {
+  if (spec.objectKey === undefined) {
+    return buildRunningStyleLatestModelKey(spec.source);
+  }
+  return validateRunningStyleModelObjectKey(spec.source, spec.objectKey);
+};
 
 export const listRequiredRunningStyleModelSources = (
   races: ReadonlyArray<Pick<RegisteredRaceRow, "source">>,
@@ -183,11 +226,14 @@ export const objectExistsInR2 = async (
 
 export const syncRunningStyleModel = async (
   source: RunningStyleModelSource,
-  options: { bucket?: string; spawner?: WranglerSpawner } = {},
+  options: { bucket?: string; objectKey?: string; spawner?: WranglerSpawner } = {},
 ): Promise<string> => {
   const bucket = options.bucket ?? RUNNING_STYLE_MODEL_BUCKET;
   const spawner = options.spawner ?? spawnWrangler;
-  const objectKey = buildRunningStyleLatestModelKey(source);
+  const objectKey =
+    options.objectKey === undefined
+      ? buildRunningStyleLatestModelKey(source)
+      : validateRunningStyleModelObjectKey(source, options.objectKey);
   const tempDir = await mkdtemp(join(tmpdir(), "running-style-model-sync-"));
   const filePath = join(tempDir, "model.flatbin");
   try {
@@ -215,7 +261,7 @@ export const registerRunningStyleModel = async (
 ): Promise<{ objectKey: string; sizeBytes: number }> => {
   const bucket = options.bucket ?? RUNNING_STYLE_MODEL_BUCKET;
   const spawner = options.spawner ?? spawnWrangler;
-  const objectKey = buildRunningStyleLatestModelKey(spec.source);
+  const objectKey = resolveRunningStyleModelObjectKey(spec);
   const resolved = await resolveFlatbinPath(spec.inputPath);
   try {
     const uploadedKey = await uploadRunningStyleModel(
@@ -248,7 +294,7 @@ export const ensureRunningStyleModels = async (
     const localExists = await objectExistsInR2(bucket, result.objectKey, false, spawner);
     if (!localExists && options.syncLocalFromRemote !== false) {
       if (spec.remote) {
-        await syncRunningStyleModel(spec.source, { bucket, spawner });
+        await syncRunningStyleModel(spec.source, { bucket, objectKey: result.objectKey, spawner });
         synced.push(result.objectKey);
       } else {
         throw new Error(

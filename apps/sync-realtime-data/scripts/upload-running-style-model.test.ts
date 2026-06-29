@@ -24,4 +24,44 @@ describe("parseUploadRunningStyleModelCliArgs", () => {
       syncLocal: true,
     });
   });
+
+  test("parses explicit object keys", () => {
+    expect(
+      parseUploadRunningStyleModelCliArgs([
+        "--source",
+        "jra",
+        "--input",
+        "tmp/jra.flatbin",
+        "--object-key",
+        "running-style/models/jra/cells/tokyo-turf.flatbin",
+      ]),
+    ).toEqual({
+      bucket: "pc-keiba-finish-position-models",
+      inputPath: "tmp/jra.flatbin",
+      objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      remote: false,
+      source: "jra",
+      syncLocal: true,
+    });
+  });
+
+  test("parses variant ids as cell object keys", () => {
+    expect(
+      parseUploadRunningStyleModelCliArgs([
+        "--source",
+        "nar",
+        "--input",
+        "tmp/nar.flatbin",
+        "--variant-id",
+        "ooi-dirt",
+      ]),
+    ).toEqual({
+      bucket: "pc-keiba-finish-position-models",
+      inputPath: "tmp/nar.flatbin",
+      objectKey: "running-style/models/nar/cells/ooi-dirt.flatbin",
+      remote: false,
+      source: "nar",
+      syncLocal: true,
+    });
+  });
 });

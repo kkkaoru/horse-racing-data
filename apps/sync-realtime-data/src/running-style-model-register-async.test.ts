@@ -181,6 +181,37 @@ it("syncRunningStyleModel returns objectKey on success", async () => {
   );
 });
 
+it("syncRunningStyleModel syncs an explicit source-scoped objectKey", async () => {
+  const { syncRunningStyleModel } = await import("./running-style-model-register");
+  const spawner = buildSuccessSpawner();
+  const result = await syncRunningStyleModel("jra", {
+    objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    spawner,
+  });
+  expect(result).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+  expect(spawner).toHaveBeenCalledWith([
+    "wrangler",
+    "r2",
+    "object",
+    "get",
+    "pc-keiba-finish-position-models/running-style/models/jra/cells/tokyo-turf.flatbin",
+    "--file",
+    expect.any(String),
+    "--remote",
+  ]);
+  expect(spawner).toHaveBeenCalledWith([
+    "wrangler",
+    "r2",
+    "object",
+    "put",
+    "pc-keiba-finish-position-models/running-style/models/jra/cells/tokyo-turf.flatbin",
+    "--file",
+    expect.any(String),
+    "--content-type",
+    "application/octet-stream",
+  ]);
+});
+
 it("registerRunningStyleModel uploads a .flatbin path directly", async () => {
   const { registerRunningStyleModel } = await import("./running-style-model-register");
   const spawner = buildSuccessSpawner();
@@ -190,6 +221,37 @@ it("registerRunningStyleModel uploads a .flatbin path directly", async () => {
   );
   expect(result.objectKey).toBe("running-style/models/jra/latest.flatbin");
   expect(result.sizeBytes).toBe(2048);
+});
+
+it("registerRunningStyleModel uploads to an explicit source-scoped objectKey", async () => {
+  const { registerRunningStyleModel } = await import("./running-style-model-register");
+  const spawner = buildSuccessSpawner();
+  const result = await registerRunningStyleModel(
+    {
+      inputPath: "tmp/model.flatbin",
+      objectKey: "running-style/models/nar/cells/ooi-dirt.flatbin",
+      remote: false,
+      source: "nar",
+    },
+    { spawner },
+  );
+  expect(result.objectKey).toBe("running-style/models/nar/cells/ooi-dirt.flatbin");
+});
+
+it("registerRunningStyleModel rejects objectKeys outside the source prefix", async () => {
+  const { registerRunningStyleModel } = await import("./running-style-model-register");
+  const spawner = buildSuccessSpawner();
+  await expect(
+    registerRunningStyleModel(
+      {
+        inputPath: "tmp/model.flatbin",
+        objectKey: "running-style/models/nar/cells/ooi-dirt.flatbin",
+        remote: false,
+        source: "jra",
+      },
+      { spawner },
+    ),
+  ).rejects.toThrow("must start with running-style/models/jra/");
 });
 
 it("registerRunningStyleModel converts a .json path before uploading", async () => {
@@ -235,6 +297,32 @@ it("ensureRunningStyleModels registers and syncs when locally missing", async ()
   expect(result.registered).toStrictEqual(["running-style/models/jra/latest.flatbin"]);
   expect(localProbeCount).toBeGreaterThan(0);
   expect(result.synced.length).toBeGreaterThan(0);
+});
+
+it("ensureRunningStyleModels syncs a registered explicit objectKey when locally missing", async () => {
+  const { ensureRunningStyleModels } = await import("./running-style-model-register");
+  const spawner: WranglerSpawner = vi.fn(async (args: readonly string[]) => {
+    if (args[3] === "get" && !args.includes("--remote")) {
+      return { exitCode: 1, stderr: "local 404" };
+    }
+    return { exitCode: 0, stderr: "" };
+  });
+  const result = await ensureRunningStyleModels(
+    {
+      register: [
+        {
+          inputPath: "tmp/model.flatbin",
+          objectKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+          remote: true,
+          source: "jra",
+        },
+      ],
+      sources: [],
+    },
+    spawner,
+  );
+  expect(result.registered).toStrictEqual(["running-style/models/jra/cells/tokyo-turf.flatbin"]);
+  expect(result.synced).toStrictEqual(["running-style/models/jra/cells/tokyo-turf.flatbin"]);
 });
 
 it("ensureRunningStyleModels throws when local missing and syncLocalFromRemote=false", async () => {
