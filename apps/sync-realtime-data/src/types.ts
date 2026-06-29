@@ -119,6 +119,18 @@ export interface HyperdriveBinding {
   connectionString: string;
 }
 
+interface FinishPositionPredictQueueMessage {
+  category: "ban-ei" | "jra" | "nar";
+  daysAhead: number;
+  keibajoCode?: string;
+  mode: "full" | "rescore";
+  raceBango?: string;
+  runDate: string;
+  runDateIso: string;
+  runYmd: string;
+  skipDedup?: boolean;
+}
+
 export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
@@ -194,6 +206,8 @@ export interface Env {
   // 5-min coordinator cron poll. Optional so existing callers / tests need
   // not set it (when absent, the trigger is a no-op and weight write succeeds).
   FINISH_POSITION_CRON?: { fetch: typeof fetch };
+  FINISH_POSITION_PREDICT_QUEUE?: Queue<FinishPositionPredictQueueMessage>;
+  PREDICT_DAYS_AHEAD?: string;
   // Bearer token forwarded to FINISH_POSITION_CRON for the internal
   // rescore-race endpoint. Same secret value as TRIGGER_TOKEN in
   // finish-position-cron — orchestrator must `wrangler secret put TRIGGER_TOKEN

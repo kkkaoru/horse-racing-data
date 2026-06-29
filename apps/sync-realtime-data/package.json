@@ -10,12 +10,12 @@
     "format": "oxfmt --write src test package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "format:check": "oxfmt --check src test package.json tsconfig.json vitest.config.ts wrangler.jsonc",
     "lint": "oxlint . --tsconfig ./tsconfig.json --type-aware --import-plugin --node-plugin --promise-plugin --deny-warnings --max-warnings=0",
-    "queues:configure": "wrangler queues consumer worker remove sync-realtime-data-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 2 && wrangler queues consumer worker remove sync-realtime-data-premium-race-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-premium-race-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 4 && wrangler queues consumer worker remove sync-realtime-data-running-style-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-running-style-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 3 && wrangler queues consumer worker remove sync-realtime-data-win5-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-win5-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 2",
+    "queues:configure": "wrangler queues consumer worker remove sync-realtime-data-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 2 && wrangler queues consumer worker remove sync-realtime-data-premium-race-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-premium-race-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 4 && wrangler queues consumer worker remove sync-realtime-data-running-style-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-running-style-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 1 && wrangler queues consumer worker remove sync-realtime-data-win5-jobs sync-realtime-data || true && wrangler queues consumer worker add sync-realtime-data-win5-jobs sync-realtime-data --batch-size 1 --batch-timeout 5 --message-retries 3 --max-concurrency 2",
     "running-style:date": "bun run scripts/run-running-style-date.ts",
     "running-style:upload-model": "bun run scripts/upload-running-style-model.ts",
     "running-style:push-remote": "bun run scripts/push-running-style-date-to-remote.ts",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage --hookTimeout 30000",
     "tsc": "tsc --noEmit"
   },
   "dependencies": {

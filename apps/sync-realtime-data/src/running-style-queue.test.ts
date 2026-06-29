@@ -131,12 +131,60 @@ it("returns a skipped summary when state already completed and counts meet expec
   expect(summary?.modelVersion).toBe("v7-lineage");
   expect(summary?.cellVariantId).toBe("latest");
   expect(summary?.cellModelKey).toBe("models/jra/latest.flatbin");
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "missing FINISH_POSITION_PREDICT_QUEUE and FINISH_POSITION_CRON bindings",
+  );
   expect(errorSpy).toHaveBeenCalledWith(
-    "Finish-position full trigger not sent for jra:20260512:08:01: missing FINISH_POSITION_CRON binding",
+    "Finish-position full trigger not sent for jra:20260512:08:01: missing FINISH_POSITION_PREDICT_QUEUE and FINISH_POSITION_CRON bindings",
   );
 });
 
-it("triggers finish-position full run when state is already completed", async () => {
+it("sends finish-position predict queue message when state is already completed", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const send = vi.fn(async (_message: unknown) => {});
+  const queue = { send } as unknown as NonNullable<Env["FINISH_POSITION_PREDICT_QUEUE"]>;
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 5,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v7-lineage",
+    status: "completed",
+    writtenHorseCount: 5,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+  ] as never);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(5);
+
+  const summary = await handleRunningStylePredictionJob(
+    buildEnv({ FINISH_POSITION_PREDICT_QUEUE: queue }),
+    JOB,
+  );
+  expect(summary?.skipped).toBe(true);
+  expect(summary?.finishPositionTriggerMode).toBe("queue");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    keibajoCode: "08",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-05-12",
+    runDateIso: "2026-05-12",
+    runYmd: "20260512",
+    skipDedup: true,
+  });
+});
+
+it("falls back to finish-position service binding when predict queue is missing", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
@@ -166,6 +214,8 @@ it("triggers finish-position full run when state is already completed", async ()
   );
   const request = fetch.mock.calls[0]![0] as Request;
   expect(summary?.skipped).toBe(true);
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(request.url).toBe("https://finish-position-cron.internal/run");
   expect(request.method).toBe("POST");
@@ -208,7 +258,11 @@ it("does not call finish-position binding when trigger token is missing or empty
     JOB,
   );
   expect(missingTokenSummary?.skipped).toBe(true);
+  expect(missingTokenSummary?.finishPositionTriggerMode).toBe("skipped");
+  expect(missingTokenSummary?.finishPositionTriggerError).toBe("missing TRIGGER_TOKEN");
   expect(emptyTokenSummary?.skipped).toBe(true);
+  expect(emptyTokenSummary?.finishPositionTriggerMode).toBe("skipped");
+  expect(emptyTokenSummary?.finishPositionTriggerError).toBe("empty TRIGGER_TOKEN");
   expect(fetch).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenNthCalledWith(
     1,
@@ -245,6 +299,10 @@ it("skips finish-position full trigger on completed short-circuit when Neon writ
   );
   expect(summary?.skipped).toBe(true);
   expect(summary?.neonWrittenCount).toBe(2);
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "Neon written count 2 is below expected horse count 3",
+  );
   expect(fetch).not.toHaveBeenCalled();
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon written count 2 is below expected horse count 3",
@@ -298,6 +356,10 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   expect(summary?.cacheWritten).toBe(true);
   expect(summary?.neonWrittenCount).toBe(2);
   expect(summary?.neonError).toBeUndefined();
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "missing FINISH_POSITION_PREDICT_QUEUE and FINISH_POSITION_CRON bindings",
+  );
   expect(vi.mocked(markFinishPositionFeaturesCached).mock.calls[0]?.[2]?.featuresR2Key).toBe(
     "features.parquet",
   );
@@ -330,9 +392,8 @@ it("loads the selected cell model key and rematerializes with the selected heade
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
-  const fetch = vi.fn<typeof globalThis.fetch>(
-    async (_input) => new Response("queued", { status: 202 }),
-  );
+  const send = vi.fn(async (_message: unknown) => {});
+  const queue = { send } as unknown as NonNullable<Env["FINISH_POSITION_PREDICT_QUEUE"]>;
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2)
     .mockResolvedValueOnce({
@@ -363,15 +424,17 @@ it("loads the selected cell model key and rematerializes with the selected heade
 
   const summary = await handleRunningStylePredictionJob(
     buildEnv({
-      FINISH_POSITION_CRON: { fetch },
+      FINISH_POSITION_PREDICT_QUEUE: queue,
+      PREDICT_DAYS_AHEAD: "5",
       RUNNING_STYLE_CELL_ROUTING_JSON: CELL_ROUTING_JSON,
-      TRIGGER_TOKEN: "secret-token",
     }),
     JOB,
   );
   expect(summary?.modelVersion).toBe("grade-a-model");
   expect(summary?.cellVariantId).toBe("grade-a");
   expect(summary?.cellModelKey).toBe("models/jra/grade-a.flatbin");
+  expect(summary?.finishPositionTriggerMode).toBe("queue");
+  expect(summary?.finishPositionTriggerError).toBeUndefined();
   expect(vi.mocked(loadFlatLightGBMModelFromR2).mock.calls[0]?.[1]).toBe(
     "models/jra/latest.flatbin",
   );
@@ -388,7 +451,62 @@ it("loads the selected cell model key and rematerializes with the selected heade
     vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.model.header
       .model_version,
   ).toBe("grade-a-model");
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 5,
+    keibajoCode: "08",
+    mode: "full",
+    raceBango: "01",
+    runDate: "2026-05-12",
+    runDateIso: "2026-05-12",
+    runYmd: "20260512",
+    skipDedup: true,
+  });
+});
+
+it("does not fail the running-style job when finish-position predict queue rejects", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { filterRunningStyleFeatureRowsByActiveEntries } =
+    await import("./running-style-expected-horses");
+  const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
+  const send = vi.fn(async (_message: unknown): Promise<void> => {
+    throw new Error("predict queue unavailable");
+  });
+  const queue = { send } as unknown as NonNullable<Env["FINISH_POSITION_PREDICT_QUEUE"]>;
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
+    header: { feature_names: ["x"], model_version: "v7-lineage" },
+  } as never);
+  vi.mocked(loadOrBuildRunningStyleFeatureParquet).mockResolvedValue({
+    featuresR2Key: "features.parquet",
+    rebuilt: false,
+    rows: [{ umaban: 1 }],
+  } as never);
+  vi.mocked(filterRunningStyleFeatureRowsByActiveEntries).mockReturnValue([{ umaban: 1 }] as never);
+  vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mockResolvedValue({
+    modelVersion: "v7-lineage",
+    writtenCount: 1,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}] as never);
+
+  const summary = await handleRunningStylePredictionJob(
+    buildEnv({ FINISH_POSITION_PREDICT_QUEUE: queue }),
+    JOB,
+  );
+  expect(summary?.writtenCount).toBe(1);
+  expect(summary?.finishPositionTriggerMode).toBe("queue");
+  expect(summary?.finishPositionTriggerError).toBe("predict queue unavailable");
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Finish-position predict queue trigger threw for jra:20260512:08:01: predict queue unavailable",
+  );
 });
 
 it("does not fail the running-style job when finish-position full trigger rejects", async () => {
@@ -426,6 +544,8 @@ it("does not fail the running-style job when finish-position full trigger reject
     JOB,
   );
   expect(summary?.writtenCount).toBe(1);
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBe("service binding unavailable");
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
@@ -464,6 +584,8 @@ it("does not fail the running-style job when finish-position full trigger return
     JOB,
   );
   expect(summary?.writtenCount).toBe(1);
+  expect(summary?.finishPositionTriggerMode).toBe("service-binding");
+  expect(summary?.finishPositionTriggerError).toBe("HTTP 500");
   expect(fetch).toHaveBeenCalledTimes(1);
 });
 
@@ -554,6 +676,10 @@ it("skips cacheCompletedRunningStyles when written count is less than expected h
   );
   expect(summary?.writtenCount).toBe(2);
   expect(summary?.cacheWritten).toBe(false);
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "written count 2 is below expected horse count 3",
+  );
   expect(listRaceRunningStylesForRace).not.toHaveBeenCalled();
   expect(fetch).not.toHaveBeenCalled();
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
@@ -605,6 +731,8 @@ it("skips finish-position full trigger after inference when Neon sync fails", as
   );
   expect(summary?.writtenCount).toBe(2);
   expect(summary?.neonError).toBe("neon connection refused");
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe("Neon sync failed: neon connection refused");
   expect(fetch).not.toHaveBeenCalled();
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon sync failed: neon connection refused",

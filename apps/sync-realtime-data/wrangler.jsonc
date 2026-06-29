@@ -81,6 +81,10 @@
         "queue": "sync-realtime-data-running-style-jobs",
       },
       {
+        "binding": "FINISH_POSITION_PREDICT_QUEUE",
+        "queue": "finish-position-predict-queue",
+      },
+      {
         "binding": "WIN5_JOBS",
         "queue": "sync-realtime-data-win5-jobs",
       },

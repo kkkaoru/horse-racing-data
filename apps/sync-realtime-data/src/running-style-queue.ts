@@ -47,6 +47,13 @@ import type { Env, RunningStylePredictionJob } from "./types";
 
 const ENABLED_FLAG = "1";
 const FINISH_POSITION_CRON_RUN_URL = "https://finish-position-cron.internal/run";
+const DEFAULT_PREDICT_DAYS_AHEAD = "2";
+
+const buildFinishPositionRunYmd = (job: RunningStylePredictionJob): string =>
+  `${job.kaisaiNen}${job.kaisaiTsukihi}`;
+
+const buildFinishPositionRunDateIso = (job: RunningStylePredictionJob): string =>
+  `${job.kaisaiNen}-${job.kaisaiTsukihi.slice(0, 2)}-${job.kaisaiTsukihi.slice(2, 4)}`;
 
 const tryLoadCalibrators = async (
   bucket: R2Bucket,
@@ -67,6 +74,8 @@ export interface RunningStylePredictionJobSummary {
   cacheError?: string;
   cacheWritten?: boolean;
   featuresR2Key: string;
+  finishPositionTriggerError?: string;
+  finishPositionTriggerMode?: "queue" | "service-binding" | "skipped";
   horseCount: number;
   modelVersion: string;
   neonError?: string;
@@ -80,6 +89,11 @@ interface CacheAndSyncRunningStylesResult {
   cacheWritten: boolean;
   neonError?: string;
   neonWrittenCount: number;
+}
+
+interface FinishPositionTriggerResult {
+  finishPositionTriggerError?: string;
+  finishPositionTriggerMode: "queue" | "service-binding" | "skipped";
 }
 
 const runningStyleCellRoutingConfig = (env: Env): RunningStyleCellRoutingConfig => {
@@ -124,33 +138,60 @@ const triggerFinishPositionFullRun = async (
   env: Env,
   job: RunningStylePredictionJob,
   category: RunningStyleCellCategory,
-): Promise<void> => {
+): Promise<FinishPositionTriggerResult> => {
+  const queue = env.FINISH_POSITION_PREDICT_QUEUE;
+  if (queue !== undefined) {
+    const runDateIso = buildFinishPositionRunDateIso(job);
+    try {
+      await queue.send({
+        category,
+        daysAhead: Number(env.PREDICT_DAYS_AHEAD ?? DEFAULT_PREDICT_DAYS_AHEAD),
+        keibajoCode: normalizeKeibajoCode(job.keibajoCode),
+        mode: "full",
+        raceBango: normalizeRaceBango(job.raceBango),
+        runDate: runDateIso,
+        runDateIso,
+        runYmd: buildFinishPositionRunYmd(job),
+        skipDedup: true,
+      });
+      return { finishPositionTriggerMode: "queue" };
+    } catch (error) {
+      const message = formatError(error);
+      console.error(
+        `Finish-position predict queue trigger threw for ${buildRunningStyleRaceKey(job)}: ${message}`,
+      );
+      return { finishPositionTriggerError: message, finishPositionTriggerMode: "queue" };
+    }
+  }
   const binding = env.FINISH_POSITION_CRON;
   const token = env.TRIGGER_TOKEN;
   if (binding === undefined) {
+    const message = "missing FINISH_POSITION_PREDICT_QUEUE and FINISH_POSITION_CRON bindings";
     console.error(
-      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: missing FINISH_POSITION_CRON binding`,
+      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: ${message}`,
     );
-    return;
+    return { finishPositionTriggerError: message, finishPositionTriggerMode: "skipped" };
   }
   if (token === undefined) {
+    const message = "missing TRIGGER_TOKEN";
     console.error(
-      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: missing TRIGGER_TOKEN`,
+      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: ${message}`,
     );
-    return;
+    return { finishPositionTriggerError: message, finishPositionTriggerMode: "skipped" };
   }
   if (token.length === 0) {
+    const message = "empty TRIGGER_TOKEN";
     console.error(
-      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: empty TRIGGER_TOKEN`,
+      `Finish-position full trigger not sent for ${buildRunningStyleRaceKey(job)}: ${message}`,
     );
-    return;
+    return { finishPositionTriggerError: message, finishPositionTriggerMode: "skipped" };
   }
   const body = {
     category,
     keibajoCode: normalizeKeibajoCode(job.keibajoCode),
     mode: "full",
     raceBango: normalizeRaceBango(job.raceBango),
-    runDate: `${job.kaisaiNen}${job.kaisaiTsukihi}`,
+    runDate: buildFinishPositionRunYmd(job),
     skipDedup: true,
   };
   try {
@@ -162,14 +203,25 @@ const triggerFinishPositionFullRun = async (
       }),
     );
     if (!response.ok) {
+      const message = `HTTP ${response.status}`;
       console.error(
         `Finish-position full trigger failed for ${buildRunningStyleRaceKey(job)}: ${response.status}`,
       );
+      return {
+        finishPositionTriggerError: message,
+        finishPositionTriggerMode: "service-binding",
+      };
     }
+    return { finishPositionTriggerMode: "service-binding" };
   } catch (error) {
+    const message = formatError(error);
     console.error(
-      `Finish-position full trigger threw for ${buildRunningStyleRaceKey(job)}: ${formatError(error)}`,
+      `Finish-position full trigger threw for ${buildRunningStyleRaceKey(job)}: ${message}`,
     );
+    return {
+      finishPositionTriggerError: message,
+      finishPositionTriggerMode: "service-binding",
+    };
   }
 };
 
@@ -197,7 +249,7 @@ const triggerFinishPositionFullRunWhenReady = async (
   cacheResult: CacheAndSyncRunningStylesResult,
   expectedHorseCount: number,
   writtenHorseCount: number,
-): Promise<void> => {
+): Promise<FinishPositionTriggerResult> => {
   const reason = finishPositionTriggerSkipReason(
     cacheResult,
     expectedHorseCount,
@@ -205,9 +257,9 @@ const triggerFinishPositionFullRunWhenReady = async (
   );
   if (reason !== null) {
     console.log(`finish-position trigger skipped for ${buildRunningStyleRaceKey(job)}: ${reason}`);
-    return;
+    return { finishPositionTriggerError: reason, finishPositionTriggerMode: "skipped" };
   }
-  await triggerFinishPositionFullRun(env, job, category);
+  return triggerFinishPositionFullRun(env, job, category);
 };
 
 const cacheAndSyncCompletedRunningStyles = async (
@@ -266,7 +318,7 @@ export const handleRunningStylePredictionJob = async (
       routeInputFromJob(job),
       runningStyleCellRoutingConfig(env),
     );
-    await triggerFinishPositionFullRunWhenReady(
+    const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
       env,
       job,
       route.cell.category,
@@ -279,6 +331,7 @@ export const handleRunningStylePredictionJob = async (
       cellModelKey: route.modelKey,
       cellVariantId: route.variantId,
       featuresR2Key: state.featuresR2Key ?? "",
+      ...finishPositionTrigger,
       horseCount: state.expectedHorseCount,
       modelVersion: state.modelVersion ?? "completed",
       raceKey,
@@ -361,7 +414,7 @@ export const handleRunningStylePredictionJob = async (
       summary.writtenCount >= expectedHorseCount
         ? await cacheAndSyncCompletedRunningStyles(env, job)
         : { cacheWritten: false, neonWrittenCount: 0 };
-    await triggerFinishPositionFullRunWhenReady(
+    const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
       env,
       job,
       selectedRoute.cell.category,
@@ -374,6 +427,7 @@ export const handleRunningStylePredictionJob = async (
       cellModelKey: selectedRoute.modelKey,
       cellVariantId: selectedRoute.variantId,
       featuresR2Key: loadOrBuild.featuresR2Key,
+      ...finishPositionTrigger,
       horseCount: inferenceRows.length,
       modelVersion: summary.modelVersion,
       raceKey,
