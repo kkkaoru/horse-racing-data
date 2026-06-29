@@ -12,6 +12,7 @@
 // returned without doing work.
 export interface SkipStatuses {
   readonly authRequired: "skip:auth-required";
+  readonly awaitingPublish: "skip:awaiting-publish";
   readonly claimFailed: "skip:claim-failed";
   readonly configMissing: "skip:config-missing";
   readonly giveUp: "skip:give-up";
@@ -24,6 +25,7 @@ export interface SkipStatuses {
 
 export const SKIP_STATUS: SkipStatuses = {
   authRequired: "skip:auth-required",
+  awaitingPublish: "skip:awaiting-publish",
   claimFailed: "skip:claim-failed",
   configMissing: "skip:config-missing",
   giveUp: "skip:give-up",

@@ -228,19 +228,36 @@ const RESULT_FETCH_RETRY_LONG_THRESHOLD_MINUTES = 60;
 // saved so far so the planner stops re-enqueuing forever. 24h covers every
 // observed real-world late-publish gap on keiba.go.jp / JRA.
 const RESULT_FETCH_GIVE_UP_HOURS = 24;
-// 2026-06-28: empty-result circuit breaker threshold. When the upstream
+// 2026-06-30: empty-result circuit breaker threshold. When the upstream
 // result HTML parses to zero rows for the same race this many times in a
-// row, fetchAndStoreResults force-completes the race with
-// `result_complete_at = now` so the planner stops re-enqueueing it (logged
-// as `empty_giveup:race_count_exceeded`). Without this guard a single
-// permanently-broken race (entry HTML parses fine, result HTML is empty)
-// re-queues every 2 minutes from RESULT_POLL_CRON until
-// RESULT_FETCH_GIVE_UP_HOURS = 24h hits, which on a Saturday race-day
-// backed the queue up to 6300+ messages and starved newer races. 20
-// attempts is ~40 minutes of cron ticks — long enough to cover a real
-// upstream republish delay while still finite. A non-empty fetch resets
-// the counter (storage.resetEmptyResultAttempts).
-const RESULT_FETCH_EMPTY_GIVEUP_COUNT = 20;
+// row AND enough wall-clock time has elapsed past the publish window,
+// fetchAndStoreResults force-completes the race with `result_complete_at`
+// (logged as `empty_giveup:race_count_exceeded`). Raised from 20 to 40 in
+// tandem with the don't-throw fix (queue-retry storm previously inflated
+// 1 cron tick into 4 increments, so the old 20 effectively gave up after
+// only 5 ticks ~10 min — before NAR publishes results at +10-15 min). With
+// the don't-throw fix, 1 tick = 1 increment, so 40 attempts = ~80 minutes
+// of cron ticks, well past the realistic NAR publish window. A non-empty
+// fetch resets the counter (storage.resetEmptyResultAttempts).
+const RESULT_FETCH_EMPTY_GIVEUP_COUNT = 40;
+// 2026-06-30: minimum minutes after the official race start before the
+// empty-result counter is even allowed to start ticking. NAR (keiba.go.jp)
+// typically does NOT publish results until ~10-15 minutes after the race
+// finishes, so any empty-result observation before then is the normal
+// awaiting-publish window, not a real failure. Logged as
+// `skip:awaiting-publish` (one row per race per dedupe window) instead of
+// incrementing the counter, so an operator can confirm the planner is
+// still polling without inflating fetch_logs or the circuit breaker.
+const NAR_RESULT_PUBLISH_DELAY_MINUTES = 10;
+// 2026-06-30: defence-in-depth giveup floor. Even if the per-race counter
+// somehow exceeds RESULT_FETCH_EMPTY_GIVEUP_COUNT (clock skew, multi-
+// consumer drift, retry storm against a not-yet-fixed upstream), refuse
+// to give up unless the wall-clock has also passed this many minutes
+// since the official race start. Prevents the 2026-06-28 NAR-result-lost
+// failure mode where the counter tripped ~5-6 minutes after race start,
+// well before the upstream had even published, and locked the race row
+// forever.
+const RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START = 60;
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -3175,43 +3192,81 @@ export const resolveResultFetchIsComplete = (input: ResolveResultFetchIsComplete
 
 interface ResolveEmptyResultGiveupInput {
   attemptCount: number;
+  minutesAfterRaceStart: number;
 }
 
 interface HandleEmptyResultFetchInput {
   env: Env;
   now: Date;
+  race: NarRaceSource;
   raceKey: string;
 }
 
-export type EmptyResultFetchOutcome = "give-up" | "throw";
+export type EmptyResultFetchOutcome = "give-up" | "silent-return" | "awaiting-publish";
 
 // 2026-06-28: logFetch status emitted when the empty-result circuit breaker
 // trips. Exported so callers can grep telemetry by a single constant string
 // and unit tests can assert it without re-typing the literal.
 export const EMPTY_RESULT_GIVEUP_LOG_STATUS = "empty_giveup:race_count_exceeded";
 
-// 2026-06-28: pure helper for the empty-result circuit breaker. Returns true
-// when the per-race counter has hit RESULT_FETCH_EMPTY_GIVEUP_COUNT — at
-// that point fetchAndStoreResults force-completes the race so the planner
-// stops re-enqueueing a race whose upstream result HTML keeps coming back
-// empty. Split out as a standalone helper so the threshold decision can be
-// unit-tested without mocking the D1 binding or the upstream fetcher.
-export const resolveEmptyResultGiveup = (input: ResolveEmptyResultGiveupInput): boolean =>
-  input.attemptCount >= RESULT_FETCH_EMPTY_GIVEUP_COUNT;
+// 2026-06-30: pure helper computing minutes elapsed since the race started.
+// Returns 0 when minutesUntilRace is null (race start unparseable) so the
+// caller does not have to special-case null — a 0-minutes-after-start race
+// is treated as still inside the awaiting-publish window, which is the
+// safest default for a malformed row.
+export const computeMinutesAfterRaceStart = (race: NarRaceSource, now: Date): number => {
+  const minutes = minutesUntilRace(race, now);
+  return minutes === null ? 0 : -minutes;
+};
 
-// 2026-06-28: integration helper for the empty-result circuit breaker.
-// Increments the per-race counter, and either force-completes the race +
-// emits the EMPTY_RESULT_GIVEUP_LOG_STATUS telemetry row when the breaker
-// trips (returns "give-up" so the caller stops re-throwing) or returns
-// "throw" so fetchAndStoreResults re-throws the existing "race result rows
-// are empty" error path — which keeps the failResultFetch + planner re-
-// enqueue loop intact below the breaker threshold.
+// 2026-06-30: pure helper for the empty-result circuit breaker. Returns true
+// only when BOTH the per-race attempt counter has hit
+// RESULT_FETCH_EMPTY_GIVEUP_COUNT AND enough wall-clock has elapsed since
+// the race started (RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START). The
+// AND gate prevents a clock-skew or retry-storm from tripping the breaker
+// before the upstream publish window has even closed — the 2026-06-28
+// failure mode where the counter ran out ~5-6 min after race start.
+export const resolveEmptyResultGiveup = (input: ResolveEmptyResultGiveupInput): boolean =>
+  input.attemptCount >= RESULT_FETCH_EMPTY_GIVEUP_COUNT &&
+  input.minutesAfterRaceStart >= RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START;
+
+// 2026-06-30: integration helper for the empty-result circuit breaker.
+// Three-way outcome:
+//   - "awaiting-publish": race finished but the upstream publish window
+//     has not opened yet (now - race_start < NAR_RESULT_PUBLISH_DELAY_
+//     MINUTES). Counter NOT incremented, lock cleared via failResultFetch
+//     so the planner re-enqueues on the next cron tick, single
+//     skip:awaiting-publish row written (KV-deduped).
+//   - "silent-return": publish window open, counter incremented but
+//     either still below the giveup threshold or the giveup-floor
+//     wall-clock has not elapsed. Lock cleared via failResultFetch so the
+//     planner re-enqueues next tick. No log row (the eventual giveup row
+//     carries the attempt count; per-tick logging would blow up D1).
+//   - "give-up": both gates passed → markEmptyResultGiveUp force-completes
+//     the race + EMPTY_RESULT_GIVEUP_LOG_STATUS row.
+// Critically: NONE of these outcomes throw. The caller silently returns
+// (acks the queue message) so the previous 1-tick = 4-increment retry
+// storm cannot reappear.
 export const handleEmptyResultFetch = async (
   input: HandleEmptyResultFetchInput,
 ): Promise<EmptyResultFetchOutcome> => {
+  const minutesAfterRaceStart = computeMinutesAfterRaceStart(input.race, input.now);
+  if (minutesAfterRaceStart < NAR_RESULT_PUBLISH_DELAY_MINUTES) {
+    await failResultFetch(input.env.REALTIME_DB, input.raceKey);
+    await logFetch(
+      input.env.REALTIME_DB,
+      "fetch-results",
+      SKIP_STATUS.awaitingPublish,
+      input.raceKey,
+      null,
+      input.env.DETAIL_SECTION_CACHE_KV,
+    );
+    return "awaiting-publish";
+  }
   const attemptCount = await incrementEmptyResultAttempts(input.env.REALTIME_DB, input.raceKey);
-  if (!resolveEmptyResultGiveup({ attemptCount })) {
-    return "throw";
+  if (!resolveEmptyResultGiveup({ attemptCount, minutesAfterRaceStart })) {
+    await failResultFetch(input.env.REALTIME_DB, input.raceKey);
+    return "silent-return";
   }
   await markEmptyResultGiveUp(input.env.REALTIME_DB, input.raceKey, toJstIsoString(input.now));
   await logFetch(
@@ -3458,11 +3513,17 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       throw new Error(`race entry rows are empty: ${raceKey}`);
     }
     if (expectedHorseCount > 0 && results.length === 0) {
-      const outcome = await handleEmptyResultFetch({ env, now, raceKey });
-      if (outcome === "give-up") {
-        return;
-      }
-      throw new Error(`race result rows are empty: ${raceKey}`);
+      // 2026-06-30: NEVER throw on empty result. Throwing triggers the
+      // Cloudflare queue auto-retry (default max_retries=3 in
+      // wrangler.jsonc) which previously turned 1 cron tick into 4
+      // empty_result_attempts increments — the breaker tripped ~5-6 min
+      // after race start, BEFORE the NAR upstream's typical +10-15 min
+      // publish window opened. handleEmptyResultFetch now owns the full
+      // state transition (failResultFetch / markEmptyResultGiveUp) and
+      // returns one of three outcomes, all of which silently ack the
+      // queue message so the planner re-enqueues on the next 2-min tick.
+      await handleEmptyResultFetch({ env, now, race, raceKey });
+      return;
     }
     await resetEmptyResultAttempts(env.REALTIME_DB, raceKey);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);

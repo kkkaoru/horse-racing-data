@@ -9,6 +9,7 @@ import {
 it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () => {
   expect(SKIP_STATUS).toStrictEqual({
     authRequired: "skip:auth-required",
+    awaitingPublish: "skip:awaiting-publish",
     claimFailed: "skip:claim-failed",
     configMissing: "skip:config-missing",
     giveUp: "skip:give-up",
@@ -18,6 +19,10 @@ it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () =>
     raceNotFound: "skip:race-not-found",
     weightsSparse: "skip:weights-sparse",
   });
+});
+
+it("SKIP_STATUS.awaitingPublish is the literal used for NAR result publish-window logs", () => {
+  expect(SKIP_STATUS.awaitingPublish).toBe("skip:awaiting-publish");
 });
 
 it("PLAN_RESULT_FETCHES_SUMMARY_STATUS uses the plan-result-fetches-summary literal", () => {

@@ -1803,7 +1803,7 @@ it("handleJob fetch-results with not-yet-finished race fails the fetch and retur
   expect(failResultFetch).toHaveBeenCalled();
 });
 
-it("handleJob fetch-results NAR throws when results empty but expectedHorseCount > 0", async () => {
+it("handleJob fetch-results NAR silently acks when results empty but expectedHorseCount > 0 (2026-06-30 fix)", async () => {
   const { handleJob } = await import("./worker");
   const { claimResultFetch, getRaceSource, failResultFetch } = await import("./storage");
   const { parseRaceResults } = await import("./keiba-go");
@@ -1845,12 +1845,10 @@ it("handleJob fetch-results NAR throws when results empty but expectedHorseCount
   });
   vi.spyOn(await import("./keiba-go"), "parseRaceEntryHorseNumbers").mockReturnValue(["1", "2"]);
   vi.spyOn(await import("./keiba-go"), "parseRaceResultExcludedHorseNumbers").mockReturnValue([]);
-  await expect(
-    handleJob(buildEnv(), {
-      raceKey: "nar:2026:0512:55:01",
-      type: "fetch-results",
-    }),
-  ).rejects.toThrow();
+  await handleJob(buildEnv(), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
   expect(failResultFetch).toHaveBeenCalled();
 });
 

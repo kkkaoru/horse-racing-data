@@ -35,6 +35,7 @@ import {
   premiumRaceKeyFromRequest,
   raceKeyFromRequest,
   raceTrendDailyTrackQueryFromRequest,
+  computeMinutesAfterRaceStart,
   EMPTY_RESULT_GIVEUP_LOG_STATUS,
   handleEmptyResultFetch,
   resolveEmptyResultGiveup,
@@ -1272,35 +1273,139 @@ it("resolveRetryLockMinutes throws when called with the non-retry outcome give-u
   );
 });
 
-// resolveEmptyResultGiveup truth table — pins the 2026-06-28 circuit breaker
-// threshold (20 consecutive empty result fetches) so an accidental tweak to
-// either side of the boundary is caught immediately.
+// resolveEmptyResultGiveup truth table — pins the 2026-06-30 circuit breaker
+// AND-gate (attempt count >= 40 AND minutes-after-race-start >= 60) so any
+// accidental tweak to either side of the boundary is caught immediately.
 
 it("resolveEmptyResultGiveup returns false for the first empty attempt", () => {
-  expect(resolveEmptyResultGiveup({ attemptCount: 1 })).toBe(false);
+  expect(resolveEmptyResultGiveup({ attemptCount: 1, minutesAfterRaceStart: 120 })).toBe(false);
 });
 
 it("resolveEmptyResultGiveup returns false one attempt below the threshold", () => {
-  expect(resolveEmptyResultGiveup({ attemptCount: 19 })).toBe(false);
+  expect(resolveEmptyResultGiveup({ attemptCount: 39, minutesAfterRaceStart: 120 })).toBe(false);
 });
 
-it("resolveEmptyResultGiveup returns true at exactly the threshold", () => {
-  expect(resolveEmptyResultGiveup({ attemptCount: 20 })).toBe(true);
+it("resolveEmptyResultGiveup returns true at exactly the threshold with sufficient time", () => {
+  expect(resolveEmptyResultGiveup({ attemptCount: 40, minutesAfterRaceStart: 60 })).toBe(true);
 });
 
-it("resolveEmptyResultGiveup returns true past the threshold", () => {
-  expect(resolveEmptyResultGiveup({ attemptCount: 50 })).toBe(true);
+it("resolveEmptyResultGiveup returns true past the threshold with sufficient time", () => {
+  expect(resolveEmptyResultGiveup({ attemptCount: 80, minutesAfterRaceStart: 200 })).toBe(true);
 });
 
-// handleEmptyResultFetch integration — verifies the circuit-breaker wiring:
-// (1) increments the per-race counter via UPDATE...RETURNING,
-// (2) returns "throw" below the 20-attempt threshold so the caller re-throws
-//     the existing "race result rows are empty" error and the planner re-
-//     enqueues on the next cron tick,
-// (3) returns "give-up" + force-completes via markEmptyResultGiveUp + emits
-//     EMPTY_RESULT_GIVEUP_LOG_STATUS when the counter hits the threshold.
+it("resolveEmptyResultGiveup returns false when minutes-after-start is below the floor even if attempts exceeded", () => {
+  expect(resolveEmptyResultGiveup({ attemptCount: 60, minutesAfterRaceStart: 30 })).toBe(false);
+});
 
-it("handleEmptyResultFetch returns throw and skips logFetch when the counter is below threshold", async () => {
+it("resolveEmptyResultGiveup returns false one minute below the time floor", () => {
+  expect(resolveEmptyResultGiveup({ attemptCount: 40, minutesAfterRaceStart: 59 })).toBe(false);
+});
+
+// computeMinutesAfterRaceStart pure helper — pins the (race, now) -> minutes
+// math so handleEmptyResultFetch's time-gate behaviour stays observable.
+
+it("computeMinutesAfterRaceStart returns 0 just after the published race start", () => {
+  expect(computeMinutesAfterRaceStart(RACE, new Date("2026-05-12T13:00:00+09:00"))).toBeCloseTo(
+    0,
+    5,
+  );
+});
+
+it("computeMinutesAfterRaceStart returns positive minutes when now is past race start", () => {
+  expect(computeMinutesAfterRaceStart(RACE, new Date("2026-05-12T13:30:00+09:00"))).toBeCloseTo(
+    30,
+    5,
+  );
+});
+
+it("computeMinutesAfterRaceStart returns 0 when minutesUntilRace cannot be computed", () => {
+  const malformed: NarRaceSource = {
+    babaCode: "22",
+    debaUrl: "https://x.test/race",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "9999",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastWeightFetchAt: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:9999:55:01",
+    raceName: "broken",
+    raceStartAtJst: "2026-05-12T99:99:00+09:00",
+    source: "nar",
+  };
+  expect(computeMinutesAfterRaceStart(malformed, new Date("2026-05-12T13:30:00+09:00"))).toBe(0);
+});
+
+// handleEmptyResultFetch integration — verifies the 3-outcome wiring:
+//   - awaiting-publish: time gate not yet open (< 10 min after race start).
+//     Counter NOT incremented, failResultFetch clears the lock so the
+//     planner re-enqueues, skip:awaiting-publish row written.
+//   - silent-return: time gate open but circuit breaker not tripped.
+//     incrementEmptyResultAttempts called, failResultFetch clears lock,
+//     no log row (the eventual give-up log carries the attempt count).
+//   - give-up: time gate AND giveup floor both passed, attempt count >=
+//     RESULT_FETCH_EMPTY_GIVEUP_COUNT. markEmptyResultGiveUp force-
+//     completes the race, EMPTY_RESULT_GIVEUP_LOG_STATUS row written.
+
+it("handleEmptyResultFetch returns awaiting-publish before the time gate opens", async () => {
+  const first = vi.fn(async () => ({ count: 1 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  const outcome = await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:05:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  expect(outcome).toBe("awaiting-publish");
+});
+
+it("handleEmptyResultFetch does not increment the empty counter before the time gate opens", async () => {
+  const first = vi.fn(async () => ({ count: 99 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:05:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  expect(first).not.toHaveBeenCalled();
+});
+
+it("handleEmptyResultFetch emits skip:awaiting-publish when called before the time gate", async () => {
+  const first = vi.fn(async () => ({ count: 1 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:05:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  const logBindArgs = bind.mock.calls.find((args) => args[2] === "skip:awaiting-publish");
+  expect(logBindArgs?.[1]).toBe("fetch-results");
+  expect(logBindArgs?.[2]).toBe("skip:awaiting-publish");
+  expect(logBindArgs?.[0]).toBe("nar:2026:0512:55:01");
+  expect(logBindArgs?.[3]).toBeNull();
+});
+
+it("handleEmptyResultFetch returns silent-return after the time gate when below attempt threshold", async () => {
   const first = vi.fn(async () => ({ count: 5 }));
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
@@ -1310,15 +1415,52 @@ it("handleEmptyResultFetch returns throw and skips logFetch when the counter is 
   } as unknown as Env;
   const outcome = await handleEmptyResultFetch({
     env,
-    now: new Date("2026-06-28T15:00:00+09:00"),
-    raceKey: "jra:2026:0628:03:02",
+    now: new Date("2026-05-12T13:15:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
   });
-  expect(outcome).toBe("throw");
-  expect(prepare).toHaveBeenCalledTimes(1);
+  expect(outcome).toBe("silent-return");
 });
 
-it("handleEmptyResultFetch returns give-up when the counter reaches threshold", async () => {
-  const first = vi.fn(async () => ({ count: 20 }));
+it("handleEmptyResultFetch increments the counter and clears the lock on silent-return", async () => {
+  const first = vi.fn(async () => ({ count: 5 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:15:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  expect(prepare).toHaveBeenCalledTimes(2);
+});
+
+it("handleEmptyResultFetch does not emit any logFetch row on silent-return", async () => {
+  const first = vi.fn(async () => ({ count: 5 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:15:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  const logBindArgs = bind.mock.calls.find(
+    (args) => args[2] === "skip:awaiting-publish" || args[2] === "empty_giveup:race_count_exceeded",
+  );
+  expect(logBindArgs).toBeUndefined();
+});
+
+it("handleEmptyResultFetch returns silent-return when attempts exceed threshold but giveup floor not yet passed", async () => {
+  const first = vi.fn(async () => ({ count: 50 }));
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
   const prepare = vi.fn(() => ({ bind }));
@@ -1327,14 +1469,32 @@ it("handleEmptyResultFetch returns give-up when the counter reaches threshold", 
   } as unknown as Env;
   const outcome = await handleEmptyResultFetch({
     env,
-    now: new Date("2026-06-28T15:00:00+09:00"),
-    raceKey: "nar:2026:0628:55:11",
+    now: new Date("2026-05-12T13:30:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  expect(outcome).toBe("silent-return");
+});
+
+it("handleEmptyResultFetch returns give-up when both gates pass", async () => {
+  const first = vi.fn(async () => ({ count: 40 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  const outcome = await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T14:30:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
   });
   expect(outcome).toBe("give-up");
 });
 
-it("handleEmptyResultFetch emits logFetch with the empty_giveup status when threshold trips", async () => {
-  const first = vi.fn(async () => ({ count: 20 }));
+it("handleEmptyResultFetch emits logFetch with the empty_giveup status when both gates pass", async () => {
+  const first = vi.fn(async () => ({ count: 40 }));
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
   const prepare = vi.fn(() => ({ bind }));
@@ -1343,20 +1503,21 @@ it("handleEmptyResultFetch emits logFetch with the empty_giveup status when thre
   } as unknown as Env;
   await handleEmptyResultFetch({
     env,
-    now: new Date("2026-06-28T15:00:00+09:00"),
-    raceKey: "nar:2026:0628:55:11",
+    now: new Date("2026-05-12T14:30:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
   });
   const logBindArgs = bind.mock.calls.find(
     (args) => args[2] === "empty_giveup:race_count_exceeded",
   );
   expect(logBindArgs?.[1]).toBe("fetch-results");
   expect(logBindArgs?.[2]).toBe("empty_giveup:race_count_exceeded");
-  expect(logBindArgs?.[0]).toBe("nar:2026:0628:55:11");
-  expect(logBindArgs?.[3]).toBe("attempts=20");
+  expect(logBindArgs?.[0]).toBe("nar:2026:0512:55:01");
+  expect(logBindArgs?.[3]).toBe("attempts=40");
 });
 
-it("handleEmptyResultFetch issues exactly three D1 statements when threshold trips", async () => {
-  const first = vi.fn(async () => ({ count: 20 }));
+it("handleEmptyResultFetch issues exactly three D1 statements on give-up", async () => {
+  const first = vi.fn(async () => ({ count: 40 }));
   const run = vi.fn(async () => ({}));
   const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
   const prepare = vi.fn(() => ({ bind }));
@@ -1365,10 +1526,28 @@ it("handleEmptyResultFetch issues exactly three D1 statements when threshold tri
   } as unknown as Env;
   await handleEmptyResultFetch({
     env,
-    now: new Date("2026-06-28T15:00:00+09:00"),
-    raceKey: "nar:2026:0628:55:11",
+    now: new Date("2026-05-12T14:30:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
   });
   expect(prepare).toHaveBeenCalledTimes(3);
+});
+
+it("handleEmptyResultFetch issues exactly two D1 statements on awaiting-publish", async () => {
+  const first = vi.fn(async () => ({ count: 1 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  await handleEmptyResultFetch({
+    env,
+    now: new Date("2026-05-12T13:05:00+09:00"),
+    race: RACE,
+    raceKey: "nar:2026:0512:55:01",
+  });
+  expect(prepare).toHaveBeenCalledTimes(2);
 });
 
 it("EMPTY_RESULT_GIVEUP_LOG_STATUS exposes the exact telemetry status string", () => {
