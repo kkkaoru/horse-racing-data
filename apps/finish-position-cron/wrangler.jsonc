@@ -9,12 +9,11 @@
     "enabled": true,
     "head_sampling_rate": 0.1,
   },
-  // Predict cron (container) remains disabled: Cloudflare Containers reaps
-  // batch instances at ~90-110s regardless of sleepAfter; this workload
-  // (DuckDB feature build ~10+ min) cannot complete within that window.
-  // Replaced by Mac launchd that runs the proven local docker pipeline daily
-  // at JST 03:00 — see apps/finish-position-predict-container/DEPLOY.md and
-  // scripts/launchd/.
+  // Production scheduling is Cloudflare-only. The legacy monolithic predict
+  // cron remains disabled because start()-style container batches can be
+  // idle-reaped before the DuckDB feature build completes. Full production
+  // runs are triggered per race by sync-realtime-data via POST /run; this
+  // Worker fans them into Queues/Containers.
   // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
   // before prediction windows and during race hours. They complete in <1s and
   // are safe to run inside a Worker (no container involved).
@@ -42,7 +41,7 @@
       "class_name": "FinishPositionPredictContainer",
       "image": "../finish-position-predict-container/Dockerfile",
       "image_build_context": "../..",
-      "instance_type": "standard-2",
+      "instance_type": "standard-4",
       "max_instances": 3,
     },
   ],
@@ -80,8 +79,8 @@
       // realtime_race_sources (race_start_at_jst = JST ISO post time). The
       // per-race coordinator only SELECTs from this DB to gate which races are
       // within their T-X rescore window. Same source the running-style
-      // coordinator and the launchd race-prediction guard already read; Neon
-      // does not carry race_start_at_jst and a service binding would add an
+      // coordinator and deprecated local guard read; Neon does not carry
+      // race_start_at_jst and a service binding would add an
       // HTTP hop, so a direct read-only D1 binding is the shortest read path.
       "binding": "REALTIME_DB",
       "database_name": "sync-realtime-data",
@@ -108,8 +107,9 @@
     "consumers": [
       {
         "queue": "finish-position-predict-queue",
-        "max_batch_size": 3,
+        "max_batch_size": 1,
         "max_batch_timeout": 5,
+        "max_concurrency": 1,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
     ],

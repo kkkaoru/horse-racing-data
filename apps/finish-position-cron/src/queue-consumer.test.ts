@@ -1,6 +1,7 @@
 // Run with bun. Tests for the queue consumer (DO-backed dedup).
 
 import { beforeEach, expect, test, vi } from "vitest";
+import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
 import type { Env, PredictQueueMessage } from "./types";
 
 interface ClaimResult {
@@ -25,11 +26,17 @@ const {
 } = vi.hoisted(() => {
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const completeRun = vi.fn(async () => undefined);
-  const parseNdjsonStream = vi.fn(async () => ({
-    type: "result" as const,
-    racesPredicted: 5,
-    category: "jra",
-  }));
+  const parseNdjsonStream = vi.fn(
+    async (
+      _body: ReadableStream<Uint8Array>,
+      _options?: ParseNdjsonStreamOptions,
+    ): Promise<PredictResultLine> => ({
+      type: "result" as const,
+      racesPredicted: 5,
+      category: "jra",
+      status: "success" as const,
+    }),
+  );
   const rescoreJraRace = vi.fn(
     async (): Promise<RescoreResult> => ({
       etop2Fired: false,
@@ -75,9 +82,12 @@ const retryMock = vi.fn();
 const idFromNameMock = vi.fn(() => ({ name: "test-id" }));
 const stubFetchMock = vi.fn(
   async () =>
-    new Response(JSON.stringify({ type: "result", racesPredicted: 5, category: "jra" }), {
-      status: 200,
-    }),
+    new Response(
+      JSON.stringify({ type: "result", racesPredicted: 5, category: "jra", status: "success" }),
+      {
+        status: 200,
+      },
+    ),
 );
 const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
 
@@ -135,11 +145,19 @@ beforeEach(() => {
     status: "ok",
   });
   claimRunMock.mockResolvedValue({ proceed: true });
-  parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 5, category: "jra" });
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 5,
+    category: "jra",
+    status: "success",
+  });
   stubFetchMock.mockResolvedValue(
-    new Response(JSON.stringify({ type: "result", racesPredicted: 5, category: "jra" }), {
-      status: 200,
-    }),
+    new Response(
+      JSON.stringify({ type: "result", racesPredicted: 5, category: "jra", status: "success" }),
+      {
+        status: 200,
+      },
+    ),
   );
 });
 
@@ -159,6 +177,7 @@ test("calls claimRun with correct params when processing", async () => {
 
 test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDate", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
@@ -185,6 +204,10 @@ test("calls stub.fetch with keibajoCode and raceBango in URL for per-race full m
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
   );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-20260628-02-01");
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
 test("omits keibajoCode and raceBango from URL when absent in message", async () => {
@@ -200,6 +223,7 @@ test("calls stub.fetch with mode=rescore when message has mode rescore using YYY
     makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
     makeEnv(),
   );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
@@ -207,13 +231,65 @@ test("calls stub.fetch with mode=rescore when message has mode rescore using YYY
   );
 });
 
-test("calls completeRun with success and acks on success", async () => {
+test("calls completeRun with success and acks on explicit result status success", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(completeRunMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "success", racesPredicted: 5 }),
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("accepts legacy result lines without status for backward compatibility", async () => {
+  parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 4, category: "jra" });
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success", racesPredicted: 4 }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
+test("logs container progress for category-level predict messages", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockImplementationOnce(
+    async (
+      _body: ReadableStream<Uint8Array>,
+      options?: ParseNdjsonStreamOptions,
+    ): Promise<PredictResultLine> => {
+      options?.onProgress?.({ type: "progress", stage: "predict", elapsed_s: 12.3 });
+      options?.onProgress?.({ type: "progress" });
+      return { type: "result", racesPredicted: 5, category: "jra", status: "success" };
+    },
+  );
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(consoleSpy).toHaveBeenCalledWith(
+    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=predict elapsed=12.3",
+  );
+  expect(consoleSpy).toHaveBeenCalledWith(
+    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=- elapsed=-",
+  );
+  consoleSpy.mockRestore();
+});
+
+test("marks the run failed and retries when final result status is error", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 2,
+    category: "jra",
+    status: "error",
+    error: "ValueError: missing feature parquet",
+  });
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(completeRunMock).toHaveBeenCalledTimes(1);
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", racesPredicted: 0 }),
+  );
+  expect(completeRunMock).not.toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
 });
 
 test("calls completeRun with error and calls message.retry on failure", async () => {
@@ -322,6 +398,10 @@ test("retries a JRA per-race rescore when the consumer throws", async () => {
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "Rescore JRA failed runYmd=20260619 keibajo=05 race=11:",
+    "Error: neon down",
+  );
   errorSpy.mockRestore();
 });
 
@@ -347,7 +427,7 @@ test("routes a NAR per-race rescore to the container held /predict (not Worker-n
   consoleSpy.mockRestore();
 });
 
-test("targets the per-race rescore at the predict-nar DO with the exact query URL", async () => {
+test("targets the per-race rescore at a race-scoped predict-nar DO with the exact query URL", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -362,7 +442,7 @@ test("targets the per-race rescore at the predict-nar DO with the exact query UR
     ]),
     makeEnv(),
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260619-44-01");
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
@@ -390,9 +470,44 @@ test("acks a NAR per-race rescore when the container returns racesPredicted grea
   consoleSpy.mockRestore();
 });
 
+test("logs container progress with race scope for container per-race rescore messages", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockImplementationOnce(
+    async (
+      _body: ReadableStream<Uint8Array>,
+      options?: ParseNdjsonStreamOptions,
+    ): Promise<PredictResultLine> => {
+      options?.onProgress?.({ type: "progress", message: "halfway", elapsed: 4 });
+      return { type: "result", racesPredicted: 1, category: "nar", status: "success" };
+    },
+  );
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(consoleSpy).toHaveBeenCalledWith(
+    "Predict progress category=nar runYmd=20260619 keibajo=44 race=01 stage=halfway elapsed=4",
+  );
+  consoleSpy.mockRestore();
+});
+
 test("acks a NAR per-race rescore when the container returns racesPredicted zero (no retry)", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  parseNdjsonStreamMock.mockResolvedValue({ type: "result", racesPredicted: 0, category: "nar" });
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "success",
+  });
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -409,6 +524,34 @@ test("acks a NAR per-race rescore when the container returns racesPredicted zero
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   consoleSpy.mockRestore();
+});
+
+test("retries a NAR per-race rescore when the container final result status is error", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "error",
+    error: "RuntimeError: rescore failed",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
 });
 
 test("retries a NAR per-race rescore when the container fetch throws", async () => {
@@ -476,7 +619,7 @@ test("retries a NAR per-race rescore when the container DO returns 502", async (
   errorSpy.mockRestore();
 });
 
-test("routes a Ban-ei per-race rescore to the predict-ban-ei container DO (not Worker-native)", async () => {
+test("routes a Ban-ei per-race rescore to a race-scoped container DO (not Worker-native)", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -493,7 +636,7 @@ test("routes a Ban-ei per-race rescore to the predict-ban-ei container DO (not W
   );
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei-20260619-83-07");
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
@@ -504,11 +647,12 @@ test("keeps a per-category rescore (no keibajo) on the container path", async ()
     makeEnv(),
   );
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
-test("skips claimRun and processes via container when skipDedup is true", async () => {
+test("skips claimRun and processes via container when category skipDedup is true", async () => {
   await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
@@ -522,6 +666,78 @@ test("retries a skipDedup message when container fetch fails", async () => {
   await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "error" }));
+  errorSpy.mockRestore();
+});
+
+test("does not warm the category cache for focused per-race skipDedup full messages", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runDateIso: "2026-06-28",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+});
+
+test("warms the category cache for category-level skipDedup full messages", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        mode: "full",
+        runDateIso: "2026-06-28",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", runDate: "2026-06-28", runYmd: "20260628" }),
+  );
+});
+
+test("retries focused skipDedup full messages with result status error without category completion", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "error",
+    error: "RuntimeError: focused build failed",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "Predict failed for category=jra runYmd=20260628 keibajo=02 race=01:",
+    "Error: Container result status=error: RuntimeError: focused build failed",
+  );
   errorSpy.mockRestore();
 });
 

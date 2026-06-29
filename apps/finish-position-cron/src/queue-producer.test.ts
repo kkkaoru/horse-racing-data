@@ -146,6 +146,33 @@ test("enqueuePredict attaches keibajoCode and raceBango for a per-race full buil
   });
 });
 
+test("enqueuePredict preserves downstream full per-race trigger fields with skipDedup", async () => {
+  const categories = await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-06-28",
+    runYmd: "20260628",
+    skipDedup: true,
+  });
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(categories).toStrictEqual(["jra"]);
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    keibajoCode: "05",
+    mode: "full",
+    raceBango: "11",
+    runDate: "2026-06-28",
+    runDateIso: "2026-06-28",
+    runYmd: "20260628",
+    skipDedup: true,
+  });
+});
+
 test("enqueuePredict omits per-race fields when only keibajoCode is provided", async () => {
   await enqueuePredict({
     category: "nar",

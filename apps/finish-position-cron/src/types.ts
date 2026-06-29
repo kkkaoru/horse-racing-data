@@ -15,7 +15,7 @@ export interface Env {
   // Read-only D1 binding to the sync-realtime-data DB. The per-race coordinator
   // reads realtime_race_sources.race_start_at_jst (JST ISO post-time) from here
   // to gate which races are within their T-X rescore window. Same source the
-  // running-style coordinator and the launchd guard already use; finish-position
+  // running-style coordinator and deprecated local guard use; finish-position
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
@@ -82,11 +82,10 @@ export interface PredictQueueMessage {
   // per-category messages, so the existing consumer is unaffected.
   keibajoCode?: string;
   raceBango?: string;
-  // Gates the weight-rebuild full build bypass: when the per-race coordinator
-  // detects races within the window (weight is now available), it triggers a
-  // second full build for that category with skipDedup=true so the queue
-  // consumer skips the per-category claimRun dedup gate and processes the
-  // Container full build identically. Absent/false keeps the normal dedup path.
+  // Gates event-driven full-build bypasses: when sync-realtime-data finishes
+  // running-style, it can trigger POST /run with skipDedup=true so the queue
+  // consumer skips the per-category claimRun dedup gate. Absent/false keeps the
+  // normal dedup path.
   skipDedup?: boolean;
 }
 

@@ -1,18 +1,17 @@
 // Run with bun. Gate that decides whether a scheduled event should run the
 // finish-position prediction container or the Neon pre-wake warm-up.
 //
-// NOTE: Cloudflare Cron Triggers are intentionally disabled in wrangler.jsonc
-// because Cloudflare Containers reaps batch instances at ~90-110s regardless
-// of sleepAfter and the DuckDB feature build needs ~10+ min. Mac launchd
-// drives the daily run instead (scripts/launchd/). The gate below remains so
-// that if anyone ever re-enables a cron and uses a different schedule by
-// mistake, scheduled() stays a no-op until PREDICT_CRON itself is changed.
+// NOTE: The legacy monolithic predict cron is intentionally absent from
+// wrangler.jsonc because start()-style container batches can be idle-reaped
+// before the DuckDB feature build completes. Production full runs are
+// Cloudflare-owned per-race: sync-realtime-data calls POST /run after
+// running-style completes, and this Worker enqueues container work.
 
 import type { PredictCategory } from "./types";
 
-// A row of realtime_race_sources (sync-realtime-data D1) projected to the columns
-// the feature-build fan-out needs: the underlying source (jra/nar) plus the
-// keibajo / race identifiers.
+// A row of realtime_race_sources (sync-realtime-data D1) projected to the
+// columns the race enumeration helper needs: the underlying source (jra/nar)
+// plus the keibajo / race identifiers.
 interface RaceSourceRow {
   source: string;
   keibajo_code: string;
@@ -42,9 +41,9 @@ const KEIBAJO_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
 const PAD_CHAR = "0";
 
-// The historical schedule preserved as the canonical "predict cron" name.
-// "0 18 * * *" is 18:00 UTC == JST 03:00. Re-enabling it in wrangler.jsonc is
-// NOT recommended (Container reap window); use launchd.
+// The historical monolithic schedule preserved as the canonical "predict cron"
+// name. "0 18 * * *" is 18:00 UTC == JST 03:00. Re-enabling it in wrangler.jsonc
+// is NOT the production path; use the Cloudflare per-race POST /run queue path.
 export const PREDICT_CRON = "0 18 * * *";
 
 // Warm cron: 17:55 UTC == JST 02:55 (5 min before NAR/ban-ei 03:00 prediction)
@@ -67,10 +66,9 @@ export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 // the predict / warm crons. Mirrors the running-style "*/10" coordinator.
 export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 
-// Feature-build cron: 00:30 UTC == JST 09:30 — triggers the Container full
-// pipeline for all categories so per-race feature parquets are uploaded to R2
-// before race hours. Replaces the manual Docker batch that previously was the
-// only way to generate feature parquets.
+// Feature-build cron: 00:30 UTC == JST 09:30. The worker now treats this as an
+// observable no-op; production full per-race runs are triggered by
+// sync-realtime-data after running-style completion via POST /run.
 export const FEATURE_BUILD_CRON = "30 0 * * *";
 
 const WARM_CRONS: ReadonlySet<string> = new Set([

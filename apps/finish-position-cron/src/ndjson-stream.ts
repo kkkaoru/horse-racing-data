@@ -3,10 +3,22 @@
 // line has type "result" and carries racesPredicted + category.
 
 const RESULT_TYPE = "result";
-const TEXT_DECODER = new TextDecoder();
+const PROGRESS_TYPE = "progress";
 
 interface NdjsonLine {
   type: string;
+}
+
+export interface PredictProgressLine extends NdjsonLine {
+  type: "progress";
+  elapsed?: number;
+  elapsed_s?: number;
+  message?: string;
+  stage?: string;
+}
+
+export interface ParseNdjsonStreamOptions {
+  onProgress?: (line: PredictProgressLine) => void;
 }
 
 export interface PerRaceParquetEntry {
@@ -14,10 +26,15 @@ export interface PerRaceParquetEntry {
   parquetKey: string;
 }
 
+export type PredictResultStatus = "success" | "error";
+
 export interface PredictResultLine extends NdjsonLine {
   type: "result";
   racesPredicted: number;
   category: string;
+  status?: PredictResultStatus;
+  error?: string;
+  runDate?: string;
   // Optional Worker-R2-proxy fields: present only on mode=full success when the
   // Container embedded the feature parquet bytes in the NDJSON result line.
   // The Worker DO decodes these and proxies the bytes to FEATURES_CACHE (R2
@@ -32,27 +49,50 @@ export interface PredictResultLine extends NdjsonLine {
 
 const isResultLine = (line: NdjsonLine): line is PredictResultLine => line.type === RESULT_TYPE;
 
-const readAllChunks = async (
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  accumulated: string,
-): Promise<string> => {
-  const { done, value } = await reader.read();
-  if (done) return accumulated;
-  return readAllChunks(reader, accumulated + TEXT_DECODER.decode(value, { stream: true }));
+const isProgressLine = (line: NdjsonLine): line is PredictProgressLine =>
+  line.type === PROGRESS_TYPE;
+
+interface ParsedLineState {
+  lastLine?: string;
+  lastParsed?: NdjsonLine;
+}
+
+const processLine = (
+  rawLine: string,
+  options: ParseNdjsonStreamOptions,
+  state: ParsedLineState,
+): void => {
+  const line = rawLine.trim();
+  if (line.length === 0) return;
+  const parsed = JSON.parse(line) as NdjsonLine;
+  if (isProgressLine(parsed)) options.onProgress?.(parsed);
+  state.lastLine = line;
+  state.lastParsed = parsed;
 };
 
 export const parseNdjsonStream = async (
   body: ReadableStream<Uint8Array>,
+  options: ParseNdjsonStreamOptions = {},
 ): Promise<PredictResultLine> => {
   const reader = body.getReader();
-  const text = await readAllChunks(reader, "");
-  const lines = text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  const lastLine = lines.at(-1);
-  if (!lastLine) throw new Error("Empty NDJSON stream");
-  const parsed = JSON.parse(lastLine) as NdjsonLine;
-  if (!isResultLine(parsed)) throw new Error(`Expected result line, got: ${lastLine}`);
-  return parsed;
+  const decoder = new TextDecoder();
+  const state: ParsedLineState = {};
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex = buffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      processLine(buffer.slice(0, newlineIndex), options, state);
+      buffer = buffer.slice(newlineIndex + 1);
+      newlineIndex = buffer.indexOf("\n");
+    }
+  }
+  buffer += decoder.decode();
+  processLine(buffer, options, state);
+  if (!state.lastLine || !state.lastParsed) throw new Error("Empty NDJSON stream");
+  if (!isResultLine(state.lastParsed))
+    throw new Error(`Expected result line, got: ${state.lastLine}`);
+  return state.lastParsed;
 };

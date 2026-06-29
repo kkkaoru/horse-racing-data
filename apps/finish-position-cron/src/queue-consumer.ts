@@ -3,7 +3,11 @@
 // DO stub's fetch, track state.
 
 import { claimRun, completeRun } from "./do-state";
-import { parseNdjsonStream } from "./ndjson-stream";
+import {
+  parseNdjsonStream,
+  type PredictProgressLine,
+  type PredictResultLine,
+} from "./ndjson-stream";
 import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
@@ -23,6 +27,7 @@ const PREDICT_DO_NAME_PREFIX = "predict-";
 const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
 const RESCORE_MODE = "rescore";
+const RESULT_SUCCESS_STATUS = "success";
 const JRA_CATEGORY = "jra";
 const NAR_CATEGORY = "nar";
 const BAN_EI_CATEGORY = "ban-ei";
@@ -56,6 +61,24 @@ interface PerRaceRescoreUrlParams {
   // runYmd is the YYYYMMDD date string required by the container /predict endpoint.
   runYmd: string;
 }
+
+interface PredictDoNameParams {
+  category: string;
+  keibajoCode?: string;
+  raceBango?: string;
+  runYmd: string;
+}
+
+const buildPredictDoName = ({
+  category,
+  keibajoCode,
+  raceBango,
+  runYmd,
+}: PredictDoNameParams): string => {
+  if (keibajoCode !== undefined && raceBango !== undefined)
+    return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}`;
+  return `${PREDICT_DO_NAME_PREFIX}${category}`;
+};
 
 const buildPredictUrl = (params: PredictUrlParams): string => {
   const searchParams = new URLSearchParams({
@@ -92,12 +115,41 @@ const isPerRaceRescore = (
   message.body.keibajoCode !== undefined &&
   message.body.raceBango !== undefined;
 
-// Container per-race rescore (NAR / Ban-ei): held /predict on the per-category DO
+const assertPredictResultSucceeded = (result: PredictResultLine): void => {
+  if (result.status === undefined || result.status === RESULT_SUCCESS_STATUS) return;
+  const detail = result.error ? `: ${result.error}` : "";
+  throw new Error(`Container result status=${result.status}${detail}`);
+};
+
+const isFocusedSkipDedupMessage = (message: PredictQueueMessage): boolean =>
+  message.skipDedup === true &&
+  message.mode === "full" &&
+  message.keibajoCode !== undefined &&
+  message.raceBango !== undefined;
+
+const raceScopeSuffix = (keibajoCode?: string, raceBango?: string): string => {
+  let suffix = "";
+  if (keibajoCode !== undefined) suffix += ` keibajo=${keibajoCode}`;
+  if (raceBango !== undefined) suffix += ` race=${raceBango}`;
+  return suffix;
+};
+
+const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
+  console.log(
+    `Predict progress category=${message.category} runYmd=${message.runYmd} keibajo=${
+      message.keibajoCode ?? "-"
+    } race=${message.raceBango ?? "-"} stage=${line.stage ?? line.message ?? "-"} elapsed=${
+      line.elapsed_s ?? line.elapsed ?? "-"
+    }`,
+  );
+};
+
+// Container per-race rescore (NAR / Ban-ei): held /predict on a per-race DO
 // runs the Python ensemble re-score for one race. No per-category run state is
 // touched (completeRun is not called) so concurrent full/per-category runs are
-// unaffected. racesPredicted > 0 and racesPredicted === 0 (cache_miss) both ack —
-// the container already produced an NDJSON result, so retry would be futile.
-// Fetch / stream / DO errors retry via the queue's DLQ machinery. After a
+// unaffected. A successful NDJSON result (status omitted or success) acks whether
+// racesPredicted is > 0 or 0 (cache_miss). Fetch / stream / DO errors, and final
+// result status:error, retry via the queue's DLQ machinery. After a
 // successful ack the viewer Cache API is warmed for the same race so the
 // event-driven horse-weight trigger surfaces fresh predictions on the race
 // detail page without waiting for cache TTL — mirrors the JRA per-race rescore
@@ -108,7 +160,7 @@ const processContainerPerRaceRescore = async (
 ): Promise<void> => {
   const { category, daysAhead, keibajoCode, raceBango, runYmd } = message.body;
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
-    `${PREDICT_DO_NAME_PREFIX}${category}`,
+    buildPredictDoName({ category, keibajoCode, raceBango, runYmd }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {
@@ -120,7 +172,12 @@ const processContainerPerRaceRescore = async (
       const text = await response.text();
       throw new Error(`Container DO returned ${response.status}: ${text}`);
     }
-    const result = await parseNdjsonStream(response.body);
+    const result = await parseNdjsonStream(response.body, {
+      onProgress(line) {
+        logPredictProgress(message.body, line);
+      },
+    });
+    assertPredictResultSucceeded(result);
     console.log(
       `Rescore NAR(container) runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted}`,
     );
@@ -162,7 +219,10 @@ const processJraPerRaceRescore = async (
       year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
     });
   } catch (err) {
-    console.error(`Rescore JRA failed runYmd=${runYmd}:`, String(err));
+    console.error(
+      `Rescore JRA failed runYmd=${runYmd}${raceScopeSuffix(keibajoCode, raceBango)}:`,
+      String(err),
+    );
     message.retry();
   }
 };
@@ -177,7 +237,12 @@ const processPerRaceRescore = (
   if (category === JRA_CATEGORY) return processJraPerRaceRescore(message, env);
   if (CONTAINER_PER_RACE_CATEGORIES.has(category))
     return processContainerPerRaceRescore(message, env);
-  console.warn(`Skipping per-race rescore for unsupported category=${category} runYmd=${runYmd}`);
+  console.warn(
+    `Skipping per-race rescore for unsupported category=${category} runYmd=${runYmd}${raceScopeSuffix(
+      message.body.keibajoCode,
+      message.body.raceBango,
+    )}`,
+  );
   message.ack();
   return Promise.resolve();
 };
@@ -185,6 +250,8 @@ const processPerRaceRescore = (
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode, keibajoCode, raceBango } = message.body;
+  const shouldCompleteCategoryRun = !isFocusedSkipDedupMessage(message.body);
+  const shouldWarmCategoryCache = message.body.skipDedup === true && shouldCompleteCategoryRun;
   if (!message.body.skipDedup) {
     const claimed = await claimRun({ category, env, runYmd });
     if (!claimed.proceed) {
@@ -193,7 +260,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     }
   }
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
-    `${PREDICT_DO_NAME_PREFIX}${category}`,
+    buildPredictDoName({ category, keibajoCode, raceBango, runYmd }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {
@@ -205,16 +272,23 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       const text = await response.text();
       throw new Error(`Container DO returned ${response.status}: ${text}`);
     }
-    const result = await parseNdjsonStream(response.body);
-    await completeRun({
-      category,
-      env,
-      racesPredicted: result.racesPredicted,
-      runYmd,
-      status: "success",
+    const result = await parseNdjsonStream(response.body, {
+      onProgress(line) {
+        logPredictProgress(message.body, line);
+      },
     });
+    assertPredictResultSucceeded(result);
+    if (shouldCompleteCategoryRun) {
+      await completeRun({
+        category,
+        env,
+        racesPredicted: result.racesPredicted,
+        runYmd,
+        status: "success",
+      });
+    }
     message.ack();
-    if (message.body.skipDedup) {
+    if (shouldWarmCategoryCache) {
       void warmPredictionCacheForCategory({
         category,
         env,
@@ -223,14 +297,22 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       });
     }
   } catch (err) {
-    console.error(`Predict failed for category=${category} runYmd=${runYmd}:`, String(err));
-    await completeRun({
-      category,
-      env,
-      racesPredicted: 0,
-      runYmd,
-      status: "error",
-    });
+    console.error(
+      `Predict failed for category=${category} runYmd=${runYmd}${raceScopeSuffix(
+        keibajoCode,
+        raceBango,
+      )}:`,
+      String(err),
+    );
+    if (shouldCompleteCategoryRun) {
+      await completeRun({
+        category,
+        env,
+        racesPredicted: 0,
+        runYmd,
+        status: "error",
+      });
+    }
     message.retry();
   }
 };

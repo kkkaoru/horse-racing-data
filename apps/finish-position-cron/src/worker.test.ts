@@ -113,6 +113,9 @@ const internalRescoreRaceRequest = (token: string | null, body: string): Request
     method: "POST",
   });
 
+const silenceFeatureBuildCronLog = (): ReturnType<typeof vi.spyOn> =>
+  vi.spyOn(console, "log").mockImplementation(() => undefined);
+
 test("fetch returns a health payload for GET", async () => {
   const response = await workerDefault.fetch(healthRequest(), makeEnv());
   expect(response.status).toBe(200);
@@ -266,39 +269,40 @@ test("handleScheduled does not run the coordinator for the rescore cron", async 
   expect(coordinatorTickMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled enqueues one full-mode build per race for the feature-build cron", async () => {
-  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(enqueueMock).toHaveBeenCalledTimes(1);
-  expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({
-      category: "jra",
-      daysAhead: 2,
-      keibajoCode: "05",
-      mode: "full",
-      raceBango: "11",
-      runDate: "2026-06-03",
-    }),
-  );
-});
-
-test("handleScheduled feature-build cron reads today's races from REALTIME_DB", async () => {
-  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(realtimePrepareMock).toHaveBeenCalledTimes(1);
-  expect(realtimeBindMock).toHaveBeenCalledWith("2026", "0603");
-});
-
-test("handleScheduled feature-build cron enqueues nothing when no races run today", async () => {
-  realtimeAllMock.mockResolvedValueOnce({ results: [] });
+test("handleScheduled skips direct full-mode enqueue for the feature-build cron", async () => {
+  const logSpy = silenceFeatureBuildCronLog();
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(enqueueMock).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    expect.stringContaining("Feature-build cron skipped; waiting for running-style completion"),
+  );
+  logSpy.mockRestore();
+});
+
+test("handleScheduled feature-build cron does not read today's races from REALTIME_DB", async () => {
+  const logSpy = silenceFeatureBuildCronLog();
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(realtimePrepareMock).not.toHaveBeenCalled();
+  expect(realtimeBindMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
+});
+
+test("handleScheduled feature-build cron does not consult realtime DB results", async () => {
+  const logSpy = silenceFeatureBuildCronLog();
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(enqueueMock).not.toHaveBeenCalled();
+  expect(realtimeAllMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
 });
 
 test("handleScheduled feature-build cron does not start container or warm or coordinate", async () => {
+  const logSpy = silenceFeatureBuildCronLog();
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
   expect(warmNeonMock).not.toHaveBeenCalled();
   expect(coordinatorTickMock).not.toHaveBeenCalled();
+  logSpy.mockRestore();
 });
 
 test("queue default handler delegates to handleQueue", async () => {
@@ -370,6 +374,40 @@ test("handleFetch forwards keibajoCode and raceBango for a per-race NAR rescore"
       keibajoCode: "45",
       mode: "rescore",
       raceBango: "12",
+    }),
+  );
+});
+
+test("handleFetch forwards downstream full per-race trigger fields with skipDedup", async () => {
+  enqueueMock.mockResolvedValue(["jra"]);
+  const response = await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "05",
+        mode: "full",
+        raceBango: "11",
+        runDate: "20260628",
+        skipDedup: true,
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  const body = (await response.json()) as { ok: boolean; queued: string[]; runDate: string };
+  expect(body).toStrictEqual({ ok: true, queued: ["jra"], runDate: "2026-06-28" });
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "jra",
+      daysAhead: 2,
+      keibajoCode: "05",
+      mode: "full",
+      raceBango: "11",
+      runDate: "2026-06-28",
+      runYmd: "20260628",
+      skipDedup: true,
     }),
   );
 });
