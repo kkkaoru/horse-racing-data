@@ -3,6 +3,7 @@ import { expect, test, vi } from "vitest";
 
 vi.mock("../src/finish-position-lite-pool", () => ({
   getFinishPositionPool: vi.fn(() => ({}) as never),
+  getFinishPositionWritePool: vi.fn(() => ({}) as never),
 }));
 vi.mock("../src/finish-position-d1", () => ({
   markFinishPositionFeaturesCached: vi.fn(async () => undefined),

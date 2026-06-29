@@ -12,11 +12,18 @@ import type { Env } from "./types";
 // PG connection usage, so 24 here is safe against Neon's plan max.
 const DEFAULT_POOL_SIZE = 24;
 let pool: Pool | null = null;
+let writePool: Pool | null = null;
 
 const getConnectionString = (env: Env): string => {
   if (env.HYPERDRIVE?.connectionString) return env.HYPERDRIVE.connectionString;
   if (env.DATABASE_URL_NEON) return env.DATABASE_URL_NEON;
   throw new Error("HYPERDRIVE or DATABASE_URL_NEON is required for finish-position pool");
+};
+
+const getWriteConnectionString = (env: Env): string | null => {
+  if (env.DATABASE_URL_NEON) return env.DATABASE_URL_NEON;
+  if (env.NEON_DATABASE_URL) return env.NEON_DATABASE_URL;
+  return null;
 };
 
 export const getFinishPositionPool = (env: Env): Pool => {
@@ -26,4 +33,15 @@ export const getFinishPositionPool = (env: Env): Pool => {
     max: DEFAULT_POOL_SIZE,
   });
   return pool;
+};
+
+export const getFinishPositionWritePool = (env: Env): Pool => {
+  if (writePool !== null) return writePool;
+  const connectionString = getWriteConnectionString(env);
+  if (connectionString === null) return getFinishPositionPool(env);
+  writePool = new Pool({
+    connectionString,
+    max: DEFAULT_POOL_SIZE,
+  });
+  return writePool;
 };

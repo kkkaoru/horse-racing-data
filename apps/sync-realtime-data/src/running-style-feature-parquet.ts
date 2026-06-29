@@ -18,6 +18,12 @@ const METADATA_COLUMNS = [
   "keibajoCode",
   "raceBango",
   "category",
+  "kyori",
+  "trackCode",
+  "gradeCode",
+  "shussoTosu",
+  "kyosoJokenCode",
+  "narSubClass",
   "kettoTorokuBango",
   "bamei",
 ] as const;
@@ -61,6 +67,12 @@ const schemaForFeatureNames = (featureNames: ReadonlyArray<string>): ParquetSche
     keibajoCode: { type: "UTF8" },
     raceBango: { type: "UTF8" },
     category: { type: "UTF8" },
+    kyori: { optional: true, type: "INT32" },
+    trackCode: { optional: true, type: "UTF8" },
+    gradeCode: { optional: true, type: "UTF8" },
+    shussoTosu: { optional: true, type: "INT32" },
+    kyosoJokenCode: { optional: true, type: "UTF8" },
+    narSubClass: { optional: true, type: "UTF8" },
     kettoTorokuBango: { type: "UTF8" },
     umaban: { type: "INT32" },
     bamei: { optional: true, type: "UTF8" },
@@ -100,9 +112,15 @@ const toParquetRow = (
     kaisaiTsukihi: row.kaisaiTsukihi,
     keibajoCode: row.keibajoCode,
     kettoTorokuBango: row.kettoTorokuBango,
+    kyori: row.kyori ?? null,
+    kyosoJokenCode: row.kyosoJokenCode ?? null,
+    gradeCode: row.gradeCode ?? null,
+    narSubClass: row.narSubClass ?? null,
     raceBango: row.raceBango,
     raceKey: row.raceKey,
+    shussoTosu: row.shussoTosu ?? null,
     source: row.source,
+    trackCode: row.trackCode ?? null,
     umaban: row.umaban,
   };
   featureNames.forEach((name) => {
@@ -117,6 +135,7 @@ const fromParquetRow = (
 ): RaceHorseFeatureRow => {
   const perHorseFeatures: Record<string, number | null> = {};
   featureNames.forEach((name) => {
+    if (!Object.hasOwn(row, name)) return;
     perHorseFeatures[name] = toNumberOrNull(row[name]);
   });
   const peerInputs = {} as RaceHorseFeatureRow["peerInputs"];
@@ -130,11 +149,17 @@ const fromParquetRow = (
     kaisaiTsukihi: String(row.kaisaiTsukihi),
     keibajoCode: String(row.keibajoCode),
     kettoTorokuBango: String(row.kettoTorokuBango),
+    kyori: toNumberOrNull(row.kyori),
+    kyosoJokenCode: toStringOrNull(row.kyosoJokenCode),
+    gradeCode: toStringOrNull(row.gradeCode),
+    narSubClass: toStringOrNull(row.narSubClass),
     peerInputs,
     perHorseFeatures,
     raceBango: String(row.raceBango),
     raceKey: String(row.raceKey),
+    shussoTosu: toNumberOrNull(row.shussoTosu),
     source: String(row.source),
+    trackCode: toStringOrNull(row.trackCode),
     umaban: Number(row.umaban),
   };
 };

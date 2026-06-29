@@ -122,6 +122,7 @@ export interface HyperdriveBinding {
 export interface Env {
   DATABASE_TARGET?: string;
   DATABASE_URL_NEON?: string;
+  NEON_DATABASE_URL?: string;
   DETAIL_SECTION_CACHE_KV?: KVNamespace;
   FEATURES_ARCHIVE?: R2Bucket;
   HYPERDRIVE?: HyperdriveBinding;
@@ -201,6 +202,7 @@ export interface Env {
   REALTIME_JOBS: Queue<Job>;
   REALTIME_TEST_NOW?: string;
   RUNNING_STYLE_CACHE_ORIGIN?: string;
+  RUNNING_STYLE_CELL_ROUTING_JSON?: string;
   RUNNING_STYLE_JOBS?: Queue<Job>;
   RUNNING_STYLE_D1_WRITE_ENABLED?: string;
   RUNNING_STYLE_MODELS: R2Bucket;

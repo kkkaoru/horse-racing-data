@@ -14,6 +14,12 @@ export interface RaceHorseFeatureRow {
   keibajoCode: string;
   raceBango: string;
   category: string;
+  kyori?: number | null;
+  trackCode?: string | null;
+  gradeCode?: string | null;
+  shussoTosu?: number | null;
+  kyosoJokenCode?: string | null;
+  narSubClass?: string | null;
   kettoTorokuBango: string;
   umaban: number;
   bamei: string | null;

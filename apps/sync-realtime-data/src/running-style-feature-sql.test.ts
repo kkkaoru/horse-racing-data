@@ -18,19 +18,19 @@ import {
 // Snapshots were re-pinned after the addition; downstream parquet schema is
 // additive (existing columns unchanged).
 const PER_RACE_SQL_SHA256_REFERENCE =
-  "4613ff8b55fc1160527b0ce19ac3bb18537cec4482ddecbf18f63a85e257e347";
-const PER_RACE_SQL_LENGTH_REFERENCE = 45475;
+  "c8bb3ea51616d91affdbb2cc9220d31671086baae4f24421878b3920617000dc";
+const PER_RACE_SQL_LENGTH_REFERENCE = 45727;
 const D1_TARGET_SQL_SHA256_REFERENCE =
-  "c2671a6ca2eb72ab91a598218bab79d4946be13113b90853365d307c448b1058";
-const D1_TARGET_SQL_LENGTH_REFERENCE = 45690;
+  "c2a54327cb96e08670dff723294e46fbf18ca49c2321d2467e3e9981bfc3864e";
+const D1_TARGET_SQL_LENGTH_REFERENCE = 45942;
 // Batch SQL gets `MATERIALIZED` hints injected for 10 heavy CTEs (rec, target,
 // target_horses, se_lookup, ra_lookup, horse_history_base, jockey_history,
 // trainer_history, pedigree_rec_um, target_months) so PG materializes them once
 // instead of re-inlining per reference. This snapshot pins the post-hint
 // output so any accidental regression on the materialization list trips here.
 const BATCH_JRA_SQL_SHA256_REFERENCE =
-  "b57b5b2e776ed6f445a1e44af1a0266c39b9062fc9a5b4f2324b7be779a7b242";
-const BATCH_JRA_SQL_LENGTH_REFERENCE = 45341;
+  "40c59e0edfe67e2fc571a2c2ca8993925e965dcc92430d6e658ab3d78e2714ab";
+const BATCH_JRA_SQL_LENGTH_REFERENCE = 45593;
 const BATCH_MATERIALIZED_HINT_COUNT = 10;
 
 const BATCH_ARGS_JRA = {
@@ -48,6 +48,14 @@ const PARAMS = {
   keibajoCode: "08",
   raceBango: "01",
   source: "jra" as const,
+};
+
+const NAR_PARAMS = {
+  kaisaiNen: "2026",
+  kaisaiTsukihi: "0512",
+  keibajoCode: "44",
+  raceBango: "01",
+  source: "nar" as const,
 };
 
 const TARGET_ROW: DailyTargetRow = {
@@ -74,12 +82,19 @@ const TARGET_ROW: DailyTargetRow = {
 const SQL_ROW = {
   bamei: "サンプル",
   career_win_rate: "0.2",
+  category: "jra",
+  grade_code: "A",
   kaisai_nen: "2026",
   kaisai_tsukihi: "0512",
   keibajo_code: "08",
   ketto_toroku_bango: "2024100001",
+  kyori: "2000",
+  kyoso_joken_code: "703",
+  nar_subclass: null,
   race_bango: "01",
+  shusso_tosu: "16",
   source: "jra",
+  track_code: "10",
   umaban: "1",
 };
 
@@ -237,6 +252,20 @@ it("buildRunningStylePostgresFeatureSqlWithD1Target swaps the rec target CTE for
   expect(sql.match(/jsonb_to_recordset\(\$6/)).not.toBeNull();
 });
 
+it("buildRunningStylePostgresFeatureSql derives nar_subclass from NAR kyoso_joken_code", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.includes("lpad(r.keibajo_code::text, 2, '0') not in ('65', '83')")).toBe(true);
+  expect(sql.includes("nullif(left(trim(coalesce(r.kyoso_joken_code, '')), 1), '')")).toBe(true);
+  expect(sql.includes("as nar_subclass")).toBe(true);
+});
+
+it("buildRunningStylePostgresFeatureSqlWithD1Target derives nar_subclass from D1 target rows", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.includes("lpad(j.keibajo_code::text, 2, '0') not in ('65', '83')")).toBe(true);
+  expect(sql.includes("nullif(left(trim(coalesce(j.kyoso_joken_code, '')), 1), '')")).toBe(true);
+  expect(sql.includes("as nar_subclass")).toBe(true);
+});
+
 it("buildRunningStyleFeaturesForRaceFromPostgres throws on unexpected raceKey in results", async () => {
   const query = vi.fn(async () => ({
     rowCount: 1,
@@ -256,6 +285,25 @@ it("buildRunningStyleFeaturesForRaceFromPostgres returns rows for matching raceK
   ]);
   expect(result.rows.length).toBe(1);
   expect(result.rows[0]!.raceKey).toBe("jra:20260512:08:01");
+  expect(result.rows[0]!.kyori).toBe(2000);
+  expect(result.rows[0]!.trackCode).toBe("10");
+  expect(result.rows[0]!.gradeCode).toBe("A");
+  expect(result.rows[0]!.shussoTosu).toBe(16);
+  expect(result.rows[0]!.kyosoJokenCode).toBe("703");
+  expect(result.rows[0]!.narSubClass).toBeNull();
+});
+
+it("buildRunningStyleFeaturesForRaceFromPostgres maps NAR subclass into feature rows", async () => {
+  const query = vi.fn(async () => ({
+    rowCount: 1,
+    rows: [{ ...SQL_ROW, category: "nar", keibajo_code: "44", nar_subclass: "C", source: "nar" }],
+  }));
+  const pool = { query } as unknown as Pool;
+  const result = await buildRunningStyleFeaturesForRaceFromPostgres(pool, NAR_PARAMS, [
+    "career_win_rate",
+  ]);
+  expect(result.rows[0]!.raceKey).toBe("nar:20260512:44:01");
+  expect(result.rows[0]!.narSubClass).toBe("C");
 });
 
 it("buildRunningStyleFeaturesForRaceFromD1Target throws when target rows empty", async () => {

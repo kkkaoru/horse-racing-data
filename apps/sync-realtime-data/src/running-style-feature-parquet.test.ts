@@ -17,10 +17,14 @@ const FEATURE_NAMES = ["career_win_rate", "kohan3f_avg_5"];
 const ROW: RaceHorseFeatureRow = {
   bamei: "サンプル",
   category: "jra",
+  gradeCode: "A",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0512",
   keibajoCode: "08",
   kettoTorokuBango: "2024100001",
+  kyori: 2000,
+  kyosoJokenCode: "703",
+  narSubClass: null,
   peerInputs: {
     careerWinRate: 0.2,
     kohan3fAvg5: 36.5,
@@ -36,7 +40,9 @@ const ROW: RaceHorseFeatureRow = {
   perHorseFeatures: { career_win_rate: 0.2, kohan3f_avg_5: 36.5 },
   raceBango: "01",
   raceKey: "jra:20260512:08:01",
+  shussoTosu: 16,
   source: "jra",
+  trackCode: "10",
   umaban: 1,
 };
 
@@ -71,6 +77,12 @@ it("metadataColumns exposes the expected fixed column list", () => {
     "keibajoCode",
     "raceBango",
     "category",
+    "kyori",
+    "trackCode",
+    "gradeCode",
+    "shussoTosu",
+    "kyosoJokenCode",
+    "narSubClass",
     "kettoTorokuBango",
     "bamei",
   ]);
@@ -87,6 +99,22 @@ it("validateFeatureCoverage returns zero counts when all features present", () =
   expect(result).toStrictEqual({ missingCells: 0, missingFeatureNames: [] });
 });
 
+it("deserializeRunningStyleFeatureParquet leaves physically missing model columns absent", async () => {
+  const bytes = await serializeRunningStyleFeatureParquet([ROW], ["career_win_rate"]);
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const rows = await deserializeRunningStyleFeatureParquet(buffer, [
+    "career_win_rate",
+    "selected_cell_feature",
+  ]);
+  expect(Object.hasOwn(rows[0]!.perHorseFeatures, "career_win_rate")).toBe(true);
+  expect(Object.hasOwn(rows[0]!.perHorseFeatures, "selected_cell_feature")).toBe(false);
+  expect(validateFeatureCoverage(rows, ["selected_cell_feature"])).toStrictEqual({
+    missingCells: 1,
+    missingFeatureNames: ["selected_cell_feature"],
+  });
+});
+
 it("serializeRunningStyleFeatureParquet + deserializeRunningStyleFeatureParquet roundtrip", async () => {
   const bytes = await serializeRunningStyleFeatureParquet([ROW], FEATURE_NAMES);
   const buffer = new ArrayBuffer(bytes.byteLength);
@@ -95,7 +123,33 @@ it("serializeRunningStyleFeatureParquet + deserializeRunningStyleFeatureParquet 
   expect(rows.length).toBe(1);
   expect(rows[0]!.raceKey).toBe("jra:20260512:08:01");
   expect(rows[0]!.umaban).toBe(1);
+  expect(rows[0]!.kyori).toBe(2000);
+  expect(rows[0]!.trackCode).toBe("10");
+  expect(rows[0]!.gradeCode).toBe("A");
+  expect(rows[0]!.shussoTosu).toBe(16);
+  expect(rows[0]!.kyosoJokenCode).toBe("703");
+  expect(rows[0]!.narSubClass).toBeNull();
   expect(rows[0]!.perHorseFeatures.career_win_rate).toBe(0.2);
+});
+
+it("serializeRunningStyleFeatureParquet writes missing route metadata as null", async () => {
+  const legacyRow: RaceHorseFeatureRow = { ...ROW };
+  delete legacyRow.gradeCode;
+  delete legacyRow.kyori;
+  delete legacyRow.kyosoJokenCode;
+  delete legacyRow.narSubClass;
+  delete legacyRow.shussoTosu;
+  delete legacyRow.trackCode;
+  const bytes = await serializeRunningStyleFeatureParquet([legacyRow], FEATURE_NAMES);
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const rows = await deserializeRunningStyleFeatureParquet(buffer, FEATURE_NAMES);
+  expect(rows[0]!.kyori).toBeNull();
+  expect(rows[0]!.trackCode).toBeNull();
+  expect(rows[0]!.gradeCode).toBeNull();
+  expect(rows[0]!.shussoTosu).toBeNull();
+  expect(rows[0]!.kyosoJokenCode).toBeNull();
+  expect(rows[0]!.narSubClass).toBeNull();
 });
 
 it("putRunningStyleFeatureParquet writes Parquet bytes to R2 with the right contentType", async () => {

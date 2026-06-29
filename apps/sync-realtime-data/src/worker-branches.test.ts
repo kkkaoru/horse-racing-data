@@ -1912,13 +1912,13 @@ it("fetch-results logs and rethrows a HandlerTimeoutError when the inner fetch h
   vi.useFakeTimers();
   const { handleJob } = await import("./worker");
   const { claimResultFetch, getRaceSource, logFetch } = await import("./storage");
-  const { fetchJraResultHtmlWithPlaywright } = await import("./jra");
+  const { fetchJraResultHtmlWithFallback } = await import("./jra");
   vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
-  vi.mocked(fetchJraResultHtmlWithPlaywright).mockImplementationOnce(
-    () => new Promise<string>(() => {}),
+  vi.mocked(fetchJraResultHtmlWithFallback).mockResolvedValueOnce(
+    `<table><tr><td class="num">5</td><td class="horse">x</td><td class="jockey">j</td></tr></table>`,
   );
-  vi.mocked(fetchJraResultHtmlWithPlaywright).mockImplementationOnce(
+  vi.mocked(fetchJraResultHtmlWithFallback).mockImplementationOnce(
     () => new Promise<string>(() => {}),
   );
   const pending = handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {

@@ -86,6 +86,15 @@ const SAFE_ZENHAN_3F_EXPR = (alias: string): string => `
   end
 `;
 
+const NAR_SUBCLASS_EXPR = (alias: string): string => `
+  case
+    when ${alias}.source = 'nar'
+      and lpad(${alias}.keibajo_code::text, 2, '0') not in ('65', '83')
+      then nullif(left(trim(coalesce(${alias}.kyoso_joken_code, '')), 1), '')
+    else null
+  end
+`;
+
 const buildPerRaceCoreCtesSql = (): string => `
 with params as (
   select
@@ -159,6 +168,7 @@ target as (
     r.kishumei_ryakusho,
     r.chokyoshimei_ryakusho,
     r.kyoso_joken_code,
+    ${NAR_SUBCLASS_EXPR("r")} as nar_subclass,
     r.babajotai_code_shiba,
     r.babajotai_code_dirt,
     r.corner1_norm as target_corner_1_norm,
@@ -707,6 +717,7 @@ base_features as (
   select
     t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
     t.ketto_toroku_bango, t.umaban, t.bamei, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
+    t.kyoso_joken_code, t.nar_subclass,
     t.finish_position, t.finish_norm,
     t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
     hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.past_first_3f_avg_5, hc.corner_pass_avg_5,
@@ -985,6 +996,7 @@ target as (
     r.kishumei_ryakusho,
     r.chokyoshimei_ryakusho,
     r.kyoso_joken_code,
+    ${NAR_SUBCLASS_EXPR("r")} as nar_subclass,
     r.babajotai_code_shiba,
     r.babajotai_code_dirt,
     r.corner1_norm as target_corner_1_norm,
@@ -1125,11 +1137,17 @@ const rowToFeaturePayload = (
     kaisaiTsukihi,
     keibajoCode,
     kettoTorokuBango: toRequiredString(row.ketto_toroku_bango),
+    kyori: toNumberOrNull(row.kyori),
+    kyosoJokenCode: toStringOrNull(row.kyoso_joken_code),
+    gradeCode: toStringOrNull(row.grade_code),
+    narSubClass: toStringOrNull(row.nar_subclass),
     peerInputs: peerInputs as RaceHorseFeatureRow["peerInputs"],
     perHorseFeatures,
     raceBango,
     raceKey: `${source}:${kaisaiNen}${kaisaiTsukihi}:${keibajoCode}:${raceBango}`,
+    shussoTosu: toNumberOrNull(row.shusso_tosu),
     source,
+    trackCode: toStringOrNull(row.track_code),
     umaban: toNumberOrNull(row.umaban) ?? 0,
   };
 };
@@ -1211,6 +1229,7 @@ const D1_TARGET_CTE_SQL = `target as (
     j.kishumei_ryakusho,
     j.chokyoshimei_ryakusho,
     j.kyoso_joken_code,
+    ${NAR_SUBCLASS_EXPR("j")} as nar_subclass,
     j.babajotai_code_shiba,
     j.babajotai_code_dirt,
     null::numeric as target_corner_1_norm,

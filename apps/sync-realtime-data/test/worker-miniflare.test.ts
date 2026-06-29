@@ -130,7 +130,7 @@ beforeAll(async () => {
           }));
           build.onLoad({ filter: /.*/, namespace: "stub-finish-position-lite-pool" }, () => ({
             contents:
-              "export const getFinishPositionPool = () => { throw new Error('finish-position pool unavailable in test'); };",
+              "export const getFinishPositionPool = () => { throw new Error('finish-position pool unavailable in test'); }; export const getFinishPositionWritePool = getFinishPositionPool;",
             loader: "js",
           }));
           build.onLoad({ filter: /.*/, namespace: "stub-running-style-feature-parquet" }, () => ({
