@@ -5,6 +5,7 @@ import type { Env } from "./types";
 import { enqueuePredict } from "./queue-producer";
 
 const sendMock = vi.fn(async () => undefined);
+const UUID_PATTERN = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u;
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -166,9 +167,31 @@ test("enqueuePredict preserves downstream full per-race trigger fields with skip
     keibajoCode: "05",
     mode: "full",
     raceBango: "11",
+    requestId: expect.stringMatching(UUID_PATTERN),
     runDate: "2026-06-28",
     runDateIso: "2026-06-28",
     runYmd: "20260628",
+    skipDedup: true,
+  });
+});
+
+test("enqueuePredict does not attach requestId to category-level skipDedup messages", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+    skipDedup: true,
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
     skipDedup: true,
   });
 });

@@ -29,6 +29,15 @@ const buildPerRaceTarget = (
     ? { keibajoCode: params.keibajoCode, raceBango: params.raceBango }
     : {};
 
+const isFocusedFullBuild = (params: EnqueuePredictParams): boolean =>
+  params.mode === "full" &&
+  params.skipDedup === true &&
+  params.keibajoCode !== undefined &&
+  params.raceBango !== undefined;
+
+const buildRequestId = (params: EnqueuePredictParams): Pick<PredictQueueMessage, "requestId"> =>
+  isFocusedFullBuild(params) ? { requestId: crypto.randomUUID() } : {};
+
 export const enqueuePredict = async (params: EnqueuePredictParams): Promise<PredictCategory[]> => {
   const categories = params.category ? [params.category] : ALL_CATEGORIES;
   const perRaceTarget = buildPerRaceTarget(params);
@@ -42,6 +51,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
         runDateIso: params.runDate,
         runYmd: params.runYmd,
         ...perRaceTarget,
+        ...buildRequestId(params),
         ...(params.skipDedup ? { skipDedup: true } : {}),
       } satisfies PredictQueueMessage),
     ),

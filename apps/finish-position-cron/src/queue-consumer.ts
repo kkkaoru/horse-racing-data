@@ -65,16 +65,30 @@ interface PerRaceRescoreUrlParams {
 interface PredictDoNameParams {
   category: string;
   keibajoCode?: string;
+  mode?: string;
   raceBango?: string;
+  requestId?: string;
   runYmd: string;
+  skipDedup?: boolean;
 }
 
 const buildPredictDoName = ({
   category,
   keibajoCode,
+  mode,
   raceBango,
+  requestId,
   runYmd,
+  skipDedup,
 }: PredictDoNameParams): string => {
+  if (
+    skipDedup === true &&
+    mode === "full" &&
+    keibajoCode !== undefined &&
+    raceBango !== undefined &&
+    requestId !== undefined
+  )
+    return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}-${requestId}`;
   if (keibajoCode !== undefined && raceBango !== undefined)
     return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}`;
   return `${PREDICT_DO_NAME_PREFIX}${category}`;
@@ -249,10 +263,11 @@ const processPerRaceRescore = (
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
-  const { category, runYmd, daysAhead, mode, keibajoCode, raceBango } = message.body;
+  const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, requestId, skipDedup } =
+    message.body;
   const shouldCompleteCategoryRun = !isFocusedSkipDedupMessage(message.body);
-  const shouldWarmCategoryCache = message.body.skipDedup === true && shouldCompleteCategoryRun;
-  if (!message.body.skipDedup) {
+  const shouldWarmCategoryCache = skipDedup === true && shouldCompleteCategoryRun;
+  if (!skipDedup) {
     const claimed = await claimRun({ category, env, runYmd });
     if (!claimed.proceed) {
       message.ack();
@@ -260,7 +275,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     }
   }
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
-    buildPredictDoName({ category, keibajoCode, raceBango, runYmd }),
+    buildPredictDoName({ category, keibajoCode, mode, raceBango, requestId, runYmd, skipDedup }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {

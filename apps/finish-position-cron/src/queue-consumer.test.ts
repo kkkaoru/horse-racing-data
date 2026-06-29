@@ -210,6 +210,51 @@ test("calls stub.fetch with keibajoCode and raceBango in URL for per-race full m
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
+test("adds requestId to the DO name for focused per-race full skipDedup messages", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 2,
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        requestId: "request-123",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&keibajoCode=35&raceBango=01",
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260629-35-01-request-123");
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("keeps category-level full messages on the category DO even when requestId is present", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        mode: "full",
+        requestId: "request-123",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
+  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
 test("omits keibajoCode and raceBango from URL when absent in message", async () => {
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
@@ -447,6 +492,27 @@ test("targets the per-race rescore at a race-scoped predict-nar DO with the exac
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
   );
+  consoleSpy.mockRestore();
+});
+
+test("keeps the per-race rescore DO name unchanged when requestId is present", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        requestId: "request-123",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260619-44-01");
+  expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
 

@@ -76,12 +76,14 @@ export interface PredictQueueMessage {
   category: PredictCategory;
   daysAhead: number;
   mode: PredictMode;
-  // Per-race rescore targeting. Present only on messages produced by the
-  // per-race coordinator (mode="rescore"). keibajoCode/raceBango are 2-digit
-  // zero-padded strings matching realtime_race_sources. Absent on the legacy
-  // per-category messages, so the existing consumer is unaffected.
+  // Per-race targeting. keibajoCode/raceBango are 2-digit zero-padded strings
+  // matching realtime_race_sources. Absent on the legacy per-category messages,
+  // so the existing consumer is unaffected.
   keibajoCode?: string;
   raceBango?: string;
+  // Focused full builds can carry a requestId so retries/replays may choose a
+  // fresh race-scoped Durable Object instead of reusing the previous instance.
+  requestId?: string;
   // Gates event-driven full-build bypasses: when sync-realtime-data finishes
   // running-style, it can trigger POST /run with skipDedup=true so the queue
   // consumer skips the per-category claimRun dedup gate. Absent/false keeps the
