@@ -185,29 +185,39 @@ test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDa
   );
 });
 
-test("calls stub.fetch with keibajoCode and raceBango in URL for per-race full mode", async () => {
-  await handleQueue(
-    makeBatch([
-      makeMessage({
-        daysAhead: 0,
-        keibajoCode: "02",
-        mode: "full",
-        raceBango: "01",
-        runYmd: "20260628",
-        skipDedup: true,
-      }),
-    ]),
-    makeEnv(),
-  );
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
-  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
-  expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
-  );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-20260628-02-01");
-  expect(claimRunMock).not.toHaveBeenCalled();
-  expect(completeRunMock).not.toHaveBeenCalled();
-  expect(ackMock).toHaveBeenCalledTimes(1);
+test("adds a fallback requestId to the DO name for focused per-race full skipDedup messages", async () => {
+  const randomUuidSpy = vi
+    .spyOn(crypto, "randomUUID")
+    .mockReturnValue("00000000-0000-4000-8000-000000000001");
+  try {
+    await handleQueue(
+      makeBatch([
+        makeMessage({
+          daysAhead: 0,
+          keibajoCode: "02",
+          mode: "full",
+          raceBango: "01",
+          runYmd: "20260628",
+          skipDedup: true,
+        }),
+      ]),
+      makeEnv(),
+    );
+    expect(stubFetchMock).toHaveBeenCalledTimes(1);
+    const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+    expect(fetchRequest.url).toBe(
+      "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
+    );
+    expect(idFromNameMock).toHaveBeenCalledWith(
+      "predict-jra-20260628-02-01-00000000-0000-4000-8000-000000000001",
+    );
+    expect(randomUuidSpy).toHaveBeenCalledTimes(1);
+    expect(claimRunMock).not.toHaveBeenCalled();
+    expect(completeRunMock).not.toHaveBeenCalled();
+    expect(ackMock).toHaveBeenCalledTimes(1);
+  } finally {
+    randomUuidSpy.mockRestore();
+  }
 });
 
 test("adds requestId to the DO name for focused per-race full skipDedup messages", async () => {

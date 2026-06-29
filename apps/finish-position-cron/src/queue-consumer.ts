@@ -265,7 +265,9 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, requestId, skipDedup } =
     message.body;
-  const shouldCompleteCategoryRun = !isFocusedSkipDedupMessage(message.body);
+  const isFocusedSkipDedup = isFocusedSkipDedupMessage(message.body);
+  const predictDoRequestId = isFocusedSkipDedup ? (requestId ?? crypto.randomUUID()) : requestId;
+  const shouldCompleteCategoryRun = !isFocusedSkipDedup;
   const shouldWarmCategoryCache = skipDedup === true && shouldCompleteCategoryRun;
   if (!skipDedup) {
     const claimed = await claimRun({ category, env, runYmd });
@@ -275,7 +277,15 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     }
   }
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
-    buildPredictDoName({ category, keibajoCode, mode, raceBango, requestId, runYmd, skipDedup }),
+    buildPredictDoName({
+      category,
+      keibajoCode,
+      mode,
+      raceBango,
+      requestId: predictDoRequestId,
+      runYmd,
+      skipDedup,
+    }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   try {
