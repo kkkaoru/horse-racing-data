@@ -30,7 +30,7 @@
   // 150 fetched_at (~900 puts/tick) for ~12x throughput to drain the
   // odds_snapshots backlog.
   "triggers": {
-    "crons": ["* * * * *", "0 */6 * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
+    "crons": ["*/2 * * * *", "0 */6 * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
   },
   "queues": {
     "producers": [
