@@ -32,6 +32,11 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
+from learning.feature_selection_policy import (
+    compute_feature_set_hash,
+    normalize_feature_names,
+    resolve_feature_columns_for_target,
+)
 from running_style_field_features import (
     FIELD_FEATURE_COLUMNS,
     enrich_dataframe_with_field_features,
@@ -204,6 +209,14 @@ class RunningStyleCellKey:
     subgroup: str | None
 
 
+@dataclass(frozen=True)
+class CellFeatureSelectionRule:
+    category: str
+    conditions: tuple[tuple[str, tuple[str, ...]], ...]
+    feature_names: tuple[str, ...]
+    feature_set_hash: str
+
+
 DEFAULT_WALK_FORWARD_WINDOWS = "2023,2024,2025,2026"
 WALK_FORWARD_PRECISION_GAP_THRESHOLD_PP = 30.0
 LOG_LOSS_EPS = 1e-15
@@ -231,13 +244,7 @@ def default_training_params() -> TrainingParams:
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
-    excluded = (
-        set(META_COLUMNS)
-        | set(LABEL_COLUMNS)
-        | set(LEAK_COLUMNS)
-        | set(CELL_DERIVED_COLUMNS)
-    )
-    return [column for column in df_columns if column not in excluded]
+    return resolve_feature_columns_for_target(df_columns, "running_style")
 
 
 def detect_categorical_features(feature_columns: list[str]) -> list[str]:
@@ -884,6 +891,121 @@ def extend_feature_columns(
     return merged
 
 
+def _cell_dimension_value(cell: RunningStyleCellKey, dimension: str) -> str:
+    values = {
+        "category": cell.category,
+        "class": cell.class_label,
+        "class_label": cell.class_label,
+        "distance_band": cell.distance_band or "",
+        "season": cell.season or "",
+        "surface": cell.surface or "",
+        "venue": cell.venue,
+        "racetrack": cell.venue,
+        "subgroup": cell.subgroup or "",
+    }
+    return values.get(dimension, "")
+
+
+def _parse_feature_selection_conditions(
+    raw_conditions: object,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    if not isinstance(raw_conditions, list):
+        return ()
+    parsed: list[tuple[str, tuple[str, ...]]] = []
+    for condition in raw_conditions:
+        if not isinstance(condition, dict):
+            continue
+        dimension = condition.get("dimension")
+        values = condition.get("values")
+        if not isinstance(dimension, str) or not isinstance(values, list):
+            continue
+        parsed.append((dimension, tuple(str(value) for value in values)))
+    return tuple(parsed)
+
+
+def _extract_feature_selection_rules_from_routing(
+    payload: dict[str, object],
+) -> list[CellFeatureSelectionRule]:
+    rules: list[CellFeatureSelectionRule] = []
+    for category, raw_config in payload.items():
+        if not isinstance(raw_config, dict):
+            continue
+        raw_variants = raw_config.get("variants")
+        raw_rules = raw_config.get("rules")
+        if not isinstance(raw_variants, dict) or not isinstance(raw_rules, list):
+            continue
+        for raw_rule in raw_rules:
+            if not isinstance(raw_rule, dict):
+                continue
+            variant_id = raw_rule.get("variant")
+            if not isinstance(variant_id, str):
+                continue
+            variant = raw_variants.get(variant_id)
+            if not isinstance(variant, dict):
+                continue
+            raw_features = variant.get("feature_names")
+            if not isinstance(raw_features, list):
+                continue
+            feature_names = tuple(normalize_feature_names([str(f) for f in raw_features]))
+            if not feature_names:
+                continue
+            feature_set_hash = variant.get("feature_set_hash")
+            rules.append(
+                CellFeatureSelectionRule(
+                    category=category,
+                    conditions=_parse_feature_selection_conditions(
+                        raw_rule.get("conditions")
+                    ),
+                    feature_names=feature_names,
+                    feature_set_hash=(
+                        str(feature_set_hash)
+                        if isinstance(feature_set_hash, str) and feature_set_hash
+                        else compute_feature_set_hash(feature_names)
+                    ),
+                )
+            )
+    return rules
+
+
+def load_cell_feature_selection_rules(path: Path | None) -> list[CellFeatureSelectionRule]:
+    if path is None:
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"cell feature selection JSON must be an object: {path}")
+    return _extract_feature_selection_rules_from_routing(payload)
+
+
+def _rule_matches_cell(
+    rule: CellFeatureSelectionRule, cell: RunningStyleCellKey
+) -> bool:
+    if rule.category != cell.category:
+        return False
+    return all(
+        _cell_dimension_value(cell, dimension) in values
+        for dimension, values in rule.conditions
+    )
+
+
+def resolve_cell_feature_selection(
+    cell: RunningStyleCellKey,
+    default_feature_columns: list[str],
+    rules: list[CellFeatureSelectionRule],
+) -> tuple[list[str], str]:
+    matching = [rule for rule in rules if _rule_matches_cell(rule, cell)]
+    if not matching:
+        return default_feature_columns, compute_feature_set_hash(default_feature_columns)
+    selected = list(matching[0].feature_names)
+    available = set(default_feature_columns)
+    missing = [feature for feature in selected if feature not in available]
+    if missing:
+        raise ValueError(
+            "cell feature selection contains features not present in training data: "
+            + ", ".join(missing[:10])
+        )
+    return selected, matching[0].feature_set_hash
+
+
 def train_running_style_head(
     train_df: pl.DataFrame,
     valid_df: pl.DataFrame,
@@ -1165,6 +1287,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     train_cells.add_argument("--output-routing-json", type=Path, required=True)
     train_cells.add_argument("--output-metrics-json", type=Path, default=None)
+    train_cells.add_argument(
+        "--cell-feature-selection-json",
+        type=Path,
+        default=None,
+        help=(
+            "cell-routing JSON containing variants[].feature_names; matching cells "
+            "train with the adopted feature set instead of the global default"
+        ),
+    )
     train_cells.add_argument(
         "--min-train-rows", type=int, default=DEFAULT_CELL_MIN_TRAIN_ROWS
     )
@@ -1590,6 +1721,7 @@ def write_cell_model_metadata(
     model_key: str,
     conditions: list[dict[str, object]],
     feature_columns: list[str],
+    feature_set_hash: str,
     categorical_features: list[str],
     train_rows: int,
     valid_rows: int,
@@ -1610,6 +1742,7 @@ def write_cell_model_metadata(
         "num_classes": NUM_CLASSES,
         "class_labels": list(CLASS_LABELS),
         "feature_columns": feature_columns,
+        "feature_set_hash": feature_set_hash,
         "categorical_features": categorical_features,
         "train_rows": train_rows,
         "valid_rows": valid_rows,
@@ -1632,6 +1765,7 @@ def train_one_running_style_cell(
     fit_df: pl.DataFrame,
     valid_df: pl.DataFrame,
     feature_columns: list[str],
+    feature_set_hash: str,
     categorical_features: list[str],
     params: TrainingParams,
     args: argparse.Namespace,
@@ -1661,6 +1795,7 @@ def train_one_running_style_cell(
         model_key=model_key,
         conditions=conditions,
         feature_columns=feature_columns,
+        feature_set_hash=feature_set_hash,
         categorical_features=categorical_features,
         train_rows=int(len(fit_df)),
         valid_rows=int(len(valid_df)),
@@ -1680,6 +1815,9 @@ def train_one_running_style_cell(
         "metadata_path": str(output_dir / "metadata.json"),
         "cell": asdict(cell),
         "conditions": conditions,
+        "feature_set_hash": feature_set_hash,
+        "feature_columns": feature_columns,
+        "feature_count": len(feature_columns),
         "train_rows": int(len(fit_df)),
         "valid_rows": int(len(valid_df)),
         "metrics": metrics,
@@ -1712,7 +1850,10 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
     feature_columns = extend_feature_columns(
         base_feature_columns, args.with_field_features
     )
-    categorical_features = detect_categorical_features(feature_columns)
+    default_feature_set_hash = compute_feature_set_hash(feature_columns)
+    feature_selection_rules = load_cell_feature_selection_rules(
+        args.cell_feature_selection_json
+    )
     params = training_params_from_args(args)
     train_subset_full = filter_by_date_range(
         df, args.train_start_date, args.train_end_date
@@ -1746,12 +1887,17 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
             )
             continue
         variant_id = reserve_variant_id(cell, used_variant_ids)
+        cell_feature_columns, cell_feature_set_hash = resolve_cell_feature_selection(
+            cell, feature_columns, feature_selection_rules
+        )
+        cell_categorical_features = detect_categorical_features(cell_feature_columns)
         trained = train_one_running_style_cell(
             cell,
             cell_fit_df,
             cell_valid_df,
-            feature_columns,
-            categorical_features,
+            cell_feature_columns,
+            cell_feature_set_hash,
+            cell_categorical_features,
             params,
             args,
             variant_id,
@@ -1775,7 +1921,14 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
         "min_valid_rows": args.min_valid_rows,
         "min_classes": args.min_classes,
         "feature_columns": feature_columns,
-        "categorical_features": categorical_features,
+        "default_feature_set_hash": default_feature_set_hash,
+        "cell_feature_selection_json": (
+            str(args.cell_feature_selection_json)
+            if args.cell_feature_selection_json is not None
+            else None
+        ),
+        "cell_feature_selection_rule_count": len(feature_selection_rules),
+        "categorical_features": detect_categorical_features(feature_columns),
         "hyperparameters": dict(params),
         "class_weight_scheme": args.class_weight_scheme,
         "trained_cells": trained_cells,

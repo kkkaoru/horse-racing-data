@@ -250,6 +250,36 @@ def test_evaluate_cell_rejects_on_weak_lb95() -> None:
     assert any("bootstrap LB95" in reason for reason in result.rejection_reasons)
 
 
+def test_evaluate_cell_running_style_uses_accuracy_required_profile() -> None:
+    baseline = _metrics("BASE", top1=0.40, place2=0.65, place3=0.30)
+    candidate = _metrics("CAND", top1=0.50, place2=0.75, place3=0.30)
+    result = evaluate_cell(
+        _cell(),
+        baseline,
+        candidate,
+        n_boot=300,
+        now=_NOW,
+        prediction_target="running_style",
+    )
+    assert result.adopted is True
+    assert result.rejection_reasons == []
+
+
+def test_evaluate_cell_running_style_rejects_without_accuracy_improvement() -> None:
+    baseline = _metrics("BASE", top1=0.40, place2=0.65, place3=0.30)
+    candidate = _metrics("CAND", top1=0.40, place2=0.75, place3=0.40)
+    result = evaluate_cell(
+        _cell(),
+        baseline,
+        candidate,
+        n_boot=300,
+        now=_NOW,
+        prediction_target="running_style",
+    )
+    assert result.adopted is False
+    assert "no top1 among improved primary metrics" in result.rejection_reasons
+
+
 # ---------------------------------------------------------------------------
 # evaluate_category
 
@@ -335,6 +365,8 @@ def test_generate_routing_json_with_variant_and_rule() -> None:
                 "cell-hashAAAA": {
                     "model_version": "cell-hashAAAA",
                     "feature_count": 3,
+                    "feature_set_hash": "hashAAAA1",
+                    "feature_names": ["f1", "f2", "f3"],
                     "architecture": "catboost",
                 },
             },
@@ -454,10 +486,23 @@ def test_load_cell_metrics_groups_rows_by_cell() -> None:
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value = cursor
     grouped = load_cell_metrics(conn, "jra")
-    cursor.execute.assert_called_once_with(subject._SELECT_CELLS, ("jra",))
+    cursor.execute.assert_called_once_with(
+        subject._SELECT_CELLS, ("finish_position", "jra")
+    )
     assert len(grouped) == 2
     cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf")
     assert {m.feature_set_hash for m in grouped[cell_a]} == {"BASE", "CAND"}
+
+
+def test_load_cell_metrics_can_filter_running_style_target() -> None:
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [_db_row("RUN")]
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    load_cell_metrics(conn, "jra", "running_style")
+    cursor.execute.assert_called_once_with(
+        subject._SELECT_CELLS, ("running_style", "jra")
+    )
 
 
 # ---------------------------------------------------------------------------

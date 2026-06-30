@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import hashlib
 import json
 import logging
 import os
@@ -41,6 +40,9 @@ from learning.feature_explorer import (
     select_round_validation_years,
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
+from learning.feature_selection_policy import (
+    compute_feature_set_hash as compute_normalized_feature_set_hash,
+)
 from learning.subgroup_diagnostics import SubgroupMetrics, compute_subgroup_diagnostics
 from finish_position_lightgbm import (
     LABEL_COLUMNS,
@@ -140,6 +142,7 @@ _CELL_EVAL_TABLE: Final[str] = "cell_training_evaluations"
 
 _CELL_EVAL_DDL = """
 CREATE TABLE IF NOT EXISTS cell_training_evaluations (
+    prediction_target  TEXT NOT NULL DEFAULT 'finish_position',
     feature_set_hash    TEXT NOT NULL,
     category            TEXT NOT NULL,
     surface             TEXT NOT NULL,
@@ -161,22 +164,54 @@ CREATE TABLE IF NOT EXISTS cell_training_evaluations (
     feature_names_array TEXT[] NOT NULL,
     cell_vector         TEXT[] NOT NULL,
     evaluated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (feature_set_hash, category, surface, distance_band, class_label, season, venue)
+    PRIMARY KEY (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue)
 )
+"""
+
+_CELL_EVAL_MIGRATION = """
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS prediction_target TEXT NOT NULL DEFAULT 'finish_position';
+
+DO $$
+DECLARE
+    pk_cols TEXT[];
+BEGIN
+    SELECT array_agg(a.attname ORDER BY u.ordinality)
+    INTO pk_cols
+    FROM pg_constraint c
+    JOIN unnest(c.conkey) WITH ORDINALITY AS u(attnum, ordinality) ON TRUE
+    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+    WHERE c.conrelid = 'cell_training_evaluations'::regclass
+      AND c.contype = 'p';
+
+    IF pk_cols = ARRAY[
+        'feature_set_hash', 'category', 'surface', 'distance_band',
+        'class_label', 'season', 'venue'
+    ] THEN
+        ALTER TABLE cell_training_evaluations
+        DROP CONSTRAINT cell_training_evaluations_pkey;
+
+        ALTER TABLE cell_training_evaluations
+        ADD PRIMARY KEY (
+            prediction_target, feature_set_hash, category, surface,
+            distance_band, class_label, season, venue
+        );
+    END IF;
+END $$;
 """
 
 _CELL_EVAL_UPSERT = """
 INSERT INTO cell_training_evaluations (
-    feature_set_hash, category, surface, distance_band, class_label, season, venue,
+    prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue,
     feature_count, race_count, ndcg_at_3,
     top1_accuracy, place2_accuracy, place3_accuracy,
     place4_accuracy, place5_accuracy, place6_accuracy,
     top3_box_accuracy,
     accuracy_vector, feature_names_array, cell_vector
 ) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
 )
-ON CONFLICT (feature_set_hash, category, surface, distance_band, class_label, season, venue)
+ON CONFLICT (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue)
 DO UPDATE SET
     feature_count = EXCLUDED.feature_count,
     race_count = EXCLUDED.race_count,
@@ -196,15 +231,15 @@ DO UPDATE SET
 
 _CELL_EVAL_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_cell_eval_category_season
-    ON cell_training_evaluations (category, season);
+    ON cell_training_evaluations (prediction_target, category, season);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_category_venue
-    ON cell_training_evaluations (category, venue);
+    ON cell_training_evaluations (prediction_target, category, venue);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_feature_hash
-    ON cell_training_evaluations (feature_set_hash);
+    ON cell_training_evaluations (prediction_target, feature_set_hash);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_category_season_venue
-    ON cell_training_evaluations (category, season, venue);
+    ON cell_training_evaluations (prediction_target, category, season, venue);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_top1
-    ON cell_training_evaluations (category, top1_accuracy DESC);
+    ON cell_training_evaluations (prediction_target, category, top1_accuracy DESC);
 """
 
 _TRIAL_LOG_TABLE: Final[str] = "trial_exploration_log"
@@ -435,8 +470,7 @@ def compute_sire_venue_bias_features(
 
 
 def compute_feature_set_hash(feature_names: list[str]) -> str:
-    canonical = json.dumps(sorted(feature_names), separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return compute_normalized_feature_set_hash(feature_names)
 
 
 class CellAccuracyStore:
@@ -449,6 +483,7 @@ class CellAccuracyStore:
         con = _psycopg.connect(self._pg_url)
         with con.cursor() as cur:
             cur.execute(_CELL_EVAL_DDL)
+            cur.execute(_CELL_EVAL_MIGRATION)
             cur.execute(_CELL_EVAL_INDEXES)
         con.commit()
         self._con = con
@@ -465,13 +500,18 @@ class CellAccuracyStore:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def evaluated_cells(self, feature_set_hash: str) -> set[str]:
+    def evaluated_cells(
+        self,
+        feature_set_hash: str,
+        prediction_target: str = "finish_position",
+    ) -> set[str]:
         assert self._con is not None
         with self._con.cursor() as cur:
             cur.execute(
                 "SELECT category, surface, distance_band, class_label, season, venue "
-                "FROM cell_training_evaluations WHERE feature_set_hash = %s",
-                (feature_set_hash,),
+                "FROM cell_training_evaluations "
+                "WHERE prediction_target = %s AND feature_set_hash = %s",
+                (prediction_target, feature_set_hash),
             )
             return {
                 f"{row[0]}_{row[1]}_{row[2]}_{row[3]}_{row[4]}_{row[5]}"
@@ -484,6 +524,7 @@ class CellAccuracyStore:
         feature_count: int,
         metrics: list[SubgroupMetrics],
         feature_names: list[str] | None = None,
+        prediction_target: str = "finish_position",
     ) -> int:
         assert self._con is not None
         sorted_names = sorted(feature_names) if feature_names is not None else []
@@ -509,6 +550,7 @@ class CellAccuracyStore:
                 cur.execute(
                     _CELL_EVAL_UPSERT,
                     (
+                        prediction_target,
                         feature_set_hash,
                         m["category"],
                         m["surface"],

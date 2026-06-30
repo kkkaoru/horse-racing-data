@@ -1383,6 +1383,57 @@ def test_parse_args_train_cells_accepts_cells_json_and_routing_output():
     assert args.valid_start_date == "20260101"
     assert args.class_weight_scheme == "inverse_freq"
     assert args.with_field_features is True
+    assert args.cell_feature_selection_json is None
+
+
+def test_resolve_cell_feature_selection_uses_matching_routing_rule(tmp_path: Path):
+    selection_path = tmp_path / "cell_routing.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "jra": {
+                    "default_variant": "sim",
+                    "variants": {
+                        "sim": {"model_version": "default"},
+                        "cell-hashAAAA": {
+                            "model_version": "cell-hashAAAA",
+                            "feature_set_hash": "hashAAAA1",
+                            "feature_names": ["feature_b", "feature_a"],
+                        },
+                    },
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"dimension": "class", "values": ["G1"]},
+                                {"dimension": "distance_band", "values": ["sprint"]},
+                                {"dimension": "season", "values": ["spring"]},
+                                {"dimension": "surface", "values": ["turf"]},
+                                {"dimension": "venue", "values": ["05"]},
+                            ],
+                            "variant": "cell-hashAAAA",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    rules = subject.load_cell_feature_selection_rules(selection_path)
+    features, feature_set_hash = subject.resolve_cell_feature_selection(
+        subject.RunningStyleCellKey(
+            category="jra",
+            class_label="G1",
+            distance_band="sprint",
+            season="spring",
+            surface="turf",
+            venue="05",
+            subgroup="OPEN",
+        ),
+        ["feature_a", "feature_b", "feature_c"],
+        rules,
+    )
+    assert features == ["feature_a", "feature_b"]
+    assert feature_set_hash == "hashAAAA1"
 
 
 def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
@@ -1485,3 +1536,7 @@ def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     ]
     assert model_keys
     assert all(str(model_key).endswith(".flatbin") for model_key in model_keys)
+    metrics_payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    trained_cells = metrics_payload["trained_cells"]
+    assert trained_cells[0]["feature_count"] > 0
+    assert len(str(trained_cells[0]["feature_set_hash"])) == 64

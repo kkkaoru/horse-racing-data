@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Final, LiteralString, SupportsFloat, SupportsI
 
 import numpy as np
 
+from learning.feature_selection_policy import PredictionTarget
+
 if TYPE_CHECKING:
     import psycopg
 
@@ -55,6 +57,30 @@ _NO_REGRESSION_METRICS: Final[tuple[str, ...]] = (
     "top3_box",
 )
 
+
+@dataclass(frozen=True)
+class AdoptionProfile:
+    primary_metrics: tuple[str, ...]
+    required_improved_metrics: frozenset[str]
+    no_regression_metrics: tuple[str, ...]
+
+
+_ADOPTION_PROFILES: Final[dict[PredictionTarget, AdoptionProfile]] = {
+    "finish_position": AdoptionProfile(
+        primary_metrics=_PRIMARY_METRICS,
+        required_improved_metrics=_PLACE_PRIMARY_METRICS,
+        no_regression_metrics=_NO_REGRESSION_METRICS,
+    ),
+    # Running-style cell evaluations are stored in the shared cell table as:
+    # top1=accuracy, place2=top2_accuracy, place3=macro_f1. The gate therefore
+    # requires accuracy improvement and one additional independent metric.
+    "running_style": AdoptionProfile(
+        primary_metrics=("top1", "place2", "place3"),
+        required_improved_metrics=frozenset({"top1"}),
+        no_regression_metrics=("top1", "place2", "place3"),
+    ),
+}
+
 # CellKey field -> the router dimension name the field routes on. ``subgroup``
 # carries the distance band and ``racetrack`` carries the venue code, both of
 # which map onto dimensions ``cell_router`` resolves on the fly.
@@ -81,7 +107,7 @@ SELECT category, class_label, distance_band, venue, season, surface,
        place4_accuracy, place5_accuracy, place6_accuracy,
        top3_box_accuracy, evaluated_at, feature_names_array
 FROM cell_training_evaluations
-WHERE category = %s
+WHERE prediction_target = %s AND category = %s
 """
 
 
@@ -132,36 +158,50 @@ def _metric_value(metrics: CellMetrics, name: str) -> float:
     }[name]
 
 
-def compute_deltas(baseline: CellMetrics, candidate: CellMetrics) -> dict[str, float]:
+def compute_deltas(
+    baseline: CellMetrics,
+    candidate: CellMetrics,
+    prediction_target: PredictionTarget = "finish_position",
+) -> dict[str, float]:
     """Compute metric deltas (candidate - baseline) for every gated metric."""
+    profile = _ADOPTION_PROFILES[prediction_target]
     return {
         name: _metric_value(candidate, name) - _metric_value(baseline, name)
-        for name in _NO_REGRESSION_METRICS
+        for name in profile.no_regression_metrics
     }
 
 
 def check_multi_metric_gate(
-    deltas: Mapping[str, float], min_delta: float = DEFAULT_MIN_DELTA
+    deltas: Mapping[str, float],
+    min_delta: float = DEFAULT_MIN_DELTA,
+    prediction_target: PredictionTarget = "finish_position",
 ) -> tuple[bool, list[str]]:
     """Require >=2 primary metrics improved by >=min_delta, >=1 being place2/place3."""
-    improved = [name for name in _PRIMARY_METRICS if deltas.get(name, 0.0) >= min_delta]
+    profile = _ADOPTION_PROFILES[prediction_target]
+    improved = [
+        name for name in profile.primary_metrics if deltas.get(name, 0.0) >= min_delta
+    ]
     reasons: list[str] = []
     if len(improved) < 2:
         reasons.append(
             f"only {len(improved)} primary metric(s) improved by >= {min_delta}; need >= 2"
         )
-    if not any(name in _PLACE_PRIMARY_METRICS for name in improved):
-        reasons.append("no place2/place3 among improved primary metrics")
+    if not any(name in profile.required_improved_metrics for name in improved):
+        required = "/".join(sorted(profile.required_improved_metrics))
+        reasons.append(f"no {required} among improved primary metrics")
     return not reasons, reasons
 
 
 def check_no_regression(
-    deltas: Mapping[str, float], threshold: float = DEFAULT_NO_REG_THRESHOLD
+    deltas: Mapping[str, float],
+    threshold: float = DEFAULT_NO_REG_THRESHOLD,
+    prediction_target: PredictionTarget = "finish_position",
 ) -> tuple[bool, list[str]]:
     """Require every rank metric (top1-top6) and top3_box to stay above threshold."""
+    profile = _ADOPTION_PROFILES[prediction_target]
     reasons = [
         f"{name} regressed by {deltas.get(name, 0.0):+.5f} (<= {threshold})"
-        for name in _NO_REGRESSION_METRICS
+        for name in profile.no_regression_metrics
         if deltas.get(name, 0.0) <= threshold
     ]
     return not reasons, reasons
@@ -214,9 +254,11 @@ def evaluate_cell(
     no_reg_threshold: float = DEFAULT_NO_REG_THRESHOLD,
     n_boot: int = DEFAULT_N_BOOT,
     now: datetime | None = None,
+    prediction_target: PredictionTarget = "finish_position",
 ) -> AdoptionResult:
     """Apply the full multi-metric adoption gate to one candidate of a cell."""
-    deltas = compute_deltas(baseline, candidate)
+    profile = _ADOPTION_PROFILES[prediction_target]
+    deltas = compute_deltas(baseline, candidate, prediction_target)
     reasons: list[str] = []
 
     if candidate.race_count < min_races:
@@ -229,13 +271,17 @@ def evaluate_cell(
             f"{freshness_days} days"
         )
 
-    _, multi_metric_reasons = check_multi_metric_gate(deltas, min_delta)
+    _, multi_metric_reasons = check_multi_metric_gate(
+        deltas, min_delta, prediction_target
+    )
     reasons.extend(multi_metric_reasons)
 
-    _, no_regression_reasons = check_no_regression(deltas, no_reg_threshold)
+    _, no_regression_reasons = check_no_regression(
+        deltas, no_reg_threshold, prediction_target
+    )
     reasons.extend(no_regression_reasons)
 
-    for name in _PRIMARY_METRICS:
+    for name in profile.primary_metrics:
         if deltas[name] < min_delta:
             continue
         lb95 = bootstrap_lb95(
@@ -271,6 +317,7 @@ def evaluate_category(
     min_races: int = DEFAULT_MIN_RACES,
     freshness_days: int = DEFAULT_FRESHNESS_DAYS,
     now: datetime | None = None,
+    prediction_target: PredictionTarget = "finish_position",
 ) -> list[AdoptionResult]:
     """Evaluate every candidate against its cell's baseline; skip baseline-less cells."""
     results: list[AdoptionResult] = []
@@ -289,6 +336,7 @@ def evaluate_category(
                     min_races=min_races,
                     freshness_days=freshness_days,
                     now=now,
+                    prediction_target=prediction_target,
                 )
             )
     return results
@@ -349,6 +397,8 @@ def generate_routing_json(
         variant_specs[variant_name] = {
             "model_version": variant_name,
             "feature_count": len(results[0].candidate.feature_names),
+            "feature_set_hash": results[0].candidate.feature_set_hash,
+            "feature_names": sorted(results[0].candidate.feature_names),
             "architecture": default_architecture,
         }
         for result in sorted(results, key=lambda r: _cell_sort_key(r.cell)):
@@ -392,11 +442,13 @@ def parse_row(row: Sequence[object]) -> tuple[CellKey, CellMetrics]:
 
 
 def load_cell_metrics(
-    conn: psycopg.Connection[tuple[object, ...]], category: str
+    conn: psycopg.Connection[tuple[object, ...]],
+    category: str,
+    prediction_target: PredictionTarget = "finish_position",
 ) -> dict[CellKey, list[CellMetrics]]:
     """Read every evaluation row for ``category`` and group it by cell."""
     with conn.cursor() as cur:
-        cur.execute(_SELECT_CELLS, (category,))
+        cur.execute(_SELECT_CELLS, (prediction_target, category))
         rows = cur.fetchall()
     grouped: dict[CellKey, list[CellMetrics]] = {}
     for row in rows:
@@ -431,6 +483,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--category", type=str, required=True, choices=list(_VALID_CATEGORIES)
     )
+    parser.add_argument(
+        "--prediction-target",
+        type=str,
+        default="finish_position",
+        choices=["finish_position", "running_style"],
+        help="Select the cell-adoption metric profile.",
+    )
     parser.add_argument("--baseline-hash", type=str, required=True)
     parser.add_argument("--output-path", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -453,10 +512,11 @@ def main(argv: list[str] | None = None) -> None:
 
     category = str(args.category)
     baseline_hash = str(args.baseline_hash)
+    prediction_target = cast("PredictionTarget", args.prediction_target)
 
     conn = _connect(str(args.pg_url))
     try:
-        grouped = load_cell_metrics(conn, category)
+        grouped = load_cell_metrics(conn, category, prediction_target)
     finally:
         conn.close()
 
@@ -481,6 +541,7 @@ def main(argv: list[str] | None = None) -> None:
         baseline_hash,
         min_races=int(args.min_races),
         freshness_days=int(args.freshness_days),
+        prediction_target=prediction_target,
     )
     adopted = [result for result in results if result.adopted]
     variants = group_variants(adopted)
@@ -494,8 +555,9 @@ def main(argv: list[str] | None = None) -> None:
     payload = json.dumps(config, ensure_ascii=False, indent=2)
 
     _logger.info(
-        "category=%s cells=%d candidates=%d adopted=%d variants=%d",
+        "category=%s prediction_target=%s cells=%d candidates=%d adopted=%d variants=%d",
         category,
+        prediction_target,
         len(grouped),
         len(results),
         len(adopted),

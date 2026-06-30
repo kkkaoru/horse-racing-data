@@ -24,6 +24,7 @@ import optuna
 import polars as pl
 from numpy.typing import NDArray
 
+from learning.feature_selection_policy import resolve_feature_columns_for_target
 from learning.subgroup_diagnostics import compute_race_ndcg
 
 if TYPE_CHECKING:
@@ -197,8 +198,7 @@ def build_label_array(
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
-    excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
-    return [column for column in df_columns if column not in excluded]
+    return resolve_feature_columns_for_target(df_columns, "finish_position")
 
 
 def build_group_sizes(df: pl.DataFrame) -> list[int]:

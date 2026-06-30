@@ -5283,6 +5283,7 @@ def test_cell_accuracy_store_evaluated_cells_empty(tmp_path: Path) -> None:
     store._con = mock_conn
     result = store.evaluated_cells("abc123")
     assert result == set()
+    assert mock_cursor.execute.call_args[0][1] == ("finish_position", "abc123")
 
 
 def test_cell_accuracy_store_evaluated_cells_returns_keys(tmp_path: Path) -> None:
@@ -5336,10 +5337,11 @@ def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
     assert mock_conn.commit.call_count == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 20
-    assert params[17] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
-    assert params[18] == []
-    assert params[19] == ["jra", "turf", "mile", "E", "summer", "10"]
+    assert len(params) == 21
+    assert params[0] == "finish_position"
+    assert params[18] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[19] == []
+    assert params[20] == ["jra", "turf", "mile", "E", "summer", "10"]
 
 
 def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
@@ -5372,14 +5374,21 @@ def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
             top3_box_accuracy=0.15,
         ),
     ]
-    saved = store.save_cell_metrics("abc123", 120, metrics, ["feat_b", "feat_a"])
+    saved = store.save_cell_metrics(
+        "abc123",
+        120,
+        metrics,
+        ["feat_b", "feat_a"],
+        prediction_target="running_style",
+    )
     assert saved == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 20
-    assert params[17] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
-    assert params[18] == ["feat_a", "feat_b"]
-    assert params[19] == ["jra", "turf", "mile", "E", "summer", "10"]
+    assert len(params) == 21
+    assert params[0] == "running_style"
+    assert params[18] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[19] == ["feat_a", "feat_b"]
+    assert params[20] == ["jra", "turf", "mile", "E", "summer", "10"]
 
 
 def test_sire_venue_bias_adds_five_columns() -> None:
@@ -5535,6 +5544,7 @@ def test_cell_accuracy_store_open_creates_table_and_indexes() -> None:
         store.open()
     executed = [c.args[0] for c in mock_cursor.execute.call_args_list]
     assert subject._CELL_EVAL_DDL in executed
+    assert subject._CELL_EVAL_MIGRATION in executed
     assert subject._CELL_EVAL_INDEXES in executed
     assert mock_conn.commit.call_count == 1
     assert store._con is mock_conn

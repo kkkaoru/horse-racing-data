@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import random
@@ -17,6 +16,9 @@ from optuna.samplers import BaseSampler, TPESampler
 from optuna.trial import FrozenTrial, TrialState, create_trial
 
 from learning.feature_registry import NDCG_IMPROVEMENT_THRESHOLD, FeatureRegistry
+from learning.feature_selection_policy import (
+    compute_feature_set_hash as compute_normalized_feature_set_hash,
+)
 from finish_position_catboost import (
     CATEGORICAL_FEATURE_NAMES as CB_CATEGORICAL_FEATURE_NAMES,
     train_catboost_ranker,
@@ -847,8 +849,7 @@ def _feature_set_hash(feature_names: list[str]) -> str:
     trials that pick the same columns in a different sequence collide and share one
     cached NDCG instead of retraining.
     """
-    canonical = json.dumps(sorted(feature_names), separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return compute_normalized_feature_set_hash(feature_names)
 
 
 class TrialDeduplicator(Protocol):
