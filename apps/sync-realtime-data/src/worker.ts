@@ -79,6 +79,7 @@ import {
   getPremiumPaddockNotificationState,
   getPremiumRaceDataFetchState,
   getQueueHealthMetrics,
+  getLatestHorseWeights,
   getRaceSource,
   deleteDailyRaceEntriesChunk,
   deleteOddsSnapshotsChunk,
@@ -4435,8 +4436,9 @@ export const raceKeyFromRequest = (url: URL): string | null => {
 // Flat horse-weight endpoint: GET /api/horse-weight/{percent-encoded raceKey}
 // Used by the finish-position-predict container to read bataiju for upcoming
 // races (available in D1 ~30-40 min before post time via the weight watchdog).
-// Returns the HorseWeightSnapshot JSON from HORSE_WEIGHT_DO, or 204 when no
-// snapshot has been stored yet. Race key format mirrors /api/odds/{raceKey}:
+// Returns the HorseWeightSnapshot JSON from HORSE_WEIGHT_DO, or D1 fallback
+// rows when the DO has not been hydrated yet. Race key format mirrors
+// /api/odds/{raceKey}:
 //   {source}:{YYYY}:{MMDD}:{keibajo_code}:{race_bango}  (percent-encoded)
 // e.g. /api/horse-weight/nar%3A2026%3A0610%3A44%3A01
 export const horseWeightRaceKeyFromRequest = (url: URL): string | null => {
@@ -4472,6 +4474,60 @@ export const horseWeightsLatestRaceKeyFromRequest = (url: URL): string | null =>
   const match = url.pathname.match(horseWeightsLatestPathRegex);
   if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5] || !match[6]) return null;
   return horseWeightsRaceKeyFromMatch(match);
+};
+
+type HorseWeightStub = {
+  fetch: (input: string, init?: RequestInit) => Promise<Response>;
+};
+
+const horseWeightD1Snapshot = async (
+  env: Env,
+  raceKey: string,
+): Promise<HorseWeightSnapshot | null> => {
+  const latest = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
+  if (latest === null) return null;
+  return toHorseWeightSnapshot(latest.fetchedAt, latest.horses);
+};
+
+const writeHorseWeightSnapshotToStubSafe = async (
+  env: Env,
+  raceKey: string,
+  stub: HorseWeightStub,
+  snapshot: HorseWeightSnapshot,
+): Promise<void> => {
+  try {
+    await writeHorseWeightSnapshotToStub({ snapshot, stub });
+  } catch (error) {
+    await logFetch(
+      env.REALTIME_DB,
+      "horse-weight-do-hydrate",
+      "error",
+      raceKey,
+      formatError(error),
+    );
+  }
+};
+
+const hydrateHorseWeightStubFromD1 = async (
+  env: Env,
+  raceKey: string,
+  stub: HorseWeightStub,
+): Promise<HorseWeightSnapshot | null> => {
+  const snapshot = await horseWeightD1Snapshot(env, raceKey);
+  if (snapshot === null) return null;
+  await writeHorseWeightSnapshotToStubSafe(env, raceKey, stub, snapshot);
+  return snapshot;
+};
+
+const proxyHorseWeightLatestWithD1Fallback = async (
+  env: Env,
+  raceKey: string,
+  stub: HorseWeightStub,
+): Promise<Response> => {
+  const response = await proxyHorseWeightLatestFromStub(stub);
+  if (response.status !== 204) return response;
+  const snapshot = await hydrateHorseWeightStubFromD1(env, raceKey, stub);
+  return snapshot === null ? response : json(snapshot);
 };
 
 export const premiumRaceKeyFromRequest = (url: URL): string | null => {
@@ -4785,6 +4841,7 @@ export default {
       const streamStub = env.HORSE_WEIGHT_DO.get(
         env.HORSE_WEIGHT_DO.idFromName(horseWeightsStreamRaceKey),
       );
+      await hydrateHorseWeightStubFromD1(env, horseWeightsStreamRaceKey, streamStub);
       return proxyHorseWeightStreamFromStub(streamStub);
     }
 
@@ -4793,7 +4850,7 @@ export default {
       const latestStub = env.HORSE_WEIGHT_DO.get(
         env.HORSE_WEIGHT_DO.idFromName(horseWeightsLatestRaceKey),
       );
-      return proxyHorseWeightLatestFromStub(latestStub);
+      return proxyHorseWeightLatestWithD1Fallback(env, horseWeightsLatestRaceKey, latestStub);
     }
 
     const horseWeightFlatRaceKey = horseWeightRaceKeyFromRequest(url);
@@ -4801,7 +4858,7 @@ export default {
       const flatStub = env.HORSE_WEIGHT_DO.get(
         env.HORSE_WEIGHT_DO.idFromName(horseWeightFlatRaceKey),
       );
-      return proxyHorseWeightLatestFromStub(flatStub);
+      return proxyHorseWeightLatestWithD1Fallback(env, horseWeightFlatRaceKey, flatStub);
     }
 
     const raceTrendQuery = raceTrendDailyTrackQueryFromRequest(url);

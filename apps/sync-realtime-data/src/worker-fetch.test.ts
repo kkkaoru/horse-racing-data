@@ -1574,6 +1574,128 @@ it("fetch GET /api/jra/.../realtime returns degraded payload when D1 batch throw
   expect(body.source).toBeNull();
 });
 
+it("fetch GET horse-weights-latest returns the D1 snapshot when the DO is empty", async () => {
+  const { default: worker } = await import("./worker");
+  const { getLatestHorseWeights } = await import("./storage");
+  vi.mocked(getLatestHorseWeights).mockResolvedValueOnce({
+    fetchedAt: "2026-06-30T11:54:35+09:00",
+    horses: [
+      {
+        changeAmount: 2,
+        changeSign: "+",
+        horseName: "Test Horse",
+        horseNumber: "1",
+        weight: 470,
+      },
+    ],
+  });
+  const stubFetch = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const env = buildEnv({
+    HORSE_WEIGHT_DO: { get, idFromName },
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/nar/races/2026/06/30/35/03/horse-weights-latest"),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as {
+    fetchedAt: string;
+    horses: Array<{ horseNumber: string; weight: number | null }>;
+  };
+  expect(body.fetchedAt).toBe("2026-06-30T11:54:35+09:00");
+  expect(body.horses[0]?.horseNumber).toBe("1");
+  expect(body.horses[0]?.weight).toBe(470);
+  expect(idFromName).toHaveBeenCalledWith("nar:2026:0630:35:03");
+  expect(getLatestHorseWeights).toHaveBeenCalledWith(env.REALTIME_DB, "nar:2026:0630:35:03");
+  expect(stubFetch).toHaveBeenCalledTimes(2);
+  expect(stubFetch.mock.calls[0]![0]).toBe("https://horse-weight-do/weights");
+  expect(stubFetch.mock.calls[1]![0]).toBe("https://horse-weight-do/weights");
+  expect(stubFetch.mock.calls[1]![1]).toMatchObject({ method: "PUT" });
+});
+
+it("fetch GET flat horse-weight returns 204 when the DO and D1 are empty", async () => {
+  const { default: worker } = await import("./worker");
+  const { getLatestHorseWeights } = await import("./storage");
+  vi.mocked(getLatestHorseWeights).mockResolvedValueOnce(null);
+  const stubFetch = vi.fn().mockResolvedValueOnce(new Response(null, { status: 204 }));
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const env = buildEnv({
+    HORSE_WEIGHT_DO: { get, idFromName },
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/horse-weight/nar%3A2026%3A0630%3A35%3A03"),
+    env,
+    buildCtx(),
+  );
+  expect(response.status).toBe(204);
+  expect(getLatestHorseWeights).toHaveBeenCalledWith(env.REALTIME_DB, "nar:2026:0630:35:03");
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+});
+
+it("fetch GET flat horse-weight returns the DO snapshot without reading D1", async () => {
+  const { default: worker } = await import("./worker");
+  const { getLatestHorseWeights } = await import("./storage");
+  const snapshot = {
+    fetchedAt: "2026-06-30T12:00:00+09:00",
+    horses: [
+      { changeAmount: null, changeSign: null, horseName: "A", horseNumber: "2", weight: 466 },
+    ],
+  };
+  const stubFetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(snapshot)));
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const response = await worker.fetch(
+    new Request("https://x.test/api/horse-weight/nar%3A2026%3A0630%3A35%3A03"),
+    buildEnv({ HORSE_WEIGHT_DO: { get, idFromName } } as never),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { fetchedAt: string };
+  expect(body.fetchedAt).toBe("2026-06-30T12:00:00+09:00");
+  expect(getLatestHorseWeights).not.toHaveBeenCalled();
+  expect(stubFetch).toHaveBeenCalledTimes(1);
+});
+
+it("fetch GET horse-weights-stream hydrates the DO from D1 before proxying the stream", async () => {
+  const { default: worker } = await import("./worker");
+  const { getLatestHorseWeights } = await import("./storage");
+  vi.mocked(getLatestHorseWeights).mockResolvedValueOnce({
+    fetchedAt: "2026-06-30T11:54:35+09:00",
+    horses: [
+      {
+        changeAmount: null,
+        changeSign: null,
+        horseName: "Stream Horse",
+        horseNumber: "3",
+        weight: 455,
+      },
+    ],
+  });
+  const stubFetch = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })))
+    .mockResolvedValueOnce(new Response("event: hello\n\n", { status: 200 }));
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  const response = await worker.fetch(
+    new Request("https://x.test/api/nar/races/2026/06/30/35/03/horse-weights-stream"),
+    buildEnv({ HORSE_WEIGHT_DO: { get, idFromName } } as never),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(getLatestHorseWeights).toHaveBeenCalledTimes(1);
+  expect(stubFetch.mock.calls[0]![0]).toBe("https://horse-weight-do/weights");
+  expect(stubFetch.mock.calls[0]![1]).toMatchObject({ method: "PUT" });
+  expect(stubFetch.mock.calls[1]![0]).toBe("https://horse-weight-do/stream");
+});
+
 it("buildRealtimeRouteResponse swallows logFetch failures while returning degraded payload", async () => {
   const { buildRealtimeRouteResponse } = await import("./worker");
   const { getRaceSource, logFetch } = await import("./storage");
