@@ -194,7 +194,6 @@ export const fetchPremiumHtmlAttempts = async (
     const requestUrl = new URL(config.proxyUrl as string);
     requestUrl.searchParams.set("url", targetUrl);
     requestUrl.searchParams.set("user_id", config.proxyUserId as string);
-    requestUrl.searchParams.set("cache", "0");
     attempts.push({
       headers: { Authorization: `Bearer ${config.proxyBearer}` },
       mode: "proxy",

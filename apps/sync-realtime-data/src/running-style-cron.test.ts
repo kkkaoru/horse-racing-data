@@ -102,6 +102,8 @@ test("selectRacesNeedingRunningStyleInference skips active queued state", () => 
         "nar:20260519:46:12",
         {
           attemptedAt: new Date().toISOString(),
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: null,
           expectedHorseCount: null,
           featuresR2Key: null,
@@ -141,6 +143,8 @@ test("selectRacesNeedingRunningStyleInference treats stale active state as needi
         "nar:20260519:46:12",
         {
           attemptedAt: "2026-05-19T00:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: null,
           expectedHorseCount: null,
           featuresR2Key: null,
@@ -167,6 +171,8 @@ test("selectRacesNeedingRunningStyleInference treats state with attemptedAt=null
         "nar:20260519:46:12",
         {
           attemptedAt: null,
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: null,
           expectedHorseCount: null,
           featuresR2Key: null,
@@ -193,6 +199,8 @@ test("selectRacesNeedingRunningStyleInference treats malformed attemptedAt as ac
         "nar:20260519:46:12",
         {
           attemptedAt: "not-a-date",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: null,
           expectedHorseCount: null,
           featuresR2Key: null,

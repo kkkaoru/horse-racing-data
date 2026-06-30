@@ -388,6 +388,8 @@ it("planRunningStylePredictionsForDate skips enqueueing when every completed rac
         "jra:20260512:08:01",
         {
           attemptedAt: "2026-05-12T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: "2026-05-12T11:05:00.000Z",
           expectedHorseCount: 16,
           featuresR2Key: null,
@@ -438,6 +440,8 @@ it("planRunningStylePredictionsForDate requeues completed races when Neon mirror
         "jra:20260512:08:01",
         {
           attemptedAt: "2026-05-12T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: "2026-05-12T11:05:00.000Z",
           expectedHorseCount: 16,
           featuresR2Key: "features.parquet",
@@ -497,6 +501,8 @@ it("planRunningStylePredictionsForDate requeues completed races when Neon mirror
         "jra:20260512:08:01",
         {
           attemptedAt: "2026-05-12T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: "2026-05-12T11:05:00.000Z",
           expectedHorseCount: 16,
           featuresR2Key: "features.parquet",
@@ -559,6 +565,8 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
         "jra:20260512:08:01",
         {
           attemptedAt: "2026-05-12T11:00:00.000Z",
+          cellModelKey: null,
+          cellVariantId: null,
           completedAt: "2026-05-12T11:05:00.000Z",
           expectedHorseCount: 16,
           featuresR2Key: null,

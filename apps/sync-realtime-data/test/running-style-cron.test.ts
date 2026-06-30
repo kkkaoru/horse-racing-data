@@ -21,6 +21,8 @@ const buildState = (
   overrides: Partial<RunningStyleInferenceStateDetail> = {},
 ): RunningStyleInferenceStateDetail => ({
   attemptedAt: new Date().toISOString(),
+  cellModelKey: null,
+  cellVariantId: null,
   completedAt: null,
   expectedHorseCount: null,
   featuresR2Key: null,
