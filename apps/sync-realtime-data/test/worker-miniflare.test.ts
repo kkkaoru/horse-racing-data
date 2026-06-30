@@ -180,6 +180,7 @@ beforeAll(async () => {
               export const parseRaceResultExcludedHorseNumbers = () => [];
               export const parseRaceResults = () => [];
               export const parseRaceResultHorseWeights = () => [];
+              export const parseRaceResultTanshoOdds = () => [];
             `,
             loader: "js",
           }));

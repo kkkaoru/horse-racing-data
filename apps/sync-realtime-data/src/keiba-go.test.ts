@@ -1,6 +1,11 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { fetchRacePage, fetchTodayRaceListUrls, TOP_PAGE_RETRYABLE_STATUSES } from "./keiba-go";
+import {
+  fetchRacePage,
+  fetchTodayRaceListUrls,
+  parseRaceResultTanshoOdds,
+  TOP_PAGE_RETRYABLE_STATUSES,
+} from "./keiba-go";
 
 const SJIS_TOKYO_BYTES = [0x93, 0x8c, 0x8b, 0x9e];
 const TEST_URL = "https://www.keiba.go.jp/test";
@@ -212,4 +217,151 @@ it("fetchRacePage does not retry on 404 (sub-page 404 bubbles immediately)", asy
     "Failed to fetch https://www.keiba.go.jp/test: 404",
   );
   expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("parseRaceResultTanshoOdds extracts horseNumber + popularity + tanshoOdds from current layout rows", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">テールヴェール</td><td class="e">大井</td>' +
+    '<td class="o">6</td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([
+    { horseNumber: "5", popularity: 6, tanshoOdds: 24.9 },
+  ]);
+});
+
+it("parseRaceResultTanshoOdds extracts popularity from a cell with extra class names", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">2</td><td class="b">6</td><td class="c">8</td>' +
+    '<td class="d horseName">ヨロシクユウキ</td>' +
+    '<td class="o popularNum course_03">3</td><td class="p femal">6.4</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([
+    { horseNumber: "8", popularity: 3, tanshoOdds: 6.4 },
+  ]);
+});
+
+it("parseRaceResultTanshoOdds extracts multiple rows from the same result table", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td><td class="p">24.9</td>' +
+    "</tr>" +
+    '<tr class="tBorder">' +
+    '<td class="a">2</td><td class="b">6</td><td class="c">8</td>' +
+    '<td class="d horseName">B</td>' +
+    '<td class="o">3</td><td class="p">6.4</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([
+    { horseNumber: "5", popularity: 6, tanshoOdds: 24.9 },
+    { horseNumber: "8", popularity: 3, tanshoOdds: 6.4 },
+  ]);
+});
+
+it("parseRaceResultTanshoOdds returns empty array when HTML has no result rows", () => {
+  expect(parseRaceResultTanshoOdds("<html><body><p>nothing</p></body></html>")).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the horseNumber cell is non-numeric", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">abc</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the horseNumber cell is out of range", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">99</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the popularity cell is missing", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the popularity cell is empty", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o"></td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the popularity cell is non-numeric", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">abc</td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where popularity is zero", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">0</td><td class="p">24.9</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the tansho odds cell is missing", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the tansho odds cell is non-numeric", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td><td class="p">abc</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops rows where the tansho odds value is zero", () => {
+  const html =
+    '<table><tr class="tBorder">' +
+    '<td class="a">1</td><td class="b">3</td><td class="c">5</td>' +
+    '<td class="d horseName">A</td>' +
+    '<td class="o">6</td><td class="p">0</td>' +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
+});
+
+it("parseRaceResultTanshoOdds drops legacy bgcolor result rows even when class-named cells are absent", () => {
+  const html =
+    '<table><tr bgcolor="#FFFFFF">' +
+    "<td>1</td><td>3</td><td>5</td><td>テールヴェール</td>" +
+    "<td>大井</td><td>牡 3</td><td>54.0</td><td>藤本現</td>" +
+    "<td>鷹見浩</td><td>440(2)</td><td></td><td>1:30.0</td>" +
+    "<td></td><td>39.4</td><td>4-4-4</td><td>6</td><td>24.9</td>" +
+    "</tr></table>";
+  expect(parseRaceResultTanshoOdds(html)).toStrictEqual([]);
 });

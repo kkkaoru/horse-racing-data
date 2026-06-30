@@ -14,7 +14,9 @@ import {
   parseRaceResultExcludedHorseNumbers,
   parseRaceResults,
   parseRaceResultHorseWeights,
+  parseRaceResultTanshoOdds,
   type KeibaGoRaceLink,
+  type RaceResultTanshoOddsRow,
 } from "./keiba-go";
 import { PLAN_RESULT_FETCHES_SUMMARY_STATUS, SKIP_STATUS } from "./fetchLogStatuses";
 import { formatError } from "./format-error";
@@ -508,6 +510,26 @@ interface ForwardRaceSourceArgs {
   raceBango: string;
 }
 
+interface ForwardNarTanshoOddsArgs {
+  fetchedAt: string;
+  raceKey: string;
+  rows: RaceResultTanshoOddsRow[];
+}
+
+interface ImportOddsSnapshotRowPayload {
+  average_odds: number | null;
+  combination: string;
+  fetched_at: string;
+  max_odds: number | null;
+  min_odds: number | null;
+  odds: number;
+  odds_type: string;
+  race_key: string;
+  rank: number;
+}
+
+const NAR_TANSHO_ODDS_TYPE = "tansho";
+
 interface ForwardRaceForFeaturesArgs {
   source: "jra" | "nar";
   raceKey: string;
@@ -580,6 +602,71 @@ export const forwardRaceSourceToHot = async (
     await logFetch(
       env.REALTIME_DB,
       "forward-race-source-to-hot",
+      "error",
+      args.raceKey,
+      formatError(error),
+    ).catch(() => undefined);
+  }
+};
+
+// Fire-and-forget POST that re-upserts NAR tansho odds + popularity into the
+// hot worker's odds_snapshots D1 after a successful result fetch. This closes
+// the loop when live odds polling missed the final pre-race snapshot — the
+// result page (RaceMarkTable) already carries the final 単勝オッズ / 人気
+// per row, so the same payload can backfill prior odds rows via the existing
+// /api/internal/import-odds-chunk endpoint (ON CONFLICT DO UPDATE keeps the
+// re-POST idempotent against earlier live polls).
+export const forwardNarTanshoOddsToHot = async (
+  env: Env,
+  args: ForwardNarTanshoOddsArgs,
+): Promise<void> => {
+  if (!env.REALTIME_HOT || !env.PC_KEIBA_VIEWER_INTERNAL_TOKEN) {
+    return;
+  }
+  if (args.rows.length === 0) {
+    return;
+  }
+  const importRows = args.rows.map(
+    (row): ImportOddsSnapshotRowPayload => ({
+      average_odds: null,
+      combination: row.horseNumber,
+      fetched_at: args.fetchedAt,
+      max_odds: null,
+      min_odds: null,
+      odds: row.tanshoOdds,
+      odds_type: NAR_TANSHO_ODDS_TYPE,
+      race_key: args.raceKey,
+      rank: row.popularity,
+    }),
+  );
+  try {
+    const response = await env.REALTIME_HOT.fetch(
+      `${HOT_WORKER_ORIGIN}/api/internal/import-odds-chunk`,
+      {
+        body: JSON.stringify({ rows: importRows }),
+        headers: {
+          "content-type": "application/json",
+          "x-pc-keiba-internal-token": env.PC_KEIBA_VIEWER_INTERNAL_TOKEN,
+        },
+        method: "POST",
+      },
+    );
+    if (!response.ok) {
+      const body = await readForwardResponseBody(response);
+      await logFetch(
+        env.REALTIME_DB,
+        "forward-nar-tansho-odds-to-hot",
+        "error",
+        args.raceKey,
+        `status=${response.status} body=${body.slice(0, FORWARD_RESPONSE_BODY_MAX_LENGTH)}`,
+      ).catch(() => undefined);
+    }
+  } catch (error) {
+    // Forwarding to the hot worker is best-effort: never block the result
+    // fetch on it (the result snapshot has already been persisted upstream).
+    await logFetch(
+      env.REALTIME_DB,
+      "forward-nar-tansho-odds-to-hot",
       "error",
       args.raceKey,
       formatError(error),
@@ -3527,6 +3614,18 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     }
     await resetEmptyResultAttempts(env.REALTIME_DB, raceKey);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
+    if (race.source === "nar") {
+      // Backfill the hot worker's odds_snapshots with the final 単勝オッズ /
+      // 人気 parsed from the same result HTML. This is a safety net for races
+      // where live odds polling missed the final pre-race snapshot (e.g. the
+      // 2026-06-29 trend section showing blanks for sibling rows).
+      const tanshoOdds = parseRaceResultTanshoOdds(resultHtml);
+      await forwardNarTanshoOddsToHot(env, {
+        fetchedAt,
+        raceKey,
+        rows: tanshoOdds,
+      });
+    }
     // isRaceFinished above guarantees minutesUntilRace(race, now) is non-null and
     // <= 0, so the non-null assertion here is provably safe (same pattern as the
     // `match[1]!` regex captures elsewhere in this file). Keeping it as `!`

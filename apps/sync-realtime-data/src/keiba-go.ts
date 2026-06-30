@@ -88,6 +88,12 @@ export interface KeibaGoRaceMetadata {
   startTime: string | null;
 }
 
+export interface RaceResultTanshoOddsRow {
+  horseNumber: string;
+  popularity: number;
+  tanshoOdds: number;
+}
+
 export const buildRaceKey = (
   year: string,
   monthDay: string,
@@ -990,3 +996,35 @@ export const parseRaceResultExcludedHorseNumbers = (html: string): string[] =>
     .filter((horseNumber): horseNumber is string => horseNumber !== null)
     .filter((horseNumber, index, values) => values.indexOf(horseNumber) === index)
     .toSorted((left, right) => Number(left) - Number(right));
+
+// NAR-only: parses the same RaceMarkTable result HTML as parseRaceResults but
+// pulls the popularity (class="o") and tansho odds (class="p") cells so a
+// result fetch can backfill missed live odds polls. Legacy layout is skipped
+// because in-window result fetches never hit it.
+export const parseRaceResultTanshoOdds = (html: string): RaceResultTanshoOddsRow[] =>
+  extractRaceResultRowCandidates(html)
+    .map((row): RaceResultTanshoOddsRow | null => {
+      if (row.layout !== "current") {
+        return null;
+      }
+      const cells = extractClassedTableCells(row.row);
+      const horseNumber = cells.c;
+      const popularityCell = cells.o;
+      const oddsCell = cells.p;
+      if (!horseNumber || !isValidHorseNum(horseNumber)) {
+        return null;
+      }
+      if (!popularityCell || !oddsCell) {
+        return null;
+      }
+      const popularity = Number.parseInt(popularityCell.trim(), 10);
+      const tanshoOdds = Number.parseFloat(oddsCell.trim());
+      if (!Number.isFinite(popularity) || popularity <= 0) {
+        return null;
+      }
+      if (!Number.isFinite(tanshoOdds) || tanshoOdds <= 0) {
+        return null;
+      }
+      return { horseNumber, popularity, tanshoOdds };
+    })
+    .filter((row): row is RaceResultTanshoOddsRow => row !== null);

@@ -1042,6 +1042,170 @@ it("forwardRaceSourceToHot does not call logFetch when the hot worker returns 20
   expect(vi.mocked(logFetch)).not.toHaveBeenCalled();
 });
 
+it("forwardNarTanshoOddsToHot is a no-op when REALTIME_HOT binding is missing", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  await forwardNarTanshoOddsToHot(buildEnv(), {
+    fetchedAt: "2026-06-29T18:00:00+09:00",
+    raceKey: "nar:2026:0629:44:01",
+    rows: [{ horseNumber: "5", popularity: 6, tanshoOdds: 24.9 }],
+  });
+});
+
+it("forwardNarTanshoOddsToHot is a no-op when internal token is missing", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const fetchMock = vi.fn();
+  await forwardNarTanshoOddsToHot(
+    buildEnv({ REALTIME_HOT: { fetch: fetchMock } as never } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [{ horseNumber: "5", popularity: 6, tanshoOdds: 24.9 }],
+    },
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("forwardNarTanshoOddsToHot is a no-op when rows is empty", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const fetchMock = vi.fn();
+  await forwardNarTanshoOddsToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: fetchMock } as never,
+    } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [],
+    },
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("forwardNarTanshoOddsToHot POSTs the mapped odds rows to /api/internal/import-odds-chunk", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const hotFetch = vi.fn(
+    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ inserted: 1 })),
+  );
+  await forwardNarTanshoOddsToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [
+        { horseNumber: "5", popularity: 6, tanshoOdds: 24.9 },
+        { horseNumber: "8", popularity: 3, tanshoOdds: 6.4 },
+      ],
+    },
+  );
+  expect(hotFetch).toHaveBeenCalledTimes(1);
+  const call = hotFetch.mock.calls[0];
+  const request = new Request(call?.[0] ?? "", call?.[1]);
+  expect(request.url).toBe(
+    "https://sync-realtime-data-hot.kkk4oru.com/api/internal/import-odds-chunk",
+  );
+  expect(request.method).toBe("POST");
+  expect(request.headers.get("content-type")).toBe("application/json");
+  expect(request.headers.get("x-pc-keiba-internal-token")).toBe("internal-token");
+  expect(await request.json()).toStrictEqual({
+    rows: [
+      {
+        average_odds: null,
+        combination: "5",
+        fetched_at: "2026-06-29T18:00:00+09:00",
+        max_odds: null,
+        min_odds: null,
+        odds: 24.9,
+        odds_type: "tansho",
+        race_key: "nar:2026:0629:44:01",
+        rank: 6,
+      },
+      {
+        average_odds: null,
+        combination: "8",
+        fetched_at: "2026-06-29T18:00:00+09:00",
+        max_odds: null,
+        min_odds: null,
+        odds: 6.4,
+        odds_type: "tansho",
+        race_key: "nar:2026:0629:44:01",
+        rank: 3,
+      },
+    ],
+  });
+});
+
+it("forwardNarTanshoOddsToHot logs the error when the hot worker returns 500", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => new Response("server boom", { status: 500 }));
+  await forwardNarTanshoOddsToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [{ horseNumber: "5", popularity: 6, tanshoOdds: 24.9 }],
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-nar-tansho-odds-to-hot",
+    "error",
+    "nar:2026:0629:44:01",
+    "status=500 body=server boom",
+  );
+});
+
+it("forwardNarTanshoOddsToHot logs the error when the hot worker fetch rejects", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => {
+    throw new Error("hot boom");
+  });
+  await forwardNarTanshoOddsToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [{ horseNumber: "5", popularity: 6, tanshoOdds: 24.9 }],
+    },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-nar-tansho-odds-to-hot",
+    "error",
+    "nar:2026:0629:44:01",
+    "hot boom",
+  );
+});
+
+it("forwardNarTanshoOddsToHot does not call logFetch when the hot worker returns 200", async () => {
+  const { forwardNarTanshoOddsToHot } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const hotFetch = vi.fn(async () => new Response(JSON.stringify({ inserted: 1 })));
+  await forwardNarTanshoOddsToHot(
+    buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_HOT: { fetch: hotFetch } as never,
+    } as never),
+    {
+      fetchedAt: "2026-06-29T18:00:00+09:00",
+      raceKey: "nar:2026:0629:44:01",
+      rows: [{ horseNumber: "5", popularity: 6, tanshoOdds: 24.9 }],
+    },
+  );
+  expect(vi.mocked(logFetch)).not.toHaveBeenCalled();
+});
+
 it("forwardRaceForFeatures is a no-op when REALTIME_FEATURES binding is missing", async () => {
   const { forwardRaceForFeatures } = await import("./worker");
   await forwardRaceForFeatures(buildEnv(), {
