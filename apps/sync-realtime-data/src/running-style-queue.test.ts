@@ -372,6 +372,9 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   expect(vi.mocked(markRunningStyleInferenceCompleted).mock.calls[0]?.[1]?.writtenHorseCount).toBe(
     2,
   );
+  expect(listRaceRunningStylesForRace).toHaveBeenCalledWith({}, "jra:20260512:08:01", {
+    bypassCache: true,
+  });
   expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
   expect(getFinishPositionWritePool).toHaveBeenCalledTimes(1);
   expect(vi.mocked(loadOrBuildRunningStyleFeatureParquet).mock.calls[0]?.[0]?.pool).toBe(
@@ -776,6 +779,39 @@ it("returns neonWrittenCount when Neon write succeeds", async () => {
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.neonWrittenCount).toBe(3);
   expect(summary?.neonError).toBeUndefined();
+  expect(listRaceRunningStylesForRace).toHaveBeenCalledWith({}, "jra:20260512:08:01", {
+    bypassCache: true,
+  });
+});
+
+it("retries transient Neon write failures before triggering finish-position", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const send = vi.fn(async (_message: unknown) => {});
+  const queue = { send } as unknown as NonNullable<Env["FINISH_POSITION_PREDICT_QUEUE"]>;
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
+    expectedHorseCount: 3,
+    featuresR2Key: "features.parquet",
+    modelVersion: "v7-lineage",
+    status: "completed",
+    writtenHorseCount: 3,
+  } as never);
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}, {}] as never);
+  vi.mocked(upsertRunningStylePredictionsToNeon)
+    .mockRejectedValueOnce(new Error("temporary neon reset"))
+    .mockResolvedValue(3);
+
+  const summary = await handleRunningStylePredictionJob(
+    buildEnv({ FINISH_POSITION_PREDICT_QUEUE: queue }),
+    JOB,
+  );
+  expect(summary?.neonWrittenCount).toBe(3);
+  expect(summary?.neonError).toBeUndefined();
+  expect(summary?.finishPositionTriggerMode).toBe("queue");
+  expect(upsertRunningStylePredictionsToNeon).toHaveBeenCalledTimes(2);
+  expect(send).toHaveBeenCalledTimes(1);
 });
 
 it("sets neonError when Neon write fails but does not throw", async () => {

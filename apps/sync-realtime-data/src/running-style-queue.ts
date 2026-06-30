@@ -19,6 +19,7 @@ import {
   markRunningStyleInferenceCompleted,
   markRunningStyleInferenceFailed,
   markRunningStyleInferenceProcessing,
+  type RaceRunningStyleRow,
 } from "./running-style-d1";
 import { loadOrBuildRunningStyleFeatureParquet } from "./running-style-feature-materialize";
 import {
@@ -48,6 +49,8 @@ import type { Env, RunningStylePredictionJob } from "./types";
 const ENABLED_FLAG = "1";
 const FINISH_POSITION_CRON_RUN_URL = "https://finish-position-cron.internal/run";
 const DEFAULT_PREDICT_DAYS_AHEAD = "2";
+const NEON_SYNC_MAX_ATTEMPTS = 3;
+const NEON_SYNC_RETRY_DELAY_MS = 200;
 
 const buildFinishPositionRunYmd = (job: RunningStylePredictionJob): string =>
   `${job.kaisaiNen}${job.kaisaiTsukihi}`;
@@ -95,6 +98,27 @@ interface FinishPositionTriggerResult {
   finishPositionTriggerError?: string;
   finishPositionTriggerMode: "queue" | "service-binding" | "skipped";
 }
+
+const waitForNeonSyncRetry = (attemptIndex: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, NEON_SYNC_RETRY_DELAY_MS * attemptIndex));
+
+const upsertRunningStylesToNeonWithRetry = async (
+  env: Env,
+  rows: ReadonlyArray<RaceRunningStyleRow>,
+): Promise<number> => {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= NEON_SYNC_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await upsertRunningStylePredictionsToNeon(getFinishPositionWritePool(env), rows);
+    } catch (error) {
+      lastError = error;
+      if (attempt < NEON_SYNC_MAX_ATTEMPTS) {
+        await waitForNeonSyncRetry(attempt);
+      }
+    }
+  }
+  throw lastError;
+};
 
 const runningStyleCellRoutingConfig = (env: Env): RunningStyleCellRoutingConfig => {
   if (env.RUNNING_STYLE_CELL_ROUTING_JSON === undefined) return {};
@@ -267,18 +291,22 @@ const cacheAndSyncCompletedRunningStyles = async (
   job: RunningStylePredictionJob,
 ): Promise<CacheAndSyncRunningStylesResult> => {
   try {
-    const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, buildRunningStyleRaceKey(job));
+    const rows = await listRaceRunningStylesForRace(
+      env.REALTIME_DB,
+      buildRunningStyleRaceKey(job),
+      {
+        bypassCache: true,
+      },
+    );
     if (rows.length === 0) {
       return { cacheWritten: false, neonWrittenCount: 0 };
     }
-    const syncRunningStylesToNeon = async () =>
-      upsertRunningStylePredictionsToNeon(getFinishPositionWritePool(env), rows);
     const [cacheWritten, neonResult] = await Promise.all([
       putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
         console.error("Running-style cache write failed:", formatError(error));
         return false;
       }),
-      syncRunningStylesToNeon().catch((error: unknown) => {
+      upsertRunningStylesToNeonWithRetry(env, rows).catch((error: unknown) => {
         console.error("Running-style Neon write failed:", formatError(error));
         return formatError(error);
       }),
