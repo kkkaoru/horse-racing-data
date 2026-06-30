@@ -55,7 +55,7 @@
       // for no enqueue. Matches RUNNING_STYLE_INFERENCE_CRON in
       // running-style-cron.ts.
       "*/10 0-14 * * *",
-      // 2026-06-07: every-minute weight watchdog. Runs runWeightWatchdog
+      // 2026-06-07: every-two-minute weight watchdog. Runs runWeightWatchdog
       // which inspects realtime_race_sources directly and enqueues
       // fetch-weights jobs for races within +/- the watchdog window whose
       // last weight fetch is null or older than the stale threshold. Lives
@@ -63,7 +63,7 @@
       // cron and the hot worker's plan-realtime-fetches path; the watchdog
       // is a dedicated minimal-D1-read path so a circuit breaker open in
       // the planner does not silently skip weight enqueueing.
-      "* * * * *",
+      "*/2 * * * *",
     ],
   },
   "queues": {
