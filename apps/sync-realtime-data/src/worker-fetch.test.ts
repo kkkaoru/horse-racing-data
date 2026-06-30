@@ -1448,6 +1448,124 @@ it("forwardRaceForFeatures clears the timeout when the features worker responds 
   expect(logFetch).not.toHaveBeenCalled();
 });
 
+// triggerFeaturesRebuildAfterResultLanded — fire-and-forget features-worker
+// R2 parquet rebuild trigger that fetchAndStoreResults runs after a finish
+// row lands. Before this trigger existed the per-race parquet stayed
+// pre-result until the next daily-feature-build cron tick.
+
+it("triggerFeaturesRebuildAfterResultLanded is a no-op when inserted is 0", async () => {
+  const { triggerFeaturesRebuildAfterResultLanded } = await import("./worker");
+  const featuresFetch = vi.fn(async () => new Response(JSON.stringify({ ok: true })));
+  await triggerFeaturesRebuildAfterResultLanded({
+    env: buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    inserted: 0,
+    race: {
+      babaCode: "22",
+      debaUrl: "https://x.test/race",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0628",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0628:55:01",
+      raceName: null,
+      raceStartAtJst: "2026-06-28T13:00:00+09:00",
+      source: "nar",
+    },
+  });
+  expect(featuresFetch).not.toHaveBeenCalled();
+});
+
+it("triggerFeaturesRebuildAfterResultLanded POSTs the rebuild URL, body and auth header when inserted is positive", async () => {
+  const { triggerFeaturesRebuildAfterResultLanded } = await import("./worker");
+  const featuresFetch = vi.fn(
+    async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true })),
+  );
+  await triggerFeaturesRebuildAfterResultLanded({
+    env: buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    inserted: 9,
+    race: {
+      babaCode: "22",
+      debaUrl: "https://x.test/race",
+      kaisaiKai: "02",
+      kaisaiNen: "2026",
+      kaisaiNichime: "06",
+      kaisaiTsukihi: "0628",
+      keibajoCode: "55",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "01",
+      raceKey: "nar:2026:0628:55:01",
+      raceName: null,
+      raceStartAtJst: "2026-06-28T13:00:00+09:00",
+      source: "nar",
+    },
+  });
+  expect(featuresFetch).toHaveBeenCalledTimes(1);
+  const call = featuresFetch.mock.calls[0]!;
+  expect(call[0]).toBe(
+    "https://sync-realtime-data-features.kkk4oru.com/api/internal/recompute-and-build-parquet",
+  );
+  const init = call[1]!;
+  expect(init.method).toBe("POST");
+  const headers = init.headers as Record<string, string>;
+  expect(headers["x-pc-keiba-internal-token"]).toBe("internal-token");
+  expect(headers["content-type"]).toBe("application/json");
+  expect(init.body).toBe(
+    '{"kaisaiNen":"2026","kaisaiTsukihi":"0628","keibajoCode":"55","raceBango":"01","raceKey":"nar:2026:0628:55:01","source":"nar"}',
+  );
+});
+
+it("triggerFeaturesRebuildAfterResultLanded resolves without throwing when the features worker fetch rejects", async () => {
+  const { triggerFeaturesRebuildAfterResultLanded } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const featuresFetch = vi.fn(async () => {
+    throw new Error("features boom");
+  });
+  await triggerFeaturesRebuildAfterResultLanded({
+    env: buildEnv({
+      PC_KEIBA_VIEWER_INTERNAL_TOKEN: "internal-token",
+      REALTIME_FEATURES: { fetch: featuresFetch } as never,
+    } as never),
+    inserted: 12,
+    race: {
+      babaCode: "00",
+      debaUrl: "https://x.test/race",
+      kaisaiKai: "01",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0628",
+      keibajoCode: "08",
+      lastOddsFetchAt: null,
+      lastWeightFetchAt: null,
+      oddsLinks: {},
+      raceBango: "11",
+      raceKey: "jra:2026:0628:08:11",
+      raceName: null,
+      raceStartAtJst: "2026-06-28T15:25:00+09:00",
+      source: "jra",
+    },
+  });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "forward-race-for-features",
+    "error",
+    "jra:2026:0628:08:11",
+    "features boom",
+  );
+});
+
 it("fetchHotOddsPayload returns null when REALTIME_HOT is not configured", async () => {
   const { fetchHotOddsPayload } = await import("./worker");
   expect(await fetchHotOddsPayload(buildEnv(), "jra:2026:0512:08:01")).toBeNull();

@@ -3398,10 +3398,48 @@ interface DispatchResultFetchOutcomeInput {
   results: Omit<RaceResult, "fetchedAt">[];
 }
 
+interface TriggerFeaturesRebuildAfterResultLandedArgs {
+  env: Env;
+  inserted: number;
+  race: NarRaceSource;
+}
+
+// 2026-06-30: Fire-and-forget features-worker R2 parquet rebuild trigger.
+// Before this, fetchAndStoreResults wrote race_result_snapshots and never
+// notified the features worker, so the per-race parquet stayed pre-result
+// until the daily-feature-build cron ticked — which could be hours away or
+// miss the date entirely. The viewer race-trend section then served the
+// stale parquet so finishes / odds / popularity that landed mid-day were
+// invisible until the next cron run (on 2026-06-30 we hand-backfilled 128
+// NAR races spanning 06-26..06-28 to recover from this gap). Closing the gap
+// structurally here means every successful result row drives an immediate
+// parquet rebuild. forwardRaceForFeatures already wraps the underlying fetch
+// in a 5s timeout + try / catch + logFetch, so the queue ack is never blocked
+// by a hung features worker and a transient error is logged rather than
+// kicked back into the queue retry loop.
+export const triggerFeaturesRebuildAfterResultLanded = async (
+  args: TriggerFeaturesRebuildAfterResultLandedArgs,
+): Promise<void> => {
+  if (args.inserted <= 0) {
+    return;
+  }
+  await forwardRaceForFeatures(args.env, {
+    kaisaiNen: args.race.kaisaiNen,
+    kaisaiTsukihi: args.race.kaisaiTsukihi,
+    keibajoCode: args.race.keibajoCode,
+    raceBango: args.race.raceBango,
+    raceKey: args.race.raceKey,
+    source: args.race.source,
+  });
+};
+
 // 2026-06-05: Routes the resolveResultFetchOutcome decision to the right
 // storage write + side effects (DO push + viewer trend cache bust). Split
 // out of fetchAndStoreResults so the per-outcome branching stays at one
 // level of indentation and the helper itself is unit-testable in isolation.
+// 2026-06-30: After either branch finishes, fire the features-worker R2
+// parquet rebuild so finishes land in the per-race parquet within seconds
+// instead of waiting for the next daily-feature-build cron tick.
 const dispatchResultFetchOutcome = async (
   input: DispatchResultFetchOutcomeInput,
 ): Promise<void> => {
@@ -3409,11 +3447,12 @@ const dispatchResultFetchOutcome = async (
     input.outcome === "retry-short" ||
     input.outcome === "retry-medium" ||
     input.outcome === "retry-long";
-  if (isRetry) {
-    await handleRetryResultFetch(input);
-    return;
-  }
-  await handleCompleteResultFetch(input);
+  await (isRetry ? handleRetryResultFetch(input) : handleCompleteResultFetch(input));
+  await triggerFeaturesRebuildAfterResultLanded({
+    env: input.env,
+    inserted: input.inserted,
+    race: input.race,
+  });
 };
 
 const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): Promise<void> => {
