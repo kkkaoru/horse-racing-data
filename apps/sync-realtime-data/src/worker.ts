@@ -398,7 +398,7 @@ const PREMIUM_RACE_DISCOVERY_HOURS_JST = [9, 20] satisfies readonly number[];
 // races. The watchdog inspects realtime_race_sources directly and enqueues
 // fetch-weights jobs for races within the lookahead window whose last
 // weight fetch is null or older than the stale threshold.
-export const WEIGHT_WATCHDOG_CRON = "* * * * *";
+export const WEIGHT_WATCHDOG_CRON = "*/2 * * * *";
 const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
 const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
 const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;

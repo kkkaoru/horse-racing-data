@@ -937,7 +937,7 @@ it("scheduled triggers the weight watchdog for the every-minute cron", async () 
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       scheduledTime: Date.parse("2026-06-07T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
