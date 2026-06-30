@@ -2492,45 +2492,53 @@ describe("decideVerifyMismatchAction re-incremental action", () => {
 });
 
 describe("resolveSkipTables", () => {
-  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is unset", () => {
-    expect(resolveSkipTables({})).toStrictEqual(new Set());
+  it("returns the Cloudflare-writer skip table when REPLICA_SYNC_SKIP_TABLES is unset", () => {
+    expect(resolveSkipTables({})).toStrictEqual(new Set(["race_running_style_model_predictions"]));
   });
 
-  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is empty string", () => {
-    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "" })).toStrictEqual(new Set());
-  });
-
-  it("returns an empty set when REPLICA_SYNC_SKIP_TABLES is whitespace only", () => {
-    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "   " })).toStrictEqual(new Set());
-  });
-
-  it("returns a single-entry set for one table", () => {
-    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "legacy_logs" })).toStrictEqual(
-      new Set(["legacy_logs"]),
+  it("returns the Cloudflare-writer skip table when REPLICA_SYNC_SKIP_TABLES is empty string", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "" })).toStrictEqual(
+      new Set(["race_running_style_model_predictions"]),
     );
   });
 
-  it("returns a three-entry set for three comma-separated tables", () => {
+  it("returns the Cloudflare-writer skip table when REPLICA_SYNC_SKIP_TABLES is whitespace only", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "   " })).toStrictEqual(
+      new Set(["race_running_style_model_predictions"]),
+    );
+  });
+
+  it("returns a user table plus the Cloudflare-writer skip table for one table", () => {
+    expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "legacy_logs" })).toStrictEqual(
+      new Set(["race_running_style_model_predictions", "legacy_logs"]),
+    );
+  });
+
+  it("returns three user tables plus the Cloudflare-writer skip table for three comma-separated tables", () => {
     expect(
       resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,table_b,table_c" }),
-    ).toStrictEqual(new Set(["table_a", "table_b", "table_c"]));
+    ).toStrictEqual(
+      new Set(["race_running_style_model_predictions", "table_a", "table_b", "table_c"]),
+    );
   });
 
   it("trims surrounding whitespace from each entry", () => {
     expect(
       resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "  table_a , table_b ,table_c  " }),
-    ).toStrictEqual(new Set(["table_a", "table_b", "table_c"]));
+    ).toStrictEqual(
+      new Set(["race_running_style_model_predictions", "table_a", "table_b", "table_c"]),
+    );
   });
 
   it("ignores empty entries produced by trailing commas", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,table_b," })).toStrictEqual(
-      new Set(["table_a", "table_b"]),
+      new Set(["race_running_style_model_predictions", "table_a", "table_b"]),
     );
   });
 
   it("ignores empty entries produced by consecutive commas", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "table_a,,table_b" })).toStrictEqual(
-      new Set(["table_a", "table_b"]),
+      new Set(["race_running_style_model_predictions", "table_a", "table_b"]),
     );
   });
 });

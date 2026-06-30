@@ -1360,16 +1360,18 @@ const TIMEOUT_WARNING_RATIO = 0.8;
 const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
 const PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_";
 const PER_TABLE_SKIP_ENV = "REPLICA_SYNC_SKIP_TABLES";
+const DEFAULT_NEON_WRITER_SKIP_TABLES = ["race_running_style_model_predictions"];
 
 export function resolveSkipTables(env: Record<string, string | undefined>): ReadonlySet<string> {
+  const skipTables = new Set(DEFAULT_NEON_WRITER_SKIP_TABLES);
   const raw = env[PER_TABLE_SKIP_ENV]?.trim();
-  if (!raw) return new Set();
-  return new Set(
-    raw
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0),
-  );
+  if (!raw) return skipTables;
+  raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .forEach((entry) => skipTables.add(entry));
+  return skipTables;
 }
 
 export function resolveDefaultFullReplaceBatchRows(
