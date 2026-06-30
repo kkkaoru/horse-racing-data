@@ -39,8 +39,19 @@ def test_compute_feature_set_hash_is_order_independent_and_duplicate_free() -> N
     assert len(left) == 64
 
 
+def test_normalize_feature_names_strips_empty_and_duplicate_names() -> None:
+    result = subject.normalize_feature_names([" feat_b ", "", "feat_a", "feat_a "])
+    assert result == ["feat_a", "feat_b"]
+
+
+def test_compute_feature_set_hash_ignores_whitespace_and_empty_names() -> None:
+    left = subject.compute_feature_set_hash([" feat_b ", "", "feat_a", "feat_a "])
+    right = subject.compute_feature_set_hash(["feat_a", "feat_b"])
+    assert left == right
+
+
 def test_build_feature_selection_spec_normalizes_names() -> None:
-    spec = subject.build_feature_selection_spec("running_style", ["z", "a", "z"])
+    spec = subject.build_feature_selection_spec("running_style", [" z ", "a", "z"])
     assert spec.prediction_target == "running_style"
     assert spec.feature_names == ("a", "z")
     assert spec.feature_set_hash == subject.compute_feature_set_hash(["a", "z"])

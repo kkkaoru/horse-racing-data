@@ -5458,6 +5458,42 @@ def test_sire_venue_bias_no_data_leakage() -> None:
     assert runs[2] == 2
 
 
+def test_sire_venue_bias_excludes_same_race_results_from_history() -> None:
+    df = pl.DataFrame({
+        "ketto_toroku_bango": ["H1", "H2", "H3"],
+        "keibajo_code": ["03", "03", "03"],
+        "track_code": ["10", "10", "10"],
+        "kyori": [1200, 1200, 1200],
+        "finish_position": [1, 3, 2],
+        "race_id": ["r1", "r1", "r2"],
+        "race_year": [2023, 2023, 2024],
+    })
+    mock_cursor = MagicMock()
+    mock_cursor.fetchall.return_value = [
+        ("H1", "SIRE_A"),
+        ("H2", "SIRE_A"),
+        ("H3", "SIRE_A"),
+    ]
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    mock_psycopg = MagicMock()
+    mock_psycopg.connect.return_value = mock_conn
+    import builtins
+    real_import = builtins.__import__
+    with patch("builtins.__import__", side_effect=lambda name, *a, **kw: mock_psycopg if name == "psycopg" else real_import(name, *a, **kw)):
+        result = compute_sire_venue_bias_features(df, "postgresql://test")
+    r1 = result.filter(pl.col("race_id") == "r1")
+    assert r1["sire_venue_surface_dist_runs"].to_list() == [0, 0]
+    assert r1["sire_venue_surface_dist_win_rate"].to_list() == [None, None]
+    r2 = result.filter(pl.col("race_id") == "r2")
+    assert r2["sire_venue_surface_dist_runs"][0] == 2
+    assert r2["sire_venue_surface_dist_win_rate"][0] == pytest.approx(0.5)
+
+
 def test_sire_venue_bias_empty_sire_produces_null() -> None:
     df = pl.DataFrame({
         "ketto_toroku_bango": ["H_UNKNOWN"],

@@ -98,7 +98,7 @@ class FeatureSelectionSpec:
 
 def normalize_feature_names(feature_names: Sequence[str]) -> list[str]:
     """Return a stable, duplicate-free feature list for hashing and manifests."""
-    return sorted({name for name in feature_names if name})
+    return sorted({name.strip() for name in feature_names if name.strip()})
 
 
 def compute_feature_set_hash(feature_names: Sequence[str]) -> str:

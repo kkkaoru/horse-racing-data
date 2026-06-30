@@ -82,7 +82,8 @@ bun run src/scripts/finish-position-features/identify-weak-buckets.ts \
   --output ../../tmp/v8/weak-buckets.json
 ```
 
-サブグループ次元 (6 軸):
+サブグループ次元 (6 軸)。これは serve 精度レポート用の weak-bucket であり、
+cell 学習・cell routing の `distance_band` ではない:
 
 - `distance_band`: sprint (≤1400m) / mile (≤1800m) / intermediate (≤2200m) / long (≤2800m) / extended
 - `field_size_band`: small (≤8) / medium (≤14) / large

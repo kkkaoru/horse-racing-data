@@ -412,53 +412,100 @@ def compute_sire_venue_bias_features(
         pl.lit(1).alias("_one"),
     ])
 
-    df = df.sort("race_year", "race_id", "finish_position")
+    df = df.with_row_index("_sire_bias_row_nr")
+    race_order_cols = ["race_year", "race_id"]
 
     svsd_group = ["_sire_id", "keibajo_code", "_surface_type", "kyori"]
-    df = df.with_columns([
-        pl.col("_is_win")
-        .shift(1)
-        .cum_sum()
-        .over(svsd_group)
-        .truediv(
-            pl.col("_one").cum_sum().over(svsd_group) - 1
-        )
-        .alias("sire_venue_surface_dist_win_rate"),
-
-        pl.col("_is_place")
-        .shift(1)
-        .cum_sum()
-        .over(svsd_group)
-        .truediv(
-            pl.col("_one").cum_sum().over(svsd_group) - 1
-        )
-        .alias("sire_venue_surface_dist_place_rate"),
-
-        (pl.col("_one").cum_sum().over(svsd_group) - 1).alias("sire_venue_surface_dist_runs"),
-    ])
+    svsd_race_keys = svsd_group + race_order_cols
+    svsd_race = (
+        df.group_by(svsd_race_keys)
+        .agg([
+            pl.col("_is_win").sum().alias("_race_wins"),
+            pl.col("_is_place").sum().alias("_race_places"),
+            pl.col("_one").sum().alias("_race_runs"),
+        ])
+        .sort(svsd_race_keys)
+        .with_columns([
+            (
+                pl.col("_race_wins").cum_sum().over(svsd_group)
+                - pl.col("_race_wins")
+            ).alias("_prior_wins"),
+            (
+                pl.col("_race_places").cum_sum().over(svsd_group)
+                - pl.col("_race_places")
+            ).alias("_prior_places"),
+            (
+                pl.col("_race_runs").cum_sum().over(svsd_group)
+                - pl.col("_race_runs")
+            ).alias("sire_venue_surface_dist_runs"),
+        ])
+        .with_columns([
+            pl.when(pl.col("sire_venue_surface_dist_runs") > 0)
+            .then(pl.col("_prior_wins") / pl.col("sire_venue_surface_dist_runs"))
+            .otherwise(None)
+            .alias("sire_venue_surface_dist_win_rate"),
+            pl.when(pl.col("sire_venue_surface_dist_runs") > 0)
+            .then(pl.col("_prior_places") / pl.col("sire_venue_surface_dist_runs"))
+            .otherwise(None)
+            .alias("sire_venue_surface_dist_place_rate"),
+        ])
+        .select(svsd_race_keys + [
+            "sire_venue_surface_dist_win_rate",
+            "sire_venue_surface_dist_place_rate",
+            "sire_venue_surface_dist_runs",
+        ])
+    )
+    df = df.join(svsd_race, on=svsd_race_keys, how="left")
 
     svs_group = ["_sire_id", "keibajo_code", "_surface_type"]
-    df = df.with_columns([
-        pl.col("_is_win")
-        .shift(1)
-        .cum_sum()
-        .over(svs_group)
-        .truediv(
-            pl.col("_one").cum_sum().over(svs_group) - 1
-        )
-        .alias("sire_venue_surface_win_rate"),
+    svs_race_keys = svs_group + race_order_cols
+    svs_race = (
+        df.group_by(svs_race_keys)
+        .agg([
+            pl.col("_is_win").sum().alias("_race_wins"),
+            pl.col("_is_place").sum().alias("_race_places"),
+            pl.col("_one").sum().alias("_race_runs"),
+        ])
+        .sort(svs_race_keys)
+        .with_columns([
+            (
+                pl.col("_race_wins").cum_sum().over(svs_group)
+                - pl.col("_race_wins")
+            ).alias("_prior_wins"),
+            (
+                pl.col("_race_places").cum_sum().over(svs_group)
+                - pl.col("_race_places")
+            ).alias("_prior_places"),
+            (
+                pl.col("_race_runs").cum_sum().over(svs_group)
+                - pl.col("_race_runs")
+            ).alias("_prior_runs"),
+        ])
+        .with_columns([
+            pl.when(pl.col("_prior_runs") > 0)
+            .then(pl.col("_prior_wins") / pl.col("_prior_runs"))
+            .otherwise(None)
+            .alias("sire_venue_surface_win_rate"),
+            pl.when(pl.col("_prior_runs") > 0)
+            .then(pl.col("_prior_places") / pl.col("_prior_runs"))
+            .otherwise(None)
+            .alias("sire_venue_surface_place_rate"),
+        ])
+        .select(svs_race_keys + [
+            "sire_venue_surface_win_rate",
+            "sire_venue_surface_place_rate",
+        ])
+    )
+    df = df.join(svs_race, on=svs_race_keys, how="left")
 
-        pl.col("_is_place")
-        .shift(1)
-        .cum_sum()
-        .over(svs_group)
-        .truediv(
-            pl.col("_one").cum_sum().over(svs_group) - 1
-        )
-        .alias("sire_venue_surface_place_rate"),
+    df = df.sort("_sire_bias_row_nr").drop([
+        "_sire_bias_row_nr",
+        "_sire_id",
+        "_surface_type",
+        "_is_win",
+        "_is_place",
+        "_one",
     ])
-
-    df = df.drop(["_sire_id", "_surface_type", "_is_win", "_is_place", "_one"])
 
     _logger.info(
         "sire venue bias: added 5 features, non-null rates: dist=%.1f%% surface=%.1f%%",

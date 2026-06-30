@@ -35,7 +35,7 @@ from finish_position_lightgbm import (
     split_walk_forward,
 )
 from finish_position_xgboost import train_xgboost_ranker
-from learning.subgroup_diagnostics import SubgroupMetrics
+from learning.subgroup_diagnostics import SubgroupMetrics, assign_subgroup_keys
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -278,14 +278,15 @@ def compute_cell_weights_from_accuracy(
 ) -> dict[str, float]:
     """Inverse-accuracy weighting: underperforming cells get higher weight.
 
-    Cell key is f"{venue}_{surface}_{distance_band}_{class_label}_{season}".
+    Cell keys use the same canonical subgroup key as diagnostics and adoption:
+    f"{category}_{surface}_{distance_band}_{class_label}_{season}_{venue}".
     Weight = 1 / max(accuracy, 0.01) normalized so mean weight = 1.0.
     """
     if not cell_metrics:
         return {}
     cell_weights: dict[str, float] = {}
     for m in cell_metrics:
-        key = f"{m['venue']}_{m['surface']}_{m['distance_band']}_{m['class_label']}_{m['season']}"
+        key = m["subgroup"]
         accuracy = m["top1_accuracy"]
         cell_weights[key] = 1.0 / max(accuracy, 0.01)
     mean_weight = sum(cell_weights.values()) / len(cell_weights)
@@ -301,7 +302,7 @@ def weighted_ndcg_at_3(
     if valid_df.is_empty():
         return 0.0
 
-    required_cols = {"keibajo_code", "track_code", "kyori"}
+    required_cols = {"source", "keibajo_code", "track_code", "kyori"}
     available = set(valid_df.columns)
     if not required_cols.issubset(available):
         return _ndcg_at_3_from_valid_df(valid_df)
@@ -331,19 +332,14 @@ def weighted_ndcg_at_3(
         .agg(pl.col("_contrib").sum().alias("ideal_dcg"))
     )
 
-    race_cells = (
-        valid_df.select(["race_id", "keibajo_code", "track_code", "kyori"])
-        .unique(subset=["race_id"])
-        .with_columns(
-            _cell_key=pl.concat_str(
-                [pl.col("keibajo_code").cast(pl.Utf8),
-                 pl.col("track_code").cast(pl.Utf8),
-                 pl.col("kyori").cast(pl.Utf8)],
-                separator="_"
-            )
-        )
-        .select(["race_id", "_cell_key"])
+    race_cell_cols = ["race_id", "source", "keibajo_code", "track_code", "kyori"]
+    race_cell_cols.extend(
+        col for col in ("grade_code", "kaisai_nengappi", "race_date") if col in valid_df.columns
     )
+    race_cell_context = valid_df.select(race_cell_cols).unique(subset=["race_id"])
+    race_cells = race_cell_context.with_columns(
+        _cell_key=assign_subgroup_keys(race_cell_context)
+    ).select(["race_id", "_cell_key"])
 
     per_race = (
         ideal.join(dcg, on="race_id", how="left")
@@ -358,6 +354,8 @@ def weighted_ndcg_at_3(
     ndcg_values = per_race["_ndcg"].to_list()
     weights = [cell_weights.get(str(k), 1.0) for k in keys]
     total_weight = sum(weights)
+    if total_weight <= 0.0:
+        return _ndcg_at_3_from_valid_df(valid_df)
     weighted_sum = sum(n * w for n, w in zip(ndcg_values, weights, strict=False))
     return weighted_sum / total_weight
 

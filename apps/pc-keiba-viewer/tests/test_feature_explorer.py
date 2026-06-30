@@ -2634,13 +2634,13 @@ def test_get_importance_ranked_features_empty_accumulator() -> None:
 def _make_subgroup_metrics(
     venue: str = "10",
     surface: str = "turf",
-    distance_band: str = "middle",
+    distance_band: str = "intermediate",
     class_label: str = "A",
     season: str = "spring",
     top1_accuracy: float = 0.5,
 ) -> SubgroupMetrics:
     return SubgroupMetrics(
-        subgroup=f"{venue}_{surface}_{distance_band}_{class_label}_{season}",
+        subgroup=f"jra_{surface}_{distance_band}_{class_label}_{season}_{venue}",
         category="jra",
         surface=surface,
         distance_band=distance_band,
@@ -2678,8 +2678,8 @@ def test_compute_cell_weights_low_accuracy_gets_higher_weight() -> None:
         _make_subgroup_metrics(venue="20", top1_accuracy=0.8),
     ]
     result = subject.compute_cell_weights_from_accuracy(metrics)
-    key_low = "10_turf_middle_A_spring"
-    key_high = "20_turf_middle_A_spring"
+    key_low = "jra_turf_intermediate_A_spring_10"
+    key_high = "jra_turf_intermediate_A_spring_20"
     assert result[key_low] > result[key_high]
 
 
@@ -2707,11 +2707,14 @@ def test_compute_cell_weights_mean_is_one() -> None:
 def testweighted_ndcg_at_3_empty_returns_zero() -> None:
     df = pl.DataFrame(schema={
         "race_id": pl.Utf8,
+        "source": pl.Utf8,
         "predicted_rank": pl.Int64,
         "finish_position": pl.Int64,
         "keibajo_code": pl.Utf8,
         "track_code": pl.Utf8,
         "kyori": pl.Int64,
+        "grade_code": pl.Utf8,
+        "race_date": pl.Utf8,
     })
     result = subject.weighted_ndcg_at_3(df, {"key": 2.0})
     assert result == pytest.approx(0.0)
@@ -2720,14 +2723,17 @@ def testweighted_ndcg_at_3_empty_returns_zero() -> None:
 def testweighted_ndcg_at_3_uniform_weights_matches_unweighted() -> None:
     df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
+        "source": ["jra", "jra", "jra", "jra"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
         "keibajo_code": ["10", "10", "10", "10"],
-        "track_code": ["1", "1", "1", "1"],
+        "track_code": ["10", "10", "10", "10"],
         "kyori": [1600, 1600, 1600, 1600],
+        "grade_code": ["A", "A", "A", "A"],
+        "race_date": ["20260630", "20260630", "20260630", "20260630"],
     })
     unweighted = subject._ndcg_at_3_from_valid_df(df)
-    weighted = subject.weighted_ndcg_at_3(df, {"10_1_1600": 1.0})
+    weighted = subject.weighted_ndcg_at_3(df, {"jra_turf_intermediate_A_summer_10": 1.0})
     assert weighted == pytest.approx(unweighted)
 
 
@@ -2745,11 +2751,14 @@ def testweighted_ndcg_at_3_falls_back_when_cols_missing() -> None:
 def testweighted_ndcg_at_3_default_weight_for_unknown_cell() -> None:
     df = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
+        "source": ["jra", "jra", "jra", "jra"],
         "predicted_rank": [1, 2, 3, 4],
         "finish_position": [1, 2, 3, 4],
         "keibajo_code": ["10", "10", "10", "10"],
-        "track_code": ["1", "1", "1", "1"],
+        "track_code": ["10", "10", "10", "10"],
         "kyori": [1600, 1600, 1600, 1600],
+        "grade_code": ["A", "A", "A", "A"],
+        "race_date": ["20260630", "20260630", "20260630", "20260630"],
     })
     result = subject.weighted_ndcg_at_3(df, {})
     assert result == pytest.approx(1.0)
@@ -2758,14 +2767,66 @@ def testweighted_ndcg_at_3_default_weight_for_unknown_cell() -> None:
 def testweighted_ndcg_at_3_all_irrelevant_finishers_returns_zero() -> None:
     df = pl.DataFrame({
         "race_id": ["r1", "r1"],
+        "source": ["jra", "jra"],
         "predicted_rank": [1, 2],
         "finish_position": [5, 6],
         "keibajo_code": ["10", "10"],
-        "track_code": ["1", "1"],
+        "track_code": ["10", "10"],
         "kyori": [1600, 1600],
+        "grade_code": ["A", "A"],
+        "race_date": ["20260630", "20260630"],
     })
-    result = subject.weighted_ndcg_at_3(df, {"10_1_1600": 2.0})
+    result = subject.weighted_ndcg_at_3(df, {"jra_turf_intermediate_A_summer_10": 2.0})
     assert result == pytest.approx(0.0)
+
+
+def testweighted_ndcg_at_3_applies_canonical_cell_weights() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1", "r2", "r2", "r2", "r2"],
+        "source": ["jra", "jra", "jra", "jra", "jra", "jra", "jra", "jra"],
+        "predicted_rank": [1, 2, 3, 4, 1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4, 4, 5, 6, 1],
+        "keibajo_code": ["10", "10", "10", "10", "06", "06", "06", "06"],
+        "track_code": ["10", "10", "10", "10", "23", "23", "23", "23"],
+        "kyori": [1600, 1600, 1600, 1600, 1500, 1500, 1500, 1500],
+        "grade_code": ["A", "A", "A", "A", "B", "B", "B", "B"],
+        "race_date": [
+            "20260630",
+            "20260630",
+            "20260630",
+            "20260630",
+            "20261201",
+            "20261201",
+            "20261201",
+            "20261201",
+        ],
+    })
+    weights = {
+        "jra_turf_intermediate_A_summer_10": 1.0,
+        "jra_dirt_mile_B_winter_06": 3.0,
+    }
+    result = subject.weighted_ndcg_at_3(df, weights)
+    assert result == pytest.approx(0.25)
+
+
+def testweighted_ndcg_at_3_zero_weights_falls_back_to_unweighted() -> None:
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r1"],
+        "source": ["jra", "jra", "jra", "jra"],
+        "predicted_rank": [1, 2, 3, 4],
+        "finish_position": [1, 2, 3, 4],
+        "keibajo_code": ["10", "10", "10", "10"],
+        "track_code": ["10", "10", "10", "10"],
+        "kyori": [1600, 1600, 1600, 1600],
+        "grade_code": ["A", "A", "A", "A"],
+        "race_date": ["20260630", "20260630", "20260630", "20260630"],
+    })
+    result = subject.weighted_ndcg_at_3(
+        df,
+        {"jra_turf_intermediate_A_summer_10": 0.0},
+    )
+    expected = subject._ndcg_at_3_from_valid_df(df)
+    assert result == pytest.approx(expected)
 
 
 # --- _mask_to_params with groups inactive ---
