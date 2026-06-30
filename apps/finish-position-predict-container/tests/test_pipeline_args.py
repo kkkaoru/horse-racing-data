@@ -756,6 +756,40 @@ def test_build_base_argv_target_race_none_same_as_omitted() -> None:
     assert argv_implicit == argv_explicit_none
 
 
+# ---------------------------------------------------------------------------
+# build_base_argv — DuckDB temp-dir optional arg
+# ---------------------------------------------------------------------------
+
+
+def test_build_base_argv_without_temp_dir_omits_flag() -> None:
+    argv = build_base_argv(BUILDER, "jra", "20260629", 0, URL, Path("/tmp/base"))
+    assert "--temp-dir" not in argv
+
+
+def test_build_base_argv_with_temp_dir_appends_flag() -> None:
+    argv = build_base_argv(
+        BUILDER,
+        "jra",
+        "20260629",
+        0,
+        URL,
+        Path("/tmp/base"),
+        temp_dir=Path("/tmp/predict-upcoming/duckdb-spill/jra-20260629-05-11"),
+    )
+    assert argv[-2:] == [
+        "--temp-dir",
+        "/tmp/predict-upcoming/duckdb-spill/jra-20260629-05-11",
+    ]
+
+
+def test_build_base_argv_temp_dir_none_same_as_omitted() -> None:
+    argv_implicit = build_base_argv(BUILDER, "nar", "20260629", 0, URL, Path("/tmp/base"))
+    argv_explicit_none = build_base_argv(
+        BUILDER, "nar", "20260629", 0, URL, Path("/tmp/base"), temp_dir=None
+    )
+    assert argv_implicit == argv_explicit_none
+
+
 def test_build_layer_argv_pacestyle_target_date_adds_run_date() -> None:
     argv = build_layer_argv(
         "add-pacestyle-features.py",

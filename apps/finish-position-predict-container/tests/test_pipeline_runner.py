@@ -244,9 +244,14 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
     monkeypatch.setattr(pipeline_runner, "layer_chain_for", lambda _category: ("script-a.py",))
     monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    captured_temp_dir: Path | None = None
 
     def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
+        nonlocal captured_temp_dir
         output_dir = args[5]
+        temp_dir = kwargs.get("temp_dir")
+        assert isinstance(temp_dir, Path)
+        captured_temp_dir = temp_dir
         return ["base", str(output_dir)]
 
     def fake_layer_argv(*args: object, **kwargs: object) -> list[str]:
@@ -272,3 +277,6 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     assert "script=script-a.py" in captured.err
     assert "target_race=05:11" in captured.err
     assert "elapsed_seconds=" in captured.err
+    assert captured_temp_dir == work_dir / "duckdb-spill" / "jra-20260629-05-11"
+    assert captured_temp_dir is not None
+    assert captured_temp_dir.exists()

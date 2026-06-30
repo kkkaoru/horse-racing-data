@@ -5,7 +5,6 @@ import type { Env } from "./types";
 import { enqueuePredict } from "./queue-producer";
 
 const sendMock = vi.fn(async () => undefined);
-const UUID_PATTERN = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u;
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -147,32 +146,39 @@ test("enqueuePredict attaches keibajoCode and raceBango for a per-race full buil
   });
 });
 
-test("enqueuePredict preserves downstream full per-race trigger fields with skipDedup", async () => {
-  const categories = await enqueuePredict({
-    category: "jra",
-    daysAhead: 2,
-    env: makeEnv(),
-    keibajoCode: "05",
-    mode: "full",
-    raceBango: "11",
-    runDate: "2026-06-28",
-    runYmd: "20260628",
-    skipDedup: true,
-  });
-  expect(sendMock).toHaveBeenCalledTimes(1);
-  expect(categories).toStrictEqual(["jra"]);
-  expect(sendMock).toHaveBeenCalledWith({
-    category: "jra",
-    daysAhead: 2,
-    keibajoCode: "05",
-    mode: "full",
-    raceBango: "11",
-    requestId: expect.stringMatching(UUID_PATTERN),
-    runDate: "2026-06-28",
-    runDateIso: "2026-06-28",
-    runYmd: "20260628",
-    skipDedup: true,
-  });
+test("enqueuePredict preserves downstream full per-race trigger fields with skipDedup without requestId", async () => {
+  const randomUuidSpy = vi
+    .spyOn(crypto, "randomUUID")
+    .mockReturnValue("00000000-0000-4000-8000-000000000001");
+  try {
+    const categories = await enqueuePredict({
+      category: "jra",
+      daysAhead: 2,
+      env: makeEnv(),
+      keibajoCode: "05",
+      mode: "full",
+      raceBango: "11",
+      runDate: "2026-06-28",
+      runYmd: "20260628",
+      skipDedup: true,
+    });
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(categories).toStrictEqual(["jra"]);
+    expect(sendMock).toHaveBeenCalledWith({
+      category: "jra",
+      daysAhead: 2,
+      keibajoCode: "05",
+      mode: "full",
+      raceBango: "11",
+      runDate: "2026-06-28",
+      runDateIso: "2026-06-28",
+      runYmd: "20260628",
+      skipDedup: true,
+    });
+    expect(randomUuidSpy).not.toHaveBeenCalled();
+  } finally {
+    randomUuidSpy.mockRestore();
+  }
 });
 
 test("enqueuePredict does not attach requestId to category-level skipDedup messages", async () => {

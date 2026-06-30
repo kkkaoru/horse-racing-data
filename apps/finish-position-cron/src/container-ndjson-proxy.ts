@@ -10,6 +10,7 @@ const PER_RACE_PARQUET_KIND = "per-race";
 
 type R2ProxyEnv = Pick<Env, "FEATURES_CACHE">;
 type WaitUntil = (promise: Promise<void>) => void;
+type RenewActivityTimeout = () => void;
 type ParquetProxyKind = typeof SINGLE_PARQUET_KIND | typeof PER_RACE_PARQUET_KIND;
 
 interface ParquetProxyEntry {
@@ -88,6 +89,15 @@ const scheduleResultLineProxy = (
   void task;
 };
 
+const scheduleActivityRenew = (renewActivityTimeout: RenewActivityTimeout | undefined): void => {
+  if (renewActivityTimeout === undefined) return;
+  try {
+    renewActivityTimeout();
+  } catch (err) {
+    console.error(`[container-class] activity renew failed: ${String(err)}`);
+  }
+};
+
 const createLastLineTracker = (): LastLineTracker => {
   const decoder = new TextDecoder();
   let pendingLine = "";
@@ -122,11 +132,13 @@ const createProxyingNdjsonStream = (
   body: ReadableStream<Uint8Array>,
   env: R2ProxyEnv,
   waitUntil: WaitUntil | undefined,
+  renewActivityTimeout: RenewActivityTimeout | undefined,
 ): ReadableStream<Uint8Array> => {
   const tracker = createLastLineTracker();
   return body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller): void {
+        scheduleActivityRenew(renewActivityTimeout);
         controller.enqueue(chunk);
         tracker.acceptChunk(chunk);
       },
@@ -142,15 +154,19 @@ export const proxyParquetFromNdjson = (
   response: Response,
   env: R2ProxyEnv,
   waitUntil?: WaitUntil,
+  renewActivityTimeout?: RenewActivityTimeout,
 ): Response => {
   if (!response.body) return response;
   const contentType = response.headers.get("Content-Type") ?? "";
   if (!contentType.includes(NDJSON_CONTENT_TYPE)) return response;
-  return new Response(createProxyingNdjsonStream(response.body, env, waitUntil), {
-    headers: response.headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return new Response(
+    createProxyingNdjsonStream(response.body, env, waitUntil, renewActivityTimeout),
+    {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    },
+  );
 };
 
-export type { R2ProxyEnv, WaitUntil };
+export type { R2ProxyEnv, RenewActivityTimeout, WaitUntil };

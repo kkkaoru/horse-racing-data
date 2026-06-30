@@ -88,8 +88,8 @@ export interface PredictQueueMessage {
   // so the existing consumer is unaffected.
   keibajoCode?: string;
   raceBango?: string;
-  // Focused full builds can carry a requestId so retries/replays may choose a
-  // fresh race-scoped Durable Object instead of reusing the previous instance.
+  // Backward-compatible field for older queued messages. Focused per-race full
+  // builds intentionally ignore it and use the stable race-scoped DO name.
   requestId?: string;
   // Gates event-driven full-build bypasses: when sync-realtime-data finishes
   // running-style, it can trigger POST /run with skipDedup=true so the queue

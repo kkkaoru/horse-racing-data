@@ -23,6 +23,7 @@ const {
   rescoreJraRaceMock,
   warmPredictionCacheForRaceMock,
   warmPredictionCacheForCategoryMock,
+  isFocusedFullPredictionCompleteMock,
 } = vi.hoisted(() => {
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const completeRun = vi.fn(async () => undefined);
@@ -47,9 +48,11 @@ const {
   );
   const warmPredictionCacheForRace = vi.fn(async (): Promise<boolean> => true);
   const warmPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
+  const isFocusedFullPredictionComplete = vi.fn(async (): Promise<boolean> => false);
   return {
     claimRunMock: claimRun,
     completeRunMock: completeRun,
+    isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
     parseNdjsonStreamMock: parseNdjsonStream,
     rescoreJraRaceMock: rescoreJraRace,
     warmPredictionCacheForCategoryMock: warmPredictionCacheForCategory,
@@ -73,6 +76,10 @@ vi.mock("./scoring/rescore-consumer", () => ({
 vi.mock("./prediction-cache-warm", () => ({
   warmPredictionCacheForCategory: warmPredictionCacheForCategoryMock,
   warmPredictionCacheForRace: warmPredictionCacheForRaceMock,
+}));
+
+vi.mock("./focused-full-completion", () => ({
+  isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
 }));
 
 import { handleQueue } from "./queue-consumer";
@@ -136,8 +143,10 @@ beforeEach(() => {
   rescoreJraRaceMock.mockClear();
   warmPredictionCacheForRaceMock.mockClear();
   warmPredictionCacheForCategoryMock.mockClear();
+  isFocusedFullPredictionCompleteMock.mockClear();
   warmPredictionCacheForRaceMock.mockResolvedValue(true);
   warmPredictionCacheForCategoryMock.mockResolvedValue(0);
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   rescoreJraRaceMock.mockResolvedValue({
     etop2Fired: false,
     predictionCount: 3,
@@ -185,7 +194,7 @@ test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDa
   );
 });
 
-test("adds a fallback requestId to the DO name for focused per-race full skipDedup messages", async () => {
+test("uses a stable race-scoped DO name for focused per-race full skipDedup messages", async () => {
   const randomUuidSpy = vi
     .spyOn(crypto, "randomUUID")
     .mockReturnValue("00000000-0000-4000-8000-000000000001");
@@ -208,10 +217,8 @@ test("adds a fallback requestId to the DO name for focused per-race full skipDed
     expect(fetchRequest.url).toBe(
       "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
     );
-    expect(idFromNameMock).toHaveBeenCalledWith(
-      "predict-jra-20260628-02-01-00000000-0000-4000-8000-000000000001",
-    );
-    expect(randomUuidSpy).toHaveBeenCalledTimes(1);
+    expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-20260628-02-01");
+    expect(randomUuidSpy).not.toHaveBeenCalled();
     expect(claimRunMock).not.toHaveBeenCalled();
     expect(completeRunMock).not.toHaveBeenCalled();
     expect(ackMock).toHaveBeenCalledTimes(1);
@@ -220,7 +227,63 @@ test("adds a fallback requestId to the DO name for focused per-race full skipDed
   }
 });
 
-test("adds requestId to the DO name for focused per-race full skipDedup messages", async () => {
+test("acks focused full skipDedup messages without container when Neon already has all rows", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "50",
+        mode: "full",
+        raceBango: "12",
+        runYmd: "20260701",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(isFocusedFullPredictionCompleteMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260701",
+    }),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("continues to container when focused full completion guard fails", async () => {
+  const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  isFocusedFullPredictionCompleteMock.mockRejectedValue(new Error("neon unavailable"));
+  try {
+    await handleQueue(
+      makeBatch([
+        makeMessage({
+          category: "nar",
+          keibajoCode: "50",
+          mode: "full",
+          raceBango: "12",
+          runYmd: "20260701",
+          skipDedup: true,
+        }),
+      ]),
+      makeEnv(),
+    );
+    expect(stubFetchMock).toHaveBeenCalledTimes(1);
+    expect(ackMock).toHaveBeenCalledTimes(1);
+    expect(consoleWarn).toHaveBeenCalledWith(
+      "Focused full completion guard failed category=nar runYmd=20260701 keibajo=50 race=12:",
+      "Error: neon unavailable",
+    );
+  } finally {
+    consoleWarn.mockRestore();
+  }
+});
+
+test("ignores requestId in the DO name for focused per-race full skipDedup messages", async () => {
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -241,7 +304,7 @@ test("adds requestId to the DO name for focused per-race full skipDedup messages
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&keibajoCode=35&raceBango=01",
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260629-35-01-request-123");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260629-35-01");
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
@@ -362,6 +425,31 @@ test("processes multiple messages in batch", async () => {
   const msg2 = makeMessage({ category: "nar" });
   const msg3 = makeMessage({ category: "ban-ei" });
   await handleQueue(makeBatch([msg1, msg2, msg3]), makeEnv());
+  expect(stubFetchMock).toHaveBeenCalledTimes(3);
+  expect(ackMock).toHaveBeenCalledTimes(3);
+});
+
+test("processes batch messages sequentially", async () => {
+  let resolveFirstClaim!: (value: ClaimResult) => void;
+  const firstClaim = new Promise<ClaimResult>((resolve) => {
+    resolveFirstClaim = resolve;
+  });
+  claimRunMock.mockImplementationOnce(() => firstClaim);
+  const processing = handleQueue(
+    makeBatch([
+      makeMessage({ category: "jra" }),
+      makeMessage({ category: "nar" }),
+      makeMessage({ category: "ban-ei" }),
+    ]),
+    makeEnv(),
+  );
+  await Promise.resolve();
+  expect(claimRunMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).not.toHaveBeenCalled();
+
+  resolveFirstClaim({ proceed: true });
+  await processing;
+  expect(claimRunMock).toHaveBeenCalledTimes(3);
   expect(stubFetchMock).toHaveBeenCalledTimes(3);
   expect(ackMock).toHaveBeenCalledTimes(3);
 });

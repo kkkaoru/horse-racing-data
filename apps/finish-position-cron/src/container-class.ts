@@ -10,7 +10,7 @@ import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
-const SLEEP_AFTER = "15m";
+const SLEEP_AFTER = "30s";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
 
@@ -33,7 +33,12 @@ export class FinishPositionPredictContainer extends Container<Env> {
     };
     try {
       const response = await this.containerFetch(request);
-      return proxyParquetFromNdjson(response, this.env, this.ctx.waitUntil.bind(this.ctx));
+      return proxyParquetFromNdjson(
+        response,
+        this.env,
+        this.ctx.waitUntil.bind(this.ctx),
+        this.renewActivityTimeout.bind(this),
+      );
     } catch (err) {
       console.error(`[container-class] containerFetch failed: ${String(err)}`);
       return Response.json(

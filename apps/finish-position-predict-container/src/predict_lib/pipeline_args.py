@@ -299,6 +299,7 @@ def build_base_argv(
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
     target_race: str | None = None,
+    temp_dir: Path | None = None,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
@@ -321,6 +322,10 @@ def build_base_argv(
     ``--target-race`` flag is appended so the DuckDB builder restricts the
     upcoming target set to that single race. Absent → all races on
     ``target_date`` are built as before.
+
+    When ``temp_dir`` is provided the ``--temp-dir`` flag is appended so DuckDB
+    spill files stay isolated to this pipeline run instead of using the shared
+    builder default.
     """
     argv = [
         PYTHON_BIN,
@@ -343,6 +348,8 @@ def build_base_argv(
         argv += ["--venue-weather-dir", str(venue_weather_dir)]
     if target_race is not None:
         argv += ["--target-race", target_race]
+    if temp_dir is not None:
+        argv += ["--temp-dir", str(temp_dir)]
     return argv
 
 

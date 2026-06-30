@@ -29,32 +29,20 @@ const buildPerRaceTarget = (
     ? { keibajoCode: params.keibajoCode, raceBango: params.raceBango }
     : {};
 
-const isFocusedFullBuild = (params: EnqueuePredictParams): boolean =>
-  params.mode === "full" &&
-  params.skipDedup === true &&
-  params.keibajoCode !== undefined &&
-  params.raceBango !== undefined;
-
-const buildRequestId = (params: EnqueuePredictParams): Pick<PredictQueueMessage, "requestId"> =>
-  isFocusedFullBuild(params) ? { requestId: crypto.randomUUID() } : {};
-
 export const enqueuePredict = async (params: EnqueuePredictParams): Promise<PredictCategory[]> => {
   const categories = params.category ? [params.category] : ALL_CATEGORIES;
   const perRaceTarget = buildPerRaceTarget(params);
-  await Promise.all(
-    categories.map((cat) =>
-      params.env.PREDICT_QUEUE.send({
-        category: cat,
-        daysAhead: params.daysAhead,
-        mode: params.mode,
-        runDate: params.runDate,
-        runDateIso: params.runDate,
-        runYmd: params.runYmd,
-        ...perRaceTarget,
-        ...buildRequestId(params),
-        ...(params.skipDedup ? { skipDedup: true } : {}),
-      } satisfies PredictQueueMessage),
-    ),
-  );
+  for (const cat of categories) {
+    await params.env.PREDICT_QUEUE.send({
+      category: cat,
+      daysAhead: params.daysAhead,
+      mode: params.mode,
+      runDate: params.runDate,
+      runDateIso: params.runDate,
+      runYmd: params.runYmd,
+      ...perRaceTarget,
+      ...(params.skipDedup ? { skipDedup: true } : {}),
+    } satisfies PredictQueueMessage);
+  }
   return categories;
 };

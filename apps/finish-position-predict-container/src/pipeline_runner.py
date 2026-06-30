@@ -138,6 +138,11 @@ def _final_parquet_dir(category: Category) -> Path:
     return WORK_DIR / f"feat-{category}-v7-final"
 
 
+def _duckdb_temp_dir(category: Category, target_date: str, target_race: str | None) -> Path:
+    target_label = target_race.replace(":", "-") if target_race is not None else "all"
+    return WORK_DIR / "duckdb-spill" / f"{category}-{target_date}-{target_label}"
+
+
 def _log_pipeline_progress(message: str) -> None:
     print(f"[pipeline] {message}", file=sys.stderr, flush=True)
 
@@ -308,6 +313,8 @@ def build_pipeline(
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     base_dir = WORK_DIR / f"feat-{category}-base"
+    duckdb_temp_dir = _duckdb_temp_dir(category, target_date, target_race)
+    duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
     target_label = target_race if target_race is not None else "all"
     base_start = perf_counter()
     _log_pipeline_progress(
@@ -327,6 +334,7 @@ def build_pipeline(
                 realtime_odds_path,
                 venue_weather_dir,
                 target_race,
+                temp_dir=duckdb_temp_dir,
             )
         )
     except Exception:

@@ -12,6 +12,7 @@ import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
+import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import type { Env, PredictQueueMessage } from "./types";
 
 const RUN_YMD_YEAR_START = 0;
@@ -54,6 +55,13 @@ interface PerRaceRescoreMessage extends PredictQueueMessage {
   raceBango: string;
 }
 
+interface FocusedFullSkipDedupMessage extends PredictQueueMessage {
+  keibajoCode: string;
+  raceBango: string;
+  mode: "full";
+  skipDedup: true;
+}
+
 interface PerRaceRescoreUrlParams {
   category: string;
   daysAhead: number;
@@ -67,30 +75,16 @@ interface PerRaceRescoreUrlParams {
 interface PredictDoNameParams {
   category: string;
   keibajoCode?: string;
-  mode?: string;
   raceBango?: string;
-  requestId?: string;
   runYmd: string;
-  skipDedup?: boolean;
 }
 
 const buildPredictDoName = ({
   category,
   keibajoCode,
-  mode,
   raceBango,
-  requestId,
   runYmd,
-  skipDedup,
 }: PredictDoNameParams): string => {
-  if (
-    skipDedup === true &&
-    mode === "full" &&
-    keibajoCode !== undefined &&
-    raceBango !== undefined &&
-    requestId !== undefined
-  )
-    return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}-${requestId}`;
   if (keibajoCode !== undefined && raceBango !== undefined)
     return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}`;
   return `${PREDICT_DO_NAME_PREFIX}${category}`;
@@ -137,11 +131,42 @@ const assertPredictResultSucceeded = (result: PredictResultLine): void => {
   throw new Error(`Container result status=${result.status}${detail}`);
 };
 
-const isFocusedSkipDedupMessage = (message: PredictQueueMessage): boolean =>
+const isFocusedSkipDedupMessage = (
+  message: PredictQueueMessage,
+): message is FocusedFullSkipDedupMessage =>
   message.skipDedup === true &&
   message.mode === "full" &&
   message.keibajoCode !== undefined &&
   message.raceBango !== undefined;
+
+const ackIfFocusedFullAlreadyComplete = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+): Promise<boolean> => {
+  if (!isFocusedSkipDedupMessage(message.body)) return false;
+  const { category, keibajoCode, raceBango, runYmd } = message.body;
+  try {
+    const complete = await isFocusedFullPredictionComplete({
+      category,
+      env,
+      keibajoCode,
+      raceBango,
+      runYmd,
+    });
+    if (!complete) return false;
+    console.log(
+      `Skipping focused full already complete category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}`,
+    );
+    message.ack();
+    return true;
+  } catch (err) {
+    console.warn(
+      `Focused full completion guard failed category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}:`,
+      String(err),
+    );
+    return false;
+  }
+};
 
 const raceScopeSuffix = (keibajoCode?: string, raceBango?: string): string => {
   let suffix = "";
@@ -235,12 +260,11 @@ const processPerRaceRescore = (
 
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
-  const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, requestId, skipDedup } =
-    message.body;
+  const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, skipDedup } = message.body;
   const isFocusedSkipDedup = isFocusedSkipDedupMessage(message.body);
-  const predictDoRequestId = isFocusedSkipDedup ? (requestId ?? crypto.randomUUID()) : requestId;
   const shouldCompleteCategoryRun = !isFocusedSkipDedup;
   const shouldWarmCategoryCache = skipDedup === true && shouldCompleteCategoryRun;
+  if (await ackIfFocusedFullAlreadyComplete(message, env)) return;
   if (!skipDedup) {
     const claimed = await claimRun({ category, env, runYmd });
     if (!claimed.proceed) {
@@ -252,11 +276,8 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     buildPredictDoName({
       category,
       keibajoCode,
-      mode,
       raceBango,
-      requestId: predictDoRequestId,
       runYmd,
-      skipDedup,
     }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
@@ -318,5 +339,7 @@ export const handleQueue = async (
   batch: MessageBatch<PredictQueueMessage>,
   env: Env,
 ): Promise<void> => {
-  await Promise.all(batch.messages.map((msg) => processMessage(msg, env)));
+  for (const message of batch.messages) {
+    await processMessage(message, env);
+  }
 };

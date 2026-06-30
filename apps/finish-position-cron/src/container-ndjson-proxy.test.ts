@@ -1,7 +1,12 @@
 // Run with bun. Tests for the Container NDJSON response proxy.
 
 import { expect, test, vi } from "vitest";
-import { proxyParquetFromNdjson, type R2ProxyEnv, type WaitUntil } from "./container-ndjson-proxy";
+import {
+  proxyParquetFromNdjson,
+  type R2ProxyEnv,
+  type RenewActivityTimeout,
+  type WaitUntil,
+} from "./container-ndjson-proxy";
 
 const encoder = new TextEncoder();
 
@@ -128,6 +133,70 @@ test("proxyParquetFromNdjson streams chunks before upstream closes and proxies r
     encoder.encode("race2").buffer,
     { httpMetadata: { contentType: "application/octet-stream" } },
   );
+});
+
+test("proxyParquetFromNdjson renews container activity for each streamed chunk", async () => {
+  const { controller, stream } = makeControlledStream();
+  const { env } = makeR2Mock();
+  const renewActivityTimeout: RenewActivityTimeout = vi.fn(() => undefined);
+  const proxied = proxyParquetFromNdjson(
+    ndjsonResponse(stream),
+    env,
+    undefined,
+    renewActivityTimeout,
+  );
+  const reader = proxied.body?.getReader();
+  if (!reader) throw new Error("proxied response did not have a body");
+
+  const first = `${JSON.stringify({ type: "progress", message: "started" })}\n`;
+  const second = `${JSON.stringify({ type: "progress", message: "predict" })}\n`;
+  enqueueText(controller, first);
+  enqueueText(controller, second);
+  controller.close();
+
+  await expect(reader.read()).resolves.toStrictEqual({
+    done: false,
+    value: encoder.encode(first),
+  });
+  await expect(reader.read()).resolves.toStrictEqual({
+    done: false,
+    value: encoder.encode(second),
+  });
+  await expect(reader.read()).resolves.toStrictEqual({ done: true, value: undefined });
+  expect(renewActivityTimeout).toHaveBeenCalledTimes(2);
+});
+
+test("proxyParquetFromNdjson keeps streaming when activity renew throws", async () => {
+  const { controller, stream } = makeControlledStream();
+  const { env } = makeR2Mock();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const renewActivityTimeout: RenewActivityTimeout = vi.fn(() => {
+    throw new Error("renew failed");
+  });
+  const proxied = proxyParquetFromNdjson(
+    ndjsonResponse(stream),
+    env,
+    undefined,
+    renewActivityTimeout,
+  );
+  const reader = proxied.body?.getReader();
+  if (!reader) throw new Error("proxied response did not have a body");
+
+  const chunk = `${JSON.stringify({ type: "progress", message: "started" })}\n`;
+  enqueueText(controller, chunk);
+  controller.close();
+
+  await expect(reader.read()).resolves.toStrictEqual({
+    done: false,
+    value: encoder.encode(chunk),
+  });
+  await expect(reader.read()).resolves.toStrictEqual({ done: true, value: undefined });
+
+  expect(renewActivityTimeout).toHaveBeenCalledTimes(1);
+  expect(consoleError).toHaveBeenCalledWith(
+    "[container-class] activity renew failed: Error: renew failed",
+  );
+  consoleError.mockRestore();
 });
 
 test("proxyParquetFromNdjson tracks split lines and ignores non-result last lines", async () => {
