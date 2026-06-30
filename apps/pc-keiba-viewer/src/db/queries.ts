@@ -6195,6 +6195,14 @@ interface RunningStyleBucketAggregateRow extends Record<string, unknown> {
   log_loss_oikomi_sum: string | number;
   log_loss_oikomi_count: string | number;
   top2_hit_count: string | number;
+  corner1_pair_score_sum: string | number;
+  corner1_pair_score_count: string | number;
+  corner3_pair_score_sum: string | number;
+  corner3_pair_score_count: string | number;
+  corner4_pair_score_sum: string | number;
+  corner4_pair_score_count: string | number;
+  finish_pair_score_sum: string | number;
+  finish_pair_score_count: string | number;
 }
 
 const toFiniteNumber = (value: string | number): number => {
@@ -6297,7 +6305,15 @@ export const getRunningStyleBucketEvaluation = cache(
             coalesce(sum(log_loss_sashi_count), 0)::text as log_loss_sashi_count,
             coalesce(sum(log_loss_oikomi_sum), 0)::text as log_loss_oikomi_sum,
             coalesce(sum(log_loss_oikomi_count), 0)::text as log_loss_oikomi_count,
-            coalesce(sum(top2_hit_count), 0)::text as top2_hit_count
+            coalesce(sum(top2_hit_count), 0)::text as top2_hit_count,
+            coalesce(sum(corner1_pair_score_sum), 0)::text as corner1_pair_score_sum,
+            coalesce(sum(corner1_pair_score_count), 0)::text as corner1_pair_score_count,
+            coalesce(sum(corner3_pair_score_sum), 0)::text as corner3_pair_score_sum,
+            coalesce(sum(corner3_pair_score_count), 0)::text as corner3_pair_score_count,
+            coalesce(sum(corner4_pair_score_sum), 0)::text as corner4_pair_score_sum,
+            coalesce(sum(corner4_pair_score_count), 0)::text as corner4_pair_score_count,
+            coalesce(sum(finish_pair_score_sum), 0)::text as finish_pair_score_sum,
+            coalesce(sum(finish_pair_score_count), 0)::text as finish_pair_score_count
           from scoped
           having coalesce(sum(prediction_count), 0) > 0
         `);
@@ -6347,6 +6363,14 @@ export const getRunningStyleBucketEvaluation = cache(
           predictionCount: toFiniteNumber(row.prediction_count),
           raceCount: toFiniteNumber(row.race_count),
           top2HitCount: toFiniteNumber(row.top2_hit_count),
+          corner1PairScoreSum: toFiniteNumber(row.corner1_pair_score_sum),
+          corner1PairScoreCount: toFiniteNumber(row.corner1_pair_score_count),
+          corner3PairScoreSum: toFiniteNumber(row.corner3_pair_score_sum),
+          corner3PairScoreCount: toFiniteNumber(row.corner3_pair_score_count),
+          corner4PairScoreSum: toFiniteNumber(row.corner4_pair_score_sum),
+          corner4PairScoreCount: toFiniteNumber(row.corner4_pair_score_count),
+          finishPairScoreSum: toFiniteNumber(row.finish_pair_score_sum),
+          finishPairScoreCount: toFiniteNumber(row.finish_pair_score_count),
         });
       },
     ),

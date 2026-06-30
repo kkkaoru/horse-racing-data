@@ -329,21 +329,25 @@ const buildBucketMetricCards = (
 ): readonly RunningStyleBucketMetricCard[] => [
   { key: "accuracy", label: "正解率", value: evaluation.accuracy },
   { key: "top2Accuracy", label: "Top2正解率", value: evaluation.top2Accuracy },
+  { key: "corner1PairScore", label: "1角順序一致", value: evaluation.corner1PairScore.score },
+  { key: "corner3PairScore", label: "3角順序一致", value: evaluation.corner3PairScore.score },
+  { key: "corner4PairScore", label: "4角順序一致", value: evaluation.corner4PairScore.score },
+  { key: "finishPairScore", label: "着順順序一致", value: evaluation.finishPairScore.score },
   { key: "macroF1", label: "macro-F1", value: evaluation.macroF1 },
   { key: "weightedF1", label: "weighted-F1", value: evaluation.weightedF1 },
-  { key: "nigeRecall", label: "逃げ的中率", value: evaluation.perClass.nige.recall },
-  { key: "senkouRecall", label: "先行的中率", value: evaluation.perClass.senkou.recall },
-  { key: "sashiRecall", label: "差し的中率", value: evaluation.perClass.sashi.recall },
-  { key: "oikomiRecall", label: "追込的中率", value: evaluation.perClass.oikomi.recall },
+  { key: "nigeAccuracy", label: "逃げ精度", value: evaluation.perClass.nige.accuracy },
+  { key: "senkouAccuracy", label: "先行精度", value: evaluation.perClass.senkou.accuracy },
+  { key: "sashiAccuracy", label: "差し精度", value: evaluation.perClass.sashi.accuracy },
+  { key: "oikomiAccuracy", label: "追込精度", value: evaluation.perClass.oikomi.accuracy },
 ];
 
 const F1_CARD_KEYS = new Set<string>(["macroF1", "weightedF1"]);
 
-const NIGE_RECALL_CARD_KEY = "nigeRecall";
+const NIGE_RECALL_CARD_KEY = "nigeAccuracy";
 
 const DETAILS_SUMMARY_LABEL = "詳細指標を表示";
 
-const NON_NIGE_DETAILS_HEADING = "脚質の逃げ的中率以外の精度";
+const NON_NIGE_DETAILS_HEADING = "脚質の逃げ精度以外の評価";
 
 const PER_CLASS_HEADING = "クラス別 metric";
 
@@ -392,6 +396,7 @@ const renderPerClassRow = (
   return (
     <tr key={`per-class-${className}`}>
       <th scope="row">{RUNNING_STYLE_CLASS_LABELS[className]}</th>
+      <td>{formatCardPercent(metric.accuracy)}</td>
       <td>{supportTooSmall ? "n too small" : formatF1Value(metric.precision)}</td>
       <td>{supportTooSmall ? "n too small" : formatF1Value(metric.recall)}</td>
       <td>{supportTooSmall ? "n too small" : formatF1Value(metric.f1)}</td>
@@ -505,6 +510,7 @@ const renderPerClassMetricSection = (evaluation: RunningStyleBucketMetrics): Rea
       <thead>
         <tr>
           <th scope="col">クラス</th>
+          <th scope="col">accuracy</th>
           <th scope="col">precision</th>
           <th scope="col">recall</th>
           <th scope="col">F1</th>

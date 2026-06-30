@@ -8,6 +8,7 @@ const CATEGORY_JRA = "jra";
 const CATEGORY_NAR = "nar";
 const CATEGORY_BAN_EI = "ban-ei";
 const LOG_EPSILON = "1e-15";
+const SOURCE_FEATURE_TABLE = "race_entry_corner_features";
 
 const BUCKET_UNIQUE_INDEX_COLUMNS = [
   "model_version",
@@ -60,6 +61,7 @@ const CM_CLASS_PAIRS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 const LOG_LOSS_CLASSES: ReadonlyArray<string> = ["nige", "senkou", "sashi", "oikomi"];
+const ORDER_PAIR_METRICS: ReadonlyArray<string> = ["corner1", "corner3", "corner4", "finish"];
 
 // Predictions loader (load_running_style_predictions.py) writes
 // target_running_style_class / predicted_class / second_predicted_class as
@@ -114,6 +116,36 @@ const buildLogLossCountCaseSql = (className: string): string =>
 
 const buildTop2HitCountSql = (): string =>
   `coalesce(sum(case when target_running_style_class in (predicted_class, second_predicted_class) then 1 else 0 end), 0) top2_hit_count`;
+
+const buildOrderPairScoreColumn = (metric: string): string => `${metric}_pair_score_sum`;
+
+const buildOrderPairCountColumn = (metric: string): string => `${metric}_pair_score_count`;
+
+const buildOrderPairSelectClauses = (): string =>
+  ORDER_PAIR_METRICS.flatMap((metric) => [
+    `coalesce(max(op.${buildOrderPairScoreColumn(metric)}), 0) ${buildOrderPairScoreColumn(metric)}`,
+    `coalesce(max(op.${buildOrderPairCountColumn(metric)}), 0) ${buildOrderPairCountColumn(metric)}`,
+  ]).join(",\n      ");
+
+const buildOrderPairValueSql = (actualColumn: string, positiveOnly = false): string => `
+             case
+               when j1.${actualColumn} is null or j2.${actualColumn} is null${
+                 positiveOnly ? ` or j1.${actualColumn} <= 0 or j2.${actualColumn} <= 0` : ""
+               } then null
+               when j1.predicted_front_score = j2.predicted_front_score
+                 or j1.${actualColumn} = j2.${actualColumn}
+               then 0.5
+               when (j1.predicted_front_score < j2.predicted_front_score)
+                 = (j1.${actualColumn} < j2.${actualColumn})
+               then 1.0
+               else 0.0
+             end`;
+
+const buildOrderPairAddColumnDdl = (): string =>
+  ORDER_PAIR_METRICS.flatMap((metric) => [
+    `alter table ${BUCKET_TABLE} add column if not exists ${buildOrderPairScoreColumn(metric)} numeric not null default 0;`,
+    `alter table ${BUCKET_TABLE} add column if not exists ${buildOrderPairCountColumn(metric)} integer not null default 0;`,
+  ]).join("\n    ");
 
 export const BUCKET_RACE_NAME_INDEX_SQL = `create index if not exists ${BUCKET_TABLE}_race_name
       on ${BUCKET_TABLE} (category, source, race_name, keibajo_code, kyori)
@@ -171,6 +203,14 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
       log_loss_oikomi_sum  numeric not null,
       log_loss_oikomi_count integer not null,
       top2_hit_count       integer not null,
+      corner1_pair_score_sum   numeric not null default 0,
+      corner1_pair_score_count integer not null default 0,
+      corner3_pair_score_sum   numeric not null default 0,
+      corner3_pair_score_count integer not null default 0,
+      corner4_pair_score_sum   numeric not null default 0,
+      corner4_pair_score_count integer not null default 0,
+      finish_pair_score_sum    numeric not null default 0,
+      finish_pair_score_count  integer not null default 0,
       evaluated_at         timestamptz not null default now()
     );
     create unique index if not exists ${BUCKET_TABLE}_uq
@@ -178,6 +218,7 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
     create index if not exists ${BUCKET_TABLE}_lookup
       on ${BUCKET_TABLE} (${BUCKET_LOOKUP_INDEX_COLUMNS.join(", ")});
     ${BUCKET_RACE_NAME_INDEX_SQL};
+    ${buildOrderPairAddColumnDdl()}
     ${BUCKET_REPLICA_IDENTITY_SQL};
   `;
 
@@ -254,8 +295,11 @@ export const buildRunningStyleBucketAggregateSql = (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
              d.kyoso_joken_code, d.condition_key, d.track_code, d.grade_code, d.race_name,
              d.kaisai_nen, d.kaisai_tsukihi, d.race_bango,
+             p.ketto_toroku_bango,
              p.predicted_class, p.second_predicted_class, p.target_running_style_class,
-             p.p_nige, p.p_senkou, p.p_sashi, p.p_oikomi
+             p.p_nige, p.p_senkou, p.p_sashi, p.p_oikomi,
+             (p.p_senkou + (2 * p.p_sashi) + (3 * p.p_oikomi)) predicted_front_score,
+             rec.corner1_norm, rec.corner3_norm, rec.corner4_norm, rec.finish_position
       from race_dims d
       join predictions p
         on p.source = d.source
@@ -263,27 +307,79 @@ export const buildRunningStyleBucketAggregateSql = (
        and p.kaisai_tsukihi = d.kaisai_tsukihi
        and p.keibajo_code = d.keibajo_code
        and p.race_bango = d.race_bango
+      left join ${SOURCE_FEATURE_TABLE} rec
+        on rec.source = p.source
+       and rec.kaisai_nen = p.kaisai_nen
+       and rec.kaisai_tsukihi = p.kaisai_tsukihi
+       and rec.keibajo_code = p.keibajo_code
+       and rec.race_bango = p.race_bango
+       and rec.ketto_toroku_bango = p.ketto_toroku_bango
+    ),
+    labeled as (
+      select *
+      from joined
+      where target_running_style_class is not null
+        and predicted_class is not null
+    ),
+    order_pairs as (
+      select source, keibajo_code, kyori, kyoso_shubetsu_code,
+             kyoso_joken_code, condition_key, track_code, grade_code, race_name,
+             coalesce(sum(corner1_pair_score), 0) corner1_pair_score_sum,
+             count(corner1_pair_score) corner1_pair_score_count,
+             coalesce(sum(corner3_pair_score), 0) corner3_pair_score_sum,
+             count(corner3_pair_score) corner3_pair_score_count,
+             coalesce(sum(corner4_pair_score), 0) corner4_pair_score_sum,
+             count(corner4_pair_score) corner4_pair_score_count,
+             coalesce(sum(finish_pair_score), 0) finish_pair_score_sum,
+             count(finish_pair_score) finish_pair_score_count
+      from (
+        select j1.source, j1.keibajo_code, j1.kyori, j1.kyoso_shubetsu_code,
+               j1.kyoso_joken_code, j1.condition_key, j1.track_code, j1.grade_code, j1.race_name,
+               ${buildOrderPairValueSql("corner1_norm")} corner1_pair_score,
+               ${buildOrderPairValueSql("corner3_norm")} corner3_pair_score,
+               ${buildOrderPairValueSql("corner4_norm")} corner4_pair_score,
+               ${buildOrderPairValueSql("finish_position", true)} finish_pair_score
+        from labeled j1
+        join labeled j2
+          on j1.source = j2.source
+         and j1.kaisai_nen = j2.kaisai_nen
+         and j1.kaisai_tsukihi = j2.kaisai_tsukihi
+         and j1.keibajo_code = j2.keibajo_code
+         and j1.race_bango = j2.race_bango
+         and j1.ketto_toroku_bango < j2.ketto_toroku_bango
+      ) pairs
+      group by source, keibajo_code, kyori, kyoso_shubetsu_code,
+               kyoso_joken_code, condition_key, track_code, grade_code, race_name
     )
     select
-      source,
-      keibajo_code,
-      kyori,
-      kyoso_shubetsu_code,
-      kyoso_joken_code,
-      condition_key,
-      track_code,
-      grade_code,
-      race_name,
-      count(distinct (kaisai_nen, kaisai_tsukihi, race_bango)) race_count,
+      j.source,
+      j.keibajo_code,
+      j.kyori,
+      j.kyoso_shubetsu_code,
+      j.kyoso_joken_code,
+      j.condition_key,
+      j.track_code,
+      j.grade_code,
+      j.race_name,
+      count(distinct (j.kaisai_nen, j.kaisai_tsukihi, j.race_bango)) race_count,
       count(*) prediction_count,
       ${buildCmSelectClauses()},
       ${buildLogLossSelectClauses()},
-      ${buildTop2HitCountSql()}
-    from joined
-    where target_running_style_class is not null
-      and predicted_class is not null
-    group by source, keibajo_code, kyori, kyoso_shubetsu_code,
-             kyoso_joken_code, condition_key, track_code, grade_code, race_name
+      ${buildTop2HitCountSql()},
+      ${buildOrderPairSelectClauses()}
+    from labeled j
+    left join order_pairs op
+      on op.source = j.source
+     and op.keibajo_code = j.keibajo_code
+     and op.kyori = j.kyori
+     and op.kyoso_shubetsu_code = j.kyoso_shubetsu_code
+     and coalesce(op.kyoso_joken_code, '') = coalesce(j.kyoso_joken_code, '')
+     and coalesce(op.condition_key, '') = coalesce(j.condition_key, '')
+     and coalesce(op.track_code, '') = coalesce(j.track_code, '')
+     and coalesce(op.grade_code, '') = coalesce(j.grade_code, '')
+     and coalesce(op.race_name, '') = coalesce(j.race_name, '')
+    group by j.source, j.keibajo_code, j.kyori, j.kyoso_shubetsu_code,
+             j.kyoso_joken_code, j.condition_key, j.track_code, j.grade_code, j.race_name
   `;
 };
 
@@ -310,6 +406,10 @@ const buildUpsertColumnList = (): string[] => [
     `log_loss_${className}_count`,
   ]),
   "top2_hit_count",
+  ...ORDER_PAIR_METRICS.flatMap((metric) => [
+    buildOrderPairScoreColumn(metric),
+    buildOrderPairCountColumn(metric),
+  ]),
 ];
 
 // psycopg cursor.execute(query, params) requires "%s" placeholders, not the
@@ -330,6 +430,10 @@ const buildReplacementColumns = (): string[] => [
     `log_loss_${className}_count`,
   ]),
   "top2_hit_count",
+  ...ORDER_PAIR_METRICS.flatMap((metric) => [
+    buildOrderPairScoreColumn(metric),
+    buildOrderPairCountColumn(metric),
+  ]),
 ];
 
 const buildBucketUpsertOnConflictClause = (): string => {
@@ -369,8 +473,8 @@ const buildBatchValuesRowSql = (columnCount: number): string =>
   `(${buildUpsertPlaceholderList(columnCount)}, now())`;
 
 // Multi-row UPSERT path. PostgreSQL caps bind parameters at 65535, so callers
-// must keep rowCount * column-count under that limit (41 columns * 100 rows =
-// 4100 placeholders, well within budget). ON CONFLICT replaces aggregate
+// must keep rowCount * column-count under that limit (49 columns * 100 rows =
+// 4900 placeholders, well within budget). ON CONFLICT replaces aggregate
 // columns with the new row values so re-running the same window is idempotent.
 export const buildRunningStyleBucketBatchUpsertSql = (rowCount: number): string => {
   if (rowCount <= 0) throw new Error("rowCount must be greater than zero.");
@@ -400,6 +504,7 @@ export const buildRunningStyleAnalyzeSqls = (): string[] => [
   `analyze ${BUCKET_TABLE}`,
   "analyze jvd_ra",
   "analyze nvd_ra",
+  `analyze ${SOURCE_FEATURE_TABLE}`,
 ];
 
 export {

@@ -191,10 +191,10 @@ const HAPPY_METRICS: RunningStyleBucketMetrics = {
   macroF1: 0.6,
   overallLogLoss: 0.5,
   perClass: {
-    nige: { f1: 0.7, precision: 0.7, recall: 0.7, support: 12 },
-    oikomi: { f1: 0.7, precision: 0.7, recall: 0.7, support: 11 },
-    sashi: { f1: 0.6, precision: 0.6, recall: 0.6, support: 13 },
-    senkou: { f1: 0.6, precision: 0.6, recall: 0.6, support: 13 },
+    nige: { accuracy: 0.86, f1: 0.7, precision: 0.7, recall: 0.7, support: 12 },
+    oikomi: { accuracy: 0.86, f1: 0.7, precision: 0.7, recall: 0.7, support: 11 },
+    sashi: { accuracy: 0.84, f1: 0.6, precision: 0.6, recall: 0.6, support: 13 },
+    senkou: { accuracy: 0.84, f1: 0.6, precision: 0.6, recall: 0.6, support: 13 },
   },
   perClassLogLoss: { nige: 0.4, oikomi: 0.5, sashi: 0.5, senkou: 0.6 },
   predictionCount: 49,
@@ -202,6 +202,10 @@ const HAPPY_METRICS: RunningStyleBucketMetrics = {
   raceCount: 5,
   smallSampleWarning: false,
   top2Accuracy: 0.9,
+  corner1PairScore: { pairCount: 100, score: 0.72 },
+  corner3PairScore: { pairCount: 100, score: 0.74 },
+  corner4PairScore: { pairCount: 100, score: 0.75 },
+  finishPairScore: { pairCount: 100, score: 0.7 },
   weightedF1: 0.6,
 };
 

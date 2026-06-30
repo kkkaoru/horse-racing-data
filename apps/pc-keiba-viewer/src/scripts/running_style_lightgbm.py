@@ -195,6 +195,9 @@ class RunningStyleCellMetrics(TypedDict):
     macro_f1: float
     multi_log_loss: float
     top2_accuracy: float
+    race_level: RunningStyleRaceLevelMetrics
+    per_class_accuracy: dict[str, float]
+    per_class_f1: dict[str, float]
     per_class_precision: dict[str, float]
     per_class_recall: dict[str, float]
     per_class_support: dict[str, int]
@@ -203,6 +206,19 @@ class RunningStyleCellMetrics(TypedDict):
     per_class_log_loss_sum: dict[str, float]
     per_class_log_loss_count: dict[str, int]
     per_class_log_loss: dict[str, float]
+
+
+class RunningStyleRaceLevelMetrics(TypedDict):
+    race_count: int
+    style_distribution_mae: float
+    style_count_mae: dict[str, float]
+    style_count_bias: dict[str, float]
+    nige_count_mae: float
+    front_group_count_mae: float
+    corner_rank_spearman: float
+    finish_weighted_accuracy: float
+    top1_finish_style_accuracy: float
+    top3_finish_style_accuracy: float
 
 
 class RunningStyleCellAdoptionMetrics(TypedDict):
@@ -665,6 +681,178 @@ def compute_top2_accuracy(probabilities: np.ndarray, actual: np.ndarray) -> floa
     return compute_topk_accuracy(probabilities, actual, 2)
 
 
+def compute_predicted_front_score(probabilities: np.ndarray) -> np.ndarray:
+    """Expected running-style ordinal: lower means closer to the lead."""
+    if probabilities.ndim != 2 or probabilities.shape[1] != NUM_CLASSES:
+        raise ValueError("probabilities must have one column per running-style class")
+    class_ordinals = np.arange(NUM_CLASSES, dtype=np.float64)
+    return probabilities @ class_ordinals
+
+
+def average_ranks(values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.empty(0, dtype=np.float64)
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(values.size, dtype=np.float64)
+    start = 0
+    while start < values.size:
+        end = start + 1
+        while end < values.size and values[order[end]] == values[order[start]]:
+            end += 1
+        average_rank = (start + end - 1) / 2.0
+        ranks[order[start:end]] = average_rank
+        start = end
+    return ranks
+
+
+def spearman_corr(left: np.ndarray, right: np.ndarray) -> float:
+    if left.size < 2 or right.size != left.size:
+        return float("nan")
+    left_ranks = average_ranks(left)
+    right_ranks = average_ranks(right)
+    left_centered = left_ranks - left_ranks.mean()
+    right_centered = right_ranks - right_ranks.mean()
+    denominator = float(
+        np.sqrt(np.sum(left_centered * left_centered) * np.sum(right_centered * right_centered))
+    )
+    if denominator == 0.0:
+        return float("nan")
+    return float(np.sum(left_centered * right_centered) / denominator)
+
+
+def _race_ids_for_metrics(
+    actual: np.ndarray, race_ids: Sequence[object] | np.ndarray | None
+) -> np.ndarray:
+    if race_ids is None:
+        return np.repeat("__all__", actual.size).astype(object)
+    values = np.asarray(race_ids, dtype=object)
+    if values.shape[0] != actual.size:
+        raise ValueError("race_ids must have one value per label")
+    return values
+
+
+def _optional_float_array(
+    values: Sequence[object] | np.ndarray | None, expected_size: int, name: str
+) -> np.ndarray | None:
+    if values is None:
+        return None
+    array = np.asarray(values, dtype=np.float64)
+    if array.shape[0] != expected_size:
+        raise ValueError(f"{name} must have one value per label")
+    return array
+
+
+def compute_race_level_running_style_metrics(
+    probabilities: np.ndarray,
+    actual: np.ndarray,
+    *,
+    race_ids: Sequence[object] | np.ndarray | None = None,
+    corner1_norm: Sequence[object] | np.ndarray | None = None,
+    finish_positions: Sequence[object] | np.ndarray | None = None,
+) -> RunningStyleRaceLevelMetrics:
+    predicted = compute_predicted_labels(probabilities)
+    pred_front_score = compute_predicted_front_score(probabilities)
+    race_id_values = _race_ids_for_metrics(actual, race_ids)
+    corner_values = _optional_float_array(corner1_norm, actual.size, "corner1_norm")
+    finish_values = _optional_float_array(finish_positions, actual.size, "finish_positions")
+
+    distribution_errors: list[float] = []
+    style_count_abs_errors: dict[str, list[float]] = {
+        class_name: [] for class_name in CLASS_LABELS
+    }
+    style_count_biases: dict[str, list[float]] = {class_name: [] for class_name in CLASS_LABELS}
+    nige_count_errors: list[float] = []
+    front_group_count_errors: list[float] = []
+    corner_spearman_values: list[float] = []
+    finish_weighted_accuracy_values: list[float] = []
+    top1_finish_style_accuracy_values: list[float] = []
+    top3_finish_style_accuracy_values: list[float] = []
+    unique_race_ids = list(dict.fromkeys(race_id_values.tolist()))
+
+    for race_id in unique_race_ids:
+        mask = race_id_values == race_id
+        race_actual = actual[mask]
+        race_predicted = predicted[mask]
+        if race_actual.size == 0:
+            continue
+        actual_counts = np.bincount(race_actual, minlength=NUM_CLASSES).astype(np.float64)
+        predicted_counts = np.bincount(race_predicted, minlength=NUM_CLASSES).astype(np.float64)
+        distribution_errors.append(
+            float(np.mean(np.abs((predicted_counts - actual_counts) / race_actual.size)))
+        )
+        for class_idx, class_name in enumerate(CLASS_LABELS):
+            count_delta = predicted_counts[class_idx] - actual_counts[class_idx]
+            style_count_abs_errors[class_name].append(float(abs(count_delta)))
+            style_count_biases[class_name].append(float(count_delta))
+        nige_count_errors.append(float(abs(predicted_counts[0] - actual_counts[0])))
+        front_group_count_errors.append(
+            float(abs(predicted_counts[0:2].sum() - actual_counts[0:2].sum()))
+        )
+        if corner_values is not None:
+            race_corner = corner_values[mask]
+            valid_corner = np.isfinite(race_corner)
+            if int(valid_corner.sum()) >= 2:
+                corr = spearman_corr(pred_front_score[mask][valid_corner], race_corner[valid_corner])
+                if np.isfinite(corr):
+                    corner_spearman_values.append(corr)
+        if finish_values is not None:
+            race_finish = finish_values[mask]
+            valid_finish = np.isfinite(race_finish) & (race_finish > 0)
+            if np.any(valid_finish):
+                weights = 1.0 / race_finish[valid_finish]
+                hits = (race_predicted[valid_finish] == race_actual[valid_finish]).astype(np.float64)
+                finish_weighted_accuracy_values.append(float(np.average(hits, weights=weights)))
+            top1_finish = valid_finish & (race_finish == 1)
+            if np.any(top1_finish):
+                top1_finish_style_accuracy_values.append(
+                    float((race_predicted[top1_finish] == race_actual[top1_finish]).mean())
+                )
+            top3_finish = valid_finish & (race_finish <= 3)
+            if np.any(top3_finish):
+                top3_finish_style_accuracy_values.append(
+                    float((race_predicted[top3_finish] == race_actual[top3_finish]).mean())
+                )
+
+    return {
+        "race_count": len(unique_race_ids),
+        "style_distribution_mae": float(np.mean(distribution_errors))
+        if distribution_errors
+        else float("nan"),
+        "style_count_mae": {
+            class_name: (
+                float(np.mean(style_count_abs_errors[class_name]))
+                if style_count_abs_errors[class_name]
+                else float("nan")
+            )
+            for class_name in CLASS_LABELS
+        },
+        "style_count_bias": {
+            class_name: (
+                float(np.mean(style_count_biases[class_name]))
+                if style_count_biases[class_name]
+                else float("nan")
+            )
+            for class_name in CLASS_LABELS
+        },
+        "nige_count_mae": float(np.mean(nige_count_errors)) if nige_count_errors else float("nan"),
+        "front_group_count_mae": float(np.mean(front_group_count_errors))
+        if front_group_count_errors
+        else float("nan"),
+        "corner_rank_spearman": float(np.mean(corner_spearman_values))
+        if corner_spearman_values
+        else float("nan"),
+        "finish_weighted_accuracy": float(np.mean(finish_weighted_accuracy_values))
+        if finish_weighted_accuracy_values
+        else float("nan"),
+        "top1_finish_style_accuracy": float(np.mean(top1_finish_style_accuracy_values))
+        if top1_finish_style_accuracy_values
+        else float("nan"),
+        "top3_finish_style_accuracy": float(np.mean(top3_finish_style_accuracy_values))
+        if top3_finish_style_accuracy_values
+        else float("nan"),
+    }
+
+
 def compute_per_class_log_loss(
     probabilities: np.ndarray, actual: np.ndarray
 ) -> dict[str, float]:
@@ -714,9 +902,14 @@ def compute_confusion_matrix(
 def compute_running_style_metrics(
     probabilities: np.ndarray,
     actual: np.ndarray,
+    *,
+    race_ids: Sequence[object] | np.ndarray | None = None,
+    corner1_norm: Sequence[object] | np.ndarray | None = None,
+    finish_positions: Sequence[object] | np.ndarray | None = None,
 ) -> RunningStyleCellMetrics:
     predicted = compute_predicted_labels(probabilities)
     precision, recall, support = compute_per_class_precision_recall(predicted, actual)
+    per_class_f1 = compute_per_class_f1(precision, recall)
     predicted_support = {
         class_name: int((predicted == class_idx).sum())
         for class_idx, class_name in enumerate(CLASS_LABELS)
@@ -731,6 +924,15 @@ def compute_running_style_metrics(
         "macro_f1": macro_f1_from_precision_recall(precision, recall),
         "multi_log_loss": compute_multi_log_loss(probabilities, actual),
         "top2_accuracy": float(top2_hits.mean()) if actual.size > 0 else float("nan"),
+        "race_level": compute_race_level_running_style_metrics(
+            probabilities,
+            actual,
+            race_ids=race_ids,
+            corner1_norm=corner1_norm,
+            finish_positions=finish_positions,
+        ),
+        "per_class_accuracy": compute_per_class_accuracy(predicted, actual),
+        "per_class_f1": per_class_f1,
         "per_class_precision": precision,
         "per_class_recall": recall,
         "per_class_support": support,
@@ -954,18 +1156,40 @@ def compute_per_class_precision_recall(
     return precision, recall, support
 
 
-def macro_f1_from_precision_recall(
+def compute_per_class_accuracy(
+    predicted: np.ndarray, actual: np.ndarray
+) -> dict[str, float]:
+    accuracy: dict[str, float] = {}
+    for class_idx, class_name in enumerate(CLASS_LABELS):
+        actual_mask = actual == class_idx
+        actual_count = int(actual_mask.sum())
+        accuracy[class_name] = (
+            float((predicted[actual_mask] == actual[actual_mask]).mean())
+            if actual_count > 0
+            else float("nan")
+        )
+    return accuracy
+
+
+def compute_per_class_f1(
     precision: dict[str, float], recall: dict[str, float]
-) -> float:
-    f1_scores: list[float] = []
+) -> dict[str, float]:
+    f1: dict[str, float] = {}
     for class_name in CLASS_LABELS:
         p = precision[class_name]
         r = recall[class_name]
-        if np.isnan(p) or np.isnan(r) or (p + r) == 0:
-            f1_scores.append(0.0)
-        else:
-            f1_scores.append(2.0 * p * r / (p + r))
-    return float(np.mean(f1_scores))
+        f1[class_name] = (
+            0.0
+            if np.isnan(p) or np.isnan(r) or (p + r) == 0
+            else float(2.0 * p * r / (p + r))
+        )
+    return f1
+
+
+def macro_f1_from_precision_recall(
+    precision: dict[str, float], recall: dict[str, float]
+) -> float:
+    return float(np.mean(list(compute_per_class_f1(precision, recall).values())))
 
 
 def compute_binary_log_loss_nige(
@@ -2018,7 +2242,21 @@ def train_one_running_style_cell(
         class_weight_scheme=args.class_weight_scheme,
     )
     actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
-    metrics = compute_running_style_metrics(probabilities, actual)
+    metrics = compute_running_style_metrics(
+        probabilities,
+        actual,
+        race_ids=valid_df["race_id"].to_numpy() if "race_id" in valid_df.columns else None,
+        corner1_norm=(
+            valid_df["target_corner_1_norm"].to_numpy()
+            if "target_corner_1_norm" in valid_df.columns
+            else None
+        ),
+        finish_positions=(
+            valid_df["finish_position"].to_numpy()
+            if "finish_position" in valid_df.columns
+            else None
+        ),
+    )
     race_count = (
         int(valid_df["race_id"].n_unique())
         if "race_id" in valid_df.columns

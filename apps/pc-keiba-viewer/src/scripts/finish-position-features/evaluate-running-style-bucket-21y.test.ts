@@ -81,6 +81,14 @@ const baseAggregateRow = (
   log_loss_oikomi_sum: "0",
   log_loss_oikomi_count: 0,
   top2_hit_count: 0,
+  corner1_pair_score_sum: "0",
+  corner1_pair_score_count: 0,
+  corner3_pair_score_sum: "0",
+  corner3_pair_score_count: 0,
+  corner4_pair_score_sum: "0",
+  corner4_pair_score_count: 0,
+  finish_pair_score_sum: "0",
+  finish_pair_score_count: 0,
   ...overrides,
 });
 
@@ -688,7 +696,7 @@ test("runRunningStyleBucketEval with categoryFilter null runs both jra and nar",
   expect(closeMock).toHaveBeenCalledTimes(2);
 });
 
-test("buildUpsertParams returns 41 parameters with jra model version for jra category", () => {
+test("buildUpsertParams returns 49 parameters with jra model version for jra category", () => {
   expect(
     buildUpsertParams(
       {
@@ -703,6 +711,10 @@ test("buildUpsertParams returns 41 parameters with jra model version for jra cat
         log_loss_nige_sum: "1.5",
         log_loss_nige_count: 5,
         top2_hit_count: 12,
+        corner1_pair_score_sum: "7.5",
+        corner1_pair_score_count: 10,
+        finish_pair_score_sum: "8.5",
+        finish_pair_score_count: 10,
       }),
     ),
   ).toStrictEqual([
@@ -747,6 +759,14 @@ test("buildUpsertParams returns 41 parameters with jra model version for jra cat
     "0",
     "0",
     "12",
+    "7.5",
+    "10",
+    "0",
+    "0",
+    "0",
+    "0",
+    "8.5",
+    "10",
   ]);
 });
 
@@ -1232,7 +1252,7 @@ test("processYear with 250 rows issues 3 batched upserts (100/100/50) plus 1 agg
   });
   expect(result).toStrictEqual({ rowCount: 250, raceCount: 250 });
   expect(upsertSqls).toHaveLength(3);
-  expect(upsertParamCounts).toStrictEqual([4100, 4100, 2050]);
+  expect(upsertParamCounts).toStrictEqual([4900, 4900, 2450]);
 });
 
 test("processYear with 100 rows issues exactly 1 batched upsert", async () => {
@@ -1266,7 +1286,7 @@ test("processYear with 100 rows issues exactly 1 batched upsert", async () => {
   expect(upsertSqls).toHaveLength(1);
 });
 
-test("processYear with 1 row issues exactly 1 batched upsert with 41 params (single-row path preserved)", async () => {
+test("processYear with 1 row issues exactly 1 batched upsert with 49 params (single-row path preserved)", async () => {
   const aggregateRows: RunningStyleAggregateRow[] = [
     baseAggregateRow({ race_count: 5, prediction_count: 60 }),
   ];
@@ -1297,7 +1317,7 @@ test("processYear with 1 row issues exactly 1 batched upsert with 41 params (sin
     log: vi.fn<(message: string) => void>(),
   });
   expect(result).toStrictEqual({ rowCount: 1, raceCount: 5 });
-  expect(upsertParamCounts).toStrictEqual([41]);
+  expect(upsertParamCounts).toStrictEqual([49]);
 });
 
 test("runRunningStyleBucketEval runs jra and nar in parallel via Promise.all (both openChunkClient calls start before either resolves)", async () => {

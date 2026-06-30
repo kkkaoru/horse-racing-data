@@ -75,6 +75,14 @@ export interface RunningStyleAggregateRow {
   log_loss_oikomi_sum: string;
   log_loss_oikomi_count: string | number;
   top2_hit_count: string | number;
+  corner1_pair_score_sum: string;
+  corner1_pair_score_count: string | number;
+  corner3_pair_score_sum: string;
+  corner3_pair_score_count: string | number;
+  corner4_pair_score_sum: string;
+  corner4_pair_score_count: string | number;
+  finish_pair_score_sum: string;
+  finish_pair_score_count: string | number;
 }
 
 export interface ColimaResources {
@@ -156,8 +164,8 @@ const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
 const DEFAULT_CHUNK_CONCURRENCY = 1;
 const MIN_CHUNK_CONCURRENCY = 1;
 const MAX_CHUNK_CONCURRENCY = 10;
-// PG bind-parameter cap is 65535. We have 41 columns per row, so 100 rows
-// emit 4100 placeholders — well within budget while reducing round-trips by
+// PG bind-parameter cap is 65535. We have 49 columns per row, so 100 rows
+// emit 4900 placeholders — well within budget while reducing round-trips by
 // 100x compared to the per-row UPSERT path.
 const UPSERT_BATCH_SIZE = 100;
 const DEFAULT_PREDICTIONS_ROOT =
@@ -453,6 +461,14 @@ export const buildUpsertParams = (
     row.log_loss_oikomi_sum,
     numericFromRow(row.log_loss_oikomi_count),
     numericFromRow(row.top2_hit_count),
+    row.corner1_pair_score_sum,
+    numericFromRow(row.corner1_pair_score_count),
+    row.corner3_pair_score_sum,
+    numericFromRow(row.corner3_pair_score_count),
+    row.corner4_pair_score_sum,
+    numericFromRow(row.corner4_pair_score_count),
+    row.finish_pair_score_sum,
+    numericFromRow(row.finish_pair_score_count),
   ];
 };
 

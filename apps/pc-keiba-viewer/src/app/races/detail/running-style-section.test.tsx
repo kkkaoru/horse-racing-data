@@ -93,12 +93,16 @@ const buildEvaluation = (
   weightedF1: 0.638,
   qwk: 0.715,
   top2Accuracy: 0.842,
+  corner1PairScore: { pairCount: 640, score: 0.71 },
+  corner3PairScore: { pairCount: 640, score: 0.73 },
+  corner4PairScore: { pairCount: 640, score: 0.74 },
+  finishPairScore: { pairCount: 640, score: 0.69 },
   overallLogLoss: 0.875,
   perClass: {
-    nige: { precision: 0.6, recall: 0.55, f1: 0.574, support: 150 },
-    senkou: { precision: 0.7, recall: 0.65, f1: 0.674, support: 600 },
-    sashi: { precision: 0.65, recall: 0.7, f1: 0.674, support: 500 },
-    oikomi: { precision: 0.4, recall: 0.3, f1: 0.343, support: 250 },
+    nige: { accuracy: 0.9, precision: 0.6, recall: 0.55, f1: 0.574, support: 150 },
+    senkou: { accuracy: 0.79, precision: 0.7, recall: 0.65, f1: 0.674, support: 600 },
+    sashi: { accuracy: 0.78, precision: 0.65, recall: 0.7, f1: 0.674, support: 500 },
+    oikomi: { accuracy: 0.83, precision: 0.4, recall: 0.3, f1: 0.343, support: 250 },
   },
   perClassLogLoss: { nige: 0.9, senkou: 0.7, sashi: 0.85, oikomi: 1.2 },
   confusionMatrix: [
@@ -567,10 +571,10 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         runnersByUmaban={{}}
         bucketEvaluation={buildEvaluation({
           perClass: {
-            nige: { precision: null, recall: null, f1: null, support: 2 },
-            senkou: { precision: 0.7, recall: 0.65, f1: 0.674, support: 600 },
-            sashi: { precision: 0.65, recall: 0.7, f1: 0.674, support: 500 },
-            oikomi: { precision: 0.4, recall: 0.3, f1: 0.343, support: 250 },
+            nige: { accuracy: 0.9, precision: null, recall: null, f1: null, support: 2 },
+            senkou: { accuracy: 0.79, precision: 0.7, recall: 0.65, f1: 0.674, support: 600 },
+            sashi: { accuracy: 0.78, precision: 0.65, recall: 0.7, f1: 0.674, support: 500 },
+            oikomi: { accuracy: 0.83, precision: 0.4, recall: 0.3, f1: 0.343, support: 250 },
           },
         })}
         bucketScope={buildScope({})}
@@ -698,7 +702,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
     expect(screen.getByText("該当条件のデータが無いためNAR 全体で集計しています")).toBeTruthy();
   });
 
-  test("renders the eight headline metric cards including per-class recall", () => {
+  test("renders the headline metric cards including per-class accuracy and order-pair scores", () => {
     render(
       <RunningStyleSection
         rows={[buildRow({})]}
@@ -715,8 +719,10 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
     );
     expect(screen.getByText("正解率")).toBeTruthy();
     expect(screen.getByText("Top2正解率")).toBeTruthy();
-    expect(screen.getByText("逃げ的中率")).toBeTruthy();
-    expect(screen.getByText("追込的中率")).toBeTruthy();
+    expect(screen.getByText("1角順序一致")).toBeTruthy();
+    expect(screen.getByText("着順順序一致")).toBeTruthy();
+    expect(screen.getByText("逃げ精度")).toBeTruthy();
+    expect(screen.getByText("追込精度")).toBeTruthy();
   });
 
   test("renders the accuracy headline card formatted with two decimals", () => {
@@ -735,7 +741,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
       />,
     );
     const cards = container.querySelectorAll(".running-style-bucket-metric-card");
-    expect(cards.length).toBe(7);
+    expect(cards.length).toBe(11);
     expect(screen.getByText("65.31%")).toBeTruthy();
   });
 
@@ -832,7 +838,7 @@ describe("RunningStyleBucketEvaluationPanel - rendering", () => {
         bucketGradeCode={null}
       />,
     );
-    const headingNode = screen.getByText("脚質の逃げ的中率以外の精度");
+    const headingNode = screen.getByText("脚質の逃げ精度以外の評価");
     const detailsEl = container.querySelector(".running-style-bucket-details");
     expect(detailsEl?.contains(headingNode)).toBe(true);
   });

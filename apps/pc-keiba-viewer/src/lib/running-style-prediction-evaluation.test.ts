@@ -26,13 +26,17 @@ it("scaleRunningStyleEvaluationFromCM returns empty metrics when predictionCount
       [0, 0, 0, 0],
       [0, 0, 0, 0],
     ],
+    corner1PairScore: { pairCount: 0, score: null },
+    corner3PairScore: { pairCount: 0, score: null },
+    corner4PairScore: { pairCount: 0, score: null },
+    finishPairScore: { pairCount: 0, score: null },
     macroF1: null,
     overallLogLoss: null,
     perClass: {
-      nige: { f1: null, precision: null, recall: null, support: 0 },
-      oikomi: { f1: null, precision: null, recall: null, support: 0 },
-      sashi: { f1: null, precision: null, recall: null, support: 0 },
-      senkou: { f1: null, precision: null, recall: null, support: 0 },
+      nige: { accuracy: null, f1: null, precision: null, recall: null, support: 0 },
+      oikomi: { accuracy: null, f1: null, precision: null, recall: null, support: 0 },
+      sashi: { accuracy: null, f1: null, precision: null, recall: null, support: 0 },
+      senkou: { accuracy: null, f1: null, precision: null, recall: null, support: 0 },
     },
     perClassLogLoss: { nige: null, oikomi: null, sashi: null, senkou: null },
     predictionCount: 0,
@@ -57,6 +61,14 @@ it("scaleRunningStyleEvaluationFromCM combines all derived metrics on the happy 
     predictionCount: 40,
     raceCount: 5,
     top2HitCount: 38,
+    corner1PairScoreSum: 18,
+    corner1PairScoreCount: 20,
+    corner3PairScoreSum: 17,
+    corner3PairScoreCount: 20,
+    corner4PairScoreSum: 16,
+    corner4PairScoreCount: 20,
+    finishPairScoreSum: 15,
+    finishPairScoreCount: 20,
   });
   expect(result.accuracy).toBe(1);
   expect(result.confusionMatrix).toStrictEqual([
@@ -69,11 +81,15 @@ it("scaleRunningStyleEvaluationFromCM combines all derived metrics on the happy 
   expect(result.weightedF1).toBe(1);
   expect(result.qwk).toBe(1);
   expect(result.perClass).toStrictEqual({
-    nige: { f1: 1, precision: 1, recall: 1, support: 10 },
-    oikomi: { f1: 1, precision: 1, recall: 1, support: 10 },
-    sashi: { f1: 1, precision: 1, recall: 1, support: 10 },
-    senkou: { f1: 1, precision: 1, recall: 1, support: 10 },
+    nige: { accuracy: 1, f1: 1, precision: 1, recall: 1, support: 10 },
+    oikomi: { accuracy: 1, f1: 1, precision: 1, recall: 1, support: 10 },
+    sashi: { accuracy: 1, f1: 1, precision: 1, recall: 1, support: 10 },
+    senkou: { accuracy: 1, f1: 1, precision: 1, recall: 1, support: 10 },
   });
+  expect(result.corner1PairScore).toStrictEqual({ pairCount: 20, score: 0.9 });
+  expect(result.corner3PairScore).toStrictEqual({ pairCount: 20, score: 0.85 });
+  expect(result.corner4PairScore).toStrictEqual({ pairCount: 20, score: 0.8 });
+  expect(result.finishPairScore).toStrictEqual({ pairCount: 20, score: 0.75 });
   expect(result.perClassLogLoss).toStrictEqual({
     nige: 0.5,
     oikomi: 0.8,

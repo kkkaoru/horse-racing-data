@@ -26,10 +26,10 @@ it("derivePerClassMetrics returns perfect precision/recall/F1 for identity-shape
     [0, 0, 0, 10],
   ]);
   expect(metrics).toStrictEqual({
-    nige: { precision: 1, recall: 1, f1: 1, support: 10 },
-    senkou: { precision: 1, recall: 1, f1: 1, support: 10 },
-    sashi: { precision: 1, recall: 1, f1: 1, support: 10 },
-    oikomi: { precision: 1, recall: 1, f1: 1, support: 10 },
+    nige: { accuracy: 1, precision: 1, recall: 1, f1: 1, support: 10 },
+    senkou: { accuracy: 1, precision: 1, recall: 1, f1: 1, support: 10 },
+    sashi: { accuracy: 1, precision: 1, recall: 1, f1: 1, support: 10 },
+    oikomi: { accuracy: 1, precision: 1, recall: 1, f1: 1, support: 10 },
   });
 });
 
@@ -41,10 +41,10 @@ it("derivePerClassMetrics returns null precision/recall/F1 for an all-zero CM", 
     [0, 0, 0, 0],
   ]);
   expect(metrics).toStrictEqual({
-    nige: { precision: null, recall: null, f1: null, support: 0 },
-    senkou: { precision: null, recall: null, f1: null, support: 0 },
-    sashi: { precision: null, recall: null, f1: null, support: 0 },
-    oikomi: { precision: null, recall: null, f1: null, support: 0 },
+    nige: { accuracy: null, precision: null, recall: null, f1: null, support: 0 },
+    senkou: { accuracy: null, precision: null, recall: null, f1: null, support: 0 },
+    sashi: { accuracy: null, precision: null, recall: null, f1: null, support: 0 },
+    oikomi: { accuracy: null, precision: null, recall: null, f1: null, support: 0 },
   });
 });
 
@@ -55,20 +55,29 @@ it("derivePerClassMetrics suppresses F1 when class support is below MIN_SUPPORT_
     [0, 0, 0, 3],
     [0, 0, 0, 0],
   ]);
-  expect(metrics.nige).toStrictEqual({ precision: 1, recall: 1, f1: 1, support: 10 });
+  expect(metrics.nige).toStrictEqual({
+    accuracy: 1,
+    precision: 1,
+    recall: 1,
+    f1: 1,
+    support: 10,
+  });
   expect(metrics.senkou).toStrictEqual({
+    accuracy: 0,
     precision: null,
     recall: 0,
     f1: null,
     support: 5,
   });
   expect(metrics.sashi).toStrictEqual({
+    accuracy: 0,
     precision: 0,
     recall: 0,
     f1: null,
     support: 3,
   });
   expect(metrics.oikomi).toStrictEqual({
+    accuracy: null,
     precision: 0,
     recall: null,
     f1: null,
@@ -84,6 +93,7 @@ it("derivePerClassMetrics returns nige precision 0.5 with mixed predictions", ()
     [0, 0, 5, 5],
   ]);
   expect(metrics.nige).toStrictEqual({
+    accuracy: 0.5,
     precision: 0.5,
     recall: 0.5,
     f1: 0.5,
@@ -99,6 +109,7 @@ it("derivePerClassMetrics returns null F1 when precision and recall are both zer
     [0, 0, 0, 10],
   ]);
   expect(metrics.nige).toStrictEqual({
+    accuracy: 0,
     precision: 0,
     recall: 0,
     f1: null,
@@ -147,6 +158,19 @@ it("deriveMacroF1 returns 1 for a perfectly classified CM", () => {
     [0, 0, 0, 10],
   ]);
   expect(deriveMacroF1(perClass)).toBe(1);
+});
+
+it("derivePerClassMetrics exposes per-actual-class accuracy for each running style", () => {
+  const perClass = derivePerClassMetrics([
+    [8, 2, 0, 0],
+    [1, 9, 0, 0],
+    [0, 1, 9, 0],
+    [0, 0, 2, 8],
+  ]);
+  expect(perClass.nige.accuracy).toBeCloseTo(8 / 10, 12);
+  expect(perClass.senkou.accuracy).toBeCloseTo(9 / 10, 12);
+  expect(perClass.sashi.accuracy).toBeCloseTo(9 / 10, 12);
+  expect(perClass.oikomi.accuracy).toBeCloseTo(8 / 10, 12);
 });
 
 it("deriveMacroF1 averages all four classes and treats missing low-support F1 as zero", () => {

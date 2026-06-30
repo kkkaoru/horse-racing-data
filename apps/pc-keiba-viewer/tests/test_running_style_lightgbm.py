@@ -1373,9 +1373,12 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     )
     actual = np.array([0, 1, 2, 3], dtype=np.int64)
     metrics = compute_metrics(probabilities, actual)
+    per_class_accuracy = cast("dict[str, float]", metrics["per_class_accuracy"])
+    per_class_f1 = cast("dict[str, float]", metrics["per_class_f1"])
     per_class_precision = cast("dict[str, float]", metrics["per_class_precision"])
     per_class_recall = cast("dict[str, float]", metrics["per_class_recall"])
     per_class_support = cast("dict[str, int]", metrics["per_class_support"])
+    race_level = cast("dict[str, float]", metrics["race_level"])
     expected_log_loss = -(np.log(0.70) + np.log(0.35) + np.log(0.60) + np.log(0.60)) / 4.0
 
     assert metrics["accuracy"] == pytest.approx(0.75)
@@ -1383,9 +1386,41 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     assert metrics["multi_log_loss"] == pytest.approx(expected_log_loss)
     assert metrics["prediction_count"] == 4
     assert metrics["top2_hit_count"] == 4
+    assert per_class_accuracy == {
+        "nige": pytest.approx(1.0),
+        "senkou": pytest.approx(0.0),
+        "sashi": pytest.approx(1.0),
+        "oikomi": pytest.approx(1.0),
+    }
+    assert per_class_f1 == {
+        "nige": pytest.approx(2.0 / 3.0),
+        "senkou": pytest.approx(0.0),
+        "sashi": pytest.approx(1.0),
+        "oikomi": pytest.approx(1.0),
+    }
     assert per_class_precision["nige"] == pytest.approx(0.5)
     assert per_class_recall["senkou"] == pytest.approx(0.0)
     assert per_class_support == {"nige": 1, "senkou": 1, "sashi": 1, "oikomi": 1}
+    assert race_level["race_count"] == 1
+    assert race_level["style_distribution_mae"] == pytest.approx(0.125)
+    assert race_level["style_count_mae"] == {
+        "nige": pytest.approx(1.0),
+        "senkou": pytest.approx(1.0),
+        "sashi": pytest.approx(0.0),
+        "oikomi": pytest.approx(0.0),
+    }
+    assert race_level["style_count_bias"] == {
+        "nige": pytest.approx(1.0),
+        "senkou": pytest.approx(-1.0),
+        "sashi": pytest.approx(0.0),
+        "oikomi": pytest.approx(0.0),
+    }
+    assert race_level["nige_count_mae"] == pytest.approx(1.0)
+    assert race_level["front_group_count_mae"] == pytest.approx(0.0)
+    assert np.isnan(race_level["corner_rank_spearman"])
+    assert np.isnan(race_level["finish_weighted_accuracy"])
+    assert np.isnan(race_level["top1_finish_style_accuracy"])
+    assert np.isnan(race_level["top3_finish_style_accuracy"])
     assert metrics["predicted_class_support"] == {
         "nige": 2,
         "senkou": 0,
@@ -1402,6 +1437,54 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     log_loss_count = cast("dict[str, int]", metrics["per_class_log_loss_count"])
     assert log_loss_sum["senkou"] == pytest.approx(-np.log(0.35))
     assert log_loss_count == {"nige": 1, "senkou": 1, "sashi": 1, "oikomi": 1}
+
+
+def test_compute_running_style_metrics_compares_race_corner_order_and_finish_position():
+    compute_metrics = cast(
+        Callable[..., dict[str, object]],
+        getattr(subject, "compute_running_style_metrics"),
+    )
+    probabilities = np.array(
+        [
+            [0.80, 0.15, 0.05, 0.00],
+            [0.10, 0.80, 0.10, 0.00],
+            [0.00, 0.10, 0.15, 0.75],
+        ],
+        dtype=np.float64,
+    )
+    actual = np.array([0, 1, 3], dtype=np.int64)
+
+    metrics = compute_metrics(
+        probabilities,
+        actual,
+        race_ids=np.array(["race-a", "race-a", "race-a"], dtype=object),
+        corner1_norm=np.array([0.0, 0.5, 1.0], dtype=np.float64),
+        finish_positions=np.array([1.0, 2.0, 3.0], dtype=np.float64),
+    )
+
+    race_level = cast("dict[str, float]", metrics["race_level"])
+    assert race_level == {
+        "race_count": 1,
+        "style_distribution_mae": pytest.approx(0.0),
+        "style_count_mae": {
+            "nige": pytest.approx(0.0),
+            "senkou": pytest.approx(0.0),
+            "sashi": pytest.approx(0.0),
+            "oikomi": pytest.approx(0.0),
+        },
+        "style_count_bias": {
+            "nige": pytest.approx(0.0),
+            "senkou": pytest.approx(0.0),
+            "sashi": pytest.approx(0.0),
+            "oikomi": pytest.approx(0.0),
+        },
+        "nige_count_mae": pytest.approx(0.0),
+        "front_group_count_mae": pytest.approx(0.0),
+        "corner_rank_spearman": pytest.approx(1.0),
+        "finish_weighted_accuracy": pytest.approx(1.0),
+        "top1_finish_style_accuracy": pytest.approx(1.0),
+        "top3_finish_style_accuracy": pytest.approx(1.0),
+    }
 
 
 def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():

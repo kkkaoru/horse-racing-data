@@ -258,6 +258,14 @@ const PERFECT_AGGREGATE_ROW = {
   prediction_count: "40",
   race_count: "5",
   top2_hit_count: "38",
+  corner1_pair_score_sum: "18",
+  corner1_pair_score_count: "20",
+  corner3_pair_score_sum: "17",
+  corner3_pair_score_count: "20",
+  corner4_pair_score_sum: "16",
+  corner4_pair_score_count: "20",
+  finish_pair_score_sum: "15",
+  finish_pair_score_count: "20",
 };
 
 beforeEach(() => {
@@ -366,7 +374,7 @@ it("getRunningStyleBucketEvaluation aggregates all 16 confusion matrix cells", a
   expect(queryText).toMatch(/sum\(cm_actual_oikomi_pred_oikomi_count\)/u);
 });
 
-it("getRunningStyleBucketEvaluation aggregates the 8 per-class log loss columns plus top2 hits", async () => {
+it("getRunningStyleBucketEvaluation aggregates the 8 per-class log loss columns, top2 hits, and order-pair scores", async () => {
   executeMock.mockResolvedValue({ rows: [PERFECT_AGGREGATE_ROW] });
   await getRunningStyleBucketEvaluation({ filter: ALL_FLAGS_ON_FILTER });
   const queryArg = executeMock.mock.calls[0]?.[0];
@@ -380,6 +388,14 @@ it("getRunningStyleBucketEvaluation aggregates the 8 per-class log loss columns 
   expect(queryText).toMatch(/sum\(log_loss_oikomi_sum\)/u);
   expect(queryText).toMatch(/sum\(log_loss_oikomi_count\)/u);
   expect(queryText).toMatch(/sum\(top2_hit_count\)/u);
+  expect(queryText).toMatch(/sum\(corner1_pair_score_sum\)/u);
+  expect(queryText).toMatch(/sum\(corner1_pair_score_count\)/u);
+  expect(queryText).toMatch(/sum\(corner3_pair_score_sum\)/u);
+  expect(queryText).toMatch(/sum\(corner3_pair_score_count\)/u);
+  expect(queryText).toMatch(/sum\(corner4_pair_score_sum\)/u);
+  expect(queryText).toMatch(/sum\(corner4_pair_score_count\)/u);
+  expect(queryText).toMatch(/sum\(finish_pair_score_sum\)/u);
+  expect(queryText).toMatch(/sum\(finish_pair_score_count\)/u);
 });
 
 it("getRunningStyleBucketEvaluation skips SQL and returns null for ban-ei category", async () => {
@@ -395,6 +411,11 @@ it("getRunningStyleBucketEvaluation translates aggregate row into RunningStyleBu
   expect(result?.predictionCount).toBe(40);
   expect(result?.raceCount).toBe(5);
   expect(result?.top2Accuracy).toBe(0.95);
+  expect(result?.corner1PairScore).toStrictEqual({ pairCount: 20, score: 0.9 });
+  expect(result?.corner3PairScore).toStrictEqual({ pairCount: 20, score: 0.85 });
+  expect(result?.corner4PairScore).toStrictEqual({ pairCount: 20, score: 0.8 });
+  expect(result?.finishPairScore).toStrictEqual({ pairCount: 20, score: 0.75 });
+  expect(result?.perClass.nige.accuracy).toBe(1);
 });
 
 it("getRunningStyleBucketEvaluation emits nar source filter and condition predicate for NAR races", async () => {

@@ -22,6 +22,14 @@ export interface RawRunningStyleBucketAggregate {
   logLossSumByClass: Record<RunningStyleClass, number>;
   logLossCountByClass: Record<RunningStyleClass, number>;
   top2HitCount: number;
+  corner1PairScoreSum?: number;
+  corner1PairScoreCount?: number;
+  corner3PairScoreSum?: number;
+  corner3PairScoreCount?: number;
+  corner4PairScoreSum?: number;
+  corner4PairScoreCount?: number;
+  finishPairScoreSum?: number;
+  finishPairScoreCount?: number;
 }
 
 const WILSON_CONFIDENCE_95 = 0.95;
@@ -41,6 +49,7 @@ const ZERO_CONFUSION_MATRIX: ConfusionMatrix = [
 ];
 
 const ZERO_PER_CLASS_METRIC = {
+  accuracy: null,
   f1: null,
   precision: null,
   recall: null,
@@ -61,6 +70,10 @@ const buildEmptyMetrics = (): RunningStyleBucketMetrics => ({
   accuracy: 0,
   accuracyCI: { lower: 0, upper: 0 },
   confusionMatrix: ZERO_CONFUSION_MATRIX,
+  corner1PairScore: { pairCount: 0, score: null },
+  corner3PairScore: { pairCount: 0, score: null },
+  corner4PairScore: { pairCount: 0, score: null },
+  finishPairScore: { pairCount: 0, score: null },
   macroF1: null,
   overallLogLoss: null,
   perClass: ZERO_PER_CLASS,
@@ -72,6 +85,17 @@ const buildEmptyMetrics = (): RunningStyleBucketMetrics => ({
   top2Accuracy: 0,
   weightedF1: null,
 });
+
+const derivePairScore = (
+  scoreSum: number | undefined,
+  pairCount: number | undefined,
+): RunningStyleBucketMetrics["corner1PairScore"] => {
+  const count = pairCount ?? 0;
+  if (count === 0) {
+    return { pairCount: 0, score: null };
+  }
+  return { pairCount: count, score: (scoreSum ?? 0) / count };
+};
 
 export const scaleRunningStyleEvaluationFromCM = (
   rawAgg: RawRunningStyleBucketAggregate,
@@ -101,6 +125,10 @@ export const scaleRunningStyleEvaluationFromCM = (
     accuracy,
     accuracyCI,
     confusionMatrix: cm,
+    corner1PairScore: derivePairScore(rawAgg.corner1PairScoreSum, rawAgg.corner1PairScoreCount),
+    corner3PairScore: derivePairScore(rawAgg.corner3PairScoreSum, rawAgg.corner3PairScoreCount),
+    corner4PairScore: derivePairScore(rawAgg.corner4PairScoreSum, rawAgg.corner4PairScoreCount),
+    finishPairScore: derivePairScore(rawAgg.finishPairScoreSum, rawAgg.finishPairScoreCount),
     macroF1,
     overallLogLoss: logLoss.overall,
     perClass,

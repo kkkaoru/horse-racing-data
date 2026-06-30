@@ -45,10 +45,16 @@ export interface RunningStyleBucketFilter {
 }
 
 export interface RunningStylePerClassMetric {
+  accuracy: number | null;
   precision: number | null;
   recall: number | null;
   f1: number | null;
   support: number;
+}
+
+export interface RunningStyleOrderPairMetric {
+  score: number | null;
+  pairCount: number;
 }
 
 export interface RunningStyleConfidenceInterval {
@@ -65,6 +71,10 @@ export interface RunningStyleBucketMetrics {
   weightedF1: number | null;
   qwk: number;
   top2Accuracy: number;
+  corner1PairScore: RunningStyleOrderPairMetric;
+  corner3PairScore: RunningStyleOrderPairMetric;
+  corner4PairScore: RunningStyleOrderPairMetric;
+  finishPairScore: RunningStyleOrderPairMetric;
   overallLogLoss: number | null;
   perClass: Record<RunningStyleClass, RunningStylePerClassMetric>;
   perClassLogLoss: Record<RunningStyleClass, number | null>;
@@ -214,6 +224,13 @@ const computeF1 = ({
   return denominator === 0 ? null : (2 * precision * recall) / denominator;
 };
 
+const computePerActualClassAccuracy = (tp: number, support: number): number | null => {
+  if (support === 0) {
+    return null;
+  }
+  return tp / support;
+};
+
 const computeMetricForClass = (
   cm: ConfusionMatrix,
   classIndex: ClassIndex,
@@ -227,7 +244,8 @@ const computeMetricForClass = (
   const precision = computePrecision(tp, fp);
   const recall = computeRecall(tp, fn);
   const f1 = computeF1({ precision, recall, support });
-  return { precision, recall, f1, support };
+  const accuracy = computePerActualClassAccuracy(tp, support);
+  return { accuracy, precision, recall, f1, support };
 };
 
 export const derivePerClassMetrics = (
