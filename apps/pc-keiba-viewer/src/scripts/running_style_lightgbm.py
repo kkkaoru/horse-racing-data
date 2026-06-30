@@ -188,6 +188,8 @@ class WalkForwardEvalMetrics(TypedDict):
 
 
 class RunningStyleCellMetrics(TypedDict):
+    prediction_count: int
+    top2_hit_count: int
     accuracy: float
     macro_f1: float
     multi_log_loss: float
@@ -195,7 +197,36 @@ class RunningStyleCellMetrics(TypedDict):
     per_class_precision: dict[str, float]
     per_class_recall: dict[str, float]
     per_class_support: dict[str, int]
+    predicted_class_support: dict[str, int]
+    confusion_matrix: dict[str, dict[str, int]]
+    per_class_log_loss_sum: dict[str, float]
+    per_class_log_loss_count: dict[str, int]
     per_class_log_loss: dict[str, float]
+
+
+class RunningStyleCellAdoptionMetrics(TypedDict):
+    prediction_target: str
+    feature_set_hash: str
+    category: str
+    surface: str
+    distance_band: str
+    class_label: str
+    season: str
+    venue: str
+    subgroup: str | None
+    race_count: int
+    prediction_count: int
+    ndcg_at_3: float
+    top1_accuracy: float
+    place2_accuracy: float
+    place3_accuracy: float
+    place4_accuracy: float
+    place5_accuracy: float
+    place6_accuracy: float
+    top3_box_accuracy: float
+    accuracy_vector: list[float]
+    cell_vector: list[str]
+    metric_mapping: dict[str, str]
 
 
 @dataclass(frozen=True, order=True)
@@ -601,27 +632,82 @@ def cell_conditions(cell: RunningStyleCellKey) -> list[dict[str, object]]:
     ]
 
 
-def compute_top2_accuracy(probabilities: np.ndarray, actual: np.ndarray) -> float:
-    if actual.size == 0:
+def compute_topk_accuracy(probabilities: np.ndarray, actual: np.ndarray, k: int) -> float:
+    topk = compute_topk_classes(probabilities, actual, k)
+    if topk.size == 0:
         return float("nan")
-    top2 = np.argpartition(probabilities, kth=-2, axis=1)[:, -2:]
-    hits = np.any(top2 == actual.reshape(-1, 1), axis=1)
+    hits = np.any(topk == actual.reshape(-1, 1), axis=1)
     return float(hits.mean())
+
+
+def compute_topk_classes(
+    probabilities: np.ndarray, actual: np.ndarray, k: int
+) -> np.ndarray:
+    if actual.size == 0:
+        return np.empty((0, 0), dtype=np.int64)
+    if probabilities.ndim != 2 or probabilities.shape[0] != actual.size:
+        raise ValueError("probabilities must be a 2D array with one row per label")
+    if probabilities.shape[1] == 0:
+        return np.empty((actual.size, 0), dtype=np.int64)
+    effective_k = min(k, probabilities.shape[1])
+    class_indices = np.arange(probabilities.shape[1])
+    return np.asarray(
+        [
+            np.lexsort((class_indices, -row))[:effective_k]
+            for row in probabilities
+        ],
+        dtype=np.int64,
+    )
+
+
+def compute_top2_accuracy(probabilities: np.ndarray, actual: np.ndarray) -> float:
+    return compute_topk_accuracy(probabilities, actual, 2)
 
 
 def compute_per_class_log_loss(
     probabilities: np.ndarray, actual: np.ndarray
 ) -> dict[str, float]:
-    losses: dict[str, float] = {}
+    sums, counts = compute_per_class_log_loss_sums(probabilities, actual)
+    return {
+        class_name: (
+            float(sums[class_name] / counts[class_name])
+            if counts[class_name] > 0
+            else float("nan")
+        )
+        for class_name in CLASS_LABELS
+    }
+
+
+def compute_per_class_log_loss_sums(
+    probabilities: np.ndarray, actual: np.ndarray
+) -> tuple[dict[str, float], dict[str, int]]:
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
     clipped = np.clip(probabilities, LOG_LOSS_EPS, 1.0 - LOG_LOSS_EPS)
     for class_idx, class_name in enumerate(CLASS_LABELS):
         class_mask = actual == class_idx
         if not np.any(class_mask):
-            losses[class_name] = float("nan")
+            sums[class_name] = 0.0
+            counts[class_name] = 0
             continue
         selected = clipped[class_mask, class_idx]
-        losses[class_name] = float(-np.log(selected).mean())
-    return losses
+        sums[class_name] = float(-np.log(selected).sum())
+        counts[class_name] = int(class_mask.sum())
+    return sums, counts
+
+
+def compute_confusion_matrix(
+    predicted: np.ndarray, actual: np.ndarray
+) -> dict[str, dict[str, int]]:
+    return {
+        actual_name: {
+            predicted_name: int(
+                ((actual == actual_idx) & (predicted == predicted_idx)).sum()
+            )
+            for predicted_idx, predicted_name in enumerate(CLASS_LABELS)
+        }
+        for actual_idx, actual_name in enumerate(CLASS_LABELS)
+    }
 
 
 def compute_running_style_metrics(
@@ -630,15 +716,90 @@ def compute_running_style_metrics(
 ) -> RunningStyleCellMetrics:
     predicted = compute_predicted_labels(probabilities)
     precision, recall, support = compute_per_class_precision_recall(predicted, actual)
+    predicted_support = {
+        class_name: int((predicted == class_idx).sum())
+        for class_idx, class_name in enumerate(CLASS_LABELS)
+    }
+    top2_classes = compute_topk_classes(probabilities, actual, 2)
+    top2_hits = np.any(top2_classes == actual.reshape(-1, 1), axis=1)
+    log_loss_sums, log_loss_counts = compute_per_class_log_loss_sums(probabilities, actual)
     return {
+        "prediction_count": int(actual.size),
+        "top2_hit_count": int(top2_hits.sum()),
         "accuracy": compute_accuracy(predicted, actual),
         "macro_f1": macro_f1_from_precision_recall(precision, recall),
         "multi_log_loss": compute_multi_log_loss(probabilities, actual),
-        "top2_accuracy": compute_top2_accuracy(probabilities, actual),
+        "top2_accuracy": float(top2_hits.mean()) if actual.size > 0 else float("nan"),
         "per_class_precision": precision,
         "per_class_recall": recall,
         "per_class_support": support,
-        "per_class_log_loss": compute_per_class_log_loss(probabilities, actual),
+        "predicted_class_support": predicted_support,
+        "confusion_matrix": compute_confusion_matrix(predicted, actual),
+        "per_class_log_loss_sum": log_loss_sums,
+        "per_class_log_loss_count": log_loss_counts,
+        "per_class_log_loss": {
+            class_name: (
+                float(log_loss_sums[class_name] / log_loss_counts[class_name])
+                if log_loss_counts[class_name] > 0
+                else float("nan")
+            )
+            for class_name in CLASS_LABELS
+        },
+    }
+
+
+def running_style_cell_metrics_for_adoption(
+    cell: RunningStyleCellKey,
+    metrics: RunningStyleCellMetrics,
+    *,
+    feature_set_hash: str,
+    race_count: int,
+) -> RunningStyleCellAdoptionMetrics:
+    surface = cell.surface or "unknown"
+    distance_band = cell.distance_band or "unknown"
+    season = cell.season or "unknown"
+    adoption_vector = [
+        metrics["accuracy"],
+        metrics["top2_accuracy"],
+        metrics["macro_f1"],
+        0.0,
+        0.0,
+        0.0,
+    ]
+    return {
+        "prediction_target": "running_style",
+        "feature_set_hash": feature_set_hash,
+        "category": cell.category,
+        "surface": surface,
+        "distance_band": distance_band,
+        "class_label": cell.class_label,
+        "season": season,
+        "venue": cell.venue,
+        "subgroup": cell.subgroup,
+        "race_count": race_count,
+        "prediction_count": metrics["prediction_count"],
+        "ndcg_at_3": metrics["accuracy"],
+        "top1_accuracy": metrics["accuracy"],
+        "place2_accuracy": metrics["top2_accuracy"],
+        "place3_accuracy": metrics["macro_f1"],
+        "place4_accuracy": 0.0,
+        "place5_accuracy": 0.0,
+        "place6_accuracy": 0.0,
+        "top3_box_accuracy": 0.0,
+        "accuracy_vector": adoption_vector,
+        "cell_vector": [
+            cell.category,
+            surface,
+            distance_band,
+            cell.class_label,
+            season,
+            cell.venue,
+        ],
+        "metric_mapping": {
+            "top1_accuracy": "accuracy",
+            "place2_accuracy": "top2_accuracy",
+            "place3_accuracy": "macro_f1",
+        },
     }
 
 
@@ -800,10 +961,9 @@ def macro_f1_from_precision_recall(
         p = precision[class_name]
         r = recall[class_name]
         if np.isnan(p) or np.isnan(r) or (p + r) == 0:
-            continue
-        f1_scores.append(2.0 * p * r / (p + r))
-    if not f1_scores:
-        return float("nan")
+            f1_scores.append(0.0)
+        else:
+            f1_scores.append(2.0 * p * r / (p + r))
     return float(np.mean(f1_scores))
 
 
@@ -1709,6 +1869,9 @@ def eligibility_rejections(
     train_classes = int(train_df[TARGET_COLUMN].n_unique()) if len(train_df) > 0 else 0
     if train_classes < min_classes:
         reasons.append(f"train_classes {train_classes} < {min_classes}")
+    valid_classes = int(valid_df[TARGET_COLUMN].n_unique()) if len(valid_df) > 0 else 0
+    if valid_classes < min_classes:
+        reasons.append(f"valid_classes {valid_classes} < {min_classes}")
     return reasons
 
 
@@ -1781,6 +1944,17 @@ def train_one_running_style_cell(
     )
     actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
     metrics = compute_running_style_metrics(probabilities, actual)
+    race_count = (
+        int(valid_df["race_id"].n_unique())
+        if "race_id" in valid_df.columns
+        else int(len(valid_df))
+    )
+    adoption_metrics = running_style_cell_metrics_for_adoption(
+        cell,
+        metrics,
+        feature_set_hash=feature_set_hash,
+        race_count=race_count,
+    )
     conditions = cell_conditions(cell)
     model_key = build_cell_model_key(cell.category, args.model_version, variant_id)
     output_dir = args.output_root / cell.category / variant_id
@@ -1820,7 +1994,9 @@ def train_one_running_style_cell(
         "feature_count": len(feature_columns),
         "train_rows": int(len(fit_df)),
         "valid_rows": int(len(valid_df)),
+        "valid_race_count": race_count,
         "metrics": metrics,
+        "cell_training_evaluation": adoption_metrics,
     }
 
 

@@ -16,6 +16,8 @@
     "dev:compare-corners": "bun run src/scripts/compare-corner-predictions.ts",
     "dev:compare-finish": "bun run src/scripts/compare-finish-position-predictions.ts",
     "dev:compare-running-style": "uv run python src/scripts/finish-position-features/compare-running-style-predictions.py",
+    "dev:evaluate-running-style-bucket-21y": "bun run src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts",
+    "dev:running-style-train-cells": "uv run --with lightgbm --with pandas --with numpy --with pyarrow python src/scripts/running_style_lightgbm.py train-cells",
     "dev:running-style-walk-forward": "uv run --with lightgbm --with pandas --with numpy --with pyarrow python src/scripts/running_style_lightgbm.py walk-forward",
     "dev:search-finish-tuning": "bun run src/scripts/search-finish-position-tuning.ts",
     "dev:build-finish-features": "bun run src/scripts/finish-position-features/build-finish-position-features.ts",

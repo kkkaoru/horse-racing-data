@@ -131,12 +131,26 @@ def test_macro_f1_from_precision_recall_average_of_per_class_f1():
     assert macro_f1 == pytest.approx(expected)
 
 
-def test_macro_f1_skips_classes_with_undefined_precision():
+def test_macro_f1_treats_undefined_classes_as_zero():
     precision = {"nige": float("nan"), "senkou": 1.0, "sashi": 0.5, "oikomi": 0.5}
     recall = {"nige": float("nan"), "senkou": 1.0, "sashi": 1.0, "oikomi": 0.5}
     macro_f1 = subject.macro_f1_from_precision_recall(precision, recall)
-    # nige skipped, only 3 classes contribute
-    assert not np.isnan(macro_f1)
+    expected_sashi = 2.0 * 0.5 * 1.0 / 1.5
+    expected_oikomi = 2.0 * 0.5 * 0.5 / 1.0
+    assert macro_f1 == pytest.approx((0.0 + 1.0 + expected_sashi + expected_oikomi) / 4.0)
+
+
+def test_compute_top2_accuracy_clamps_k_to_available_probability_columns():
+    probabilities = np.array([[0.9], [0.2], [0.8]], dtype=np.float64)
+    actual = np.array([0, 0, 0], dtype=np.int64)
+    assert subject.compute_top2_accuracy(probabilities, actual) == pytest.approx(1.0)
+
+
+def test_compute_top2_accuracy_rejects_row_label_mismatch():
+    probabilities = np.array([[0.9, 0.1]], dtype=np.float64)
+    actual = np.array([0, 1], dtype=np.int64)
+    with pytest.raises(ValueError, match="one row per label"):
+        subject.compute_top2_accuracy(probabilities, actual)
 
 
 def test_filter_labeled_rows_drops_null_target():
@@ -1288,6 +1302,62 @@ def test_derive_running_style_cell_key_matches_production_router_dimensions():
     assert cell.subgroup == "OPEN"
 
 
+@pytest.mark.parametrize(
+    ("kyori", "expected"),
+    [
+        (1199, "sprint"),
+        (1200, "mile"),
+        (1599, "mile"),
+        (1600, "intermediate"),
+        (1999, "intermediate"),
+        (2000, "long"),
+        (2399, "long"),
+        (2400, "extended"),
+    ],
+)
+def test_derive_running_style_distance_band_boundaries(kyori: int, expected: str):
+    assert subject.derive_running_style_distance_band(kyori) == expected
+
+
+def test_derive_running_style_cell_key_uses_nar_subclass_for_nar_subgroup():
+    cell = subject.derive_running_style_cell_key(
+        {
+            "source": "nar",
+            "grade_code": "C1",
+            "kyori": 1400,
+            "kaisai_tsukihi": "1201",
+            "track_code": "23",
+            "keibajo_code": "44",
+            "kyoso_joken_code": "JRA_CONDITION",
+            "nar_subclass": "NAR_SUB",
+        }
+    )
+    assert cell.category == "nar"
+    assert cell.surface == "dirt"
+    assert cell.season == "winter"
+    assert cell.subgroup == "NAR_SUB"
+
+
+def test_derive_running_style_cell_key_detects_banei_from_keibajo_code():
+    cell = subject.derive_running_style_cell_key(
+        {
+            "source": "nar",
+            "grade_code": "E",
+            "kyori": 200,
+            "kaisai_tsukihi": "0101",
+            "track_code": "23",
+            "keibajo_code": "83",
+        }
+    )
+    assert cell.category == "ban-ei"
+    assert cell.surface == "dirt"
+
+
+def test_derive_running_style_distance_band_returns_none_for_blank_or_nan():
+    assert subject.derive_running_style_distance_band("") is None
+    assert subject.derive_running_style_distance_band(float("nan")) is None
+
+
 def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_values():
     compute_metrics = cast(
         Callable[[np.ndarray, np.ndarray], dict[str, object]],
@@ -1311,9 +1381,121 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     assert metrics["accuracy"] == pytest.approx(0.75)
     assert metrics["top2_accuracy"] == pytest.approx(1.0)
     assert metrics["multi_log_loss"] == pytest.approx(expected_log_loss)
+    assert metrics["prediction_count"] == 4
+    assert metrics["top2_hit_count"] == 4
     assert per_class_precision["nige"] == pytest.approx(0.5)
     assert per_class_recall["senkou"] == pytest.approx(0.0)
     assert per_class_support == {"nige": 1, "senkou": 1, "sashi": 1, "oikomi": 1}
+    assert metrics["predicted_class_support"] == {
+        "nige": 2,
+        "senkou": 0,
+        "sashi": 1,
+        "oikomi": 1,
+    }
+    assert metrics["confusion_matrix"] == {
+        "nige": {"nige": 1, "senkou": 0, "sashi": 0, "oikomi": 0},
+        "senkou": {"nige": 1, "senkou": 0, "sashi": 0, "oikomi": 0},
+        "sashi": {"nige": 0, "senkou": 0, "sashi": 1, "oikomi": 0},
+        "oikomi": {"nige": 0, "senkou": 0, "sashi": 0, "oikomi": 1},
+    }
+    log_loss_sum = cast("dict[str, float]", metrics["per_class_log_loss_sum"])
+    log_loss_count = cast("dict[str, int]", metrics["per_class_log_loss_count"])
+    assert log_loss_sum["senkou"] == pytest.approx(-np.log(0.35))
+    assert log_loss_count == {"nige": 1, "senkou": 1, "sashi": 1, "oikomi": 1}
+
+
+def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():
+    cell = subject.RunningStyleCellKey(
+        category="jra",
+        class_label="G1",
+        distance_band="mile",
+        season="spring",
+        surface="turf",
+        venue="05",
+        subgroup="OPEN",
+    )
+    metrics = subject.compute_running_style_metrics(
+        np.array(
+            [
+                [0.7, 0.2, 0.1, 0.0],
+                [0.7, 0.2, 0.1, 0.0],
+            ],
+            dtype=np.float64,
+        ),
+        np.array([0, 1], dtype=np.int64),
+    )
+    adoption = subject.running_style_cell_metrics_for_adoption(
+        cell,
+        metrics,
+        feature_set_hash="hash123",
+        race_count=2,
+    )
+    assert adoption["prediction_target"] == "running_style"
+    assert adoption["top1_accuracy"] == pytest.approx(metrics["accuracy"])
+    assert adoption["place2_accuracy"] == pytest.approx(metrics["top2_accuracy"])
+    assert adoption["place3_accuracy"] == pytest.approx(metrics["macro_f1"])
+    assert adoption["accuracy_vector"][:3] == [
+        metrics["accuracy"],
+        metrics["top2_accuracy"],
+        metrics["macro_f1"],
+    ]
+    assert adoption["cell_vector"] == ["jra", "turf", "mile", "G1", "spring", "05"]
+    assert adoption["metric_mapping"] == {
+        "top1_accuracy": "accuracy",
+        "place2_accuracy": "top2_accuracy",
+        "place3_accuracy": "macro_f1",
+    }
+
+
+def test_compute_top2_accuracy_returns_fractional_hit_rate():
+    probabilities = np.array(
+        [
+            [0.6, 0.3, 0.1, 0.0],
+            [0.6, 0.3, 0.1, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    actual = np.array([1, 2], dtype=np.int64)
+    assert subject.compute_top2_accuracy(probabilities, actual) == pytest.approx(0.5)
+
+
+def test_compute_top2_accuracy_returns_nan_for_empty_actual():
+    probabilities = np.empty((0, 4), dtype=np.float64)
+    actual = np.array([], dtype=np.int64)
+    assert np.isnan(subject.compute_top2_accuracy(probabilities, actual))
+
+
+def test_compute_per_class_log_loss_clips_extreme_probabilities():
+    probabilities = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    actual = np.array([0, 1], dtype=np.int64)
+    losses = subject.compute_per_class_log_loss(probabilities, actual)
+    assert losses["nige"] == pytest.approx(-np.log(1.0 - subject.LOG_LOSS_EPS))
+    assert losses["senkou"] == pytest.approx(-np.log(1.0 - subject.LOG_LOSS_EPS))
+    assert np.isnan(losses["sashi"])
+    assert np.isnan(losses["oikomi"])
+
+
+def test_json_ready_converts_nested_non_finite_metrics_to_none():
+    result = subject.json_ready(
+        {
+            "metrics": {
+                "macro_f1": float("nan"),
+                "per_class_log_loss": {"nige": float("inf")},
+            }
+        }
+    )
+    assert result == {
+        "metrics": {
+            "macro_f1": None,
+            "per_class_log_loss": {"nige": None},
+        }
+    }
 
 
 def test_build_running_style_cell_routing_config_emits_default_variant_and_cell_rule_shape():
@@ -1359,6 +1541,19 @@ def test_build_running_style_cell_routing_config_emits_default_variant_and_cell_
         ],
         "variantId": "cell-jra-class-nige-dist-sprint-season-spring-surface-turf-venue-05-subgroup-open",
     }
+
+
+def test_eligibility_rejections_requires_validation_class_coverage():
+    train_df = pl.DataFrame({"target_running_style_class": [0, 1, 0, 1]})
+    valid_df = pl.DataFrame({"target_running_style_class": [0, 0, 0]})
+    rejections = subject.eligibility_rejections(
+        train_df,
+        valid_df,
+        min_train_rows=1,
+        min_valid_rows=1,
+        min_classes=2,
+    )
+    assert rejections == ["valid_classes 1 < 2"]
 
 
 def test_parse_args_train_cells_accepts_cells_json_and_routing_output():
@@ -1540,3 +1735,9 @@ def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     trained_cells = metrics_payload["trained_cells"]
     assert trained_cells[0]["feature_count"] > 0
     assert len(str(trained_cells[0]["feature_set_hash"])) == 64
+    cell_eval = trained_cells[0]["cell_training_evaluation"]
+    assert cell_eval["prediction_target"] == "running_style"
+    assert cell_eval["top1_accuracy"] == trained_cells[0]["metrics"]["accuracy"]
+    assert cell_eval["place2_accuracy"] == trained_cells[0]["metrics"]["top2_accuracy"]
+    assert cell_eval["place3_accuracy"] == trained_cells[0]["metrics"]["macro_f1"]
+    assert cell_eval["prediction_count"] == trained_cells[0]["metrics"]["prediction_count"]
