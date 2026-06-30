@@ -106,3 +106,39 @@ export const upsertRunningStylePredictionsToNeon = async (
   }
   return validRows.length;
 };
+
+export const listRaceRunningStylePredictionCountsByDate = async (
+  pool: Pool,
+  date: string,
+): Promise<Map<string, Map<string, number>>> => {
+  const kaisaiNen = date.slice(0, 4);
+  const kaisaiTsukihi = date.slice(4, 8);
+  const result = await pool.query<{
+    count: string;
+    kaisai_nen: string;
+    kaisai_tsukihi: string;
+    keibajo_code: string;
+    model_version: string;
+    race_bango: string;
+    source: string;
+  }>(
+    `select model_version, source, kaisai_nen, kaisai_tsukihi,
+            lpad(keibajo_code::text, 2, '0') as keibajo_code,
+            lpad(race_bango::text, 2, '0') as race_bango,
+            count(*)::text as count
+       from race_running_style_model_predictions
+      where source in ('jra', 'nar')
+        and kaisai_nen = $1
+        and kaisai_tsukihi = $2
+      group by model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango`,
+    [kaisaiNen, kaisaiTsukihi],
+  );
+  const counts = new Map<string, Map<string, number>>();
+  result.rows.forEach((row) => {
+    const raceKey = `${row.source}:${row.kaisai_nen}${row.kaisai_tsukihi}:${row.keibajo_code}:${row.race_bango}`;
+    const modelCounts = counts.get(raceKey) ?? new Map<string, number>();
+    modelCounts.set(row.model_version, Number(row.count));
+    counts.set(raceKey, modelCounts);
+  });
+  return counts;
+};

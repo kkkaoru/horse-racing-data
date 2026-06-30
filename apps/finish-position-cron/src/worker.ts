@@ -43,6 +43,7 @@ const RESCORE_MODE: PredictMode = "rescore";
 const VALID_MODES: ReadonlySet<string> = new Set(["full", "rescore"]);
 const VALID_CATEGORIES: ReadonlySet<string> = new Set(["jra", "nar", "ban-ei"]);
 const RESCORE_DAYS_AHEAD = 0;
+const RESCORE_ENABLED_FLAG = "1";
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
@@ -227,6 +228,9 @@ const sendRescoreRaceMessage = async (
 const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  if (env.RESCORE_ENABLED !== RESCORE_ENABLED_FLAG) {
+    return Response.json({ claimed: false, ok: true, rescoreEnabled: false }, { status: HTTP_OK });
   }
   const raw = await parseBody(request);
   const parsed = parseInternalRescoreRaceBody(raw);

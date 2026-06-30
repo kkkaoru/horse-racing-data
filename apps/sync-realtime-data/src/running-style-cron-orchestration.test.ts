@@ -23,6 +23,9 @@ vi.mock("./running-style-d1", () => ({
 vi.mock("./running-style-expected-horses", () => ({
   listRunningStyleExpectedHorseCounts: vi.fn(async () => new Map()),
 }));
+vi.mock("./running-style-neon", () => ({
+  listRaceRunningStylePredictionCountsByDate: vi.fn(async () => new Map()),
+}));
 vi.mock("./viewer-running-style-cache", () => ({
   putViewerRunningStyleRaceCache: vi.fn(async () => true),
 }));
@@ -361,11 +364,12 @@ it("runRunningStyleCronTick captures plan error as planError on summary", async 
   expect(summary.planError).toBe("boom");
 });
 
-it("planRunningStylePredictionsForDate skips the Neon feature-count query when every race is completed", async () => {
+it("planRunningStylePredictionsForDate skips enqueueing when every completed race has a Neon mirror", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { listRunningStyleInferenceStates } = await import("./running-style-d1");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
       {
@@ -395,6 +399,9 @@ it("planRunningStylePredictionsForDate skips the Neon feature-count query when e
       ],
     ]),
   );
+  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(
+    new Map([["jra:20260512:08:01", new Map([["v7", 16]])]]),
+  );
   const summary = await planRunningStylePredictionsForDate(
     buildEnv(),
     "20260512",
@@ -403,7 +410,122 @@ it("planRunningStylePredictionsForDate skips the Neon feature-count query when e
   expect(summary.completed).toBe(1);
   expect(summary.enqueued).toBe(0);
   expect(summary.scanned).toBe(1);
-  expect(getFinishPositionPool).not.toHaveBeenCalled();
+  expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
+  expect(listRaceRunningStylePredictionCountsByDate).toHaveBeenCalledTimes(1);
+});
+
+it("planRunningStylePredictionsForDate requeues completed races when Neon mirror is missing", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRunningStyleInferenceStates, upsertRunningStylePendingStates } =
+    await import("./running-style-d1");
+  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        "jra:20260512:08:01",
+        {
+          attemptedAt: "2026-05-12T11:00:00.000Z",
+          completedAt: "2026-05-12T11:05:00.000Z",
+          expectedHorseCount: 16,
+          featuresR2Key: "features.parquet",
+          modelVersion: "v7",
+          raceKey: "jra:20260512:08:01",
+          status: "completed",
+          writtenHorseCount: 16,
+        },
+      ],
+    ]),
+  );
+  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(new Map());
+  const send = vi.fn(queueSendOk);
+  const env = buildEnv({
+    RUNNING_STYLE_JOBS: {
+      metrics: vi.fn(queueMetricsOk),
+      send,
+      sendBatch: vi.fn(queueSendOk),
+    },
+  });
+  const summary = await planRunningStylePredictionsForDate(
+    env,
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.completed).toBe(0);
+  expect(summary.enqueued).toBe(1);
+  expect(send).toHaveBeenCalledWith(
+    expect.objectContaining({
+      raceKey: "jra:20260512:08:01",
+      type: "generate-running-style-predictions",
+    }),
+  );
+  expect(upsertRunningStylePendingStates).not.toHaveBeenCalled();
+});
+
+it("planRunningStylePredictionsForDate requeues completed races when Neon mirror is incomplete", async () => {
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
+  const { listRunningStyleInferenceStates } = await import("./running-style-d1");
+  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
+  vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
+    races: [
+      {
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0512",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+    source: "d1",
+  });
+  vi.mocked(listRunningStyleInferenceStates).mockResolvedValue(
+    new Map([
+      [
+        "jra:20260512:08:01",
+        {
+          attemptedAt: "2026-05-12T11:00:00.000Z",
+          completedAt: "2026-05-12T11:05:00.000Z",
+          expectedHorseCount: 16,
+          featuresR2Key: "features.parquet",
+          modelVersion: "v7",
+          raceKey: "jra:20260512:08:01",
+          status: "completed",
+          writtenHorseCount: 16,
+        },
+      ],
+    ]),
+  );
+  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(
+    new Map([["jra:20260512:08:01", new Map([["v7", 15]])]]),
+  );
+  const send = vi.fn(queueSendOk);
+  const summary = await planRunningStylePredictionsForDate(
+    buildEnv({
+      RUNNING_STYLE_JOBS: {
+        metrics: vi.fn(queueMetricsOk),
+        send,
+        sendBatch: vi.fn(queueSendOk),
+      },
+    }),
+    "20260512",
+    new Date("2026-05-12T12:00:00.000Z"),
+  );
+  expect(summary.completed).toBe(0);
+  expect(summary.enqueued).toBe(1);
+  expect(send).toHaveBeenCalledTimes(1);
 });
 
 it("planRunningStylePredictionsForDate still queries Neon when only some races are completed", async () => {
@@ -411,6 +533,7 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { listRunningStyleInferenceStates } = await import("./running-style-d1");
   const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
       {
@@ -446,6 +569,9 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
         },
       ],
     ]),
+  );
+  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(
+    new Map([["jra:20260512:08:01", new Map([["v7", 16]])]]),
   );
   const metrics = vi.fn(queueMetricsOk);
   const send = vi.fn(queueSendOk);

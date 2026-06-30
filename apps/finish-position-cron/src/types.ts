@@ -19,6 +19,9 @@ export interface Env {
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
+  // Optional read/source connection for the heavy DuckDB feature build. When
+  // unset, the container falls back to NEON_DATABASE_URL.
+  SOURCE_DATABASE_URL?: string;
   PREDICT_DAYS_AHEAD: string;
   TRIGGER_TOKEN: string;
   // Feature flag for the per-race rescore coordinator. "1" enables enqueueing;
@@ -27,6 +30,10 @@ export interface Env {
   // production predictions until the rescore consumer (task B) is wired and this
   // flag is flipped. Optional so existing callers/tests need not set it.
   COORDINATOR_ENABLED?: string;
+  // Feature flag for event-driven per-race rescore requests from
+  // sync-realtime-data. "1" enables the internal rescore endpoint; any other
+  // value accepts the request as a no-op so full generation can drain first.
+  RESCORE_ENABLED?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;

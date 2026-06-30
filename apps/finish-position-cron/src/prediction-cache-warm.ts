@@ -26,13 +26,32 @@ const RUN_YMD_TSUKIHI_START = 4;
 const RUN_YMD_TSUKIHI_END = 8;
 const KEIBAJO_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
-// ban-ei rows live under the nar source (keibajo 65/83); both nar categories map
-// 1:1 to the nar source. Mirrors race-coordinator.ts CATEGORY_SOURCES — kept
-// local so the warm path does not couple to the coordinator's internals.
-const CATEGORY_SOURCES: Readonly<Record<PredictCategory, ReadonlyArray<string>>> = {
-  "ban-ei": ["nar"],
-  jra: ["jra"],
-  nar: ["nar"],
+// Ban-ei rows live under the nar source with keibajo_code 83. The warm path
+// keeps its own routing table so it can mirror the predict pipeline without
+// coupling to the coordinator internals.
+const BAN_EI_KEIBAJO_CODES = ["83"] as const;
+interface CategoryRaceFilter {
+  keibajoCodes: ReadonlyArray<string>;
+  keibajoMode: "all" | "exclude" | "include";
+  sources: ReadonlyArray<string>;
+}
+
+const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter>> = {
+  "ban-ei": {
+    keibajoCodes: BAN_EI_KEIBAJO_CODES,
+    keibajoMode: "include",
+    sources: ["nar"],
+  },
+  jra: {
+    keibajoCodes: [],
+    keibajoMode: "all",
+    sources: ["jra"],
+  },
+  nar: {
+    keibajoCodes: BAN_EI_KEIBAJO_CODES,
+    keibajoMode: "exclude",
+    sources: ["nar"],
+  },
 };
 
 interface WarmRaceParams {
@@ -60,6 +79,19 @@ const pad = (value: string, width: number): string => value.padStart(width, "0")
 const buildPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(", ");
 
+const buildKeibajoFilter = (
+  filter: CategoryRaceFilter,
+): { binds: ReadonlyArray<string>; sql: string } => {
+  if (filter.keibajoMode === "all") {
+    return { binds: [], sql: "" };
+  }
+  const operator = filter.keibajoMode === "include" ? "in" : "not in";
+  return {
+    binds: filter.keibajoCodes,
+    sql: `\n        and keibajo_code ${operator} (${buildPlaceholders(filter.keibajoCodes.length)})`,
+  };
+};
+
 const buildSectionUrl = (params: WarmRaceParams): string =>
   `${VIEWER_BASE_URL}/api/races/${params.year}/${params.month}/${params.day}/${params.keibajoCode}/${params.raceNumber}/sections/${SECTION_PATH}?${PREDICTION_REFRESH_PARAM}=${PREDICTION_REFRESH_VALUE}`;
 
@@ -79,17 +111,18 @@ export const warmPredictionCacheForRace = async (params: WarmRaceParams): Promis
 };
 
 const listRacesForCategory = async (params: WarmCategoryParams): Promise<RaceWarmRow[]> => {
-  const sources = CATEGORY_SOURCES[params.category];
+  const filter = CATEGORY_RACE_FILTERS[params.category];
+  const keibajoFilter = buildKeibajoFilter(filter);
   const nen = params.runYmd.slice(RUN_YMD_NEN_START, RUN_YMD_NEN_END);
   const tsukihi = params.runYmd.slice(RUN_YMD_TSUKIHI_START, RUN_YMD_TSUKIHI_END);
   const sql = `select keibajo_code, race_bango
        from realtime_race_sources
-      where source in (${buildPlaceholders(sources.length)})
+      where source in (${buildPlaceholders(filter.sources.length)})
         and kaisai_nen = ?
-        and kaisai_tsukihi = ?
+        and kaisai_tsukihi = ?${keibajoFilter.sql}
       order by keibajo_code, race_bango`;
   const result = await params.env.REALTIME_DB.prepare(sql)
-    .bind(...sources, nen, tsukihi)
+    .bind(...filter.sources, nen, tsukihi, ...keibajoFilter.binds)
     .all<RaceWarmRow>();
   return result.results;
 };

@@ -141,7 +141,31 @@ test("warmPredictionCacheForCategory uses the nar source for ban-ei", async () =
     runDate: "2026-06-19",
     runYmd: "20260619",
   });
-  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619");
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
+});
+
+test("warmPredictionCacheForCategory excludes the ban-ei keibajo code for normal nar", async () => {
+  allMock.mockResolvedValue({ results: [] });
+  await warmPredictionCacheForCategory({
+    category: "nar",
+    env: makeEnv(),
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("keibajo_code not in (?)"));
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
+});
+
+test("warmPredictionCacheForCategory includes only the ban-ei keibajo code for ban-ei", async () => {
+  allMock.mockResolvedValue({ results: [] });
+  await warmPredictionCacheForCategory({
+    category: "ban-ei",
+    env: makeEnv(),
+    runDate: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("keibajo_code in (?)"));
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
 });
 
 test("warmPredictionCacheForCategory warms each race with zero-padded codes", async () => {

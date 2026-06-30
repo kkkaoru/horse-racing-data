@@ -2,10 +2,13 @@
 import { expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
-import { upsertRunningStylePredictionsToNeon } from "./running-style-neon";
+import {
+  listRaceRunningStylePredictionCountsByDate,
+  upsertRunningStylePredictionsToNeon,
+} from "./running-style-neon";
 import type { RaceRunningStyleRow } from "./running-style-d1";
 
-type QueryFn = (sql: string, values?: unknown[]) => Promise<void>;
+type QueryFn = (sql: string, values?: unknown[]) => Promise<unknown>;
 
 const buildPool = (queryFn: QueryFn = vi.fn(async () => {})): Pool =>
   ({ query: queryFn }) as unknown as Pool;
@@ -113,4 +116,39 @@ it("parses source from race_key correctly", async () => {
   expect(values[3]).toBe("0619");
   expect(values[4]).toBe("45");
   expect(values[5]).toBe("01");
+});
+
+it("lists Neon prediction counts by race key and model version", async () => {
+  const queryFn: QueryFn = vi.fn(async () => ({
+    rows: [
+      {
+        count: "16",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0619",
+        keibajo_code: "08",
+        model_version: "v7",
+        race_bango: "01",
+        source: "jra",
+      },
+      {
+        count: "12",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0619",
+        keibajo_code: "45",
+        model_version: "v3",
+        race_bango: "02",
+        source: "nar",
+      },
+    ],
+  }));
+  const counts = await listRaceRunningStylePredictionCountsByDate(buildPool(queryFn), "20260619");
+  expect(counts.get("jra:20260619:08:01")?.get("v7")).toBe(16);
+  expect(counts.get("nar:20260619:45:02")?.get("v3")).toBe(12);
+  expect(vi.mocked(queryFn).mock.calls[0]?.[1]).toStrictEqual(["2026", "0619"]);
+});
+
+it("returns an empty Neon prediction count map when no rows exist", async () => {
+  const queryFn: QueryFn = vi.fn(async () => ({ rows: [] }));
+  const counts = await listRaceRunningStylePredictionCountsByDate(buildPool(queryFn), "20260619");
+  expect(counts.size).toBe(0);
 });

@@ -71,6 +71,7 @@ const makeEnv = (): Env => ({
   PREDICT_QUEUE: { send: predictQueueSendMock } as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
   REALTIME_DB: { prepare: realtimePrepareMock } as unknown as D1Database,
+  RESCORE_ENABLED: "1",
   TRIGGER_TOKEN: "secret-token",
 });
 
@@ -607,6 +608,29 @@ test("internal rescore-race endpoint returns 401 when bearer token mismatches", 
   );
   expect(response.status).toBe(401);
   expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+});
+
+test("internal rescore-race endpoint is a no-op when rescore is disabled", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    { ...makeEnv(), RESCORE_ENABLED: "0" },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    claimed: false,
+    ok: true,
+    rescoreEnabled: false,
+  });
+  expect(claimRescoreRaceMock).not.toHaveBeenCalled();
+  expect(predictQueueSendMock).not.toHaveBeenCalled();
 });
 
 test("internal rescore-race endpoint returns 400 when category is missing", async () => {

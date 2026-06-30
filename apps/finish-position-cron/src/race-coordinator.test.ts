@@ -150,7 +150,37 @@ test("planRescoreForCategory maps the ban-ei category to the nar source", async 
     now: new Date("2026-06-19T05:00:00.000Z"),
     runYmd: "20260619",
   });
-  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619");
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
+});
+
+test("planRescoreForCategory excludes the ban-ei keibajo code for the normal nar category", async () => {
+  stubD1Rows([]);
+  await planRescoreForCategory({
+    category: "nar",
+    date: "2026-06-19",
+    env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("source in (?)"));
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("keibajo_code not in (?)"));
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
+});
+
+test("planRescoreForCategory includes only the ban-ei keibajo code while using the nar source", async () => {
+  stubD1Rows([]);
+  await planRescoreForCategory({
+    category: "ban-ei",
+    date: "2026-06-19",
+    env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("source in (?)"));
+  expect(prepareMock).toHaveBeenCalledWith(expect.stringContaining("keibajo_code in (?)"));
+  expect(bindMock).toHaveBeenCalledWith("nar", "2026", "0619", "83");
 });
 
 test("planRescoreForCategory enqueues a per-race rescore message for an in-window race", async () => {

@@ -37,14 +37,32 @@ const RACE_BANGO_PAD_WIDTH = 2;
 const MINUTES_PER_HALF_HOUR = 30;
 const HALF_HOUR_SLOT_PAD_WIDTH = 2;
 // realtime_race_sources stores per-source rows; finish-position rescore targets
-// the same jra/nar/ban-ei categories the predict pipeline produces. JRA/NAR map
-// 1:1 to source; ban-ei rows live under the nar source with keibajo_code 65/83
-// (帯広). Coordinator keys off the explicit category, so the SQL filters by the
-// underlying source for that category.
-const CATEGORY_SOURCES: Readonly<Record<PredictCategory, ReadonlyArray<string>>> = {
-  "ban-ei": ["nar"],
-  jra: ["jra"],
-  nar: ["nar"],
+// the same jra/nar/ban-ei categories the predict pipeline produces. Ban-ei rows
+// live under the nar source with keibajo_code 83 (帯広), so the coordinator
+// must split the nar source by venue before enqueueing per-race container jobs.
+const BAN_EI_KEIBAJO_CODES = ["83"] as const;
+interface CategoryRaceFilter {
+  keibajoCodes: ReadonlyArray<string>;
+  keibajoMode: "all" | "exclude" | "include";
+  sources: ReadonlyArray<string>;
+}
+
+const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter>> = {
+  "ban-ei": {
+    keibajoCodes: BAN_EI_KEIBAJO_CODES,
+    keibajoMode: "include",
+    sources: ["nar"],
+  },
+  jra: {
+    keibajoCodes: [],
+    keibajoMode: "all",
+    sources: ["jra"],
+  },
+  nar: {
+    keibajoCodes: BAN_EI_KEIBAJO_CODES,
+    keibajoMode: "exclude",
+    sources: ["nar"],
+  },
 };
 const ALL_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra", "nar", "ban-ei"];
 
@@ -147,21 +165,35 @@ export const getJstHalfHourSlot = (now: Date): string => {
 const buildPlaceholders = (count: number): string =>
   Array.from({ length: count }, () => "?").join(", ");
 
+const buildKeibajoFilter = (
+  filter: CategoryRaceFilter,
+): { binds: ReadonlyArray<string>; sql: string } => {
+  if (filter.keibajoMode === "all") {
+    return { binds: [], sql: "" };
+  }
+  const operator = filter.keibajoMode === "include" ? "in" : "not in";
+  return {
+    binds: filter.keibajoCodes,
+    sql: `\n        and keibajo_code ${operator} (${buildPlaceholders(filter.keibajoCodes.length)})`,
+  };
+};
+
 const listRacesForCategory = async (
   env: Env,
   category: PredictCategory,
   runYmd: string,
 ): Promise<RaceSourceRow[]> => {
   const { nen, tsukihi } = splitRunYmd(runYmd);
-  const sources = CATEGORY_SOURCES[category];
+  const filter = CATEGORY_RACE_FILTERS[category];
+  const keibajoFilter = buildKeibajoFilter(filter);
   const sql = `select keibajo_code, race_bango, race_start_at_jst
        from realtime_race_sources
-      where source in (${buildPlaceholders(sources.length)})
+      where source in (${buildPlaceholders(filter.sources.length)})
         and kaisai_nen = ?
-        and kaisai_tsukihi = ?
+        and kaisai_tsukihi = ?${keibajoFilter.sql}
       order by race_start_at_jst, keibajo_code, race_bango`;
   const result = await env.REALTIME_DB.prepare(sql)
-    .bind(...sources, nen, tsukihi)
+    .bind(...filter.sources, nen, tsukihi, ...keibajoFilter.binds)
     .all<RaceSourceRow>();
   return result.results;
 };

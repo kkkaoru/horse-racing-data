@@ -20,6 +20,7 @@ import {
   exportRunningStyleParquetForDay,
   type ExportRunningStyleParquetResult,
 } from "./running-style-parquet-export";
+import { listRaceRunningStylePredictionCountsByDate } from "./running-style-neon";
 import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
 import {
   buildRunningStyleRaceKey,
@@ -188,6 +189,29 @@ const allRegisteredRacesCompleted = (
     isRunningStyleStateCompleted(states.get(toRunningStyleRaceKey(row))),
   );
 
+const selectCompletedRacesNeedingRunningStyleMirror = (
+  registeredRaces: ReadonlyArray<RegisteredRaceRow>,
+  states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
+  predictionCounts: ReadonlyMap<string, number>,
+  neonCounts: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): RunningStylePlanRace[] => {
+  const needed: RunningStylePlanRace[] = [];
+  registeredRaces.forEach((row) => {
+    const raceKey = toRunningStyleRaceKey(row);
+    const state = states.get(raceKey);
+    if (state === undefined || !isRunningStyleStateCompleted(state)) return;
+    const expectedHorseCount = state.expectedHorseCount ?? 0;
+    const modelVersion = state.modelVersion;
+    const neonCount = modelVersion === null ? 0 : (neonCounts.get(raceKey)?.get(modelVersion) ?? 0);
+    if (neonCount >= expectedHorseCount) return;
+    needed.push({
+      ...toRunningStylePendingRace(row, expectedHorseCount),
+      existingHorseCount: predictionCounts.get(raceKey) ?? 0,
+    });
+  });
+  return needed;
+};
+
 const buildSettledPlanSummary = (input: SettledPlanSummaryInput): RunningStylePlanSummary => ({
   alreadyQueued: 0,
   completed: input.completed,
@@ -302,20 +326,36 @@ export const planRunningStylePredictionsForDate = async (
     listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
     listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
   ]);
-  // Cost guard: when every registered race already has a completed inference
-  // state there is nothing to enqueue, so skip the Neon feature-count query.
-  // This lets Neon compute autosuspend during idle windows (overnight,
-  // post-race) without changing enqueue behavior. The full select path below
-  // would also enqueue zero races in this case, so the result is equivalent.
+  const pool = getFinishPositionPool(env);
+  const hasCompletedRace = registeredRaces.some((row) =>
+    isRunningStyleStateCompleted(states.get(toRunningStyleRaceKey(row))),
+  );
+  const neonCounts =
+    hasCompletedRace && registeredRaces.length > 0
+      ? await listRaceRunningStylePredictionCountsByDate(pool, date)
+      : new Map<string, Map<string, number>>();
+  const mirrorNeeded = selectCompletedRacesNeedingRunningStyleMirror(
+    registeredRaces,
+    states,
+    predictionCounts,
+    neonCounts,
+  );
+  const predictedAt = now.toISOString();
   if (allRegisteredRacesCompleted(registeredRaces, states)) {
-    return buildSettledPlanSummary({
-      completed: registeredRaces.length,
+    await sendPredictionJobs(
+      env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
+      mirrorNeeded.map((row) => toPredictionJob(row, predictedAt)),
+    );
+    return {
+      alreadyQueued: 0,
+      completed: registeredRaces.length - mirrorNeeded.length,
       date,
+      enqueued: mirrorNeeded.length,
+      featureReady: 0,
       missingFeatures: 0,
       scanned: registeredRaces.length,
-    });
+    };
   }
-  const pool = getFinishPositionPool(env);
   const featureCounts = await listFeatureCountsByDate(pool, date);
   const expectedHorseCounts = await listRunningStyleExpectedHorseCounts(
     env.REALTIME_DB,
@@ -330,17 +370,16 @@ export const planRunningStylePredictionsForDate = async (
     states,
     now,
   );
-  const predictedAt = now.toISOString();
   await upsertRunningStylePendingStates(env.REALTIME_DB, selected.needed, predictedAt);
   await sendPredictionJobs(
     env.RUNNING_STYLE_JOBS ?? env.REALTIME_JOBS,
-    selected.needed.map((row) => toPredictionJob(row, predictedAt)),
+    [...selected.needed, ...mirrorNeeded].map((row) => toPredictionJob(row, predictedAt)),
   );
   return {
     alreadyQueued: selected.alreadyQueued,
-    completed: selected.completed,
+    completed: selected.completed - mirrorNeeded.length,
     date,
-    enqueued: selected.needed.length,
+    enqueued: selected.needed.length + mirrorNeeded.length,
     featureReady: selected.featureReady,
     missingFeatures: selected.missingFeatures,
     scanned: registeredRaces.length,
