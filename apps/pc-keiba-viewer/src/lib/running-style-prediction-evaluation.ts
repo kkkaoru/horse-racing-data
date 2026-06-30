@@ -96,7 +96,7 @@ export const scaleRunningStyleEvaluationFromCM = (
     sumByClass: logLossSumByClass,
   });
   const top2Accuracy = deriveTop2Accuracy({ hitCount: top2HitCount, total: predictionCount });
-  const smallSampleWarning = isSmallSample(predictionCount);
+  const smallSampleWarning = isSmallSample({ raceCount, predictionCount, perClass });
   return {
     accuracy,
     accuracyCI,

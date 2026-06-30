@@ -22,6 +22,7 @@ from learning.build_cell_models import (
     evaluate_category,
     evaluate_cell,
     generate_routing_json,
+    generate_running_style_feature_selection_json,
     group_variants,
     load_cell_metrics,
     main,
@@ -428,6 +429,80 @@ def test_generate_routing_json_with_no_variants() -> None:
     }
 
 
+def test_generate_running_style_feature_selection_json_is_not_worker_routing() -> None:
+    result = AdoptionResult(
+        cell=_cell(
+            class_label="G1",
+            subgroup="sprint",
+            racetrack="05",
+            season="spring",
+            surface="turf",
+        ),
+        candidate=_metrics("hashRS001", feature_names=["feature_b", "feature_a"]),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    config = generate_running_style_feature_selection_json(
+        "jra", 180, {"cell-hashRS00": [result]}
+    )
+
+    assert config["schema_version"] == 1
+    assert config["type"] == "running_style_cell_feature_selection_routing"
+    assert config["prediction_target"] == "running_style"
+    assert config["consumer"] == "running_style_lightgbm --cell-feature-selection-json"
+    assert config["worker_production_routing"] is False
+    assert config["default_feature_selection"] == {
+        "mode": "training_default",
+        "feature_count": 180,
+    }
+
+    jra = cast("dict[str, object]", config["jra"])
+    assert "default_variant" not in jra
+    variants = cast("dict[str, dict[str, object]]", jra["variants"])
+    assert variants == {
+        "cell-hashRS00": {
+            "feature_count": 2,
+            "feature_set_hash": "hashRS001",
+            "feature_names": ["feature_a", "feature_b"],
+        }
+    }
+    assert "model_version" not in variants["cell-hashRS00"]
+    assert "architecture" not in variants["cell-hashRS00"]
+    assert jra["rules"] == [
+        {
+            "conditions": [
+                {"dimension": "class", "values": ["G1"]},
+                {"dimension": "distance_band", "values": ["sprint"]},
+                {"dimension": "season", "values": ["spring"]},
+                {"dimension": "surface", "values": ["turf"]},
+                {"dimension": "venue", "values": ["05"]},
+            ],
+            "variant": "cell-hashRS00",
+        }
+    ]
+
+
+def test_generate_running_style_feature_selection_json_with_no_variants() -> None:
+    config = generate_running_style_feature_selection_json("jra", 180, {})
+    assert config == {
+        "schema_version": 1,
+        "type": "running_style_cell_feature_selection_routing",
+        "prediction_target": "running_style",
+        "consumer": "running_style_lightgbm --cell-feature-selection-json",
+        "worker_production_routing": False,
+        "default_feature_selection": {
+            "mode": "training_default",
+            "feature_count": 180,
+        },
+        "jra": {
+            "variants": {},
+            "rules": [],
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # parse_row + load_cell_metrics
 
@@ -579,6 +654,37 @@ def test_main_writes_output_file(tmp_path: Path) -> None:
     assert jra["variants"]["sim"]["feature_count"] == 2
     assert jra["variants"]["cell-CANDIDAT"]["feature_count"] == 3
     assert len(jra["rules"]) == 1
+
+
+def test_main_running_style_writes_feature_selection_config(tmp_path: Path) -> None:
+    output_path = tmp_path / "running_style_cell_feature_selection.json"
+    conn = MagicMock()
+    with patch.object(subject, "_connect", return_value=conn), patch.object(
+        subject, "load_cell_metrics", return_value=_patched_grouped()
+    ) as load_cell_metrics:
+        main(
+            [
+                "--pg-url",
+                "postgresql://example",
+                "--category",
+                "jra",
+                "--prediction-target",
+                "running_style",
+                "--baseline-hash",
+                "BASE",
+                "--output-path",
+                str(output_path),
+            ]
+        )
+
+    load_cell_metrics.assert_called_once_with(conn, "jra", "running_style")
+    config = json.loads(output_path.read_text(encoding="utf-8"))
+    assert config["type"] == "running_style_cell_feature_selection_routing"
+    assert config["worker_production_routing"] is False
+    jra = config["jra"]
+    assert "default_variant" not in jra
+    assert "sim" not in jra["variants"]
+    assert jra["variants"]["cell-CANDIDAT"]["feature_names"] == ["f1", "f2", "f3"]
 
 
 def test_main_dry_run_prints_without_writing(

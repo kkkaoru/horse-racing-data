@@ -390,7 +390,7 @@ test("calls completeRun with error and retries when container DO returns 502", a
   errorSpy.mockRestore();
 });
 
-test("routes a JRA per-race rescore to the Worker-native consumer (no container)", async () => {
+test("routes a JRA per-race rescore to the container held /predict", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -404,20 +404,25 @@ test("routes a JRA per-race rescore to the Worker-native consumer (no container)
     ]),
     makeEnv(),
   );
-  expect(rescoreJraRaceMock).toHaveBeenCalledTimes(1);
-  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(stubFetchMock).toHaveBeenCalledWith(
+    new Request(
+      "http://do/predict?category=jra&daysAhead=0&mode=rescore&keibajoCode=05&raceBango=11&runDate=20260619",
+    ),
+  );
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
 
-test("acks a JRA per-race rescore that returns cache_miss without retrying", async () => {
+test("acks a JRA container per-race rescore with zero races without retrying", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-  rescoreJraRaceMock.mockResolvedValue({
-    etop2Fired: false,
-    predictionCount: 0,
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
     racesPredicted: 0,
-    status: "cache_miss",
+    category: "jra",
+    status: "success",
   });
   await handleQueue(
     makeBatch([
@@ -431,14 +436,16 @@ test("acks a JRA per-race rescore that returns cache_miss without retrying", asy
     ]),
     makeEnv(),
   );
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   consoleSpy.mockRestore();
 });
 
-test("retries a JRA per-race rescore when the consumer throws", async () => {
+test("retries a JRA container per-race rescore when the container fetch throws", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  rescoreJraRaceMock.mockRejectedValue(new Error("neon down"));
+  stubFetchMock.mockRejectedValue(new Error("container down"));
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -451,11 +458,12 @@ test("retries a JRA per-race rescore when the consumer throws", async () => {
     ]),
     makeEnv(),
   );
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "Rescore JRA failed runYmd=20260619 keibajo=05 race=11:",
-    "Error: neon down",
+    "Container per-race rescore failed category=jra runYmd=20260619 keibajo=05 race=11:",
+    "Error: container down",
   );
   errorSpy.mockRestore();
 });
@@ -832,8 +840,8 @@ test("does not treat per-race rescore as skipDedup even if skipDedup is set", as
     ]),
     makeEnv(),
   );
-  expect(rescoreJraRaceMock).toHaveBeenCalledTimes(1);
-  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(rescoreJraRaceMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
@@ -862,9 +870,9 @@ test("warms the viewer cache for the race after a JRA per-race rescore succeeds"
   consoleSpy.mockRestore();
 });
 
-test("does not warm the race cache when a JRA per-race rescore throws", async () => {
+test("does not warm the race cache when a JRA container per-race rescore fetch throws", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  rescoreJraRaceMock.mockRejectedValue(new Error("neon down"));
+  stubFetchMock.mockRejectedValue(new Error("container down"));
   await handleQueue(
     makeBatch([
       makeMessage({

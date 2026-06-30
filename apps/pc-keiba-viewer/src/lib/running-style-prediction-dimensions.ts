@@ -118,6 +118,12 @@ export interface DeriveTop2AccuracyInput {
   total: number;
 }
 
+export interface IsRunningStyleSmallSampleInput {
+  raceCount: number;
+  predictionCount: number;
+  perClass: Record<RunningStyleClass, RunningStylePerClassMetric>;
+}
+
 export const RUNNING_STYLE_CLASSES: readonly RunningStyleClass[] = [
   "nige",
   "senkou",
@@ -141,7 +147,8 @@ export const RUNNING_STYLE_BUCKET_PERIOD_PARAM_NAME = "rs_period";
 const RUNNING_STYLE_BUCKET_PERIOD_OOS_ONLY = "oos-only";
 const RUNNING_STYLE_BUCKET_PERIOD_ALL = "all";
 
-const SMALL_SAMPLE_THRESHOLD = 30;
+const SMALL_SAMPLE_PREDICTION_THRESHOLD = 30;
+const SMALL_SAMPLE_RACE_THRESHOLD = 5;
 const MIN_SUPPORT_FOR_F1 = 5;
 const WILSON_Z_95 = 1.96;
 const LOG_EPSILON = 1e-15;
@@ -245,23 +252,20 @@ export const deriveAccuracy = (cm: ConfusionMatrix): number => {
   return trace / total;
 };
 
-const collectEligibleF1s = (
-  perClass: Record<RunningStyleClass, RunningStylePerClassMetric>,
-): readonly number[] =>
-  RUNNING_STYLE_CLASSES.map((className) => perClass[className]).flatMap((metric) =>
-    metric.f1 === null ? [] : [metric.f1],
-  );
+const deriveF1ForMacro = (metric: RunningStylePerClassMetric): number => {
+  const { precision, recall } = metric;
+  if (precision === null || recall === null) {
+    return 0;
+  }
+  const denominator = precision + recall;
+  return denominator === 0 ? 0 : (2 * precision * recall) / denominator;
+};
 
 export const deriveMacroF1 = (
   perClass: Record<RunningStyleClass, RunningStylePerClassMetric>,
-): number | null => {
-  const eligible = collectEligibleF1s(perClass);
-  if (eligible.length === 0) {
-    return null;
-  }
-  const sum = eligible.reduce((acc, value) => acc + value, 0);
-  return sum / eligible.length;
-};
+): number =>
+  RUNNING_STYLE_CLASSES.reduce((acc, className) => acc + deriveF1ForMacro(perClass[className]), 0) /
+  CLASS_COUNT;
 
 const toQualifiedMetric = (
   metric: RunningStylePerClassMetric,
@@ -402,8 +406,21 @@ export const deriveTop2Accuracy = (input: DeriveTop2AccuracyInput): number => {
   return hitCount / total;
 };
 
-export const isSmallSample = (predictionCount: number): boolean =>
-  predictionCount < SMALL_SAMPLE_THRESHOLD;
+const hasLowSupportClass = (
+  perClass: Record<RunningStyleClass, RunningStylePerClassMetric>,
+): boolean =>
+  RUNNING_STYLE_CLASSES.some((className) => perClass[className].support < MIN_SUPPORT_FOR_F1);
+
+export const isSmallSample = (input: number | IsRunningStyleSmallSampleInput): boolean => {
+  if (typeof input === "number") {
+    return input < SMALL_SAMPLE_PREDICTION_THRESHOLD;
+  }
+  return (
+    input.raceCount < SMALL_SAMPLE_RACE_THRESHOLD ||
+    input.predictionCount < SMALL_SAMPLE_PREDICTION_THRESHOLD ||
+    hasLowSupportClass(input.perClass)
+  );
+};
 
 export const getRunningStyleDimensionFlags = (
   input: GetRunningStyleDimensionFlagsInput,

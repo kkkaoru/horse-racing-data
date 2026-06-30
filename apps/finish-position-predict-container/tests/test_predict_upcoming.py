@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import final, override
 from unittest.mock import patch
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
@@ -749,6 +751,43 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1, "the fallback booster must drive the ranking for the default variant"
+
+
+def test_score_races_warns_when_resolved_non_default_variant_missing(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A rule pointing at an undeclared/unloaded variant falls back but is visible."""
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="missing-cell")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])
+
+    def _fake_load_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
+        del model_path, architecture
+        return variant_booster
+
+    races = {"ban-ei:20260620:65:01:01": _banei_entries()}
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
+    ):
+        scored = score_races(races, "ban-ei", tmp_path, ["feat"])
+
+    captured = capsys.readouterr()
+    assert "resolved missing variant=missing-cell; using default" in captured.err
+    rows = scored[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 1
 
 
 # ---------------------------------------------------------------------------

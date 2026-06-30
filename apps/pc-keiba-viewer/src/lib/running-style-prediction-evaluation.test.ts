@@ -155,7 +155,7 @@ it("scaleRunningStyleEvaluationFromCM marks small sample warning false when pred
     logLossCountByClass: { nige: 10, oikomi: 6, sashi: 6, senkou: 8 },
     logLossSumByClass: { nige: 1, oikomi: 0.6, sashi: 0.6, senkou: 0.8 },
     predictionCount: 30,
-    raceCount: 4,
+    raceCount: 5,
     top2HitCount: 28,
   });
   expect(result.smallSampleWarning).toBe(false);

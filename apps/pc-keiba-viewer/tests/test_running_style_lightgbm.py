@@ -1631,6 +1631,120 @@ def test_resolve_cell_feature_selection_uses_matching_routing_rule(tmp_path: Pat
     assert feature_set_hash == "hashAAAA1"
 
 
+def test_load_cell_feature_selection_rules_accepts_worker_variant_id(
+    tmp_path: Path,
+):
+    selection_path = tmp_path / "cell_routing.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "jra": {
+                    "defaultVariantId": "latest",
+                    "variants": {
+                        "latest": {"modelKey": "running-style/models/jra/latest.flatbin"},
+                        "tokyo-turf": {
+                            "modelKey": "running-style/models/jra/cells/tokyo-turf.flatbin",
+                            "feature_set_hash": "hashTOKYO1",
+                            "feature_names": ["feature_b", "feature_a"],
+                        },
+                    },
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"dimension": "venue", "values": ["05"]},
+                                {"dimension": "surface", "values": ["turf"]},
+                            ],
+                            "variantId": "tokyo-turf",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rules = subject.load_cell_feature_selection_rules(selection_path)
+
+    assert rules == [
+        subject.CellFeatureSelectionRule(
+            category="jra",
+            conditions=(
+                ("venue", ("05",)),
+                ("surface", ("turf",)),
+            ),
+            feature_names=("feature_a", "feature_b"),
+            feature_set_hash="hashTOKYO1",
+        )
+    ]
+
+
+def test_load_cell_feature_selection_rules_accepts_explicit_schema(
+    tmp_path: Path,
+):
+    selection_path = tmp_path / "feature_selection.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "category": "nar",
+                        "conditions": [
+                            {"dimension": "class", "values": ["A"]},
+                        ],
+                        "feature_set_hash": "hashNAR1",
+                        "feature_names": ["feature_c", "feature_a"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rules = subject.load_cell_feature_selection_rules(selection_path)
+
+    assert rules == [
+        subject.CellFeatureSelectionRule(
+            category="nar",
+            conditions=(("class", ("A",)),),
+            feature_names=("feature_a", "feature_c"),
+            feature_set_hash="hashNAR1",
+        )
+    ]
+
+
+def test_load_cell_feature_selection_rules_rejects_rules_without_feature_names(
+    tmp_path: Path,
+):
+    selection_path = tmp_path / "cell_routing.json"
+    selection_path.write_text(
+        json.dumps(
+            {
+                "jra": {
+                    "defaultVariantId": "latest",
+                    "variants": {
+                        "latest": {"modelKey": "running-style/models/jra/latest.flatbin"},
+                        "tokyo-turf": {
+                            "modelKey": "running-style/models/jra/cells/tokyo-turf.flatbin"
+                        },
+                    },
+                    "rules": [
+                        {
+                            "conditions": [
+                                {"dimension": "venue", "values": ["05"]},
+                            ],
+                            "variantId": "tokyo-turf",
+                        }
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="no usable feature-selection rules"):
+        subject.load_cell_feature_selection_rules(selection_path)
+
+
 def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

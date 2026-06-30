@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
@@ -1083,48 +1084,115 @@ def _parse_feature_selection_conditions(
     return tuple(parsed)
 
 
+def _build_cell_feature_selection_rule(
+    *,
+    category: str,
+    raw_conditions: object,
+    raw_features: object,
+    raw_feature_set_hash: object,
+) -> CellFeatureSelectionRule | None:
+    if not isinstance(raw_features, list):
+        return None
+    feature_names = tuple(normalize_feature_names([str(f) for f in raw_features]))
+    if not feature_names:
+        return None
+    return CellFeatureSelectionRule(
+        category=category,
+        conditions=_parse_feature_selection_conditions(raw_conditions),
+        feature_names=feature_names,
+        feature_set_hash=(
+            str(raw_feature_set_hash)
+            if isinstance(raw_feature_set_hash, str) and raw_feature_set_hash
+            else compute_feature_set_hash(feature_names)
+        ),
+    )
+
+
+def _extract_variant_id_from_rule(raw_rule: object) -> str | None:
+    if not isinstance(raw_rule, Mapping):
+        return None
+    variant_id = raw_rule.get("variant")
+    if isinstance(variant_id, str):
+        return variant_id
+    variant_id = raw_rule.get("variantId")
+    return variant_id if isinstance(variant_id, str) else None
+
+
+def _extract_explicit_feature_selection_rules(
+    raw_rules: Sequence[object], default_category: str | None
+) -> list[CellFeatureSelectionRule]:
+    rules: list[CellFeatureSelectionRule] = []
+    for raw_rule in raw_rules:
+        if not isinstance(raw_rule, dict):
+            continue
+        category = raw_rule.get("category")
+        if not isinstance(category, str):
+            category = default_category
+        if category is None:
+            continue
+        rule = _build_cell_feature_selection_rule(
+            category=category,
+            raw_conditions=raw_rule.get("conditions"),
+            raw_features=raw_rule.get("feature_names"),
+            raw_feature_set_hash=raw_rule.get("feature_set_hash"),
+        )
+        if rule is not None:
+            rules.append(rule)
+    return rules
+
+
 def _extract_feature_selection_rules_from_routing(
     payload: dict[str, object],
 ) -> list[CellFeatureSelectionRule]:
     rules: list[CellFeatureSelectionRule] = []
+    raw_top_level_rules = payload.get("rules")
+    if isinstance(raw_top_level_rules, list):
+        rules.extend(
+            _extract_explicit_feature_selection_rules(raw_top_level_rules, None)
+        )
     for category, raw_config in payload.items():
         if not isinstance(raw_config, dict):
             continue
-        raw_variants = raw_config.get("variants")
         raw_rules = raw_config.get("rules")
-        if not isinstance(raw_variants, dict) or not isinstance(raw_rules, list):
+        if not isinstance(raw_rules, list):
+            continue
+        rules.extend(_extract_explicit_feature_selection_rules(raw_rules, category))
+        raw_variants = raw_config.get("variants")
+        if not isinstance(raw_variants, dict):
             continue
         for raw_rule in raw_rules:
             if not isinstance(raw_rule, dict):
                 continue
-            variant_id = raw_rule.get("variant")
-            if not isinstance(variant_id, str):
+            if "feature_names" in raw_rule:
+                continue
+            variant_id = _extract_variant_id_from_rule(raw_rule)
+            if variant_id is None:
                 continue
             variant = raw_variants.get(variant_id)
             if not isinstance(variant, dict):
                 continue
-            raw_features = variant.get("feature_names")
-            if not isinstance(raw_features, list):
-                continue
-            feature_names = tuple(normalize_feature_names([str(f) for f in raw_features]))
-            if not feature_names:
-                continue
-            feature_set_hash = variant.get("feature_set_hash")
-            rules.append(
-                CellFeatureSelectionRule(
-                    category=category,
-                    conditions=_parse_feature_selection_conditions(
-                        raw_rule.get("conditions")
-                    ),
-                    feature_names=feature_names,
-                    feature_set_hash=(
-                        str(feature_set_hash)
-                        if isinstance(feature_set_hash, str) and feature_set_hash
-                        else compute_feature_set_hash(feature_names)
-                    ),
-                )
+            rule = _build_cell_feature_selection_rule(
+                category=category,
+                raw_conditions=raw_rule.get("conditions"),
+                raw_features=variant.get("feature_names"),
+                raw_feature_set_hash=variant.get("feature_set_hash"),
             )
+            if rule is not None:
+                rules.append(rule)
     return rules
+
+
+def _payload_has_feature_selection_rule_candidates(payload: dict[str, object]) -> bool:
+    raw_top_level_rules = payload.get("rules")
+    if isinstance(raw_top_level_rules, list) and len(raw_top_level_rules) > 0:
+        return True
+    for raw_config in payload.values():
+        if not isinstance(raw_config, dict):
+            continue
+        raw_rules = raw_config.get("rules")
+        if isinstance(raw_rules, list) and len(raw_rules) > 0:
+            return True
+    return False
 
 
 def load_cell_feature_selection_rules(path: Path | None) -> list[CellFeatureSelectionRule]:
@@ -1133,7 +1201,14 @@ def load_cell_feature_selection_rules(path: Path | None) -> list[CellFeatureSele
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"cell feature selection JSON must be an object: {path}")
-    return _extract_feature_selection_rules_from_routing(payload)
+    rules = _extract_feature_selection_rules_from_routing(payload)
+    if not rules and _payload_has_feature_selection_rule_candidates(payload):
+        raise ValueError(
+            "cell feature selection JSON contains rules but no usable "
+            "feature-selection rules; provide rules with feature_names or "
+            "route variants referenced by variant/variantId that include feature_names"
+        )
+    return rules
 
 
 def _rule_matches_cell(

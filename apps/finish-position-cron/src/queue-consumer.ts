@@ -12,7 +12,6 @@ import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
-import { rescoreJraRace } from "./scoring/rescore-consumer";
 import type { Env, PredictQueueMessage } from "./types";
 
 const RUN_YMD_YEAR_START = 0;
@@ -21,8 +20,6 @@ const RUN_YMD_MONTH_START = 4;
 const RUN_YMD_MONTH_END = 6;
 const RUN_YMD_DAY_START = 6;
 const RUN_YMD_DAY_END = 8;
-const EMPTY_RACE_TARGET = "";
-
 const PREDICT_DO_NAME_PREFIX = "predict-";
 const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
@@ -32,8 +29,13 @@ const JRA_CATEGORY = "jra";
 const NAR_CATEGORY = "nar";
 const BAN_EI_CATEGORY = "ban-ei";
 // Categories whose per-race rescore is served by the container DO held /predict
-// (Python ensemble re-score). JRA stays Worker-native and is excluded here.
-const CONTAINER_PER_RACE_CATEGORIES = new Set<string>([NAR_CATEGORY, BAN_EI_CATEGORY]);
+// (Python ensemble re-score). Keeping JRA here avoids a stale Worker-native
+// scorer path drifting away from the container's production model contract.
+const CONTAINER_PER_RACE_CATEGORIES = new Set<string>([
+  JRA_CATEGORY,
+  NAR_CATEGORY,
+  BAN_EI_CATEGORY,
+]);
 
 interface PredictUrlParams {
   category: string;
@@ -158,7 +160,7 @@ const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressL
   );
 };
 
-// Container per-race rescore (NAR / Ban-ei): held /predict on a per-race DO
+// Container per-race rescore: held /predict on a per-race DO
 // runs the Python ensemble re-score for one race. No per-category run state is
 // touched (completeRun is not called) so concurrent full/per-category runs are
 // unaffected. A successful NDJSON result (status omitted or success) acks whether
@@ -166,8 +168,8 @@ const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressL
 // result status:error, retry via the queue's DLQ machinery. After a
 // successful ack the viewer Cache API is warmed for the same race so the
 // event-driven horse-weight trigger surfaces fresh predictions on the race
-// detail page without waiting for cache TTL — mirrors the JRA per-race rescore
-// path. Warm is fire-and-forget: failures are swallowed inside the warm helper.
+// detail page without waiting for cache TTL. Warm is fire-and-forget: failures
+// are swallowed inside the warm helper.
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -193,7 +195,7 @@ const processContainerPerRaceRescore = async (
     });
     assertPredictResultSucceeded(result);
     console.log(
-      `Rescore NAR(container) runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted}`,
+      `Rescore container category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango} races=${result.racesPredicted}`,
     );
     message.ack();
     void warmPredictionCacheForRace({
@@ -212,43 +214,13 @@ const processContainerPerRaceRescore = async (
   }
 };
 
-// Worker-native JRA per-race rescore: no container, no 21y Neon scan. cache_miss /
-// race_not_found are acked (retry is futile); fetch / score / UPSERT errors retry.
-const processJraPerRaceRescore = async (
-  message: Message<PerRaceRescoreMessage>,
-  env: Env,
-): Promise<void> => {
-  const { runYmd, keibajoCode, raceBango } = message.body;
-  try {
-    const result = await rescoreJraRace({ env, fetchImpl: fetch, message: message.body });
-    console.log(
-      `Rescore JRA runYmd=${runYmd} status=${result.status} predictions=${result.predictionCount} etop2=${result.etop2Fired}`,
-    );
-    message.ack();
-    void warmPredictionCacheForRace({
-      day: runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
-      keibajoCode: keibajoCode ?? EMPTY_RACE_TARGET,
-      month: runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
-      raceNumber: raceBango ?? EMPTY_RACE_TARGET,
-      year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
-    });
-  } catch (err) {
-    console.error(
-      `Rescore JRA failed runYmd=${runYmd}${raceScopeSuffix(keibajoCode, raceBango)}:`,
-      String(err),
-    );
-    message.retry();
-  }
-};
-
-// Per-race rescore dispatch: JRA stays Worker-native, NAR / Ban-ei route to the
-// container held /predict, unknown categories are skipped + acked.
+// Per-race rescore dispatch: supported categories route to the container held
+// /predict, unknown categories are skipped + acked.
 const processPerRaceRescore = (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
 ): Promise<void> => {
   const { category, runYmd } = message.body;
-  if (category === JRA_CATEGORY) return processJraPerRaceRescore(message, env);
   if (CONTAINER_PER_RACE_CATEGORIES.has(category))
     return processContainerPerRaceRescore(message, env);
   console.warn(

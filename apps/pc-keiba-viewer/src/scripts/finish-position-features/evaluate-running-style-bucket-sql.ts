@@ -319,10 +319,9 @@ const buildUpsertColumnList = (): string[] => [
 const buildUpsertPlaceholderList = (count: number): string =>
   Array.from({ length: count }, () => "%s").join(", ");
 
-const buildAdditiveSetClause = (column: string): string =>
-  `${column} = excluded.${column} + ${BUCKET_TABLE}.${column}`;
+const buildReplacementSetClause = (column: string): string => `${column} = excluded.${column}`;
 
-const buildAdditiveColumns = (): string[] => [
+const buildReplacementColumns = (): string[] => [
   "race_count",
   "prediction_count",
   ...CM_CLASS_PAIRS.map(([actual, predicted]) => buildCmColumnName(actual, predicted)),
@@ -334,9 +333,9 @@ const buildAdditiveColumns = (): string[] => [
 ];
 
 const buildBucketUpsertOnConflictClause = (): string => {
-  const additiveColumns = buildAdditiveColumns();
-  return additiveColumns
-    .map((column) => buildAdditiveSetClause(column))
+  const replacementColumns = buildReplacementColumns();
+  return replacementColumns
+    .map((column) => buildReplacementSetClause(column))
     .concat(["evaluated_at = now()"])
     .join(",\n      ");
 };
@@ -371,9 +370,8 @@ const buildBatchValuesRowSql = (columnCount: number): string =>
 
 // Multi-row UPSERT path. PostgreSQL caps bind parameters at 65535, so callers
 // must keep rowCount * column-count under that limit (41 columns * 100 rows =
-// 4100 placeholders, well within budget). ON CONFLICT clause stays additive so
-// re-running the same window keeps producing identical totals as the
-// single-row variant did.
+// 4100 placeholders, well within budget). ON CONFLICT replaces aggregate
+// columns with the new row values so re-running the same window is idempotent.
 export const buildRunningStyleBucketBatchUpsertSql = (rowCount: number): string => {
   if (rowCount <= 0) throw new Error("rowCount must be greater than zero.");
   const columns = buildUpsertColumnList();

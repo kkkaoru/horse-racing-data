@@ -598,6 +598,12 @@ def score_races(
                     f"[cell-routing] race={race_id} category={category} -> {variant}",
                     file=sys.stderr,
                 )
+            elif variant != cell_router.routing_for(category).default_variant:
+                print(
+                    f"[cell-routing] race={race_id} category={category} "
+                    f"resolved missing variant={variant}; using default",
+                    file=sys.stderr,
+                )
         if xgb_etop2_booster is not None:
             rows = _score_one_race_etop2(
                 effective_booster,

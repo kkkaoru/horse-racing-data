@@ -149,24 +149,34 @@ it("deriveMacroF1 returns 1 for a perfectly classified CM", () => {
   expect(deriveMacroF1(perClass)).toBe(1);
 });
 
-it("deriveMacroF1 ignores classes whose support is below MIN_SUPPORT_FOR_F1", () => {
+it("deriveMacroF1 averages all four classes and treats missing low-support F1 as zero", () => {
   const perClass = derivePerClassMetrics([
     [10, 0, 0, 0],
     [0, 10, 0, 0],
     [0, 0, 0, 3],
     [0, 0, 0, 0],
   ]);
-  expect(deriveMacroF1(perClass)).toBe(1);
+  expect(deriveMacroF1(perClass)).toBe(0.5);
 });
 
-it("deriveMacroF1 returns null when no class qualifies for F1", () => {
+it("deriveMacroF1 returns 0 when all classes rely on zero_division fallback", () => {
   const perClass = derivePerClassMetrics([
-    [1, 0, 0, 0],
-    [0, 1, 0, 0],
-    [0, 0, 1, 0],
-    [0, 0, 0, 1],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
   ]);
-  expect(deriveMacroF1(perClass)).toBe(null);
+  expect(deriveMacroF1(perClass)).toBe(0);
+});
+
+it("deriveMacroF1 treats precision=0 and recall=0 as zero instead of dropping the class", () => {
+  const perClass = derivePerClassMetrics([
+    [0, 5, 0, 0],
+    [5, 5, 0, 0],
+    [0, 0, 10, 0],
+    [0, 0, 0, 10],
+  ]);
+  expect(deriveMacroF1(perClass)).toBe(0.625);
 });
 
 it("deriveWeightedF1 weights F1 by support across qualified classes", () => {
@@ -326,7 +336,7 @@ it("deriveTop2Accuracy returns 0 when total is 0", () => {
   expect(deriveTop2Accuracy({ hitCount: 0, total: 0 })).toBe(0);
 });
 
-it("isSmallSample flags counts strictly below 30 as small", () => {
+it("isSmallSample keeps numeric input compatible with the prediction-count threshold", () => {
   expect(isSmallSample(15)).toBe(true);
 });
 
@@ -340,6 +350,46 @@ it("isSmallSample does not flag 30 as small", () => {
 
 it("isSmallSample does not flag 100 as small", () => {
   expect(isSmallSample(100)).toBe(false);
+});
+
+it("isSmallSample flags an object input when raceCount is below the race threshold", () => {
+  const perClass = derivePerClassMetrics([
+    [10, 0, 0, 0],
+    [0, 10, 0, 0],
+    [0, 0, 10, 0],
+    [0, 0, 0, 10],
+  ]);
+  expect(isSmallSample({ raceCount: 4, predictionCount: 40, perClass })).toBe(true);
+});
+
+it("isSmallSample flags an object input when predictionCount is below the prediction threshold", () => {
+  const perClass = derivePerClassMetrics([
+    [10, 0, 0, 0],
+    [0, 10, 0, 0],
+    [0, 0, 10, 0],
+    [0, 0, 0, 10],
+  ]);
+  expect(isSmallSample({ raceCount: 5, predictionCount: 29, perClass })).toBe(true);
+});
+
+it("isSmallSample flags an object input when any class support is below the F1 support threshold", () => {
+  const perClass = derivePerClassMetrics([
+    [10, 0, 0, 0],
+    [0, 10, 0, 0],
+    [0, 0, 10, 0],
+    [0, 0, 0, 4],
+  ]);
+  expect(isSmallSample({ raceCount: 5, predictionCount: 34, perClass })).toBe(true);
+});
+
+it("isSmallSample does not flag an object input when all sample dimensions meet thresholds", () => {
+  const perClass = derivePerClassMetrics([
+    [10, 0, 0, 0],
+    [0, 10, 0, 0],
+    [0, 0, 10, 0],
+    [0, 0, 0, 10],
+  ]);
+  expect(isSmallSample({ raceCount: 5, predictionCount: 40, perClass })).toBe(false);
 });
 
 it("getRunningStyleDimensionFlags returns all dims ON by default for NAR without grade", () => {

@@ -35,6 +35,10 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 VARIANT_SIM: Final[str] = "sim"
+RUNNING_STYLE_FEATURE_SELECTION_SCHEMA_VERSION: Final[int] = 1
+RUNNING_STYLE_FEATURE_SELECTION_TYPE: Final[str] = (
+    "running_style_cell_feature_selection_routing"
+)
 
 DEFAULT_MIN_RACES: Final[int] = 200
 DEFAULT_FRESHNESS_DAYS: Final[int] = 14
@@ -414,6 +418,42 @@ def generate_routing_json(
     }
 
 
+def generate_running_style_feature_selection_json(
+    category: str,
+    default_feature_count: int,
+    variants: Mapping[str, Sequence[AdoptionResult]],
+) -> dict[str, object]:
+    """Render running-style cell feature-selection routing, not production routing."""
+    variant_specs: dict[str, object] = {}
+    rules: list[dict[str, object]] = []
+    for variant_name in sorted(variants):
+        results = variants[variant_name]
+        variant_specs[variant_name] = {
+            "feature_count": len(results[0].candidate.feature_names),
+            "feature_set_hash": results[0].candidate.feature_set_hash,
+            "feature_names": sorted(results[0].candidate.feature_names),
+        }
+        for result in sorted(results, key=lambda r: _cell_sort_key(r.cell)):
+            rules.append(
+                {"conditions": _cell_conditions(result.cell), "variant": variant_name}
+            )
+    return {
+        "schema_version": RUNNING_STYLE_FEATURE_SELECTION_SCHEMA_VERSION,
+        "type": RUNNING_STYLE_FEATURE_SELECTION_TYPE,
+        "prediction_target": "running_style",
+        "consumer": "running_style_lightgbm --cell-feature-selection-json",
+        "worker_production_routing": False,
+        "default_feature_selection": {
+            "mode": "training_default",
+            "feature_count": default_feature_count,
+        },
+        category: {
+            "variants": variant_specs,
+            "rules": rules,
+        },
+    }
+
+
 def parse_row(row: Sequence[object]) -> tuple[CellKey, CellMetrics]:
     """Map one ``_SELECT_CELLS`` row to its CellKey and CellMetrics."""
     cell = CellKey(
@@ -545,13 +585,20 @@ def main(argv: list[str] | None = None) -> None:
     )
     adopted = [result for result in results if result.adopted]
     variants = group_variants(adopted)
-    config = generate_routing_json(
-        category,
-        default_model_version,
-        default_feature_count,
-        default_architecture,
-        variants,
-    )
+    if prediction_target == "running_style":
+        config = generate_running_style_feature_selection_json(
+            category,
+            default_feature_count,
+            variants,
+        )
+    else:
+        config = generate_routing_json(
+            category,
+            default_model_version,
+            default_feature_count,
+            default_architecture,
+            variants,
+        )
     payload = json.dumps(config, ensure_ascii=False, indent=2)
 
     _logger.info(

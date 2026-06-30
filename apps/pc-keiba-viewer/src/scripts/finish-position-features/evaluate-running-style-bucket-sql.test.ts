@@ -607,53 +607,17 @@ test("buildRunningStyleBucketAggregateSql escapes single quote in model version"
   `);
 });
 
-test("buildRunningStyleBucketUpsertSql emits ON CONFLICT additive UPSERT with 41 psycopg %s placeholders and EXCLUDED + table-name addition", () => {
-  expect(buildRunningStyleBucketUpsertSql()).toBe(`
-    insert into running_style_model_bucket_evaluations (
-      model_version, running_style_feature_version, category, evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code, race_name, race_count, prediction_count, cm_actual_nige_pred_nige_count, cm_actual_nige_pred_senkou_count, cm_actual_nige_pred_sashi_count, cm_actual_nige_pred_oikomi_count, cm_actual_senkou_pred_nige_count, cm_actual_senkou_pred_senkou_count, cm_actual_senkou_pred_sashi_count, cm_actual_senkou_pred_oikomi_count, cm_actual_sashi_pred_nige_count, cm_actual_sashi_pred_senkou_count, cm_actual_sashi_pred_sashi_count, cm_actual_sashi_pred_oikomi_count, cm_actual_oikomi_pred_nige_count, cm_actual_oikomi_pred_senkou_count, cm_actual_oikomi_pred_sashi_count, cm_actual_oikomi_pred_oikomi_count, log_loss_nige_sum, log_loss_nige_count, log_loss_senkou_sum, log_loss_senkou_count, log_loss_sashi_sum, log_loss_sashi_count, log_loss_oikomi_sum, log_loss_oikomi_count, top2_hit_count,
-      evaluated_at
-    )
-    values (
-      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-      now()
-    )
-    on conflict (
-      model_version, running_style_feature_version, category,
-      evaluation_window_from, evaluation_window_to,
-      source, keibajo_code, kyori, kyoso_shubetsu_code,
-      coalesce(kyoso_joken_code,''), coalesce(condition_key,''),
-      coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,'')
-    )
-    do update set
-      race_count = excluded.race_count + running_style_model_bucket_evaluations.race_count,
-      prediction_count = excluded.prediction_count + running_style_model_bucket_evaluations.prediction_count,
-      cm_actual_nige_pred_nige_count = excluded.cm_actual_nige_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_nige_count,
-      cm_actual_nige_pred_senkou_count = excluded.cm_actual_nige_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_senkou_count,
-      cm_actual_nige_pred_sashi_count = excluded.cm_actual_nige_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_sashi_count,
-      cm_actual_nige_pred_oikomi_count = excluded.cm_actual_nige_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_oikomi_count,
-      cm_actual_senkou_pred_nige_count = excluded.cm_actual_senkou_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_nige_count,
-      cm_actual_senkou_pred_senkou_count = excluded.cm_actual_senkou_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_senkou_count,
-      cm_actual_senkou_pred_sashi_count = excluded.cm_actual_senkou_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_sashi_count,
-      cm_actual_senkou_pred_oikomi_count = excluded.cm_actual_senkou_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_oikomi_count,
-      cm_actual_sashi_pred_nige_count = excluded.cm_actual_sashi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_nige_count,
-      cm_actual_sashi_pred_senkou_count = excluded.cm_actual_sashi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_senkou_count,
-      cm_actual_sashi_pred_sashi_count = excluded.cm_actual_sashi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_sashi_count,
-      cm_actual_sashi_pred_oikomi_count = excluded.cm_actual_sashi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_oikomi_count,
-      cm_actual_oikomi_pred_nige_count = excluded.cm_actual_oikomi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_nige_count,
-      cm_actual_oikomi_pred_senkou_count = excluded.cm_actual_oikomi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_senkou_count,
-      cm_actual_oikomi_pred_sashi_count = excluded.cm_actual_oikomi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_sashi_count,
-      cm_actual_oikomi_pred_oikomi_count = excluded.cm_actual_oikomi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_oikomi_count,
-      log_loss_nige_sum = excluded.log_loss_nige_sum + running_style_model_bucket_evaluations.log_loss_nige_sum,
-      log_loss_nige_count = excluded.log_loss_nige_count + running_style_model_bucket_evaluations.log_loss_nige_count,
-      log_loss_senkou_sum = excluded.log_loss_senkou_sum + running_style_model_bucket_evaluations.log_loss_senkou_sum,
-      log_loss_senkou_count = excluded.log_loss_senkou_count + running_style_model_bucket_evaluations.log_loss_senkou_count,
-      log_loss_sashi_sum = excluded.log_loss_sashi_sum + running_style_model_bucket_evaluations.log_loss_sashi_sum,
-      log_loss_sashi_count = excluded.log_loss_sashi_count + running_style_model_bucket_evaluations.log_loss_sashi_count,
-      log_loss_oikomi_sum = excluded.log_loss_oikomi_sum + running_style_model_bucket_evaluations.log_loss_oikomi_sum,
-      log_loss_oikomi_count = excluded.log_loss_oikomi_count + running_style_model_bucket_evaluations.log_loss_oikomi_count,
-      top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count,
-      evaluated_at = now()
-  `);
+test("buildRunningStyleBucketUpsertSql emits idempotent ON CONFLICT replacement assignments", () => {
+  const sql = buildRunningStyleBucketUpsertSql();
+  expect(sql.indexOf("do update set")).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf("race_count = excluded.race_count")).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf("prediction_count = excluded.prediction_count")).toBeGreaterThanOrEqual(0);
+  expect(
+    sql.indexOf("cm_actual_nige_pred_nige_count = excluded.cm_actual_nige_pred_nige_count"),
+  ).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf("log_loss_nige_sum = excluded.log_loss_nige_sum")).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf("top2_hit_count = excluded.top2_hit_count")).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf(" + running_style_model_bucket_evaluations.")).toBe(-1);
 });
 
 test("buildRunningStyleBucketAggregateSql for jra exposes 4 NOT NULL guard clauses in race_dims CTE", () => {
@@ -737,31 +701,34 @@ test("buildRunningStyleBucketBatchUpsertSql with rowCount 100 emits 4100 psycopg
   expect(placeholderMatches?.length).toBe(4100);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for race_count", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 replaces race_count on conflict", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(sql.indexOf("race_count = excluded.race_count")).toBeGreaterThanOrEqual(0);
   expect(
     sql.indexOf(
       "race_count = excluded.race_count + running_style_model_bucket_evaluations.race_count",
     ),
-  ).toBeGreaterThanOrEqual(0);
+  ).toBe(-1);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for top2_hit_count", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 replaces top2_hit_count on conflict", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(sql.indexOf("top2_hit_count = excluded.top2_hit_count")).toBeGreaterThanOrEqual(0);
   expect(
     sql.indexOf(
       "top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count",
     ),
-  ).toBeGreaterThanOrEqual(0);
+  ).toBe(-1);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps additive ON CONFLICT SET clause for log_loss_nige_sum", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 replaces log_loss_nige_sum on conflict", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(3);
+  expect(sql.indexOf("log_loss_nige_sum = excluded.log_loss_nige_sum")).toBeGreaterThanOrEqual(0);
   expect(
     sql.indexOf(
       "log_loss_nige_sum = excluded.log_loss_nige_sum + running_style_model_bucket_evaluations.log_loss_nige_sum",
     ),
-  ).toBeGreaterThanOrEqual(0);
+  ).toBe(-1);
 });
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps the evaluated_at = now() trailing SET", () => {
@@ -770,50 +737,13 @@ test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps the evaluated_
 });
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits a single VALUES row tuple closed by now()", () => {
-  expect(buildRunningStyleBucketBatchUpsertSql(1)).toBe(`
-    insert into running_style_model_bucket_evaluations (
-      model_version, running_style_feature_version, category, evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code, race_name, race_count, prediction_count, cm_actual_nige_pred_nige_count, cm_actual_nige_pred_senkou_count, cm_actual_nige_pred_sashi_count, cm_actual_nige_pred_oikomi_count, cm_actual_senkou_pred_nige_count, cm_actual_senkou_pred_senkou_count, cm_actual_senkou_pred_sashi_count, cm_actual_senkou_pred_oikomi_count, cm_actual_sashi_pred_nige_count, cm_actual_sashi_pred_senkou_count, cm_actual_sashi_pred_sashi_count, cm_actual_sashi_pred_oikomi_count, cm_actual_oikomi_pred_nige_count, cm_actual_oikomi_pred_senkou_count, cm_actual_oikomi_pred_sashi_count, cm_actual_oikomi_pred_oikomi_count, log_loss_nige_sum, log_loss_nige_count, log_loss_senkou_sum, log_loss_senkou_count, log_loss_sashi_sum, log_loss_sashi_count, log_loss_oikomi_sum, log_loss_oikomi_count, top2_hit_count,
-      evaluated_at
-    )
-    values
-      (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
-    on conflict (
-      model_version, running_style_feature_version, category,
-      evaluation_window_from, evaluation_window_to,
-      source, keibajo_code, kyori, kyoso_shubetsu_code,
-      coalesce(kyoso_joken_code,''), coalesce(condition_key,''),
-      coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,'')
-    )
-    do update set
-      race_count = excluded.race_count + running_style_model_bucket_evaluations.race_count,
-      prediction_count = excluded.prediction_count + running_style_model_bucket_evaluations.prediction_count,
-      cm_actual_nige_pred_nige_count = excluded.cm_actual_nige_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_nige_count,
-      cm_actual_nige_pred_senkou_count = excluded.cm_actual_nige_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_senkou_count,
-      cm_actual_nige_pred_sashi_count = excluded.cm_actual_nige_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_sashi_count,
-      cm_actual_nige_pred_oikomi_count = excluded.cm_actual_nige_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_nige_pred_oikomi_count,
-      cm_actual_senkou_pred_nige_count = excluded.cm_actual_senkou_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_nige_count,
-      cm_actual_senkou_pred_senkou_count = excluded.cm_actual_senkou_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_senkou_count,
-      cm_actual_senkou_pred_sashi_count = excluded.cm_actual_senkou_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_sashi_count,
-      cm_actual_senkou_pred_oikomi_count = excluded.cm_actual_senkou_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_senkou_pred_oikomi_count,
-      cm_actual_sashi_pred_nige_count = excluded.cm_actual_sashi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_nige_count,
-      cm_actual_sashi_pred_senkou_count = excluded.cm_actual_sashi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_senkou_count,
-      cm_actual_sashi_pred_sashi_count = excluded.cm_actual_sashi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_sashi_count,
-      cm_actual_sashi_pred_oikomi_count = excluded.cm_actual_sashi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_sashi_pred_oikomi_count,
-      cm_actual_oikomi_pred_nige_count = excluded.cm_actual_oikomi_pred_nige_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_nige_count,
-      cm_actual_oikomi_pred_senkou_count = excluded.cm_actual_oikomi_pred_senkou_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_senkou_count,
-      cm_actual_oikomi_pred_sashi_count = excluded.cm_actual_oikomi_pred_sashi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_sashi_count,
-      cm_actual_oikomi_pred_oikomi_count = excluded.cm_actual_oikomi_pred_oikomi_count + running_style_model_bucket_evaluations.cm_actual_oikomi_pred_oikomi_count,
-      log_loss_nige_sum = excluded.log_loss_nige_sum + running_style_model_bucket_evaluations.log_loss_nige_sum,
-      log_loss_nige_count = excluded.log_loss_nige_count + running_style_model_bucket_evaluations.log_loss_nige_count,
-      log_loss_senkou_sum = excluded.log_loss_senkou_sum + running_style_model_bucket_evaluations.log_loss_senkou_sum,
-      log_loss_senkou_count = excluded.log_loss_senkou_count + running_style_model_bucket_evaluations.log_loss_senkou_count,
-      log_loss_sashi_sum = excluded.log_loss_sashi_sum + running_style_model_bucket_evaluations.log_loss_sashi_sum,
-      log_loss_sashi_count = excluded.log_loss_sashi_count + running_style_model_bucket_evaluations.log_loss_sashi_count,
-      log_loss_oikomi_sum = excluded.log_loss_oikomi_sum + running_style_model_bucket_evaluations.log_loss_oikomi_sum,
-      log_loss_oikomi_count = excluded.log_loss_oikomi_count + running_style_model_bucket_evaluations.log_loss_oikomi_count,
-      top2_hit_count = excluded.top2_hit_count + running_style_model_bucket_evaluations.top2_hit_count,
-      evaluated_at = now()
-  `);
+  const sql = buildRunningStyleBucketBatchUpsertSql(1);
+  expect(
+    sql.indexOf(
+      "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())",
+    ),
+  ).toBeGreaterThanOrEqual(0);
+  expect(sql.indexOf("do update set")).toBeGreaterThanOrEqual(0);
 });
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 2 emits two comma-separated VALUES row tuples", () => {
