@@ -49,7 +49,7 @@ import {
 import { addDaysToYyyymmdd, getTodayJst } from "./time";
 import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
 
-const PLAN_ODDS_FETCHES_CRON = "* * * * *";
+const PLAN_ODDS_FETCHES_CRON = "*/2 * * * *";
 // Quadrupling the daily 04:00 UTC tick to every 6h (00/06/12/18 UTC) yields
 // 4 archive runs/day. Combined with `DISTINCT_FETCHED_AT_LIMIT = 150` in
 // storage.ts this targets ~3600 R2 archive writes/day, sufficient to drain

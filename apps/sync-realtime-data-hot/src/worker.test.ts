@@ -1475,7 +1475,7 @@ it("handleScheduled dispatches plan cron to runScheduledPlan", async () => {
   const env = buildEnv();
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1493,7 +1493,7 @@ it("handleScheduled skips runScheduledPlan when the polling-window gate cache re
   );
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1760,7 +1760,7 @@ it("handleScheduled plan cron does not invoke runScheduledClosingBackfill", asyn
   const env = buildEnv();
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-22T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1955,7 +1955,7 @@ it("default worker scheduled dispatches to handleScheduled", async () => {
   const env = buildEnv();
   await worker.scheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -1974,7 +1974,7 @@ it("default worker scheduled accepts the Module Workers (controller, env, ctx) 3
   } as unknown as ExecutionContext;
   await worker.scheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -2119,7 +2119,7 @@ it("scheduled-outer-runs-without-error-when-handler-ok", async () => {
   });
   await worker.scheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-05-28T01:00:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -2138,7 +2138,7 @@ it("handleScheduled writes the cron heartbeat KV key as the first action of ever
   const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -2179,7 +2179,7 @@ it("handleScheduled still dispatches the underlying cron branch even when the he
   });
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -2222,7 +2222,7 @@ it("handleScheduled writes a cron-heartbeat-kv-error fetch_logs row when the hea
   });
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
     } as unknown as ScheduledController,
@@ -2272,7 +2272,7 @@ it("handleScheduled swallows logFetch failure when the heartbeat KV.put rejects 
   });
   await handleScheduled(
     {
-      cron: "* * * * *",
+      cron: "*/2 * * * *",
       noRetry: () => undefined,
       scheduledTime: new Date("2026-06-23T05:23:00Z").getTime(),
     } as unknown as ScheduledController,
