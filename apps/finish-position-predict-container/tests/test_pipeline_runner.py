@@ -28,7 +28,9 @@ def test_mask_pg_url_redacts_userinfo():
 
 
 def test_mask_pg_url_redacts_neon_style_token():
-    masked = mask_pg_url("postgresql://neondb_owner:npg_VERYSECRET@ep-foo.aws.neon.tech/neondb?sslmode=require")
+    masked = mask_pg_url(
+        "postgresql://neondb_owner:npg_VERYSECRET@ep-foo.aws.neon.tech/neondb?sslmode=require"
+    )
     assert "npg_VERYSECRET" not in masked
     assert masked.startswith("postgresql://<redacted>@ep-foo.aws.neon.tech/neondb")
 
@@ -43,11 +45,13 @@ def test_run_succeeds_on_zero_exit():
 
 
 def test_run_streams_child_stdout_to_parent_stdout(capfd: pytest.CaptureFixture[str]):
-    run_with_stderr_capture([
-        "python",
-        "-c",
-        "import sys; sys.stdout.write('hello-child-stdout\\n'); sys.stdout.flush()",
-    ])
+    run_with_stderr_capture(
+        [
+            "python",
+            "-c",
+            "import sys; sys.stdout.write('hello-child-stdout\\n'); sys.stdout.flush()",
+        ]
+    )
     captured = capfd.readouterr()
     assert "hello-child-stdout" in captured.out
 
@@ -55,22 +59,26 @@ def test_run_streams_child_stdout_to_parent_stdout(capfd: pytest.CaptureFixture[
 def test_run_streams_child_stderr_to_parent_stderr_on_success(
     capfd: pytest.CaptureFixture[str],
 ):
-    run_with_stderr_capture([
-        "python",
-        "-c",
-        "import sys; sys.stderr.write('child-progress-log\\n'); sys.stderr.flush()",
-    ])
+    run_with_stderr_capture(
+        [
+            "python",
+            "-c",
+            "import sys; sys.stderr.write('child-progress-log\\n'); sys.stderr.flush()",
+        ]
+    )
     captured = capfd.readouterr()
     assert "child-progress-log" in captured.err
 
 
 def test_run_raises_runtime_error_with_stderr_tail_on_failure():
     with pytest.raises(RuntimeError) as exc_info:
-        run_with_stderr_capture([
-            "python",
-            "-c",
-            "import sys; sys.stderr.write('boom from child\\n'); sys.exit(7)",
-        ])
+        run_with_stderr_capture(
+            [
+                "python",
+                "-c",
+                "import sys; sys.stderr.write('boom from child\\n'); sys.exit(7)",
+            ]
+        )
     message = str(exc_info.value)
     assert "exit 7" in message
     assert "boom from child" in message
@@ -78,13 +86,15 @@ def test_run_raises_runtime_error_with_stderr_tail_on_failure():
 
 def test_run_masks_pg_url_in_error_message():
     with pytest.raises(RuntimeError) as exc_info:
-        run_with_stderr_capture([
-            "python",
-            "-c",
-            "import sys; sys.exit(1)",
-            "--pg-url",
-            "postgresql://u:hunter2@h/db",
-        ])
+        run_with_stderr_capture(
+            [
+                "python",
+                "-c",
+                "import sys; sys.exit(1)",
+                "--pg-url",
+                "postgresql://u:hunter2@h/db",
+            ]
+        )
     message = str(exc_info.value)
     assert "hunter2" not in message
     assert "<redacted>" in message
@@ -244,6 +254,16 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
     monkeypatch.setattr(pipeline_runner, "layer_chain_for", lambda _category: ("script-a.py",))
     monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    # The debug-timing writer is diagnostic-only I/O (real Postgres connect) —
+    # stub it out so this test of the layer-timing LOG behavior never touches
+    # the network. Its own behavior is covered by the
+    # test_record_layer_timing_row_* tests below.
+    recorded_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        pipeline_runner,
+        "record_layer_timing_row",
+        lambda *args: recorded_calls.append(args),
+    )
     captured_temp_dir: Path | None = None
 
     def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
@@ -280,3 +300,211 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     assert captured_temp_dir == work_dir / "duckdb-spill" / "jra-20260629-05-11"
     assert captured_temp_dir is not None
     assert captured_temp_dir.exists()
+    # One debug-timing call for the base build (layer_index=0) + one for the
+    # single layer in the fake chain (layer_index=1), both status="done".
+    # Positional args: (database_url, run_id, category, run_date, target_race,
+    # layer_index, layer_total, layer_script, status, elapsed, cumulative).
+    assert len(recorded_calls) == 2
+    base_call, layer_call = recorded_calls
+    assert (base_call[5], base_call[6], base_call[7], base_call[8]) == (
+        0,
+        1,
+        "__base_build__",
+        "done",
+    )
+    assert (layer_call[5], layer_call[6], layer_call[7], layer_call[8]) == (
+        1,
+        1,
+        "script-a.py",
+        "done",
+    )
+
+
+def test_record_layer_timing_row_writes_row_via_mocked_connection(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import psycopg
+
+    executed_sql: list[str] = []
+    inserted_params: list[tuple[object, ...]] = []
+    state = {"committed": False, "closed": False}
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            executed_sql.append(sql)
+            if params is not None:
+                inserted_params.append(params)
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            state["committed"] = True
+
+        def close(self) -> None:
+            state["closed"] = True
+
+    captured_connect_kwargs: dict[str, object] = {}
+
+    def fake_connect(url: str, **kwargs: object) -> FakeConn:
+        captured_connect_kwargs["url"] = url
+        captured_connect_kwargs.update(kwargs)
+        return FakeConn()
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+
+    pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:05:11:abcd1234",
+        "jra",
+        "20260702",
+        "05:11",
+        1,
+        3,
+        "add-race-internal-features.py",
+        "done",
+        1.5,
+        2.5,
+    )
+
+    assert captured_connect_kwargs["url"] == "postgresql://u:p@h/db"
+    assert captured_connect_kwargs["connect_timeout"] == 5
+    assert any(
+        "CREATE TABLE IF NOT EXISTS _debug_finish_position_layer_timing" in sql
+        for sql in executed_sql
+    )
+    assert any("INSERT INTO _debug_finish_position_layer_timing" in sql for sql in executed_sql)
+    assert inserted_params == [
+        (
+            "jra:20260702:05:11:abcd1234",
+            "jra",
+            "20260702",
+            "05",
+            "11",
+            1,
+            3,
+            "add-race-internal-features.py",
+            "done",
+            1.5,
+            2.5,
+        )
+    ]
+    assert state["committed"] is True
+    assert state["closed"] is True
+
+
+def test_record_layer_timing_row_no_target_race_leaves_keys_none(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import psycopg
+
+    inserted_params: list[tuple[object, ...]] = []
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            if params is not None:
+                inserted_params.append(params)
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
+
+    pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:all:abcd1234",
+        "jra",
+        "20260702",
+        None,
+        0,
+        3,
+        "__base_build__",
+        "done",
+        2.0,
+        2.0,
+    )
+
+    assert inserted_params[0][3] is None  # keibajo_code
+    assert inserted_params[0][4] is None  # race_bango
+
+
+def test_record_layer_timing_row_swallows_connect_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    import psycopg
+
+    def fake_connect_raises(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("boom-connect")
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect_raises)
+
+    pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:all:abcd1234",
+        "jra",
+        "20260702",
+        None,
+        0,
+        3,
+        "__base_build__",
+        "failed",
+        2.0,
+        2.0,
+    )
+
+    captured = capsys.readouterr()
+    assert "debug-timing write failed" in captured.err
+    assert "boom-connect" in captured.err
+
+
+def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    import psycopg
+
+    state = {"closed": False}
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            raise RuntimeError("boom-execute")
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            pass
+
+        def close(self) -> None:
+            state["closed"] = True
+
+    monkeypatch.setattr(psycopg, "connect", lambda *_args, **_kwargs: FakeConn())
+
+    pipeline_runner.record_layer_timing_row(
+        "postgresql://u:p@h/db",
+        "jra:20260702:all:abcd1234",
+        "jra",
+        "20260702",
+        None,
+        0,
+        3,
+        "__base_build__",
+        "done",
+        1.0,
+        1.0,
+    )
+
+    captured = capsys.readouterr()
+    assert "debug-timing write failed" in captured.err
+    assert "boom-execute" in captured.err
+    assert state["closed"] is True

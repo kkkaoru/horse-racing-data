@@ -38,6 +38,7 @@ import re
 import subprocess
 import sys
 import threading
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from time import perf_counter
@@ -58,6 +59,113 @@ RACE_ID_FIELD: Final[str] = "race_id"
 STDERR_TAIL_BYTES: Final[int] = 4000
 PG_URL_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"(postgresql://)[^@]+@")
 PG_URL_REDACTED: Final[str] = r"\1<redacted>@"
+
+# --- TEMPORARY diagnostic instrumentation (added 2026-07-02) ---------------
+# Investigating a live production hang: the Cloudflare Queue consumer
+# (finish-position-cron/src/queue-consumer.ts) holds a stub.fetch() call to
+# this Container's /predict endpoint for ~15-17 minutes, gets killed/
+# redelivered by the platform, retries twice more, then dead-letters with
+# ZERO rows ever written to race_finish_position_model_predictions. Container
+# health checks show no crashes, so the platform is killing the connection
+# from OUTSIDE. We have no dashboard/SSH access this session, so per-layer
+# timing (already logged to this process's stderr via ``_log_pipeline_progress``)
+# never reaches us: wrangler tail only shows the parent Worker's own
+# console.log (further thinned by head_sampling_rate). ``DEBUG_LAYER_TIMING_TABLE``
+# writes the same timing straight to Neon so it can be read via direct SQL.
+# Remove this table name, ``record_layer_timing_row``, and its call sites
+# once the timeout root cause is found and fixed.
+DEBUG_LAYER_TIMING_TABLE: Final[str] = "_debug_finish_position_layer_timing"
+DEBUG_LAYER_TIMING_CONNECT_TIMEOUT_SECONDS: Final[int] = 5
+
+
+def record_layer_timing_row(
+    database_url: str,
+    run_id: str,
+    category: Category,
+    run_date: str,
+    target_race: str | None,
+    layer_index: int,
+    layer_total: int,
+    layer_script: str,
+    status: str,
+    elapsed_seconds: float,
+    cumulative_elapsed_seconds: float,
+) -> None:
+    """Best-effort write of one layer-timing row to a TEMPORARY debug table.
+
+    See the module-level comment above ``DEBUG_LAYER_TIMING_TABLE`` for why
+    this exists. This function must NEVER raise and must NEVER meaningfully
+    slow down the real pipeline: it opens a short-lived connection with a
+    short ``connect_timeout``, writes one row, and closes — any failure
+    (including the ``CREATE TABLE IF NOT EXISTS``) is swallowed and only
+    best-effort logged to stderr.
+    """
+    keibajo_code: str | None = None
+    race_bango: str | None = None
+    if target_race is not None and ":" in target_race:
+        keibajo_code, race_bango = target_race.split(":", 1)
+    try:
+        import psycopg
+
+        conn = psycopg.connect(
+            database_url, connect_timeout=DEBUG_LAYER_TIMING_CONNECT_TIMEOUT_SECONDS
+        )
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {DEBUG_LAYER_TIMING_TABLE} (
+                  id BIGSERIAL PRIMARY KEY,
+                  run_id TEXT NOT NULL,
+                  category TEXT NOT NULL,
+                  run_date TEXT NOT NULL,
+                  keibajo_code TEXT,
+                  race_bango TEXT,
+                  layer_index INTEGER NOT NULL,
+                  layer_total INTEGER NOT NULL,
+                  layer_script TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  elapsed_seconds DOUBLE PRECISION NOT NULL,
+                  cumulative_elapsed_seconds DOUBLE PRECISION NOT NULL,
+                  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            cursor.execute(
+                f"""
+                INSERT INTO {DEBUG_LAYER_TIMING_TABLE} (
+                  run_id, category, run_date, keibajo_code, race_bango,
+                  layer_index, layer_total, layer_script, status,
+                  elapsed_seconds, cumulative_elapsed_seconds
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    category,
+                    run_date,
+                    keibajo_code,
+                    race_bango,
+                    layer_index,
+                    layer_total,
+                    layer_script,
+                    status,
+                    elapsed_seconds,
+                    cumulative_elapsed_seconds,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # best-effort diagnostic only, never re-raise
+        print(
+            f"[pipeline] debug-timing write failed run_id={run_id} "
+            f"layer_index={layer_index} status={status} error={exc!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+# --- end TEMPORARY diagnostic instrumentation ------------------------------
 
 
 def mask_pg_url(text: str) -> str:
@@ -176,9 +284,7 @@ def _query_upcoming_race_keys(
         target_to = to_dt.strftime("%Y%m%d")
         if category == "jra":
             se_table = "jvd_se"
-            keibajo_filter = (
-                "keibajo_code in ('01','02','03','04','05','06','07','08','09','10')"
-            )
+            keibajo_filter = "keibajo_code in ('01','02','03','04','05','06','07','08','09','10')"
         elif category == "nar":
             se_table = "nvd_se"
             keibajo_filter = "keibajo_code <> '83'"
@@ -189,8 +295,7 @@ def _query_upcoming_race_keys(
         if target_race is not None:
             keibajo_code, race_bango = target_race.split(":", 1)
             target_race_filter = (
-                f"and keibajo_code = '{keibajo_code}' "
-                f"and race_bango = '{race_bango}'"
+                f"and keibajo_code = '{keibajo_code}' and race_bango = '{race_bango}'"
             )
 
         sql = f"""
@@ -249,9 +354,7 @@ def build_upcoming_feature_rows(
     race_keys = _query_upcoming_race_keys(
         database_url, target_date, days_ahead, category, target_race
     )
-    realtime_odds_path = fetch_realtime_odds_parquet(
-        category, target_date, WORK_DIR, race_keys
-    )
+    realtime_odds_path = fetch_realtime_odds_parquet(category, target_date, WORK_DIR, race_keys)
     venue_weather_dir = fetch_venue_weather_dir(target_date, WORK_DIR)
     built = build_pipeline(
         category,
@@ -316,6 +419,11 @@ def build_pipeline(
     duckdb_temp_dir = _duckdb_temp_dir(category, target_date, target_race)
     duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
     target_label = target_race if target_race is not None else "all"
+    chain = layer_chain_for(category)
+    # TEMPORARY (2026-07-02): unique id per /predict invocation of build_pipeline
+    # so debug-timing rows for this run can be grouped/ordered in Neon. See
+    # DEBUG_LAYER_TIMING_TABLE comment above.
+    run_id = f"{category}:{target_date}:{target_label}:{uuid.uuid4().hex[:8]}"
     base_start = perf_counter()
     _log_pipeline_progress(
         f"step=base index=0 status=start category={category} "
@@ -338,14 +446,42 @@ def build_pipeline(
             )
         )
     except Exception:
+        base_elapsed = perf_counter() - base_start
         _log_pipeline_progress(
             f"step=base index=0 status=failed category={category} "
-            f"target_race={target_label} elapsed_seconds={perf_counter() - base_start:.3f}"
+            f"target_race={target_label} elapsed_seconds={base_elapsed:.3f}"
+        )
+        record_layer_timing_row(
+            database_url,
+            run_id,
+            category,
+            target_date,
+            target_race,
+            0,
+            len(chain),
+            "__base_build__",
+            "failed",
+            base_elapsed,
+            base_elapsed,
         )
         raise
+    base_elapsed = perf_counter() - base_start
     _log_pipeline_progress(
         f"step=base index=0 status=done category={category} "
-        f"target_race={target_label} elapsed_seconds={perf_counter() - base_start:.3f}"
+        f"target_race={target_label} elapsed_seconds={base_elapsed:.3f}"
+    )
+    record_layer_timing_row(
+        database_url,
+        run_id,
+        category,
+        target_date,
+        target_race,
+        0,
+        len(chain),
+        "__base_build__",
+        "done",
+        base_elapsed,
+        base_elapsed,
     )
     if not has_parquet_output(base_dir):
         _log_pipeline_progress(
@@ -354,7 +490,6 @@ def build_pipeline(
         )
         return False
     current = base_dir
-    chain = layer_chain_for(category)
     for index, script in enumerate(chain):
         nxt = WORK_DIR / f"feat-{category}-layer-{index}"
         layer_start = perf_counter()
@@ -377,16 +512,44 @@ def build_pipeline(
                 )
             )
         except Exception:
+            layer_elapsed = perf_counter() - layer_start
             _log_pipeline_progress(
                 f"step=layer index={index + 1}/{len(chain)} status=failed "
                 f"category={category} script={script} target_race={target_label} "
-                f"elapsed_seconds={perf_counter() - layer_start:.3f}"
+                f"elapsed_seconds={layer_elapsed:.3f}"
+            )
+            record_layer_timing_row(
+                database_url,
+                run_id,
+                category,
+                target_date,
+                target_race,
+                index + 1,
+                len(chain),
+                script,
+                "failed",
+                layer_elapsed,
+                perf_counter() - base_start,
             )
             raise
+        layer_elapsed = perf_counter() - layer_start
         _log_pipeline_progress(
             f"step=layer index={index + 1}/{len(chain)} status=done "
             f"category={category} script={script} target_race={target_label} "
-            f"elapsed_seconds={perf_counter() - layer_start:.3f}"
+            f"elapsed_seconds={layer_elapsed:.3f}"
+        )
+        record_layer_timing_row(
+            database_url,
+            run_id,
+            category,
+            target_date,
+            target_race,
+            index + 1,
+            len(chain),
+            script,
+            "done",
+            layer_elapsed,
+            perf_counter() - base_start,
         )
         current = nxt
     current.rename(final_dir)
