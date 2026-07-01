@@ -39,6 +39,7 @@ def _base_args(tmp_path: Path) -> subject.TrainXgboostArgs:
         "objective": "pairwise",
         "hpo_params_path": None,
         "bucket_membership_parquet": None,
+        "predictions_output_root": None,
         "resume_from_checkpoint": False,
         "fine_tune_final_folds": 0,
         "fine_tune_lr_divisor": 10,
@@ -152,6 +153,84 @@ def test_normalize_args_propagates_objective_and_paths():
     assert normalized["objective"] == "ndcg"
     assert normalized["hpo_params_path"] == Path("tmp/hpo.json")
     assert normalized["bucket_membership_parquet"] == Path("tmp/buckets")
+
+
+def test_parse_args_defaults_predictions_output_root_to_none():
+    args = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+    ])
+    assert args.predictions_output_root is None
+
+
+def test_parse_args_accepts_predictions_output_root():
+    args = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+        "--predictions-output-root",
+        "tmp/predictions",
+    ])
+    assert args.predictions_output_root == Path("tmp/predictions")
+
+
+def test_normalize_args_predictions_output_root_defaults_to_none():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["predictions_output_root"] is None
+
+
+def test_normalize_args_propagates_predictions_output_root():
+    raw = subject.parse_args([
+        "--features-parquet",
+        "tmp/feat",
+        "--category",
+        "nar",
+        "--walk-forward-namespace",
+        "ns",
+        "--year-from",
+        "2024",
+        "--year-to",
+        "2024",
+        "--model-root",
+        "tmp/models",
+        "--predictions-output-root",
+        "tmp/predictions",
+    ])
+    normalized = subject.normalize_args(raw)
+    assert normalized["predictions_output_root"] == Path("tmp/predictions")
 
 
 def test_load_hpo_params_returns_empty_when_none():
@@ -308,6 +387,20 @@ def test_build_per_fold_model_dir_includes_iteration_and_fold(tmp_path: Path):
     assert subject.build_per_fold_model_dir(args, 2024) == (
         tmp_path / "models" / "nar" / "iter1" / "fold-2024"
     )
+
+
+def test_build_predictions_output_path_uses_category_and_fold_year(tmp_path: Path):
+    args = _base_args(tmp_path)
+    args["predictions_output_root"] = tmp_path / "predictions"
+    assert subject.build_predictions_output_path(args, 2024) == (
+        tmp_path / "predictions" / "nar" / "fold-2024" / "predictions.parquet"
+    )
+
+
+def test_build_predictions_output_path_raises_when_root_is_none(tmp_path: Path):
+    args = _base_args(tmp_path)
+    with pytest.raises(ValueError):
+        subject.build_predictions_output_path(args, 2024)
 
 
 def test_resolve_fold_learning_rate_no_fine_tune_returns_base(tmp_path: Path):
@@ -477,6 +570,34 @@ def test_train_fold_completes_and_writes_metadata(
     parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert parsed["objective"] == "ndcg"
     assert parsed["random_seed"] == subject.RANDOM_SEED_BASE + 2024
+
+
+def test_train_fold_writes_predictions_parquet_when_root_set(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    args["predictions_output_root"] = tmp_path / "predictions"
+    df = _feature_df()
+    deps = _make_fake_deps(df)
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    predictions_path = tmp_path / "predictions" / "nar" / "fold-2024" / "predictions.parquet"
+    assert predictions_path.exists()
+    written = pl.read_parquet(predictions_path)
+    assert written.columns == df.columns
+    assert written["race_id"].to_list() == df["race_id"].to_list()
+
+
+def test_train_fold_skips_predictions_write_when_root_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    deps = _make_fake_deps(df)
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    parquet_files = list(tmp_path.rglob("predictions.parquet"))
+    assert parquet_files == []
 
 
 def test_train_fold_passes_bucket_df_through(

@@ -56,6 +56,7 @@ class TrainXgboostArgs(TypedDict):
     objective: str
     hpo_params_path: Path | None
     bucket_membership_parquet: Path | None
+    predictions_output_root: Path | None
     resume_from_checkpoint: bool
     fine_tune_final_folds: int
     fine_tune_lr_divisor: int
@@ -124,6 +125,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--bucket-membership-parquet", type=Path, default=None,
     )
     parser.add_argument(
+        "--predictions-output-root", type=Path, default=None,
+    )
+    parser.add_argument(
         "--resume-from-checkpoint", action="store_true", default=False,
     )
     parser.add_argument(
@@ -168,6 +172,10 @@ def normalize_args(args: argparse.Namespace) -> TrainXgboostArgs:
         "bucket_membership_parquet": (
             Path(cast(str, args.bucket_membership_parquet))
             if args.bucket_membership_parquet is not None else None
+        ),
+        "predictions_output_root": (
+            Path(cast(str, args.predictions_output_root))
+            if args.predictions_output_root is not None else None
         ),
         "resume_from_checkpoint": bool(cast(bool, args.resume_from_checkpoint)),
         "fine_tune_final_folds": int(cast(int, args.fine_tune_final_folds)),
@@ -230,6 +238,20 @@ def resolve_fold_random_seed(fold_year: int) -> int:
 
 def build_per_fold_model_dir(args: TrainXgboostArgs, fold_year: int) -> Path:
     return args["model_root"] / args["category"] / f"iter{args['iteration_id']}" / f"fold-{fold_year}"
+
+
+def build_predictions_output_path(args: TrainXgboostArgs, fold_year: int) -> Path:
+    """Path for the per-race predictions export, gated by ``--predictions-output-root``.
+
+    Callers must only invoke this once ``args["predictions_output_root"]`` is
+    confirmed non-``None``; this mirrors ``build_per_fold_model_dir`` but omits
+    the ``iter{iteration_id}`` segment since predictions exports are keyed by
+    fold year alone for post-hoc cell-level evaluation.
+    """
+    predictions_output_root = args["predictions_output_root"]
+    if predictions_output_root is None:
+        raise ValueError("predictions_output_root must be set to build a predictions output path")
+    return predictions_output_root / args["category"] / f"fold-{fold_year}" / "predictions.parquet"
 
 
 def resolve_fold_learning_rate(
@@ -367,6 +389,10 @@ def train_fold(
     model_dir.mkdir(parents=True, exist_ok=True)
     cast(SaveModelLike, booster).save_model(str(model_dir / "model.json"))
     valid_predictions = cast(pl.DataFrame, fold_result["valid_predictions"])
+    if args["predictions_output_root"] is not None:
+        predictions_path = build_predictions_output_path(args, fold_year)
+        predictions_path.parent.mkdir(parents=True, exist_ok=True)
+        valid_predictions.write_parquet(predictions_path)
     metadata = {
         "fold_year": fold_year,
         "status": METADATA_STATUS_COMPLETED,
