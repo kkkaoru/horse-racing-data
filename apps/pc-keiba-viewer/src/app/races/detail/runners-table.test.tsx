@@ -229,6 +229,35 @@ describe("runners table", () => {
     expect(rowTexts()[0]).toContain("二番");
   });
 
+  it("normalizes realtime horse weight numbers before matching runner rows", () => {
+    render(
+      <RunnersTable
+        initialRealtimePayload={{
+          horseWeights: {
+            fetchedAt: "2026-05-10T18:40:00+09:00",
+            horses: [
+              {
+                changeAmount: 6,
+                changeSign: "-",
+                horseName: "一番",
+                horseNumber: "01",
+                weight: 506,
+              },
+            ],
+          },
+          odds: null,
+          raceEntries: null,
+          raceResults: null,
+          raceKey: "nar:2026:0510:83:09",
+          source: null,
+        }}
+        runners={[runner({ bamei: "一番", bataiju: "480", umaban: "1" })]}
+      />,
+    );
+
+    expect(screen.getByText("506kg (-6)")).toBeTruthy();
+  });
+
   it("uses realtime race entries for changed jockeys and status", () => {
     render(
       <RunnersTable

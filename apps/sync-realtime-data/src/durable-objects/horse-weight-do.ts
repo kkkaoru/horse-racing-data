@@ -53,12 +53,27 @@ const STORAGE_KEY = "snapshot";
 
 const encodeEvent = (event: string, data: string): string => `event: ${event}\ndata: ${data}\n\n`;
 
-const hasHorses = (record: Record<string, unknown>): boolean => Array.isArray(record.horses);
+const isHorseWeightEntry = (value: unknown): value is HorseWeightEntry => {
+  if (value === null || typeof value !== "object") return false;
+  const record: Record<string, unknown> = { ...value };
+  return (
+    typeof record.horseNumber === "string" &&
+    (record.horseName === null || typeof record.horseName === "string") &&
+    (record.weight === null || typeof record.weight === "number") &&
+    (record.changeSign === null || typeof record.changeSign === "string") &&
+    (record.changeAmount === null || typeof record.changeAmount === "number")
+  );
+};
+
+const hasValidHorses = (record: Record<string, unknown>): boolean =>
+  Array.isArray(record.horses) &&
+  record.horses.length > 0 &&
+  record.horses.every(isHorseWeightEntry);
 
 const isHorseWeightSnapshot = (value: unknown): value is HorseWeightSnapshot => {
   if (value === null || typeof value !== "object") return false;
   const record: Record<string, unknown> = { ...value };
-  return typeof record.fetchedAt === "string" && hasHorses(record);
+  return typeof record.fetchedAt === "string" && hasValidHorses(record);
 };
 
 const notFoundResponse = (): Response => new Response("not found", { status: 404 });

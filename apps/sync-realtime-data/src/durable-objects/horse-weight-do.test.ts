@@ -66,6 +66,41 @@ it("PUT /weights rejects payloads missing required fields", async () => {
   expect(await response.json()).toStrictEqual({ error: "invalid body" });
 });
 
+it("PUT /weights rejects an empty horse list", async () => {
+  const cache = HorseWeightDO.createForTest();
+  const response = await cache.fetch(
+    new Request("https://horse-weight-do/weights", {
+      body: JSON.stringify({ fetchedAt: "2026-05-30T14:14:00+09:00", horses: [] }),
+      method: "PUT",
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({ error: "invalid body" });
+});
+
+it("PUT /weights rejects malformed horse entries", async () => {
+  const cache = HorseWeightDO.createForTest();
+  const response = await cache.fetch(
+    new Request("https://horse-weight-do/weights", {
+      body: JSON.stringify({
+        fetchedAt: "2026-05-30T14:14:00+09:00",
+        horses: [
+          {
+            changeAmount: null,
+            changeSign: null,
+            horseName: null,
+            horseNumber: 1,
+            weight: 538,
+          },
+        ],
+      }),
+      method: "PUT",
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({ error: "invalid body" });
+});
+
 it("PUT /weights rejects non-object payloads", async () => {
   const cache = HorseWeightDO.createForTest();
   const response = await cache.fetch(

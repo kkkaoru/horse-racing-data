@@ -80,6 +80,7 @@ import {
   getPremiumRaceDataFetchState,
   getQueueHealthMetrics,
   getLatestHorseWeights,
+  getLatestRaceEntries,
   getRaceSource,
   deleteDailyRaceEntriesChunk,
   deleteOddsSnapshotsChunk,
@@ -2865,7 +2866,7 @@ export const enqueueFetchWeightsBatch = async (
   return jobs.length;
 };
 
-const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> => {
+const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race) {
     throw new Error(`race source not found: ${raceKey}`);
@@ -2917,14 +2918,33 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<void> =>
       raceKey,
       `count=${weights.length}`,
     );
-    return;
+    return false;
+  }
+  if (weights.length === 0) {
+    await logFetch(env.REALTIME_DB, "fetch-weights", SKIP_STATUS.weightsEmpty, raceKey, "count=0");
+    return false;
   }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
-  if (weights.length > 0) {
-    await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
-    await broadcastHorseWeightsToDO(env, raceKey, fetchedAt, weights);
-    await triggerRescoreAfterWeights(env, raceKey);
+  await broadcastHorseWeightsToDO(env, raceKey, fetchedAt, weights);
+  await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_at", fetchedAt);
+  await triggerRescoreAfterWeights(env, raceKey);
+  if (entries.length > 0) {
+    await pushResultsToRaceTrendDO(
+      env,
+      buildRaceTrendDailyTrackRow({
+        entries,
+        fetchedAt,
+        isComplete: false,
+        race,
+        results: [],
+        weights,
+      }),
+      race,
+    );
   }
+  await runTrendCacheBust(env, raceKey, race);
+  await runRaceCacheBust(env, raceKey, race);
+  return true;
 };
 
 const toHorseWeightSnapshot = (fetchedAt: string, weights: HorseWeight[]): HorseWeightSnapshot => ({
@@ -3046,11 +3066,19 @@ interface BuildRaceTrendRowArgs {
   isComplete: boolean;
   race: NarRaceSource;
   results: Omit<RaceResult, "fetchedAt">[];
+  tanshoOdds?: RaceResultTanshoOddsRow[];
+  weights?: HorseWeight[];
 }
 
 const formatHassoJikokuFromRaceStart = (raceStartAtJst: string): string | null => {
   if (raceStartAtJst.length < 16) return null;
   return `${raceStartAtJst.slice(11, 13)}${raceStartAtJst.slice(14, 16)}`;
+};
+
+const normalizeHorseNumberKey = (value: string): string => {
+  const trimmed = value.trim();
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? String(parsed) : trimmed;
 };
 
 // Build a push-row whose starter list covers the FULL field (one row per
@@ -3067,16 +3095,30 @@ const buildRaceTrendDailyTrackRow = ({
   isComplete,
   race,
   results,
+  tanshoOdds = [],
+  weights = [],
 }: BuildRaceTrendRowArgs): RaceTrendDailyTrackRow => {
-  const resultByHorseNumber = new Map(results.map((result) => [result.horseNumber, result]));
+  const resultByHorseNumber = new Map(
+    results.map((result) => [normalizeHorseNumberKey(result.horseNumber), result]),
+  );
+  const oddsByHorseNumber = new Map(
+    tanshoOdds.map((odds) => [normalizeHorseNumberKey(odds.horseNumber), odds]),
+  );
+  const weightByHorseNumber = new Map(
+    weights.map((weight) => [normalizeHorseNumberKey(weight.horseNumber), weight]),
+  );
   const starterRows = entries.map((entry) => {
-    const result = resultByHorseNumber.get(entry.horseNumber);
+    const horseNumberKey = normalizeHorseNumberKey(entry.horseNumber);
+    const result = resultByHorseNumber.get(horseNumberKey);
+    const odds = oddsByHorseNumber.get(horseNumberKey);
+    const weight = weightByHorseNumber.get(horseNumberKey);
     const finishPosition = result
       ? Number.parseInt(result.finishPosition.replace(/\s+/gu, ""), 10) || 0
       : 0;
     return {
       bamei: entry.horseName,
-      bataiju: null,
+      bataiju:
+        weight?.weight === undefined || weight.weight === null ? null : String(weight.weight),
       corner1: null,
       corner2: null,
       corner3: null,
@@ -3092,12 +3134,16 @@ const buildRaceTrendDailyTrackRow = ({
       runnerCount: null,
       sohaTime: result?.time ?? null,
       source: race.source,
-      tanshoOdds: null,
-      tanshoPopularity: null,
+      tanshoOdds:
+        odds === undefined ? null : String(Math.round(odds.tanshoOdds * 10)).padStart(4, "0"),
+      tanshoPopularity: odds === undefined ? null : String(odds.popularity).padStart(2, "0"),
       umaban: entry.horseNumber,
       wakuban: null,
-      zogenFugo: null,
-      zogenSa: null,
+      zogenFugo: weight?.changeSign ?? null,
+      zogenSa:
+        weight?.changeAmount === undefined || weight.changeAmount === null
+          ? null
+          : String(weight.changeAmount),
     };
   });
   return {
@@ -3109,6 +3155,45 @@ const buildRaceTrendDailyTrackRow = ({
     runningStyles: [],
     starterRows,
   };
+};
+
+const buildRaceEntriesFromResults = (
+  results: ReadonlyArray<Omit<RaceResult, "fetchedAt">>,
+): Omit<RaceEntry, "fetchedAt">[] =>
+  results.map((result) => ({
+    horseName: result.horseName,
+    horseNumber: result.horseNumber,
+    jockeyName: null,
+    status: null,
+  }));
+
+type RaceTrendEntriesSource = "parsed" | "stored" | "results";
+
+interface ResolvedRaceTrendEntries {
+  entries: Omit<RaceEntry, "fetchedAt">[];
+  source: RaceTrendEntriesSource;
+}
+
+const resolveRaceTrendEntries = async (
+  env: Env,
+  raceKey: string,
+  parsedEntries: Omit<RaceEntry, "fetchedAt">[],
+  results: Omit<RaceResult, "fetchedAt">[],
+): Promise<ResolvedRaceTrendEntries> => {
+  if (parsedEntries.length > 0) return { entries: parsedEntries, source: "parsed" };
+  const stored = await getLatestRaceEntries(env.REALTIME_DB, raceKey);
+  if (stored !== null && stored.horses.length > 0) {
+    return {
+      entries: stored.horses.map((entry) => ({
+        horseName: entry.horseName,
+        horseNumber: entry.horseNumber,
+        jockeyName: entry.jockeyName,
+        status: entry.status,
+      })),
+      source: "stored",
+    };
+  }
+  return { entries: buildRaceEntriesFromResults(results), source: "results" };
 };
 
 // Observe `requestTrendCacheBust` outcome by status:
@@ -3396,6 +3481,8 @@ interface DispatchResultFetchOutcomeInput {
   race: NarRaceSource;
   raceKey: string;
   results: Omit<RaceResult, "fetchedAt">[];
+  tanshoOdds: RaceResultTanshoOddsRow[];
+  weights: HorseWeight[];
 }
 
 interface TriggerFeaturesRebuildAfterResultLandedArgs {
@@ -3476,6 +3563,8 @@ const handleRetryResultFetch = async (input: DispatchResultFetchOutcomeInput): P
       isComplete: false,
       race: input.race,
       results: input.results,
+      tanshoOdds: input.tanshoOdds,
+      weights: input.weights,
     }),
     input.race,
   );
@@ -3512,6 +3601,8 @@ const handleCompleteResultFetch = async (input: DispatchResultFetchOutcomeInput)
       isComplete,
       race: input.race,
       results: input.results,
+      tanshoOdds: input.tanshoOdds,
+      weights: input.weights,
     }),
     input.race,
   );
@@ -3611,7 +3702,7 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
         ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(entryHtml), null)
         : parseRaceEntries(entryHtml);
     await insertRaceEntrySnapshot(env.REALTIME_DB, raceKey, fetchedAt, entries);
-    const entryHorseNumbers =
+    const parsedEntryHorseNumbers =
       race.source === "jra"
         ? entries.map((entry) => entry.horseNumber)
         : parseRaceEntryHorseNumbers(entryHtml);
@@ -3625,9 +3716,6 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
           ]
         : parseRaceResultExcludedHorseNumbers(resultHtml),
     );
-    const expectedHorseCount = entryHorseNumbers.filter(
-      (horseNumber) => !excludedHorseNumbers.has(horseNumber),
-    ).length;
     const results =
       race.source === "jra" ? parseJraRaceResults(resultHtml) : parseRaceResults(resultHtml);
     // 2026-06-07: when the entry HTML parses to 0 horses AND the result HTML
@@ -3636,9 +3724,19 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     // falls through, insertRaceResultSnapshot short-circuits on 0 rows, and
     // resolveResultFetchOutcome returns "complete" → permanently locks the
     // race at 0 result rows (same shape as the BBB fix 3c7f877 for entries).
-    if (entryHorseNumbers.length === 0 && results.length === 0) {
+    if (parsedEntryHorseNumbers.length === 0 && results.length === 0) {
       throw new Error(`race entry rows are empty: ${raceKey}`);
     }
+    const resolvedTrendEntries = await resolveRaceTrendEntries(env, raceKey, entries, results);
+    const effectiveEntryHorseNumbers =
+      parsedEntryHorseNumbers.length > 0
+        ? parsedEntryHorseNumbers
+        : resolvedTrendEntries.entries.map((entry) => entry.horseNumber);
+    const expectedHorseCount =
+      resolvedTrendEntries.source === "results" && race.source === "nar"
+        ? results.length + 1
+        : effectiveEntryHorseNumbers.filter((horseNumber) => !excludedHorseNumbers.has(horseNumber))
+            .length;
     if (expectedHorseCount > 0 && results.length === 0) {
       // 2026-06-30: NEVER throw on empty result. Throwing triggers the
       // Cloudflare queue auto-retry (default max_retries=3 in
@@ -3654,12 +3752,15 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     }
     await resetEmptyResultAttempts(env.REALTIME_DB, raceKey);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
+    const tanshoOdds =
+      race.source === "nar" && results.length > 0 ? parseRaceResultTanshoOdds(resultHtml) : [];
+    const latestWeights = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
+    const weightsForTrend = latestWeights?.horses ?? [];
     if (race.source === "nar") {
       // Backfill the hot worker's odds_snapshots with the final 単勝オッズ /
       // 人気 parsed from the same result HTML. This is a safety net for races
       // where live odds polling missed the final pre-race snapshot (e.g. the
       // 2026-06-29 trend section showing blanks for sibling rows).
-      const tanshoOdds = parseRaceResultTanshoOdds(resultHtml);
       await forwardNarTanshoOddsToHot(env, {
         fetchedAt,
         raceKey,
@@ -3685,7 +3786,7 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       source: race.source,
     });
     await dispatchResultFetchOutcome({
-      entries,
+      entries: resolvedTrendEntries.entries,
       env,
       expectedHorseCount,
       fetchedAt,
@@ -3695,6 +3796,8 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
       race,
       raceKey,
       results,
+      tanshoOdds,
+      weights: weightsForTrend,
     });
   } catch (error) {
     await failResultFetch(env.REALTIME_DB, raceKey);
@@ -4224,11 +4327,12 @@ const handleFetchWeightsOrUnknown = async (env: Env, job: unknown): Promise<void
   }
   // 2026-06-28: NAR weight scrapes can hang on dead or rate-limited NAR
   // upstreams. Same 30s runtime cancel concern as fetch-results above.
-  await withHandlerTimeout({
+  const stored = await withHandlerTimeout({
     label: "fetch-weights",
     ms: QUEUE_HANDLER_TIMEOUT_MS,
     task: fetchAndStoreWeights(env, fetchWeightsJob.raceKey),
   });
+  if (!stored) return;
   await logFetch(env.REALTIME_DB, fetchWeightsJob.type, "ok", fetchWeightsJob.raceKey, null);
 };
 

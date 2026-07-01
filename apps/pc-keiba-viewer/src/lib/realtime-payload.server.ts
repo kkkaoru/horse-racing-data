@@ -76,7 +76,7 @@ const isHorseWeightSnapshot = (value: unknown): value is HorseWeightSnapshot => 
   if (typeof value !== "object" || value === null) return false;
   const fetchedAt: unknown = Reflect.get(value, "fetchedAt");
   const horses: unknown = Reflect.get(value, "horses");
-  return typeof fetchedAt === "string" && Array.isArray(horses);
+  return typeof fetchedAt === "string" && Array.isArray(horses) && horses.length > 0;
 };
 
 export const buildRaceKey = (request: RealtimePayloadRequest): string =>
@@ -124,7 +124,7 @@ export const fetchOddsFromHot = async (
 export const resolveHorseWeights = async (
   params: ResolveHorseWeightsParams,
 ): Promise<HorseWeightSnapshot | null> => {
-  if (params.fromDO !== null) return params.fromDO;
+  if (params.fromDO !== null && params.fromDO.horses.length > 0) return params.fromDO;
   if (params.db === undefined) return null;
   try {
     return await fetchHorseWeightsFromD1({ db: params.db, raceKey: params.raceKey });

@@ -686,7 +686,7 @@ it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues ne
   );
 });
 
-it("handleJob fetch-weights with NAR race source short-circuits when no fetch URL", async () => {
+it("handleJob fetch-weights with NAR race source logs weights-empty when no rows parse", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch, getRaceSource } = await import("./storage");
   vi.mocked(getRaceSource).mockResolvedValue({
@@ -723,15 +723,16 @@ it("handleJob fetch-weights with NAR race source short-circuits when no fetch UR
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",
-    "ok",
+    "skip:weights-empty",
     "nar:2026:0512:55:01",
-    null,
+    "count=0",
   );
 });
 
 it("handleJob fetch-weights with NAR race source + debaUrl runs fetchOdds + insert weight", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, logFetch } = await import("./storage");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { parseHorseWeights } = await import("./keiba-go");
   vi.mocked(getRaceSource).mockResolvedValue({
     babaCode: "22",
     debaUrl: "https://x.test/race",
@@ -759,10 +760,27 @@ it("handleJob fetch-weights with NAR race source + debaUrl runs fetchOdds + inse
     source: "nar",
     updatedAt: "2026-05-12T00:00:00+09:00",
   } as never);
+  vi.mocked(parseHorseWeights).mockReturnValueOnce([
+    {
+      changeAmount: 4,
+      changeSign: "+",
+      horseName: "WeightA",
+      horseNumber: "1",
+      weight: 482,
+    },
+    {
+      changeAmount: 2,
+      changeSign: "-",
+      horseName: "WeightB",
+      horseNumber: "2",
+      weight: 510,
+    },
+  ]);
   await handleJob(buildEnv(), {
     raceKey: "nar:2026:0512:55:01",
     type: "fetch-weights",
   });
+  expect(insertHorseWeightSnapshot).toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",

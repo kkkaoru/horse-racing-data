@@ -221,6 +221,30 @@ it("fetchHorseWeightsLatest returns null when DO returns malformed json", async 
   expect(result).toBeNull();
 });
 
+it("fetchHorseWeightsLatest treats an empty DO snapshot as unavailable", async () => {
+  const fetchMock = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          fetchedAt: "2026-05-29T08:00:00.000Z",
+          horses: [],
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  const result = await fetchHorseWeightsLatest({
+    day: "29",
+    keibajoCode: "05",
+    month: "05",
+    raceNumber: "01",
+    realtimeData: { fetch: fetchMock },
+    source: "jra",
+    year: "2026",
+  });
+  expect(result).toBeNull();
+});
+
 it("fetchHorseWeightsLatest returns null when fetch throws", async () => {
   const fetchMock = vi.fn<HotFetch>(async () => {
     throw new Error("offline");
@@ -302,6 +326,39 @@ it("resolveHorseWeights falls back to D1 when DO is null", async () => {
         horseName: "Alpha",
         horseNumber: "2",
         weight: 460,
+      },
+    ],
+  });
+});
+
+it("resolveHorseWeights falls back to D1 when DO snapshot has no horses", async () => {
+  const db = buildD1WithRows([
+    {
+      change_amount: 4,
+      change_sign: "+",
+      fetched_at: "2026-05-29T08:05:00.000Z",
+      horse_name: "Fallback",
+      horse_number: "3",
+      weight: 488,
+    },
+  ]);
+  const result = await resolveHorseWeights({
+    db,
+    fromDO: {
+      fetchedAt: "2026-05-29T08:00:00.000Z",
+      horses: [],
+    },
+    raceKey: "jra:2026:0529:05:01",
+  });
+  expect(result).toStrictEqual({
+    fetchedAt: "2026-05-29T08:05:00.000Z",
+    horses: [
+      {
+        changeAmount: 4,
+        changeSign: "+",
+        horseName: "Fallback",
+        horseNumber: "3",
+        weight: 488,
       },
     ],
   });

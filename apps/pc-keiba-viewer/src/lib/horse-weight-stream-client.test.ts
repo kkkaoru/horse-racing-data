@@ -112,6 +112,76 @@ it("updates on incoming weights event", () => {
   });
 });
 
+it("keeps a non-empty initial snapshot when an empty weights event arrives", () => {
+  const initial: HorseWeightSnapshot = {
+    fetchedAt: "2026-05-30T08:00:00.000Z",
+    horses: [
+      { changeAmount: 0, changeSign: "+", horseName: "Alpha", horseNumber: "1", weight: 480 },
+    ],
+  };
+  const { result } = renderHook(() =>
+    useHorseWeightStream({
+      day: "30",
+      initial,
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      source: "jra",
+      year: "2026",
+    }),
+  );
+  const instance = FakeEventSource.instances[0];
+  if (!instance) throw new Error("missing fake EventSource instance");
+  act(() => {
+    instance.dispatchWeightsEvent(
+      JSON.stringify({ fetchedAt: "2026-05-30T08:30:00.000Z", horses: [] }),
+    );
+  });
+  expect(result.current).toStrictEqual({
+    fetchedAt: "2026-05-30T08:00:00.000Z",
+    horses: [
+      { changeAmount: 0, changeSign: "+", horseName: "Alpha", horseNumber: "1", weight: 480 },
+    ],
+  });
+});
+
+it("keeps an existing non-empty snapshot when a later empty weights event arrives", () => {
+  const { result } = renderHook(() =>
+    useHorseWeightStream({
+      day: "30",
+      initial: null,
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      source: "jra",
+      year: "2026",
+    }),
+  );
+  const instance = FakeEventSource.instances[0];
+  if (!instance) throw new Error("missing fake EventSource instance");
+  act(() => {
+    instance.dispatchWeightsEvent(
+      JSON.stringify({
+        fetchedAt: "2026-05-30T08:30:00.000Z",
+        horses: [
+          { changeAmount: -2, changeSign: "-", horseName: "Beta", horseNumber: "2", weight: 502 },
+        ],
+      }),
+    );
+  });
+  act(() => {
+    instance.dispatchWeightsEvent(
+      JSON.stringify({ fetchedAt: "2026-05-30T08:33:00.000Z", horses: [] }),
+    );
+  });
+  expect(result.current).toStrictEqual({
+    fetchedAt: "2026-05-30T08:30:00.000Z",
+    horses: [
+      { changeAmount: -2, changeSign: "-", horseName: "Beta", horseNumber: "2", weight: 502 },
+    ],
+  });
+});
+
 it("ignores malformed event payload", () => {
   const initial: HorseWeightSnapshot = {
     fetchedAt: "2026-05-30T08:00:00.000Z",

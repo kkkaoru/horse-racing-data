@@ -177,6 +177,11 @@ const SNAPSHOT_SELECT_SQL = `
     select race_key, max(fetched_at) as fetched_at
     from race_entry_snapshots
     group by race_key
+  ),
+  latest_weight_fetch_at as (
+    select race_key, max(fetched_at) as fetched_at
+    from horse_weight_snapshots
+    group by race_key
   )
   select
     s.source as source,
@@ -195,7 +200,11 @@ const SNAPSHOT_SELECT_SQL = `
     w.weight as weight,
     w.change_sign as changeSign,
     w.change_amount as changeAmount,
-    coalesce(rf.fetched_at, ef.fetched_at) as fetchedAt,
+    max(
+      coalesce(rf.fetched_at, ''),
+      coalesce(ef.fetched_at, ''),
+      coalesce(wf.fetched_at, '')
+    ) as fetchedAt,
     s.result_expected_horse_count as expectedHorseCount,
     s.result_saved_horse_count as savedHorseCount,
     s.result_complete_at as resultCompleteAt
@@ -205,6 +214,7 @@ const SNAPSHOT_SELECT_SQL = `
   left join latest_weight w on w.race_key = e.race_key and w.horse_number = e.horse_number
   left join latest_result_fetch_at rf on rf.race_key = e.race_key
   left join latest_entry_fetch_at ef on ef.race_key = e.race_key
+  left join latest_weight_fetch_at wf on wf.race_key = e.race_key
   where s.source = ?
     and s.kaisai_nen = ?
     and s.kaisai_tsukihi = ?
@@ -640,6 +650,17 @@ const mergeRowFields = (
   }),
 });
 
+const mergeRowEnrichment = (
+  current: RaceTrendDailyTrackRow,
+  incoming: RaceTrendDailyTrackRow,
+): RaceTrendDailyTrackRow => ({
+  ...current,
+  starterRows: mergeStarterRowLists({
+    current: current.starterRows,
+    incoming: incoming.starterRows,
+  }),
+});
+
 const mergeIncomingRow = ({
   existing,
   incoming,
@@ -649,8 +670,14 @@ const mergeIncomingRow = ({
   const baseRaces = existing ? { ...existing.races } : {};
   const currentRow = baseRaces[incoming.raceBango];
   const shouldOverwrite = shouldOverwriteExistingRow({ current: currentRow, incoming });
-  const nextRow = shouldOverwrite && currentRow ? mergeRowFields(currentRow, incoming) : incoming;
-  const nextRaces = shouldOverwrite ? { ...baseRaces, [incoming.raceBango]: nextRow } : baseRaces;
+  const nextRow =
+    shouldOverwrite && currentRow
+      ? mergeRowFields(currentRow, incoming)
+      : currentRow
+        ? mergeRowEnrichment(currentRow, incoming)
+        : incoming;
+  const nextRaces =
+    shouldOverwrite || currentRow ? { ...baseRaces, [incoming.raceBango]: nextRow } : baseRaces;
   return {
     keibajoCode: parsed.keibajoCode,
     races: nextRaces,

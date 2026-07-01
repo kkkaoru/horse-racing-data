@@ -171,8 +171,9 @@ vi.mock("./premium-race", async () => {
 // `buildEnv` factory — every test body uses `buildEnv()` and never touches
 // `as unknown as Env` directly (typescript rule 28).
 interface BuildEnvOverrides extends Partial<
-  Omit<Env, "REALTIME_DB" | "RACE_TREND_DAILY_TRACK_DO">
+  Omit<Env, "HORSE_WEIGHT_DO" | "REALTIME_DB" | "RACE_TREND_DAILY_TRACK_DO">
 > {
+  HORSE_WEIGHT_DO?: object;
   REALTIME_DB?: object;
   RACE_TREND_DAILY_TRACK_DO?: object;
 }
@@ -1902,6 +1903,182 @@ it("fetch-results pushes one starter row per entry, including unranked horses", 
     "1:25.6",
     null,
   ]);
+});
+
+it("fetch-results reuses stored entries when fresh entry parsing is empty but results exist", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getLatestRaceEntries, getRaceSource, insertRaceResultSnapshot } =
+    await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([]);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue([]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    buildRaceResult({ finishPosition: "1", horseNumber: "1", time: "1:25.0" }),
+    buildRaceResult({ finishPosition: "2", horseNumber: "2", time: "1:25.4" }),
+  ]);
+  vi.mocked(getLatestRaceEntries).mockResolvedValueOnce({
+    fetchedAt: "2026-05-12T10:30:00+09:00",
+    horses: [
+      {
+        ...buildRaceEntry({ horseName: "StoredA", horseNumber: "1", jockeyName: "JockeyA" }),
+        fetchedAt: "2026-05-12T10:30:00+09:00",
+      },
+      {
+        ...buildRaceEntry({ horseName: "StoredB", horseNumber: "2", jockeyName: "JockeyB" }),
+        fetchedAt: "2026-05-12T10:30:00+09:00",
+      },
+    ],
+  });
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName },
+      REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z",
+    }),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-results" },
+  );
+  const body = stubFetch.mock.calls[0]![1]!.body;
+  if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+  const parsed = JSON.parse(body) as {
+    starterRows: Array<{ bamei: string | null; finishPosition: number; umaban: string }>;
+  };
+  expect(
+    parsed.starterRows.map((row) => ({
+      bamei: row.bamei,
+      finishPosition: row.finishPosition,
+      umaban: row.umaban,
+    })),
+  ).toStrictEqual([
+    { bamei: "StoredA", finishPosition: 1, umaban: "1" },
+    { bamei: "StoredB", finishPosition: 2, umaban: "2" },
+  ]);
+});
+
+it("fetch-results keeps result-only NAR rows partial instead of completing a shrunken field", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    claimResultFetch,
+    getLatestRaceEntries,
+    getRaceSource,
+    insertRaceResultSnapshot,
+    recordPartialResultFetch,
+    completeResultFetch,
+  } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries, parseRaceResults, parseRaceEntryHorseNumbers } =
+    await import("./keiba-go");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([]);
+  vi.mocked(parseRaceEntryHorseNumbers).mockReturnValue([]);
+  vi.mocked(parseRaceResults).mockReturnValue([
+    buildRaceResult({ finishPosition: "1", horseName: "ResultA", horseNumber: "1" }),
+    buildRaceResult({ finishPosition: "2", horseName: "ResultB", horseNumber: "2" }),
+  ]);
+  vi.mocked(getLatestRaceEntries).mockResolvedValueOnce(null);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValue(2);
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-05-12T07:00:00.000Z" }), {
+    raceKey: "nar:2026:0512:55:01",
+    type: "fetch-results",
+  });
+  expect(recordPartialResultFetch).toHaveBeenCalledTimes(1);
+  expect(completeResultFetch).toHaveBeenCalledTimes(0);
+});
+
+it("fetch-weights logs weights-empty without recording ok when parser returns no rows", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceEntries).mockReturnValue([buildRaceEntry({ horseNumber: "1" })]);
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
+  expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:weights-empty",
+    "nar:2026:0512:55:01",
+    "count=0",
+  );
+  expect(logFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "ok",
+    "nar:2026:0512:55:01",
+    null,
+  );
+});
+
+it("fetch-weights broadcasts target weights before pushing weight rows to RaceTrend DO", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot } = await import("./storage");
+  const { fetchRacePage, parseRaceEntries } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildNarNarRaceSource());
+  vi.mocked(fetchRacePage).mockResolvedValue(`
+    <table>
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">1</td>
+        <td colspan="3"><a class="horseName">WeightA</a></td>
+        <td class="odds_weight" rowspan="2">1.8<br>482(+4)</td>
+      </tr>
+      <tr class="tBorder">
+        <td rowspan="5" class="horseNum">12</td>
+        <td colspan="3"><a class="horseName">WeightB</a></td>
+        <td class="odds_weight" rowspan="2">7.2<br>510(-2)</td>
+      </tr>
+    </table>
+  `);
+  vi.mocked(parseRaceEntries).mockReturnValue([
+    buildRaceEntry({ horseName: "WeightA", horseNumber: "1", jockeyName: "JockeyA" }),
+    buildRaceEntry({ horseName: "WeightB", horseNumber: "12", jockeyName: "JockeyB" }),
+  ]);
+  const callOrder: string[] = [];
+  vi.mocked(insertHorseWeightSnapshot).mockImplementationOnce(async () => {
+    callOrder.push("insert");
+  });
+  const horseWeightFetch = vi.fn(async (_url: string, _init?: RequestInit): Promise<Response> => {
+    callOrder.push("horse-weight-do");
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+  let raceTrendPushCount = 0;
+  const raceTrendFetch = vi.fn(async (_url: string, init?: RequestInit): Promise<Response> => {
+    callOrder.push("race-trend-do");
+    raceTrendPushCount += 1;
+    const body = init?.body;
+    if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+    const parsed = JSON.parse(body) as { starterRows: Array<{ bataiju: string | null }> };
+    if (raceTrendPushCount === 2) {
+      expect(parsed.starterRows.map((row) => row.bataiju)).toStrictEqual(["482", "510"]);
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+  const horseWeightIdFromName = vi.fn((name: string): string => name);
+  const raceTrendIdFromName = vi.fn((name: string): string => name);
+  await handleJob(
+    buildEnv({
+      HORSE_WEIGHT_DO: {
+        get: vi.fn((_id: string) => ({ fetch: horseWeightFetch })),
+        idFromName: horseWeightIdFromName,
+      },
+      RACE_TREND_DAILY_TRACK_DO: {
+        get: vi.fn((_id: string) => ({ fetch: raceTrendFetch })),
+        idFromName: raceTrendIdFromName,
+      },
+    }),
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" },
+  );
+  expect(callOrder).toStrictEqual(["race-trend-do", "insert", "horse-weight-do", "race-trend-do"]);
 });
 
 // 2026-06-28: queue-stall preventive fix. fetchAndStoreResults wrapping with

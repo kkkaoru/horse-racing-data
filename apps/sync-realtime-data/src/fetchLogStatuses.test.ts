@@ -17,6 +17,7 @@ it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () =>
     notFinished: "skip:not-finished",
     paddockUrlMissing: "skip:paddock-url-missing",
     raceNotFound: "skip:race-not-found",
+    weightsEmpty: "skip:weights-empty",
     weightsSparse: "skip:weights-sparse",
   });
 });

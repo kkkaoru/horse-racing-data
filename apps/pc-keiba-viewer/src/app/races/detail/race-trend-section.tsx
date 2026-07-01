@@ -1049,8 +1049,8 @@ function RowFragment({
         <td>{formatRate(row.showRate)}</td>
         <td>{formatRate(row.quinellaRate)}</td>
         <td>{formatRate(row.winRate)}</td>
-        <td>{formatMedian(realtimeOdds?.popularity)}</td>
-        <td>{formatTrendWinOdds(realtimeOdds?.winOdds)}</td>
+        <td>{formatMedian(realtimeOdds?.popularity ?? row.popularityMedian)}</td>
+        <td>{formatTrendWinOdds(realtimeOdds?.winOdds ?? row.winOddsMedian)}</td>
         <td>{row.starts}</td>
         <td>{formatMedian(row.finishPositionMedian)}</td>
       </tr>

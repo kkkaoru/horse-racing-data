@@ -229,7 +229,7 @@ export function RunnersTable({
     const horses = effectiveSnapshot?.horses ?? [];
     return new Map(
       horses.map((horse) => [
-        horse.horseNumber,
+        formatRunnerNumber(horse.horseNumber),
         formatHorseWeight(
           horse.weight === null ? null : String(horse.weight),
           horse.changeSign,

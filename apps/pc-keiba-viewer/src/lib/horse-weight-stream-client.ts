@@ -65,7 +65,7 @@ export const useHorseWeightStream = (
     const source = new EventSource(url);
     const handleMessage = (event: MessageEvent) => {
       const next = parseEventData(event.data);
-      if (next !== null) setSnapshot(next);
+      if (next !== null && next.horses.length > 0) setSnapshot(next);
     };
     source.addEventListener(WEIGHTS_EVENT_NAME, handleMessage);
     return () => {

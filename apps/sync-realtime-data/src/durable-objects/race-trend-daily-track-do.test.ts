@@ -2272,6 +2272,107 @@ it("POST /push preserves existing bataiju when incoming row has finishPosition b
   expect(starter.sohaTime).toBe("1:34.2");
 });
 
+it("POST /push enriches starter fields from an older row without demoting completion metadata", async () => {
+  const handle = buildFakeState(new Map());
+  const cache = await RaceTrendDailyTrackDO.createForTest({ env: buildEnv(), state: handle.state });
+  const completeRow: RaceTrendDailyTrackRow = {
+    fetchedAt: "2026-05-31T11:05:00+09:00",
+    finishedAt: "2026-05-31T11:05:00+09:00",
+    isComplete: true,
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    runningStyles: [],
+    starterRows: [
+      {
+        bamei: "Horse",
+        bataiju: null,
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        finishPosition: 1,
+        hassoJikoku: "1100",
+        jockeyName: "Jockey",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0531",
+        keibajoCode: "06",
+        raceBango: "03",
+        raceName: "TestRace",
+        runnerCount: null,
+        sohaTime: "1:34.2",
+        source: "jra",
+        tanshoOdds: null,
+        tanshoPopularity: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: null,
+        zogenSa: null,
+      },
+    ],
+  };
+  const olderWeightRow: RaceTrendDailyTrackRow = {
+    fetchedAt: "2026-05-31T11:04:00+09:00",
+    finishedAt: null,
+    isComplete: false,
+    raceBango: "03",
+    raceKey: "jra:2026:0531:06:03",
+    runningStyles: [],
+    starterRows: [
+      {
+        bamei: "Horse",
+        bataiju: "456",
+        corner1: null,
+        corner2: null,
+        corner3: null,
+        corner4: null,
+        finishPosition: 0,
+        hassoJikoku: "1100",
+        jockeyName: "Jockey",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0531",
+        keibajoCode: "06",
+        raceBango: "03",
+        raceName: "TestRace",
+        runnerCount: null,
+        sohaTime: null,
+        source: "jra",
+        tanshoOdds: null,
+        tanshoPopularity: null,
+        umaban: "1",
+        wakuban: "1",
+        zogenFugo: "-",
+        zogenSa: "4",
+      },
+    ],
+  };
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(completeRow),
+      method: "POST",
+    }),
+  );
+  await cache.fetch(
+    new Request("https://race-trend-daily-track-do/push", {
+      body: JSON.stringify(olderWeightRow),
+      method: "POST",
+    }),
+  );
+  const response = await cache.fetch(
+    new Request("https://race-trend-daily-track-do/races?beforeRaceBango=99"),
+  );
+  const payload = (await response.json()) as { races: RaceTrendDailyTrackRow[] };
+  const row = payload.races[0]!;
+  const starter = row.starterRows[0]!;
+  expect(row.fetchedAt).toBe("2026-05-31T11:05:00+09:00");
+  expect(row.finishedAt).toBe("2026-05-31T11:05:00+09:00");
+  expect(row.isComplete).toBe(true);
+  expect(starter.bataiju).toBe("456");
+  expect(starter.finishPosition).toBe(1);
+  expect(starter.sohaTime).toBe("1:34.2");
+  expect(starter.zogenFugo).toBe("-");
+  expect(starter.zogenSa).toBe("4");
+});
+
 // Critical alarm self-pull bootstrap: handlePush schedules the alarm on
 // the very first push so the DO actually runs refreshFromD1 even when
 // /races never gets hit while state is empty. Without this, a DO populated

@@ -1043,3 +1043,21 @@ test("expanded detail table renders a dash when the trainer name is missing", as
   );
   expect(trainerCell?.textContent).toStrictEqual("-");
 });
+
+test("aggregate row falls back to stored popularity and win odds medians without realtime odds", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(buildOkResponse(buildDetailPayloadWithTrainer()));
+  const { container } = renderSection();
+  await flushAllAsync();
+  const headers = Array.from(
+    container.querySelectorAll(".race-trend-table.aggregate thead th"),
+  ).map((node) => node.textContent ?? "");
+  const popularityIndex = headers.indexOf("人気");
+  const winOddsIndex = headers.indexOf("単勝");
+  expect(popularityIndex >= 0).toStrictEqual(true);
+  expect(winOddsIndex >= 0).toStrictEqual(true);
+  const row = container.querySelector(".race-trend-table.aggregate tbody tr");
+  if (row === null) throw new Error("aggregate row missing");
+  const cells = Array.from(row.querySelectorAll("td")).map((node) => node.textContent ?? "");
+  expect(cells[popularityIndex]).toStrictEqual("3");
+  expect(cells[winOddsIndex]).toStrictEqual("5.0");
+});
