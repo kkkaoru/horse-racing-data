@@ -8,6 +8,12 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
 import { FINISH_POSITION_VERSION } from "./finish-position-version";
+import {
+  collectLocalResourceSnapshot,
+  resolveAutoMemoryLimit,
+  resolveAutoThreads,
+  type LocalResourceSnapshot,
+} from "./generate-running-style-local";
 import { RUNNING_STYLE_FEATURE_VERSION } from "./running-style-feature-version";
 
 interface CategoryModelVersions {
@@ -49,6 +55,10 @@ interface ColimaResource {
 
 interface ColimaProbe {
   (): Promise<ColimaResource>;
+}
+
+interface LocalResourceProbe {
+  (): Promise<LocalResourceSnapshot>;
 }
 
 interface NowProvider {
@@ -117,6 +127,7 @@ interface RunDeps {
   spawn: SpawnRunner;
   sleep: SleepRunner;
   probeColima: ColimaProbe;
+  probeLocalResources?: LocalResourceProbe;
   now: NowProvider;
   fs: FsLike;
 }
@@ -134,8 +145,9 @@ export const PER_YEAR_SLEEP_MS = 2000;
 export const PER_CATEGORY_SLEEP_MS = 5000;
 export const DEFAULT_RUNNING_STYLE_ROOT = "apps/pc-keiba-viewer/tmp/bucket-eval/running-style";
 export const DEFAULT_OUTPUT_ROOT = "apps/pc-keiba-viewer/tmp/bucket-eval/finish-position";
-export const DEFAULT_THREADS = 8;
-export const DEFAULT_MEMORY_LIMIT = "16GB";
+export const AUTO_RESOURCE_VALUE = 0;
+export const DEFAULT_THREADS = AUTO_RESOURCE_VALUE;
+export const DEFAULT_MEMORY_LIMIT = "";
 export const DEFAULT_MAX_YEARS_PER_RUN = 5;
 export const PHASE_A_SCRIPT = "src/scripts/generate_finish_position_features_local.py";
 export const PHASE_B_SCRIPT = "src/scripts/score_finish_position_local.py";
@@ -158,6 +170,11 @@ const requireValue = (name: string, value: string | undefined): string => {
 };
 
 const parseBooleanFlag = (raw: string | undefined): boolean => raw === "1" || raw === "true";
+const parseAutoInteger = (raw: string): number => {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "auto") return AUTO_RESOURCE_VALUE;
+  return Number(normalized);
+};
 
 export const buildDefaultOptions = (): GenerateFinishPositionLocalOptions => ({
   pgUrl: "",
@@ -198,7 +215,7 @@ const applyArg = (
     return { advanceBy: 2 };
   }
   if (name === "--threads") {
-    options.threads = Number(requireValue(name, value));
+    options.threads = parseAutoInteger(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--memory-limit") {
@@ -269,6 +286,17 @@ export const assertColimaCapacity = (resource: ColimaResource): void => {
     );
   }
 };
+
+export const resolveRuntimeResourceOptions = (
+  options: GenerateFinishPositionLocalOptions,
+  resource: ColimaResource,
+  snapshot: LocalResourceSnapshot,
+): GenerateFinishPositionLocalOptions => ({
+  ...options,
+  memoryLimit:
+    options.memoryLimit === "" ? resolveAutoMemoryLimit(resource, snapshot) : options.memoryLimit,
+  threads: options.threads <= 0 ? resolveAutoThreads(resource, snapshot) : options.threads,
+});
 
 export const buildCategoryWindows = (
   options: GenerateFinishPositionLocalOptions,
@@ -536,10 +564,15 @@ export const runGenerateFinishPositionLocal = async (
   }
   const resource = await deps.probeColima();
   assertColimaCapacity(resource);
+  const snapshot =
+    deps.probeLocalResources === undefined
+      ? collectLocalResourceSnapshot()
+      : await deps.probeLocalResources();
+  const runtimeOptions = resolveRuntimeResourceOptions(options, resource, snapshot);
   await assertRunningStyleInputsPresent(options, deps.fs);
-  const windows = buildCategoryWindows(options);
-  await runAllCategoriesSequentially(deps, options, windows);
-  await writeManifest(options, deps.fs, deps.now());
+  const windows = buildCategoryWindows(runtimeOptions);
+  await runAllCategoriesSequentially(deps, runtimeOptions, windows);
+  await writeManifest(runtimeOptions, deps.fs, deps.now());
 };
 
 const buildBunSpawnRunner = (): SpawnRunner => async (command) => {

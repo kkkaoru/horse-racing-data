@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -85,6 +85,42 @@ def test_parse_args_default_threads_uses_dynamic_resource_default() -> None:
     ])
     assert args.threads == subject.DEFAULT_THREADS
     assert args.threads >= 1
+
+
+def test_load_resource_defaults_raises_when_spec_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        importlib.util,
+        "spec_from_file_location",
+        lambda _name, _path: None,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot load resource defaults module"):
+        subject._load_resource_defaults()
+
+
+def test_load_resource_defaults_raises_when_callables_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoopLoader:
+        def exec_module(self, module: ModuleType) -> None:
+            return None
+
+    empty_module = ModuleType("empty_resource_defaults")
+    monkeypatch.setattr(
+        importlib.util,
+        "spec_from_file_location",
+        lambda _name, _path: SimpleNamespace(loader=NoopLoader()),
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "module_from_spec",
+        lambda _spec: empty_module,
+    )
+
+    with pytest.raises(RuntimeError, match="missing callables"):
+        subject._load_resource_defaults()
 
 
 def test_parse_args_default_memory_limit_uses_dynamic_resource_default() -> None:
@@ -1476,11 +1512,58 @@ def test_resource_defaults_prefers_cgroup_memory_limit(
     assert defaults.default_memory_limit() == "6GB"
 
 
+def test_resource_defaults_memory_limit_shrinks_under_high_macos_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = load_resource_defaults_module()
+    monkeypatch.setattr(defaults, "_detect_total_memory_bytes", lambda: 48 * 1024**3)
+    monkeypatch.setattr(
+        defaults,
+        "_detect_macos_pressure_bytes",
+        lambda: (18 * 1024**3, 5 * 1024**3),
+    )
+
+    assert defaults.default_memory_limit() == "6GB"
+
+
+def test_resource_defaults_memory_limit_shrinks_under_moderate_macos_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = load_resource_defaults_module()
+    monkeypatch.setattr(defaults, "_detect_total_memory_bytes", lambda: 48 * 1024**3)
+    monkeypatch.setattr(
+        defaults,
+        "_detect_macos_pressure_bytes",
+        lambda: (18 * 1024**3, 3 * 1024**3),
+    )
+
+    assert defaults.default_memory_limit() == "9GB"
+
+
 def test_resource_defaults_threads_are_capped_by_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defaults = load_resource_defaults_module()
     monkeypatch.setattr(defaults.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(defaults.os, "getloadavg", lambda: (0.0, 0.0, 0.0))
     monkeypatch.setattr(defaults, "default_memory_limit", lambda: "6GB")
+    monkeypatch.setattr(defaults, "_detect_macos_pressure_bytes", lambda: None)
 
     assert defaults.default_threads() == 4
+
+
+def test_resource_defaults_threads_shrink_under_macos_compressor_pressure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = load_resource_defaults_module()
+    monkeypatch.setattr(defaults.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(defaults.os, "getloadavg", lambda: (1.0, 1.0, 1.0))
+    monkeypatch.setattr(defaults, "default_memory_limit", lambda: "24GB")
+    monkeypatch.setattr(defaults, "_detect_total_memory_bytes", lambda: 48 * 1024**3)
+    monkeypatch.setattr(
+        defaults,
+        "_detect_macos_pressure_bytes",
+        lambda: (32 * 1024**3, 5 * 1024**3),
+    )
+
+    assert defaults.default_threads() == 1

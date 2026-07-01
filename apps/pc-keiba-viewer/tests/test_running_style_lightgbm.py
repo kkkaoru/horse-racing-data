@@ -1103,7 +1103,7 @@ def test_resolve_auto_num_threads_scales_with_resource_snapshot():
         "available_memory_bytes": 3 * 1024**3,
     }
 
-    assert subject.resolve_auto_num_threads(healthy) == 4
+    assert subject.resolve_auto_num_threads(healthy) == 8
     assert subject.resolve_auto_num_threads(pressured) == 1
 
 
@@ -1124,7 +1124,7 @@ def test_resolve_auto_fit_concurrency_scales_with_resource_snapshot():
         "available_memory_bytes": 6 * 1024**3,
     }
 
-    assert subject.resolve_auto_fit_concurrency(healthy) == 3
+    assert subject.resolve_auto_fit_concurrency(healthy) == 4
     assert subject.resolve_auto_fit_concurrency(loaded) == 2
     assert subject.resolve_auto_fit_concurrency(pressured) == 1
 

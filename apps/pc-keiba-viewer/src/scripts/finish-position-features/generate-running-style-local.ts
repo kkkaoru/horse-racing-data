@@ -478,9 +478,24 @@ export const collectMacVmStatResourceSnapshot = (
 
 const bytesToGiB = (bytes: number): number => bytes / 1024 ** 3;
 
-export const resolveAutoMemoryLimit = (resource: ColimaResource): string => {
+export const resolveAutoMemoryLimit = (
+  resource: ColimaResource,
+  snapshot?: LocalResourceSnapshot,
+): string => {
   const halfColimaMemory = Math.floor(resource.memoryGiB * 0.5);
-  return `${Math.max(6, halfColimaMemory)}GB`;
+  const capacityLimit = Math.max(1, halfColimaMemory);
+  if (snapshot === undefined || snapshot.totalMemoryBytes <= 0) {
+    return `${Math.max(6, capacityLimit)}GB`;
+  }
+  const freeGiB = Math.max(1, Math.floor(bytesToGiB(snapshot.freeMemoryBytes)));
+  const compressorRatio = (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes;
+  if (compressorRatio > 0.08) {
+    return `${Math.max(1, Math.min(capacityLimit, Math.floor(freeGiB / 3)))}GB`;
+  }
+  if (compressorRatio > 0.05) {
+    return `${Math.max(2, Math.min(capacityLimit, Math.floor(freeGiB / 2)))}GB`;
+  }
+  return `${Math.max(1, Math.min(Math.max(6, capacityLimit), Math.max(1, freeGiB - 2)))}GB`;
 };
 
 export const resolveAutoThreads = (
@@ -545,7 +560,7 @@ export const resolveRuntimeResourceOptions = (
   snapshot: LocalResourceSnapshot,
 ): GenerateRunningStyleLocalOptions => {
   const memoryLimit =
-    options.memoryLimit === "" ? resolveAutoMemoryLimit(resource) : options.memoryLimit;
+    options.memoryLimit === "" ? resolveAutoMemoryLimit(resource, snapshot) : options.memoryLimit;
   const threads = options.threads <= 0 ? resolveAutoThreads(resource, snapshot) : options.threads;
   const phaseAConcurrency =
     options.phaseAConcurrency <= 0

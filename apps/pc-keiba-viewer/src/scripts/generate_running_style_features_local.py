@@ -45,14 +45,16 @@ def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
         "running_style_feature_resource_defaults", module_path
     )
     if spec is None or spec.loader is None:
-        return lambda: 4, lambda: "6GB"
+        raise RuntimeError(f"cannot load resource defaults module: {module_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    default_threads = cast(Callable[[], int], getattr(module, "default_threads", lambda: 4))
-    default_memory_limit = cast(
-        Callable[[], str], getattr(module, "default_memory_limit", lambda: "6GB")
+    default_threads = getattr(module, "default_threads", None)
+    default_memory_limit = getattr(module, "default_memory_limit", None)
+    if not callable(default_threads) or not callable(default_memory_limit):
+        raise RuntimeError(f"resource defaults module is missing callables: {module_path}")
+    return cast(Callable[[], int], default_threads), cast(
+        Callable[[], str], default_memory_limit
     )
-    return default_threads, default_memory_limit
 
 
 _default_threads, _default_memory_limit = _load_resource_defaults()

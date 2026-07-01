@@ -7,8 +7,9 @@
   2. Linux container: `/sys/fs/cgroup/memory.max` (cgroup v2 — docker --memory= がここを設定)
   3. Linux fallback: `/proc/meminfo` MemTotal (VM 全体なので cgroup 制限は反映されない)
 
-memory_limit: 検出メモリの 50% を DuckDB に割り当てる。OS + Python ランタイム用に
-50% 残すことで、CF Container (standard-4 = 12 GiB) では 6 GiB に収まる。
+memory_limit: 検出メモリの 50% を上限にしつつ、macOS の available memory /
+compressor pressure を見て DuckDB に割り当てる。OS + Python ランタイム用に
+余裕を残すことで、CF Container (standard-4 = 12 GiB) では 6 GiB に収まる。
 
 threads: os.cpu_count() を上限とするが、低メモリ環境では per-thread メモリ使用量を
 抑えるため GB_PER_THREAD 以上 memory_limit があるか確認して上限キャップする。
@@ -26,6 +27,7 @@ CLI 引数 --threads / --memory-limit が与えられればそちらを優先。
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import subprocess
 from pathlib import Path
@@ -94,12 +96,70 @@ def _detect_total_memory_bytes() -> int | None:
     return None
 
 
+def _run_text(command: list[str]) -> str | None:
+    try:
+        out = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip()
+
+
+def _parse_vm_stat_pages(output: str) -> dict[str, int]:
+    pages: dict[str, int] = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        normalized = raw_value.strip().rstrip(".").replace(".", "").replace(",", "")
+        if normalized.isdigit():
+            pages[key.strip()] = int(normalized)
+    return pages
+
+
+def _detect_macos_pressure_bytes() -> tuple[int, int] | None:
+    page_size_raw = _run_text(["sysctl", "-n", "hw.pagesize"])
+    vm_stat_raw = _run_text(["vm_stat"])
+    if page_size_raw is None or vm_stat_raw is None:
+        return None
+    try:
+        page_size = int(page_size_raw)
+    except ValueError:
+        return None
+    pages = _parse_vm_stat_pages(vm_stat_raw)
+    available_pages = (
+        pages.get("Pages free", 0)
+        + pages.get("Pages inactive", 0)
+        + pages.get("Pages speculative", 0)
+        + pages.get("Pages purgeable", 0)
+    )
+    compressor_pages = pages.get("Pages occupied by compressor", 0)
+    return available_pages * page_size, compressor_pages * page_size
+
+
 def default_memory_limit() -> str:
     total = _detect_total_memory_bytes()
     if total is None:
         return f"{FALLBACK_MEMORY_GB}GB"
-    gb = int((total / (1024**3)) * DEFAULT_MEM_FRACTION)
-    return f"{max(gb, FALLBACK_MEMORY_GB)}GB"
+    capacity_gb = max(int((total / (1024**3)) * DEFAULT_MEM_FRACTION), 1)
+    pressure = _detect_macos_pressure_bytes()
+    if pressure is None:
+        return f"{max(capacity_gb, FALLBACK_MEMORY_GB)}GB"
+    available_bytes, compressor_bytes = pressure
+    available_gb = max(1, int(available_bytes / (1024**3)))
+    compressor_ratio = compressor_bytes / total if total > 0 else 0
+    if compressor_ratio > 0.08:
+        return f"{max(1, min(capacity_gb, available_gb // 3))}GB"
+    if compressor_ratio > 0.05:
+        return f"{max(2, min(capacity_gb, available_gb // 2))}GB"
+    return f"{max(1, min(max(capacity_gb, FALLBACK_MEMORY_GB), max(1, available_gb - 2)))}GB"
 
 
 def default_threads() -> int:
@@ -111,14 +171,30 @@ def default_threads() -> int:
     causes the peak to exceed the limit even with disk spill because each
     thread's active partition must fit in memory before it can spill.
 
-    Cap: floor(memory_limit_gb / GB_PER_THREAD), minimum = FALLBACK_THREADS.
+    Cap: floor(memory_limit_gb / GB_PER_THREAD), then shrink further from
+    current macOS load / available memory / compressor pressure when available.
     On Mac (48 GiB → 24 GiB limit): 24 / 1.5 = 16 threads ≥ cpu_count → no cap.
     On CF standard-4 (12 GiB → 6 GiB limit): 6 / 1.5 = 4 threads → capped.
     """
     cpu = os.cpu_count() or FALLBACK_THREADS
     mem_gb = int(default_memory_limit().rstrip("GB"))
-    mem_cap = max(int(mem_gb / GB_PER_THREAD), FALLBACK_THREADS)
-    return min(cpu, mem_cap)
+    mem_cap = max(int(mem_gb / GB_PER_THREAD), 1)
+    try:
+        load_1m = max(float(os.getloadavg()[0]), 0.0)
+    except (AttributeError, OSError):
+        load_1m = 0.0
+    headroom = max(cpu - math.ceil(load_1m), 1)
+    total_memory = _detect_total_memory_bytes() or 0
+    pressure = _detect_macos_pressure_bytes()
+    if pressure is not None and total_memory > 0:
+        available_bytes, compressor_bytes = pressure
+        available_ratio = available_bytes / total_memory
+        compressor_ratio = compressor_bytes / total_memory
+        if available_ratio < 0.15 or compressor_ratio > 0.08 or load_1m >= cpu * 0.85:
+            return 1
+        if available_ratio < 0.25 or compressor_ratio > 0.05 or load_1m >= cpu * 0.65:
+            return min(2, headroom, mem_cap)
+    return max(min(cpu, headroom, mem_cap), 1)
 
 
 def add_resource_args(parser: argparse.ArgumentParser) -> None:

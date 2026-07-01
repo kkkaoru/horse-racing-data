@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -218,8 +220,46 @@ def test_parse_args_defaults_threads_and_memory():
             "nar",
         ]
     )
-    assert args.threads == 8
-    assert args.memory_limit == "16GB"
+    assert args.threads == subject.DEFAULT_THREADS
+    assert args.threads >= 1
+    assert args.memory_limit == subject.DEFAULT_MEMORY_LIMIT
+    assert args.memory_limit.endswith("GB")
+
+
+def test_load_resource_defaults_raises_when_spec_cannot_load(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        importlib.util,
+        "spec_from_file_location",
+        lambda _name, _path: None,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot load resource defaults module"):
+        subject._load_resource_defaults()
+
+
+def test_load_resource_defaults_raises_when_callables_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class NoopLoader:
+        def exec_module(self, module: ModuleType) -> None:
+            return None
+
+    empty_module = ModuleType("empty_resource_defaults")
+    monkeypatch.setattr(
+        importlib.util,
+        "spec_from_file_location",
+        lambda _name, _path: SimpleNamespace(loader=NoopLoader()),
+    )
+    monkeypatch.setattr(
+        importlib.util,
+        "module_from_spec",
+        lambda _spec: empty_module,
+    )
+
+    with pytest.raises(RuntimeError, match="missing callables"):
+        subject._load_resource_defaults()
 
 
 def test_parse_args_rejects_unknown_category():

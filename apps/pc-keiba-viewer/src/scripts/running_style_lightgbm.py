@@ -363,14 +363,15 @@ def resolve_auto_num_threads(snapshot: LocalResourceSnapshot | None = None) -> i
     available_memory = max(int(resource["available_memory_bytes"]), 0)
     compressor = max(int(resource["compressor_bytes"]), 0)
     headroom = max(cpu_count - int(load_1m), 1)
-    cap = max(min(cpu_count // 2, 4), 1)
+    available_gib = available_memory / 1024**3
+    memory_cap = max(int(available_gib / 3), 1) if available_memory > 0 else cpu_count
     memory_ratio = available_memory / total_memory if total_memory > 0 else 1.0
     compressor_ratio = compressor / total_memory if total_memory > 0 else 0.0
     if memory_ratio < 0.15 or compressor_ratio > 0.08:
         return 1
     if memory_ratio < 0.25 or load_1m >= cpu_count * 0.85:
-        return min(2, cap, headroom)
-    return max(min(cap, headroom), 1)
+        return min(2, memory_cap, headroom)
+    return max(min(cpu_count, headroom, memory_cap), 1)
 
 
 def resolve_auto_fit_concurrency(snapshot: LocalResourceSnapshot | None = None) -> int:
@@ -380,13 +381,17 @@ def resolve_auto_fit_concurrency(snapshot: LocalResourceSnapshot | None = None) 
     total_memory = max(int(resource["total_memory_bytes"]), 0)
     available_memory = max(int(resource["available_memory_bytes"]), 0)
     compressor = max(int(resource["compressor_bytes"]), 0)
+    headroom = max(cpu_count - int(load_1m), 1)
+    available_gib = available_memory / 1024**3
     memory_ratio = available_memory / total_memory if total_memory > 0 else 1.0
     compressor_ratio = compressor / total_memory if total_memory > 0 else 0.0
     if memory_ratio < 0.20 or compressor_ratio > 0.05 or load_1m >= cpu_count * 0.85:
         return 1
+    cpu_slots = max(headroom // 2, 1)
+    memory_slots = max(int(available_gib / 8), 1) if available_memory > 0 else cpu_slots
     if memory_ratio < 0.35 or load_1m >= cpu_count * 0.65:
-        return min(2, max(cpu_count // 4, 1))
-    return max(min(cpu_count // 4, 3), 1)
+        return min(2, cpu_slots, memory_slots)
+    return max(min(cpu_slots, memory_slots), 1)
 
 
 @contextmanager

@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   assertColimaCapacity,
   assertRunningStyleManifestMatches,
+  AUTO_RESOURCE_VALUE,
   buildDefaultOptions,
   buildFeaturesDir,
   buildManifest,
@@ -21,11 +22,19 @@ import {
   PER_YEAR_SLEEP_MS,
   PHASE_A_SCRIPT,
   PHASE_B_SCRIPT,
+  resolveRuntimeResourceOptions,
   runGenerateFinishPositionLocal,
 } from "./generate-finish-position-local";
 
 const FIXED_NIGHT_DATE = new Date("2026-05-30T16:00:00Z"); // 01:00 JST -> inside window
 const FIXED_DAY_DATE = new Date("2026-05-30T05:00:00Z"); // 14:00 JST -> outside window
+const CALM_LOCAL_SNAPSHOT = {
+  cpuCount: 8,
+  load1m: 1,
+  totalMemoryBytes: 64 * 1024 ** 3,
+  freeMemoryBytes: 40 * 1024 ** 3,
+  compressorBytes: 0,
+};
 
 const buildFakeFs = (
   manifestJson: string,
@@ -47,10 +56,10 @@ const buildRunOptions = () => ({
   ignoreNightWindow: true,
 });
 
-test("buildDefaultOptions returns 8 threads / 16GB / max 5 years per run", () => {
+test("buildDefaultOptions returns auto resources / max 5 years per run", () => {
   const options = buildDefaultOptions();
-  expect(options.threads).toBe(8);
-  expect(options.memoryLimit).toBe("16GB");
+  expect(options.threads).toBe(AUTO_RESOURCE_VALUE);
+  expect(options.memoryLimit).toBe("");
   expect(options.maxYearsPerRun).toBe(5);
 });
 
@@ -118,6 +127,42 @@ test("parseArgs returns all required fields when supplied", () => {
   expect(options.modelVersions.jra).toBe("mj");
   expect(options.runningStyleRoot).toBe("/tmp/rs");
   expect(options.outputRoot).toBe("/tmp/fp");
+});
+
+test("parseArgs accepts --threads auto", () => {
+  const options = parseArgs([
+    "--pg-url",
+    "postgres://u",
+    "--threads",
+    "auto",
+    "--model-version-jra",
+    "mj",
+    "--model-version-nar",
+    "mn",
+    "--model-version-ban-ei",
+    "mb",
+  ]);
+  expect(options.threads).toBe(AUTO_RESOURCE_VALUE);
+});
+
+test("resolveRuntimeResourceOptions uses current local resource snapshot for auto values", () => {
+  const options = resolveRuntimeResourceOptions(
+    buildRunOptions(),
+    { cpu: 8, memoryGiB: 24, diskGiB: 100 },
+    CALM_LOCAL_SNAPSHOT,
+  );
+  expect(options.memoryLimit).toBe("12GB");
+  expect(options.threads).toBe(7);
+});
+
+test("resolveRuntimeResourceOptions keeps explicit resource overrides", () => {
+  const options = resolveRuntimeResourceOptions(
+    { ...buildRunOptions(), threads: 3, memoryLimit: "7GB" },
+    { cpu: 8, memoryGiB: 24, diskGiB: 100 },
+    CALM_LOCAL_SNAPSHOT,
+  );
+  expect(options.memoryLimit).toBe("7GB");
+  expect(options.threads).toBe(3);
 });
 
 test("isInsideNightWindow returns true for 01:00 JST", () => {
@@ -364,6 +409,7 @@ test("runGenerateFinishPositionLocal aborts outside night window when guard acti
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_DAY_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
     }),
@@ -382,6 +428,7 @@ test("runGenerateFinishPositionLocal aborts when Colima resources insufficient",
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_DAY_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
     }),
@@ -400,6 +447,7 @@ test("runGenerateFinishPositionLocal aborts when Agent F predictions dir missing
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', false, true),
     }),
@@ -418,6 +466,7 @@ test("runGenerateFinishPositionLocal aborts when Agent F manifest missing", asyn
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, false),
     }),
@@ -436,6 +485,7 @@ test("runGenerateFinishPositionLocal aborts on Agent F manifest version mismatch
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v2"}', true, true),
     }),
@@ -459,6 +509,7 @@ test("runGenerateFinishPositionLocal spawns Phase A before Phase B", async () =>
     spawn,
     sleep,
     probeColima,
+    probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
     now: () => FIXED_NIGHT_DATE,
     fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
   });
@@ -483,6 +534,7 @@ test("runGenerateFinishPositionLocal throws when Phase A spawn returns non-zero"
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
     }),
@@ -505,6 +557,7 @@ test("runGenerateFinishPositionLocal throws when Phase B spawn returns non-zero"
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
     }),
@@ -523,6 +576,7 @@ test("runGenerateFinishPositionLocal writes manifest.json with both versions aft
     spawn,
     sleep,
     probeColima,
+    probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
     now: () => FIXED_NIGHT_DATE,
     fs,
   });

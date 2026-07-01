@@ -22,12 +22,14 @@ Run with: ``uv run python src/scripts/generate_finish_position_features_local.py
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import shutil
 from argparse import Namespace
+from collections.abc import Callable
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import finish_position_features_duckdb as feature_builder
 
@@ -35,12 +37,33 @@ if TYPE_CHECKING:
     import duckdb
 
 CATEGORY_CHOICES: tuple[str, ...] = ("jra", "nar", "ban-ei")
-DEFAULT_THREADS: int = 8
-DEFAULT_MEMORY_LIMIT: str = "16GB"
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS: float = 10.0
 RAW_OUTPUT_PREFIX: str = "_raw"
 SINGLE_QUOTE: str = "'"
 DOUBLED_SINGLE_QUOTE: str = "''"
+
+
+def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
+    module_path = Path(__file__).parent / "finish-position-features" / "_resource_defaults.py"
+    spec = importlib.util.spec_from_file_location(
+        "finish_position_feature_resource_defaults", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load resource defaults module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    default_threads = getattr(module, "default_threads", None)
+    default_memory_limit = getattr(module, "default_memory_limit", None)
+    if not callable(default_threads) or not callable(default_memory_limit):
+        raise RuntimeError(f"resource defaults module is missing callables: {module_path}")
+    return cast(Callable[[], int], default_threads), cast(
+        Callable[[], str], default_memory_limit
+    )
+
+
+_default_threads, _default_memory_limit = _load_resource_defaults()
+DEFAULT_THREADS: int = _default_threads()
+DEFAULT_MEMORY_LIMIT: str = _default_memory_limit()
 
 
 class PhaseAArguments(TypedDict):

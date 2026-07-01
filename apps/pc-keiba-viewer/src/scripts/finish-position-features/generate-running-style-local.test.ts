@@ -94,6 +94,21 @@ describe("generate-running-style-local", () => {
     expect(resolveAutoMemoryLimit({ cpu: 4, memoryGiB: 8, diskGiB: 100 })).toBe("6GB");
   });
 
+  test("resolveAutoMemoryLimit shrinks from current macOS memory pressure", () => {
+    expect(
+      resolveAutoMemoryLimit(
+        { cpu: 12, memoryGiB: 24, diskGiB: 100 },
+        {
+          compressorBytes: 5 * 1024 ** 3,
+          cpuCount: 15,
+          freeMemoryBytes: 6 * 1024 ** 3,
+          load1m: 2,
+          totalMemoryBytes: 48 * 1024 ** 3,
+        },
+      ),
+    ).toBe("2GB");
+  });
+
   test("resolveAutoThreads shrinks under high load or low free memory", () => {
     const calm: LocalResourceSnapshot = {
       cpuCount: 15,

@@ -36,10 +36,12 @@ import {
   parseCategoryFilter,
   parseChunkConcurrency,
   parseColimaStatusJson,
+  parseWorkMemMb,
   processCategoryChunk,
   processYear,
   resolveAutoCategoryConcurrency,
   resolveAutoChunkConcurrency,
+  resolveAutoWorkMemMb,
   resolveModelVersion,
   resolveRuntimeResourcePlan,
   runRunningStyleBucketEval,
@@ -49,6 +51,8 @@ const baseAggregateRow = (
   overrides: Partial<RunningStyleAggregateRow>,
 ): RunningStyleAggregateRow => ({
   source: "jra",
+  cell_model_key: "jra-default-model",
+  cell_variant_id: "cell-05-2400",
   keibajo_code: "05",
   kyori: 2400,
   kyoso_shubetsu_code: "12",
@@ -113,6 +117,7 @@ const baseOptions = (
   categoryFilter: null,
   chunkConcurrency: 1,
   categoryConcurrency: 1,
+  workMemMb: 128,
   ...overrides,
 });
 
@@ -166,9 +171,9 @@ const buildChunkOpener = (
     },
   );
 
-test("buildUsageText renders the CLI usage with model-version-jra/nar, category, and chunk-concurrency flags", () => {
+test("buildUsageText renders the CLI usage with model-version-jra/nar, category, chunk-concurrency, and work_mem flags", () => {
   expect(buildUsageText()).toBe(
-    `Usage:\n  bun run src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts \\\n    --pg-url <connection-string> \\\n    --running-style-feature-version v1 \\\n    --model-version-jra <jra-model> \\\n    --model-version-nar <nar-model> \\\n    [--max-years-per-run 5] \\\n    [--statement-timeout-ms 900000] \\\n    [--ignore-night-window] \\\n    [--category jra|nar] \\\n    [--chunk-concurrency auto]`,
+    `Usage:\n  bun run src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts \\\n    --pg-url <connection-string> \\\n    --running-style-feature-version v1 \\\n    --model-version-jra <jra-model> \\\n    --model-version-nar <nar-model> \\\n    [--max-years-per-run 5] \\\n    [--statement-timeout-ms 900000] \\\n    [--ignore-night-window] \\\n    [--category jra|nar] \\\n    [--chunk-concurrency auto] \\\n    [--work-mem-mb auto]`,
   );
 });
 
@@ -217,15 +222,26 @@ test("buildSessionIdleTimeoutSql sets idle_in_transaction_session_timeout", () =
   );
 });
 
-test("buildSessionWorkMemSql sets work_mem to 256MB", () => {
-  expect(buildSessionWorkMemSql()).toBe("set local work_mem = '256MB'");
+test("buildSessionWorkMemSql uses explicit work_mem when provided", () => {
+  expect(buildSessionWorkMemSql(128)).toBe("set local work_mem = '128MB'");
+});
+
+test("buildSessionWorkMemSql derives work_mem from resource snapshot when auto", () => {
+  expect(
+    buildSessionWorkMemSql(0, {
+      cpuCount: 12,
+      freeMemoryBytes: 16 * 1024 ** 3,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+    }),
+  ).toBe("set local work_mem = '512MB'");
 });
 
 test("buildSessionTuningSqls returns the three SET LOCAL statements", () => {
-  expect(buildSessionTuningSqls(900_000)).toStrictEqual([
+  expect(buildSessionTuningSqls(900_000, 128)).toStrictEqual([
     "set local statement_timeout = '900000ms'",
     "set local idle_in_transaction_session_timeout = '900000ms'",
-    "set local work_mem = '256MB'",
+    "set local work_mem = '128MB'",
   ]);
 });
 
@@ -429,6 +445,7 @@ test("parseArgs accepts a fully specified argv", () => {
     categoryFilter: null,
     chunkConcurrency: 0,
     categoryConcurrency: 0,
+    workMemMb: 0,
   });
 });
 
@@ -701,7 +718,7 @@ test("runRunningStyleBucketEval with categoryFilter null runs both jra and nar",
   expect(closeMock).toHaveBeenCalledTimes(2);
 });
 
-test("buildUpsertParams returns 49 parameters with jra model version for jra category", () => {
+test("buildUpsertParams returns 51 parameters with jra model version and cell provenance for jra category", () => {
   expect(
     buildUpsertParams(
       {
@@ -726,6 +743,8 @@ test("buildUpsertParams returns 49 parameters with jra model version for jra cat
     "jra-model-v1",
     "v1",
     "jra",
+    "jra-default-model",
+    "cell-05-2400",
     "20240101",
     "20241231",
     "jra",
@@ -873,7 +892,7 @@ test("processCategoryChunk emits SET LOCAL session tuning without nested BEGIN o
   expect(capturedSqls.slice(0, 3)).toStrictEqual([
     "set local statement_timeout = '900000ms'",
     "set local idle_in_transaction_session_timeout = '900000ms'",
-    "set local work_mem = '256MB'",
+    "set local work_mem = '128MB'",
   ]);
   expect(capturedSqls.includes("begin")).toBe(false);
   expect(capturedSqls.includes("BEGIN")).toBe(false);
@@ -1172,10 +1191,62 @@ test("parseChunkConcurrency throws when value is above 10", () => {
   );
 });
 
+test("parseWorkMemMb accepts auto", () => {
+  expect(parseWorkMemMb("auto")).toBe(0);
+});
+
+test("parseWorkMemMb accepts explicit megabytes", () => {
+  expect(parseWorkMemMb("384")).toBe(384);
+});
+
+test("parseWorkMemMb rejects invalid values", () => {
+  expect(() => parseWorkMemMb("abc")).toThrowError("--work-mem-mb must be an integer (got: abc)");
+  expect(() => parseWorkMemMb("0")).toThrowError(
+    "--work-mem-mb must be between 1 and 4096 (got: 0)",
+  );
+  expect(() => parseWorkMemMb("4097")).toThrowError(
+    "--work-mem-mb must be between 1 and 4096 (got: 4097)",
+  );
+});
+
+test("resolveAutoWorkMemMb shrinks under pressure and concurrency", () => {
+  const calm = resolveAutoWorkMemMb(
+    { cpu: 12, memory: 24 },
+    {
+      cpuCount: 15,
+      freeMemoryBytes: 24 * 1024 ** 3,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+    },
+    1,
+    1,
+  );
+  const pressured = resolveAutoWorkMemMb(
+    { cpu: 12, memory: 24 },
+    {
+      compressorBytes: 4 * 1024 ** 3,
+      cpuCount: 15,
+      freeMemoryBytes: 4 * 1024 ** 3,
+      load1m: 13,
+      totalMemoryBytes: 48 * 1024 ** 3,
+    },
+    2,
+    2,
+  );
+  expect(calm).toBe(512);
+  expect(pressured).toBe(64);
+});
+
 test("applyArg handles --chunk-concurrency integer 3", () => {
   const options = initialOptions();
   expect(applyArg(options, "--chunk-concurrency", "3")).toStrictEqual({ advanceBy: 2 });
   expect(options.chunkConcurrency).toBe(3);
+});
+
+test("applyArg handles --work-mem-mb", () => {
+  const options = initialOptions();
+  expect(applyArg(options, "--work-mem-mb", "384")).toStrictEqual({ advanceBy: 2 });
+  expect(options.workMemMb).toBe(384);
 });
 
 test("applyArg throws when --chunk-concurrency value is missing", () => {
@@ -1210,9 +1281,23 @@ test("parseArgs with --chunk-concurrency 4 propagates chunkConcurrency 4", () =>
   expect(result.chunkConcurrency).toBe(4);
 });
 
+test("parseArgs with --work-mem-mb 384 propagates workMemMb", () => {
+  const result = parseArgs([
+    "--running-style-feature-version",
+    "v1",
+    "--model-version-jra",
+    "j",
+    "--model-version-nar",
+    "n",
+    "--work-mem-mb",
+    "384",
+  ]);
+  expect(result.workMemMb).toBe(384);
+});
+
 test("resolveRuntimeResourcePlan turns auto chunkConcurrency into a resource-derived value", () => {
   const result = resolveRuntimeResourcePlan(
-    baseOptions({ chunkConcurrency: 0, categoryConcurrency: 0 }),
+    baseOptions({ chunkConcurrency: 0, categoryConcurrency: 0, workMemMb: 0 }),
     { cpu: 12, memory: 24 },
     {
       cpuCount: 15,
@@ -1227,8 +1312,17 @@ test("resolveRuntimeResourcePlan turns auto chunkConcurrency into a resource-der
   expect(result.categoryConcurrency).toBe(
     resolveAutoCategoryConcurrency({ cpu: 12, memory: 24 }, result.snapshot),
   );
+  expect(result.workMemMb).toBe(
+    resolveAutoWorkMemMb(
+      { cpu: 12, memory: 24 },
+      result.snapshot,
+      result.chunkConcurrency,
+      result.categoryConcurrency,
+    ),
+  );
   expect(result.chunkConcurrency).toBeGreaterThan(0);
   expect(result.categoryConcurrency).toBeGreaterThan(0);
+  expect(result.workMemMb).toBeGreaterThan(0);
 });
 
 test("chunkRows splits 5 rows into batches of 2", () => {
@@ -1282,7 +1376,7 @@ test("processYear with 250 rows issues 3 batched upserts (100/100/50) plus 1 agg
   });
   expect(result).toStrictEqual({ rowCount: 250, raceCount: 250 });
   expect(upsertSqls).toHaveLength(3);
-  expect(upsertParamCounts).toStrictEqual([4900, 4900, 2450]);
+  expect(upsertParamCounts).toStrictEqual([5100, 5100, 2550]);
 });
 
 test("processYear with 100 rows issues exactly 1 batched upsert", async () => {
@@ -1316,7 +1410,7 @@ test("processYear with 100 rows issues exactly 1 batched upsert", async () => {
   expect(upsertSqls).toHaveLength(1);
 });
 
-test("processYear with 1 row issues exactly 1 batched upsert with 49 params (single-row path preserved)", async () => {
+test("processYear with 1 row issues exactly 1 batched upsert with 51 params (single-row path preserved)", async () => {
   const aggregateRows: RunningStyleAggregateRow[] = [
     baseAggregateRow({ race_count: 5, prediction_count: 60 }),
   ];
@@ -1347,7 +1441,7 @@ test("processYear with 1 row issues exactly 1 batched upsert with 49 params (sin
     log: vi.fn<(message: string) => void>(),
   });
   expect(result).toStrictEqual({ rowCount: 1, raceCount: 5 });
-  expect(upsertParamCounts).toStrictEqual([49]);
+  expect(upsertParamCounts).toStrictEqual([51]);
 });
 
 test("runRunningStyleBucketEval serializes categories when categoryConcurrency is 1", async () => {

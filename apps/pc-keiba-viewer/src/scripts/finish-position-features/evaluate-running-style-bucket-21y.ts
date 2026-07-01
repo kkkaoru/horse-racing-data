@@ -37,6 +37,7 @@ export interface RunningStyleBucketEvalCliOptions {
   categoryFilter: RunningStyleBucketCategory | null;
   chunkConcurrency: number;
   categoryConcurrency: number;
+  workMemMb: number;
 }
 
 export interface RunningStyleCategoryYearWindow {
@@ -46,6 +47,8 @@ export interface RunningStyleCategoryYearWindow {
 
 export interface RunningStyleAggregateRow {
   source: string;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   keibajo_code: string;
   kyori: number;
   kyoso_shubetsu_code: string;
@@ -162,6 +165,7 @@ interface RunningStyleBucketEvalAccumulator {
 export interface RuntimeResourcePlan {
   chunkConcurrency: number;
   categoryConcurrency: number;
+  workMemMb: number;
   snapshot: LocalResourceSnapshot;
 }
 
@@ -175,10 +179,11 @@ const DEFAULT_MIN_COLIMA_CPU = 8;
 const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
 const DEFAULT_CHUNK_CONCURRENCY = 0;
 const DEFAULT_CATEGORY_CONCURRENCY = 0;
+const DEFAULT_WORK_MEM_MB = 0;
 const MIN_CHUNK_CONCURRENCY = 1;
 const MAX_CHUNK_CONCURRENCY = 10;
-// PG bind-parameter cap is 65535. We have 49 columns per row, so 100 rows
-// emit 4900 placeholders — well within budget while reducing round-trips by
+// PG bind-parameter cap is 65535. We have 51 columns per row, so 100 rows
+// emit 5100 placeholders — well within budget while reducing round-trips by
 // 100x compared to the per-row UPSERT path.
 const UPSERT_BATCH_SIZE = 100;
 const DEFAULT_PREDICTIONS_ROOT =
@@ -211,7 +216,8 @@ export const buildUsageText = (): string =>
     "    [--statement-timeout-ms 900000] \\",
     "    [--ignore-night-window] \\",
     "    [--category jra|nar] \\",
-    "    [--chunk-concurrency auto]",
+    "    [--chunk-concurrency auto] \\",
+    "    [--work-mem-mb auto]",
   ].join("\n");
 
 const requireValue = (name: string, value: string | undefined): string => {
@@ -235,6 +241,7 @@ export const initialOptions = (): RunningStyleBucketEvalCliOptions => ({
   categoryFilter: null,
   chunkConcurrency: DEFAULT_CHUNK_CONCURRENCY,
   categoryConcurrency: DEFAULT_CATEGORY_CONCURRENCY,
+  workMemMb: DEFAULT_WORK_MEM_MB,
 });
 
 export const parseChunkConcurrency = (raw: string): number => {
@@ -273,6 +280,47 @@ export const resolveAutoCategoryConcurrency = (
     snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
   if (freeRatio < 0.28 || compressorRatio > 0.03 || load1m >= cpuCount * 0.5) return 1;
   return 2;
+};
+
+export const resolveAutoWorkMemMb = (
+  resources: ColimaResources,
+  snapshot: LocalResourceSnapshot,
+  chunkConcurrency: number,
+  categoryConcurrency: number,
+): number => {
+  const concurrentSessions = Math.max(1, chunkConcurrency * categoryConcurrency);
+  const totalMemoryMbPerSession = Math.max(
+    1,
+    Math.floor((resources.memory * 1024) / concurrentSessions),
+  );
+  const freeMemoryMbPerSession = Math.max(
+    1,
+    Math.floor(snapshot.freeMemoryBytes / 1024 / 1024 / concurrentSessions),
+  );
+  const cpuCount = Math.max(1, Math.min(resources.cpu, snapshot.cpuCount));
+  const load1m = Math.max(0, snapshot.load1m);
+  const freeRatio =
+    snapshot.totalMemoryBytes > 0 ? snapshot.freeMemoryBytes / snapshot.totalMemoryBytes : 1;
+  const compressorRatio =
+    snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
+  const pressureDivisor =
+    freeRatio < 0.18 || compressorRatio > 0.05 || load1m >= cpuCount * 0.85 ? 16 : 8;
+  const candidate = Math.floor(
+    Math.min(totalMemoryMbPerSession, freeMemoryMbPerSession) / pressureDivisor,
+  );
+  return Math.max(32, Math.min(512, candidate));
+};
+
+export const parseWorkMemMb = (raw: string): number => {
+  if (raw.trim().toLowerCase() === "auto") return DEFAULT_WORK_MEM_MB;
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value)) {
+    throw new Error(`--work-mem-mb must be an integer (got: ${raw})`);
+  }
+  if (value < 1 || value > 4096) {
+    throw new Error(`--work-mem-mb must be between 1 and 4096 (got: ${raw})`);
+  }
+  return value;
 };
 
 export const parseCategoryFilter = (value: string): RunningStyleBucketCategory => {
@@ -328,6 +376,10 @@ export const applyArg = (
   }
   if (name === "--chunk-concurrency") {
     options.chunkConcurrency = parseChunkConcurrency(requireValue(name, value));
+    return { advanceBy: 2 };
+  }
+  if (name === "--work-mem-mb") {
+    options.workMemMb = parseWorkMemMb(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--help" || name === "-h") {
@@ -431,15 +483,35 @@ export const chunkYears = (years: number[], chunkSize: number): number[][] => {
 export const buildSessionStatementSql = (statementTimeoutMs: number): string =>
   `set local statement_timeout = '${statementTimeoutMs}ms'`;
 
-export const buildSessionWorkMemSql = (): string => "set local work_mem = '256MB'";
+const snapshotToResourceMemoryGiB = (snapshot: LocalResourceSnapshot): number =>
+  Math.max(1, Math.floor(snapshot.totalMemoryBytes / 1024 ** 3));
+
+export const buildSessionWorkMemSql = (
+  workMemMb = DEFAULT_WORK_MEM_MB,
+  snapshot = collectLocalResourceSnapshot(),
+): string => {
+  const resolved =
+    workMemMb > 0
+      ? workMemMb
+      : resolveAutoWorkMemMb(
+          { cpu: snapshot.cpuCount, memory: snapshotToResourceMemoryGiB(snapshot) },
+          snapshot,
+          1,
+          1,
+        );
+  return `set local work_mem = '${resolved}MB'`;
+};
 
 export const buildSessionIdleTimeoutSql = (statementTimeoutMs: number): string =>
   `set local idle_in_transaction_session_timeout = '${statementTimeoutMs}ms'`;
 
-export const buildSessionTuningSqls = (statementTimeoutMs: number): string[] => [
+export const buildSessionTuningSqls = (
+  statementTimeoutMs: number,
+  workMemMb = DEFAULT_WORK_MEM_MB,
+): string[] => [
   buildSessionStatementSql(statementTimeoutMs),
   buildSessionIdleTimeoutSql(statementTimeoutMs),
-  buildSessionWorkMemSql(),
+  buildSessionWorkMemSql(workMemMb),
 ];
 
 export const resolveModelVersion = (
@@ -462,6 +534,8 @@ export const buildUpsertParams = (
     modelVersion,
     context.options.runningStyleFeatureVersion,
     context.category,
+    row.cell_model_key,
+    row.cell_variant_id,
     context.fromDate,
     context.toDate,
     row.source,
@@ -613,7 +687,11 @@ const runSessionTuning = (
   runner: RunningStyleBucketQueryRunner,
   options: RunningStyleBucketEvalCliOptions,
 ): Promise<unknown> =>
-  runStatementsSerially(runner, buildSessionTuningSqls(options.statementTimeoutMs), () => {});
+  runStatementsSerially(
+    runner,
+    buildSessionTuningSqls(options.statementTimeoutMs, options.workMemMb),
+    () => {},
+  );
 
 const runAnalyzes = (
   pool: RunningStyleBucketQueryRunner,
@@ -786,7 +864,11 @@ export const resolveRuntimeResourcePlan = (
     options.categoryConcurrency <= 0
       ? resolveAutoCategoryConcurrency(resources, snapshot)
       : options.categoryConcurrency;
-  return { chunkConcurrency, categoryConcurrency, snapshot };
+  const workMemMb =
+    options.workMemMb <= 0
+      ? resolveAutoWorkMemMb(resources, snapshot, chunkConcurrency, categoryConcurrency)
+      : options.workMemMb;
+  return { chunkConcurrency, categoryConcurrency, snapshot, workMemMb };
 };
 
 export const buildPredictionsParquetPath = (predictionsRoot: string, category: string): string =>
@@ -871,8 +953,9 @@ const main = async (): Promise<void> => {
   );
   options.chunkConcurrency = resourcePlan.chunkConcurrency;
   options.categoryConcurrency = resourcePlan.categoryConcurrency;
+  options.workMemMb = resourcePlan.workMemMb;
   console.log(
-    `[running-style-bucket-eval] resource chunkConcurrency=${options.chunkConcurrency} categoryConcurrency=${options.categoryConcurrency} load1m=${resourcePlan.snapshot.load1m.toFixed(2)}`,
+    `[running-style-bucket-eval] resource chunkConcurrency=${options.chunkConcurrency} categoryConcurrency=${options.categoryConcurrency} workMemMb=${options.workMemMb} load1m=${resourcePlan.snapshot.load1m.toFixed(2)}`,
   );
   const pool = new Pool({ connectionString: options.pgUrl });
   try {
