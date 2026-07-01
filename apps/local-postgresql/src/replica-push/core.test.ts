@@ -12,12 +12,15 @@ import {
   buildStageTableName,
   buildTableFilterSql,
   buildTableProfileSql,
+  buildTimestampCountSql,
   buildTimestampFingerprintSql,
+  buildTimestampRangePredicate,
   calculateEtaSeconds,
   computeBackoffDelayMs,
   computeChunkEtaSeconds,
   computeChunkPlan,
   decideVerifyMismatchAction,
+  findEarliestDivergentTimestampMarker,
   formatRowsPerSecond,
   incrementalComparatorForTimestampColumn,
   isVerifyMismatchSkipError,
@@ -32,6 +35,7 @@ import {
   parseReincrementalRollbackSteps,
   parseTableMetadata,
   parseTableProfiles,
+  parseTimestampCountRows,
   pkExpression,
   quoteIdentifier,
   quoteLiteral,
@@ -446,6 +450,72 @@ describe("fingerprint SQL", () => {
     expect(sql).toContain('public."table_a"');
   });
 
+  it("builds timestamp count SQL", () => {
+    const sql = buildTimestampCountSql(tableA, "data_sakusei_nengappi");
+    expect(sql).toBe(
+      [
+        'select ("data_sakusei_nengappi")::text as marker, count(*)::text as row_count',
+        'from public."table_a"',
+        "group by 1",
+        "order by 1",
+      ].join("\n"),
+    );
+  });
+
+  it("parses timestamp count rows", () => {
+    expect(parseTimestampCountRows("20241001\t97\n\n20241015\t1027\n")).toStrictEqual([
+      { marker: "20241001", count: 97 },
+      { marker: "20241015", count: 1027 },
+    ]);
+  });
+
+  it("drops invalid timestamp count rows", () => {
+    expect(parseTimestampCountRows("\t12\n20241001\tNaN\n20241002\t4\n")).toStrictEqual([
+      { marker: "20241002", count: 4 },
+    ]);
+  });
+
+  it("finds the earliest divergent timestamp marker", () => {
+    expect(
+      findEarliestDivergentTimestampMarker({
+        localRows: [
+          { marker: "20241001", count: 97 },
+          { marker: "20241015", count: 1027 },
+          { marker: "20241022", count: 140 },
+        ],
+        neonRows: [
+          { marker: "20241001", count: 97 },
+          { marker: "20241015", count: 1016 },
+          { marker: "20241022", count: 140 },
+        ],
+      }),
+    ).toBe("20241015");
+  });
+
+  it("finds divergence when a marker exists only on one side", () => {
+    expect(
+      findEarliestDivergentTimestampMarker({
+        localRows: [{ marker: "20241015", count: 1027 }],
+        neonRows: [{ marker: "20241001", count: 86 }],
+      }),
+    ).toBe("20241001");
+  });
+
+  it("returns null when timestamp counts match", () => {
+    expect(
+      findEarliestDivergentTimestampMarker({
+        localRows: [{ marker: "20241001", count: 97 }],
+        neonRows: [{ marker: "20241001", count: 97 }],
+      }),
+    ).toBe(null);
+  });
+
+  it("builds timestamp range predicates using text marker semantics", () => {
+    expect(buildTimestampRangePredicate("data_sakusei_nengappi", "20241001")).toBe(
+      "(\"data_sakusei_nengappi\")::text >= '20241001'",
+    );
+  });
+
   it("parses fingerprint output", () => {
     expect(parseFingerprintLine("1234\t2026-05-21 10:00:00")).toEqual({
       count: 1234,
@@ -517,6 +587,19 @@ describe("incremental apply SQL", () => {
     expect(sql.postCopySql).toContain("BEGIN;");
     expect(sql.postCopySql).toContain('DROP TABLE public."custom_stage"');
     expect(sql.cleanupSql).toBe('DROP TABLE IF EXISTS public."custom_stage";');
+  });
+
+  it("can delete a bounded timestamp range before upserting staged rows", () => {
+    const sql = buildIncrementalApplySql(tableA, "custom_stage", false, {
+      preInsertDeleteWhere: buildTimestampRangePredicate("updated_at", "2026-06-01T00:00:00.000Z"),
+    });
+    expect(sql.postCopySql).toContain(
+      'DELETE FROM public."table_a" WHERE ("updated_at")::text >= \'2026-06-01T00:00:00.000Z\';',
+    );
+    expect(sql.postCopySql).toContain('INSERT INTO public."table_a"');
+    expect(sql.postCopySql.indexOf("DELETE FROM")).toBeLessThan(
+      sql.postCopySql.indexOf("INSERT INTO"),
+    );
   });
 
   it("rolls back the implicit transaction for temporary stages", () => {

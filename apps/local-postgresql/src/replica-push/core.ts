@@ -444,6 +444,52 @@ export function buildTimestampFingerprintSql(table: TableMetadata, tsColumn: str
   return `select count(*)::text || E'\\t' || coalesce(max(${quoteIdentifier(tsColumn)})::text, '') from public.${quoteIdentifier(table.tableName)}`;
 }
 
+export interface TimestampCountRow {
+  marker: string;
+  count: number;
+}
+
+export function buildTimestampCountSql(table: TableMetadata, tsColumn: string): string {
+  const markerExpression = `(${quoteIdentifier(tsColumn)})::text`;
+  return [
+    `select ${markerExpression} as marker, count(*)::text as row_count`,
+    `from public.${quoteIdentifier(table.tableName)}`,
+    "group by 1",
+    "order by 1",
+  ].join("\n");
+}
+
+export function parseTimestampCountRows(output: string): TimestampCountRow[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [marker = "", countText = ""] = line.split("\t");
+      return { marker, count: Number(countText) };
+    })
+    .filter((row) => row.marker !== "" && Number.isFinite(row.count));
+}
+
+export function findEarliestDivergentTimestampMarker(input: {
+  localRows: readonly TimestampCountRow[];
+  neonRows: readonly TimestampCountRow[];
+}): string | null {
+  const localCounts = new Map(input.localRows.map((row) => [row.marker, row.count]));
+  const neonCounts = new Map(input.neonRows.map((row) => [row.marker, row.count]));
+  const markers = Array.from(new Set([...localCounts.keys(), ...neonCounts.keys()])).sort();
+  for (const marker of markers) {
+    if ((localCounts.get(marker) ?? 0) !== (neonCounts.get(marker) ?? 0)) {
+      return marker;
+    }
+  }
+  return null;
+}
+
+export function buildTimestampRangePredicate(tsColumn: string, marker: string): string {
+  return `${timestampKeyExpression(tsColumn)} >= ${quoteLiteral(marker)}`;
+}
+
 export interface FingerprintResult {
   count: number;
   marker: string;
@@ -567,6 +613,7 @@ export function buildIncrementalApplySql(
   table: TableMetadata,
   stageTableName = "replica_sync_stage_inc",
   temporaryStage = true,
+  options: { preInsertDeleteWhere?: string } = {},
 ): {
   preCopySql: string;
   copySql: string;
@@ -594,10 +641,17 @@ export function buildIncrementalApplySql(
     `  ORDER BY ${table.primaryKeyList}`,
     ") AS stage",
   ].join("\n");
+  const preInsertDeleteSql =
+    options.preInsertDeleteWhere === undefined
+      ? ""
+      : `DELETE FROM public.${quotedTableName} WHERE ${options.preInsertDeleteWhere};`;
   // OVERRIDING SYSTEM VALUE preserves Neon-side GENERATED ALWAYS identity columns while remaining a no-op for non-identity columns and BY DEFAULT identities.
   const applySql = [
+    preInsertDeleteSql,
     `INSERT INTO public.${quotedTableName} (${table.columnList}) OVERRIDING SYSTEM VALUE ${deduplicatedStageSelect} ON CONFLICT (${table.primaryKeyList}) ${conflictAction};`,
-  ].join("\n");
+  ]
+    .filter((sql) => sql !== "")
+    .join("\n");
   const dropStageSql = temporaryStage ? "" : `DROP TABLE ${stageTableReference};\n`;
   return {
     preCopySql: [temporaryStage ? "BEGIN;" : "", stageCreateSql].join("\n"),

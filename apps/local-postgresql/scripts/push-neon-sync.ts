@@ -11,6 +11,8 @@ import {
   buildIncrementalCopyFromSql,
   buildJsonlRecord,
   buildStageTableName,
+  buildTimestampCountSql,
+  buildTimestampRangePredicate,
   incrementalComparatorForTimestampColumn,
   buildMetadataSql,
   buildNeonApplySql,
@@ -20,12 +22,14 @@ import {
   computeChunkEtaSeconds,
   computeChunkPlan,
   decideVerifyMismatchAction,
+  findEarliestDivergentTimestampMarker,
   formatRowsPerSecond,
   isVerifyMismatchSkipError,
   parseDependencyEdges,
   parseFingerprintLine,
   parseTableMetadata,
   parseTableProfiles,
+  parseTimestampCountRows,
   pkExpression,
   quoteIdentifier,
   resolveDefaultFullReplaceBatchRows,
@@ -71,6 +75,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
 const JSONL_LOG_ENV_KEY = "REPLICA_SYNC_LOG_JSONL";
 const TIMEOUT_WARN_INTERVAL_MS = 30_000;
+const DEFAULT_RANGE_RECONCILE_MAX_ROWS = 500_000;
 
 type CommandResult = {
   stdout: string;
@@ -612,6 +617,11 @@ Environment:
                                   the timestamp marker back further and retries until the
                                   Neon row count catches up to local; full-replace fallback
                                   fires only after every step exhausts. Default: 7,30,90.
+  REPLICA_SYNC_RANGE_RECONCILE_MAX_ROWS
+                                  After rollback steps exhaust, resync only the earliest
+                                  divergent timestamp range when the local range has at most
+                                  this many rows. Avoids full-replace on late corrections.
+                                  Default: 500000.
   REPLICA_SYNC_LOG_JSONL          When set to 1 or true, append one JSON line per progress
                                   event to tmp/push-neon-sync.jsonl. Default: off.
   REPLICA_SYNC_NEON_PSQL_CONTAINER
@@ -775,6 +785,55 @@ async function loadFingerprint(
   return parseFingerprintLine(result.stdout);
 }
 
+async function loadTimestampCounts(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  target: "local" | "neon",
+  tsColumn: string,
+) {
+  const sql = buildTimestampCountSql(table, tsColumn);
+  const result =
+    target === "local"
+      ? await runCommand("container", containerExecArgs(env, sql))
+      : await runCommand(
+          "container",
+          neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+        );
+  return parseTimestampCountRows(result.stdout);
+}
+
+async function findEarliestDivergentMarker(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  tsColumn: string,
+): Promise<string | null> {
+  const [localRows, neonRows] = await Promise.all([
+    loadTimestampCounts(env, table, "local", tsColumn),
+    loadTimestampCounts(env, table, "neon", tsColumn),
+  ]);
+  return findEarliestDivergentTimestampMarker({ localRows, neonRows });
+}
+
+async function loadLocalTimestampRangeCount(
+  env: Record<string, string | undefined>,
+  table: TableMetadata,
+  tsColumn: string,
+  marker: string,
+): Promise<number> {
+  const predicate = buildTimestampRangePredicate(tsColumn, marker);
+  const sql = `select count(*) from public.${quoteIdentifier(table.tableName)} where ${predicate}`;
+  const { stdout } = await runCommand("container", containerExecArgs(env, sql));
+  return Number(stdout.trim());
+}
+
+function resolveRangeReconcileMaxRows(env: Record<string, string | undefined>): number {
+  return resolvePositiveIntegerEnv(
+    null,
+    env.REPLICA_SYNC_RANGE_RECONCILE_MAX_ROWS,
+    DEFAULT_RANGE_RECONCILE_MAX_ROWS,
+  );
+}
+
 interface SyncTableOptions {
   env: Record<string, string | undefined>;
   table: TableMetadata;
@@ -860,6 +919,16 @@ async function syncTableIncrementally(options: SyncTableIncrementallyOptions): P
 
   const verifyFp = await loadFingerprint(env, table, "neon", tsColumn);
   if (verifyFp.count !== localFp.count) {
+    if (tsColumn !== null && verifyFp.count > localFp.count) {
+      const rangeReconciled = await tryTimestampRangeReconcile({
+        env,
+        table,
+        tsColumn,
+        localCount: localFp.count,
+        retry,
+      });
+      if (rangeReconciled) return;
+    }
     const action = decideVerifyMismatchAction({
       tableName: table.tableName,
       localCount: localFp.count,
@@ -868,6 +937,17 @@ async function syncTableIncrementally(options: SyncTableIncrementallyOptions): P
       policy: verifyMismatchPolicy,
     });
     if (action.kind === "skip") {
+      const rangeReconciled =
+        tsColumn === null
+          ? false
+          : await tryTimestampRangeReconcile({
+              env,
+              table,
+              tsColumn,
+              localCount: localFp.count,
+              retry,
+            });
+      if (rangeReconciled) return;
       writeLine(`[${formatNow()}] ❌ ${action.message}`);
       throw new VerifyMismatchSkipError({
         tableName: table.tableName,
@@ -1453,6 +1533,14 @@ interface ReincrementalEscalationOptions {
   stepIndex: number;
 }
 
+interface TimestampRangeReconcileOptions {
+  env: Record<string, string | undefined>;
+  table: TableMetadata;
+  tsColumn: string;
+  localCount: number;
+  retry: { maxAttempts: number; backoff: RetryBackoffConfig };
+}
+
 interface ReincrementalReplayStepOptions {
   env: Record<string, string | undefined>;
   table: TableMetadata;
@@ -1490,6 +1578,14 @@ async function runReincrementalEscalation(
   options: ReincrementalEscalationOptions,
 ): Promise<boolean> {
   if (options.stepIndex >= options.steps.length) {
+    const reconciled = await tryTimestampRangeReconcile({
+      env: options.env,
+      table: options.table,
+      tsColumn: options.tsColumn,
+      localCount: options.localCount,
+      retry: options.retry,
+    });
+    if (reconciled) return true;
     writeLine(
       `[${formatNow()}] ↻ ${options.table.tableName}: re-incremental escalation exhausted after steps=[${options.steps.join(",")}]d, falling back to full-replace`,
     );
@@ -1542,15 +1638,78 @@ async function runReincrementalReplayStep(
     retry: options.retry,
   });
   const verifyFp = await loadFingerprint(options.env, options.table, "neon", options.tsColumn);
-  if (verifyFp.count >= options.localCount) {
+  if (verifyFp.count === options.localCount) {
     writeLine(
       `[${formatNow()}] ✚ ${options.table.tableName}: re-incremental verified neon=${verifyFp.count} after ${options.days}d rollback (local=${options.localCount})`,
     );
     return true;
   }
-  const residual = options.localCount - verifyFp.count;
+  const residual = Math.abs(options.localCount - verifyFp.count);
   writeLine(
     `[${formatNow()}] ↺ ${options.table.tableName}: re-incremental rollback ${options.days}d residual=${residual} (neon=${verifyFp.count}, local=${options.localCount}) — escalating`,
+  );
+  return false;
+}
+
+async function tryTimestampRangeReconcile(
+  options: TimestampRangeReconcileOptions,
+): Promise<boolean> {
+  const marker = await findEarliestDivergentMarker(options.env, options.table, options.tsColumn);
+  if (marker === null) {
+    writeLine(
+      `[${formatNow()}] ↺ ${options.table.tableName}: timestamp range reconcile found no divergent ${options.tsColumn} bucket`,
+    );
+    return false;
+  }
+
+  const localRangeRows = await loadLocalTimestampRangeCount(
+    options.env,
+    options.table,
+    options.tsColumn,
+    marker,
+  );
+  const maxRows = resolveRangeReconcileMaxRows(options.env);
+  if (!Number.isFinite(localRangeRows) || localRangeRows > maxRows) {
+    writeLine(
+      `[${formatNow()}] ↺ ${options.table.tableName}: timestamp range reconcile would copy ${formatBigNumber(localRangeRows)} rows from ${marker}, above limit ${formatBigNumber(maxRows)} — falling back`,
+    );
+    return false;
+  }
+
+  writeLine(
+    `[${formatNow()}] ↺ ${options.table.tableName}: timestamp range reconcile from ${marker} (${formatBigNumber(localRangeRows)} local rows, limit ${formatBigNumber(maxRows)})`,
+  );
+  const predicate = buildTimestampRangePredicate(options.tsColumn, marker);
+  const stageTableName = buildStageTableName({
+    kind: "reincremental",
+    pid: process.pid,
+    tableName: options.table.tableName,
+  });
+  const incSql = buildIncrementalApplySql(options.table, stageTableName, false, {
+    preInsertDeleteWhere: predicate,
+  });
+  const localCopySql = buildIncrementalCopyFromSql(options.table, {
+    keyExpression: timestampKeyExpression(options.tsColumn),
+    neonMarker: marker,
+    comparator: ">=",
+  });
+  await runIncrementalCopyWithRetry({
+    env: options.env,
+    table: options.table,
+    incSql,
+    localCopySql,
+    retry: options.retry,
+  });
+
+  const verifyFp = await loadFingerprint(options.env, options.table, "neon", options.tsColumn);
+  if (verifyFp.count === options.localCount) {
+    writeLine(
+      `[${formatNow()}] ✚ ${options.table.tableName}: timestamp range reconcile verified neon=${verifyFp.count} from ${marker}`,
+    );
+    return true;
+  }
+  writeLine(
+    `[${formatNow()}] ↺ ${options.table.tableName}: timestamp range reconcile residual=${Math.abs(options.localCount - verifyFp.count)} (neon=${verifyFp.count}, local=${options.localCount}) — falling back`,
   );
   return false;
 }
