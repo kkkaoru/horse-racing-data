@@ -22,12 +22,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-from collections.abc import Mapping, Sequence
+import subprocess
+import tempfile
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from time import perf_counter
-from typing import TYPE_CHECKING, TypedDict
+from time import perf_counter, sleep
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import lightgbm as lgb
 import numpy as np
@@ -141,6 +145,8 @@ DEFAULT_BAGGING_FREQ = 1
 DEFAULT_NUM_ITERATIONS = 2000
 DEFAULT_EARLY_STOPPING_ROUNDS = 100
 DEFAULT_VERBOSE_EVAL = 0
+AUTO_NUM_THREADS = 0
+TRAINING_SLOT_LOCK_DIR = "horse-racing-running-style-lightgbm-slots"
 
 # 21-year training range: 2005-2026 inclusive. NAR feature parquet starts
 # in 2005, JRA starts in 2006 (filtered at category level). 2026 is the
@@ -162,6 +168,15 @@ class TrainingParams(TypedDict):
     bagging_freq: int
     num_iterations: int
     early_stopping_rounds: int
+    num_threads: int
+
+
+class LocalResourceSnapshot(TypedDict):
+    cpu_count: int
+    load_1m: float
+    total_memory_bytes: int
+    available_memory_bytes: int
+    compressor_bytes: int
 
 
 class FoldMetrics(TypedDict):
@@ -288,7 +303,129 @@ def default_training_params() -> TrainingParams:
         "bagging_freq": DEFAULT_BAGGING_FREQ,
         "num_iterations": DEFAULT_NUM_ITERATIONS,
         "early_stopping_rounds": DEFAULT_EARLY_STOPPING_ROUNDS,
+        "num_threads": AUTO_NUM_THREADS,
     }
+
+
+def _parse_vm_stat_pages(output: str) -> dict[str, int]:
+    pages: dict[str, int] = {}
+    for line in output.splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        token = raw_value.strip().rstrip(".").replace(".", "")
+        if token.isdigit():
+            pages[key.strip()] = int(token)
+    return pages
+
+
+def _sysctl_int(name: str, fallback: int) -> int:
+    try:
+        raw = subprocess.check_output(["sysctl", "-n", name], text=True).strip()
+        return int(raw)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return fallback
+
+
+def collect_local_resource_snapshot() -> LocalResourceSnapshot:
+    cpu_count = os.cpu_count() or 1
+    load_1m = os.getloadavg()[0] if hasattr(os, "getloadavg") else 0.0
+    total_memory_bytes = _sysctl_int("hw.memsize", 0)
+    page_size = _sysctl_int("hw.pagesize", 16384)
+    try:
+        vm_stat_output = subprocess.check_output(["vm_stat"], text=True)
+        pages = _parse_vm_stat_pages(vm_stat_output)
+    except (OSError, subprocess.SubprocessError):
+        pages = {}
+    available_pages = (
+        pages.get("Pages free", 0)
+        + pages.get("Pages inactive", 0)
+        + pages.get("Pages speculative", 0)
+        + pages.get("Pages purgeable", 0)
+    )
+    compressor_pages = pages.get("Pages occupied by compressor", 0)
+    return {
+        "cpu_count": cpu_count,
+        "load_1m": float(load_1m),
+        "total_memory_bytes": total_memory_bytes,
+        "available_memory_bytes": int(available_pages * page_size),
+        "compressor_bytes": int(compressor_pages * page_size),
+    }
+
+
+def resolve_auto_num_threads(snapshot: LocalResourceSnapshot | None = None) -> int:
+    resource = snapshot if snapshot is not None else collect_local_resource_snapshot()
+    cpu_count = max(int(resource["cpu_count"]), 1)
+    load_1m = max(float(resource["load_1m"]), 0.0)
+    total_memory = max(int(resource["total_memory_bytes"]), 0)
+    available_memory = max(int(resource["available_memory_bytes"]), 0)
+    compressor = max(int(resource["compressor_bytes"]), 0)
+    headroom = max(cpu_count - int(load_1m), 1)
+    cap = max(min(cpu_count // 2, 4), 1)
+    memory_ratio = available_memory / total_memory if total_memory > 0 else 1.0
+    compressor_ratio = compressor / total_memory if total_memory > 0 else 0.0
+    if memory_ratio < 0.15 or compressor_ratio > 0.08:
+        return 1
+    if memory_ratio < 0.25 or load_1m >= cpu_count * 0.85:
+        return min(2, cap, headroom)
+    return max(min(cap, headroom), 1)
+
+
+def resolve_auto_fit_concurrency(snapshot: LocalResourceSnapshot | None = None) -> int:
+    resource = snapshot if snapshot is not None else collect_local_resource_snapshot()
+    cpu_count = max(int(resource["cpu_count"]), 1)
+    load_1m = max(float(resource["load_1m"]), 0.0)
+    total_memory = max(int(resource["total_memory_bytes"]), 0)
+    available_memory = max(int(resource["available_memory_bytes"]), 0)
+    compressor = max(int(resource["compressor_bytes"]), 0)
+    memory_ratio = available_memory / total_memory if total_memory > 0 else 1.0
+    compressor_ratio = compressor / total_memory if total_memory > 0 else 0.0
+    if memory_ratio < 0.20 or compressor_ratio > 0.05 or load_1m >= cpu_count * 0.85:
+        return 1
+    if memory_ratio < 0.35 or load_1m >= cpu_count * 0.65:
+        return min(2, max(cpu_count // 4, 1))
+    return max(min(cpu_count // 4, 3), 1)
+
+
+@contextmanager
+def acquire_local_training_slot(poll_seconds: float = 10.0) -> Generator[None]:
+    import fcntl
+
+    lock_root = Path(tempfile.gettempdir()) / TRAINING_SLOT_LOCK_DIR
+    lock_root.mkdir(parents=True, exist_ok=True)
+    handle = None
+    while handle is None:
+        max_slots = resolve_auto_fit_concurrency()
+        for slot_index in range(max_slots):
+            candidate = (lock_root / f"slot-{slot_index}.lock").open("a+", encoding="utf-8")
+            try:
+                fcntl.flock(candidate.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                handle = candidate
+                break
+            except BlockingIOError:
+                candidate.close()
+        if handle is None:
+            sleep(poll_seconds)
+    try:
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def resolve_training_params_for_fit(params: TrainingParams) -> TrainingParams:
+    resolved = params.copy()
+    if resolved["num_threads"] <= 0:
+        resolved["num_threads"] = resolve_auto_num_threads()
+    return resolved
+
+
+def parse_num_threads(value: str) -> int:
+    normalized = value.strip().lower()
+    if normalized == "auto":
+        return AUTO_NUM_THREADS
+    parsed = int(normalized)
+    return parsed if parsed > 0 else AUTO_NUM_THREADS
 
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
@@ -1058,6 +1195,9 @@ def build_running_style_cell_routing_config(
 
 
 def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
+    num_threads = params["num_threads"]
+    if num_threads <= 0:
+        num_threads = resolve_auto_num_threads()
     return {
         "objective": "multiclass",
         "num_class": NUM_CLASSES,
@@ -1070,6 +1210,7 @@ def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
         "feature_fraction": params["feature_fraction"],
         "bagging_fraction": params["bagging_fraction"],
         "bagging_freq": params["bagging_freq"],
+        "num_threads": num_threads,
         "verbose": -1,
     }
 
@@ -1474,37 +1615,39 @@ def train_running_style_head(
     *,
     class_weight_scheme: str = "inverse_freq",
 ) -> tuple[lgb.Booster, np.ndarray]:
-    train_subset = filter_labeled_rows(train_df)
-    valid_subset = filter_labeled_rows(valid_df)
-    train_weights = resolve_sample_weights(
-        train_subset[TARGET_COLUMN], class_weight_scheme
-    )
-    valid_weights = np.ones(len(valid_subset), dtype=np.float64)
-    train_dataset = build_lgb_dataset(
-        train_subset,
-        train_subset[TARGET_COLUMN],
-        train_weights,
-        feature_columns,
-        categorical_features,
-    )
-    valid_dataset = build_lgb_dataset(
-        valid_subset,
-        valid_subset[TARGET_COLUMN],
-        valid_weights,
-        feature_columns,
-        categorical_features,
-        reference=train_dataset,
-    )
-    booster = lgb.train(
-        lgb_params_for_multiclass(params),
-        train_dataset,
-        num_boost_round=params["num_iterations"],
-        valid_sets=[valid_dataset],
-        callbacks=[
-            lgb.early_stopping(stopping_rounds=params["early_stopping_rounds"]),
-            lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
-        ],
-    )
+    fit_params = resolve_training_params_for_fit(params)
+    with acquire_local_training_slot():
+        train_subset = filter_labeled_rows(train_df)
+        valid_subset = filter_labeled_rows(valid_df)
+        train_weights = resolve_sample_weights(
+            train_subset[TARGET_COLUMN], class_weight_scheme
+        )
+        valid_weights = np.ones(len(valid_subset), dtype=np.float64)
+        train_dataset = build_lgb_dataset(
+            train_subset,
+            train_subset[TARGET_COLUMN],
+            train_weights,
+            feature_columns,
+            categorical_features,
+        )
+        valid_dataset = build_lgb_dataset(
+            valid_subset,
+            valid_subset[TARGET_COLUMN],
+            valid_weights,
+            feature_columns,
+            categorical_features,
+            reference=train_dataset,
+        )
+        booster = lgb.train(
+            lgb_params_for_multiclass(fit_params),
+            train_dataset,
+            num_boost_round=fit_params["num_iterations"],
+            valid_sets=[valid_dataset],
+            callbacks=[
+                lgb.early_stopping(stopping_rounds=fit_params["early_stopping_rounds"]),
+                lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
+            ],
+        )
     probabilities = predict_softmax(
         booster, valid_df, feature_columns, categorical_features
     )
@@ -1614,6 +1757,15 @@ def _add_lgbm_hyperparam_arguments(subparser: argparse.ArgumentParser) -> None:
         "--min-child-samples", type=int, default=DEFAULT_MIN_CHILD_SAMPLES
     )
     subparser.add_argument("--num-iterations", type=int, default=DEFAULT_NUM_ITERATIONS)
+    subparser.add_argument(
+        "--num-threads",
+        type=parse_num_threads,
+        default=AUTO_NUM_THREADS,
+        help=(
+            "LightGBM worker threads per process. Use 'auto' to derive a safe "
+            "value from current CPU and memory pressure."
+        ),
+    )
     subparser.add_argument(
         "--early-stopping-rounds",
         type=int,
@@ -1756,6 +1908,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     train_cells.add_argument(
+        "--pg-url",
+        type=str,
+        default="postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing",
+        help="PostgreSQL URL used when --save-cell-metrics-to-postgres is enabled",
+    )
+    train_cells.add_argument(
+        "--save-cell-metrics-to-postgres",
+        action="store_true",
+        help="Persist trained running-style cell evaluation rows to cell_training_evaluations",
+    )
+    train_cells.add_argument(
         "--min-train-rows", type=int, default=DEFAULT_CELL_MIN_TRAIN_ROWS
     )
     train_cells.add_argument(
@@ -1785,6 +1948,7 @@ def training_params_from_args(args: argparse.Namespace) -> TrainingParams:
     base["learning_rate"] = args.learning_rate
     base["min_child_samples"] = args.min_child_samples
     base["num_iterations"] = args.num_iterations
+    base["num_threads"] = args.num_threads
     base["early_stopping_rounds"] = getattr(
         args, "early_stopping_rounds", DEFAULT_EARLY_STOPPING_ROUNDS
     )
@@ -1868,59 +2032,63 @@ def train_full_dataset(
     valid_start_date: str | None = None,
     class_weight_scheme: str = "inverse_freq",
 ) -> lgb.Booster:
-    train_subset = filter_labeled_rows(train_df)
-    if valid_start_date is not None:
-        fit_df, valid_df = split_production_train_valid(train_subset, valid_start_date)
-        if len(valid_df) == 0:
-            raise ValueError(
-                f"production validation split is empty from {valid_start_date}"
+    fit_params = resolve_training_params_for_fit(params)
+    with acquire_local_training_slot():
+        train_subset = filter_labeled_rows(train_df)
+        if valid_start_date is not None:
+            fit_df, valid_df = split_production_train_valid(train_subset, valid_start_date)
+            if len(valid_df) == 0:
+                raise ValueError(
+                    f"production validation split is empty from {valid_start_date}"
+                )
+            train_weights = resolve_sample_weights(
+                fit_df[TARGET_COLUMN], class_weight_scheme
             )
+            valid_weights = np.ones(len(valid_df), dtype=np.float64)
+            train_dataset = build_lgb_dataset(
+                fit_df,
+                fit_df[TARGET_COLUMN],
+                train_weights,
+                feature_columns,
+                categorical_features,
+            )
+            valid_dataset = build_lgb_dataset(
+                valid_df,
+                valid_df[TARGET_COLUMN],
+                valid_weights,
+                feature_columns,
+                categorical_features,
+                reference=train_dataset,
+            )
+            return lgb.train(
+                lgb_params_for_multiclass(fit_params),
+                train_dataset,
+                num_boost_round=fit_params["num_iterations"],
+                valid_sets=[valid_dataset],
+                callbacks=[
+                    lgb.early_stopping(
+                        stopping_rounds=fit_params["early_stopping_rounds"]
+                    ),
+                    lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
+                ],
+            )
+
         train_weights = resolve_sample_weights(
-            fit_df[TARGET_COLUMN], class_weight_scheme
+            train_subset[TARGET_COLUMN], class_weight_scheme
         )
-        valid_weights = np.ones(len(valid_df), dtype=np.float64)
         train_dataset = build_lgb_dataset(
-            fit_df,
-            fit_df[TARGET_COLUMN],
+            train_subset,
+            train_subset[TARGET_COLUMN],
             train_weights,
             feature_columns,
             categorical_features,
         )
-        valid_dataset = build_lgb_dataset(
-            valid_df,
-            valid_df[TARGET_COLUMN],
-            valid_weights,
-            feature_columns,
-            categorical_features,
-            reference=train_dataset,
-        )
         return lgb.train(
-            lgb_params_for_multiclass(params),
+            lgb_params_for_multiclass(fit_params),
             train_dataset,
-            num_boost_round=params["num_iterations"],
-            valid_sets=[valid_dataset],
-            callbacks=[
-                lgb.early_stopping(stopping_rounds=params["early_stopping_rounds"]),
-                lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
-            ],
+            num_boost_round=fit_params["num_iterations"],
+            callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
         )
-
-    train_weights = resolve_sample_weights(
-        train_subset[TARGET_COLUMN], class_weight_scheme
-    )
-    train_dataset = build_lgb_dataset(
-        train_subset,
-        train_subset[TARGET_COLUMN],
-        train_weights,
-        feature_columns,
-        categorical_features,
-    )
-    return lgb.train(
-        lgb_params_for_multiclass(params),
-        train_dataset,
-        num_boost_round=params["num_iterations"],
-        callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
-    )
 
 
 def run_walk_forward_eval_for_year(
@@ -2233,12 +2401,13 @@ def train_one_running_style_cell(
     args: argparse.Namespace,
     variant_id: str,
 ) -> dict[str, object]:
+    fit_params = resolve_training_params_for_fit(params)
     booster, probabilities = train_running_style_head(
         fit_df,
         valid_df,
         feature_columns,
         categorical_features,
-        params,
+        fit_params,
         class_weight_scheme=args.class_weight_scheme,
     )
     actual = valid_df[TARGET_COLUMN].to_numpy().astype(np.int64)
@@ -2291,7 +2460,7 @@ def train_one_running_style_cell(
         valid_start_date=args.valid_start_date,
         with_field_features=args.with_field_features,
         metrics=metrics,
-        hyperparameters=params,
+        hyperparameters=fit_params,
         class_weight_scheme=args.class_weight_scheme,
     )
     return {
@@ -2310,6 +2479,7 @@ def train_one_running_style_cell(
         "valid_race_count": race_count,
         "metrics": metrics,
         "cell_training_evaluation": adoption_metrics,
+        "resolved_num_threads": fit_params["num_threads"],
     }
 
 
@@ -2322,6 +2492,47 @@ def reserve_variant_id(cell: RunningStyleCellKey, used: set[str]) -> str:
         suffix += 1
     used.add(variant_id)
     return variant_id
+
+
+def save_running_style_cell_training_evaluations(
+    trained_cells: Sequence[Mapping[str, object]],
+    *,
+    pg_url: str,
+) -> int:
+    from learning.continuous_learner import CellAccuracyStore
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    grouped: dict[tuple[str, tuple[str, ...]], list[Mapping[str, object]]] = {}
+    for cell in trained_cells:
+        raw_hash = cell.get("feature_set_hash")
+        raw_feature_columns = cell.get("feature_columns")
+        raw_metrics = cell.get("cell_training_evaluation")
+        if not isinstance(raw_hash, str):
+            continue
+        if not isinstance(raw_feature_columns, list) or not all(
+            isinstance(name, str) for name in raw_feature_columns
+        ):
+            continue
+        if not isinstance(raw_metrics, Mapping):
+            continue
+        feature_names = tuple(str(name) for name in raw_feature_columns)
+        metrics = cast(Mapping[str, object], raw_metrics)
+        key: tuple[str, tuple[str, ...]] = (raw_hash, feature_names)
+        if key not in grouped:
+            grouped[key] = []
+        grouped[key].append(metrics)
+
+    saved = 0
+    with CellAccuracyStore(pg_url=pg_url) as store:
+        for (feature_set_hash, feature_names), metrics in grouped.items():
+            saved += store.save_cell_metrics(
+                feature_set_hash,
+                len(feature_names),
+                cast(list[SubgroupMetrics], list(metrics)),
+                list(feature_names),
+                prediction_target="running_style",
+            )
+    return saved
 
 
 def run_train_cells_command(args: argparse.Namespace) -> None:
@@ -2432,6 +2643,12 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
         json.dumps(json_ready(metrics_payload), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    saved_cell_training_evaluations = 0
+    if args.save_cell_metrics_to_postgres:
+        saved_cell_training_evaluations = save_running_style_cell_training_evaluations(
+            trained_cells,
+            pg_url=args.pg_url,
+        )
     elapsed = perf_counter() - started
     print(
         json.dumps(
@@ -2441,6 +2658,7 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
                 "skipped_cells": len(skipped_cells),
                 "routing_json": str(args.output_routing_json),
                 "metrics_json": str(output_metrics_json),
+                "saved_cell_training_evaluations": saved_cell_training_evaluations,
             }
         )
     )

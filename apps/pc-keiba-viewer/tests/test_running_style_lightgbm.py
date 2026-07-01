@@ -27,6 +27,7 @@ def test_default_training_params_uses_documented_defaults():
     assert params["lambda_l1"] == 0.1
     assert params["lambda_l2"] == 0.1
     assert params["feature_fraction"] == 0.8
+    assert params["num_threads"] == subject.AUTO_NUM_THREADS
 
 
 def test_resolve_feature_columns_excludes_target_running_style_class():
@@ -208,11 +209,15 @@ def test_build_predictions_df_emits_probabilities_and_label():
     assert output["p_sashi"].to_list() == [0.1, 0.7]
 
 
-def test_lgb_params_for_multiclass_sets_objective_and_num_class():
+def test_lgb_params_for_multiclass_sets_objective_and_num_class(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(subject, "resolve_auto_num_threads", lambda: 3)
     params = subject.lgb_params_for_multiclass(subject.default_training_params())
     assert params["objective"] == "multiclass"
     assert params["num_class"] == 4
     assert params["metric"] == "multi_logloss"
+    assert params["num_threads"] == 3
 
 
 def test_parse_validation_years_accepts_multiple_years():
@@ -1006,6 +1011,111 @@ def test_training_params_from_args_preserves_legacy_defaults_when_overrides_abse
     assert params["feature_fraction"] == pytest.approx(0.8)
     assert params["lambda_l1"] == pytest.approx(0.1)
     assert params["lambda_l2"] == pytest.approx(0.1)
+    assert params["num_threads"] == subject.AUTO_NUM_THREADS
+
+
+def test_training_params_from_args_accepts_num_threads_override():
+    args = subject.parse_args(
+        [
+            "train-cells",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "rs-cell-v1",
+            "--output-root",
+            "tmp/model",
+            "--output-routing-json",
+            "tmp/routing.json",
+            "--num-threads",
+            "1",
+        ]
+    )
+    params = subject.training_params_from_args(args)
+    assert params["num_threads"] == 1
+
+
+def test_training_params_from_args_accepts_auto_num_threads():
+    args = subject.parse_args(
+        [
+            "train-cells",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "rs-cell-v1",
+            "--output-root",
+            "tmp/model",
+            "--output-routing-json",
+            "tmp/routing.json",
+            "--num-threads",
+            "auto",
+        ]
+    )
+    params = subject.training_params_from_args(args)
+    assert params["num_threads"] == subject.AUTO_NUM_THREADS
+
+
+def test_resolve_auto_num_threads_scales_with_resource_snapshot():
+    healthy: subject.LocalResourceSnapshot = {
+        "cpu_count": 10,
+        "load_1m": 2.0,
+        "total_memory_bytes": 40 * 1024**3,
+        "available_memory_bytes": 24 * 1024**3,
+        "compressor_bytes": 0,
+    }
+    pressured: subject.LocalResourceSnapshot = {
+        **healthy,
+        "available_memory_bytes": 3 * 1024**3,
+    }
+
+    assert subject.resolve_auto_num_threads(healthy) == 4
+    assert subject.resolve_auto_num_threads(pressured) == 1
+
+
+def test_resolve_auto_fit_concurrency_scales_with_resource_snapshot():
+    healthy: subject.LocalResourceSnapshot = {
+        "cpu_count": 12,
+        "load_1m": 2.0,
+        "total_memory_bytes": 48 * 1024**3,
+        "available_memory_bytes": 32 * 1024**3,
+        "compressor_bytes": 0,
+    }
+    loaded: subject.LocalResourceSnapshot = {
+        **healthy,
+        "load_1m": 8.0,
+    }
+    pressured: subject.LocalResourceSnapshot = {
+        **healthy,
+        "available_memory_bytes": 6 * 1024**3,
+    }
+
+    assert subject.resolve_auto_fit_concurrency(healthy) == 3
+    assert subject.resolve_auto_fit_concurrency(loaded) == 2
+    assert subject.resolve_auto_fit_concurrency(pressured) == 1
+
+
+def test_parse_vm_stat_pages_extracts_numeric_page_counts():
+    pages = subject._parse_vm_stat_pages(
+        """
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               804083.
+Pages active:                             992273.
+Pages occupied by compressor:                  7.
+"""
+    )
+
+    assert pages["Pages free"] == 804083
+    assert pages["Pages active"] == 992273
+    assert pages["Pages occupied by compressor"] == 7
+
+
+def test_resolve_training_params_for_fit_replaces_auto_num_threads(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(subject, "resolve_auto_num_threads", lambda: 2)
+    params = subject.default_training_params()
+    resolved = subject.resolve_training_params_for_fit(params)
+    assert params["num_threads"] == subject.AUTO_NUM_THREADS
+    assert resolved["num_threads"] == 2
 
 
 def test_write_model_metadata_records_hyperparameters_when_provided(tmp_path: Path):
@@ -1020,6 +1130,7 @@ def test_write_model_metadata_records_hyperparameters_when_provided(tmp_path: Pa
         "bagging_freq": 5,
         "num_iterations": 2000,
         "early_stopping_rounds": 100,
+        "num_threads": subject.AUTO_NUM_THREADS,
     }
     subject.write_model_metadata(
         tmp_path,
@@ -1938,3 +2049,112 @@ def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     assert cell_eval["place2_accuracy"] == trained_cells[0]["metrics"]["top2_accuracy"]
     assert cell_eval["place3_accuracy"] == trained_cells[0]["metrics"]["macro_f1"]
     assert cell_eval["prediction_count"] == trained_cells[0]["metrics"]["prediction_count"]
+
+
+def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    class _FakeStore:
+        def __init__(self, pg_url: str) -> None:
+            self.pg_url: str = pg_url
+
+        def __enter__(self) -> "_FakeStore":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def save_cell_metrics(
+            self,
+            feature_set_hash: str,
+            feature_count: int,
+            metrics: list[object],
+            feature_names: list[str],
+            *,
+            prediction_target: str,
+        ) -> int:
+            calls.append(
+                {
+                    "pg_url": self.pg_url,
+                    "feature_set_hash": feature_set_hash,
+                    "feature_count": feature_count,
+                    "metrics": metrics,
+                    "feature_names": feature_names,
+                    "prediction_target": prediction_target,
+                }
+            )
+            return len(metrics)
+
+    monkeypatch.setattr("learning.continuous_learner.CellAccuracyStore", _FakeStore)
+    metrics = {
+        "prediction_target": "running_style",
+        "feature_set_hash": "a" * 64,
+        "category": "jra",
+        "surface": "turf",
+        "distance_band": "sprint",
+        "class_label": "open",
+        "season": "spring",
+        "venue": "05",
+        "race_count": 12,
+        "ndcg_at_3": 0.4,
+        "top1_accuracy": 0.4,
+        "place2_accuracy": 0.6,
+        "place3_accuracy": 0.3,
+        "place4_accuracy": 0.0,
+        "place5_accuracy": 0.0,
+        "place6_accuracy": 0.0,
+        "top3_box_accuracy": 0.0,
+    }
+
+    saved = subject.save_running_style_cell_training_evaluations(
+        [
+            {
+                "feature_set_hash": "a" * 64,
+                "feature_columns": ["feature_b", "feature_a"],
+                "cell_training_evaluation": metrics,
+            },
+            {
+                "feature_set_hash": "a" * 64,
+                "feature_columns": ["feature_b", "feature_a"],
+                "cell_training_evaluation": {**metrics, "venue": "06"},
+            },
+            {
+                "feature_set_hash": "b" * 64,
+                "feature_columns": ["feature_c"],
+            },
+        ],
+        pg_url="postgresql://local/test",
+    )
+
+    assert saved == 2
+    assert len(calls) == 1
+    assert calls[0]["pg_url"] == "postgresql://local/test"
+    assert calls[0]["feature_set_hash"] == "a" * 64
+    assert calls[0]["feature_count"] == 2
+    assert calls[0]["feature_names"] == ["feature_b", "feature_a"]
+    assert calls[0]["prediction_target"] == "running_style"
+    assert len(cast(list[object], calls[0]["metrics"])) == 2
+
+
+def test_parse_train_cells_accepts_postgres_persistence_options(tmp_path: Path):
+    args = subject.parse_args(
+        [
+            "train-cells",
+            "--csv",
+            "tmp/in",
+            "--model-version",
+            "rs-cell-v1",
+            "--output-root",
+            str(tmp_path / "models"),
+            "--output-routing-json",
+            str(tmp_path / "routing.json"),
+            "--pg-url",
+            "postgresql://local/test",
+            "--save-cell-metrics-to-postgres",
+        ]
+    )
+
+    assert args.pg_url == "postgresql://local/test"
+    assert args.save_cell_metrics_to_postgres is True

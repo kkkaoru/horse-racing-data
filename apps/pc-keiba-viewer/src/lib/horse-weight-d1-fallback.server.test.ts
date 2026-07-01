@@ -173,9 +173,9 @@ it("fetchHorseWeightsFromD1 calls D1 with the right SQL and binds the raceKey ar
   ]);
   await fetchHorseWeightsFromD1({ db, raceKey: "nar:2026:0529:47:01" });
   expect(raw.prepare).toHaveBeenCalledWith(
-    "select horse_number, horse_name, weight, change_sign, change_amount, fetched_at from horse_weight_snapshots where race_key = ?",
+    "select horse_number, horse_name, weight, change_sign, change_amount, fetched_at from horse_weight_snapshots where race_key = ? and fetched_at = (select max(fetched_at) from horse_weight_snapshots where race_key = ?)",
   );
-  expect(prepared.bind).toHaveBeenCalledWith("nar:2026:0529:47:01");
+  expect(prepared.bind).toHaveBeenCalledWith("nar:2026:0529:47:01", "nar:2026:0529:47:01");
 });
 
 it("fetchHorseWeightsFromD1 uses the fetched_at of the first row when rows share the same timestamp", async () => {

@@ -34,7 +34,7 @@ export interface FetchHorseWeightsFromD1Params {
 }
 
 const SELECT_HORSE_WEIGHTS_SQL =
-  "select horse_number, horse_name, weight, change_sign, change_amount, fetched_at from horse_weight_snapshots where race_key = ?";
+  "select horse_number, horse_name, weight, change_sign, change_amount, fetched_at from horse_weight_snapshots where race_key = ? and fetched_at = (select max(fetched_at) from horse_weight_snapshots where race_key = ?)";
 
 const DECIMAL_RADIX = 10;
 
@@ -54,7 +54,7 @@ export const fetchHorseWeightsFromD1 = async (
 ): Promise<HorseWeightSnapshot | null> => {
   const result = await params.db
     .prepare(SELECT_HORSE_WEIGHTS_SQL)
-    .bind(params.raceKey)
+    .bind(params.raceKey, params.raceKey)
     .all<HorseWeightSnapshotRow>();
   const rows = result.results;
   const [first] = rows;
