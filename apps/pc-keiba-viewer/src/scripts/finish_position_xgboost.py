@@ -30,6 +30,7 @@ import xgboost as xgb
 
 __all__ = [
     "compute_fold_metrics",
+    "group_weights_from_row_weights",
     "make_to_relevance",
     "read_parquet_schema_names",
     "resolve_feature_columns",
@@ -213,6 +214,35 @@ def sort_train_valid_for_grouping(
     )
 
 
+def group_weights_from_row_weights(
+    row_weights: np.ndarray, group_sizes: list[int],
+) -> np.ndarray:
+    """Reduce a per-row weight array to one weight per ranking query group.
+
+    XGBoost (this repo pins ``xgboost>=3.2.0``) validates
+    ``group_ptr_.size() == weights_.Size() + 1`` in ``MetaInfo::Validate``
+    once ``DMatrix.set_group`` is called for a ranking objective: ``weight``
+    must have exactly one entry per query group, not one per row. Passing the
+    per-row ``sample_weight`` column straight through (as this function used
+    to) raises ``Check failed: group_ptr_.size() == weights_.Size() + 1``.
+
+    This repo's per-row weights (time-decay plus optional bucket-aware mixing,
+    see ``attach_sample_weights`` in ``train_finish_position_xgboost_walk_forward.py``)
+    are constant within a race -- both factors are race-level, not horse-level
+    -- so reducing to one value per group via the mean is lossless for the
+    current weighting scheme, and degrades gracefully (rather than crashing)
+    if a future weighting scheme ever varies within a race.
+    """
+    offsets = np.cumsum([0, *group_sizes])
+    return np.array(
+        [
+            float(row_weights[offsets[i] : offsets[i + 1]].mean())
+            for i in range(len(group_sizes))
+        ],
+        dtype=np.float64,
+    )
+
+
 def train_xgboost_ranker(
     train_df: pl.DataFrame,
     valid_df: pl.DataFrame,
@@ -226,11 +256,13 @@ def train_xgboost_ranker(
     valid_labels = relevance_labels(
         valid_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )
+    train_group_sizes = build_group_sizes(train_df)
     train_weights = (
-        train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
+        group_weights_from_row_weights(train_df["sample_weight"].to_numpy(), train_group_sizes)
+        if "sample_weight" in train_df.columns else None
     )
     dtrain = xgb.DMatrix(train_df.select(feature_cols), label=train_labels, weight=train_weights)
-    dtrain.set_group(build_group_sizes(train_df))
+    dtrain.set_group(train_group_sizes)
     dvalid = xgb.DMatrix(valid_df.select(feature_cols), label=valid_labels)
     dvalid.set_group(build_group_sizes(valid_df))
     objective_arg = getattr(args, "objective", "pairwise")

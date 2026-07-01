@@ -205,6 +205,28 @@ def test_build_group_sizes_single_race():
     assert subject.build_group_sizes(df) == [2]
 
 
+def test_group_weights_from_row_weights_reduces_constant_group_to_one_value():
+    row_weights = np.array([1.5, 1.5, 2.0, 2.0, 2.0])
+    group_sizes = [2, 3]
+    result = subject.group_weights_from_row_weights(row_weights, group_sizes)
+    assert result.shape == (2,)
+    np.testing.assert_array_almost_equal(result, np.array([1.5, 2.0]))
+
+
+def test_group_weights_from_row_weights_averages_within_group_when_not_constant():
+    row_weights = np.array([1.0, 3.0, 5.0])
+    group_sizes = [2, 1]
+    result = subject.group_weights_from_row_weights(row_weights, group_sizes)
+    np.testing.assert_array_almost_equal(result, np.array([2.0, 5.0]))
+
+
+def test_group_weights_from_row_weights_single_group():
+    row_weights = np.array([4.0, 6.0])
+    group_sizes = [2]
+    result = subject.group_weights_from_row_weights(row_weights, group_sizes)
+    np.testing.assert_array_almost_equal(result, np.array([5.0]))
+
+
 def test_sort_train_valid_for_grouping_sorts_when_not_presorted():
     train_df = pl.DataFrame({"race_id": ["r2", "r1", "r1"], "umaban": [1.0, 2.0, 1.0]})
     valid_df = pl.DataFrame({"race_id": ["r4", "r3"], "umaban": [2.0, 1.0]})
@@ -813,22 +835,28 @@ def test_train_xgboost_ranker_presorted_matches_unsorted_labels_and_groups(
     assert groups[0] == groups[2]
 
 
-def test_train_xgboost_ranker_passes_sample_weight_to_dmatrix(
+def test_train_xgboost_ranker_passes_group_reduced_weight_to_dmatrix(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """When sample_weight column is present, it must be forwarded to xgb.DMatrix."""
+    """sample_weight must be reduced to one value per query GROUP, not one per
+    row, before reaching xgb.DMatrix. xgboost>=3.2.0 raises
+    'Check failed: group_ptr_.size() == weights_.Size() + 1' if a per-row
+    weight array is combined with DMatrix.set_group() for a ranking
+    objective -- this repo's sample_weight (time-decay, optionally
+    bucket-aware-mixed) is constant within a race, so the fix takes the mean
+    per race/group, which is exact for that scheme and safe in general."""
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
-        "sample_weight": [1.5, 2.0],
+        "race_id": ["r1", "r1", "r2", "r2", "r2"],
+        "umaban": [1.0, 2.0, 1.0, 2.0, 3.0],
+        "finish_position": [1.0, 2.0, 1.0, 2.0, 3.0],
+        "feature_a": [0.1, 0.2, 0.3, 0.4, 0.5],
+        "sample_weight": [1.5, 1.5, 2.0, 2.0, 2.0],
     })
     valid_df = pl.DataFrame({
-        "race_id": ["r2", "r2"],
+        "race_id": ["r3", "r3"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
-        "feature_a": [0.3, 0.4],
+        "feature_a": [0.6, 0.7],
     })
 
     dmatrix_calls: list[dict[str, object]] = []
@@ -845,14 +873,14 @@ def test_train_xgboost_ranker_passes_sample_weight_to_dmatrix(
     monkeypatch.setattr(subject.xgb, "DMatrix", FakeDMatrix)
     monkeypatch.setattr(subject.xgb, "train", MagicMock(return_value=fake_booster))
 
-    args = _make_args()
+    args = _make_args(presorted=True)
     subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
 
     train_call = dmatrix_calls[0]
     assert train_call["weight"] is not None, "sample_weight was not passed to xgb.DMatrix"
-    np.testing.assert_array_almost_equal(
-        cast(np.ndarray, train_call["weight"]), np.array([1.5, 2.0]),
-    )
+    weight_arr = cast(np.ndarray, train_call["weight"])
+    assert weight_arr.shape == (2,), "weight must have one entry per query group, not per row"
+    np.testing.assert_array_almost_equal(weight_arr, np.array([1.5, 2.0]))
 
 
 def test_train_xgboost_ranker_passes_none_weight_when_no_sample_weight_column(
