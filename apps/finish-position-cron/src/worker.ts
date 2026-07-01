@@ -48,6 +48,10 @@ const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
+const ADMIN_STOP_CONTAINERS_PATH = "/api/admin/stop-predict-containers";
+const ADMIN_STOP_CONTAINER_DO_PATH = "/__admin/stop-container";
+const PREDICT_CONTAINER_NAME_PREFIX = "predict-";
+const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
 const INTERNAL_RESCORE_RACE_METHOD = "POST";
 const RUN_YMD_LENGTH = 8;
@@ -61,6 +65,12 @@ interface InternalRescoreRaceRequest {
   keibajoCode: string;
   raceBango: string;
   runYmd: string;
+}
+
+interface StopContainerResult {
+  name: string;
+  ok: boolean;
+  status: number;
 }
 
 export { FinishPositionPredictContainer, PredictRunCoordinator };
@@ -173,6 +183,9 @@ const guardedTrigger = async (request: Request, env: Env): Promise<Response> => 
 export const isInternalRescoreRaceRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === INTERNAL_RESCORE_RACE_PATH;
 
+export const isAdminStopContainersRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_STOP_CONTAINERS_PATH;
+
 const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
   typeof value === "string" && VALID_CATEGORIES.has(value);
 
@@ -259,10 +272,65 @@ const guardedInternalRescoreRace = async (request: Request, env: Env): Promise<R
   }
 };
 
+const parseStopContainerNames = (body: Record<string, unknown>): string[] | null => {
+  const names = body.names;
+  if (!Array.isArray(names)) return null;
+  if (names.length === 0 || names.length > MAX_ADMIN_STOP_NAMES) return null;
+  const parsed = names.filter(
+    (name): name is string =>
+      typeof name === "string" && name.startsWith(PREDICT_CONTAINER_NAME_PREFIX),
+  );
+  return parsed.length === names.length ? parsed : null;
+};
+
+const stopPredictContainer = async (
+  env: Env,
+  authorization: string,
+  name: string,
+): Promise<StopContainerResult> => {
+  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(name);
+  const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+  const response = await stub.fetch(
+    new Request(`http://do${ADMIN_STOP_CONTAINER_DO_PATH}`, {
+      headers: { authorization },
+      method: INTERNAL_RESCORE_RACE_METHOD,
+    }),
+  );
+  return { name, ok: response.ok, status: response.status };
+};
+
+const handleAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
+  const authorization = request.headers.get("authorization");
+  if (authorization === null || !isAuthorized(authorization, env.TRIGGER_TOKEN)) {
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const body = await parseBody(request);
+  const names = parseStopContainerNames(body);
+  if (!names) {
+    return Response.json({ error: "invalid names", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const results: StopContainerResult[] = [];
+  for (const name of names) {
+    results.push(await stopPredictContainer(env, authorization, name));
+  }
+  return Response.json({ ok: results.every((result) => result.ok), results });
+};
+
+const guardedAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleAdminStopContainers(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
 export const handleFetch = async (request: Request, env: Env): Promise<Response> => {
   const url = new URL(request.url);
   if (isTriggerRequest(request.method, url.pathname)) {
     return guardedTrigger(request, env);
+  }
+  if (isAdminStopContainersRequest(request.method, url.pathname)) {
+    return guardedAdminStopContainers(request, env);
   }
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);

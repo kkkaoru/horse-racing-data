@@ -13,6 +13,15 @@ const DEFAULT_PORT = 8080;
 const SLEEP_AFTER = "30s";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
+const ADMIN_STOP_PATH = "/__admin/stop-container";
+const AUTH_HEADER = "authorization";
+const BEARER_PREFIX = "Bearer ";
+
+const isAuthorizedAdmin = (request: Request, token: string): boolean => {
+  const header = request.headers.get(AUTH_HEADER);
+  if (!header?.startsWith(BEARER_PREFIX)) return false;
+  return header.slice(BEARER_PREFIX.length) === token;
+};
 
 export class FinishPositionPredictContainer extends Container<Env> {
   override defaultPort = DEFAULT_PORT;
@@ -20,10 +29,19 @@ export class FinishPositionPredictContainer extends Container<Env> {
   override enableInternet = true;
 
   override async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === ADMIN_STOP_PATH) {
+      if (!isAuthorizedAdmin(request, this.env.TRIGGER_TOKEN)) {
+        return Response.json({ error: "unauthorized", ok: false }, { status: 401 });
+      }
+      await this.destroy();
+      return Response.json({ ok: true });
+    }
     this.envVars = {
       MODELS_DIR: MODELS_DIR_DEFAULT,
       NEON_DATABASE_URL: this.env.NEON_DATABASE_URL,
       PREDICT_DAYS_AHEAD: this.env.PREDICT_DAYS_AHEAD,
+      PREDICT_SERVE_MODE: "http",
       SOURCE_DATABASE_URL: this.env.SOURCE_DATABASE_URL ?? EMPTY_ENV_VALUE,
       R2_ACCOUNT_ID: this.env.R2_ACCOUNT_ID ?? EMPTY_ENV_VALUE,
       R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID ?? EMPTY_ENV_VALUE,

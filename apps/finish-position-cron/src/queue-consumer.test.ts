@@ -194,7 +194,7 @@ test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDa
   );
 });
 
-test("uses a stable race-scoped DO name for focused per-race full skipDedup messages", async () => {
+test("uses a stable category-scoped DO name for focused per-race full skipDedup messages", async () => {
   const randomUuidSpy = vi
     .spyOn(crypto, "randomUUID")
     .mockReturnValue("00000000-0000-4000-8000-000000000001");
@@ -217,7 +217,7 @@ test("uses a stable race-scoped DO name for focused per-race full skipDedup mess
     expect(fetchRequest.url).toBe(
       "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260628&keibajoCode=02&raceBango=01",
     );
-    expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-20260628-02-01");
+    expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
     expect(randomUuidSpy).not.toHaveBeenCalled();
     expect(claimRunMock).not.toHaveBeenCalled();
     expect(completeRunMock).not.toHaveBeenCalled();
@@ -304,10 +304,44 @@ test("ignores requestId in the DO name for focused per-race full skipDedup messa
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=2&mode=full&runDate=20260629&keibajoCode=35&raceBango=01",
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260629-35-01");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("reuses the category-scoped DO across multiple focused per-race full messages", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 2,
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+      makeMessage({
+        category: "nar",
+        daysAhead: 2,
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "02",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(idFromNameMock).toHaveBeenCalledTimes(2);
+  expect(idFromNameMock).toHaveBeenNthCalledWith(1, "predict-nar");
+  expect(idFromNameMock).toHaveBeenNthCalledWith(2, "predict-nar");
+  const firstRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  const secondRequest = (stubFetchMock.mock.calls[1] as unknown as [Request])[0];
+  expect(firstRequest.url).toContain("raceBango=01");
+  expect(secondRequest.url).toContain("raceBango=02");
+  expect(ackMock).toHaveBeenCalledTimes(2);
 });
 
 test("keeps category-level full messages on the category DO even when requestId is present", async () => {
@@ -578,7 +612,7 @@ test("routes a NAR per-race rescore to the container held /predict (not Worker-n
   consoleSpy.mockRestore();
 });
 
-test("targets the per-race rescore at a race-scoped predict-nar DO with the exact query URL", async () => {
+test("targets the per-race rescore at a category-scoped predict-nar DO with the exact query URL", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -593,7 +627,7 @@ test("targets the per-race rescore at a race-scoped predict-nar DO with the exac
     ]),
     makeEnv(),
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260619-44-01");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
@@ -601,7 +635,7 @@ test("targets the per-race rescore at a race-scoped predict-nar DO with the exac
   consoleSpy.mockRestore();
 });
 
-test("keeps the per-race rescore DO name unchanged when requestId is present", async () => {
+test("keeps the per-race rescore DO name category-scoped when requestId is present", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -617,7 +651,7 @@ test("keeps the per-race rescore DO name unchanged when requestId is present", a
     ]),
     makeEnv(),
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-20260619-44-01");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
@@ -791,7 +825,7 @@ test("retries a NAR per-race rescore when the container DO returns 502", async (
   errorSpy.mockRestore();
 });
 
-test("routes a Ban-ei per-race rescore to a race-scoped container DO (not Worker-native)", async () => {
+test("routes a Ban-ei per-race rescore to a category-scoped container DO (not Worker-native)", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(
     makeBatch([
@@ -808,7 +842,7 @@ test("routes a Ban-ei per-race rescore to a race-scoped container DO (not Worker
   );
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei-20260619-83-07");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-ban-ei");
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });

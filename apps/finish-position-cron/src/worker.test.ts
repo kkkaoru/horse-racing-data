@@ -56,6 +56,9 @@ const runMock = vi.fn(async () => ({ success: true }));
 const bindMock = vi.fn(() => ({ run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const predictQueueSendMock = vi.fn(async () => undefined);
+const containerDoFetchMock = vi.fn(async () => Response.json({ ok: true }));
+const containerDoGetMock = vi.fn(() => ({ fetch: containerDoFetchMock }));
+const containerDoIdFromNameMock = vi.fn((name: string) => ({ name }));
 const realtimeAllMock = vi.fn(async () => ({
   results: [{ keibajo_code: "05", race_bango: "11", source: "jra" }],
 }));
@@ -65,7 +68,10 @@ const realtimePrepareMock = vi.fn(() => ({ bind: realtimeBindMock }));
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
   FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
-  FINISH_POSITION_PREDICT_CONTAINER: {} as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
+  FINISH_POSITION_PREDICT_CONTAINER: {
+    get: containerDoGetMock,
+    idFromName: containerDoIdFromNameMock,
+  } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: { send: predictQueueSendMock } as unknown as Env["PREDICT_QUEUE"],
@@ -99,6 +105,9 @@ beforeEach(() => {
   coordinatorTickMock.mockClear();
   claimRescoreRaceMock.mockClear();
   predictQueueSendMock.mockClear();
+  containerDoFetchMock.mockClear();
+  containerDoGetMock.mockClear();
+  containerDoIdFromNameMock.mockClear();
   realtimeAllMock.mockClear();
   realtimeBindMock.mockClear();
   realtimePrepareMock.mockClear();
@@ -109,6 +118,13 @@ beforeEach(() => {
 
 const internalRescoreRaceRequest = (token: string | null, body: string): Request =>
   new Request("https://cron.example/api/internal/rescore-race", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const adminStopContainersRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/stop-predict-containers", {
     body,
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
@@ -498,6 +514,76 @@ test("handleFetch omits per-race fields for the per-category path", async () => 
   expect(enqueueMock).toHaveBeenCalledWith(
     expect.objectContaining({ keibajoCode: undefined, raceBango: undefined }),
   );
+});
+
+test("admin stop containers endpoint rejects unauthenticated requests", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(null, JSON.stringify({ names: ["predict-nar-20260702-50-01"] })),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin stop containers endpoint rejects non-predict names", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest("secret-token", JSON.stringify({ names: ["daily-predict"] })),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin stop containers endpoint rejects missing and empty names", async () => {
+  const missingResponse = await handleFetch(
+    adminStopContainersRequest("secret-token", JSON.stringify({})),
+    makeEnv(),
+  );
+  const emptyResponse = await handleFetch(
+    adminStopContainersRequest("secret-token", JSON.stringify({ names: [] })),
+    makeEnv(),
+  );
+  expect(missingResponse.status).toBe(400);
+  expect(emptyResponse.status).toBe(400);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin stop containers endpoint returns 400 for malformed JSON", async () => {
+  const response = await handleFetch(adminStopContainersRequest("secret-token", "{"), makeEnv());
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.ok).toBe(false);
+  expect(body.error).toContain("SyntaxError");
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin stop containers endpoint destroys requested predict DO containers", async () => {
+  const response = await handleFetch(
+    adminStopContainersRequest(
+      "secret-token",
+      JSON.stringify({ names: ["predict-nar-20260702-50-01", "predict-nar-20260702-50-02"] }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(containerDoIdFromNameMock).toHaveBeenNthCalledWith(1, "predict-nar-20260702-50-01");
+  expect(containerDoIdFromNameMock).toHaveBeenNthCalledWith(2, "predict-nar-20260702-50-02");
+  expect(containerDoFetchMock).toHaveBeenCalledTimes(2);
+  const request = (containerDoFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.method).toBe("POST");
+  expect(request.url).toBe("http://do/__admin/stop-container");
+  expect(request.headers.get("authorization")).toBe("Bearer secret-token");
+  const body = (await response.json()) as {
+    ok: boolean;
+    results: Array<{ name: string; ok: boolean; status: number }>;
+  };
+  expect(body).toStrictEqual({
+    ok: true,
+    results: [
+      { name: "predict-nar-20260702-50-01", ok: true, status: 200 },
+      { name: "predict-nar-20260702-50-02", ok: true, status: 200 },
+    ],
+  });
 });
 
 test("internal rescore-race endpoint claims, enqueues a per-race rescore message, and returns 202", async () => {

@@ -79,14 +79,10 @@ interface PredictDoNameParams {
   runYmd: string;
 }
 
-const buildPredictDoName = ({
-  category,
-  keibajoCode,
-  raceBango,
-  runYmd,
-}: PredictDoNameParams): string => {
-  if (keibajoCode !== undefined && raceBango !== undefined)
-    return `${PREDICT_DO_NAME_PREFIX}${category}-${runYmd}-${keibajoCode}-${raceBango}`;
+const buildPredictDoName = ({ category }: PredictDoNameParams): string => {
+  // Per-race messages still carry race scope in the /predict query. The
+  // Container instance is category-scoped to avoid exhausting max_instances while
+  // previous race-scoped instances wait through sleepAfter.
   return `${PREDICT_DO_NAME_PREFIX}${category}`;
 };
 
