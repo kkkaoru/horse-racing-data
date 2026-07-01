@@ -65,3 +65,7 @@ export const writeLatestOddsToKv = async (
     expirationTtl: resolveLatestKvTtl(env),
   });
 };
+
+export const invalidateLatestOddsInKv = async (env: Env, raceKey: string): Promise<void> => {
+  await env.ODDS_HOT_KV.delete(buildLatestKvKey(raceKey));
+};

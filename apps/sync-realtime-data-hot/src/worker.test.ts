@@ -7,6 +7,7 @@ vi.mock("./fetch-odds", () => ({
 
 vi.mock("./odds-cache", () => ({
   OddsCacheHot: class {},
+  purgeCachedOdds: vi.fn(async () => undefined),
   readCachedOdds: vi.fn(async () => null),
   writeCachedOdds: vi.fn(async () => undefined),
 }));
@@ -22,7 +23,7 @@ vi.mock("./expected-race-count", () => ({
 
 import { getExpectedRaceCountForDate } from "./expected-race-count";
 import { fetchAndStoreOdds } from "./fetch-odds";
-import { readCachedOdds } from "./odds-cache";
+import { purgeCachedOdds, readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import worker, {
   buildOddsPayloadFromD1,
@@ -81,6 +82,10 @@ afterEach(() => {
   vi.mocked(getExpectedRaceCountForDate).mockResolvedValue(0);
   vi.mocked(readCachedOdds).mockReset();
   vi.mocked(readCachedOdds).mockResolvedValue(null);
+  vi.mocked(writeCachedOdds).mockReset();
+  vi.mocked(writeCachedOdds).mockResolvedValue(undefined);
+  vi.mocked(purgeCachedOdds).mockReset();
+  vi.mocked(purgeCachedOdds).mockResolvedValue(undefined);
   vi.mocked(fetchAndStoreOdds).mockReset();
   vi.mocked(fetchAndStoreOdds).mockResolvedValue(null);
 });
@@ -644,6 +649,54 @@ it("handleImportOddsChunk inserts rows and returns count", async () => {
   expect(await response.json()).toStrictEqual({ inserted: 1 });
 });
 
+it("handleImportOddsChunk invalidates all odds cache layers once per raceKey after insert", async () => {
+  const env = buildEnv();
+  const response = await handleImportOddsChunk(
+    env,
+    new Request("https://x/api/internal/import-odds-chunk", {
+      body: JSON.stringify({
+        rows: [
+          {
+            average_odds: null,
+            combination: "01",
+            fetched_at: "2026-05-28T10:00:00+09:00",
+            max_odds: null,
+            min_odds: null,
+            odds: 2.5,
+            odds_type: "tansho",
+            race_key: "nar:20260528:42:01",
+            rank: 1,
+          },
+          {
+            average_odds: null,
+            combination: "02",
+            fetched_at: "2026-05-28T10:00:00+09:00",
+            max_odds: null,
+            min_odds: null,
+            odds: 4.8,
+            odds_type: "tansho",
+            race_key: "nar:20260528:42:01",
+            rank: 2,
+          },
+        ],
+      }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A20260528%3A42%3A01",
+    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/latest",
+    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/tanshoHistory",
+    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/oddsHistoryByType",
+    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/payload",
+  ]);
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:20260528:42:01");
+  expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledWith(env, "nar:20260528:42:01");
+  expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(1);
+});
+
 it("handleImportOddsChunk treats missing rows array as empty", async () => {
   const env = buildEnv();
   const response = await handleImportOddsChunk(
@@ -655,6 +708,9 @@ it("handleImportOddsChunk treats missing rows array as empty", async () => {
     }),
   );
   expect(await response.json()).toStrictEqual({ inserted: 0 });
+  expect(cacheMock.delete).not.toHaveBeenCalled();
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+  expect(vi.mocked(purgeCachedOdds)).not.toHaveBeenCalled();
 });
 
 it("groupRowsForFinalBackup groups rows by race_key, odds_type, and date", () => {
@@ -1659,8 +1715,18 @@ it("processFetchOddsJob fans out cache writes on success (NAR)", async () => {
   });
   const env = buildEnv();
   await processFetchOddsJob(env, "nar:2026:0528:42:01");
-  expect(cacheMock.delete).toHaveBeenCalled();
+  expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0528%3A42%3A01",
+    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/latest",
+    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/tanshoHistory",
+    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/oddsHistoryByType",
+    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/payload",
+  ]);
   expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalled();
+  expect(vi.mocked(writeCachedOdds)).toHaveBeenCalledWith(env, "nar:2026:0528:42:01", {
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
 });
 
 it("processFetchOddsJob detects JRA source prefix on success", async () => {

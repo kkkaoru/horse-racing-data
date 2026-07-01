@@ -10,7 +10,11 @@ import {
   writeD1ResultCache,
   writeToEdgeCache,
 } from "./gates/edge-cache";
-import { readLatestOddsFromKv, writeLatestOddsToKv } from "./gates/latest-odds-kv-mirror";
+import {
+  invalidateLatestOddsInKv,
+  readLatestOddsFromKv,
+  writeLatestOddsToKv,
+} from "./gates/latest-odds-kv-mirror";
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
 import {
   computeArchiveCutoffIso,
@@ -26,7 +30,7 @@ import {
   buildHealthReport,
 } from "./monitor/health";
 import { extractYyyymmddFromRaceKey } from "./race-key";
-import { readCachedOdds, writeCachedOdds } from "./odds-cache";
+import { purgeCachedOdds, readCachedOdds, writeCachedOdds } from "./odds-cache";
 import {
   getCachedOddsFetchStateCount,
   invalidateOddsFetchStateCount,
@@ -72,7 +76,7 @@ const CLOSING_BACKFILL_CRON = "30 13 * * *";
 // storage cap (150) keeps worker-side intent explicit and avoids a silent
 // clamp when the storage limit changes.
 const ARCHIVE_QUERY_LIMIT = 150;
-const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType"];
+const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType", "payload"];
 const PLAN_DAYS_AHEAD = 2;
 // Silent-death detector for the per-minute scheduled cron. `dispatchScheduledByCron`
 // writes this key at the very top of every tick so a missing value == cron is dead.
@@ -262,7 +266,19 @@ export const handleImportOddsChunk = async (env: Env, request: Request): Promise
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
   const body = (await request.json()) as ImportOddsChunkRequest;
-  const inserted = await bulkInsertOddsSnapshotRows(env.REALTIME_HOT_DB, body.rows ?? []);
+  const rows = body.rows ?? [];
+  const inserted = await bulkInsertOddsSnapshotRows(env.REALTIME_HOT_DB, rows);
+  const raceKeys = Array.from(new Set(rows.map((row) => row.race_key)));
+  await Promise.all(
+    raceKeys.map((raceKey) =>
+      Promise.all([
+        purgeEdgeCache(raceKey),
+        purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES),
+        invalidateLatestOddsInKv(env, raceKey),
+        purgeCachedOdds(env, raceKey),
+      ]),
+    ),
+  );
   return jsonResponse({ inserted });
 };
 

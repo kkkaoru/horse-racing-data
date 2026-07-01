@@ -2,6 +2,7 @@
 import { expect, it, vi } from "vitest";
 
 import {
+  invalidateLatestOddsInKv,
   readLatestOddsFromKv,
   writeLatestOddsToKv,
   type LatestOddsMirrorPayload,
@@ -9,6 +10,7 @@ import {
 import type { Env } from "../types";
 
 interface KvMockHandle {
+  delete: ReturnType<typeof vi.fn>;
   get: ReturnType<typeof vi.fn>;
   put: ReturnType<typeof vi.fn>;
 }
@@ -146,4 +148,10 @@ it("writeLatestOddsToKv falls back to default when env value is zero", async () 
     JSON.stringify(samplePayload()),
     { expirationTtl: 600 },
   );
+});
+
+it("invalidateLatestOddsInKv deletes the race mirror key", async () => {
+  const env = buildEnv();
+  await invalidateLatestOddsInKv(env, "nar:20260528:42:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:20260528:42:01");
 });

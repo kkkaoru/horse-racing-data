@@ -2,7 +2,13 @@
 import type { DurableObjectState } from "@cloudflare/workers-types";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { OddsCacheHot, getOddsCacheId, readCachedOdds, writeCachedOdds } from "./odds-cache";
+import {
+  OddsCacheHot,
+  getOddsCacheId,
+  purgeCachedOdds,
+  readCachedOdds,
+  writeCachedOdds,
+} from "./odds-cache";
 import type { Env } from "./types";
 
 interface FakeStorage {
@@ -414,11 +420,21 @@ it("GET returns 404 when payload expired", async () => {
   expect(response.status).toBe(404);
 });
 
-it("returns 405 on unsupported method", async () => {
+it("DELETE purges stored race state", async () => {
   const { state } = buildState(new Map());
   const cache = new OddsCacheHot(state as unknown as DurableObjectState, buildEnv());
   const response = await cache.fetch(
     new Request("https://odds-cache/races/key1", { method: "DELETE" }),
+  );
+  expect(response.status).toBe(200);
+  expect(state.storage.delete).toHaveBeenCalledWith("key1");
+});
+
+it("returns 405 on unsupported method", async () => {
+  const { state } = buildState(new Map());
+  const cache = new OddsCacheHot(state as unknown as DurableObjectState, buildEnv());
+  const response = await cache.fetch(
+    new Request("https://odds-cache/races/key1", { method: "PATCH" }),
   );
   expect(response.status).toBe(405);
 });
@@ -541,6 +557,23 @@ it("writeCachedOdds issues a PUT request against the stub", async () => {
   await writeCachedOdds(env, "race key", { fetchedAt: "x", latest: {} });
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock.mock.calls[0]![0]).toBe("https://odds-cache/races/race%20key");
+});
+
+it("purgeCachedOdds issues a DELETE request against the stub", async () => {
+  const fetchMock = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(null, { status: 200 }),
+  );
+  const env = {
+    ODDS_CACHE: {
+      get: () => ({ fetch: fetchMock }),
+      idFromName: () => "id-1",
+    },
+  } as unknown as Env;
+  await purgeCachedOdds(env, "race key");
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0]![0]).toBe("https://odds-cache/races/race%20key");
+  expect(fetchMock.mock.calls[0]![1]).toStrictEqual({ method: "DELETE" });
 });
 
 it("PUT retains the latest 50 tansho snapshots when 100 snapshots are pushed", async () => {

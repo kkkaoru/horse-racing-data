@@ -141,6 +141,9 @@ export class OddsCacheHot {
     if (request.method === "GET") {
       return this.handleGet(raceKey);
     }
+    if (request.method === "DELETE") {
+      return this.handleDelete(raceKey);
+    }
     return jsonResponse({ error: "method not allowed" }, { status: 405 });
   }
 
@@ -169,6 +172,11 @@ export class OddsCacheHot {
       return jsonResponse(null, { status: 404 });
     }
     return jsonResponse(buildPayload(stored));
+  }
+
+  private async handleDelete(raceKey: string): Promise<Response> {
+    await this.state.storage.delete(raceKey);
+    return jsonResponse({ ok: true });
   }
 
   async alarm(): Promise<void> {
@@ -214,5 +222,12 @@ export const writeCachedOdds = async (
   await stub.fetch(`https://odds-cache/races/${encodeURIComponent(raceKey)}`, {
     body: JSON.stringify(payload),
     method: "PUT",
+  });
+};
+
+export const purgeCachedOdds = async (env: Env, raceKey: string): Promise<void> => {
+  const stub = env.ODDS_CACHE.get(getOddsCacheId(env, raceKey));
+  await stub.fetch(`https://odds-cache/races/${encodeURIComponent(raceKey)}`, {
+    method: "DELETE",
   });
 };
