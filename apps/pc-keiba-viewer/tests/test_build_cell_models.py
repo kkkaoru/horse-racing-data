@@ -84,6 +84,22 @@ def _metrics(
 
 
 # ---------------------------------------------------------------------------
+# _db_category
+
+
+def test_db_category_translates_ban_ei_to_banei() -> None:
+    assert subject._db_category("ban-ei") == "banei"
+
+
+def test_db_category_is_identity_for_jra() -> None:
+    assert subject._db_category("jra") == "jra"
+
+
+def test_db_category_is_identity_for_nar() -> None:
+    assert subject._db_category("nar") == "nar"
+
+
+# ---------------------------------------------------------------------------
 # compute_deltas
 
 
@@ -655,6 +671,59 @@ def test_main_writes_output_file(tmp_path: Path) -> None:
     assert jra["variants"]["sim"]["feature_count"] == 2
     assert jra["variants"]["cell-CANDIDAT"]["feature_count"] == 3
     assert len(jra["rules"]) == 1
+
+
+def _patched_banei_grouped() -> dict[CellKey, list[CellMetrics]]:
+    cell = _cell(category="ban-ei")
+    baseline = _metrics(
+        "BASE", top1=0.40, place2=0.30, place3=0.25, evaluated_at=datetime.now(timezone.utc)
+    )
+    candidate = _metrics(
+        "CANDIDATEHASH",
+        top1=0.50,
+        place2=0.40,
+        place3=0.35,
+        evaluated_at=datetime.now(timezone.utc),
+        feature_names=["f1", "f2", "f3"],
+    )
+    return {cell: [baseline, candidate]}
+
+
+def test_main_ban_ei_category_queries_db_as_banei_but_emits_ban_ei_key(
+    tmp_path: Path,
+) -> None:
+    """Regression test for the CLI/DB category spelling mismatch.
+
+    ``--category ban-ei`` must query ``cell_training_evaluations`` with the DB
+    row spelling ``banei`` (no hyphen), while the emitted routing config keeps
+    the hyphenated ``ban-ei`` key that ``predict_lib.cell_router`` expects.
+    Before the ``_db_category`` translation this queried with the literal
+    ``ban-ei`` and silently returned zero rows.
+    """
+    output_path = tmp_path / "cell_routing.json"
+    conn = MagicMock()
+    with patch.object(subject, "_connect", return_value=conn), patch.object(
+        subject, "load_cell_metrics", return_value=_patched_banei_grouped()
+    ) as load_cell_metrics:
+        main(
+            [
+                "--pg-url",
+                "postgresql://example",
+                "--category",
+                "ban-ei",
+                "--baseline-hash",
+                "BASE",
+                "--output-path",
+                str(output_path),
+            ]
+        )
+    load_cell_metrics.assert_called_once_with(conn, "banei", "finish_position")
+    config = json.loads(output_path.read_text(encoding="utf-8"))
+    assert "ban-ei" in config
+    ban_ei = config["ban-ei"]
+    assert ban_ei["default_variant"] == "sim"
+    assert ban_ei["variants"]["sim"]["model_version"] == "ban-ei-production"
+    assert ban_ei["variants"]["cell-CANDIDAT"]["feature_count"] == 3
 
 
 def test_main_running_style_writes_feature_selection_config(tmp_path: Path) -> None:

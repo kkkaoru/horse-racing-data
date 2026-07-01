@@ -104,6 +104,29 @@ _ARCHITECTURE_BY_CATEGORY: Final[dict[str, str]] = {
 
 _VALID_CATEGORIES: Final[tuple[str, ...]] = ("jra", "nar", "ban-ei")
 
+# Category -> ``cell_training_evaluations.category`` (DB row) spelling.
+# ``continuous_learner`` -> ``CellAccuracyStore`` writes that column via
+# ``subgroup_diagnostics.get_source_label()``, which stores Ban-ei rows as
+# ``banei`` (no hyphen), even though this module's own ``--category`` flag,
+# ``_VALID_CATEGORIES``/``_ARCHITECTURE_BY_CATEGORY``, and the emitted
+# ``cell_routing.json``'s top-level key all use ``ban-ei`` (hyphenated) to match
+# ``model_meta.Category`` / ``serve.py``'s ``SUPPORTED_CATEGORIES``. This is the
+# same split ``score_finish_position_walk_forward.py`` documents (in reverse) for
+# its ``CATEGORY_PARTITION`` mapping. Only the DB query parameter needs this
+# translation; every other use of ``category`` in this module keeps the
+# hyphenated CLI/output spelling.
+_DB_CATEGORY_BY_CLI_CATEGORY: Final[dict[str, str]] = {
+    "jra": "jra",
+    "nar": "nar",
+    "ban-ei": "banei",
+}
+
+
+def _db_category(category: str) -> str:
+    """Translate a CLI/output ``category`` to its DB row spelling for queries."""
+    return _DB_CATEGORY_BY_CLI_CATEGORY.get(category, category)
+
+
 _SELECT_CELLS: Final[LiteralString] = """
 SELECT category, class_label, distance_band, venue, season, surface, subgroup,
        feature_set_hash, race_count,
@@ -556,7 +579,7 @@ def main(argv: list[str] | None = None) -> None:
 
     conn = _connect(str(args.pg_url))
     try:
-        grouped = load_cell_metrics(conn, category, prediction_target)
+        grouped = load_cell_metrics(conn, _db_category(category), prediction_target)
     finally:
         conn.close()
 
