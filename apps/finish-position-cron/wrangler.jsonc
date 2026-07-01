@@ -113,7 +113,24 @@
         "queue": "finish-position-predict-queue",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 1,
+        // max_concurrency was 1 back when Container DO names were scoped
+        // per-race (one DO instance per keibajoCode+raceBango), so serializing
+        // consumer invocations was needed to avoid exhausting max_instances
+        // while earlier per-race instances idled through sleepAfter. Commit
+        // 09dd0755 ("scope predict containers by category, add stop admin
+        // endpoint") fixed that by consolidating DO names to one per category
+        // (see buildPredictDoName in src/queue-consumer.ts). Investigation on
+        // 2026-07-02 found the leftover max_concurrency: 1 was itself causing
+        // production incidents: race_finish_position_model_predictions saw
+        // zero rows for JRA/Ban-ei after the 2026-06-26 deploy because a
+        // hung/slow /predict call for one category could occupy the single
+        // serialized consumer slot for the ~15-17 min queue read/retry cycle,
+        // stalling otherwise-fast NAR messages behind it. With only 3
+        // categories (jra/nar/ban-ei), each mapping to at most one
+        // category-scoped Container DO at a time, max_concurrency: 3 lets at
+        // most 3 concurrent category DOs run — well under max_instances: 10
+        // above — while letting a hung category stop blocking the others.
+        "max_concurrency": 3,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
     ],

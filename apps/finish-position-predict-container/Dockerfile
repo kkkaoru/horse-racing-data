@@ -39,6 +39,16 @@ RUN uv pip install --system \
     "pyarrow>=17.0.0" \
     "xgboost>=3.2.0"
 
+# Pre-install the DuckDB postgres extension into the image so every per-race
+# layer subprocess's runtime `install postgres; load postgres` call (see
+# apps/pc-keiba-viewer/src/scripts/finish-position-features/add-similar-race-features.py
+# and sibling layer scripts) hits a warm local cache instead of a cold network
+# fetch on every fresh Cloudflare Containers cold start. DuckDB's INSTALL is a
+# no-op / fast local check when already present, so this is purely an avoidable-
+# latency fix with no behavioral change. See finish-position-cron queue timeout
+# investigation, 2026-07-02.
+RUN python3 -c "import duckdb; duckdb.connect().execute('INSTALL postgres')"
+
 # The container's own predict entrypoint + pure helpers.
 COPY apps/finish-position-predict-container/src /app/src
 
