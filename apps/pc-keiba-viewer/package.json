@@ -63,7 +63,7 @@
     "@ai-sdk/react": "3.0.208",
     "@mediapipe/tasks-genai": "0.10.27",
     "@opennextjs/cloudflare": "1.19.11",
-    "ai": "6.0.206",
+    "ai": "6.0.218",
     "drizzle-orm": "0.45.2",
     "horse-racing-realtime": "workspace:*",
     "next": "16.2.9",
