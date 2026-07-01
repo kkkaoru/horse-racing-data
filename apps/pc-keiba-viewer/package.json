@@ -60,7 +60,7 @@
     "tsc": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/react": "3.0.208",
+    "@ai-sdk/react": "3.0.220",
     "@mediapipe/tasks-genai": "0.10.27",
     "@opennextjs/cloudflare": "1.19.11",
     "ai": "6.0.206",
