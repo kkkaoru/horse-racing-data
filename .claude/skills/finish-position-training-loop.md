@@ -192,12 +192,12 @@ uv run python src/scripts/continuous_learner.py \
 
 ## §5. メモリ予算ルール (HARD)
 
-**48GB Mac, Colima 24GB 常時確保** → 実質 24GB
+固定値ではなく、その時点の macOS / Colima resource snapshot から決める。
 
-1. **heavy 学習は同時 1 本のみ** (kernel panic 2026-06-12 教訓)
-2. DuckDB は `memory_limit 6GB / threads 4` 必須
-3. heavy 学習前に `memory_pressure` 確認 (free < 30% で待機)
-4. compute agent ≤ 2
+1. heavy 学習・feature generation は `auto` resource control を既定にする。
+2. DuckDB / LightGBM の threads、memory_limit、chunk concurrency は load average、available memory、compressor 使用量から実行時に解決する。
+3. heavy 学習前に `memory_pressure` / `vm_stat` を確認し、free / available memory が低い、または compressor が増えている場合は待機または auto が 1 並列へ落ちる状態で実行する。
+4. 手元確認のために固定値を指定する場合だけ、コマンドライン引数で明示する。
 
 ```bash
 # メモリチェック

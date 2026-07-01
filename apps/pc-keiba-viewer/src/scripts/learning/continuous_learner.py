@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS cell_training_evaluations (
     class_label         TEXT NOT NULL,
     season              TEXT NOT NULL,
     venue               TEXT NOT NULL,
+    subgroup            TEXT NOT NULL DEFAULT '',
     feature_count       INTEGER NOT NULL,
     race_count          INTEGER NOT NULL,
     ndcg_at_3           DOUBLE PRECISION NOT NULL,
@@ -164,13 +165,16 @@ CREATE TABLE IF NOT EXISTS cell_training_evaluations (
     feature_names_array TEXT[] NOT NULL,
     cell_vector         TEXT[] NOT NULL,
     evaluated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue)
+    PRIMARY KEY (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
 )
 """
 
 _CELL_EVAL_MIGRATION = """
 ALTER TABLE cell_training_evaluations
 ADD COLUMN IF NOT EXISTS prediction_target TEXT NOT NULL DEFAULT 'finish_position';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS subgroup TEXT NOT NULL DEFAULT '';
 
 DO $$
 DECLARE
@@ -187,6 +191,9 @@ BEGIN
     IF pk_cols = ARRAY[
         'feature_set_hash', 'category', 'surface', 'distance_band',
         'class_label', 'season', 'venue'
+    ] OR pk_cols = ARRAY[
+        'prediction_target', 'feature_set_hash', 'category', 'surface',
+        'distance_band', 'class_label', 'season', 'venue'
     ] THEN
         ALTER TABLE cell_training_evaluations
         DROP CONSTRAINT cell_training_evaluations_pkey;
@@ -194,7 +201,7 @@ BEGIN
         ALTER TABLE cell_training_evaluations
         ADD PRIMARY KEY (
             prediction_target, feature_set_hash, category, surface,
-            distance_band, class_label, season, venue
+            distance_band, class_label, season, venue, subgroup
         );
     END IF;
 END $$;
@@ -202,16 +209,16 @@ END $$;
 
 _CELL_EVAL_UPSERT = """
 INSERT INTO cell_training_evaluations (
-    prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue,
+    prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup,
     feature_count, race_count, ndcg_at_3,
     top1_accuracy, place2_accuracy, place3_accuracy,
     place4_accuracy, place5_accuracy, place6_accuracy,
     top3_box_accuracy,
     accuracy_vector, feature_names_array, cell_vector
 ) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
 )
-ON CONFLICT (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue)
+ON CONFLICT (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
 DO UPDATE SET
     feature_count = EXCLUDED.feature_count,
     race_count = EXCLUDED.race_count,
@@ -555,13 +562,13 @@ class CellAccuracyStore:
         assert self._con is not None
         with self._con.cursor() as cur:
             cur.execute(
-                "SELECT category, surface, distance_band, class_label, season, venue "
+                "SELECT category, surface, distance_band, class_label, season, venue, subgroup "
                 "FROM cell_training_evaluations "
                 "WHERE prediction_target = %s AND feature_set_hash = %s",
                 (prediction_target, feature_set_hash),
             )
             return {
-                f"{row[0]}_{row[1]}_{row[2]}_{row[3]}_{row[4]}_{row[5]}"
+                f"{row[0]}_{row[1]}_{row[2]}_{row[3]}_{row[4]}_{row[5]}_{row[6]}"
                 for row in cur.fetchall()
             }
 
@@ -593,6 +600,7 @@ class CellAccuracyStore:
                     m["class_label"],
                     m["season"],
                     m["venue"],
+                    m["subgroup"],
                 ]
                 cur.execute(
                     _CELL_EVAL_UPSERT,
@@ -605,6 +613,7 @@ class CellAccuracyStore:
                         m["class_label"],
                         m["season"],
                         m["venue"],
+                        m["subgroup"],
                         feature_count,
                         m["race_count"],
                         m["ndcg_at_3"],

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 import json
 from pathlib import Path
 from typing import cast
@@ -73,9 +73,45 @@ def test_leak_columns_constant_contains_all_four_rs_p_columns():
 
 
 def test_detect_categorical_features_returns_only_known_categoricals():
-    feature_columns = ["track_code", "kyori_band", "speed_index_avg_5", "grade_code"]
+    feature_columns = [
+        "track_code",
+        "kyori_band",
+        "speed_index_avg_5",
+        "grade_code",
+        "kyoso_joken_code",
+        "nar_subclass",
+    ]
     detected = subject.detect_categorical_features(feature_columns)
-    assert sorted(detected) == ["grade_code", "kyori_band", "track_code"]
+    assert sorted(detected) == [
+        "grade_code",
+        "kyori_band",
+        "kyoso_joken_code",
+        "nar_subclass",
+        "track_code",
+    ]
+
+
+def test_encode_categoricals_accepts_numeric_category_columns():
+    frame = pl.DataFrame(
+        {
+            "kyori_band": [2, 2, 3],
+            "track_code": ["10", "10", "20"],
+            "speed_index_avg_5": [1.0, 2.0, 3.0],
+        }
+    )
+    encoded = subject.encode_categoricals(frame, ["kyori_band", "track_code"])
+    assert encoded.schema["kyori_band"] == pl.Categorical
+    assert encoded.schema["track_code"] == pl.Categorical
+    assert encoded["kyori_band"].cast(pl.Utf8).to_list() == ["2", "2", "3"]
+
+
+def test_to_lgb_frame_keeps_categorical_columns_as_pandas_category():
+    frame = subject.encode_categoricals(
+        pl.DataFrame({"kyoso_joken_code": ["701", "702"], "feature_a": [1.0, 2.0]}),
+        ["kyoso_joken_code"],
+    )
+    pandas_frame = subject.to_lgb_frame(frame, ["kyoso_joken_code"])
+    assert str(pandas_frame["kyoso_joken_code"].dtype) == "category"
 
 
 def test_compute_inverse_frequency_weights_balances_classes():
@@ -2045,6 +2081,7 @@ def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     assert len(str(trained_cells[0]["feature_set_hash"])) == 64
     cell_eval = trained_cells[0]["cell_training_evaluation"]
     assert cell_eval["prediction_target"] == "running_style"
+    assert cell_eval["subgroup"] == trained_cells[0]["cell"]["subgroup"]
     assert cell_eval["top1_accuracy"] == trained_cells[0]["metrics"]["accuracy"]
     assert cell_eval["place2_accuracy"] == trained_cells[0]["metrics"]["top2_accuracy"]
     assert cell_eval["place3_accuracy"] == trained_cells[0]["metrics"]["macro_f1"]
@@ -2097,6 +2134,7 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
         "class_label": "open",
         "season": "spring",
         "venue": "05",
+        "subgroup": "OPEN",
         "race_count": 12,
         "ndcg_at_3": 0.4,
         "top1_accuracy": 0.4,
@@ -2132,6 +2170,10 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
     assert len(calls) == 1
     assert calls[0]["pg_url"] == "postgresql://local/test"
     assert calls[0]["feature_set_hash"] == "a" * 64
+    forwarded_metrics = calls[0]["metrics"]
+    assert isinstance(forwarded_metrics, list)
+    first_metric = cast(Mapping[str, object], forwarded_metrics[0])
+    assert first_metric["subgroup"] == "OPEN"
     assert calls[0]["feature_count"] == 2
     assert calls[0]["feature_names"] == ["feature_b", "feature_a"]
     assert calls[0]["prediction_target"] == "running_style"

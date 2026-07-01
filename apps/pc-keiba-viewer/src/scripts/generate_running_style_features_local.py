@@ -23,23 +23,41 @@ repo-root-relative path):
         --output-dir apps/pc-keiba-viewer/tmp/bucket-eval/running-style/v1/features \\
         --running-style-feature-version v1 \\
         --year-from 2006 --year-to 2026 --category jra \\
-        --threads 8 --memory-limit 16GB
+        --threads <auto-resolved> --memory-limit <auto-resolved>
 """
 
 from __future__ import annotations
 
 import argparse
 import calendar
+import importlib.util
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     import duckdb
 
-DEFAULT_THREADS: int = 8
-DEFAULT_MEMORY_LIMIT: str = "16GB"
+def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
+    module_path = Path(__file__).parent / "finish-position-features" / "_resource_defaults.py"
+    spec = importlib.util.spec_from_file_location(
+        "running_style_feature_resource_defaults", module_path
+    )
+    if spec is None or spec.loader is None:
+        return lambda: 4, lambda: "6GB"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    default_threads = cast(Callable[[], int], getattr(module, "default_threads", lambda: 4))
+    default_memory_limit = cast(
+        Callable[[], str], getattr(module, "default_memory_limit", lambda: "6GB")
+    )
+    return default_threads, default_memory_limit
+
+
+_default_threads, _default_memory_limit = _load_resource_defaults()
+DEFAULT_THREADS: int = _default_threads()
+DEFAULT_MEMORY_LIMIT: str = _default_memory_limit()
 SUPPORTED_CATEGORIES: tuple[str, str] = ("jra", "nar")
 PRINT_SQL_SCRIPT: str = (
     "apps/pc-keiba-viewer/src/scripts/finish-position-features/print-running-style-feature-sql.ts"

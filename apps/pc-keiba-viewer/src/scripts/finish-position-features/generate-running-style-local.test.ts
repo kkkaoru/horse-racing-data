@@ -16,6 +16,7 @@ import {
   buildPhaseBCommand,
   buildPhaseCCommand,
   buildPredictionsRoot,
+  collectMacVmStatResourceSnapshot,
   chunkHasExistingParquet,
   chunkYears,
   chunkYearsByMonth,
@@ -23,14 +24,17 @@ import {
   isInsideNightWindow,
   isJraV2ModelVersion,
   logitsFileHasContent,
+  parseVmStatPages,
   parseArgs,
   resolveMemoryLimitPerChunk,
   runGenerateRunningStyleLocal,
   runVoidTasksWithConcurrencyLimit,
   yearHasFullMonthParquet,
   ALL_MONTHS,
+  AUTO_RESOURCE_VALUE,
   CHUNK_GRANULARITIES,
   COLIMA_MIN_CPU,
+  DEFAULT_CATEGORY_CONCURRENCY,
   DEFAULT_CHUNK_GRANULARITY,
   DEFAULT_FORCE,
   DEFAULT_MAX_YEARS_PER_RUN,
@@ -45,23 +49,34 @@ import {
   PHASE_B_SCRIPT,
   PHASE_C_SCRIPT,
   RUNNING_STYLE_CATEGORIES,
+  resolveAutoCategoryConcurrency,
+  resolveAutoMemoryLimit,
+  resolveAutoPhaseAConcurrency,
+  resolveAutoThreads,
+  resolveRuntimeResourceOptions,
   type ChunkGranularity,
+  type LocalResourceSnapshot,
 } from "./generate-running-style-local";
 
 const FIXED_NIGHT_DATE = new Date("2026-05-30T16:00:00Z"); // 01:00 JST -> inside window
 const FIXED_DAY_DATE = new Date("2026-05-30T05:00:00Z"); // 14:00 JST -> outside window
 
 describe("generate-running-style-local", () => {
-  test("buildDefaultOptions returns initial empty strings and 8 threads", () => {
+  test("buildDefaultOptions returns initial empty strings and auto resources", () => {
     const options = buildDefaultOptions();
-    expect(options.threads).toBe(8);
-    expect(options.memoryLimit).toBe("16GB");
+    expect(options.threads).toBe(AUTO_RESOURCE_VALUE);
+    expect(options.memoryLimit).toBe("");
     expect(options.maxYearsPerRun).toBe(1);
   });
 
-  test("buildDefaultOptions returns phaseAConcurrency of 4", () => {
+  test("buildDefaultOptions returns auto phaseAConcurrency", () => {
     const options = buildDefaultOptions();
-    expect(options.phaseAConcurrency).toBe(4);
+    expect(options.phaseAConcurrency).toBe(AUTO_RESOURCE_VALUE);
+  });
+
+  test("buildDefaultOptions returns auto categoryConcurrency", () => {
+    const options = buildDefaultOptions();
+    expect(options.categoryConcurrency).toBe(DEFAULT_CATEGORY_CONCURRENCY);
   });
 
   test("buildDefaultOptions returns empty memoryLimitPerChunk so it falls back to memoryLimit", () => {
@@ -72,6 +87,120 @@ describe("generate-running-style-local", () => {
   test("buildDefaultOptions returns empty rsPFromFlatbinJra", () => {
     const options = buildDefaultOptions();
     expect(options.rsPFromFlatbinJra).toBe("");
+  });
+
+  test("resolveAutoMemoryLimit uses half of Colima memory with a 6GB floor", () => {
+    expect(resolveAutoMemoryLimit({ cpu: 12, memoryGiB: 24, diskGiB: 100 })).toBe("12GB");
+    expect(resolveAutoMemoryLimit({ cpu: 4, memoryGiB: 8, diskGiB: 100 })).toBe("6GB");
+  });
+
+  test("resolveAutoThreads shrinks under high load or low free memory", () => {
+    const calm: LocalResourceSnapshot = {
+      cpuCount: 15,
+      load1m: 3.1,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 26 * 1024 ** 3,
+    };
+    const pressured: LocalResourceSnapshot = {
+      ...calm,
+      load1m: 13,
+      freeMemoryBytes: 5 * 1024 ** 3,
+    };
+    expect(resolveAutoThreads({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, calm)).toBeGreaterThan(1);
+    expect(resolveAutoThreads({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, pressured)).toBe(1);
+  });
+
+  test("resolveAutoThreads shrinks when macOS compressor is high", () => {
+    const snapshot: LocalResourceSnapshot = {
+      cpuCount: 15,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 30 * 1024 ** 3,
+      compressorBytes: 5 * 1024 ** 3,
+    };
+    expect(resolveAutoThreads({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, snapshot)).toBe(1);
+  });
+
+  test("parseVmStatPages parses macOS page counters", () => {
+    const pages = parseVmStatPages(
+      "Pages free: 1,024.\nPages inactive: 2.\nPages occupied by compressor: 3.",
+    );
+    expect(pages.get("Pages free")).toBe(1024);
+    expect(pages.get("Pages inactive")).toBe(2);
+    expect(pages.get("Pages occupied by compressor")).toBe(3);
+  });
+
+  test("collectMacVmStatResourceSnapshot returns available and compressor bytes", () => {
+    const execFile = vi.fn<(file: string, args: readonly string[]) => string>((file) => {
+      if (file === "sysctl") return "4096\n";
+      return [
+        "Pages free: 10.",
+        "Pages inactive: 20.",
+        "Pages speculative: 30.",
+        "Pages purgeable: 40.",
+        "Pages occupied by compressor: 5.",
+      ].join("\n");
+    });
+    expect(collectMacVmStatResourceSnapshot(execFile)).toStrictEqual({
+      freeMemoryBytes: 100 * 4096,
+      compressorBytes: 5 * 4096,
+    });
+  });
+
+  test("resolveAutoPhaseAConcurrency leaves headroom for both categories", () => {
+    const snapshot: LocalResourceSnapshot = {
+      cpuCount: 15,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 30 * 1024 ** 3,
+    };
+    expect(
+      resolveAutoPhaseAConcurrency({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, snapshot, 2),
+    ).toBe(2);
+  });
+
+  test("resolveAutoCategoryConcurrency shrinks category-level parallelism under pressure", () => {
+    const calm: LocalResourceSnapshot = {
+      cpuCount: 15,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 30 * 1024 ** 3,
+    };
+    const pressured: LocalResourceSnapshot = {
+      ...calm,
+      load1m: 8,
+      freeMemoryBytes: 10 * 1024 ** 3,
+    };
+    expect(resolveAutoCategoryConcurrency({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, calm)).toBe(
+      RUNNING_STYLE_CATEGORIES.length,
+    );
+    expect(
+      resolveAutoCategoryConcurrency({ cpu: 12, memoryGiB: 24, diskGiB: 100 }, pressured),
+    ).toBe(1);
+  });
+
+  test("resolveRuntimeResourceOptions keeps explicit resource overrides", () => {
+    const snapshot: LocalResourceSnapshot = {
+      cpuCount: 15,
+      load1m: 3,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 24 * 1024 ** 3,
+    };
+    const result = resolveRuntimeResourceOptions(
+      {
+        ...buildDefaultOptions(),
+        threads: 3,
+        memoryLimit: "9GB",
+        phaseAConcurrency: 2,
+        categoryConcurrency: 1,
+      },
+      { cpu: 12, memoryGiB: 24, diskGiB: 100 },
+      snapshot,
+    );
+    expect(result.threads).toBe(3);
+    expect(result.memoryLimit).toBe("9GB");
+    expect(result.phaseAConcurrency).toBe(2);
+    expect(result.categoryConcurrency).toBe(1);
   });
 
   test("parseArgs throws when pg-url missing", () => {
@@ -828,6 +957,13 @@ describe("generate-running-style-local", () => {
       spawn,
       sleep,
       probeColima,
+      probeLocalResources: () =>
+        Promise.resolve({
+          cpuCount: 15,
+          load1m: 1,
+          totalMemoryBytes: 48 * 1024 ** 3,
+          freeMemoryBytes: 36 * 1024 ** 3,
+        }),
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1277,8 +1413,8 @@ describe("generate-running-style-local", () => {
     expect(DEFAULT_MAX_YEARS_PER_RUN).toBe(1);
   });
 
-  test("DEFAULT_PHASE_A_CONCURRENCY equals 4 so 4 chunks may run in parallel", () => {
-    expect(DEFAULT_PHASE_A_CONCURRENCY).toBe(4);
+  test("DEFAULT_PHASE_A_CONCURRENCY is auto so runtime resources choose the cap", () => {
+    expect(DEFAULT_PHASE_A_CONCURRENCY).toBe(AUTO_RESOURCE_VALUE);
   });
 
   test("DEFAULT_MEMORY_LIMIT_PER_CHUNK equals empty so it falls back to --memory-limit", () => {
@@ -1516,13 +1652,25 @@ describe("generate-running-style-local", () => {
     expect(phaseAMemoryLimits.every((limit) => limit === "16GB")).toBe(true);
   });
 
-  test("runGenerateRunningStyleLocal Phase A spawns jra and nar chunks in interleaved order (categories run in parallel)", async () => {
+  test("runGenerateRunningStyleLocal can start jra and nar concurrently when categoryConcurrency is 2", async () => {
     const phaseACategories: string[] = [];
+    const gateHolder: { jra: () => void; nar: () => void } = {
+      jra: () => undefined,
+      nar: () => undefined,
+    };
+    const jraGate = new Promise<void>((resolve) => {
+      gateHolder.jra = resolve;
+    });
+    const narGate = new Promise<void>((resolve) => {
+      gateHolder.nar = resolve;
+    });
     const spawn = vi.fn<(command: readonly string[]) => Promise<{ exitCode: number }>>(
-      (command) => {
+      async (command) => {
         if (command[5] === PHASE_A_SCRIPT) {
           const categoryIndex = command.indexOf("--category");
-          phaseACategories.push(command[categoryIndex + 1] ?? "");
+          const category = command[categoryIndex + 1] ?? "";
+          phaseACategories.push(category);
+          await (category === "jra" ? jraGate : narGate);
         }
         return Promise.resolve({ exitCode: 0 });
       },
@@ -1540,8 +1688,11 @@ describe("generate-running-style-local", () => {
       modelFlatbinNar: "/p/nar.flatbin",
       ignoreNightWindow: true,
       outputRoot: "/tmp/parallel-cats",
+      phaseAConcurrency: 1,
+      categoryConcurrency: 2,
+      chunkGranularity: "year" as ChunkGranularity,
     };
-    await runGenerateRunningStyleLocal(options, {
+    const runPromise = runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
       probeColima,
@@ -1550,9 +1701,11 @@ describe("generate-running-style-local", () => {
       listDirectoryEntries: () => Promise.resolve([]),
       statFile: () => Promise.reject(new Error("ENOENT")),
     });
-    const firstNarIndex = phaseACategories.indexOf("nar");
-    const lastJraIndex = phaseACategories.lastIndexOf("jra");
-    expect(firstNarIndex < lastJraIndex).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(phaseACategories.slice(0, 2).toSorted()).toStrictEqual(["jra", "nar"]);
+    gateHolder.jra();
+    gateHolder.nar();
+    await runPromise;
   });
 
   test("DEFAULT_FORCE equals false so existing parquet is skipped by default", () => {

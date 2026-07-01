@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import generate_running_style_features_local as subject
+
+
+def load_resource_defaults_module() -> ModuleType:
+    module_path = (
+        Path(__file__).parents[1]
+        / "src/scripts/finish-position-features/_resource_defaults.py"
+    )
+    spec = importlib.util.spec_from_file_location("test_resource_defaults", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_parse_args_required_fields_pg_url() -> None:
@@ -59,7 +74,7 @@ def test_parse_args_year_range_parsed_as_int() -> None:
     assert args.year_to == 2020
 
 
-def test_parse_args_default_threads_is_eight() -> None:
+def test_parse_args_default_threads_uses_dynamic_resource_default() -> None:
     args = subject.parse_args([
         "--pg-url", "u",
         "--output-dir", "/tmp",
@@ -68,10 +83,11 @@ def test_parse_args_default_threads_is_eight() -> None:
         "--year-to", "2007",
         "--category", "jra",
     ])
-    assert args.threads == 8
+    assert args.threads == subject.DEFAULT_THREADS
+    assert args.threads >= 1
 
 
-def test_parse_args_default_memory_limit_is_16gb() -> None:
+def test_parse_args_default_memory_limit_uses_dynamic_resource_default() -> None:
     args = subject.parse_args([
         "--pg-url", "u",
         "--output-dir", "/tmp",
@@ -80,7 +96,8 @@ def test_parse_args_default_memory_limit_is_16gb() -> None:
         "--year-to", "2007",
         "--category", "jra",
     ])
-    assert args.memory_limit == "16GB"
+    assert args.memory_limit == subject.DEFAULT_MEMORY_LIMIT
+    assert args.memory_limit.endswith("GB")
 
 
 def test_parse_args_overrides_threads() -> None:
@@ -1433,3 +1450,37 @@ def test_run_month_chunk_uses_zstd_compression() -> None:
         call for call in con.execute.call_args_list if call.args[0].startswith("COPY (")
     )
     assert "COMPRESSION ZSTD" in copy_call.args[0]
+
+
+def test_resource_defaults_prefers_cgroup_memory_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = load_resource_defaults_module()
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value: str = value
+
+        def exists(self) -> bool:
+            return self.value == "/sys/fs/cgroup/memory.max"
+
+        def read_text(self) -> str:
+            return str(12 * 1024**3)
+
+    completed = MagicMock()
+    completed.returncode = 1
+    completed.stdout = ""
+    monkeypatch.setattr(defaults.subprocess, "run", MagicMock(return_value=completed))
+    monkeypatch.setattr(defaults, "Path", FakePath)
+
+    assert defaults.default_memory_limit() == "6GB"
+
+
+def test_resource_defaults_threads_are_capped_by_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = load_resource_defaults_module()
+    monkeypatch.setattr(defaults.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(defaults, "default_memory_limit", lambda: "6GB")
+
+    assert defaults.default_threads() == 4

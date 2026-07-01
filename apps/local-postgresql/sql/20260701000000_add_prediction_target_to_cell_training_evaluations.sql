@@ -21,6 +21,9 @@ where prediction_target is null;
 alter table cell_training_evaluations
   alter column prediction_target set not null;
 
+alter table cell_training_evaluations
+  add column if not exists subgroup text not null default '';
+
 do $$
 declare
   pk_cols text[];
@@ -41,6 +44,15 @@ begin
     'class_label',
     'season',
     'venue'
+  ] or pk_cols = array[
+    'prediction_target',
+    'feature_set_hash',
+    'category',
+    'surface',
+    'distance_band',
+    'class_label',
+    'season',
+    'venue'
   ] then
     alter table cell_training_evaluations
       drop constraint cell_training_evaluations_pkey;
@@ -54,7 +66,8 @@ begin
         distance_band,
         class_label,
         season,
-        venue
+        venue,
+        subgroup
       );
   end if;
 end $$;

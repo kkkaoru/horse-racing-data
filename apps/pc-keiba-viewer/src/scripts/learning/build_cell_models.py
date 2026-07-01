@@ -105,7 +105,7 @@ _ARCHITECTURE_BY_CATEGORY: Final[dict[str, str]] = {
 _VALID_CATEGORIES: Final[tuple[str, ...]] = ("jra", "nar", "ban-ei")
 
 _SELECT_CELLS: Final[LiteralString] = """
-SELECT category, class_label, distance_band, venue, season, surface,
+SELECT category, class_label, distance_band, venue, season, surface, subgroup,
        feature_set_hash, race_count,
        top1_accuracy, place2_accuracy, place3_accuracy,
        place4_accuracy, place5_accuracy, place6_accuracy,
@@ -459,23 +459,23 @@ def parse_row(row: Sequence[object]) -> tuple[CellKey, CellMetrics]:
     cell = CellKey(
         category=str(row[0]),
         class_label=str(row[1]),
-        subgroup=str(row[2]),
+        subgroup=str(row[6] or row[2]),
         racetrack=str(row[3]),
         season=str(row[4]),
         surface=str(row[5]),
     )
-    feature_names = [str(name) for name in cast("Sequence[object]", row[16])]
+    feature_names = [str(name) for name in cast("Sequence[object]", row[17])]
     metrics = CellMetrics(
-        race_count=int(cast("SupportsInt", row[7])),
-        top1=float(cast("SupportsFloat", row[8])),
-        place2=float(cast("SupportsFloat", row[9])),
-        place3=float(cast("SupportsFloat", row[10])),
-        place4=float(cast("SupportsFloat", row[11])),
-        place5=float(cast("SupportsFloat", row[12])),
-        place6=float(cast("SupportsFloat", row[13])),
-        top3_box=float(cast("SupportsFloat", row[14])),
-        evaluated_at=cast("datetime", row[15]),
-        feature_set_hash=str(row[6]),
+        race_count=int(cast("SupportsInt", row[8])),
+        top1=float(cast("SupportsFloat", row[9])),
+        place2=float(cast("SupportsFloat", row[10])),
+        place3=float(cast("SupportsFloat", row[11])),
+        place4=float(cast("SupportsFloat", row[12])),
+        place5=float(cast("SupportsFloat", row[13])),
+        place6=float(cast("SupportsFloat", row[14])),
+        top3_box=float(cast("SupportsFloat", row[15])),
+        evaluated_at=cast("datetime", row[16]),
+        feature_set_hash=str(row[7]),
         feature_names=feature_names,
     )
     return cell, metrics

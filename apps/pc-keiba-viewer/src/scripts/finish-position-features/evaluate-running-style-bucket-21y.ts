@@ -12,7 +12,12 @@ import {
   buildRunningStyleBucketBatchUpsertSql,
   buildRunningStyleBucketEvaluationsDdl,
 } from "./evaluate-running-style-bucket-sql";
-import { runVoidTasksWithConcurrencyLimit } from "./generate-running-style-local";
+import {
+  collectLocalResourceSnapshot,
+  resolveAutoPhaseAConcurrency,
+  runVoidTasksWithConcurrencyLimit,
+  type LocalResourceSnapshot,
+} from "./generate-running-style-local";
 
 export type RunningStyleBucketCategory = "jra" | "nar";
 
@@ -31,6 +36,7 @@ export interface RunningStyleBucketEvalCliOptions {
   predictionsRoot: string;
   categoryFilter: RunningStyleBucketCategory | null;
   chunkConcurrency: number;
+  categoryConcurrency: number;
 }
 
 export interface RunningStyleCategoryYearWindow {
@@ -153,6 +159,12 @@ interface RunningStyleBucketEvalAccumulator {
   totalRaces: number;
 }
 
+export interface RuntimeResourcePlan {
+  chunkConcurrency: number;
+  categoryConcurrency: number;
+  snapshot: LocalResourceSnapshot;
+}
+
 const NIGHT_WINDOW_HOURS_JST = new Set<number>([23, 0, 1, 2, 3, 4]);
 const DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing";
 const DEFAULT_MAX_YEARS_PER_RUN = 5;
@@ -161,7 +173,8 @@ const DEFAULT_PER_YEAR_SLEEP_MS = 2_000;
 const DEFAULT_PER_CATEGORY_SLEEP_MS = 5_000;
 const DEFAULT_MIN_COLIMA_CPU = 8;
 const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
-const DEFAULT_CHUNK_CONCURRENCY = 1;
+const DEFAULT_CHUNK_CONCURRENCY = 0;
+const DEFAULT_CATEGORY_CONCURRENCY = 0;
 const MIN_CHUNK_CONCURRENCY = 1;
 const MAX_CHUNK_CONCURRENCY = 10;
 // PG bind-parameter cap is 65535. We have 49 columns per row, so 100 rows
@@ -198,7 +211,7 @@ export const buildUsageText = (): string =>
     "    [--statement-timeout-ms 900000] \\",
     "    [--ignore-night-window] \\",
     "    [--category jra|nar] \\",
-    "    [--chunk-concurrency 1]",
+    "    [--chunk-concurrency auto]",
   ].join("\n");
 
 const requireValue = (name: string, value: string | undefined): string => {
@@ -221,9 +234,11 @@ export const initialOptions = (): RunningStyleBucketEvalCliOptions => ({
   predictionsRoot: DEFAULT_PREDICTIONS_ROOT,
   categoryFilter: null,
   chunkConcurrency: DEFAULT_CHUNK_CONCURRENCY,
+  categoryConcurrency: DEFAULT_CATEGORY_CONCURRENCY,
 });
 
 export const parseChunkConcurrency = (raw: string): number => {
+  if (raw.trim().toLowerCase() === "auto") return DEFAULT_CHUNK_CONCURRENCY;
   const value = Number.parseInt(raw, 10);
   if (!Number.isFinite(value)) {
     throw new Error(`--chunk-concurrency must be an integer (got: ${raw})`);
@@ -234,6 +249,30 @@ export const parseChunkConcurrency = (raw: string): number => {
     );
   }
   return value;
+};
+
+export const resolveAutoChunkConcurrency = (
+  resources: ColimaResources,
+  snapshot: LocalResourceSnapshot,
+): number =>
+  resolveAutoPhaseAConcurrency(
+    { cpu: resources.cpu, memoryGiB: resources.memory, diskGiB: 0 },
+    snapshot,
+    1,
+  );
+
+export const resolveAutoCategoryConcurrency = (
+  resources: ColimaResources,
+  snapshot: LocalResourceSnapshot,
+): number => {
+  const cpuCount = Math.max(1, Math.min(resources.cpu, snapshot.cpuCount));
+  const load1m = Math.max(0, snapshot.load1m);
+  const freeRatio =
+    snapshot.totalMemoryBytes > 0 ? snapshot.freeMemoryBytes / snapshot.totalMemoryBytes : 1;
+  const compressorRatio =
+    snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
+  if (freeRatio < 0.28 || compressorRatio > 0.03 || load1m >= cpuCount * 0.5) return 1;
+  return 2;
 };
 
 export const parseCategoryFilter = (value: string): RunningStyleBucketCategory => {
@@ -683,7 +722,8 @@ const processAllCategories = async (
   windows: RunningStyleCategoryYearWindow[],
   acc: RunningStyleBucketEvalAccumulator,
 ): Promise<void> => {
-  await Promise.all(windows.map((window) => processCategory(deps, options, window, acc)));
+  const tasks = windows.map((window) => () => processCategory(deps, options, window, acc));
+  await runVoidTasksWithConcurrencyLimit(tasks, options.categoryConcurrency);
 };
 
 export const filterWindowsByCategory = (
@@ -722,15 +762,31 @@ export const getJstHour = (date: Date): number => {
   return jstDate.getHours();
 };
 
-const checkColima = async (options: RunningStyleBucketEvalCliOptions): Promise<void> => {
+const loadColimaResources = async (): Promise<ColimaResources> => {
   const proc = Bun.spawn(["colima", "status", "--json"], { stdout: "pipe", stderr: "pipe" });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
   if (proc.exitCode !== 0) {
     throw new Error("colima status --json failed; ensure colima is running.");
   }
-  const resources = parseColimaStatusJson(stdout);
+  return parseColimaStatusJson(stdout);
+};
+
+export const resolveRuntimeResourcePlan = (
+  options: RunningStyleBucketEvalCliOptions,
+  resources: ColimaResources,
+  snapshot: LocalResourceSnapshot,
+): RuntimeResourcePlan => {
   ensureColimaCapacity(resources, options.minColimaCpu, options.minColimaMemoryGb);
+  const chunkConcurrency =
+    options.chunkConcurrency <= 0
+      ? resolveAutoChunkConcurrency(resources, snapshot)
+      : options.chunkConcurrency;
+  const categoryConcurrency =
+    options.categoryConcurrency <= 0
+      ? resolveAutoCategoryConcurrency(resources, snapshot)
+      : options.categoryConcurrency;
+  return { chunkConcurrency, categoryConcurrency, snapshot };
 };
 
 export const buildPredictionsParquetPath = (predictionsRoot: string, category: string): string =>
@@ -808,7 +864,16 @@ const main = async (): Promise<void> => {
   if (!isWithinNightWindow({ hourJst: hour, ignoreNightWindow: options.ignoreNightWindow })) {
     throw new Error("Outside night window (JST 23-04). Pass --ignore-night-window to override.");
   }
-  await checkColima(options);
+  const resourcePlan = resolveRuntimeResourcePlan(
+    options,
+    await loadColimaResources(),
+    collectLocalResourceSnapshot(),
+  );
+  options.chunkConcurrency = resourcePlan.chunkConcurrency;
+  options.categoryConcurrency = resourcePlan.categoryConcurrency;
+  console.log(
+    `[running-style-bucket-eval] resource chunkConcurrency=${options.chunkConcurrency} categoryConcurrency=${options.categoryConcurrency} load1m=${resourcePlan.snapshot.load1m.toFixed(2)}`,
+  );
   const pool = new Pool({ connectionString: options.pgUrl });
   try {
     const result = await runRunningStyleBucketEval(

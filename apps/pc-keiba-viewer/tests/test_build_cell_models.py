@@ -520,6 +520,7 @@ def _db_row(
         "05",
         "summer",
         "turf",
+        "subgroup-703",
         feature_set_hash,
         1000,
         top1,
@@ -539,7 +540,7 @@ def test_parse_row_maps_columns_to_cell_and_metrics() -> None:
     assert cell == CellKey(
         category="jra",
         class_label="A",
-        subgroup="mile",
+        subgroup="subgroup-703",
         racetrack="05",
         season="summer",
         surface="turf",
@@ -565,7 +566,7 @@ def test_load_cell_metrics_groups_rows_by_cell() -> None:
         subject._SELECT_CELLS, ("finish_position", "jra")
     )
     assert len(grouped) == 2
-    cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf")
+    cell_a = CellKey("jra", "A", "subgroup-703", "05", "summer", "turf")
     assert {m.feature_set_hash for m in grouped[cell_a]} == {"BASE", "CAND"}
 
 

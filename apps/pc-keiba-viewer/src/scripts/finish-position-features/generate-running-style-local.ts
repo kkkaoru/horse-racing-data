@@ -4,13 +4,13 @@
 //   --model-version-jra <m> --model-version-nar <m> \
 //   --model-flatbin-jra <path> --model-flatbin-nar <path> \
 //   [--rs-p-from-flatbin-jra <path>] \
-//   [--max-years-per-run 1] [--phase-a-concurrency 4] [--memory-limit-per-chunk 4GB] \
+//   [--max-years-per-run 1] [--phase-a-concurrency auto] [--memory-limit-per-chunk 4GB] \
 //   [--chunk-granularity month]
 // Chunk granularity (Agent D1):
 //   "month" (default): each Phase A spawn covers a single year-month slice
 //     so the SQL pgsql_tmp spill stays roughly an order of magnitude below
 //     the year-chunk baseline (~6 GB / chunk vs ~75 GB). chunk count grows
-//     ~12x, mitigated by --phase-a-concurrency 4+ and a year-level resume
+//     ~12x, mitigated by resource-aware Phase A concurrency and a year-level resume
 //     check (a race_year dir is treated as complete once 12 parquet exist).
 //   "year": legacy behaviour kept for one-shot reruns / debugging. spawns
 //     a single Phase A command per year window.
@@ -33,7 +33,9 @@
 // Legacy Python score_running_style_local.py is preserved for backward compat;
 // it is simply no longer referenced from the orchestrator.
 
+import { execFileSync } from "node:child_process";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { cpus, freemem, loadavg, totalmem } from "node:os";
 
 import { RUNNING_STYLE_FEATURE_VERSION } from "./running-style-feature-version";
 
@@ -54,6 +56,7 @@ interface GenerateRunningStyleLocalOptions {
   memoryLimit: string;
   memoryLimitPerChunk: string;
   phaseAConcurrency: number;
+  categoryConcurrency: number;
   maxYearsPerRun: number;
   chunkGranularity: ChunkGranularity;
   ignoreNightWindow: boolean;
@@ -87,6 +90,20 @@ interface ColimaResource {
 interface ColimaProbe {
   (): Promise<ColimaResource>;
 }
+
+export interface LocalResourceSnapshot {
+  cpuCount: number;
+  load1m: number;
+  totalMemoryBytes: number;
+  freeMemoryBytes: number;
+  compressorBytes?: number;
+}
+
+interface LocalResourceProbe {
+  (): Promise<LocalResourceSnapshot>;
+}
+
+type ExecFileSyncText = (file: string, args: readonly string[]) => string;
 
 interface NowProvider {
   (): Date;
@@ -185,6 +202,7 @@ interface RunDeps {
   spawn: SpawnRunner;
   sleep: SleepRunner;
   probeColima: ColimaProbe;
+  probeLocalResources?: LocalResourceProbe;
   now: NowProvider;
   log: Logger;
   listDirectoryEntries: ListDirectoryEntriesFn;
@@ -213,10 +231,12 @@ export const NIGHT_WINDOW_HOURS_JST: readonly number[] = [23, 0, 1, 2, 3, 4];
 export const PER_YEAR_SLEEP_MS = 2000;
 export const PER_CATEGORY_SLEEP_MS = 5000;
 export const DEFAULT_OUTPUT_ROOT = "apps/pc-keiba-viewer/tmp/bucket-eval/running-style";
-export const DEFAULT_THREADS = 8;
-export const DEFAULT_MEMORY_LIMIT = "16GB";
+export const AUTO_RESOURCE_VALUE = 0;
+export const DEFAULT_THREADS = AUTO_RESOURCE_VALUE;
+export const DEFAULT_MEMORY_LIMIT = "";
 export const DEFAULT_MAX_YEARS_PER_RUN = 1;
-export const DEFAULT_PHASE_A_CONCURRENCY = 4;
+export const DEFAULT_PHASE_A_CONCURRENCY = AUTO_RESOURCE_VALUE;
+export const DEFAULT_CATEGORY_CONCURRENCY = AUTO_RESOURCE_VALUE;
 export const DEFAULT_MEMORY_LIMIT_PER_CHUNK = "";
 export const DEFAULT_FORCE = false;
 export const PHASE_A_SCRIPT =
@@ -245,6 +265,11 @@ const requireValue = (name: string, value: string | undefined): string => {
 };
 
 const parseBooleanFlag = (raw: string | undefined): boolean => raw === "1" || raw === "true";
+const parseAutoInteger = (raw: string): number => {
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "auto") return AUTO_RESOURCE_VALUE;
+  return Number(normalized);
+};
 
 const isChunkGranularity = (raw: string): raw is ChunkGranularity => CHUNK_GRANULARITY_SET.has(raw);
 
@@ -265,6 +290,7 @@ export const buildDefaultOptions = (): GenerateRunningStyleLocalOptions => ({
   memoryLimit: DEFAULT_MEMORY_LIMIT,
   memoryLimitPerChunk: DEFAULT_MEMORY_LIMIT_PER_CHUNK,
   phaseAConcurrency: DEFAULT_PHASE_A_CONCURRENCY,
+  categoryConcurrency: DEFAULT_CATEGORY_CONCURRENCY,
   maxYearsPerRun: DEFAULT_MAX_YEARS_PER_RUN,
   chunkGranularity: DEFAULT_CHUNK_GRANULARITY,
   ignoreNightWindow: false,
@@ -291,7 +317,7 @@ const applyArg = (
     return { advanceBy: 2 };
   }
   if (name === "--threads") {
-    options.threads = Number(requireValue(name, value));
+    options.threads = parseAutoInteger(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--memory-limit") {
@@ -303,7 +329,7 @@ const applyArg = (
     return { advanceBy: 2 };
   }
   if (name === "--phase-a-concurrency") {
-    options.phaseAConcurrency = Number(requireValue(name, value));
+    options.phaseAConcurrency = parseAutoInteger(requireValue(name, value));
     return { advanceBy: 2 };
   }
   if (name === "--max-years-per-run") {
@@ -399,6 +425,137 @@ export const assertColimaCapacity = (resource: ColimaResource): void => {
       `Colima disk ${resource.diskGiB} GiB below minimum ${COLIMA_MIN_DISK_GIB} GiB.`,
     );
   }
+};
+
+export const collectLocalResourceSnapshot = (): LocalResourceSnapshot => ({
+  ...collectLocalResourceSnapshotFallback(),
+  ...collectMacVmStatResourceSnapshot(),
+});
+
+const collectLocalResourceSnapshotFallback = (): LocalResourceSnapshot => ({
+  cpuCount: cpus().length || 1,
+  load1m: loadavg()[0] ?? 0,
+  totalMemoryBytes: totalmem(),
+  freeMemoryBytes: freemem(),
+});
+
+export const parseVmStatPages = (output: string): Map<string, number> => {
+  const pages = new Map<string, number>();
+  for (const line of output.split("\n")) {
+    const [rawKey, rawValue] = line.split(":");
+    if (rawKey === undefined || rawValue === undefined) continue;
+    const normalized = rawValue.trim().replace(/\.$/, "").replaceAll(".", "").replaceAll(",", "");
+    const parsed = Number.parseInt(normalized, 10);
+    if (Number.isFinite(parsed)) pages.set(rawKey.trim(), parsed);
+  }
+  return pages;
+};
+
+const execFileSyncText: ExecFileSyncText = (file, args) =>
+  execFileSync(file, args, { encoding: "utf8" });
+
+export const collectMacVmStatResourceSnapshot = (
+  execFile: ExecFileSyncText = execFileSyncText,
+): Partial<LocalResourceSnapshot> => {
+  try {
+    const pageSize = Number.parseInt(execFile("sysctl", ["-n", "hw.pagesize"]), 10);
+    if (!Number.isFinite(pageSize) || pageSize <= 0) return {};
+    const output = execFile("vm_stat", []);
+    const pages = parseVmStatPages(output);
+    const availablePages =
+      (pages.get("Pages free") ?? 0) +
+      (pages.get("Pages inactive") ?? 0) +
+      (pages.get("Pages speculative") ?? 0) +
+      (pages.get("Pages purgeable") ?? 0);
+    return {
+      freeMemoryBytes: availablePages * pageSize,
+      compressorBytes: (pages.get("Pages occupied by compressor") ?? 0) * pageSize,
+    };
+  } catch {
+    return {};
+  }
+};
+
+const bytesToGiB = (bytes: number): number => bytes / 1024 ** 3;
+
+export const resolveAutoMemoryLimit = (resource: ColimaResource): string => {
+  const halfColimaMemory = Math.floor(resource.memoryGiB * 0.5);
+  return `${Math.max(6, halfColimaMemory)}GB`;
+};
+
+export const resolveAutoThreads = (
+  resource: ColimaResource,
+  snapshot: LocalResourceSnapshot,
+): number => {
+  const cpuCount = Math.max(1, Math.min(resource.cpu, snapshot.cpuCount));
+  const load1m = Math.max(0, snapshot.load1m);
+  const freeRatio =
+    snapshot.totalMemoryBytes > 0 ? snapshot.freeMemoryBytes / snapshot.totalMemoryBytes : 1;
+  const compressorRatio =
+    snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
+  const cpuHeadroom = Math.max(1, cpuCount - Math.ceil(load1m));
+  const memoryLimitGiB = Math.max(6, Math.floor(resource.memoryGiB * 0.5));
+  const memoryCap = Math.max(1, Math.floor(memoryLimitGiB / 1.5));
+  if (freeRatio < 0.15 || compressorRatio > 0.08 || load1m >= cpuCount * 0.85) return 1;
+  if (freeRatio < 0.25 || compressorRatio > 0.05 || load1m >= cpuCount * 0.65) {
+    return Math.max(1, Math.min(2, cpuHeadroom, memoryCap));
+  }
+  return Math.max(1, Math.min(cpuCount, cpuHeadroom, memoryCap));
+};
+
+export const resolveAutoPhaseAConcurrency = (
+  resource: ColimaResource,
+  snapshot: LocalResourceSnapshot,
+  resolvedThreads: number,
+): number => {
+  const cpuCount = Math.max(1, Math.min(resource.cpu, snapshot.cpuCount));
+  const load1m = Math.max(0, snapshot.load1m);
+  const freeGiB = Math.max(0, bytesToGiB(snapshot.freeMemoryBytes));
+  const freeRatio =
+    snapshot.totalMemoryBytes > 0 ? snapshot.freeMemoryBytes / snapshot.totalMemoryBytes : 1;
+  const compressorRatio =
+    snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
+  if (freeRatio < 0.18 || compressorRatio > 0.05 || load1m >= cpuCount * 0.85) return 1;
+  const cpuSlots = Math.max(
+    1,
+    Math.floor(Math.max(1, cpuCount - Math.ceil(load1m)) / resolvedThreads),
+  );
+  const memorySlots = Math.max(1, Math.floor(freeGiB / 6));
+  const globalSlots = Math.max(1, Math.min(cpuSlots, memorySlots));
+  return Math.max(1, Math.floor(globalSlots / RUNNING_STYLE_CATEGORIES.length));
+};
+
+export const resolveAutoCategoryConcurrency = (
+  resource: ColimaResource,
+  snapshot: LocalResourceSnapshot,
+): number => {
+  const cpuCount = Math.max(1, Math.min(resource.cpu, snapshot.cpuCount));
+  const load1m = Math.max(0, snapshot.load1m);
+  const freeRatio =
+    snapshot.totalMemoryBytes > 0 ? snapshot.freeMemoryBytes / snapshot.totalMemoryBytes : 1;
+  const compressorRatio =
+    snapshot.totalMemoryBytes > 0 ? (snapshot.compressorBytes ?? 0) / snapshot.totalMemoryBytes : 0;
+  if (freeRatio < 0.28 || compressorRatio > 0.03 || load1m >= cpuCount * 0.5) return 1;
+  return RUNNING_STYLE_CATEGORIES.length;
+};
+
+export const resolveRuntimeResourceOptions = (
+  options: GenerateRunningStyleLocalOptions,
+  resource: ColimaResource,
+  snapshot: LocalResourceSnapshot,
+): GenerateRunningStyleLocalOptions => {
+  const memoryLimit =
+    options.memoryLimit === "" ? resolveAutoMemoryLimit(resource) : options.memoryLimit;
+  const threads = options.threads <= 0 ? resolveAutoThreads(resource, snapshot) : options.threads;
+  const phaseAConcurrency =
+    options.phaseAConcurrency <= 0
+      ? resolveAutoPhaseAConcurrency(resource, snapshot, threads)
+      : options.phaseAConcurrency;
+  const categoryConcurrency =
+    options.categoryConcurrency <= 0
+      ? resolveAutoCategoryConcurrency(resource, snapshot)
+      : options.categoryConcurrency;
+  return { ...options, memoryLimit, threads, phaseAConcurrency, categoryConcurrency };
 };
 
 const resolveRsPFromFlatbinForJra = (options: GenerateRunningStyleLocalOptions): string | null =>
@@ -879,7 +1036,8 @@ const runAllCategoriesInParallel = async (
   options: GenerateRunningStyleLocalOptions,
   windows: readonly CategoryWindow[],
 ): Promise<void> => {
-  await Promise.all(windows.map((window) => runCategory(deps, options, window)));
+  const tasks = windows.map((window) => () => runCategory(deps, options, window));
+  await runVoidTasksWithConcurrencyLimit(tasks, options.categoryConcurrency);
 };
 
 export const runGenerateRunningStyleLocal = async (
@@ -891,9 +1049,17 @@ export const runGenerateRunningStyleLocal = async (
   }
   const resource = await deps.probeColima();
   assertColimaCapacity(resource);
-  const windows = buildCategoryWindows(options);
-  await runAllCategoriesInParallel(deps, options, windows);
-  await writeManifest(options, deps.now());
+  const snapshot =
+    deps.probeLocalResources === undefined
+      ? collectLocalResourceSnapshot()
+      : await deps.probeLocalResources();
+  const runtimeOptions = resolveRuntimeResourceOptions(options, resource, snapshot);
+  deps.log(
+    `[resource] threads=${runtimeOptions.threads} phaseAConcurrency=${runtimeOptions.phaseAConcurrency} categoryConcurrency=${runtimeOptions.categoryConcurrency} memoryLimit=${runtimeOptions.memoryLimit} load1m=${snapshot.load1m.toFixed(2)} freeMemoryGiB=${bytesToGiB(snapshot.freeMemoryBytes).toFixed(1)}`,
+  );
+  const windows = buildCategoryWindows(runtimeOptions);
+  await runAllCategoriesInParallel(deps, runtimeOptions, windows);
+  await writeManifest(runtimeOptions, deps.now());
 };
 
 const buildBunSpawnRunner = (): SpawnRunner => async (command) => {

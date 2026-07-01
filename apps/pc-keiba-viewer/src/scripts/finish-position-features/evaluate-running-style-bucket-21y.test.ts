@@ -38,7 +38,10 @@ import {
   parseColimaStatusJson,
   processCategoryChunk,
   processYear,
+  resolveAutoCategoryConcurrency,
+  resolveAutoChunkConcurrency,
   resolveModelVersion,
+  resolveRuntimeResourcePlan,
   runRunningStyleBucketEval,
 } from "./evaluate-running-style-bucket-21y";
 
@@ -109,6 +112,7 @@ const baseOptions = (
   predictionsRoot: "/tmp/parquet",
   categoryFilter: null,
   chunkConcurrency: 1,
+  categoryConcurrency: 1,
   ...overrides,
 });
 
@@ -164,7 +168,7 @@ const buildChunkOpener = (
 
 test("buildUsageText renders the CLI usage with model-version-jra/nar, category, and chunk-concurrency flags", () => {
   expect(buildUsageText()).toBe(
-    `Usage:\n  bun run src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts \\\n    --pg-url <connection-string> \\\n    --running-style-feature-version v1 \\\n    --model-version-jra <jra-model> \\\n    --model-version-nar <nar-model> \\\n    [--max-years-per-run 5] \\\n    [--statement-timeout-ms 900000] \\\n    [--ignore-night-window] \\\n    [--category jra|nar] \\\n    [--chunk-concurrency 1]`,
+    `Usage:\n  bun run src/scripts/finish-position-features/evaluate-running-style-bucket-21y.ts \\\n    --pg-url <connection-string> \\\n    --running-style-feature-version v1 \\\n    --model-version-jra <jra-model> \\\n    --model-version-nar <nar-model> \\\n    [--max-years-per-run 5] \\\n    [--statement-timeout-ms 900000] \\\n    [--ignore-night-window] \\\n    [--category jra|nar] \\\n    [--chunk-concurrency auto]`,
   );
 });
 
@@ -423,7 +427,8 @@ test("parseArgs accepts a fully specified argv", () => {
     minColimaMemoryGb: 24,
     predictionsRoot: "/tmp/p",
     categoryFilter: null,
-    chunkConcurrency: 1,
+    chunkConcurrency: 0,
+    categoryConcurrency: 0,
   });
 });
 
@@ -1129,8 +1134,12 @@ test("getJstHour returns the hour in JST", () => {
   expect(getJstHour(sample)).toBe(2);
 });
 
-test("initialOptions seeds chunkConcurrency to 1 (sequential default)", () => {
-  expect(initialOptions().chunkConcurrency).toBe(1);
+test("initialOptions seeds chunkConcurrency to auto", () => {
+  expect(initialOptions().chunkConcurrency).toBe(0);
+});
+
+test("parseChunkConcurrency accepts auto", () => {
+  expect(parseChunkConcurrency("auto")).toBe(0);
 });
 
 test("parseChunkConcurrency accepts integer 1", () => {
@@ -1199,6 +1208,27 @@ test("parseArgs with --chunk-concurrency 4 propagates chunkConcurrency 4", () =>
     "4",
   ]);
   expect(result.chunkConcurrency).toBe(4);
+});
+
+test("resolveRuntimeResourcePlan turns auto chunkConcurrency into a resource-derived value", () => {
+  const result = resolveRuntimeResourcePlan(
+    baseOptions({ chunkConcurrency: 0, categoryConcurrency: 0 }),
+    { cpu: 12, memory: 24 },
+    {
+      cpuCount: 15,
+      load1m: 2,
+      totalMemoryBytes: 48 * 1024 ** 3,
+      freeMemoryBytes: 30 * 1024 ** 3,
+    },
+  );
+  expect(result.chunkConcurrency).toBe(
+    resolveAutoChunkConcurrency({ cpu: 12, memory: 24 }, result.snapshot),
+  );
+  expect(result.categoryConcurrency).toBe(
+    resolveAutoCategoryConcurrency({ cpu: 12, memory: 24 }, result.snapshot),
+  );
+  expect(result.chunkConcurrency).toBeGreaterThan(0);
+  expect(result.categoryConcurrency).toBeGreaterThan(0);
 });
 
 test("chunkRows splits 5 rows into batches of 2", () => {
@@ -1320,9 +1350,49 @@ test("processYear with 1 row issues exactly 1 batched upsert with 49 params (sin
   expect(upsertParamCounts).toStrictEqual([49]);
 });
 
-test("runRunningStyleBucketEval runs jra and nar in parallel via Promise.all (both openChunkClient calls start before either resolves)", async () => {
+test("runRunningStyleBucketEval serializes categories when categoryConcurrency is 1", async () => {
   const openOrder: string[] = [];
   const closeOrder: string[] = [];
+  const runner: RunningStyleBucketQueryRunner = {
+    query: vi.fn<RunningStyleBucketQueryRunner["query"]>().mockResolvedValue({ rows: [] }),
+  };
+  const poolMock: RunningStyleBucketQueryRunner = {
+    query: vi.fn<RunningStyleBucketQueryRunner["query"]>().mockResolvedValue({ rows: [] }),
+  };
+  const openChunkClient = vi.fn<RunRunningStyleBucketEvalDeps["openChunkClient"]>(
+    (loader: RunningStyleBucketChunkLoaderArgs) => {
+      openOrder.push(loader.category);
+      const client: RunningStyleBucketChunkClient = {
+        runner,
+        loadedRows: 0,
+        close: () => {
+          closeOrder.push(loader.category);
+          return Promise.resolve();
+        },
+      };
+      return Promise.resolve(client);
+    },
+  );
+  const deps: RunRunningStyleBucketEvalDeps = {
+    pool: poolMock,
+    openChunkClient,
+    sleep: vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined),
+    log: vi.fn<(message: string) => void>(),
+  };
+  const windows: RunningStyleCategoryYearWindow[] = [
+    { category: "jra", years: [2024] },
+    { category: "nar", years: [2010] },
+  ];
+  await runRunningStyleBucketEval(deps, {
+    options: baseOptions({ categoryConcurrency: 1 }),
+    windows,
+  });
+  expect(openOrder).toStrictEqual(["jra", "nar"]);
+  expect(closeOrder).toStrictEqual(["jra", "nar"]);
+});
+
+test("runRunningStyleBucketEval can run categories in parallel when categoryConcurrency is 2", async () => {
+  const openOrder: string[] = [];
   const gateHolder: { jra: () => void; nar: () => void } = {
     jra: () => {},
     nar: () => {},
@@ -1344,15 +1414,7 @@ test("runRunningStyleBucketEval runs jra and nar in parallel via Promise.all (bo
       openOrder.push(loader.category);
       const gate = loader.category === "jra" ? jraGate : narGate;
       await gate;
-      const client: RunningStyleBucketChunkClient = {
-        runner,
-        loadedRows: 0,
-        close: () => {
-          closeOrder.push(loader.category);
-          return Promise.resolve();
-        },
-      };
-      return client;
+      return { runner, loadedRows: 0, close: () => Promise.resolve() };
     },
   );
   const deps: RunRunningStyleBucketEvalDeps = {
@@ -1361,22 +1423,19 @@ test("runRunningStyleBucketEval runs jra and nar in parallel via Promise.all (bo
     sleep: vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined),
     log: vi.fn<(message: string) => void>(),
   };
-  const windows: RunningStyleCategoryYearWindow[] = [
-    { category: "jra", years: [2024] },
-    { category: "nar", years: [2010] },
-  ];
   const promise = runRunningStyleBucketEval(deps, {
-    options: baseOptions({}),
-    windows,
+    options: baseOptions({ categoryConcurrency: 2 }),
+    windows: [
+      { category: "jra", years: [2024] },
+      { category: "nar", years: [2010] },
+    ],
   });
-  // Yield twice so both processCategory tasks register their openChunkClient calls.
   await Promise.resolve();
   await Promise.resolve();
   expect(openOrder).toStrictEqual(["jra", "nar"]);
   gateHolder.nar();
   gateHolder.jra();
   await promise;
-  expect(closeOrder).toHaveLength(2);
 });
 
 test("processCategoryChunks with chunk-concurrency 2 keeps active opens capped at 2 across 4 chunks", async () => {

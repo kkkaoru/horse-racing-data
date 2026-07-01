@@ -6,6 +6,10 @@ const migrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260701000000_add_prediction_target_to_cell_training_evaluations.sql",
 );
+const subgroupMigrationPath = resolve(
+  import.meta.dirname,
+  "../../sql/20260702000000_add_subgroup_to_cell_training_evaluations.sql",
+);
 
 it("adds prediction_target and backfills existing finish-position rows", () => {
   const sql = readFileSync(migrationPath, "utf8");
@@ -37,20 +41,33 @@ it("rebuilds the legacy primary key with prediction_target first", () => {
 
   expect(
     normalized.match(
-      /if pk_cols = array\[ 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' \] then/,
+      /if pk_cols = array\[ 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' \] or pk_cols = array\[ 'prediction_target', 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' \] then/,
     )?.[0],
   ).toStrictEqual(
-    "if pk_cols = array[ 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' ] then",
+    "if pk_cols = array[ 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' ] or pk_cols = array[ 'prediction_target', 'feature_set_hash', 'category', 'surface', 'distance_band', 'class_label', 'season', 'venue' ] then",
   );
   expect(normalized.match(/drop constraint cell_training_evaluations_pkey/)?.[0]).toStrictEqual(
     "drop constraint cell_training_evaluations_pkey",
   );
   expect(
     normalized.match(
-      /add primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue \)/,
+      /add primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup \)/,
     )?.[0],
   ).toStrictEqual(
-    "add primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue )",
+    "add primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup )",
+  );
+});
+
+it("adds subgroup for full cell-key persistence", () => {
+  const sql = readFileSync(migrationPath, "utf8");
+  const normalized = sql.replaceAll(/\s+/g, " ").trim().toLowerCase();
+
+  expect(
+    normalized.match(
+      /alter table cell_training_evaluations add column if not exists subgroup text not null default ''/,
+    )?.[0],
+  ).toStrictEqual(
+    "alter table cell_training_evaluations add column if not exists subgroup text not null default ''",
   );
 });
 
@@ -92,5 +109,25 @@ it("creates target-aware indexes with new names", () => {
     )?.[0],
   ).toStrictEqual(
     "create index if not exists cell_training_evaluations_target_category_top1_idx on cell_training_evaluations (prediction_target, category, top1_accuracy desc)",
+  );
+});
+
+it("has a follow-up migration for already migrated databases", () => {
+  const sql = readFileSync(subgroupMigrationPath, "utf8");
+  const normalized = sql.replaceAll(/\s+/g, " ").trim().toLowerCase();
+
+  expect(
+    normalized.match(
+      /alter table cell_training_evaluations add column if not exists subgroup text not null default ''/,
+    )?.[0],
+  ).toStrictEqual(
+    "alter table cell_training_evaluations add column if not exists subgroup text not null default ''",
+  );
+  expect(
+    normalized.match(
+      /add primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup \)/,
+    )?.[0],
+  ).toStrictEqual(
+    "add primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup )",
   );
 });

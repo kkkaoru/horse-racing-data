@@ -78,6 +78,8 @@ CATEGORICAL_FEATURE_COLUMNS: tuple[str, ...] = (
     "grade_code",
     "keibajo_code",
     "kyori_band",
+    "kyoso_joken_code",
+    "nar_subclass",
     "season_band",
     "is_newcomer_race",
     "tenko_code",
@@ -1219,14 +1221,22 @@ def encode_categoricals(
     frame: pl.DataFrame, categorical_features: list[str]
 ) -> pl.DataFrame:
     present = [column for column in categorical_features if column in frame.columns]
-    return frame.with_columns(pl.col(column).cast(pl.Categorical) for column in present)
+    return frame.with_columns(
+        pl.col(column).cast(pl.Utf8).cast(pl.Categorical) for column in present
+    )
 
 
-def to_lgb_frame(frame: pl.DataFrame) -> "pd.DataFrame":
+def to_lgb_frame(
+    frame: pl.DataFrame, categorical_features: list[str] | None = None
+) -> "pd.DataFrame":
     # LightGBM 4.x ingests only pandas/numpy; its Arrow path rejects dictionary
     # (categorical) columns. Convert at the boundary so polars Categorical maps to
     # pandas "category" dtype, which LightGBM consumes natively for categorical splits.
-    return frame.to_pandas()
+    pandas_frame = frame.to_pandas()
+    for column in categorical_features or []:
+        if column in pandas_frame.columns:
+            pandas_frame[column] = pandas_frame[column].astype("category")
+    return pandas_frame
 
 
 def build_lgb_dataset(
@@ -1241,7 +1251,7 @@ def build_lgb_dataset(
         frame.select(feature_columns), categorical_features
     )
     return lgb.Dataset(
-        to_lgb_frame(feature_frame),
+        to_lgb_frame(feature_frame, categorical_features),
         label=labels.to_numpy().astype(np.int64),
         weight=sample_weights,
         categorical_feature=categorical_features if categorical_features else "auto",
@@ -1260,7 +1270,8 @@ def predict_softmax(
         frame.select(feature_columns), categorical_features
     )
     raw = booster.predict(
-        to_lgb_frame(feature_frame), num_iteration=booster.best_iteration
+        to_lgb_frame(feature_frame, categorical_features),
+        num_iteration=booster.best_iteration,
     )
     return np.asarray(raw, dtype=np.float64)
 

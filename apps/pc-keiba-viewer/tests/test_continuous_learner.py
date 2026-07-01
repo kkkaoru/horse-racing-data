@@ -5289,7 +5289,7 @@ def test_cell_accuracy_store_evaluated_cells_empty(tmp_path: Path) -> None:
 def test_cell_accuracy_store_evaluated_cells_returns_keys(tmp_path: Path) -> None:
     mock_cursor = MagicMock()
     mock_cursor.fetchall.return_value = [
-        ("jra", "turf", "mile", "E", "summer", "10"),
+        ("jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"),
     ]
     mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
     mock_cursor.__exit__ = MagicMock(return_value=False)
@@ -5298,7 +5298,7 @@ def test_cell_accuracy_store_evaluated_cells_returns_keys(tmp_path: Path) -> Non
     store = CellAccuracyStore.__new__(CellAccuracyStore)
     store._con = mock_conn
     result = store.evaluated_cells("abc123")
-    assert result == {"jra_turf_mile_E_summer_10"}
+    assert result == {"jra_turf_mile_E_summer_10_jra_turf_mile_E_summer_10"}
 
 
 def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
@@ -5337,11 +5337,12 @@ def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
     assert mock_conn.commit.call_count == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 21
+    assert len(params) == 22
     assert params[0] == "finish_position"
-    assert params[18] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
-    assert params[19] == []
-    assert params[20] == ["jra", "turf", "mile", "E", "summer", "10"]
+    assert params[8] == "jra_turf_mile_E_summer_10"
+    assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[20] == []
+    assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
 
 
 def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
@@ -5384,11 +5385,12 @@ def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
     assert saved == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 21
+    assert len(params) == 22
     assert params[0] == "running_style"
-    assert params[18] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
-    assert params[19] == ["feat_a", "feat_b"]
-    assert params[20] == ["jra", "turf", "mile", "E", "summer", "10"]
+    assert params[8] == "jra_turf_mile_E_summer_10"
+    assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
+    assert params[20] == ["feat_a", "feat_b"]
+    assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
 
 
 def test_sire_venue_bias_adds_five_columns() -> None:
