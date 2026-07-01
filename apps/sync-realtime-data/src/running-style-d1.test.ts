@@ -13,6 +13,8 @@ vi.mock("./d1-query-cache", () => ({
 const ROW: RaceRunningStyleRow = {
   bamei: "サンプル",
   category: "jra",
+  cellModelKey: null,
+  cellVariantId: null,
   horseNumber: 1,
   kaisaiNen: "2026",
   kettoTorokuBango: "2024100001",
@@ -51,6 +53,38 @@ it("upsertRaceRunningStyles batches statements and returns row count", async () 
   const count = await upsertRaceRunningStyles(db, [ROW, ROW]);
   expect(count).toBe(2);
   expect(prepare).toHaveBeenCalledTimes(2);
+});
+
+it("upsertRaceRunningStyles binds cell provenance before probabilities", async () => {
+  const { upsertRaceRunningStyles } = await import("./running-style-d1");
+  const bind = vi.fn(() => ({ bind: vi.fn() }));
+  const prepare = vi.fn(() => ({ bind }));
+  const batch = vi.fn(async () => []);
+  const db = { batch, prepare } as unknown as D1Database;
+  await upsertRaceRunningStyles(db, [
+    {
+      ...ROW,
+      cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      cellVariantId: "tokyo-turf",
+    },
+  ]);
+  expect(bind.mock.calls[0]).toStrictEqual([
+    "jra:20260512:08:01",
+    1,
+    "2024100001",
+    "サンプル",
+    "jra",
+    "2026",
+    "v7-lineage",
+    "running-style/models/jra/cells/tokyo-turf.flatbin",
+    "tokyo-turf",
+    0.1,
+    0.4,
+    0.3,
+    0.2,
+    "senkou",
+    "2026-05-12T11:30:00+09:00",
+  ]);
 });
 
 it("listRaceRunningStyleCounts returns empty map when raceKeys is empty", async () => {
@@ -106,6 +140,8 @@ it("listRaceRunningStylesForRace bypasses cache when bypassCache=true", async ()
       {
         bamei: "サンプル",
         category: "jra",
+        cell_model_key: null,
+        cell_variant_id: null,
         horse_number: 1,
         kaisai_nen: "2026",
         ketto_toroku_bango: "2024100001",
@@ -143,6 +179,8 @@ it("listRunningStyleInferenceStates returns mapped rows by race_key", async () =
     results: [
       {
         attempted_at: "2026-05-12T11:00:00+09:00",
+        cell_model_key: null,
+        cell_variant_id: null,
         completed_at: null,
         expected_horse_count: 5,
         features_r2_key: "k.parquet",
@@ -159,6 +197,8 @@ it("listRunningStyleInferenceStates returns mapped rows by race_key", async () =
   const states = await listRunningStyleInferenceStates(db, ["jra:20260512:08:01"]);
   expect(states.get("jra:20260512:08:01")).toStrictEqual({
     attemptedAt: "2026-05-12T11:00:00+09:00",
+    cellModelKey: null,
+    cellVariantId: null,
     completedAt: null,
     expectedHorseCount: 5,
     featuresR2Key: "k.parquet",
@@ -182,6 +222,8 @@ it("getRunningStyleInferenceState maps row columns to camelCase fields", async (
   const { getRunningStyleInferenceState } = await import("./running-style-d1");
   const first = vi.fn(async () => ({
     attempted_at: "2026-05-12T11:00:00+09:00",
+    cell_model_key: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    cell_variant_id: "tokyo-turf",
     completed_at: "2026-05-12T11:31:00+09:00",
     expected_horse_count: 5,
     features_r2_key: "k.parquet",
@@ -196,6 +238,8 @@ it("getRunningStyleInferenceState maps row columns to camelCase fields", async (
   const state = await getRunningStyleInferenceState(db, "jra:20260512:08:01");
   expect(state).toStrictEqual({
     attemptedAt: "2026-05-12T11:00:00+09:00",
+    cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    cellVariantId: "tokyo-turf",
     completedAt: "2026-05-12T11:31:00+09:00",
     expectedHorseCount: 5,
     featuresR2Key: "k.parquet",
@@ -210,6 +254,8 @@ it("getRunningStyleInferenceState maps null expected/written horse counts to nul
   const { getRunningStyleInferenceState } = await import("./running-style-d1");
   const first = vi.fn(async () => ({
     attempted_at: null,
+    cell_model_key: null,
+    cell_variant_id: null,
     completed_at: null,
     expected_horse_count: null,
     features_r2_key: null,
@@ -232,6 +278,8 @@ it("listRunningStyleInferenceStates maps non-null written_horse_count to a numbe
     results: [
       {
         attempted_at: "2026-05-12T11:00:00+09:00",
+        cell_model_key: null,
+        cell_variant_id: null,
         completed_at: "2026-05-12T11:31:00+09:00",
         expected_horse_count: null,
         features_r2_key: "k.parquet",
@@ -320,6 +368,8 @@ it("markRunningStyleInferenceCompleted binds completion params and runs the upda
   expect(bind.mock.calls[0]).toStrictEqual([
     "k.parquet",
     "v7-lineage",
+    null,
+    null,
     5,
     5,
     "2026-05-12T11:31:00+09:00",

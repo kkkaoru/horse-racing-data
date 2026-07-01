@@ -57,6 +57,15 @@ RS_SOURCE_CHOICES = ("r2", "pg", "auto")
 R2_BUCKET_DEFAULT = "pc-keiba-features-archive"
 R2_PREDICTIONS_PREFIX = "running-style/predictions/by-day"
 
+
+def ensure_rs_pred_cell_columns(con: duckdb.DuckDBPyConnection, table_name: str) -> None:
+    columns = {str(row[1]) for row in con.execute(f"pragma table_info('{table_name}')").fetchall()}
+    if "cell_model_key" not in columns:
+        con.execute(f"alter table {table_name} add column cell_model_key varchar")
+    if "cell_variant_id" not in columns:
+        con.execute(f"alter table {table_name} add column cell_variant_id varchar")
+
+
 # Best available running-style model_version per year, per category. Used to
 # select rs_* rows from PG when multiple model_versions exist for the same
 # (source, year). Mirrors tmp/v8/iter9_build_pacestyle_features.py
@@ -198,7 +207,9 @@ def stage_rs_predictions_from_pg(
           cast(p_senkou as double) as rs_p_senkou,
           cast(p_sashi as double) as rs_p_sashi,
           cast(p_oikomi as double) as rs_p_oikomi,
-          cast(predicted_class as integer) as rs_predicted_class
+          cast(predicted_class as integer) as rs_predicted_class,
+          cast(cell_model_key as varchar) as rs_cell_model_key,
+          cast(cell_variant_id as varchar) as rs_cell_variant_id
         from pg.race_running_style_model_predictions
         where source = '{category}'
           and ({version_filter})
@@ -259,6 +270,10 @@ def stage_rs_predictions_from_r2(
     )
     target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
     con.execute(
+        f"create or replace temp table rs_preds_raw as select * from read_parquet('{glob}')"
+    )
+    ensure_rs_pred_cell_columns(con, "rs_preds_raw")
+    con.execute(
         f"""
         create or replace temp table rs_preds as
         select
@@ -269,8 +284,10 @@ def stage_rs_predictions_from_r2(
           cast(p_senkou as double) as rs_p_senkou,
           cast(p_sashi as double) as rs_p_sashi,
           cast(p_oikomi as double) as rs_p_oikomi,
-          cast(predicted_class as integer) as rs_predicted_class
-        from read_parquet('{glob}')
+          cast(predicted_class as integer) as rs_predicted_class,
+          cast(cell_model_key as varchar) as rs_cell_model_key,
+          cast(cell_variant_id as varchar) as rs_cell_variant_id
+        from rs_preds_raw
         where true
           {target_filter}
         """

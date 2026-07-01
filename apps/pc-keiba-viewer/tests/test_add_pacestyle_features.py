@@ -295,31 +295,66 @@ def test_setup_r2_duckdb_secret_raises_when_account_id_missing(
         subject.setup_r2_duckdb_secret(con)
 
 
-def test_stage_rs_predictions_from_r2_builds_glob_for_jra() -> None:
+def _table_info_with_cell_columns() -> MagicMock:
+    table_info_call = MagicMock()
+    table_info_call.fetchall.return_value = [
+        (0, "cell_model_key"),
+        (1, "cell_variant_id"),
+    ]
+    return table_info_call
+
+
+def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_jra() -> None:
     con = MagicMock()
+    con.execute.side_effect = [
+        MagicMock(),
+        _table_info_with_cell_columns(),
+        MagicMock(),
+        MagicMock(),
+    ]
     subject.stage_rs_predictions_from_r2(con, "jra", "20260607", "pc-keiba-features-archive")
-    create_sql = con.execute.call_args_list[0].args[0]
+    raw_sql = con.execute.call_args_list[0].args[0]
+    create_sql = con.execute.call_args_list[2].args[0]
     assert (
         "s3://pc-keiba-features-archive/running-style/predictions/by-day/"
         "2026/06/07/jra/*.parquet"
-    ) in create_sql
+    ) in raw_sql
     assert "'jra:' || kaisai_nen || ':' || kaisai_tsukihi" in create_sql
+    assert "from rs_preds_raw" in create_sql
+    assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
+    assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
 
 
-def test_stage_rs_predictions_from_r2_builds_glob_for_nar_custom_bucket() -> None:
+def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_nar() -> None:
     con = MagicMock()
+    con.execute.side_effect = [
+        MagicMock(),
+        _table_info_with_cell_columns(),
+        MagicMock(),
+        MagicMock(),
+    ]
     subject.stage_rs_predictions_from_r2(con, "nar", "20240115", "other-bucket")
-    create_sql = con.execute.call_args_list[0].args[0]
+    raw_sql = con.execute.call_args_list[0].args[0]
+    create_sql = con.execute.call_args_list[2].args[0]
     assert (
         "s3://other-bucket/running-style/predictions/by-day/2024/01/15/nar/*.parquet"
-    ) in create_sql
+    ) in raw_sql
     assert "'nar:' || kaisai_nen || ':' || kaisai_tsukihi" in create_sql
+    assert "from rs_preds_raw" in create_sql
+    assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
+    assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
 
 
 def test_stage_rs_predictions_from_r2_creates_index() -> None:
     con = MagicMock()
+    con.execute.side_effect = [
+        MagicMock(),
+        _table_info_with_cell_columns(),
+        MagicMock(),
+        MagicMock(),
+    ]
     subject.stage_rs_predictions_from_r2(con, "jra", "20260607", "pc-keiba-features-archive")
-    index_sql = con.execute.call_args_list[1].args[0]
+    index_sql = con.execute.call_args_list[3].args[0]
     assert index_sql == "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
 
 
@@ -335,10 +370,16 @@ def test_target_race_ids_filter_sql_true_uses_staged_ids() -> None:
 
 def test_stage_rs_predictions_from_r2_focused_filters_to_target_race_ids() -> None:
     con = MagicMock()
+    con.execute.side_effect = [
+        MagicMock(),
+        _table_info_with_cell_columns(),
+        MagicMock(),
+        MagicMock(),
+    ]
     subject.stage_rs_predictions_from_r2(
         con, "jra", "20260607", "pc-keiba-features-archive", focused_target=True
     )
-    create_sql = con.execute.call_args_list[0].args[0]
+    create_sql = con.execute.call_args_list[2].args[0]
     assert "where true" in create_sql
     assert "target_race_ids" in create_sql
 
@@ -349,6 +390,8 @@ def test_stage_rs_predictions_from_pg_uses_pg_attach_table() -> None:
     create_sql = con.execute.call_args_list[0].args[0]
     assert "from pg.race_running_style_model_predictions" in create_sql
     assert "where source = 'jra'" in create_sql
+    assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
+    assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
 
 
 def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids() -> None:

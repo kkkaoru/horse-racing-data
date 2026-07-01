@@ -35,6 +35,8 @@ interface D1Row {
   ketto_toroku_bango: string;
   kaisai_nen: string;
   model_version: string;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   p_nige: number;
   p_senkou: number;
   p_sashi: number;
@@ -52,6 +54,8 @@ interface NeonRow {
   race_bango: string;
   ketto_toroku_bango: string;
   umaban: number;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   p_nige: number;
   p_senkou: number;
   p_sashi: number;
@@ -125,7 +129,7 @@ const fetchD1Batch = async (datePattern: string, offset: number): Promise<D1Row[
     "--remote",
     "--json",
     "--command",
-    `select race_key, horse_number, ketto_toroku_bango, kaisai_nen, model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at from race_running_styles where race_key like '${datePattern}' order by race_key, horse_number limit ${D1_BATCH_SIZE} offset ${offset}`,
+    `select race_key, horse_number, ketto_toroku_bango, kaisai_nen, model_version, cell_model_key, cell_variant_id, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at from race_running_styles where race_key like '${datePattern}' order by race_key, horse_number limit ${D1_BATCH_SIZE} offset ${offset}`,
   ];
   const result = (await spawnJson(command)) as Array<{ results: D1Row[] }>;
   return result[0]?.results ?? [];
@@ -159,6 +163,8 @@ const toNeonRow = (row: D1Row): NeonRow | null => {
     keibajo_code: parsed.keibajoCode,
     ketto_toroku_bango: row.ketto_toroku_bango,
     model_version: row.model_version,
+    cell_model_key: row.cell_model_key,
+    cell_variant_id: row.cell_variant_id,
     p_nige: Number(row.p_nige),
     p_oikomi: Number(row.p_oikomi),
     p_sashi: Number(row.p_sashi),
@@ -174,10 +180,11 @@ const toNeonRow = (row: D1Row): NeonRow | null => {
 
 const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => {
   if (rows.length === 0) return 0;
+  const colCount = 16;
   const placeholders = rows
     .map(
       (_, rowIndex) =>
-        `($${rowIndex * 14 + 1}, $${rowIndex * 14 + 2}, $${rowIndex * 14 + 3}, $${rowIndex * 14 + 4}, $${rowIndex * 14 + 5}, $${rowIndex * 14 + 6}, $${rowIndex * 14 + 7}, $${rowIndex * 14 + 8}, $${rowIndex * 14 + 9}, $${rowIndex * 14 + 10}, $${rowIndex * 14 + 11}, $${rowIndex * 14 + 12}, $${rowIndex * 14 + 13}, $${rowIndex * 14 + 14})`,
+        `(${Array.from({ length: colCount }, (__, colIndex) => `$${rowIndex * colCount + colIndex + 1}`).join(", ")})`,
     )
     .join(", ");
   const values = rows.flatMap((row) => [
@@ -189,6 +196,8 @@ const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => 
     row.race_bango,
     row.ketto_toroku_bango,
     row.umaban,
+    row.cell_model_key,
+    row.cell_variant_id,
     row.p_nige,
     row.p_senkou,
     row.p_sashi,
@@ -199,11 +208,14 @@ const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => 
   await pool.query(
     `insert into race_running_style_model_predictions
        (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-        ketto_toroku_bango, umaban, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
+        ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
+        p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
      values ${placeholders}
      on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
      do update set
        umaban = excluded.umaban,
+       cell_model_key = excluded.cell_model_key,
+       cell_variant_id = excluded.cell_variant_id,
        p_nige = excluded.p_nige,
        p_senkou = excluded.p_senkou,
        p_sashi = excluded.p_sashi,

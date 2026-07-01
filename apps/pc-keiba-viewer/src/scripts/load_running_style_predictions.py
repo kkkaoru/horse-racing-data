@@ -36,7 +36,7 @@ import importlib
 import io
 import json
 import sys
-from typing import IO, Callable, Sequence, TypedDict
+from typing import IO, Callable, Protocol, Sequence, TypedDict
 
 import numpy as np
 
@@ -77,6 +77,8 @@ LOAD_COLUMNS: tuple[str, ...] = (
     "model_version",
     "running_style_feature_version",
     "race_date",
+    "cell_model_key",
+    "cell_variant_id",
 )
 
 PARQUET_SELECT_COLUMNS: tuple[str, ...] = (
@@ -94,6 +96,8 @@ PARQUET_SELECT_COLUMNS: tuple[str, ...] = (
     "p_oikomi",
     "running_style_feature_version",
     "model_version",
+    "cell_model_key",
+    "cell_variant_id",
 )
 
 TEMP_TABLE_SCHEMA: tuple[tuple[str, str], ...] = (
@@ -113,6 +117,8 @@ TEMP_TABLE_SCHEMA: tuple[tuple[str, str], ...] = (
     ("model_version", "text not null"),
     ("running_style_feature_version", "text not null"),
     ("race_date", "date not null"),
+    ("cell_model_key", "text"),
+    ("cell_variant_id", "text"),
 )
 
 SINGLE_QUOTE: str = "'"
@@ -123,6 +129,8 @@ P_OIKOMI_INDEX_IN_ROW: int = 11
 PREDICTED_CLASS_INDEX_IN_ROW: int = 6
 RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW: int = 12
 MODEL_VERSION_INDEX_IN_ROW: int = 13
+CELL_MODEL_KEY_INDEX_IN_ROW: int = 14
+CELL_VARIANT_ID_INDEX_IN_ROW: int = 15
 KAISAI_NEN_INDEX_IN_ROW: int = 1
 KAISAI_TSUKIHI_INDEX_IN_ROW: int = 2
 
@@ -143,6 +151,14 @@ class LoadArguments(TypedDict):
     category: str
     year_from: int
     year_to: int
+
+
+class DuckDbQueryResult(Protocol):
+    def fetchall(self) -> Sequence[Sequence[object]]: ...
+
+
+class DuckDbExecutor(Protocol):
+    def execute(self, query: str) -> DuckDbQueryResult: ...
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -201,6 +217,18 @@ def build_select_from_parquet_sql(args: LoadArguments) -> str:
     columns = ", ".join(PARQUET_SELECT_COLUMNS)
     return (
         f"select {columns} from read_parquet('{safe_glob}') "
+        f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
+        f"and running_style_feature_version = '{safe_rs}' "
+        f"and model_version = '{safe_mv}'"
+    )
+
+
+def build_select_from_raw_predictions_sql(args: LoadArguments) -> str:
+    safe_rs = sql_quote_literal(args["running_style_feature_version"])
+    safe_mv = sql_quote_literal(args["model_version"])
+    columns = ", ".join(PARQUET_SELECT_COLUMNS)
+    return (
+        f"select {columns} from raw_running_style_predictions "
         f"where cast(kaisai_nen as integer) between {args['year_from']} and {args['year_to']} "
         f"and running_style_feature_version = '{safe_rs}' "
         f"and model_version = '{safe_mv}'"
@@ -339,6 +367,8 @@ def attach_second_predicted_class(
         parquet_row[KAISAI_NEN_INDEX_IN_ROW],
         parquet_row[KAISAI_TSUKIHI_INDEX_IN_ROW],
     )
+    cell_model_key = parquet_row[CELL_MODEL_KEY_INDEX_IN_ROW]
+    cell_variant_id = parquet_row[CELL_VARIANT_ID_INDEX_IN_ROW]
     return (
         *head,
         predicted_class,
@@ -348,7 +378,26 @@ def attach_second_predicted_class(
         model_version,
         running_style_feature_version,
         race_date,
+        cell_model_key,
+        cell_variant_id,
     )
+
+
+def ensure_optional_cell_columns(duckdb_con: DuckDbExecutor) -> None:
+    columns = {
+        str(row[1])
+        for row in duckdb_con.execute(
+            "pragma table_info('raw_running_style_predictions')"
+        ).fetchall()
+    }
+    if "cell_model_key" not in columns:
+        duckdb_con.execute(
+            "alter table raw_running_style_predictions add column cell_model_key varchar"
+        )
+    if "cell_variant_id" not in columns:
+        duckdb_con.execute(
+            "alter table raw_running_style_predictions add column cell_variant_id varchar"
+        )
 
 
 def default_read_predictions(args: LoadArguments) -> tuple[int, list[tuple[object, ...]]]:
@@ -364,11 +413,16 @@ def default_read_predictions(args: LoadArguments) -> tuple[int, list[tuple[objec
     duckdb_module = importlib.import_module("duckdb")
     duckdb_con = duckdb_module.connect(":memory:")
     try:
+        safe_glob = sql_quote_literal(args["predictions_parquet_glob"])
+        duckdb_con.execute(
+            f"create temp table raw_running_style_predictions as select * from read_parquet('{safe_glob}')"
+        )
+        ensure_optional_cell_columns(duckdb_con)
         mismatch_row = duckdb_con.execute(build_version_mismatch_check_sql(args)).fetchone()
         mismatched = int(mismatch_row[0]) if mismatch_row is not None else 0
         if mismatched > 0:
             return mismatched, []
-        raw_rows = duckdb_con.execute(build_select_from_parquet_sql(args)).fetchall()
+        raw_rows = duckdb_con.execute(build_select_from_raw_predictions_sql(args)).fetchall()
     finally:
         duckdb_con.close()
     return 0, [attach_second_predicted_class(row) for row in raw_rows]

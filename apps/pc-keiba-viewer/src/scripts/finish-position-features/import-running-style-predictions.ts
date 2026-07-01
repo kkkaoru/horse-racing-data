@@ -16,6 +16,7 @@ import {
   buildActiveModelsTableDdl,
   buildBatchInsertSql,
   buildHorseLookupIndexSql,
+  buildPredictionsCellLookupIndexSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
 } from "./import-running-style-sql";
@@ -224,6 +225,7 @@ const ensureTables = async (pool: Pool): Promise<void> => {
   ]);
   await Promise.all([
     pool.query(buildPredictionsLookupIndexSql()),
+    pool.query(buildPredictionsCellLookupIndexSql()),
     pool.query(buildHorseLookupIndexSql()),
   ]);
 };

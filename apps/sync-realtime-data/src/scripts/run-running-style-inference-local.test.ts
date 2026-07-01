@@ -227,6 +227,8 @@ it("initialOptions returns empty defaults", () => {
     predictedAt: "",
     modelVersion: "",
     featureVersion: "",
+    cellModelKey: "",
+    cellVariantId: "",
   });
 });
 
@@ -310,6 +312,24 @@ it("applyArg sets --feature-version and advances by two", () => {
   expect(options.featureVersion).toBe("v1");
 });
 
+it("applyArg sets --cell-model-key and advances by two", () => {
+  const options = initialOptions();
+  const result = applyArg(
+    options,
+    "--cell-model-key",
+    "running-style/models/jra/cells/tokyo-turf.flatbin",
+  );
+  expect(result).toStrictEqual({ advanceBy: 2 });
+  expect(options.cellModelKey).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+});
+
+it("applyArg sets --cell-variant-id and advances by two", () => {
+  const options = initialOptions();
+  const result = applyArg(options, "--cell-variant-id", "tokyo-turf");
+  expect(result).toStrictEqual({ advanceBy: 2 });
+  expect(options.cellVariantId).toBe("tokyo-turf");
+});
+
 it("applyArg throws when a value is missing", () => {
   const options = initialOptions();
   expect(() => applyArg(options, "--model-flatbin", undefined)).toThrowError(
@@ -368,7 +388,34 @@ it("parseArgs returns populated options when all required flags are present", ()
     predictedAt: "2026-05-31T00:00:00Z",
     modelVersion: "m1",
     featureVersion: "v1",
+    cellModelKey: "",
+    cellVariantId: "",
   });
+});
+
+it("parseArgs accepts optional cell provenance flags", () => {
+  const result = parseArgs([
+    "--model-flatbin",
+    "/tmp/model.flatbin",
+    "--features-parquet",
+    "/tmp/in.parquet",
+    "--output-parquet",
+    "/tmp/out.parquet",
+    "--category",
+    "jra",
+    "--predicted-at",
+    "2026-05-31T00:00:00Z",
+    "--model-version",
+    "m1",
+    "--feature-version",
+    "v1",
+    "--cell-model-key",
+    "running-style/models/jra/cells/tokyo-turf.flatbin",
+    "--cell-variant-id",
+    "tokyo-turf",
+  ]);
+  expect(result.cellModelKey).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+  expect(result.cellVariantId).toBe("tokyo-turf");
 });
 
 it("parseArgs accepts the optional --rs-p-from-flatbin flag", () => {
@@ -505,7 +552,7 @@ it("RACE_KEY_COLUMNS exposes the expected race-key 5-tuple", () => {
   ]);
 });
 
-it("OUTPUT_COLUMN_NAMES exposes the output 12-column schema", () => {
+it("OUTPUT_COLUMN_NAMES exposes the output 14-column schema", () => {
   expect(OUTPUT_COLUMN_NAMES).toStrictEqual([
     "source",
     "kaisai_nen",
@@ -517,6 +564,8 @@ it("OUTPUT_COLUMN_NAMES exposes the output 12-column schema", () => {
     "p_senkou",
     "p_sashi",
     "p_oikomi",
+    "cell_model_key",
+    "cell_variant_id",
     "model_version",
     "running_style_feature_version",
   ]);
@@ -861,12 +910,16 @@ it("predictRace calls predictFlatRunningStyle once per horse for a single-stage 
     v1Model: null,
     modelVersion: "m1",
     featureVersion: "v1",
+    cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    cellVariantId: "tokyo-turf",
   });
   expect(spy).toHaveBeenCalledTimes(2);
   expect(result.length).toBe(2);
   expect(result[0]!.p_senkou).toBe(0.6);
   expect(result[0]!.model_version).toBe("m1");
   expect(result[0]!.running_style_feature_version).toBe("v1");
+  expect(result[0]!.cell_model_key).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+  expect(result[0]!.cell_variant_id).toBe("tokyo-turf");
   expect(result[0]!.ketto_toroku_bango).toBe("A");
   expect(result[1]!.ketto_toroku_bango).toBe("B");
   expect(result[0]!.target_running_style_class).toBe(null);
@@ -889,6 +942,8 @@ it("predictRace passes through target_running_style_class from raw row to predic
     v1Model: null,
     modelVersion: "m1",
     featureVersion: "v1",
+    cellModelKey: "running-style/models/jra/latest.flatbin",
+    cellVariantId: "latest",
   });
   expect(result[0]!.target_running_style_class).toBe(2);
   spy.mockRestore();
@@ -913,6 +968,8 @@ it("predictRace calls predictFlatRunningStyle twice per horse when v1Model is pr
     v1Model: FAKE_MODEL,
     modelVersion: "v2",
     featureVersion: "v1",
+    cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    cellVariantId: "tokyo-turf",
   });
   expect(spy).toHaveBeenCalledTimes(2);
   expect(result.length).toBe(1);
@@ -943,6 +1000,8 @@ it("predictRace injects rs_p_* probabilities into v2 input vector during chained
     v1Model: FAKE_MODEL,
     modelVersion: "v2",
     featureVersion: "v1",
+    cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+    cellVariantId: "tokyo-turf",
   });
   expect(captured[1]!.rs_p_nige).toBe(0.4);
   expect(captured[1]!.rs_p_senkou).toBe(0.3);
@@ -976,6 +1035,8 @@ it("predictAll groups rows by race and produces one prediction per input row", (
     v1Model: null,
     modelVersion: "m",
     featureVersion: "v",
+    cellModelKey: "running-style/models/jra/latest.flatbin",
+    cellVariantId: "latest",
   });
   expect(result.length).toBe(2);
   expect(spy).toHaveBeenCalledTimes(2);
@@ -1024,6 +1085,8 @@ it("buildWriteOutputCopySql includes a tuple for each row and uses ZSTD compress
         p_senkou: 0.6,
         p_sashi: 0.2,
         p_oikomi: 0.1,
+        cell_model_key: "running-style/models/jra/cells/tokyo-turf.flatbin",
+        cell_variant_id: "tokyo-turf",
         model_version: "m1",
         running_style_feature_version: "v1",
         target_running_style_class: null,
@@ -1051,6 +1114,8 @@ it("buildWriteOutputCopySql escapes single quotes inside string columns", () => 
         p_senkou: 0.6,
         p_sashi: 0.2,
         p_oikomi: 0.1,
+        cell_model_key: "running-style/models/jra/cells/tokyo-turf.flatbin",
+        cell_variant_id: "tokyo-turf",
         model_version: "m'1",
         running_style_feature_version: "v1",
         target_running_style_class: null,
@@ -1077,6 +1142,8 @@ it("buildWriteOutputCopySql renders NULL for non-finite probability values", () 
         p_senkou: 0.6,
         p_sashi: 0.2,
         p_oikomi: 0.1,
+        cell_model_key: null,
+        cell_variant_id: null,
         model_version: "m",
         running_style_feature_version: "v",
         target_running_style_class: null,
@@ -1102,6 +1169,8 @@ it("buildWriteOutputCopySql appends target_running_style_class column when inclu
         p_senkou: 0.6,
         p_sashi: 0.2,
         p_oikomi: 0.1,
+        cell_model_key: "running-style/models/jra/latest.flatbin",
+        cell_variant_id: "latest",
         model_version: "m",
         running_style_feature_version: "v",
         target_running_style_class: 2,
@@ -1127,6 +1196,8 @@ it("buildWriteOutputCopySql renders NULL for a null target_running_style_class v
         p_senkou: 0.6,
         p_sashi: 0.2,
         p_oikomi: 0.1,
+        cell_model_key: "running-style/models/jra/latest.flatbin",
+        cell_variant_id: "latest",
         model_version: "m",
         running_style_feature_version: "v",
         target_running_style_class: null,
@@ -1178,6 +1249,8 @@ it("writeOutput runs VALUES COPY when rows are present", async () => {
       p_senkou: 0.6,
       p_sashi: 0.2,
       p_oikomi: 0.1,
+      cell_model_key: "running-style/models/jra/latest.flatbin",
+      cell_variant_id: "latest",
       model_version: "m",
       running_style_feature_version: "v",
       target_running_style_class: null,
@@ -1270,6 +1343,8 @@ it("runInferenceLocal reads features, runs predictions, writes parquet, and repo
       predictedAt: "2026-05-31T00:00:00Z",
       modelVersion: "m1",
       featureVersion: "v1",
+      cellModelKey: "",
+      cellVariantId: "",
     },
     duckdbModule: setup.module,
     readModelFile,
@@ -1297,6 +1372,8 @@ it("runInferenceLocal writes empty parquet when there are no input rows", async 
       predictedAt: "2026-05-31T00:00:00Z",
       modelVersion: "m",
       featureVersion: "v",
+      cellModelKey: "",
+      cellVariantId: "",
     },
     duckdbModule: setup.module,
     readModelFile,
@@ -1329,6 +1406,8 @@ it("runInferenceLocal predicts per race independently across multiple race group
       predictedAt: "now",
       modelVersion: "m",
       featureVersion: "v",
+      cellModelKey: "",
+      cellVariantId: "",
     },
     duckdbModule: setup.module,
     readModelFile,
@@ -1371,6 +1450,8 @@ it("runInferenceLocal runs chained-predict 2-stage inference for a v2 model with
       predictedAt: "2026-05-31T00:00:00Z",
       modelVersion: "v2",
       featureVersion: "v1",
+      cellModelKey: "",
+      cellVariantId: "",
     },
     duckdbModule: setup.module,
     readModelFile,
@@ -1398,6 +1479,8 @@ it("runInferenceLocal throws when a v2 model is given but --rs-p-from-flatbin is
         predictedAt: "now",
         modelVersion: "v2",
         featureVersion: "v1",
+        cellModelKey: "",
+        cellVariantId: "",
       },
       duckdbModule: setup.module,
       readModelFile,
@@ -1431,6 +1514,8 @@ it("runInferenceLocal carries target_running_style_class from input parquet to o
       predictedAt: "now",
       modelVersion: "m",
       featureVersion: "v",
+      cellModelKey: "",
+      cellVariantId: "",
     },
     duckdbModule: setup.module,
     readModelFile,

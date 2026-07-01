@@ -50,7 +50,7 @@ const upsertNeonBatch = async (
   pool: Pool,
   rows: ReadonlyArray<RaceRunningStyleRow>,
 ): Promise<void> => {
-  const COL_COUNT = 14;
+  const COL_COUNT = 16;
   const values = rows.flatMap((row) => {
     const parsed = parseRaceKey(row.raceKey)!;
     const predictedClass = LABEL_CLASS_INDEX[row.predictedLabel]!;
@@ -63,6 +63,8 @@ const upsertNeonBatch = async (
       parsed.raceBango,
       row.kettoTorokuBango,
       row.horseNumber,
+      row.cellModelKey ?? null,
+      row.cellVariantId ?? null,
       row.pNige,
       row.pSenkou,
       row.pSashi,
@@ -76,11 +78,14 @@ const upsertNeonBatch = async (
   await pool.query(
     `insert into race_running_style_model_predictions
        (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-        ketto_toroku_bango, umaban, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
+        ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
+        p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
      values ${actualPlaceholders}
      on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
      do update set
        umaban = excluded.umaban,
+       cell_model_key = excluded.cell_model_key,
+       cell_variant_id = excluded.cell_variant_id,
        p_nige = excluded.p_nige,
        p_senkou = excluded.p_senkou,
        p_sashi = excluded.p_sashi,

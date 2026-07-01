@@ -34,6 +34,8 @@ const RACE_KEY_FIELDS = {
 };
 
 const PASSTHROUGH_FIELDS = {
+  cell_model_key: "jra-default-model",
+  cell_variant_id: "cell-05-2400",
   model_version: "jra-running-style-lgbm-prod-v1.5",
   running_style_feature_version: "v1",
   target_running_style_class: 0,
@@ -1005,6 +1007,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        cell_model_key: "jra-default-model",
+        cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
         running_style_feature_version: "v1",
         target_running_style_class: 0,
@@ -1030,6 +1034,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        cell_model_key: "jra-default-model",
+        cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
         running_style_feature_version: "v1",
         target_running_style_class: 0,
@@ -1038,7 +1044,7 @@ describe("apply-running-style-postproc", () => {
     expect(sql.includes("'j''ra'") satisfies boolean).toBe(true);
   });
 
-  test("buildWriteOutputCopySql lists model_version, running_style_feature_version, and target_running_style_class in column header", () => {
+  test("buildWriteOutputCopySql lists cell provenance, model_version, running_style_feature_version, and target_running_style_class in column header", () => {
     const sql = buildWriteOutputCopySql("/tmp/out.parquet", [
       {
         source: "jra",
@@ -1054,6 +1060,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        cell_model_key: "jra-default-model",
+        cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
         running_style_feature_version: "v1",
         target_running_style_class: 2,
@@ -1061,7 +1069,7 @@ describe("apply-running-style-postproc", () => {
     ]);
     expect(
       sql.includes(
-        "model_version, running_style_feature_version, target_running_style_class",
+        "cell_model_key, cell_variant_id, model_version, running_style_feature_version, target_running_style_class",
       ) satisfies boolean,
     ).toBe(true);
   });
@@ -1082,6 +1090,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        cell_model_key: "jra-default-model",
+        cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
         running_style_feature_version: "v1",
         target_running_style_class: null,
@@ -1106,6 +1116,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        cell_model_key: "jra-default-model",
+        cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
         running_style_feature_version: "v1",
         target_running_style_class: 3,
@@ -1187,6 +1199,8 @@ describe("apply-running-style-postproc", () => {
           predicted_class: 0,
           second_predicted_class: 1,
           predicted_label: "nige",
+          cell_model_key: "jra-default-model",
+          cell_variant_id: "cell-05-2400",
           model_version: "jra-rs-prod",
           running_style_feature_version: "v1",
           target_running_style_class: 0,

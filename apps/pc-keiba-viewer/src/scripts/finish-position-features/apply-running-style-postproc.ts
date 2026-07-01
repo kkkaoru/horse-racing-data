@@ -74,6 +74,8 @@ interface RawInputRaceKey {
 }
 
 interface RawInputPassthrough {
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   model_version: string;
   running_style_feature_version: string;
   target_running_style_class: number | null;
@@ -93,6 +95,8 @@ interface PostprocPredictionRow {
   predicted_class: number;
   second_predicted_class: number;
   predicted_label: string;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   model_version: string;
   running_style_feature_version: string;
   target_running_style_class: number | null;
@@ -323,6 +327,14 @@ const extractPassthrough = (
   raw: Record<string, unknown>,
   runningStyleFeatureVersion: string,
 ): RawInputPassthrough => ({
+  cell_model_key:
+    raw.cell_model_key === null || raw.cell_model_key === undefined
+      ? null
+      : requireString(raw.cell_model_key, "cell_model_key"),
+  cell_variant_id:
+    raw.cell_variant_id === null || raw.cell_variant_id === undefined
+      ? null
+      : requireString(raw.cell_variant_id, "cell_variant_id"),
   model_version: requireString(raw.model_version, "model_version"),
   running_style_feature_version: assertVersionMatches(
     requireString(raw.running_style_feature_version, "running_style_feature_version"),
@@ -359,6 +371,8 @@ const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictio
     predicted_class: predictedClass,
     second_predicted_class: secondPredictedClass,
     predicted_label: buildLabelFromClass(predictedClass),
+    cell_model_key: passthrough.cell_model_key,
+    cell_variant_id: passthrough.cell_variant_id,
     model_version: passthrough.model_version,
     running_style_feature_version: passthrough.running_style_feature_version,
     target_running_style_class: passthrough.target_running_style_class,
@@ -429,6 +443,8 @@ const formatRowAsValuesTuple = (row: PostprocPredictionRow): string =>
     formatValueForSql(row.predicted_class),
     formatValueForSql(row.second_predicted_class),
     formatValueForSql(row.predicted_label),
+    formatValueForSql(row.cell_model_key),
+    formatValueForSql(row.cell_variant_id),
     formatValueForSql(row.model_version),
     formatValueForSql(row.running_style_feature_version),
     formatNullableIntegerForSql(row.target_running_style_class),
@@ -448,6 +464,8 @@ const OUTPUT_COLUMN_NAMES = [
   "predicted_class",
   "second_predicted_class",
   "predicted_label",
+  "cell_model_key",
+  "cell_variant_id",
   "model_version",
   "running_style_feature_version",
   "target_running_style_class",
@@ -468,6 +486,8 @@ export const buildEmptyOutputCopySql = (outputParquet: string): string => {
     "CAST(NULL AS INTEGER) AS predicted_class",
     "CAST(NULL AS INTEGER) AS second_predicted_class",
     "CAST(NULL AS VARCHAR) AS predicted_label",
+    "CAST(NULL AS VARCHAR) AS cell_model_key",
+    "CAST(NULL AS VARCHAR) AS cell_variant_id",
     "CAST(NULL AS VARCHAR) AS model_version",
     "CAST(NULL AS VARCHAR) AS running_style_feature_version",
     "CAST(NULL AS INTEGER) AS target_running_style_class",

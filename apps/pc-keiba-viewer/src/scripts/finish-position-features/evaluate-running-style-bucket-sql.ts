@@ -14,6 +14,8 @@ const BUCKET_UNIQUE_INDEX_COLUMNS = [
   "model_version",
   "running_style_feature_version",
   "category",
+  "coalesce(cell_model_key,'')",
+  "coalesce(cell_variant_id,'')",
   "evaluation_window_from",
   "evaluation_window_to",
   "source",
@@ -31,6 +33,8 @@ const BUCKET_LOOKUP_INDEX_COLUMNS = [
   "model_version",
   "running_style_feature_version",
   "category",
+  "cell_model_key",
+  "cell_variant_id",
   "source",
   "keibajo_code",
   "kyori",
@@ -165,6 +169,8 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
       model_version                 text not null,
       running_style_feature_version text not null,
       category                      text not null,
+      cell_model_key                text,
+      cell_variant_id               text,
       evaluation_window_from        text not null,
       evaluation_window_to          text not null,
       source                        text not null,
@@ -218,6 +224,8 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
     create index if not exists ${BUCKET_TABLE}_lookup
       on ${BUCKET_TABLE} (${BUCKET_LOOKUP_INDEX_COLUMNS.join(", ")});
     ${BUCKET_RACE_NAME_INDEX_SQL};
+    alter table ${BUCKET_TABLE} add column if not exists cell_model_key text;
+    alter table ${BUCKET_TABLE} add column if not exists cell_variant_id text;
     ${buildOrderPairAddColumnDdl()}
     ${BUCKET_REPLICA_IDENTITY_SQL};
   `;
@@ -261,7 +269,8 @@ export const buildRunningStyleBucketAggregateSql = (
       select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
              ketto_toroku_bango, predicted_class, second_predicted_class,
              target_running_style_class,
-             p_nige, p_senkou, p_sashi, p_oikomi
+             p_nige, p_senkou, p_sashi, p_oikomi,
+             cell_model_key, cell_variant_id
       from ${PREDICTIONS_TEMP_TABLE}
       where model_version = '${escapeSqlLiteral(modelVersion)}'
         and running_style_feature_version = '${escapeSqlLiteral(runningStyleFeatureVersion)}'
@@ -294,6 +303,7 @@ export const buildRunningStyleBucketAggregateSql = (
     joined as (
       select d.source, d.keibajo_code, d.kyori, d.kyoso_shubetsu_code,
              d.kyoso_joken_code, d.condition_key, d.track_code, d.grade_code, d.race_name,
+             p.cell_model_key, p.cell_variant_id,
              d.kaisai_nen, d.kaisai_tsukihi, d.race_bango,
              p.ketto_toroku_bango,
              p.predicted_class, p.second_predicted_class, p.target_running_style_class,
@@ -324,6 +334,7 @@ export const buildRunningStyleBucketAggregateSql = (
     order_pairs as (
       select source, keibajo_code, kyori, kyoso_shubetsu_code,
              kyoso_joken_code, condition_key, track_code, grade_code, race_name,
+             cell_model_key, cell_variant_id,
              coalesce(sum(corner1_pair_score), 0) corner1_pair_score_sum,
              count(corner1_pair_score) corner1_pair_score_count,
              coalesce(sum(corner3_pair_score), 0) corner3_pair_score_sum,
@@ -335,6 +346,7 @@ export const buildRunningStyleBucketAggregateSql = (
       from (
         select j1.source, j1.keibajo_code, j1.kyori, j1.kyoso_shubetsu_code,
                j1.kyoso_joken_code, j1.condition_key, j1.track_code, j1.grade_code, j1.race_name,
+               j1.cell_model_key, j1.cell_variant_id,
                ${buildOrderPairValueSql("corner1_norm")} corner1_pair_score,
                ${buildOrderPairValueSql("corner3_norm")} corner3_pair_score,
                ${buildOrderPairValueSql("corner4_norm")} corner4_pair_score,
@@ -349,10 +361,13 @@ export const buildRunningStyleBucketAggregateSql = (
          and j1.ketto_toroku_bango < j2.ketto_toroku_bango
       ) pairs
       group by source, keibajo_code, kyori, kyoso_shubetsu_code,
-               kyoso_joken_code, condition_key, track_code, grade_code, race_name
+               kyoso_joken_code, condition_key, track_code, grade_code, race_name,
+               cell_model_key, cell_variant_id
     )
     select
       j.source,
+      j.cell_model_key,
+      j.cell_variant_id,
       j.keibajo_code,
       j.kyori,
       j.kyoso_shubetsu_code,
@@ -378,8 +393,11 @@ export const buildRunningStyleBucketAggregateSql = (
      and coalesce(op.track_code, '') = coalesce(j.track_code, '')
      and coalesce(op.grade_code, '') = coalesce(j.grade_code, '')
      and coalesce(op.race_name, '') = coalesce(j.race_name, '')
+     and coalesce(op.cell_model_key, '') = coalesce(j.cell_model_key, '')
+     and coalesce(op.cell_variant_id, '') = coalesce(j.cell_variant_id, '')
     group by j.source, j.keibajo_code, j.kyori, j.kyoso_shubetsu_code,
-             j.kyoso_joken_code, j.condition_key, j.track_code, j.grade_code, j.race_name
+             j.kyoso_joken_code, j.condition_key, j.track_code, j.grade_code, j.race_name,
+             j.cell_model_key, j.cell_variant_id
   `;
 };
 
@@ -387,6 +405,8 @@ const buildUpsertColumnList = (): string[] => [
   "model_version",
   "running_style_feature_version",
   "category",
+  "cell_model_key",
+  "cell_variant_id",
   "evaluation_window_from",
   "evaluation_window_to",
   "source",
@@ -459,6 +479,7 @@ export const buildRunningStyleBucketUpsertSql = (): string => {
     )
     on conflict (
       model_version, running_style_feature_version, category,
+      coalesce(cell_model_key,''), coalesce(cell_variant_id,''),
       evaluation_window_from, evaluation_window_to,
       source, keibajo_code, kyori, kyoso_shubetsu_code,
       coalesce(kyoso_joken_code,''), coalesce(condition_key,''),
@@ -473,8 +494,8 @@ const buildBatchValuesRowSql = (columnCount: number): string =>
   `(${buildUpsertPlaceholderList(columnCount)}, now())`;
 
 // Multi-row UPSERT path. PostgreSQL caps bind parameters at 65535, so callers
-// must keep rowCount * column-count under that limit (49 columns * 100 rows =
-// 4900 placeholders, well within budget). ON CONFLICT replaces aggregate
+// must keep rowCount * column-count under that limit (51 columns * 100 rows =
+// 5100 placeholders, well within budget). ON CONFLICT replaces aggregate
 // columns with the new row values so re-running the same window is idempotent.
 export const buildRunningStyleBucketBatchUpsertSql = (rowCount: number): string => {
   if (rowCount <= 0) throw new Error("rowCount must be greater than zero.");
@@ -490,6 +511,7 @@ export const buildRunningStyleBucketBatchUpsertSql = (rowCount: number): string 
       ${valueRows.join(",\n      ")}
     on conflict (
       model_version, running_style_feature_version, category,
+      coalesce(cell_model_key,''), coalesce(cell_variant_id,''),
       evaluation_window_from, evaluation_window_to,
       source, keibajo_code, kyori, kyoso_shubetsu_code,
       coalesce(kyoso_joken_code,''), coalesce(condition_key,''),

@@ -107,11 +107,13 @@ test("resolveRunningStyleClassIndex throws on unknown label", () => {
   );
 });
 
-test("BUCKET_UNIQUE_INDEX_COLUMNS lists 14 unique columns including coalesce expressions", () => {
+test("BUCKET_UNIQUE_INDEX_COLUMNS lists 16 unique columns including cell provenance and coalesce expressions", () => {
   expect(BUCKET_UNIQUE_INDEX_COLUMNS).toStrictEqual([
     "model_version",
     "running_style_feature_version",
     "category",
+    "coalesce(cell_model_key,'')",
+    "coalesce(cell_variant_id,'')",
     "evaluation_window_from",
     "evaluation_window_to",
     "source",
@@ -126,11 +128,13 @@ test("BUCKET_UNIQUE_INDEX_COLUMNS lists 14 unique columns including coalesce exp
   ]);
 });
 
-test("BUCKET_LOOKUP_INDEX_COLUMNS lists 11 viewer lookup columns", () => {
+test("BUCKET_LOOKUP_INDEX_COLUMNS lists 13 viewer lookup columns including cell provenance", () => {
   expect(BUCKET_LOOKUP_INDEX_COLUMNS).toStrictEqual([
     "model_version",
     "running_style_feature_version",
     "category",
+    "cell_model_key",
+    "cell_variant_id",
     "source",
     "keibajo_code",
     "kyori",
@@ -211,6 +215,8 @@ test("buildRunningStyleBucketEvaluationsDdl emits 16 cm + 8 log_loss + top2 + or
       model_version                 text not null,
       running_style_feature_version text not null,
       category                      text not null,
+      cell_model_key                text,
+      cell_variant_id               text,
       evaluation_window_from        text not null,
       evaluation_window_to          text not null,
       source                        text not null,
@@ -260,12 +266,14 @@ test("buildRunningStyleBucketEvaluationsDdl emits 16 cm + 8 log_loss + top2 + or
       evaluated_at         timestamptz not null default now()
     );
     create unique index if not exists running_style_model_bucket_evaluations_uq
-      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, coalesce(kyoso_joken_code,''), coalesce(condition_key,''), coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,''));
+      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, coalesce(cell_model_key,''), coalesce(cell_variant_id,''), evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, coalesce(kyoso_joken_code,''), coalesce(condition_key,''), coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,''));
     create index if not exists running_style_model_bucket_evaluations_lookup
-      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code);
+      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, cell_model_key, cell_variant_id, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code);
     create index if not exists running_style_model_bucket_evaluations_race_name
       on running_style_model_bucket_evaluations (category, source, race_name, keibajo_code, kyori)
       where race_name is not null;
+    alter table running_style_model_bucket_evaluations add column if not exists cell_model_key text;
+    alter table running_style_model_bucket_evaluations add column if not exists cell_variant_id text;
     alter table running_style_model_bucket_evaluations add column if not exists corner1_pair_score_sum numeric not null default 0;
     alter table running_style_model_bucket_evaluations add column if not exists corner1_pair_score_count integer not null default 0;
     alter table running_style_model_bucket_evaluations add column if not exists corner3_pair_score_sum numeric not null default 0;
@@ -318,6 +326,7 @@ test("buildRunningStyleBucketAggregateSql for jra emits aggregate with order-pai
   expect(sql).toContain("join jvd_ra ra");
   expect(sql).toContain("where true");
   expect(sql).toContain("p.ketto_toroku_bango");
+  expect(sql).toContain("cell_model_key, cell_variant_id");
   expect(sql).toContain("(p.p_senkou + (2 * p.p_sashi) + (3 * p.p_oikomi)) predicted_front_score");
   expect(sql).toContain("left join race_entry_corner_features rec");
   expect(sql).toContain(
@@ -349,8 +358,10 @@ test("buildRunningStyleBucketAggregateSql for jra emits aggregate with order-pai
   expect(sql).toContain("and coalesce(op.track_code, '') = coalesce(j.track_code, '')");
   expect(sql).toContain("and coalesce(op.grade_code, '') = coalesce(j.grade_code, '')");
   expect(sql).toContain("and coalesce(op.race_name, '') = coalesce(j.race_name, '')");
+  expect(sql).toContain("and coalesce(op.cell_model_key, '') = coalesce(j.cell_model_key, '')");
+  expect(sql).toContain("and coalesce(op.cell_variant_id, '') = coalesce(j.cell_variant_id, '')");
   expect(sql).toMatch(
-    /group by j\.source, j\.keibajo_code, j\.kyori, j\.kyoso_shubetsu_code,\s+j\.kyoso_joken_code, j\.condition_key, j\.track_code, j\.grade_code, j\.race_name/u,
+    /group by j\.source, j\.keibajo_code, j\.kyori, j\.kyoso_shubetsu_code,\s+j\.kyoso_joken_code, j\.condition_key, j\.track_code, j\.grade_code, j\.race_name,\s+j\.cell_model_key, j\.cell_variant_id/u,
   );
   expect(sql).toContain(
     "coalesce(sum(case when target_running_style_class = 0 and predicted_class = 0 then 1 else 0 end), 0) cm_actual_nige_pred_nige_count",
@@ -469,28 +480,28 @@ test("buildRunningStyleBucketUpsertSql does not emit PG-native $41 placeholder (
   expect(sql.indexOf("$41")).toBe(-1);
 });
 
-test("buildRunningStyleBucketUpsertSql emits exactly 49 psycopg %s placeholders in values clause", () => {
+test("buildRunningStyleBucketUpsertSql emits exactly 51 psycopg %s placeholders in values clause", () => {
   const sql = buildRunningStyleBucketUpsertSql();
   const placeholderMatches = sql.match(/%s/g);
-  expect(placeholderMatches?.length).toBe(49);
+  expect(placeholderMatches?.length).toBe(51);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits exactly 49 psycopg %s placeholders (single-row path preserved)", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits exactly 51 psycopg %s placeholders (single-row path preserved)", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(1);
   const placeholderMatches = sql.match(/%s/g);
-  expect(placeholderMatches?.length).toBe(49);
+  expect(placeholderMatches?.length).toBe(51);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 emits 147 psycopg %s placeholders (3 * 49)", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 emits 153 psycopg %s placeholders (3 * 51)", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(3);
   const placeholderMatches = sql.match(/%s/g);
-  expect(placeholderMatches?.length).toBe(147);
+  expect(placeholderMatches?.length).toBe(153);
 });
 
-test("buildRunningStyleBucketBatchUpsertSql with rowCount 100 emits 4900 psycopg %s placeholders (100 * 49)", () => {
+test("buildRunningStyleBucketBatchUpsertSql with rowCount 100 emits 5100 psycopg %s placeholders (100 * 51)", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(100);
   const placeholderMatches = sql.match(/%s/g);
-  expect(placeholderMatches?.length).toBe(4900);
+  expect(placeholderMatches?.length).toBe(5100);
 });
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 replaces race_count on conflict", () => {
@@ -530,14 +541,14 @@ test("buildRunningStyleBucketBatchUpsertSql with rowCount 3 keeps the evaluated_
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 1 emits a single VALUES row tuple closed by now()", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(1);
-  const rowTuple = `(${Array.from({ length: 49 }, () => "%s").join(", ")}, now())`;
+  const rowTuple = `(${Array.from({ length: 51 }, () => "%s").join(", ")}, now())`;
   expect(sql.indexOf(rowTuple)).toBeGreaterThanOrEqual(0);
   expect(sql.indexOf("do update set")).toBeGreaterThanOrEqual(0);
 });
 
 test("buildRunningStyleBucketBatchUpsertSql with rowCount 2 emits two comma-separated VALUES row tuples", () => {
   const sql = buildRunningStyleBucketBatchUpsertSql(2);
-  const rowTuple = `(${Array.from({ length: 49 }, () => "%s").join(", ")}, now())`;
+  const rowTuple = `(${Array.from({ length: 51 }, () => "%s").join(", ")}, now())`;
   const rowMatches = sql.match(
     new RegExp(rowTuple.replaceAll("(", "\\(").replaceAll(")", "\\)"), "g"),
   );

@@ -47,6 +47,8 @@ export interface RunningStylePredictionExportRow {
   p_oikomi: number;
   predicted_label: RunningStyleClassLabel;
   predicted_class: number;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   model_version: string;
   predicted_at: string;
 }
@@ -57,6 +59,8 @@ interface D1PredictionRow {
   ketto_toroku_bango: string;
   kaisai_nen: string;
   model_version: string;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   p_nige: number;
   p_senkou: number;
   p_sashi: number;
@@ -94,6 +98,8 @@ const PARQUET_SCHEMA_DEFINITION: Record<string, Record<string, unknown>> = {
   p_oikomi: { type: "DOUBLE" },
   predicted_label: { type: "UTF8" },
   predicted_class: { type: "INT32" },
+  cell_model_key: { optional: true, type: "UTF8" },
+  cell_variant_id: { optional: true, type: "UTF8" },
   model_version: { type: "UTF8" },
   predicted_at: { type: "UTF8" },
 };
@@ -166,6 +172,8 @@ const toExportRow = (
   return {
     kaisai_nen: row.kaisai_nen,
     kaisai_tsukihi: parsed.kaisaiTsukihi,
+    cell_model_key: row.cell_model_key,
+    cell_variant_id: row.cell_variant_id,
     keibajo_code: parsed.keibajoCode,
     ketto_toroku_bango: row.ketto_toroku_bango,
     model_version: row.model_version,
@@ -234,7 +242,8 @@ const fetchPredictionRowsBatch = async (
   const result = await db
     .prepare(
       `select race_key, horse_number, ketto_toroku_bango, kaisai_nen,
-              model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+              model_version, cell_model_key, cell_variant_id,
+              p_nige, p_senkou, p_sashi, p_oikomi,
               predicted_label, predicted_at
          from race_running_styles
         where race_key like ?

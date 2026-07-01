@@ -13,6 +13,8 @@ export interface RaceRunningStyleRow {
   kettoTorokuBango: string;
   bamei: string | null;
   category: string;
+  cellModelKey?: string | null;
+  cellVariantId?: string | null;
   kaisaiNen: string;
   modelVersion: string;
   pNige: number;
@@ -37,6 +39,8 @@ export interface RunningStyleInferenceState {
 }
 
 export interface RunningStyleInferenceStateDetail extends RunningStyleInferenceState {
+  cellModelKey: string | null;
+  cellVariantId: string | null;
   completedAt: string | null;
   expectedHorseCount: number | null;
   featuresR2Key: string | null;
@@ -61,8 +65,9 @@ const D1_BATCH_SIZE = 50;
 
 const INSERT_SQL = `insert or replace into race_running_styles (
   race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
-  model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  model_version, cell_model_key, cell_variant_id, p_nige, p_senkou, p_sashi, p_oikomi,
+  predicted_label, predicted_at
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 const bindValues = (row: RaceRunningStyleRow): unknown[] => [
   row.raceKey,
@@ -72,6 +77,8 @@ const bindValues = (row: RaceRunningStyleRow): unknown[] => [
   row.category,
   row.kaisaiNen,
   row.modelVersion,
+  row.cellModelKey ?? null,
+  row.cellVariantId ?? null,
   row.pNige,
   row.pSenkou,
   row.pSashi,
@@ -173,7 +180,8 @@ const queryRaceRunningStylesForRace = async (
   const result = await db
     .prepare(
       `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
-              model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
+              model_version, cell_model_key, cell_variant_id,
+              p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
          from race_running_styles
         where race_key = ?
         order by horse_number`,
@@ -182,6 +190,8 @@ const queryRaceRunningStylesForRace = async (
     .all<{
       bamei: string | null;
       category: string;
+      cell_model_key: string | null;
+      cell_variant_id: string | null;
       horse_number: number;
       kaisai_nen: string;
       ketto_toroku_bango: string;
@@ -197,6 +207,8 @@ const queryRaceRunningStylesForRace = async (
   return result.results.map((row) => ({
     bamei: row.bamei,
     category: row.category,
+    cellModelKey: row.cell_model_key,
+    cellVariantId: row.cell_variant_id,
     horseNumber: Number(row.horse_number),
     kaisaiNen: row.kaisai_nen,
     kettoTorokuBango: row.ketto_toroku_bango,
@@ -246,7 +258,7 @@ export const listRunningStyleInferenceStates = async (
       .prepare(
         `select race_key, status, attempted_at, completed_at,
                 expected_horse_count, written_horse_count,
-                features_r2_key, model_version
+                features_r2_key, model_version, cell_model_key, cell_variant_id
            from running_style_inference_state
           where race_key in (${buildPlaceholders(chunk.length)})`,
       )
@@ -255,6 +267,8 @@ export const listRunningStyleInferenceStates = async (
         race_key: string;
         status: RunningStyleInferenceStatus;
         attempted_at: string | null;
+        cell_model_key: string | null;
+        cell_variant_id: string | null;
         completed_at: string | null;
         expected_horse_count: number | null;
         written_horse_count: number | null;
@@ -264,6 +278,8 @@ export const listRunningStyleInferenceStates = async (
     result.results.forEach((row) =>
       states.set(row.race_key, {
         attemptedAt: row.attempted_at,
+        cellModelKey: row.cell_model_key,
+        cellVariantId: row.cell_variant_id,
         completedAt: row.completed_at,
         expectedHorseCount:
           row.expected_horse_count === null ? null : Number(row.expected_horse_count),
@@ -286,6 +302,7 @@ export const getRunningStyleInferenceState = async (
   const row = await db
     .prepare(
       `select race_key, status, attempted_at, features_r2_key, model_version,
+              cell_model_key, cell_variant_id,
               expected_horse_count, written_horse_count, completed_at
          from running_style_inference_state
         where race_key = ?`,
@@ -293,6 +310,8 @@ export const getRunningStyleInferenceState = async (
     .bind(raceKey)
     .first<{
       attempted_at: string | null;
+      cell_model_key: string | null;
+      cell_variant_id: string | null;
       completed_at: string | null;
       expected_horse_count: number | null;
       features_r2_key: string | null;
@@ -304,6 +323,8 @@ export const getRunningStyleInferenceState = async (
   if (row === null) return null;
   return {
     attemptedAt: row.attempted_at,
+    cellModelKey: row.cell_model_key,
+    cellVariantId: row.cell_variant_id,
     completedAt: row.completed_at,
     expectedHorseCount: row.expected_horse_count === null ? null : Number(row.expected_horse_count),
     featuresR2Key: row.features_r2_key,
@@ -336,6 +357,8 @@ export const upsertRunningStylePendingStates = async (
           race_bango = excluded.race_bango,
           features_r2_key = null,
           model_version = null,
+          cell_model_key = null,
+          cell_variant_id = null,
           expected_horse_count = excluded.expected_horse_count,
           written_horse_count = null,
           attempted_at = excluded.attempted_at,
@@ -392,6 +415,8 @@ export const markRunningStyleInferenceCompleted = async (
     raceKey: string;
     featuresR2Key: string;
     modelVersion: string;
+    cellModelKey?: string | null;
+    cellVariantId?: string | null;
     expectedHorseCount: number;
     writtenHorseCount: number;
     completedAt: string;
@@ -403,6 +428,8 @@ export const markRunningStyleInferenceCompleted = async (
           set status = 'completed',
               features_r2_key = ?,
               model_version = ?,
+              cell_model_key = ?,
+              cell_variant_id = ?,
               expected_horse_count = ?,
               written_horse_count = ?,
               completed_at = ?,
@@ -412,6 +439,8 @@ export const markRunningStyleInferenceCompleted = async (
     .bind(
       params.featuresR2Key,
       params.modelVersion,
+      params.cellModelKey ?? null,
+      params.cellVariantId ?? null,
       params.expectedHorseCount,
       params.writtenHorseCount,
       params.completedAt,

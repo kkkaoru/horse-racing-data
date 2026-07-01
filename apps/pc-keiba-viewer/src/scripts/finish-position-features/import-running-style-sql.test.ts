@@ -10,8 +10,10 @@ import {
   buildEvaluationsTableDdl,
   buildEvaluationUpsertSql,
   buildHorseLookupIndexSql,
+  buildPredictionsCellLookupIndexSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
+  CELL_PROVENANCE_COLUMNS,
   EVALUATION_METRIC_COLUMNS,
   EVALUATIONS_TABLE,
   INSERT_COLUMNS,
@@ -41,7 +43,11 @@ describe("import-running-style-sql constants", () => {
     expect(LABEL_COLUMNS).toStrictEqual(["predicted_label", "predicted_class"]);
   });
 
-  test("insert columns combine primary keys plus probabilities and labels", () => {
+  test("cell provenance columns are cell_model_key and cell_variant_id", () => {
+    expect(CELL_PROVENANCE_COLUMNS).toStrictEqual(["cell_model_key", "cell_variant_id"]);
+  });
+
+  test("insert columns combine primary keys plus cell provenance, probabilities, and labels", () => {
     expect(INSERT_COLUMNS).toStrictEqual([
       "model_version",
       "source",
@@ -51,6 +57,8 @@ describe("import-running-style-sql constants", () => {
       "race_bango",
       "ketto_toroku_bango",
       "umaban",
+      "cell_model_key",
+      "cell_variant_id",
       "p_nige",
       "p_senkou",
       "p_sashi",
@@ -91,6 +99,8 @@ describe("buildPredictionsTableDdl", () => {
     expect(ddl).toContain("p_oikomi numeric not null");
     expect(ddl).toContain("predicted_label text not null");
     expect(ddl).toContain("predicted_class integer not null");
+    expect(ddl).toContain("cell_model_key text");
+    expect(ddl).toContain("cell_variant_id text");
     expect(ddl).toContain(
       "primary key (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)",
     );
@@ -136,21 +146,37 @@ describe("buildHorseLookupIndexSql", () => {
   });
 });
 
+describe("buildPredictionsCellLookupIndexSql", () => {
+  test("creates idempotent cell provenance lookup index", () => {
+    const sql = buildPredictionsCellLookupIndexSql();
+    expect(sql).toContain("race_running_style_model_predictions_cell_lookup_idx");
+    expect(sql).toContain("source, cell_variant_id, cell_model_key, kaisai_nen, kaisai_tsukihi");
+  });
+});
+
 describe("buildBatchInsertSql", () => {
-  test("emits sequential placeholders for a single row of 14 columns", () => {
+  test("emits sequential placeholders for a single row of 16 columns", () => {
     const sql = buildBatchInsertSql(1);
     expect(sql).toContain("insert into race_running_style_model_predictions");
-    expect(sql).toContain("($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)");
+    expect(sql).toContain(
+      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+    );
   });
 
   test("multi-row batch keeps placeholder numbering correct", () => {
     const sql = buildBatchInsertSql(2);
-    expect(sql).toContain("($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)");
-    expect(sql).toContain("($15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)");
+    expect(sql).toContain(
+      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+    );
+    expect(sql).toContain(
+      "($17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)",
+    );
   });
 
-  test("update clause overwrites probabilities and labels on conflict", () => {
+  test("update clause overwrites cell provenance, probabilities, and labels on conflict", () => {
     const sql = buildBatchInsertSql(1);
+    expect(sql).toContain("cell_model_key = excluded.cell_model_key");
+    expect(sql).toContain("cell_variant_id = excluded.cell_variant_id");
     expect(sql).toContain("p_nige = excluded.p_nige");
     expect(sql).toContain("predicted_label = excluded.predicted_label");
     expect(sql).toContain("predicted_class = excluded.predicted_class");

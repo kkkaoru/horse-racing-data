@@ -160,7 +160,19 @@ test("runRunningStyleInference predicts nige for class-0 dominated leaves", asyn
     modelKey: "model/key",
     predictedAt: "2026-05-18T10:00:00Z",
   });
-  expect(calls[0]?.[11]).toBe("nige");
+  expect(calls[0]?.[13]).toBe("nige");
+});
+
+test("runRunningStyleInference binds null cell provenance for legacy JSON model inference", async () => {
+  const bucket = buildMockBucket("model/key", "features/key", [HORSE_ROW_1]);
+  const { calls, db } = buildMockD1();
+  await runRunningStyleInference(bucket, db, {
+    featuresKey: "features/key",
+    modelKey: "model/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+  });
+  expect(calls[0]?.[7]).toBe(null);
+  expect(calls[0]?.[8]).toBe(null);
 });
 
 test("runRunningStyleInferenceForRows skips the features fetch and consumes provided rows", async () => {
@@ -252,7 +264,23 @@ test("runRunningStyleInferenceRowsWithFlatModel writes predictions when given a 
     rows: [HORSE_ROW_1],
   });
   expect(summary.writtenCount).toBe(1);
-  expect(calls[0]?.[11]).toBe("nige");
+  expect(calls[0]?.[7]).toBe("flat/key");
+  expect(calls[0]?.[8]).toBe(null);
+  expect(calls[0]?.[13]).toBe("nige");
+});
+
+test("runRunningStyleInferenceForRowsWithFlatModel binds configured cell provenance", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { calls, db } = buildMockD1();
+  await runRunningStyleInferenceForRowsWithFlatModel(bucket, db, {
+    cellModelKey: "running-style/models/nar/cells/ooi-dirt.flatbin",
+    cellVariantId: "ooi-dirt",
+    modelKey: "flat/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1],
+  });
+  expect(calls[0]?.[7]).toBe("running-style/models/nar/cells/ooi-dirt.flatbin");
+  expect(calls[0]?.[8]).toBe("ooi-dirt");
 });
 
 test("runRunningStyleInferenceRowsWithFlatModel is also callable directly with a loaded model", async () => {
@@ -305,5 +333,5 @@ test("runRunningStyleInferenceRowsWithFlatModel without calibrators produces sam
     predictedAt: "2026-05-18T10:00:00Z",
     rows: [HORSE_ROW_1],
   });
-  expect(calls[0]?.[11]).toBe("nige");
+  expect(calls[0]?.[13]).toBe("nige");
 });

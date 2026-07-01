@@ -16,10 +16,22 @@ const PRIMARY_KEY_COLUMNS = [
 
 const PROBABILITY_COLUMNS = ["p_nige", "p_senkou", "p_sashi", "p_oikomi"];
 const LABEL_COLUMNS = ["predicted_label", "predicted_class"];
+const CELL_PROVENANCE_COLUMNS = ["cell_model_key", "cell_variant_id"];
 
-const INSERT_COLUMNS = [...PRIMARY_KEY_COLUMNS, "umaban", ...PROBABILITY_COLUMNS, ...LABEL_COLUMNS];
+const INSERT_COLUMNS = [
+  ...PRIMARY_KEY_COLUMNS,
+  "umaban",
+  ...CELL_PROVENANCE_COLUMNS,
+  ...PROBABILITY_COLUMNS,
+  ...LABEL_COLUMNS,
+];
 
-const UPDATABLE_COLUMNS = ["umaban", ...PROBABILITY_COLUMNS, ...LABEL_COLUMNS];
+const UPDATABLE_COLUMNS = [
+  "umaban",
+  ...CELL_PROVENANCE_COLUMNS,
+  ...PROBABILITY_COLUMNS,
+  ...LABEL_COLUMNS,
+];
 
 const EVALUATION_PRIMARY_KEYS = [
   "model_version",
@@ -56,6 +68,8 @@ const buildPredictionsTableDdl = (): string => `
       race_bango text not null,
       ketto_toroku_bango text not null,
       umaban integer not null,
+      cell_model_key text,
+      cell_variant_id text,
       p_nige numeric not null,
       p_senkou numeric not null,
       p_sashi numeric not null,
@@ -64,7 +78,9 @@ const buildPredictionsTableDdl = (): string => `
       predicted_class integer not null,
       prediction_generated_at timestamptz not null default now(),
       primary key (${PRIMARY_KEY_COLUMNS.join(", ")})
-    )
+    );
+    alter table ${PREDICTIONS_TABLE} add column if not exists cell_model_key text;
+    alter table ${PREDICTIONS_TABLE} add column if not exists cell_variant_id text;
   `;
 
 const buildActiveModelsTableDdl = (): string => `
@@ -110,6 +126,10 @@ const buildPredictionsLookupIndexSql = (): string =>
 const buildHorseLookupIndexSql = (): string =>
   `create index if not exists ${PREDICTIONS_TABLE}_horse_lookup_idx
      on ${PREDICTIONS_TABLE} (ketto_toroku_bango, prediction_generated_at desc)`;
+
+const buildPredictionsCellLookupIndexSql = (): string =>
+  `create index if not exists ${PREDICTIONS_TABLE}_cell_lookup_idx
+     on ${PREDICTIONS_TABLE} (source, cell_variant_id, cell_model_key, kaisai_nen, kaisai_tsukihi)`;
 
 const buildPlaceholderRow = (rowIndex: number): string => {
   const start = rowIndex * INSERT_COLUMNS.length + 1;
@@ -165,6 +185,7 @@ export {
   buildActivateModelSql,
   buildActiveModelsTableDdl,
   buildBatchInsertSql,
+  buildPredictionsCellLookupIndexSql,
   buildEvaluationsTableDdl,
   buildEvaluationUpsertSql,
   buildHorseLookupIndexSql,
@@ -176,6 +197,7 @@ export {
   INSERT_COLUMNS,
   LABEL_COLUMNS,
   PREDICTIONS_TABLE,
+  CELL_PROVENANCE_COLUMNS,
   PRIMARY_KEY_COLUMNS,
   PROBABILITY_COLUMNS,
   UPDATABLE_COLUMNS,

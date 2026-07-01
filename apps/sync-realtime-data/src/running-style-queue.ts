@@ -356,8 +356,8 @@ export const handleRunningStylePredictionJob = async (
     );
     return {
       ...cacheResult,
-      cellModelKey: route.modelKey,
-      cellVariantId: route.variantId,
+      cellModelKey: state.cellModelKey ?? route.modelKey,
+      cellVariantId: state.cellVariantId ?? route.variantId,
       featuresR2Key: state.featuresR2Key ?? "",
       ...finishPositionTrigger,
       horseCount: state.expectedHorseCount,
@@ -426,12 +426,16 @@ export const handleRunningStylePredictionJob = async (
     });
     const summary = await runRunningStyleInferenceRowsWithFlatModel(env.REALTIME_DB, {
       calibrators,
+      cellModelKey: selectedRoute.modelKey,
+      cellVariantId: selectedRoute.variantId,
       model,
       predictedAt: job.predictedAt,
       rows: inferenceRows,
     });
     await markRunningStyleInferenceCompleted(env.REALTIME_DB, {
       completedAt: new Date().toISOString(),
+      cellModelKey: selectedRoute.modelKey,
+      cellVariantId: selectedRoute.variantId,
       expectedHorseCount,
       featuresR2Key: loadOrBuild.featuresR2Key,
       modelVersion: summary.modelVersion,

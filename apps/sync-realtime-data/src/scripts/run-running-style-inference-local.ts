@@ -46,6 +46,8 @@ interface CliOptions {
   predictedAt: string;
   modelVersion: string;
   featureVersion: string;
+  cellModelKey: string;
+  cellVariantId: string;
 }
 
 interface ApplyArgResult {
@@ -73,6 +75,8 @@ interface PredictionRow extends RaceKey {
   p_senkou: number;
   p_sashi: number;
   p_oikomi: number;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   model_version: string;
   running_style_feature_version: string;
   target_running_style_class: number | null;
@@ -185,6 +189,8 @@ const OUTPUT_COLUMN_NAMES = [
   "p_senkou",
   "p_sashi",
   "p_oikomi",
+  "cell_model_key",
+  "cell_variant_id",
   "model_version",
   "running_style_feature_version",
 ] satisfies readonly string[];
@@ -211,6 +217,8 @@ export const initialOptions = (): CliOptions => ({
   predictedAt: "",
   modelVersion: "",
   featureVersion: "",
+  cellModelKey: "",
+  cellVariantId: "",
 });
 
 export const buildUsageText = (): string =>
@@ -224,6 +232,8 @@ export const buildUsageText = (): string =>
     "    --predicted-at <ISO 8601> \\",
     "    --model-version <model_version> \\",
     "    --feature-version <feature_version> \\",
+    "    [--cell-model-key <model_key>] \\",
+    "    [--cell-variant-id <variant_id>] \\",
     "    [--rs-p-from-flatbin <path/to/v1.5/model.flatbin>]",
   ].join("\n");
 
@@ -273,6 +283,14 @@ export const applyArg = (
   }
   if (name === "--feature-version") {
     options.featureVersion = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--cell-model-key") {
+    options.cellModelKey = requireValue(name, value);
+    return { advanceBy: 2 };
+  }
+  if (name === "--cell-variant-id") {
+    options.cellVariantId = requireValue(name, value);
     return { advanceBy: 2 };
   }
   if (name === "--help" || name === "-h") {
@@ -455,6 +473,8 @@ interface PredictHorseParams {
   v1Model: FlatLightGBMModel | null;
   modelVersion: string;
   featureVersion: string;
+  cellModelKey: string;
+  cellVariantId: string;
 }
 
 const predictHorse = (params: PredictHorseParams): PredictionRow => {
@@ -478,6 +498,8 @@ const predictHorse = (params: PredictHorseParams): PredictionRow => {
     p_senkou: prediction.probabilities.senkou,
     p_sashi: prediction.probabilities.sashi,
     p_oikomi: prediction.probabilities.oikomi,
+    cell_model_key: params.cellModelKey,
+    cell_variant_id: params.cellVariantId,
     model_version: params.modelVersion,
     running_style_feature_version: params.featureVersion,
     target_running_style_class: params.raw.targetRunningStyleClass,
@@ -490,6 +512,8 @@ interface PredictRaceParams {
   v1Model: FlatLightGBMModel | null;
   modelVersion: string;
   featureVersion: string;
+  cellModelKey: string;
+  cellVariantId: string;
 }
 
 export const predictRace = (params: PredictRaceParams): ReadonlyArray<PredictionRow> => {
@@ -506,6 +530,8 @@ export const predictRace = (params: PredictRaceParams): ReadonlyArray<Prediction
       v1Model: params.v1Model,
       modelVersion: params.modelVersion,
       featureVersion: params.featureVersion,
+      cellModelKey: params.cellModelKey,
+      cellVariantId: params.cellVariantId,
     }),
   );
 };
@@ -516,6 +542,8 @@ interface PredictAllParams {
   v1Model: FlatLightGBMModel | null;
   modelVersion: string;
   featureVersion: string;
+  cellModelKey: string;
+  cellVariantId: string;
 }
 
 export const predictAll = (params: PredictAllParams): ReadonlyArray<PredictionRow> => {
@@ -527,6 +555,8 @@ export const predictAll = (params: PredictAllParams): ReadonlyArray<PredictionRo
       v1Model: params.v1Model,
       modelVersion: params.modelVersion,
       featureVersion: params.featureVersion,
+      cellModelKey: params.cellModelKey,
+      cellVariantId: params.cellVariantId,
     }),
   );
 };
@@ -578,6 +608,8 @@ const baseTupleValues = (row: PredictionRow): string[] => [
   formatValueForSql(row.p_senkou),
   formatValueForSql(row.p_sashi),
   formatValueForSql(row.p_oikomi),
+  formatValueForSql(row.cell_model_key),
+  formatValueForSql(row.cell_variant_id),
   formatValueForSql(row.model_version),
   formatValueForSql(row.running_style_feature_version),
 ];
@@ -600,6 +632,8 @@ const baseEmptyColumnDefinitions = (): readonly string[] => [
   "CAST(NULL AS DOUBLE) AS p_senkou",
   "CAST(NULL AS DOUBLE) AS p_sashi",
   "CAST(NULL AS DOUBLE) AS p_oikomi",
+  "CAST(NULL AS VARCHAR) AS cell_model_key",
+  "CAST(NULL AS VARCHAR) AS cell_variant_id",
   "CAST(NULL AS VARCHAR) AS model_version",
   "CAST(NULL AS VARCHAR) AS running_style_feature_version",
 ];
@@ -686,12 +720,18 @@ export const runInferenceLocal = async (
   });
   const includeTargetClass = hasTargetClassColumn(rawRows);
   const rows = rawRows.map((raw) => buildRawFeatureRow(raw, featureNames));
+  const cellModelKey =
+    params.options.cellModelKey === "" ? params.options.modelFlatbin : params.options.cellModelKey;
+  const cellVariantId =
+    params.options.cellVariantId === "" ? "latest" : params.options.cellVariantId;
   const predictions = predictAll({
     rows,
     model,
     v1Model,
     modelVersion: params.options.modelVersion,
     featureVersion: params.options.featureVersion,
+    cellModelKey,
+    cellVariantId,
   });
   await writeOutput({
     duckdbModule: params.duckdbModule,

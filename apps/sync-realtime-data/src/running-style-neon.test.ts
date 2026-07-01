@@ -16,6 +16,8 @@ const buildPool = (queryFn: QueryFn = vi.fn(async () => {})): Pool =>
 const buildRow = (overrides?: Partial<RaceRunningStyleRow>): RaceRunningStyleRow => ({
   bamei: "テスト馬",
   category: "jra",
+  cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+  cellVariantId: "tokyo-turf",
   horseNumber: 1,
   kaisaiNen: "2026",
   kettoTorokuBango: "2022101234",
@@ -48,6 +50,9 @@ it("upserts a single valid row and returns 1", async () => {
   const sql = vi.mocked(queryFn).mock.calls[0]?.[0] ?? "";
   expect(sql.startsWith("insert into race_running_style_model_predictions")).toBe(true);
   expect(sql.indexOf("on conflict") > -1).toBe(true);
+  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
+  expect(values[8]).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+  expect(values[9]).toBe("tokyo-turf");
 });
 
 it("filters rows with invalid race_key format", async () => {
@@ -88,12 +93,22 @@ it("correctly maps label to class index: nige=0 senkou=1 sashi=2 oikomi=3", asyn
   ];
   await upsertRunningStylePredictionsToNeon(pool, rows);
   const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
-  const classIndexOffset = 13;
-  const colCount = 14;
+  const classIndexOffset = 15;
+  const colCount = 16;
   expect(values[classIndexOffset]).toBe(0);
   expect(values[colCount + classIndexOffset]).toBe(1);
   expect(values[colCount * 2 + classIndexOffset]).toBe(2);
   expect(values[colCount * 3 + classIndexOffset]).toBe(3);
+});
+
+it("binds null cell provenance when a row omits it", async () => {
+  const queryFn: QueryFn = vi.fn(async () => {});
+  const pool = buildPool(queryFn);
+  const row = buildRow({ cellModelKey: undefined, cellVariantId: undefined });
+  await upsertRunningStylePredictionsToNeon(pool, [row]);
+  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
+  expect(values[8]).toBe(null);
+  expect(values[9]).toBe(null);
 });
 
 it("batches large row sets into NEON_BATCH_SIZE chunks", async () => {

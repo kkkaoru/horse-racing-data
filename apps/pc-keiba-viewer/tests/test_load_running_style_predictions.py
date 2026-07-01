@@ -255,6 +255,8 @@ def test_build_create_temp_table_sql_includes_all_columns_and_on_commit_drop():
     assert "model_version text not null" in sql
     assert "running_style_feature_version text not null" in sql
     assert "race_date date not null" in sql
+    assert "cell_model_key text" in sql
+    assert "cell_variant_id text" in sql
     assert sql.endswith(") ON COMMIT DROP")
 
 
@@ -263,6 +265,8 @@ def test_temp_table_schema_includes_driver_required_columns():
     assert "model_version" in column_names
     assert "running_style_feature_version" in column_names
     assert "race_date" in column_names
+    assert "cell_model_key" in column_names
+    assert "cell_variant_id" in column_names
 
 
 def test_temp_table_schema_target_running_style_class_is_nullable():
@@ -294,6 +298,8 @@ def test_csv_encode_row_emits_empty_field_for_none_target_running_style_class():
         "jra-running-style-lgbm-prod-v2",
         "v1",
         "2006-01-31",
+        "jra:2026:56:04",
+        "prod",
     )
     encoded = subject.csv_encode_row(row)
     fields = encoded.split(",")
@@ -344,6 +350,8 @@ def test_default_copy_into_pg_writes_empty_csv_field_for_null_target(
             "jra-running-style-lgbm-prod-v2",
             "v1",
             "2006-01-31",
+            "jra:2026:56:04",
+            "prod",
         ),
     ]
     stdout = io.StringIO()
@@ -357,11 +365,15 @@ def test_load_columns_includes_driver_required_columns():
     assert "model_version" in subject.LOAD_COLUMNS
     assert "running_style_feature_version" in subject.LOAD_COLUMNS
     assert "race_date" in subject.LOAD_COLUMNS
+    assert "cell_model_key" in subject.LOAD_COLUMNS
+    assert "cell_variant_id" in subject.LOAD_COLUMNS
 
 
 def test_parquet_select_columns_includes_model_version():
     assert "model_version" in subject.PARQUET_SELECT_COLUMNS
     assert "running_style_feature_version" in subject.PARQUET_SELECT_COLUMNS
+    assert "cell_model_key" in subject.PARQUET_SELECT_COLUMNS
+    assert "cell_variant_id" in subject.PARQUET_SELECT_COLUMNS
 
 
 def test_build_create_temp_table_sql_rejects_unsafe_name():
@@ -545,6 +557,8 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         0.25,
         "v1",
         "jra-running-style-lgbm-prod-v2",
+        "jra:2026:05:01",
+        "prod",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
     assert attached == (
@@ -564,6 +578,8 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         "jra-running-style-lgbm-prod-v2",
         "v1",
         "2024-01-01",
+        "jra:2026:05:01",
+        "prod",
     )
 
 
@@ -583,6 +599,8 @@ def test_attach_second_predicted_class_falls_back_when_second_equals_predicted()
         0.25,
         "v1",
         "nar-running-style-lgbm-v2.0",
+        "nar:2026:55:01",
+        "prod",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
     assert attached[7] == 3
@@ -604,11 +622,15 @@ def test_attach_second_predicted_class_appends_model_and_feature_version():
         0.25,
         "v1",
         "jra-running-style-lgbm-prod-v2",
+        "jra:2026:05:01",
+        "prod",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
     assert attached[13] == "jra-running-style-lgbm-prod-v2"
     assert attached[14] == "v1"
     assert attached[15] == "2023-12-31"
+    assert attached[16] == "jra:2026:05:01"
+    assert attached[17] == "prod"
 
 
 def test_derive_race_date_builds_iso_string_from_nen_and_tsukihi():
@@ -948,6 +970,8 @@ def test_load_predictions_into_temp_table_invokes_copy_and_returns_row_count():
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",
+            "jra:2026:05:01",
+            "prod",
         ),
         (
             "jra",
@@ -966,6 +990,8 @@ def test_load_predictions_into_temp_table_invokes_copy_and_returns_row_count():
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",
+            "jra:2026:05:01",
+            "prod",
         ),
     ]
     read_predictions = MagicMock(return_value=(0, rows))
@@ -1085,9 +1111,17 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
             0.15,
             "v1",
             "jra-running-style-lgbm-v1.0",
+            "jra:2026:05:01",
+            "prod",
         ),
     ]
-    duckdb_con.execute.side_effect = [mismatch_call, select_call]
+    create_call = MagicMock()
+    table_info_call = MagicMock()
+    table_info_call.fetchall.return_value = [
+        (0, "cell_model_key"),
+        (1, "cell_variant_id"),
+    ]
+    duckdb_con.execute.side_effect = [create_call, table_info_call, mismatch_call, select_call]
 
     import importlib as _importlib
 
@@ -1115,6 +1149,8 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
         "jra-running-style-lgbm-v1.0",
         "v1",
         "2024-01-01",
+        "jra:2026:05:01",
+        "prod",
     )
     duckdb_con.close.assert_called_once()
 
@@ -1150,7 +1186,13 @@ def test_default_read_predictions_treats_none_mismatch_row_as_zero(
     mismatch_call.fetchone.return_value = None
     select_call = MagicMock()
     select_call.fetchall.return_value = []
-    duckdb_con.execute.side_effect = [mismatch_call, select_call]
+    create_call = MagicMock()
+    table_info_call = MagicMock()
+    table_info_call.fetchall.return_value = [
+        (0, "cell_model_key"),
+        (1, "cell_variant_id"),
+    ]
+    duckdb_con.execute.side_effect = [create_call, table_info_call, mismatch_call, select_call]
 
     import importlib as _importlib
 
@@ -1206,6 +1248,8 @@ def test_default_copy_into_pg_runs_begin_set_create_copy_and_waits_for_exit(
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",
+            "jra:2026:05:01",
+            "prod",
         ),
     ]
     stdout = io.StringIO()

@@ -54,12 +54,16 @@ export interface FlatRowsInferenceConfig {
   modelKey: string;
   rows: ReadonlyArray<RaceHorseFeatureRow>;
   predictedAt: string;
+  cellModelKey?: string | null;
+  cellVariantId?: string | null;
 }
 
 export interface LoadedFlatRowsInferenceConfig {
   model: FlatLightGBMModel;
   rows: ReadonlyArray<RaceHorseFeatureRow>;
   predictedAt: string;
+  cellModelKey?: string | null;
+  cellVariantId?: string | null;
   calibrators?: RunningStyleCalibrationTable;
 }
 
@@ -113,9 +117,13 @@ const predictionRowFromResult = (
   prediction: RunningStylePrediction,
   modelVersion: string,
   predictedAt: string,
+  cellModelKey?: string | null,
+  cellVariantId?: string | null,
 ): RaceRunningStyleRow => ({
   bamei: row.bamei,
   category: row.category,
+  cellModelKey: cellModelKey ?? null,
+  cellVariantId: cellVariantId ?? null,
   horseNumber: row.umaban,
   kaisaiNen: row.kaisaiNen,
   kettoTorokuBango: row.kettoTorokuBango,
@@ -173,6 +181,8 @@ const predictRaceFlat = (
   model: FlatLightGBMModel,
   predictedAt: string,
   calibrators?: RunningStyleCalibrationTable,
+  cellModelKey?: string | null,
+  cellVariantId?: string | null,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
   return rows.map((row, index) =>
@@ -181,6 +191,8 @@ const predictRaceFlat = (
       buildFlatPredictionForHorse(row, fieldRows[index]!, model, calibrators),
       model.header.model_version,
       predictedAt,
+      cellModelKey,
+      cellVariantId,
     ),
   );
 };
@@ -241,6 +253,8 @@ export const runRunningStyleInferenceForRowsWithFlatModel = async (
 ): Promise<InferenceSummary> => {
   const model = await loadFlatLightGBMModelFromR2(bucket, config.modelKey);
   return runRunningStyleInferenceRowsWithFlatModel(db, {
+    cellModelKey: config.cellModelKey ?? config.modelKey,
+    cellVariantId: config.cellVariantId,
     model,
     predictedAt: config.predictedAt,
     rows: config.rows,
@@ -254,9 +268,14 @@ export const runRunningStyleInferenceRowsWithFlatModel = async (
   const grouped = groupByRace(config.rows);
   const predictions: RaceRunningStyleRow[] = [];
   grouped.forEach((raceRows) => {
-    predictRaceFlat(raceRows, config.model, config.predictedAt, config.calibrators).forEach((row) =>
-      predictions.push(row),
-    );
+    predictRaceFlat(
+      raceRows,
+      config.model,
+      config.predictedAt,
+      config.calibrators,
+      config.cellModelKey,
+      config.cellVariantId,
+    ).forEach((row) => predictions.push(row));
   });
   const writtenCount = await upsertRaceRunningStyles(db, predictions);
   return {
