@@ -554,6 +554,18 @@ def test_recent_form_cte_uses_regr_slope_with_three_race_guard():
     assert f">= {subject.TREND_MIN_RACES}" in cte
 
 
+def test_recent_form_cte_emits_prior_window_trend_and_acceleration():
+    cte = subject.recent_form_cte()
+    assert "as finish_trend_prior5" in cte
+    assert "as finish_trend_acceleration_5_10" in cte
+    assert f"between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}" in cte
+
+
+def test_trend_prior_window_constants_cover_races_6_through_10():
+    assert subject.TREND_PRIOR_WINDOW_START == 6
+    assert subject.TREND_PRIOR_WINDOW_END == 10
+
+
 def test_legacy_five_cte_emits_popularity_and_odds_scoring():
     cte = subject.legacy_five_cte()
     assert "popularity_score" in cte
@@ -593,6 +605,10 @@ def test_assemble_final_select_appends_race_internal_relative_features():
         "speed_index_avg_5_diff_from_race_avg",
         "jockey_recent_win_rate_diff_from_race_avg",
         "pedigree_score_diff_from_race_avg",
+        "career_win_rate_rank_in_race",
+        "career_place_rate_rank_in_race",
+        "career_win_rate_diff_from_race_avg",
+        "career_place_rate_diff_from_race_avg",
     ]
     for column in expected_new_columns:
         assert column in sql
@@ -3221,6 +3237,80 @@ def test_weight_trend_5_is_null_for_single_history_point():
     assert rows[1][1] is None
 
 
+def test_finish_trend_acceleration_is_null_when_prior_window_insufficient():
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create table horse_history_base as
+        select * from (values
+          (0.9, 1), (0.7, 2), (0.5, 3), (0.3, 4), (0.1, 5)
+        ) as t(finish_norm, recent_rank)
+        """
+    )
+    rows = con.execute(
+        f"""
+        select
+          case when count(*) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE})
+               else null end as finish_trend_5,
+          case when count(*) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END})
+               else null end as finish_trend_prior5,
+          (case when count(*) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE})
+               else null end)
+          - (case when count(*) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END})
+               else null end) as finish_trend_acceleration_5_10
+        from horse_history_base
+        """
+    ).fetchall()
+    con.close()
+    assert rows[0][0] is not None  # finish_trend_5 computed (5 races >= TREND_MIN_RACES)
+    assert rows[0][1] is None      # finish_trend_prior5 NULL (0 races in 6-10 window)
+    assert rows[0][2] is None      # acceleration NULL (subtraction of NULL propagates)
+
+
+def test_finish_trend_acceleration_computed_when_both_windows_populated():
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create table horse_history_base as
+        select * from (values
+          (0.9, 1), (0.7, 2), (0.5, 3), (0.3, 4), (0.1, 5),
+          (0.2, 6), (0.3, 7), (0.4, 8), (0.5, 9), (0.6, 10)
+        ) as t(finish_norm, recent_rank)
+        """
+    )
+    rows = con.execute(
+        f"""
+        select
+          case when count(*) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE})
+               else null end as finish_trend_5,
+          case when count(*) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END})
+               else null end as finish_trend_prior5,
+          (case when count(*) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {subject.RECENT_WINDOW_SIZE})
+               else null end)
+          - (case when count(*) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END}) >= {subject.TREND_MIN_RACES}
+               then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {subject.TREND_PRIOR_WINDOW_START} and {subject.TREND_PRIOR_WINDOW_END})
+               else null end) as finish_trend_acceleration_5_10
+        from horse_history_base
+        """
+    ).fetchall()
+    con.close()
+    assert rows[0][0] == pytest.approx(-0.2)
+    assert rows[0][1] == pytest.approx(0.1)
+    assert rows[0][2] is not None
+    assert rows[0][2] == pytest.approx(rows[0][0] - rows[0][1])
+
+
 def test_write_parquet_writes_per_year_from_target_table(tmp_path: Path) -> None:
     import duckdb
 
@@ -3305,6 +3395,10 @@ def test_window_query_from_base_table_produces_valid_sql_with_expected_columns()
     assert "speed_index_avg_5_diff_from_race_avg" in sql
     assert "jockey_recent_win_rate_diff_from_race_avg" in sql
     assert "pedigree_score_diff_from_race_avg" in sql
+    assert "career_win_rate_rank_in_race" in sql
+    assert "career_place_rate_rank_in_race" in sql
+    assert "career_win_rate_diff_from_race_avg" in sql
+    assert "career_place_rate_diff_from_race_avg" in sql
     assert "race_partition" in sql
     assert "race_by_speed_avg_asc" in sql
 
@@ -3324,13 +3418,14 @@ def test_window_query_from_base_table_is_executable_in_duckdb() -> None:
             race_bango text, race_year int, ketto_toroku_bango text, umaban int,
             speed_index_avg_5 double, speed_index_best_5 double,
             jockey_recent_win_rate double, trainer_career_win_rate double,
-            pedigree_score_for_race double, same_distance_win_rate double
+            pedigree_score_for_race double, same_distance_win_rate double,
+            career_win_rate double, career_place_rate double
         )
     """)
     con.execute("""
         insert into _test_base values
-        ('jra','2024','0601','01','01',2024,'H1',1,50.0,55.0,0.2,0.3,0.4,0.5),
-        ('jra','2024','0601','01','01',2024,'H2',2,45.0,48.0,0.15,0.25,0.35,0.45)
+        ('jra','2024','0601','01','01',2024,'H1',1,50.0,55.0,0.2,0.3,0.4,0.5,0.15,0.4),
+        ('jra','2024','0601','01','01',2024,'H2',2,45.0,48.0,0.15,0.25,0.35,0.45,0.10,0.3)
     """)
 
     query = subject._window_query_from_base_table("_test_base")
@@ -3368,10 +3463,11 @@ def test_stage_parquet_write_prematerializes_and_cleans_up(tmp_path: Path) -> No
                    '01' as keibajo_code, '01' as race_bango, 2023 as race_year,
                    50.0 as speed_index_avg_5, 55.0 as speed_index_best_5,
                    0.2 as jockey_recent_win_rate, 0.3 as trainer_career_win_rate,
-                   0.4 as pedigree_score_for_race, 0.5 as same_distance_win_rate
+                   0.4 as pedigree_score_for_race, 0.5 as same_distance_win_rate,
+                   0.15 as career_win_rate, 0.4 as career_place_rate
             union all
             select 'jra', '2024', '0601', '01', '01', 2024,
-                   45.0, 48.0, 0.15, 0.25, 0.35, 0.45
+                   45.0, 48.0, 0.15, 0.25, 0.35, 0.45, 0.10, 0.3
         """
 
     import unittest.mock

@@ -328,6 +328,7 @@ def test_append_features_sql_contains_market_signal_columns() -> None:
     assert "odds_score_diff_from_race_avg" in sql
     assert "popularity_score_diff_from_race_avg" in sql
     assert "popularity_odds_disagreement" in sql
+    assert "form_market_edge" in sql
 
 
 def test_append_features_sql_preserves_base_select_star() -> None:
@@ -357,7 +358,8 @@ def _seed_upcoming_parquet(parquet_dir: Path) -> str:
     already populated (as they are after the realtime-odds path in base build).
 
     Three horses in one race: odds 5.0 (fav), 8.0, 20.0.
-    Also includes odds_score / popularity_score to exercise those diffs.
+    Also includes odds_score / popularity_score to exercise those diffs, and
+    career_win_rate (base-layer column consumed by form_market_edge).
     """
     parquet_dir.mkdir(parents=True, exist_ok=True)
     seed_con = duckdb.connect(":memory:")
@@ -367,16 +369,16 @@ def _seed_upcoming_parquet(parquet_dir: Path) -> str:
         select * from (
           values
             ('jra', '2026', '0607', '05', '11', 'horse_fav', '20260607', 2026,
-              5.0::double, 1::integer, 0.5::double, 0.6::double),
+              5.0::double, 1::integer, 0.5::double, 0.6::double, 0.4::double),
             ('jra', '2026', '0607', '05', '11', 'horse_mid', '20260607', 2026,
-              8.0::double, 2::integer, 0.3::double, 0.2::double),
+              8.0::double, 2::integer, 0.3::double, 0.2::double, 0.2::double),
             ('jra', '2026', '0607', '05', '11', 'horse_out', '20260607', 2026,
-              20.0::double, 3::integer, 0.1::double, 0.1::double)
+              20.0::double, 3::integer, 0.1::double, 0.1::double, 0.05::double)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, race_date, race_year,
           tansho_odds, tansho_ninkijun,
-          odds_score, popularity_score
+          odds_score, popularity_score, career_win_rate
         )
         """
     )
@@ -547,6 +549,106 @@ def test_upcoming_race_odds_score_diff_from_race_avg_non_null(tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
+# form_market_edge — 8th market-signal feature (own-history vs own-price)
+# ---------------------------------------------------------------------------
+
+
+def test_form_market_edge_equals_career_win_rate_minus_implied_prob(tmp_path: Path) -> None:
+    """form_market_edge = career_win_rate - inverse_odds_implied_prob.
+    odds=5.0 -> inverse_odds_implied_prob=0.2; career_win_rate=0.3 -> edge=0.1.
+    """
+    parquet_dir = tmp_path / "input"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2026', '0607', '05', '11', 'horse_a', '20260607', 2026,
+              5.0::double, 1::integer, 0.5::double, 0.6::double, 0.3::double)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, race_date, race_year,
+          tansho_odds, tansho_ninkijun,
+          odds_score, popularity_score, career_win_rate
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    glob = f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+    con = duckdb.connect(":memory:")
+    _seed_empty_raw_odds(con)
+    subject.stage_parquet_odds(con, glob)
+    subject.merge_odds_tables(con)
+    sql = subject.append_features_sql(glob)
+    row = con.execute(f"select round(form_market_edge, 6) from ({sql})").fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == pytest.approx(0.1, rel=1e-5)
+
+
+def test_form_market_edge_null_when_odds_or_career_win_rate_missing(tmp_path: Path) -> None:
+    """form_market_edge is NULL when either input is missing.
+
+    horse_no_odds has NULL tansho_odds, which stage_parquet_odds() excludes via
+    its `where tansho_odds is not null` filter, so it never lands in
+    parquet_odds / raw_odds_merged and its tansho_odds_raw resolves to NULL
+    via the left join in append_features_sql (same NULL behavior as
+    inverse_odds_implied_prob). horse_no_form has valid odds but a NULL
+    career_win_rate. Both must yield a NULL form_market_edge.
+    """
+    parquet_dir = tmp_path / "input"
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2026', '0607', '05', '11', 'horse_no_odds', '20260607', 2026,
+              NULL::double, NULL::integer, 0.5::double, 0.6::double, 0.3::double),
+            ('jra', '2026', '0607', '05', '11', 'horse_no_form', '20260607', 2026,
+              8.0::double, 2::integer, 0.3::double, 0.2::double, NULL::double)
+        ) as v(
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, race_date, race_year,
+          tansho_odds, tansho_ninkijun,
+          odds_score, popularity_score, career_win_rate
+        )
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{parquet_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    glob = f"{parquet_dir.as_posix()}/race_year=*/*.parquet"
+    con = duckdb.connect(":memory:")
+    _seed_empty_raw_odds(con)
+    subject.stage_parquet_odds(con, glob)
+    subject.merge_odds_tables(con)
+    sql = subject.append_features_sql(glob)
+    rows = con.execute(
+        f"""
+        select ketto_toroku_bango, form_market_edge
+        from ({sql})
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+    assert len(rows) == 2
+    no_odds = next(r for r in rows if r[0] == "horse_no_odds")
+    no_form = next(r for r in rows if r[0] == "horse_no_form")
+    assert no_odds[1] is None
+    assert no_form[1] is None
+
+
+# ---------------------------------------------------------------------------
 # Historical path: PG rows present → values unchanged (regression guard)
 # ---------------------------------------------------------------------------
 
@@ -554,6 +656,9 @@ def test_upcoming_race_odds_score_diff_from_race_avg_non_null(tmp_path: Path) ->
 def _seed_historical_parquet(parquet_dir: Path) -> str:
     """Write a synthetic historical parquet where tansho_odds in parquet
     differs from what PG would provide (so we can confirm PG wins).
+
+    Also includes career_win_rate (base-layer column consumed by
+    form_market_edge).
     """
     parquet_dir.mkdir(parents=True, exist_ok=True)
     seed_con = duckdb.connect(":memory:")
@@ -563,14 +668,14 @@ def _seed_historical_parquet(parquet_dir: Path) -> str:
         select * from (
           values
             ('jra', '2024', '0415', '05', '11', 'horse_a', '20240415', 2024,
-              99.0::double, 9::integer, 0.2::double, 0.3::double),
+              99.0::double, 9::integer, 0.2::double, 0.3::double, 0.25::double),
             ('jra', '2024', '0415', '05', '11', 'horse_b', '20240415', 2024,
-              88.0::double, 8::integer, 0.5::double, 0.4::double)
+              88.0::double, 8::integer, 0.5::double, 0.4::double, 0.35::double)
         ) as v(
           source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, race_date, race_year,
           tansho_odds, tansho_ninkijun,
-          odds_score, popularity_score
+          odds_score, popularity_score, career_win_rate
         )
         """
     )
@@ -874,9 +979,9 @@ def _seed_realistic_base_build_parquet(parquet_dir: Path, *, include_raw_odds: b
     present (post-fix), and the market-signal layer must not raise.
 
     The fixture also includes the columns consumed by append_features_sql
-    (odds_score, popularity_score, race partition keys, ketto_toroku_bango,
-    race_year) so the full SQL pipeline executes without missing-column errors
-    on those other references.
+    (odds_score, popularity_score, career_win_rate, race partition keys,
+    ketto_toroku_bango, race_year) so the full SQL pipeline executes without
+    missing-column errors on those other references.
     """
     parquet_dir.mkdir(parents=True, exist_ok=True)
     seed_con = duckdb.connect(":memory:")
@@ -887,14 +992,14 @@ def _seed_realistic_base_build_parquet(parquet_dir: Path, *, include_raw_odds: b
             select * from (
               values
                 ('jra','2026','0607','05','11','horse_a','20260607',2026,
-                  5.0::double, 1::integer, 0.4::double, 0.5::double),
+                  5.0::double, 1::integer, 0.4::double, 0.5::double, 0.3::double),
                 ('jra','2026','0607','05','11','horse_b','20260607',2026,
-                  8.0::double, 2::integer, 0.3::double, 0.3::double)
+                  8.0::double, 2::integer, 0.3::double, 0.3::double, 0.2::double)
             ) as v(
               source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
               ketto_toroku_bango, race_date, race_year,
               tansho_odds, tansho_ninkijun,
-              odds_score, popularity_score
+              odds_score, popularity_score, career_win_rate
             )
             """
         )

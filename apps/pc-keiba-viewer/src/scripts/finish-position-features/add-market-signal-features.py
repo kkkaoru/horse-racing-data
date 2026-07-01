@@ -11,7 +11,14 @@ This is a post-processor that:
     real-time), falls back to tansho_odds / tansho_ninkijun already present in
     the input parquet (populated via the COALESCE(realtime→jvd_se/nvd_se) path
     in finish_position_features_duckdb.py)
-  - computes 7 new market-signal features per-horse with race-internal ranks
+  - computes 8 new market-signal features per-horse with race-internal ranks
+  - the 8th, `form_market_edge`, is NOT within-race-relative like the other 7:
+    it is career_win_rate minus inverse_odds_implied_prob — the horse's OWN
+    career win rate compared against its OWN current market price. Positive
+    means the market currently underprices the horse relative to its career
+    record; negative means the market overprices it. This is a persistent
+    form-vs-market mispricing signal, distinct from the within-race
+    field-relative signals above.
   - writes a new v3 parquet partitioned by race_year
 
 Run with:
@@ -158,7 +165,10 @@ def append_features_sql(input_glob: str) -> str:
         as popularity_score_diff_from_race_avg,
       case when b.popularity_score is not null and b.odds_score is not null
            then abs(b.popularity_score - b.odds_score)
-           else null end as popularity_odds_disagreement
+           else null end as popularity_odds_disagreement,
+      case when b.career_win_rate is not null and b.tansho_odds_raw is not null and b.tansho_odds_raw > 0
+           then b.career_win_rate - (1.0 / b.tansho_odds_raw)
+           else null end as form_market_edge
     from joined b
     window
       race_by_inverse_odds_desc as (

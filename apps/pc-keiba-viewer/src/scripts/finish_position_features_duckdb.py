@@ -64,6 +64,10 @@ DISTANCE_BAND_METERS = 400
 PEDIGREE_MIN_RACES = 5
 PEDIGREE_COMPOSITE_DIVISOR = 3
 TREND_MIN_RACES = 3
+# Prior 5-race window (ranks 6-10) used to compute the 2nd-derivative
+# acceleration of finish_trend_5 (finish_trend_5 - finish_trend_prior5).
+TREND_PRIOR_WINDOW_START = RECENT_WINDOW_SIZE + 1
+TREND_PRIOR_WINDOW_END = RECENT_WINDOW_SIZE * 2
 # regr_slope returns NaN with <2 points (zero variance in x); require >=2.
 WEIGHT_TREND_MIN_RACES = 2
 # Floor volatility (kg) so near-zero spread does not blow up the z-score.
@@ -2110,6 +2114,15 @@ def recent_form_cte() -> str:
         case when count(*) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) >= {TREND_MIN_RACES}
              then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {RECENT_WINDOW_SIZE})
              else null end as finish_trend_5,
+        case when count(*) filter (where recent_rank between {TREND_PRIOR_WINDOW_START} and {TREND_PRIOR_WINDOW_END}) >= {TREND_MIN_RACES}
+             then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {TREND_PRIOR_WINDOW_START} and {TREND_PRIOR_WINDOW_END})
+             else null end as finish_trend_prior5,
+        (case when count(*) filter (where recent_rank <= {RECENT_WINDOW_SIZE}) >= {TREND_MIN_RACES}
+             then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank <= {RECENT_WINDOW_SIZE})
+             else null end)
+        - (case when count(*) filter (where recent_rank between {TREND_PRIOR_WINDOW_START} and {TREND_PRIOR_WINDOW_END}) >= {TREND_MIN_RACES}
+             then regr_slope(finish_norm, cast(recent_rank as double)) filter (where recent_rank between {TREND_PRIOR_WINDOW_START} and {TREND_PRIOR_WINDOW_END})
+             else null end) as finish_trend_acceleration_5_10,
         avg(finish_norm) filter (where recent_rank <= 3) as last_3_avg_finish_norm
       from horse_history_base
       group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango
@@ -2450,7 +2463,7 @@ def base_features_select_sql(category: str) -> str:
       least(1::double, greatest(0::double, coalesce(t.shusso_tosu, 0)::double / {MAX_FIELD_SIZE})) as field_size_normalized,
       case when trim(coalesce(t.grade_code, '')) in ('A', 'B', 'C', 'D', 'G', 'H') then 1 else 0 end::int as is_grade_race,
       rf.last_race_finish_norm, rf.last_race_margin_to_winner, rf.last_race_corner_pass_norm,
-      rf.last_race_class_diff, rf.last_race_distance_diff, rf.finish_trend_5, rf.last_3_avg_finish_norm,
+      rf.last_race_class_diff, rf.last_race_distance_diff, rf.finish_trend_5, rf.finish_trend_prior5, rf.finish_trend_acceleration_5_10, rf.last_3_avg_finish_norm,
       lf.avg_finish, lf.recent_finish, lf.popularity_score, lf.odds_score,
       rsh.past_corner_1_norm_avg_5,
       rsh.past_corner_1_norm_avg_3,
@@ -2547,12 +2560,18 @@ def assemble_final_select_from_temp_tables(category: str) -> str:
       rank() over race_by_trainer_career_desc as trainer_career_win_rate_rank_in_race,
       rank() over race_by_pedigree_desc as pedigree_score_for_race_rank_in_race,
       rank() over race_by_same_distance_desc as same_distance_win_rate_rank_in_race,
+      rank() over race_by_career_win_rate_desc as career_win_rate_rank_in_race,
+      rank() over race_by_career_place_rate_desc as career_place_rate_rank_in_race,
       b.speed_index_avg_5 - avg(b.speed_index_avg_5) over race_partition
         as speed_index_avg_5_diff_from_race_avg,
       b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition
         as jockey_recent_win_rate_diff_from_race_avg,
       b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition
-        as pedigree_score_diff_from_race_avg
+        as pedigree_score_diff_from_race_avg,
+      b.career_win_rate - avg(b.career_win_rate) over race_partition
+        as career_win_rate_diff_from_race_avg,
+      b.career_place_rate - avg(b.career_place_rate) over race_partition
+        as career_place_rate_diff_from_race_avg
     from base_features b
     window
       race_partition as (partition by {RACE_PARTITION_COLUMNS}),
@@ -2573,6 +2592,12 @@ def assemble_final_select_from_temp_tables(category: str) -> str:
       ),
       race_by_same_distance_desc as (
         partition by {RACE_PARTITION_COLUMNS} order by b.same_distance_win_rate desc nulls last
+      ),
+      race_by_career_win_rate_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.career_win_rate desc nulls last
+      ),
+      race_by_career_place_rate_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.career_place_rate desc nulls last
       )
     """
 
@@ -2593,12 +2618,18 @@ def _window_query_from_base_table(table_name: str) -> str:
       rank() over race_by_trainer_career_desc as trainer_career_win_rate_rank_in_race,
       rank() over race_by_pedigree_desc as pedigree_score_for_race_rank_in_race,
       rank() over race_by_same_distance_desc as same_distance_win_rate_rank_in_race,
+      rank() over race_by_career_win_rate_desc as career_win_rate_rank_in_race,
+      rank() over race_by_career_place_rate_desc as career_place_rate_rank_in_race,
       b.speed_index_avg_5 - avg(b.speed_index_avg_5) over race_partition
         as speed_index_avg_5_diff_from_race_avg,
       b.jockey_recent_win_rate - avg(b.jockey_recent_win_rate) over race_partition
         as jockey_recent_win_rate_diff_from_race_avg,
       b.pedigree_score_for_race - avg(b.pedigree_score_for_race) over race_partition
-        as pedigree_score_diff_from_race_avg
+        as pedigree_score_diff_from_race_avg,
+      b.career_win_rate - avg(b.career_win_rate) over race_partition
+        as career_win_rate_diff_from_race_avg,
+      b.career_place_rate - avg(b.career_place_rate) over race_partition
+        as career_place_rate_diff_from_race_avg
     from {table_name} b
     window
       race_partition as (partition by {RACE_PARTITION_COLUMNS}),
@@ -2619,6 +2650,12 @@ def _window_query_from_base_table(table_name: str) -> str:
       ),
       race_by_same_distance_desc as (
         partition by {RACE_PARTITION_COLUMNS} order by b.same_distance_win_rate desc nulls last
+      ),
+      race_by_career_win_rate_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.career_win_rate desc nulls last
+      ),
+      race_by_career_place_rate_desc as (
+        partition by {RACE_PARTITION_COLUMNS} order by b.career_place_rate desc nulls last
       )
     """
 

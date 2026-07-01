@@ -1513,6 +1513,10 @@ def test_assemble_final_select_emits_race_internal_rank_values(
         "speed_index_avg_5_diff_from_race_avg",
         "jockey_recent_win_rate_diff_from_race_avg",
         "pedigree_score_diff_from_race_avg",
+        "career_win_rate_rank_in_race",
+        "career_place_rate_rank_in_race",
+        "career_win_rate_diff_from_race_avg",
+        "career_place_rate_diff_from_race_avg",
     ):
         assert column in captured_columns["names"]
     assert sorted(captured_values["speed_rank"]) == [1.0, 2.0]
