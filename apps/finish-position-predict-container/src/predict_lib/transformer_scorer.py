@@ -24,11 +24,12 @@ Artifact layout (produced by export_artifact.py / mlx-nar):
                        seed_files:["weights_s1.npz","weights_s2.npz","weights_s3.npz"]}
   <dir>/weights_s*.npz   numpy float32 weights, keys = MLX param paths (per seed)
 
-Gate-exact fusion (mirrors eval_prodbase.build_join):
-  per seed i:  rank_i = within-race ordinal rank of rank_score (1=best, desc)
-  trm        = mean_i(rank_i)                       # mean of seed RANKS, not scores
-  base_rank  = within-race ordinal rank of the NAR ENSEMBLE final score
-  fused      = -(0.5 * base_rank + 0.5 * trm)       # higher = better -> rank_within_race
+Gate-exact fusion (mirrors eval_prodbase.build_join, deploy variant ``score_z_55``):
+  per seed i:  seed_score_i = per-horse rank_score (higher = better)
+  tf_score_mean = mean_i(seed_score_i)               # mean of seed SCORES, not ranks
+  base_score    = the NAR base (iter12 XGBoost) per-horse score
+  fused = 0.5 * znorm(tf_score_mean) + 0.5 * znorm(base_score)  # znorm = within-race
+          z-normalisation (population std, ddof=0); higher = better -> rank_within_race
 """
 
 from __future__ import annotations
@@ -131,6 +132,22 @@ def within_race_ordinal_rank(scores: Sequence[float], ketto: Sequence[str]) -> l
     return rank
 
 
+def within_race_zscore(scores: Sequence[float]) -> list[float]:
+    """Within-race z-normalisation: ``(x - mean) / std`` (population std,
+    ddof=0), or all-zeros when std == 0. Matches the score-fusion gate's
+    ``znorm`` (polars ``std(ddof=0)``) so eval == serve. Scale-invariant, so the
+    fused blend is robust to differing base-score magnitudes."""
+    n = len(scores)
+    if n == 0:
+        return []
+    arr = np.asarray(scores, dtype=np.float64)
+    mean = float(arr.mean())
+    std = float(arr.std())  # numpy default ddof=0 == polars std(ddof=0)
+    if std > 0.0:
+        return [float((value - mean) / std) for value in arr]
+    return [0.0] * n
+
+
 # ---------------------------------------------------------------------------
 # Scorer (multi-seed)
 # ---------------------------------------------------------------------------
@@ -178,12 +195,21 @@ class TransformerScorer:
         self, entries: Sequence[Mapping[str, object]], ketto: Sequence[str]
     ) -> list[float]:
         """The gate's ``_trm``: mean over seeds of each seed's within-race
-        ordinal rank. Lower = better (it is a rank). This is the transformer
-        contribution consumed by :func:`fuse_ensemble_transformer`."""
+        ordinal rank. Lower = better (it is a rank). This was the transformer
+        contribution consumed by the earlier rank-level fusion (superseded by
+        :meth:`seed_score_mean` -> :func:`fuse_ensemble_transformer`)."""
         per_seed = self.seed_scores(entries)
         seed_ranks = [within_race_ordinal_rank(s, ketto) for s in per_seed]
         n = len(entries)
         return [sum(r[i] for r in seed_ranks) / len(seed_ranks) for i in range(n)]
+
+    def seed_score_mean(self, entries: Sequence[Mapping[str, object]]) -> list[float]:
+        """Mean over seeds of each seed's raw per-horse rank_score (the gate's
+        ``tf_score_mean``). This is the transformer contribution consumed by the
+        score-level :func:`fuse_ensemble_transformer` (z-normalised there)."""
+        per_seed = self.seed_scores(entries)
+        n = len(entries)
+        return [sum(s[i] for s in per_seed) / len(per_seed) for i in range(n)]
 
     def missing_feature_keys(self, entries: Sequence[Mapping[str, object]]) -> set[str]:
         """Return the ``feature_order`` names absent as KEYS from the race's
@@ -295,22 +321,22 @@ def load_transformer(artifact_dir: str | Path) -> TransformerScorer:
 
 def fuse_ensemble_transformer(
     base_scores: Sequence[float],
-    seed_rank_mean: Sequence[float],
-    ketto: Sequence[str],
+    transformer_score_mean: Sequence[float],
     weight_transformer: float = 0.5,
 ) -> list[float]:
-    """Fuse the NAR ensemble score with the transformer seed-rank-mean.
+    """Score-level z-fusion of the NAR base score with the transformer's mean
+    seed score (deploy variant ``score_z_55``).
 
-    ``base_scores`` = the per-class ENSEMBLE (iter12+iter30+iter36) final
-    per-horse score (higher=better) — the value that today's rank_within_race
-    consumes. ``seed_rank_mean`` = TransformerScorer.seed_rank_mean output.
-
-    Returns fused scores (higher = better) for rank_within_race:
-        fused[i] = -(w * trm[i] + (1-w) * base_rank[i])
-    matching the gate's ``-(0.5*_xr + 0.5*_trm)``. base_rank is the ensemble's
-    within-race ordinal rank (same tie-break as the seeds)."""
-    base_rank = within_race_ordinal_rank(base_scores, ketto)
+    ``base_scores`` = the NAR base (iter12 XGBoost) per-horse score;
+    ``transformer_score_mean`` = :meth:`TransformerScorer.seed_score_mean`
+    output. Both are within-race z-normalised (scale-invariant) then blended:
+        fused[i] = w * z(transformer_score_mean)[i] + (1-w) * z(base_scores)[i]
+    Higher = better -> rank_within_race (ketto tie-break applied by the caller).
+    Replaces the earlier rank-level fusion; 5-fold CONFIRMED over it: top1
+    +0.253 [LB95 +0.120] / place2 +0.341 [+0.166] / place3 +0.230 [+0.051]."""
+    transformer_z = within_race_zscore(transformer_score_mean)
+    base_z = within_race_zscore(base_scores)
     return [
-        -(weight_transformer * seed_rank_mean[i] + (1.0 - weight_transformer) * base_rank[i])
+        weight_transformer * transformer_z[i] + (1.0 - weight_transformer) * base_z[i]
         for i in range(len(base_scores))
     ]

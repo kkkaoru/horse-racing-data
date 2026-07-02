@@ -117,7 +117,7 @@ from predict_lib.transformer_scorer import (
     fuse_ensemble_transformer,
     load_transformer,
 )
-from predict_lib.upcoming import KETTO_FIELD, build_prediction_rows, rank_race_entries
+from predict_lib.upcoming import build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
     build_upsert_sql,
@@ -720,26 +720,27 @@ def _score_one_race_nar_blend(
     entries: Sequence[Mapping[str, object]],
     feature_names: Sequence[str],
 ) -> list[list[object]]:
-    """Score one NAR race with the Set-Transformer x ensemble rank-fusion blend.
+    """Score one NAR race with the Set-Transformer x base score-level z-fusion blend.
 
     The pure iter12 XGBoost base scores the 192-feature matrix; the transformer
-    contributes its within-race seed-rank-mean over the 117-feature subset. The
-    two are fused 0.5/0.5 at the rank level (ketto-ascending tie-break == serve),
-    reproducing the deploy gate. Fail-closed per race: field < 2, a feature gap
-    on this race's entries, or any transformer exception falls back to the pure
-    base ranking under the category-global model_version (auditable); blended
-    rows write NAR_TRANSFORMER_MODEL_VERSION.
+    contributes its mean seed score over the 117-feature subset. The two are
+    within-race z-normalised (scale-invariant) then fused 0.5/0.5 at the score
+    level, reproducing the deploy gate (deploy variant ``score_z_55``); the
+    caller's ``rank_race_entries`` applies the ketto-ascending tie-break on the
+    fused scores. Fail-closed per race: field < 2, a feature gap on this race's
+    entries, or any transformer exception falls back to the pure base ranking
+    under the category-global model_version (auditable); blended rows write
+    NAR_TRANSFORMER_MODEL_VERSION.
     """
     matrix = build_feature_matrix(entries, feature_names, "xgboost")
     base_scores = score_matrix(fallback_booster, matrix)
-    ketto_list = [str(entry[KETTO_FIELD]) for entry in entries]
     scores: Sequence[float] = base_scores
     model_version = model_version_for("nar")
     if len(entries) >= 2 and not transformer.missing_feature_keys(entries):
         try:
-            seed_rank_mean = transformer.seed_rank_mean(entries, ketto_list)
+            transformer_score_mean = transformer.seed_score_mean(entries)
             scores = fuse_ensemble_transformer(
-                base_scores, seed_rank_mean, ketto_list, NAR_TRANSFORMER_BLEND_WEIGHT
+                base_scores, transformer_score_mean, NAR_TRANSFORMER_BLEND_WEIGHT
             )
             model_version = NAR_TRANSFORMER_MODEL_VERSION
         except BaseException as blend_error:

@@ -104,6 +104,25 @@ def test_within_race_ordinal_rank_ties_break_on_ketto_ascending() -> None:
 
 
 # --------------------------------------------------------------------------
+# within_race_zscore
+# --------------------------------------------------------------------------
+
+
+def test_within_race_zscore_std_greater_than_zero() -> None:
+    # mean=2.0, population std=sqrt(2/3)~=0.8165 -> [-1.2247, 0.0, 1.2247]
+    zs = tsc.within_race_zscore([1.0, 2.0, 3.0])
+    assert zs == pytest.approx([-1.224744871, 0.0, 1.224744871])
+
+
+def test_within_race_zscore_all_equal_is_all_zeros() -> None:
+    assert tsc.within_race_zscore([4.0, 4.0, 4.0]) == [0.0, 0.0, 0.0]
+
+
+def test_within_race_zscore_empty_returns_empty() -> None:
+    assert tsc.within_race_zscore([]) == []
+
+
+# --------------------------------------------------------------------------
 # forward_rank_score — properties + masked-pad invariance + determinism
 # --------------------------------------------------------------------------
 
@@ -375,6 +394,20 @@ def test_seed_rank_mean_handles_out_of_range_and_null_umaban(tmp_path: Path) -> 
     assert {round(v) for v in trm} == {1, 2}
 
 
+def test_seed_score_mean_matches_hand_averaged_seed_scores(tmp_path: Path) -> None:
+    _write_artifact(tmp_path, n_seeds=2, use_seed_files=True)
+    scorer = tsc.load_transformer(tmp_path)
+    entries = [
+        {"f0": 1.0, "f1": 0.0, "f2": 0.0, "f3": 0.0, "umaban": 1},
+        {"f0": 0.0, "f1": 1.0, "f2": 0.0, "f3": 0.0, "umaban": 2},
+        {"f0": 0.0, "f1": 0.0, "f2": 1.0, "f3": 0.0, "umaban": 3},
+    ]
+    per_seed = scorer.seed_scores(entries)
+    mean = scorer.seed_score_mean(entries)
+    assert len(mean) == 3
+    assert mean == [sum(s[i] for s in per_seed) / len(per_seed) for i in range(len(entries))]
+
+
 # --------------------------------------------------------------------------
 # missing_feature_keys
 # --------------------------------------------------------------------------
@@ -435,33 +468,22 @@ def test_missing_feature_keys_only_checks_representative_first_entry(
 # --------------------------------------------------------------------------
 
 
-def test_fuse_ensemble_transformer_blends_ranks() -> None:
-    # base ranks horse0 best; transformer trm ranks horse1 best.
-    fused = tsc.fuse_ensemble_transformer([10.0, 1.0], [2.0, 1.0], ["a", "b"], 0.5)
-    # base_rank = [1, 2]; fused = -(0.5*trm + 0.5*base_rank)
-    assert fused[0] == -(0.5 * 2.0 + 0.5 * 1)
-    assert fused[1] == -(0.5 * 1.0 + 0.5 * 2)
+def test_fuse_ensemble_transformer_blends_zscores() -> None:
+    # z([2.0, 1.0]) pop std: mean=1.5, std=0.5 -> [+1.0, -1.0]
+    # z([10.0, 1.0]) pop std: mean=5.5, std=4.5 -> [+1.0, -1.0]
+    # fused = 0.5*[+1,-1] + 0.5*[+1,-1] = [1.0, -1.0]
+    fused = tsc.fuse_ensemble_transformer([10.0, 1.0], [2.0, 1.0], 0.5)
+    assert fused == pytest.approx([1.0, -1.0])
 
 
 def test_fuse_ensemble_transformer_weight_zero_is_base_only() -> None:
-    fused = tsc.fuse_ensemble_transformer([10.0, 1.0], [1.0, 2.0], ["a", "b"], 0.0)
-    ranked = tsc.within_race_ordinal_rank(fused, ["a", "b"])
-    assert ranked == [1, 2]
+    # weight_transformer=0.0 -> fused == z(base_scores) exactly (mean=5.5, std=4.5).
+    fused = tsc.fuse_ensemble_transformer([10.0, 1.0], [1.0, 2.0], 0.0)
+    assert fused == pytest.approx(tsc.within_race_zscore([10.0, 1.0]))
+    assert fused == pytest.approx([1.0, -1.0])
 
 
 def test_fuse_ensemble_transformer_default_weight_is_half() -> None:
-    fused = tsc.fuse_ensemble_transformer([1.0, 10.0], [1.0, 2.0], ["a", "b"])
-    # default weight_transformer=0.5; base_rank = [2, 1]
-    assert fused[0] == -(0.5 * 1.0 + 0.5 * 2)
-    assert fused[1] == -(0.5 * 2.0 + 0.5 * 1)
-
-
-def test_fuse_ensemble_transformer_ties_break_on_ketto_ascending() -> None:
-    # base_scores tied -> base_rank = [2, 1] (ketto "a1" < "z9" wins the tie).
-    # trm = [1.0, 2.0] exactly offsets that rank gap, so BOTH fused values land
-    # on -1.5 -- the caller's within_race_ordinal_rank must then resolve that
-    # fused-level tie by ketto ascending, exercising the shared tie-break.
-    fused = tsc.fuse_ensemble_transformer([5.0, 5.0], [1.0, 2.0], ["z9", "a1"], 0.5)
-    assert fused[0] == fused[1]
-    ranked = tsc.within_race_ordinal_rank(fused, ["z9", "a1"])
-    assert ranked == [2, 1]
+    fused_default = tsc.fuse_ensemble_transformer([1.0, 10.0], [1.0, 2.0])
+    fused_explicit = tsc.fuse_ensemble_transformer([1.0, 10.0], [1.0, 2.0], 0.5)
+    assert fused_default == fused_explicit
