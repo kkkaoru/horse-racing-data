@@ -64,6 +64,14 @@ _NO_REGRESSION_METRICS: Final[tuple[str, ...]] = (
 )
 
 
+class RoutingModelProvenanceError(ValueError):
+    """Raised when a production finish-position route lacks model identity."""
+
+
+class RoutingModelArtifactError(ValueError):
+    """Raised when a referenced production model artifact is missing or invalid."""
+
+
 @dataclass(frozen=True)
 class AdoptionProfile:
     primary_metrics: tuple[str, ...]
@@ -541,8 +549,18 @@ def generate_routing_json(
     default_feature_count: int,
     default_architecture: str,
     variants: Mapping[str, Sequence[AdoptionResult]],
+    *,
+    allow_synthetic_model_version: bool = False,
+    model_artifacts_root: Path | None = None,
 ) -> dict[str, object]:
     """Render the N-variant ``cell_routing.json`` body for one category."""
+    if model_artifacts_root is not None:
+        _validate_model_artifact(
+            model_artifacts_root,
+            category,
+            default_model_version,
+            default_feature_count,
+        )
     variant_specs: dict[str, object] = {
         VARIANT_SIM: {
             "model_version": default_model_version,
@@ -554,12 +572,25 @@ def generate_routing_json(
     for variant_name in sorted(variants):
         results = variants[variant_name]
         first_candidate = results[0].candidate
+        model_version, architecture = _resolve_variant_model_identity(
+            variant_name,
+            first_candidate,
+            default_architecture,
+            allow_synthetic_model_version=allow_synthetic_model_version,
+        )
+        if model_artifacts_root is not None:
+            _validate_model_artifact(
+                model_artifacts_root,
+                category,
+                model_version,
+                len(first_candidate.feature_names),
+            )
         variant_spec: dict[str, object] = {
-            "model_version": first_candidate.model_version or variant_name,
+            "model_version": model_version,
             "feature_count": len(first_candidate.feature_names),
             "feature_set_hash": first_candidate.feature_set_hash,
             "feature_names": sorted(first_candidate.feature_names),
-            "architecture": first_candidate.architecture or default_architecture,
+            "architecture": architecture,
         }
         if first_candidate.method is not None:
             variant_spec["method"] = first_candidate.method
@@ -577,6 +608,77 @@ def generate_routing_json(
             "rules": rules,
         }
     }
+
+
+def _resolve_variant_model_identity(
+    variant_name: str,
+    candidate: CellMetrics,
+    default_architecture: str,
+    *,
+    allow_synthetic_model_version: bool,
+) -> tuple[str, str]:
+    """Return the model identity for a finish-position production route."""
+    if candidate.model_version is not None and candidate.architecture is not None:
+        return candidate.model_version, candidate.architecture
+    if allow_synthetic_model_version:
+        return (
+            candidate.model_version or variant_name,
+            candidate.architecture or default_architecture,
+        )
+    missing: list[str] = []
+    if candidate.model_version is None:
+        missing.append("metric_payload.model_version")
+    if candidate.architecture is None:
+        missing.append("metric_payload.architecture")
+    raise RoutingModelProvenanceError(
+        "finish_position production routing requires real model provenance for "
+        f"variant {variant_name!r} / feature_set_hash={candidate.feature_set_hash!r}; "
+        f"missing {', '.join(missing)}. Re-run local training so "
+        "cell_training_evaluations.metric_payload stores model_version and "
+        "architecture, or pass --allow-synthetic-model-version only for local "
+        "analysis output that will not be deployed."
+    )
+
+
+def _validate_model_artifact(
+    model_artifacts_root: Path,
+    category: str,
+    model_version: str,
+    expected_feature_count: int,
+) -> None:
+    """Validate that a routed model exists under the container artifact root."""
+    artifact_dir = model_artifacts_root / category / model_version
+    model_path = artifact_dir / "model.json"
+    metadata_path = artifact_dir / "metadata.json"
+    missing = [path for path in (model_path, metadata_path) if not path.is_file()]
+    if missing:
+        missing_text = ", ".join(str(path) for path in missing)
+        raise RoutingModelArtifactError(
+            f"missing finish-position model artifact(s) for {category}/{model_version}: "
+            f"{missing_text}"
+        )
+
+    try:
+        metadata_raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RoutingModelArtifactError(
+            f"invalid metadata.json for {category}/{model_version}: {exc}"
+        ) from exc
+
+    if not isinstance(metadata_raw, Mapping):
+        raise RoutingModelArtifactError(
+            f"metadata.json for {category}/{model_version} must be a JSON object"
+        )
+    feature_names = metadata_raw.get("feature_names")
+    if not isinstance(feature_names, list):
+        raise RoutingModelArtifactError(
+            f"metadata feature_names for {category}/{model_version} must be a list"
+        )
+    if len(feature_names) != expected_feature_count:
+        raise RoutingModelArtifactError(
+            f"metadata feature_names length mismatch for {category}/{model_version}: "
+            f"expected {expected_feature_count}, got {len(feature_names)}"
+        )
 
 
 def generate_running_style_feature_selection_json(
@@ -786,6 +888,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--default-model-version", type=str, default=None)
     parser.add_argument("--default-feature-count", type=int, default=None)
     parser.add_argument("--default-architecture", type=str, default=None)
+    parser.add_argument(
+        "--allow-synthetic-model-version",
+        action="store_true",
+        help=(
+            "Allow legacy cell-<hash> model_version fallback. Use only for local "
+            "analysis; production finish-position routing requires real model "
+            "provenance in metric_payload."
+        ),
+    )
+    parser.add_argument(
+        "--model-artifacts-root",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to apps/finish-position-predict-container/models/"
+            "finish-position for validating referenced production artifacts."
+        ),
+    )
     return parser
 
 
@@ -847,6 +967,8 @@ def main(argv: list[str] | None = None) -> None:
             default_feature_count,
             default_architecture,
             variants,
+            allow_synthetic_model_version=bool(args.allow_synthetic_model_version),
+            model_artifacts_root=cast("Path | None", args.model_artifacts_root),
         )
     payload = json.dumps(config, ensure_ascii=False, indent=2)
 

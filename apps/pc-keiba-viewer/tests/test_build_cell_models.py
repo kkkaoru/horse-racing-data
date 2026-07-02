@@ -606,7 +606,14 @@ def test_generate_routing_json_with_variant_and_rule() -> None:
         rejection_reasons=[],
     )
     variants = {"cell-hashAAAA": [result]}
-    config = generate_routing_json("jra", "jra-prod", 200, "catboost", variants)
+    config = generate_routing_json(
+        "jra",
+        "jra-prod",
+        200,
+        "catboost",
+        variants,
+        allow_synthetic_model_version=True,
+    )
     assert config == {
         "jra": {
             "default_variant": "sim",
@@ -670,6 +677,170 @@ def test_generate_routing_json_uses_candidate_model_provenance_when_present() ->
     }
 
 
+def test_generate_routing_json_requires_model_provenance_by_default() -> None:
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics("hashNAR54", feature_names=["f1", "f2", "f3"]),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+
+    with pytest.raises(
+        subject.RoutingModelProvenanceError,
+        match="requires real model provenance",
+    ):
+        generate_routing_json(
+            "nar",
+            "nar-prod",
+            200,
+            "xgboost",
+            {"cell-hashNAR5": [result]},
+        )
+
+
+def _write_model_artifact(
+    root: Path,
+    category: str,
+    model_version: str,
+    feature_names: list[str],
+) -> None:
+    artifact_dir = root / category / model_version
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "model.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "metadata.json").write_text(
+        json.dumps({"feature_names": feature_names}),
+        encoding="utf-8",
+    )
+
+
+def test_generate_routing_json_validates_model_artifact_root(tmp_path: Path) -> None:
+    _write_model_artifact(tmp_path, "nar", "nar-prod", ["d1", "d2"])
+    _write_model_artifact(tmp_path, "nar", "nar-mile-e-54-lgbm-v1", ["f1", "f2", "f3"])
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics(
+            "hashNAR54",
+            feature_names=["f1", "f2", "f3"],
+            model_version="nar-mile-e-54-lgbm-v1",
+            architecture="lightgbm",
+        ),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+
+    config = generate_routing_json(
+        "nar",
+        "nar-prod",
+        2,
+        "xgboost",
+        group_variants([result]),
+        model_artifacts_root=tmp_path,
+    )
+
+    nar = cast("dict[str, object]", config["nar"])
+    variants = cast("dict[str, dict[str, object]]", nar["variants"])
+    variant_name = next(name for name in variants if name != "sim")
+    assert variants[variant_name]["model_version"] == "nar-mile-e-54-lgbm-v1"
+
+
+def test_generate_routing_json_rejects_missing_model_artifact(tmp_path: Path) -> None:
+    _write_model_artifact(tmp_path, "nar", "nar-prod", ["d1", "d2"])
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics(
+            "hashNAR54",
+            feature_names=["f1", "f2", "f3"],
+            model_version="nar-mile-e-54-lgbm-v1",
+            architecture="lightgbm",
+        ),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+
+    with pytest.raises(subject.RoutingModelArtifactError, match="missing"):
+        generate_routing_json(
+            "nar",
+            "nar-prod",
+            2,
+            "xgboost",
+            group_variants([result]),
+            model_artifacts_root=tmp_path,
+        )
+
+
+def test_generate_routing_json_rejects_artifact_without_feature_names(
+    tmp_path: Path,
+) -> None:
+    _write_model_artifact(tmp_path, "nar", "nar-prod", ["d1", "d2"])
+    _write_model_artifact(tmp_path, "nar", "nar-mile-e-54-lgbm-v1", ["f1", "f2", "f3"])
+    metadata_path = (
+        tmp_path
+        / "nar"
+        / "nar-mile-e-54-lgbm-v1"
+        / "metadata.json"
+    )
+    metadata_path.write_text("{}", encoding="utf-8")
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics(
+            "hashNAR54",
+            feature_names=["f1", "f2", "f3"],
+            model_version="nar-mile-e-54-lgbm-v1",
+            architecture="lightgbm",
+        ),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+
+    with pytest.raises(subject.RoutingModelArtifactError, match="must be a list"):
+        generate_routing_json(
+            "nar",
+            "nar-prod",
+            2,
+            "xgboost",
+            group_variants([result]),
+            model_artifacts_root=tmp_path,
+        )
+
+
+def test_generate_routing_json_rejects_artifact_feature_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_model_artifact(tmp_path, "nar", "nar-prod", ["d1", "d2"])
+    _write_model_artifact(tmp_path, "nar", "nar-mile-e-54-lgbm-v1", ["f1", "f2"])
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics(
+            "hashNAR54",
+            feature_names=["f1", "f2", "f3"],
+            model_version="nar-mile-e-54-lgbm-v1",
+            architecture="lightgbm",
+        ),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+
+    with pytest.raises(subject.RoutingModelArtifactError, match="length mismatch"):
+        generate_routing_json(
+            "nar",
+            "nar-prod",
+            2,
+            "xgboost",
+            group_variants([result]),
+            model_artifacts_root=tmp_path,
+        )
+
+
 def test_generate_routing_json_skips_empty_dimension_values() -> None:
     result = AdoptionResult(
         cell=_cell(
@@ -686,7 +857,12 @@ def test_generate_routing_json_skips_empty_dimension_values() -> None:
         rejection_reasons=[],
     )
     config = generate_routing_json(
-        "nar", "nar-prod", 140, "xgboost", {"cell-hashBBBB": [result]}
+        "nar",
+        "nar-prod",
+        140,
+        "xgboost",
+        {"cell-hashBBBB": [result]},
+        allow_synthetic_model_version=True,
     )
     category = cast("dict[str, object]", config["nar"])
     rules = cast("list[dict[str, object]]", category["rules"])
@@ -784,6 +960,7 @@ def test_generate_routing_json_omits_db_subgroup_for_finish_position_routing() -
         130,
         "catboost",
         {"cell-CANDIDAT": [result]},
+        allow_synthetic_model_version=True,
     )
     jra = cast("dict[str, object]", config["jra"])
     rules = cast("list[dict[str, object]]", jra["rules"])
@@ -1053,6 +1230,7 @@ def test_main_writes_output_file(tmp_path: Path) -> None:
                 "BASE",
                 "--output-path",
                 str(output_path),
+                "--allow-synthetic-model-version",
             ]
         )
     conn.close.assert_called_once_with()
@@ -1062,6 +1240,31 @@ def test_main_writes_output_file(tmp_path: Path) -> None:
     assert jra["variants"]["sim"]["feature_count"] == 2
     assert jra["variants"]["cell-CANDIDAT"]["feature_count"] == 3
     assert len(jra["rules"]) == 1
+
+
+def test_main_requires_model_provenance_for_finish_position_production(
+    tmp_path: Path,
+) -> None:
+    output_path = tmp_path / "cell_routing.json"
+    conn = MagicMock()
+    with patch.object(subject, "_connect", return_value=conn), patch.object(
+        subject, "load_cell_metrics", return_value=_patched_grouped()
+    ), pytest.raises(subject.RoutingModelProvenanceError):
+        main(
+            [
+                "--pg-url",
+                "postgresql://example",
+                "--category",
+                "jra",
+                "--baseline-hash",
+                "BASE",
+                "--output-path",
+                str(output_path),
+            ]
+        )
+
+    conn.close.assert_called_once_with()
+    assert output_path.exists() is False
 
 
 def test_main_writes_only_best_candidate_for_each_cell(tmp_path: Path) -> None:
@@ -1106,6 +1309,7 @@ def test_main_writes_only_best_candidate_for_each_cell(tmp_path: Path) -> None:
                 "BASE",
                 "--output-path",
                 str(output_path),
+                "--allow-synthetic-model-version",
             ]
         )
     config = json.loads(output_path.read_text(encoding="utf-8"))
@@ -1168,6 +1372,7 @@ def test_main_ban_ei_category_queries_db_as_banei_but_emits_ban_ei_key(
                 "BASE",
                 "--output-path",
                 str(output_path),
+                "--allow-synthetic-model-version",
             ]
         )
     load_cell_metrics.assert_called_once_with(conn, "banei", "finish_position")
@@ -1229,6 +1434,7 @@ def test_main_dry_run_prints_without_writing(
                 "--output-path",
                 str(output_path),
                 "--dry-run",
+                "--allow-synthetic-model-version",
             ]
         )
     captured = capsys.readouterr()
@@ -1257,6 +1463,7 @@ def test_main_prints_to_stdout_when_no_output_path(
                 "263",
                 "--default-architecture",
                 "catboost",
+                "--allow-synthetic-model-version",
             ]
         )
     captured = capsys.readouterr()
