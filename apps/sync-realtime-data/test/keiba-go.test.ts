@@ -1055,7 +1055,7 @@ describe("keiba.go realtime helpers", () => {
     ]);
   });
 
-  it("extractBabaCode returns null when k_babaCode is missing", async () => {
+  it("fetchTodayRaceListUrls falls back when target-day links omit k_babaCode", async () => {
     const { extractOddsLinks: _extract } = await import("../src/keiba-go");
     expect(_extract).toBeDefined();
     mockFetchHtml({
@@ -1065,7 +1065,11 @@ describe("keiba.go realtime helpers", () => {
         </article>
       `,
     });
-    expect(await fetchTodayRaceListUrls("20260510")).toStrictEqual([]);
+    const result = await fetchTodayRaceListUrls("20260510");
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.every((item) => item.url.includes("RaceList?k_raceDate=2026%2F05%2F10"))).toBe(
+      true,
+    );
   });
 
   it("collectLegacyOddsLinksFromNav returns {} when the third div is missing the known odds links", () => {

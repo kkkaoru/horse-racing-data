@@ -174,13 +174,23 @@ const dedupe = <T>(values: readonly T[]): T[] => Array.from(new Set(values));
 const toFullKeibaGoUrl = (path: string): string =>
   path.startsWith("http") ? path : `${KEIBA_GO_ORIGIN}${path}`;
 
+const allKnownRaceListUrls = (targetDate: string): RaceListUrl[] =>
+  Object.keys(BABA_CODE_TO_LOCAL_KEIBAJO)
+    .toSorted((left, right) => Number(left) - Number(right))
+    .map((babaCode) => buildRaceListUrl(targetDate, babaCode));
+
 const extractBabaCode = (url: string): string | null => {
   const code = new URL(url).searchParams.get("k_babaCode");
   return code ? code.padStart(2, "0") : null;
 };
 
 export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceListUrl[]> => {
-  const html = await fetchHtml(TOP_PAGE_URL, { retryableStatuses: TOP_PAGE_RETRYABLE_STATUSES });
+  let html: string;
+  try {
+    html = await fetchHtml(TOP_PAGE_URL, { retryableStatuses: TOP_PAGE_RETRYABLE_STATUSES });
+  } catch {
+    return allKnownRaceListUrls(targetDate);
+  }
   const article = html.match(TODAY_RACE_ARTICLE_PATTERN)?.[1] ?? html;
   const target = `${targetDate.slice(0, 4)}/${targetDate.slice(4, 6)}/${targetDate.slice(6, 8)}`;
   const paths = dedupe(
@@ -189,11 +199,12 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
     ),
   );
 
-  return paths
+  const urls = paths
     .map(toFullKeibaGoUrl)
     .filter((url) => new URL(url).searchParams.get("k_raceDate") === target)
     .map((url) => ({ babaCode: extractBabaCode(url) ?? "", url }))
     .filter((item) => item.babaCode in BABA_CODE_TO_LOCAL_KEIBAJO);
+  return urls.length > 0 ? urls : allKnownRaceListUrls(targetDate);
 };
 
 export const fetchRaceLinksFromRaceList = async (

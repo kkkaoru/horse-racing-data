@@ -270,7 +270,7 @@ describe("worker scheduling with Miniflare", () => {
     expect(planLog?.count).toBe(1);
   }, 20_000);
 
-  it("seeds the realtime planner watchdog from API traffic when stale", async () => {
+  it("does not seed the realtime planner watchdog from API traffic", async () => {
     const response = await worker.fetch("https://example.test/health");
 
     expect(response.status).toBe(200);
@@ -287,18 +287,7 @@ describe("worker scheduling with Miniflare", () => {
         `,
       )
       .all<{ job_type: string; message: string | null; status: string }>();
-    expect(planLog.results).toEqual([
-      {
-        job_type: "plan-realtime-fetches-self",
-        message: "0 jobs queued",
-        status: "ok",
-      },
-      {
-        job_type: "plan-realtime-fetches",
-        message: "0 jobs queued",
-        status: "ok",
-      },
-    ]);
+    expect(planLog.results).toEqual([]);
   });
 
   it("runs scheduled JRA premium link discovery for the next race day", async () => {

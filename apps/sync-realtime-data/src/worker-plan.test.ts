@@ -2364,9 +2364,10 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
   );
 });
 
-it("runWeightWatchdog enqueues fetch-weights jobs for stale races and logs the enqueued count", async () => {
+it("runWeightWatchdog enqueues fetch-weights jobs and inline-attempts stale JRA races", async () => {
   const { runWeightWatchdog } = await import("./worker");
-  const { logFetch } = await import("./storage");
+  const { getRaceSource, logFetch } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValue(null);
   const all = vi.fn(async () => ({
     results: [
       {
@@ -2395,13 +2396,62 @@ it("runWeightWatchdog enqueues fetch-weights jobs for stale races and logs the e
     "weight-watchdog",
     "ok",
     null,
-    '{"enqueued":2}',
+    '{"enqueued":2,"inlineAttempted":2,"inlineError":2,"inlineStored":0}',
+    undefined,
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog-inline",
+    "error",
+    "jra:2026:0607:05:06",
+    "race source not found: jra:2026:0607:05:06",
     undefined,
   );
   expect(sendBatch).toHaveBeenCalledWith([
     { body: { raceKey: "jra:2026:0607:05:06", type: "fetch-weights" } },
     { body: { raceKey: "jra:2026:0607:05:11", type: "fetch-weights" } },
   ]);
+});
+
+it("runWeightWatchdog also attempts inline NAR weight fetches and keeps the watchdog alive on inline failure", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const { getRaceSource, logFetch } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(null);
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        last_weight_fetch_at: null,
+        race_key: "nar:2026:0607:44:07",
+        race_start_at_jst: "2026-06-07T17:45:00+09:00",
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const sendBatch = vi.fn(async () => {});
+  const env = {
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch },
+  } as unknown as Env;
+  await runWeightWatchdog(env, new Date("2026-06-07T08:30:00.000Z"));
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog-inline",
+    "error",
+    "nar:2026:0607:44:07",
+    "race source not found: nar:2026:0607:44:07",
+    undefined,
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-watchdog",
+    "ok",
+    null,
+    '{"enqueued":1,"inlineAttempted":1,"inlineError":1,"inlineStored":0}',
+    undefined,
+  );
+  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0607:44:07", type: "fetch-weights" });
 });
 
 it("runWeightWatchdog logs an error when the d1 query throws and does not enqueue jobs", async () => {
@@ -2561,4 +2611,158 @@ it("planResultFetchesOnly enqueues fetch-results for a finished race that has ne
   const count = await planResultFetchesOnly(env, "20260607");
   expect(count).toBe(1);
   expect(send).toHaveBeenCalledWith({ raceKey: "jra:2026:0607:09:03", type: "fetch-results" });
+});
+
+it("planResultFetchesOnly attempts inline NAR result fetches so race trends are not blocked by queue backlog", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "20",
+      debaUrl: "https://www.keiba.go.jp/race",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: null,
+      kaisaiNen: "2026",
+      kaisaiNichime: null,
+      kaisaiTsukihi: "0607",
+      keibajoCode: "44",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "12",
+      raceKey: "nar:2026:0607:44:12",
+      raceName: "大井12R",
+      raceStartAtJst: "2026-06-07T20:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "nar",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+  ] as never);
+  const send = vi.fn(queueSendOk);
+  const env = buildEnv({
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send, sendBatch: vi.fn(queueSendOk) },
+    REALTIME_TEST_NOW: "2026-06-07T12:00:00.000Z",
+  });
+  const count = await planResultFetchesOnly(env, "20260607");
+  expect(count).toBe(1);
+  expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0607:44:12", type: "fetch-results" });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "skip:claim-failed",
+    "nar:2026:0607:44:12",
+    null,
+    undefined,
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "plan-result-fetches-summary",
+    null,
+    '{"enqueued":1,"eligible":1,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
+    undefined,
+  );
+});
+
+it("planResultFetchesOnly attempts inline JRA result fetches with a low per-tick cap", async () => {
+  const { planResultFetchesOnly } = await import("./worker");
+  const { listSchedulableRaceSourcesByDate, logFetch } = await import("./storage");
+  vi.mocked(listSchedulableRaceSourcesByDate).mockResolvedValueOnce([
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race/one",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: "03",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0607",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "03",
+      raceKey: "jra:2026:0607:09:03",
+      raceName: "阪神3R",
+      raceStartAtJst: "2026-06-07T10:50:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+    {
+      babaCode: "08",
+      debaUrl: "https://www.jra.go.jp/race/two",
+      discoveredAt: "2026-06-07T00:00:00+09:00",
+      kaisaiKai: "03",
+      kaisaiNen: "2026",
+      kaisaiNichime: "01",
+      kaisaiTsukihi: "0607",
+      keibajoCode: "09",
+      lastOddsFetchAt: null,
+      lastOddsQueuedAt: null,
+      lastResultFetchAt: null,
+      lastResultQueuedAt: null,
+      lastWeightFetchAt: null,
+      oddsFetchLockUntil: null,
+      oddsLinks: {},
+      raceBango: "04",
+      raceKey: "jra:2026:0607:09:04",
+      raceName: "阪神4R",
+      raceStartAtJst: "2026-06-07T11:20:00+09:00",
+      resultCompleteAt: null,
+      resultExpectedHorseCount: null,
+      resultFetchLockUntil: null,
+      resultSavedHorseCount: null,
+      source: "jra",
+      updatedAt: "2026-06-07T00:00:00+09:00",
+    },
+  ] as never);
+  const sendBatch = vi.fn(queueSendOk);
+  const env = buildEnv({
+    REALTIME_JOBS: { metrics: vi.fn(queueMetricsOk), send: vi.fn(queueSendOk), sendBatch },
+    REALTIME_TEST_NOW: "2026-06-07T03:00:00.000Z",
+  });
+  const count = await planResultFetchesOnly(env, "20260607");
+  expect(count).toBe(2);
+  expect(sendBatch).toHaveBeenCalledWith([
+    { body: { raceKey: "jra:2026:0607:09:03", type: "fetch-results" } },
+    { body: { raceKey: "jra:2026:0607:09:04", type: "fetch-results" } },
+  ]);
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "skip:claim-failed",
+    "jra:2026:0607:09:03",
+    null,
+    undefined,
+  );
+  expect(logFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "skip:claim-failed",
+    "jra:2026:0607:09:04",
+    null,
+    undefined,
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-result-fetches",
+    "plan-result-fetches-summary",
+    null,
+    '{"enqueued":2,"eligible":2,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
+    undefined,
+  );
 });

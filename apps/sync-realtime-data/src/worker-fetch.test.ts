@@ -519,7 +519,7 @@ it("fetch GET premium race returns plain payload when cached paddock is missing"
   expect(response.status).toBe(200);
 });
 
-it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil", async () => {
+it("fetch during JST polling window does not seed the planner watchdog", async () => {
   const { default: worker } = await import("./worker");
   const waitPromises: Promise<unknown>[] = [];
   const ctx = {
@@ -534,7 +534,7 @@ it("fetch during JST polling window seeds the planner watchdog via ctx.waitUntil
     ctx,
   );
   await Promise.all(waitPromises);
-  expect(waitPromises.length).toBeGreaterThanOrEqual(1);
+  expect(waitPromises).toHaveLength(0);
 });
 
 it("fetch returns 403 for /api/jobs when REALTIME_ADMIN_TOKEN is missing", async () => {
@@ -551,6 +551,43 @@ it("fetch returns 403 for /api/jobs when REALTIME_ADMIN_TOKEN is missing", async
     buildCtx(),
   );
   expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/jobs/run-inline returns 403 when authorization mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/run-inline", {
+      body: JSON.stringify({ date: "20260512", type: "plan-realtime-fetches" }),
+      headers: { authorization: "Bearer wrong" },
+      method: "POST",
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+});
+
+it("fetch POST /api/jobs/run-inline executes the job immediately when authorized", async () => {
+  const { default: worker } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/jobs/run-inline", {
+      body: JSON.stringify({ type: "plan-realtime-fetches", date: "20260512" }),
+      headers: { authorization: "Bearer secret" },
+      method: "POST",
+    }),
+    buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" } as never),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ ok: true });
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-realtime-fetches",
+    "ok",
+    null,
+    expect.any(String),
+  );
 });
 
 it("fetch GET unknown path returns 404 with cache-control max-age=0", async () => {

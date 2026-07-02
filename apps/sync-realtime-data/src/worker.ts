@@ -279,6 +279,8 @@ const RESULT_FETCH_INTERVAL_MINUTES = 2;
 // (`RESULT_FETCH_RETRY_LONG_LOCK_MINUTES` = 15) plus a small grace, so we do
 // not race the in-flight job. 20 minutes = 15 + 5 grace.
 const RESULT_FETCH_QUEUE_STALE_MINUTES = 20;
+const RESULT_FETCH_INLINE_JRA_MAX_PER_TICK = 1;
+const RESULT_FETCH_INLINE_NAR_MAX_PER_TICK = 4;
 // JST 09-22 (= UTC 00-13) is the race-day result-poller cron. Distinct from
 // the hourly "0 0-13 * * *" plan-realtime-fetches cron so we only run the
 // result poller without re-triggering the heavier hourly work. Tightened to
@@ -404,6 +406,8 @@ const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
 const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
 const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;
 const WEIGHT_WATCHDOG_MAX_PER_TICK = 8;
+const WEIGHT_WATCHDOG_INLINE_JRA_MAX_PER_TICK = 2;
+const WEIGHT_WATCHDOG_INLINE_NAR_MAX_PER_TICK = 2;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -1489,6 +1493,28 @@ interface StaleWeightFetchRaceRow {
   race_start_at_jst: string;
 }
 
+const selectInlineRealtimeJobs = <T extends { raceKey: string }>(
+  jobs: readonly T[],
+  limits: { jra: number; nar: number },
+): T[] => [
+  ...jobs.filter((candidate) => candidate.raceKey.startsWith("jra:")).slice(0, limits.jra),
+  ...jobs.filter((candidate) => candidate.raceKey.startsWith("nar:")).slice(0, limits.nar),
+];
+
+const buildTanshoOddsRowsFromHotOdds = (
+  hotOdds: HotOddsPayload | null,
+): RaceResultTanshoOddsRow[] =>
+  (hotOdds?.latest.tansho ?? [])
+    .map((row): RaceResultTanshoOddsRow | null => {
+      if (row.odds === undefined || row.rank === undefined) return null;
+      if (!Number.isFinite(row.odds) || row.odds <= 0) return null;
+      if (!Number.isFinite(row.rank) || row.rank <= 0) return null;
+      const horseNumber = row.combination.trim();
+      if (horseNumber.length === 0) return null;
+      return { horseNumber, popularity: row.rank, tanshoOdds: row.odds };
+    })
+    .filter((row): row is RaceResultTanshoOddsRow => row !== null);
+
 // Direct D1 query for races whose post time falls inside the watchdog
 // lookahead window and whose last weight fetch is null or older than the
 // stale threshold. Keeps the watchdog independent of the heavier
@@ -1561,17 +1587,53 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
       );
       return;
     }
-    const jobs: Job[] = stale.map((race) => ({
+    const jobs: FetchWeightsJobShape[] = stale.map((race) => ({
       raceKey: race.raceKey,
       type: "fetch-weights",
     }));
     await enqueueJobs(env, jobs);
+    let inlineAttempted = 0;
+    let inlineStored = 0;
+    let inlineError = 0;
+    for (const job of selectInlineRealtimeJobs(jobs, {
+      jra: WEIGHT_WATCHDOG_INLINE_JRA_MAX_PER_TICK,
+      nar: WEIGHT_WATCHDOG_INLINE_NAR_MAX_PER_TICK,
+    })) {
+      inlineAttempted += 1;
+      try {
+        const stored = await withHandlerTimeout({
+          label: "weight-watchdog-inline",
+          ms: QUEUE_HANDLER_TIMEOUT_MS,
+          task: fetchAndStoreWeights(env, job.raceKey),
+        });
+        if (stored) {
+          inlineStored += 1;
+        }
+      } catch (error: unknown) {
+        inlineError += 1;
+        await logFetch(
+          env.REALTIME_DB,
+          "weight-watchdog-inline",
+          "error",
+          job.raceKey,
+          formatError(error),
+          env.DETAIL_SECTION_CACHE_KV,
+        );
+      }
+    }
     await logFetch(
       env.REALTIME_DB,
       "weight-watchdog",
       "ok",
       null,
-      JSON.stringify({ enqueued: jobs.length }),
+      inlineAttempted === 0
+        ? JSON.stringify({ enqueued: jobs.length })
+        : JSON.stringify({
+            enqueued: jobs.length,
+            inlineAttempted,
+            inlineError,
+            inlineStored,
+          }),
       env.DETAIL_SECTION_CACHE_KV,
     );
   } catch (error: unknown) {
@@ -1735,44 +1797,6 @@ const enqueueSelfRealtimePlanIfStale = async (env: Env, date: string, now = getN
     { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
   );
   await logFetch(env.REALTIME_DB, "plan-realtime-fetches-self", "queued", null, date);
-};
-
-const enqueueNextSelfRealtimePlan = async (env: Env, date: string, now = getNow(env)) => {
-  if (!isJstPollingWindow(now)) {
-    return;
-  }
-  if (await isPlanRealtimeCircuitBreakerOpen(env)) {
-    return;
-  }
-  await env.REALTIME_JOBS.send(
-    { date, selfSchedule: true, type: "plan-realtime-fetches" },
-    { delaySeconds: REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS },
-  );
-};
-
-const runRealtimePlannerWatchdogIfStale = async (env: Env, date: string, now = getNow(env)) => {
-  if (!isJstPollingWindow(now)) {
-    return;
-  }
-  if (await isPlanRealtimeCircuitBreakerOpen(env)) {
-    return;
-  }
-  const latest = await getLatestSuccessfulRealtimePlanAt(env);
-  if (
-    latest &&
-    new Date(latest).getTime() > now.getTime() - REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS * 1000
-  ) {
-    return;
-  }
-  await handleJob(env, { date, selfSchedule: true, type: "plan-realtime-fetches" });
-};
-
-const seedRealtimePlannerWatchdog = (env: Env, ctx: ExecutionContext): void => {
-  const now = getNow(env);
-  if (!isJstPollingWindow(now)) {
-    return;
-  }
-  ctx.waitUntil(runRealtimePlannerWatchdogIfStale(env, getTodayJst(now), now));
 };
 
 export const getJstDayStart = (targetDate: string): Date =>
@@ -2623,17 +2647,47 @@ export const planResultFetchesOnly = async (env: Env, targetDate: string): Promi
     .map((race) => buildResultFetchJobIfDue(race, now))
     .filter((job): job is Extract<Job, { type: "fetch-results" }> => job !== null);
   await enqueueJobs(env, jobs);
+  const inlineJobs = selectInlineRealtimeJobs(jobs, {
+    jra: RESULT_FETCH_INLINE_JRA_MAX_PER_TICK,
+    nar: RESULT_FETCH_INLINE_NAR_MAX_PER_TICK,
+  });
+  let inlineAttempted = 0;
+  let inlineError = 0;
+  for (const job of inlineJobs) {
+    inlineAttempted += 1;
+    try {
+      await handleJob(env, job);
+    } catch (error: unknown) {
+      inlineError += 1;
+      await logFetch(
+        env.REALTIME_DB,
+        "plan-result-fetches-inline",
+        "error",
+        job.raceKey,
+        formatError(error),
+        env.DETAIL_SECTION_CACHE_KV,
+      );
+    }
+  }
   const breakdown = summariseResultFetchEligibility(races, now);
   await logFetch(
     env.REALTIME_DB,
     "plan-result-fetches",
     PLAN_RESULT_FETCHES_SUMMARY_STATUS,
     null,
-    JSON.stringify({
-      enqueued: jobs.length,
-      eligible: breakdown.eligible,
-      skipped_too_recent: breakdown.skippedTooRecent,
-    }),
+    inlineAttempted === 0
+      ? JSON.stringify({
+          enqueued: jobs.length,
+          eligible: breakdown.eligible,
+          skipped_too_recent: breakdown.skippedTooRecent,
+        })
+      : JSON.stringify({
+          enqueued: jobs.length,
+          eligible: breakdown.eligible,
+          inlineAttempted,
+          inlineError,
+          skipped_too_recent: breakdown.skippedTooRecent,
+        }),
     // 2026-06-28 (D1 cost optimization): the */2 cron emits a summary row
     // every 2 min. Identical summary payloads (same enqueued / eligible /
     // skipped triple) repeat through quiet windows; KV dedupe collapses
@@ -2641,9 +2695,10 @@ export const planResultFetchesOnly = async (env: Env, targetDate: string): Promi
     // first transition to a new payload.
     env.DETAIL_SECTION_CACHE_KV,
   );
+  const inlineRaceKeys = new Set(inlineJobs.map((job) => job.raceKey));
   await markResultFetchQueued(
     env.REALTIME_DB,
-    jobs.map((job) => job.raceKey),
+    jobs.filter((job) => !inlineRaceKeys.has(job.raceKey)).map((job) => job.raceKey),
     toJstIsoString(now),
   );
   return jobs.length;
@@ -2874,6 +2929,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
   const fetchedAt = toJstIsoString();
   const html = await fetchRacePage(race.debaUrl);
   const latestOdds = race.source === "jra" ? await fetchHotOddsPayload(env, raceKey) : null;
+  const latestTanshoOdds = buildTanshoOddsRowsFromHotOdds(latestOdds);
   const entries =
     race.source === "jra"
       ? sanitizeJraRaceEntriesWithOdds(parseJraRaceEntries(html), latestOdds?.latest)
@@ -2895,6 +2951,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
         isComplete: false,
         race,
         results: [],
+        tanshoOdds: latestTanshoOdds,
       }),
       race,
     );
@@ -2937,6 +2994,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
         isComplete: false,
         race,
         results: [],
+        tanshoOdds: latestTanshoOdds,
         weights,
       }),
       race,
@@ -3752,9 +3810,14 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     }
     await resetEmptyResultAttempts(env.REALTIME_DB, raceKey);
     const inserted = await insertRaceResultSnapshot(env.REALTIME_DB, raceKey, fetchedAt, results);
+    const [latestWeights, latestOdds] = await Promise.all([
+      getLatestHorseWeights(env.REALTIME_DB, raceKey),
+      race.source === "jra" ? fetchHotOddsPayload(env, raceKey) : Promise.resolve(null),
+    ]);
     const tanshoOdds =
-      race.source === "nar" && results.length > 0 ? parseRaceResultTanshoOdds(resultHtml) : [];
-    const latestWeights = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
+      race.source === "nar" && results.length > 0
+        ? parseRaceResultTanshoOdds(resultHtml)
+        : buildTanshoOddsRowsFromHotOdds(latestOdds);
     const weightsForTrend = latestWeights?.horses ?? [];
     if (race.source === "nar") {
       // Backfill the hot worker's odds_snapshots with the final 単勝オッズ /
@@ -4325,6 +4388,9 @@ const handleFetchWeightsOrUnknown = async (env: Env, job: unknown): Promise<void
     );
     return;
   }
+  if (await skipStaleLiveRealtimeJob(env, fetchWeightsJob.type, fetchWeightsJob.raceKey)) {
+    return;
+  }
   // 2026-06-28: NAR weight scrapes can hang on dead or rate-limited NAR
   // upstreams. Same 30s runtime cancel concern as fetch-results above.
   const stored = await withHandlerTimeout({
@@ -4340,6 +4406,36 @@ interface FetchWeightsJobShape {
   raceKey: string;
   type: "fetch-weights";
 }
+
+const raceKeyDateYmd = (raceKey: string): string | null => {
+  const parts = raceKey.split(":");
+  if (parts.length !== RACE_KEY_PART_COUNT) return null;
+  const year = parts[1];
+  const monthDay = parts[2];
+  if (!year || !monthDay || !/^\d{4}$/u.test(year) || !/^\d{4}$/u.test(monthDay)) return null;
+  return `${year}${monthDay}`;
+};
+
+const skipStaleLiveRealtimeJob = async (
+  env: Env,
+  jobType: "fetch-results" | "fetch-weights",
+  raceKey: string,
+): Promise<boolean> => {
+  const raceDate = raceKeyDateYmd(raceKey);
+  if (!raceDate) return false;
+  const today = getTodayJst(getNow(env));
+  const staleBefore = jobType === "fetch-results" ? addDaysToYyyymmdd(today, -1) : today;
+  if (raceDate >= staleBefore) return false;
+  await logFetch(
+    env.REALTIME_DB,
+    jobType,
+    "skip:stale-live-job",
+    raceKey,
+    JSON.stringify({ raceDate, today }),
+    env.DETAIL_SECTION_CACHE_KV,
+  );
+  return true;
+};
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -4402,7 +4498,6 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
           null,
           `${count} jobs queued`,
         );
-        await enqueueNextSelfRealtimePlan(env, job.date);
       }
       return;
     }
@@ -4471,6 +4566,9 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "fetch-results") {
+      if (await skipStaleLiveRealtimeJob(env, job.type, job.raceKey)) {
+        return;
+      }
       // 2026-06-28: wrap the JRA Playwright path so a hung Browser binding
       // (10 concurrent / 10-minute paid-plan caps) does not let the Workers
       // runtime cancel the whole handler at ~30s, which previously left the
@@ -4742,11 +4840,8 @@ export const sameDayVenueJockeyWinsFromRequest = (
 };
 
 export default {
-  async fetch(request, env, ctx): Promise<Response> {
+  async fetch(request, env, _ctx): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "OPTIONS") {
-      seedRealtimePlannerWatchdog(env, ctx);
-    }
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -4892,6 +4987,16 @@ export default {
       }
       const job = (await request.json()) as Job;
       await enqueueJobs(env, [job]);
+      return json({ ok: true });
+    }
+
+    if (url.pathname === "/api/jobs/run-inline" && request.method === "POST") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      const job = (await request.json()) as Job;
+      await handleJob(env, job);
       return json({ ok: true });
     }
 

@@ -188,6 +188,7 @@ const buildEnv = (overrides?: BuildEnvOverrides): Env => {
     PREMIUM_RACE_JOBS: baseQueue,
     REALTIME_DB: {},
     REALTIME_JOBS: baseQueue,
+    REALTIME_TEST_NOW: "2026-05-12T12:00:00.000Z",
     ...overrides,
   };
   return base satisfies BuildEnvOverrides as unknown as Env;

@@ -197,15 +197,18 @@ it("fetchTodayRaceListUrls retries on transient 404 and succeeds on second attem
     );
   vi.stubGlobal("fetch", fetchMock);
   const result = await fetchTodayRaceListUrls("20260609");
-  expect(result).toStrictEqual([]);
+  expect(result.length).toBeGreaterThan(0);
+  expect(result[0]?.url).toContain("RaceList?k_raceDate=2026%2F06%2F09");
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
-it("fetchTodayRaceListUrls bubbles up 404 after exhausting retry attempts", async () => {
+it("fetchTodayRaceListUrls falls back to deterministic RaceList URLs after top-page 404s", async () => {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("nope", { status: 404 }));
   vi.stubGlobal("fetch", fetchMock);
-  await expect(fetchTodayRaceListUrls("20260609")).rejects.toThrowError(
-    "Failed to fetch https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop: 404",
+  const result = await fetchTodayRaceListUrls("20260609");
+  expect(result.length).toBeGreaterThan(0);
+  expect(result.every((item) => item.url.includes("RaceList?k_raceDate=2026%2F06%2F09"))).toBe(
+    true,
   );
   expect(fetchMock).toHaveBeenCalledTimes(3);
 });

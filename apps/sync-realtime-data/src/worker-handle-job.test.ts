@@ -145,6 +145,7 @@ vi.mock("./jra", async () => {
     fetchJraOddsWithPlaywright: vi.fn(async () => ({ entryHtml: "", latest: {} })),
     parseJraHorseWeights: vi.fn(() => []),
     parseJraRaceEntries: vi.fn(() => []),
+    parseJraRaceResults: vi.fn(() => []),
   };
 });
 vi.mock("./jra-track-condition", () => ({
@@ -213,6 +214,7 @@ const buildEnv = (overrides?: Partial<Env>): Env => {
     PREMIUM_RACE_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
     REALTIME_DB: {},
     REALTIME_JOBS: { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) },
+    REALTIME_TEST_NOW: "2026-05-12T12:00:00.000Z",
     ...overrides,
   } as unknown as Env;
 };
@@ -240,6 +242,43 @@ it("handleJob delegates build-daily-features to runDailyFeatureBuildForEnv and l
     "ok",
     null,
     expect.any(String),
+  );
+});
+
+it("handleJob skips stale fetch-weights jobs before scraping", async () => {
+  const { handleJob } = await import("./worker");
+  const { logFetch } = await import("./storage");
+  const { fetchRacePage } = await import("./keiba-go");
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-07-02T06:00:00.000Z" }), {
+    raceKey: "nar:2026:0630:48:01",
+    type: "fetch-weights",
+  });
+  expect(fetchRacePage).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:stale-live-job",
+    "nar:2026:0630:48:01",
+    JSON.stringify({ raceDate: "20260630", today: "20260702" }),
+    undefined,
+  );
+});
+
+it("handleJob skips stale fetch-results jobs before claiming result fetch", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, logFetch } = await import("./storage");
+  await handleJob(buildEnv({ REALTIME_TEST_NOW: "2026-07-02T06:00:00.000Z" }), {
+    raceKey: "nar:2026:0630:50:01",
+    type: "fetch-results",
+  });
+  expect(claimResultFetch).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-results",
+    "skip:stale-live-job",
+    "nar:2026:0630:50:01",
+    JSON.stringify({ raceDate: "20260630", today: "20260702" }),
+    undefined,
   );
 });
 
@@ -669,10 +708,14 @@ it("handleJob discover-premium-races with full config fetches top + NAR top and 
   expect(upsertPremiumRaceLink).toHaveBeenCalled();
 });
 
-it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues next plan", async () => {
+it("handleJob plan-realtime-fetches with selfSchedule logs without chaining another plan", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
-  await handleJob(buildEnv(), {
+  const send = vi.fn(async () => {});
+  const env = buildEnv({
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+  } as never);
+  await handleJob(env, {
     date: "20260512",
     selfSchedule: true,
     type: "plan-realtime-fetches",
@@ -684,6 +727,7 @@ it("handleJob plan-realtime-fetches with selfSchedule logs twice and enqueues ne
     null,
     expect.any(String),
   );
+  expect(send).not.toHaveBeenCalled();
 });
 
 it("handleJob fetch-weights with NAR race source logs weights-empty when no rows parse", async () => {
@@ -1732,10 +1776,120 @@ it("handleJob fetch-results with JRA race source throws when entry and result bo
   expect(completeResultFetch).not.toHaveBeenCalled();
 });
 
+it("handleJob fetch-results with JRA race source pushes hot odds to race trend DO", async () => {
+  const { handleJob } = await import("./worker");
+  const { claimResultFetch, getLatestHorseWeights, getRaceSource, insertRaceResultSnapshot } =
+    await import("./storage");
+  const { parseJraRaceEntries, parseJraRaceResults } = await import("./jra");
+  vi.mocked(claimResultFetch).mockResolvedValueOnce(true);
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseJraRaceEntries).mockReturnValueOnce([
+    { horseName: "JraA", horseNumber: "1", jockeyName: "JockeyA", status: null },
+    { horseName: "JraB", horseNumber: "2", jockeyName: "JockeyB", status: null },
+  ]);
+  vi.mocked(parseJraRaceResults).mockReturnValueOnce([
+    { finishPosition: "1", horseName: "JraA", horseNumber: "1", time: "1:10.1" },
+    { finishPosition: "2", horseName: "JraB", horseNumber: "2", time: "1:10.3" },
+  ]);
+  vi.mocked(insertRaceResultSnapshot).mockResolvedValueOnce(2);
+  vi.mocked(getLatestHorseWeights).mockResolvedValueOnce({
+    fetchedAt: "2026-05-12T12:40:00+09:00",
+    horses: [
+      { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 480 },
+      { changeAmount: null, changeSign: null, horseName: null, horseNumber: "2", weight: 490 },
+    ],
+  } as never);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName } as never,
+      REALTIME_HOT: {
+        fetch: vi.fn(
+          async (): Promise<Response> =>
+            Response.json({
+              fetchedAt: "2026-05-12T12:50:00+09:00",
+              history: [],
+              historyByType: {},
+              latest: {
+                tansho: [
+                  { combination: "1", odds: 2.6, rank: 1 },
+                  { combination: "2", odds: 4.8, rank: 3 },
+                ],
+              },
+            }),
+        ),
+      } as never,
+      REALTIME_TEST_NOW: "2026-05-12T05:00:00.000Z",
+    }),
+    {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-results",
+    },
+  );
+  const body = stubFetch.mock.calls[0]![1]!.body;
+  if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+  const parsed = JSON.parse(body) as {
+    starterRows: Array<{
+      bataiju: string | null;
+      finishPosition: number;
+      tanshoOdds: string | null;
+      tanshoPopularity: string | null;
+      umaban: string;
+    }>;
+  };
+  expect(parsed.starterRows).toMatchObject([
+    {
+      bataiju: "480",
+      finishPosition: 1,
+      tanshoOdds: "0026",
+      tanshoPopularity: "01",
+      umaban: "1",
+    },
+    {
+      bataiju: "490",
+      finishPosition: 2,
+      tanshoOdds: "0048",
+      tanshoPopularity: "03",
+      umaban: "2",
+    },
+  ]);
+});
+
 it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeightSnapshot", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, insertHorseWeightSnapshot, updateLastFetch } = await import("./storage");
-  const { parseJraHorseWeights } = await import("./jra");
+  const { parseJraHorseWeights, parseJraRaceEntries } = await import("./jra");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "08",
     debaUrl: "https://www.jra.go.jp/race",
@@ -1767,10 +1921,41 @@ it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeight
     { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 480 },
     { changeAmount: null, changeSign: null, horseName: null, horseNumber: "2", weight: 490 },
   ]);
-  await handleJob(buildEnv(), {
-    raceKey: "jra:2026:0512:08:01",
-    type: "fetch-weights",
-  });
+  vi.mocked(parseJraRaceEntries).mockReturnValueOnce([
+    { horseName: "JraA", horseNumber: "1", jockeyName: "JockeyA", status: null },
+    { horseName: "JraB", horseNumber: "2", jockeyName: "JockeyB", status: null },
+  ]);
+  const stubFetch = vi.fn(
+    async (_url: string, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+  );
+  const idFromName = vi.fn((name: string): string => name);
+  const get = vi.fn((_id: string) => ({ fetch: stubFetch }));
+  await handleJob(
+    buildEnv({
+      RACE_TREND_DAILY_TRACK_DO: { get, idFromName } as never,
+      REALTIME_HOT: {
+        fetch: vi.fn(
+          async (): Promise<Response> =>
+            Response.json({
+              fetchedAt: "2026-05-12T12:00:00+09:00",
+              history: [],
+              historyByType: {},
+              latest: {
+                tansho: [
+                  { combination: "1", odds: 3.4, rank: 2 },
+                  { combination: "2", odds: 1.8, rank: 1 },
+                ],
+              },
+            }),
+        ),
+      } as never,
+    }),
+    {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-weights",
+    },
+  );
   expect(insertHorseWeightSnapshot).toHaveBeenCalled();
   expect(updateLastFetch).toHaveBeenCalledWith(
     expect.anything(),
@@ -1778,6 +1963,21 @@ it("handleJob fetch-weights with JRA race source runs assert + insertHorseWeight
     "last_weight_fetch_at",
     expect.any(String),
   );
+  expect(stubFetch).toHaveBeenCalledTimes(2);
+  const body = stubFetch.mock.calls[1]![1]!.body;
+  if (typeof body !== "string") throw new Error("expected push body to be a JSON string");
+  const parsed = JSON.parse(body) as {
+    starterRows: Array<{
+      bataiju: string | null;
+      tanshoOdds: string | null;
+      tanshoPopularity: string | null;
+      umaban: string;
+    }>;
+  };
+  expect(parsed.starterRows).toMatchObject([
+    { bataiju: "480", tanshoOdds: "0034", tanshoPopularity: "02", umaban: "1" },
+    { bataiju: "490", tanshoOdds: "0018", tanshoPopularity: "01", umaban: "2" },
+  ]);
 });
 
 it("handleJob fetch-results with not-yet-finished race fails the fetch and returns", async () => {
