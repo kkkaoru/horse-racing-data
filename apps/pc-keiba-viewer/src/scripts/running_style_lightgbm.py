@@ -213,6 +213,7 @@ class RunningStyleCellMetrics(TypedDict):
     multi_log_loss: float
     top2_accuracy: float
     race_level: RunningStyleRaceLevelMetrics
+    race_level_pair_metrics: RunningStyleRaceLevelPairMetrics
     per_class_accuracy: dict[str, float]
     per_class_f1: dict[str, float]
     per_class_precision: dict[str, float]
@@ -236,6 +237,19 @@ class RunningStyleRaceLevelMetrics(TypedDict):
     finish_weighted_accuracy: float
     top1_finish_style_accuracy: float
     top3_finish_style_accuracy: float
+
+
+class RunningStylePairMetric(TypedDict):
+    score_sum: float
+    score_count: int
+    score: float
+
+
+class RunningStyleRaceLevelPairMetrics(TypedDict):
+    corner1: RunningStylePairMetric
+    corner3: RunningStylePairMetric
+    corner4: RunningStylePairMetric
+    finish: RunningStylePairMetric
 
 
 class RunningStyleCellAdoptionMetrics(TypedDict):
@@ -998,6 +1012,98 @@ def compute_race_level_running_style_metrics(
     }
 
 
+def _pair_metric_from_totals(score_sum: float, score_count: int) -> RunningStylePairMetric:
+    return {
+        "score_sum": float(score_sum),
+        "score_count": int(score_count),
+        "score": float(score_sum / score_count) if score_count > 0 else float("nan"),
+    }
+
+
+def _score_front_order_pairs(
+    predicted_front_score: np.ndarray,
+    actual_order: np.ndarray,
+    *,
+    positive_only: bool = False,
+) -> tuple[float, int]:
+    if predicted_front_score.size != actual_order.size:
+        raise ValueError("predicted_front_score and actual_order must have the same size")
+    score_sum = 0.0
+    score_count = 0
+    for left_idx in range(actual_order.size):
+        left_actual = actual_order[left_idx]
+        left_pred = predicted_front_score[left_idx]
+        if not np.isfinite(left_actual) or not np.isfinite(left_pred):
+            continue
+        if positive_only and left_actual <= 0:
+            continue
+        for right_idx in range(left_idx + 1, actual_order.size):
+            right_actual = actual_order[right_idx]
+            right_pred = predicted_front_score[right_idx]
+            if not np.isfinite(right_actual) or not np.isfinite(right_pred):
+                continue
+            if positive_only and right_actual <= 0:
+                continue
+            if left_pred == right_pred or left_actual == right_actual:
+                score_sum += 0.5
+            elif (left_pred < right_pred) == (left_actual < right_actual):
+                score_sum += 1.0
+            score_count += 1
+    return score_sum, score_count
+
+
+def _optional_pair_metric_array(
+    values: Sequence[object] | np.ndarray | None,
+    expected_size: int,
+    name: str,
+) -> np.ndarray | None:
+    return _optional_float_array(values, expected_size, name)
+
+
+def compute_race_level_pair_metrics(
+    probabilities: np.ndarray,
+    actual: np.ndarray,
+    *,
+    race_ids: Sequence[object] | np.ndarray | None = None,
+    corner1_norm: Sequence[object] | np.ndarray | None = None,
+    corner3_norm: Sequence[object] | np.ndarray | None = None,
+    corner4_norm: Sequence[object] | np.ndarray | None = None,
+    finish_positions: Sequence[object] | np.ndarray | None = None,
+) -> RunningStyleRaceLevelPairMetrics:
+    pred_front_score = compute_predicted_front_score(probabilities)
+    race_id_values = _race_ids_for_metrics(actual, race_ids)
+    metric_arrays = {
+        "corner1": _optional_pair_metric_array(corner1_norm, actual.size, "corner1_norm"),
+        "corner3": _optional_pair_metric_array(corner3_norm, actual.size, "corner3_norm"),
+        "corner4": _optional_pair_metric_array(corner4_norm, actual.size, "corner4_norm"),
+        "finish": _optional_pair_metric_array(
+            finish_positions, actual.size, "finish_positions"
+        ),
+    }
+    totals: dict[str, tuple[float, int]] = {
+        metric_name: (0.0, 0) for metric_name in metric_arrays
+    }
+    for race_id in dict.fromkeys(race_id_values.tolist()):
+        mask = race_id_values == race_id
+        race_scores = pred_front_score[mask]
+        for metric_name, values in metric_arrays.items():
+            if values is None:
+                continue
+            score_sum, score_count = _score_front_order_pairs(
+                race_scores,
+                values[mask],
+                positive_only=metric_name == "finish",
+            )
+            current_sum, current_count = totals[metric_name]
+            totals[metric_name] = (current_sum + score_sum, current_count + score_count)
+    return {
+        "corner1": _pair_metric_from_totals(*totals["corner1"]),
+        "corner3": _pair_metric_from_totals(*totals["corner3"]),
+        "corner4": _pair_metric_from_totals(*totals["corner4"]),
+        "finish": _pair_metric_from_totals(*totals["finish"]),
+    }
+
+
 def compute_per_class_log_loss(
     probabilities: np.ndarray, actual: np.ndarray
 ) -> dict[str, float]:
@@ -1050,6 +1156,8 @@ def compute_running_style_metrics(
     *,
     race_ids: Sequence[object] | np.ndarray | None = None,
     corner1_norm: Sequence[object] | np.ndarray | None = None,
+    corner3_norm: Sequence[object] | np.ndarray | None = None,
+    corner4_norm: Sequence[object] | np.ndarray | None = None,
     finish_positions: Sequence[object] | np.ndarray | None = None,
 ) -> RunningStyleCellMetrics:
     predicted = compute_predicted_labels(probabilities)
@@ -1074,6 +1182,15 @@ def compute_running_style_metrics(
             actual,
             race_ids=race_ids,
             corner1_norm=corner1_norm,
+            finish_positions=finish_positions,
+        ),
+        "race_level_pair_metrics": compute_race_level_pair_metrics(
+            probabilities,
+            actual,
+            race_ids=race_ids,
+            corner1_norm=corner1_norm,
+            corner3_norm=corner3_norm,
+            corner4_norm=corner4_norm,
             finish_positions=finish_positions,
         ),
         "per_class_accuracy": compute_per_class_accuracy(predicted, actual),
@@ -1162,6 +1279,7 @@ def running_style_cell_metrics_for_adoption(
             "macro_f1": metrics["macro_f1"],
             "multi_log_loss": metrics["multi_log_loss"],
             "race_level": metrics["race_level"],
+            "race_level_pair_metrics": metrics["race_level_pair_metrics"],
             "per_class_accuracy": metrics["per_class_accuracy"],
             "per_class_f1": metrics["per_class_f1"],
             "per_class_precision": metrics["per_class_precision"],
@@ -2461,6 +2579,16 @@ def train_one_running_style_cell(
         corner1_norm=(
             valid_df["target_corner_1_norm"].to_numpy()
             if "target_corner_1_norm" in valid_df.columns
+            else None
+        ),
+        corner3_norm=(
+            valid_df["target_corner_3_norm"].to_numpy()
+            if "target_corner_3_norm" in valid_df.columns
+            else None
+        ),
+        corner4_norm=(
+            valid_df["target_corner_4_norm"].to_numpy()
+            if "target_corner_4_norm" in valid_df.columns
             else None
         ),
         finish_positions=(

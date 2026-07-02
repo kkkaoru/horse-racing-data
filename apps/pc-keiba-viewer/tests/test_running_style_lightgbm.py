@@ -1526,6 +1526,7 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     per_class_recall = cast("dict[str, float]", metrics["per_class_recall"])
     per_class_support = cast("dict[str, int]", metrics["per_class_support"])
     race_level = cast("dict[str, float]", metrics["race_level"])
+    pair_metrics = cast("dict[str, dict[str, float | int]]", metrics["race_level_pair_metrics"])
     expected_log_loss = -(np.log(0.70) + np.log(0.35) + np.log(0.60) + np.log(0.60)) / 4.0
 
     assert metrics["accuracy"] == pytest.approx(0.75)
@@ -1568,6 +1569,12 @@ def test_compute_running_style_metrics_includes_top2_logloss_and_per_class_value
     assert np.isnan(race_level["finish_weighted_accuracy"])
     assert np.isnan(race_level["top1_finish_style_accuracy"])
     assert np.isnan(race_level["top3_finish_style_accuracy"])
+    assert pair_metrics["corner1"]["score_sum"] == pytest.approx(0.0)
+    assert pair_metrics["corner1"]["score_count"] == 0
+    assert np.isnan(pair_metrics["corner1"]["score"])
+    assert pair_metrics["finish"]["score_sum"] == pytest.approx(0.0)
+    assert pair_metrics["finish"]["score_count"] == 0
+    assert np.isnan(pair_metrics["finish"]["score"])
     assert metrics["predicted_class_support"] == {
         "nige": 2,
         "senkou": 0,
@@ -1606,10 +1613,13 @@ def test_compute_running_style_metrics_compares_race_corner_order_and_finish_pos
         actual,
         race_ids=np.array(["race-a", "race-a", "race-a"], dtype=object),
         corner1_norm=np.array([0.0, 0.5, 1.0], dtype=np.float64),
+        corner3_norm=np.array([1.0, 0.5, 0.0], dtype=np.float64),
+        corner4_norm=np.array([0.0, 1.0, 0.5], dtype=np.float64),
         finish_positions=np.array([1.0, 2.0, 3.0], dtype=np.float64),
     )
 
     race_level = cast("dict[str, float]", metrics["race_level"])
+    pair_metrics = cast("dict[str, dict[str, float | int]]", metrics["race_level_pair_metrics"])
     assert race_level == {
         "race_count": 1,
         "style_distribution_mae": pytest.approx(0.0),
@@ -1632,6 +1642,73 @@ def test_compute_running_style_metrics_compares_race_corner_order_and_finish_pos
         "top1_finish_style_accuracy": pytest.approx(1.0),
         "top3_finish_style_accuracy": pytest.approx(1.0),
     }
+    assert pair_metrics["corner1"] == {
+        "score_sum": pytest.approx(3.0),
+        "score_count": 3,
+        "score": pytest.approx(1.0),
+    }
+    assert pair_metrics["corner3"] == {
+        "score_sum": pytest.approx(0.0),
+        "score_count": 3,
+        "score": pytest.approx(0.0),
+    }
+    assert pair_metrics["corner4"] == {
+        "score_sum": pytest.approx(2.0),
+        "score_count": 3,
+        "score": pytest.approx(2.0 / 3.0),
+    }
+    assert pair_metrics["finish"] == {
+        "score_sum": pytest.approx(3.0),
+        "score_count": 3,
+        "score": pytest.approx(1.0),
+    }
+
+
+def test_score_front_order_pairs_rejects_mismatched_sizes():
+    with pytest.raises(ValueError, match="same size"):
+        subject._score_front_order_pairs(
+            np.array([0.0, 1.0], dtype=np.float64),
+            np.array([0.0], dtype=np.float64),
+        )
+
+
+def test_score_front_order_pairs_scores_tied_predictions_and_actual_order():
+    score_sum, score_count = subject._score_front_order_pairs(
+        np.array([1.0, 1.0, 2.0], dtype=np.float64),
+        np.array([0.0, 1.0, 1.0], dtype=np.float64),
+    )
+
+    assert score_sum == pytest.approx(2.0)
+    assert score_count == 3
+
+
+def test_compute_race_level_pair_metrics_skips_invalid_corner_and_finish_pairs():
+    probabilities = np.array(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    actual = np.array([0, 1, 2], dtype=np.int64)
+
+    metrics = subject.compute_race_level_pair_metrics(
+        probabilities,
+        actual,
+        race_ids=np.array(["race-a", "race-a", "race-a"], dtype=object),
+        corner1_norm=np.array([0.0, np.nan, 1.0], dtype=np.float64),
+        finish_positions=np.array([0.0, 1.0, 0.0], dtype=np.float64),
+    )
+
+    assert metrics["corner1"] == {
+        "score_sum": pytest.approx(1.0),
+        "score_count": 1,
+        "score": pytest.approx(1.0),
+    }
+    assert metrics["finish"]["score_sum"] == pytest.approx(0.0)
+    assert metrics["finish"]["score_count"] == 0
+    assert np.isnan(metrics["finish"]["score"])
 
 
 def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():
@@ -1683,6 +1760,7 @@ def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():
     assert payload["top2_accuracy"] == pytest.approx(metrics["top2_accuracy"])
     assert payload["macro_f1"] == pytest.approx(metrics["macro_f1"])
     assert payload["race_level"] == metrics["race_level"]
+    assert payload["race_level_pair_metrics"] == metrics["race_level_pair_metrics"]
     assert payload["per_class_accuracy"] == metrics["per_class_accuracy"]
     assert payload["per_class_f1"] == metrics["per_class_f1"]
     assert payload["per_class_precision"] == metrics["per_class_precision"]
