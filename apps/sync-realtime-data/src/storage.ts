@@ -2647,6 +2647,7 @@ export interface QueueHealthMetrics {
 export interface GetQueueHealthMetricsParams {
   todayYmd: string;
   thirtyMinutesAgoIso: string;
+  yesterdayYmd: string;
 }
 
 interface LastFetchLogRow {
@@ -2667,12 +2668,12 @@ const LAST_SUCCESSFUL_FETCH_LOG_SQL =
 const RACES_QUEUED_NOT_FETCHED_TODAY_SQL =
   "select count(*) as c from realtime_race_sources where (kaisai_nen || kaisai_tsukihi) = ? and last_result_queued_at is not null and last_result_fetch_at is null";
 
-// Counts races whose last result-fetch attempt landed > 30 minutes ago but
-// the race never completed. This is the signature failure mode the
-// 2026-06-28 outage left in D1 — a stuck row stays here until the planner
-// re-claims it or an operator force-completes it.
+// Counts recent races whose last result-fetch attempt landed > 30 minutes ago
+// but the race never completed. Scope this to today/yesterday so historical
+// late-publish rows do not keep queue-health permanently red after they are no
+// longer able to block the current race-day queues.
 const RACES_STUCK_OVER_THIRTY_MIN_SQL =
-  "select count(*) as c from realtime_race_sources where last_result_fetch_at is not null and last_result_fetch_at < ? and result_complete_at is null";
+  "select count(*) as c from realtime_race_sources where (kaisai_nen || kaisai_tsukihi) in (?, ?) and last_result_fetch_at is not null and last_result_fetch_at < ? and result_complete_at is null";
 
 export const getQueueHealthMetrics = async (
   db: D1Database,
@@ -2688,7 +2689,10 @@ export const getQueueHealthMetrics = async (
       .bind(FETCH_LOG_SUCCESS.fetchWeightsJobType, FETCH_LOG_SUCCESS.okStatus)
       .first<LastFetchLogRow>(),
     db.prepare(RACES_QUEUED_NOT_FETCHED_TODAY_SQL).bind(params.todayYmd).first<CountRow>(),
-    db.prepare(RACES_STUCK_OVER_THIRTY_MIN_SQL).bind(params.thirtyMinutesAgoIso).first<CountRow>(),
+    db
+      .prepare(RACES_STUCK_OVER_THIRTY_MIN_SQL)
+      .bind(params.yesterdayYmd, params.todayYmd, params.thirtyMinutesAgoIso)
+      .first<CountRow>(),
   ]);
   return {
     lastSuccessfulFetchResultsAt: lastResultsRow ? lastResultsRow.created_at : null,

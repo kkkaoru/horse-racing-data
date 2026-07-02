@@ -2609,8 +2609,12 @@ it("getQueueHealthMetrics returns the four queue-health signals when D1 returns 
       ? Promise.resolve({ created_at: "2026-06-28T15:42:00+09:00" })
       : Promise.resolve({ created_at: "2026-06-28T15:35:00+09:00" }),
   );
-  const firstCount = vi.fn((sql: string) =>
-    sql.includes("queued_at is not null") ? Promise.resolve({ c: 7 }) : Promise.resolve({ c: 3 }),
+  const firstCount = vi.fn((sql: string, args: unknown[]) =>
+    sql.includes("queued_at is not null")
+      ? Promise.resolve({ c: 7 })
+      : Promise.resolve({
+          c: args.join(",") === "20260627,20260628,2026-06-28T16:00:00+09:00" ? 3 : -1,
+        }),
   );
   const prepare = vi.fn((sql: string) => {
     if (sql.includes("from fetch_logs")) {
@@ -2619,7 +2623,7 @@ it("getQueueHealthMetrics returns the four queue-health signals when D1 returns 
       };
     }
     return {
-      bind: () => ({ first: () => firstCount(sql) }),
+      bind: (...args: unknown[]) => ({ first: () => firstCount(sql, args) }),
     };
   });
   const db = { prepare } as unknown as D1Database;
@@ -2627,6 +2631,7 @@ it("getQueueHealthMetrics returns the four queue-health signals when D1 returns 
   const result = await getQueueHealthMetrics(db, {
     thirtyMinutesAgoIso: "2026-06-28T16:00:00+09:00",
     todayYmd: "20260628",
+    yesterdayYmd: "20260627",
   });
   expect(result).toStrictEqual({
     lastSuccessfulFetchResultsAt: "2026-06-28T15:42:00+09:00",
@@ -2649,6 +2654,7 @@ it("getQueueHealthMetrics returns nulls and zero counts when D1 has no rows", as
   const result = await getQueueHealthMetrics(db, {
     thirtyMinutesAgoIso: "2026-06-28T16:00:00+09:00",
     todayYmd: "20260628",
+    yesterdayYmd: "20260627",
   });
   expect(result).toStrictEqual({
     lastSuccessfulFetchResultsAt: null,

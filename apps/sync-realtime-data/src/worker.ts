@@ -2634,12 +2634,20 @@ export const summariseResultFetchEligibility = (
 // hourly discover-urls tick does not leave today's races invisible to the
 // result poller (= the "11R confirmed but viewer never sees 1R-11R" failure
 // mode the new DO + cache-bust path is meant to fix upstream).
-export const planResultFetchesOnly = async (env: Env, targetDate: string): Promise<number> => {
+interface PlanResultFetchesOptions {
+  discoveryRecovery?: boolean;
+}
+
+export const planResultFetchesOnly = async (
+  env: Env,
+  targetDate: string,
+  options: PlanResultFetchesOptions = {},
+): Promise<number> => {
   const now = getNow(env);
   if (!isJstPollingWindow(now)) {
     return 0;
   }
-  if (shouldRunHourlyDiscoveryRecovery(now)) {
+  if (options.discoveryRecovery !== false && shouldRunHourlyDiscoveryRecovery(now)) {
     await tryEnsureDiscoveredUrlsAreCurrent(env, targetDate);
   }
   const races = await listSchedulableRaceSourcesByDate(env.REALTIME_DB, targetDate);
@@ -4869,6 +4877,7 @@ export default {
       const metrics = await getQueueHealthMetrics(env.REALTIME_DB, {
         thirtyMinutesAgoIso,
         todayYmd,
+        yesterdayYmd: addDaysToYyyymmdd(todayYmd, -1),
       });
       return json(metrics);
     }
@@ -5141,7 +5150,15 @@ export default {
     if (controller.cron === RESULT_POLL_CRON) {
       const targetDate = getTodayJst(scheduledAt);
       ctx.waitUntil(
-        planResultFetchesOnly(env, targetDate)
+        (async () => {
+          const todayCount = await planResultFetchesOnly(env, targetDate);
+          const yesterdayCount = await planResultFetchesOnly(
+            env,
+            addDaysToYyyymmdd(targetDate, -1),
+            { discoveryRecovery: false },
+          );
+          return todayCount + yesterdayCount;
+        })()
           .then((count) =>
             logFetch(env.REALTIME_DB, "plan-result-fetches", "ok", null, `${count} jobs queued`),
           )

@@ -784,6 +784,9 @@ it("scheduled result-poll cron logs plan-result-fetches ok", async () => {
     null,
     "0 jobs queued",
   );
+  expect(vi.mocked(listSchedulableRaceSourcesByDate).mock.calls.map((call) => call[1])).toEqual(
+    expect.arrayContaining(["20260512", "20260511"]),
+  );
 });
 
 it("scheduled result-poll cron skips running-style inference path", async () => {
