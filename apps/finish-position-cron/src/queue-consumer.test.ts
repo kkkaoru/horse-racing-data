@@ -256,6 +256,13 @@ test("acks focused full skipDedup messages without container when Neon already h
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "01",
+    keibajoCode: "50",
+    month: "07",
+    raceNumber: "12",
+    year: "2026",
+  });
 });
 
 test("continues to container when focused full completion guard fails", async () => {
@@ -878,7 +885,7 @@ test("retries a skipDedup message when container fetch fails", async () => {
   errorSpy.mockRestore();
 });
 
-test("does not warm the category cache for focused per-race skipDedup full messages", async () => {
+test("warms only the race cache for focused per-race skipDedup full messages", async () => {
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -897,6 +904,13 @@ test("does not warm the category cache for focused per-race skipDedup full messa
   expect(completeRunMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "02",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
 });
 
 test("warms the category cache for category-level skipDedup full messages", async () => {
@@ -1096,6 +1110,13 @@ test("acks focused skipDedup full messages when result status is already-complet
   expect(retryMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "02",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1121,6 +1142,13 @@ test("falls through focused skipDedup full messages with result status success t
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
+    day: "28",
+    keibajoCode: "02",
+    month: "06",
+    raceNumber: "01",
+    year: "2026",
+  });
 });
 
 test("does not treat a category-level full message with status accepted as focused-full acceptance", async () => {

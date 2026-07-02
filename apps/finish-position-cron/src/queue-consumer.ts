@@ -165,6 +165,16 @@ const isFocusedSkipDedupMessage = (
   message.keibajoCode !== undefined &&
   message.raceBango !== undefined;
 
+const warmPredictionCacheForFocusedRace = (message: FocusedFullSkipDedupMessage): void => {
+  void warmPredictionCacheForRace({
+    day: message.runYmd.slice(RUN_YMD_DAY_START, RUN_YMD_DAY_END),
+    keibajoCode: message.keibajoCode,
+    month: message.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
+    raceNumber: message.raceBango,
+    year: message.runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
+  });
+};
+
 const ackIfFocusedFullAlreadyComplete = async (
   message: Message<PredictQueueMessage>,
   env: Env,
@@ -184,6 +194,7 @@ const ackIfFocusedFullAlreadyComplete = async (
       `Skipping focused full already complete category=${category} runYmd=${runYmd} keibajo=${keibajoCode} race=${raceBango}`,
     );
     message.ack();
+    warmPredictionCacheForFocusedRace(message.body);
     return true;
   } catch (err) {
     console.warn(
@@ -252,6 +263,9 @@ const handleFocusedFullStatus = async (
       `Focused full already complete (container) category=${category} runYmd=${runYmd}${suffix}`,
     );
     message.ack();
+    if (isFocusedSkipDedupMessage(message.body)) {
+      warmPredictionCacheForFocusedRace(message.body);
+    }
     return true;
   }
   if (status === FOCUSED_FULL_BUSY_STATUS) {
@@ -393,6 +407,9 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       });
     }
     message.ack();
+    if (isFocusedSkipDedup) {
+      warmPredictionCacheForFocusedRace(message.body);
+    }
     if (shouldWarmCategoryCache) {
       void warmPredictionCacheForCategory({
         category,
