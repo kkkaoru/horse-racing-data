@@ -1,10 +1,14 @@
-"""Per-class JRA / NAR model routing (Phase B + Phase F of the per-class architecture pivot).
+"""Dormant historical per-class JRA / NAR model routing helpers.
 
-The v8 production deploy (JRA=iter19-jra-cb-kohan3f-going-v8, NAR=iter12-nar-
-xgb-hpo-v8) is a single global model per category. The per-class architecture
-adds an optional second axis — a category-specific class code — so per-class
-winners can be activated piecemeal without disturbing classes that have no
-per-class winner yet. The class-code domain depends on the category:
+Production deploys use a single global model per category. This module retains
+the older per-class architecture for tests and offline fixtures, but
+``PER_CLASS_ENABLED_CATEGORIES`` is intentionally empty by default so importing
+or calling this helper cannot reactivate JRA / NAR per-class routing.
+
+The dormant architecture added an optional second axis — a category-specific
+class code — so per-class winners could be activated piecemeal without
+disturbing classes that had no per-class winner yet. The class-code domain
+depends on the category:
 
 * JRA — ``kyoso_joken_code`` (race-class code: ``005`` / ``010`` / ``016`` /
   ``701`` / ``703`` / ``other``). As of iter 19 (2026-06-13) JRA routes
@@ -16,28 +20,28 @@ per-class winner yet. The class-code domain depends on the category:
 
 Routing rules:
 
-* ``PER_CLASS_MODEL_VERSIONS`` maps ``(category, class_code)`` to a registered
-  per-class ``model_version`` string. An entry is added ONLY when a per-class
-  model has beaten the category-global fallback on its own subset; an
-  unmapped class falls back to the category-global model.
-* ``PER_CLASS_ENABLED_CATEGORIES`` lists the categories that participate in the
-  per-class architecture. Ban-ei is intentionally excluded — it has no
-  actionable per-class plan yet — so it always returns the category-global
-  model regardless of class code.
+* ``PER_CLASS_MODEL_VERSIONS`` maps ``(category, class_code)`` to a historical
+  per-class ``model_version`` string. These entries are kept so tests and
+  offline fixtures can exercise the legacy paths when they explicitly
+  monkeypatch enabled categories.
+* ``PER_CLASS_ENABLED_CATEGORIES`` is the runtime allowlist for per-class
+  routing. It is empty in production/default code paths, so JRA, NAR, and
+  Ban-ei all return their category-global model regardless of class code.
 
-Phase B-2A (2026-06-05) adds an ENSEMBLE routing layer on top of the registered
-single-model string. When ``PER_CLASS_MODEL_VERSIONS`` resolves to an ensemble
+Phase B-2A (2026-06-05) added an ENSEMBLE routing layer on top of the registered
+single-model string. When a test or offline fixture opts a category into the
+legacy path and ``PER_CLASS_MODEL_VERSIONS`` resolves to an ensemble
 model_version (e.g. ``iter30-nar-cb-ensemble-NEW-v8``), the container can read a
-sidecar ``manifest.json`` that lists weighted member booster versions and a blend
-strategy. ``load_ensemble_manifest`` returns the parsed ``PerClassEnsemble``
-dataclass, or ``None`` when no manifest exists (the caller then falls back to
-the single-model path). ``resolve_per_class_resolution`` is the unified entry
-point that returns either a ``PerClassEnsemble`` (multi-model) or a single
-``model_version`` string.
+sidecar ``manifest.json`` that lists weighted member booster versions and a
+blend strategy. ``load_ensemble_manifest`` returns the parsed
+``PerClassEnsemble`` dataclass, or ``None`` when no manifest exists (the caller
+then falls back to the single-model path). ``resolve_per_class_resolution`` is
+the unified entry point that returns either a ``PerClassEnsemble`` (multi-model)
+or a single ``model_version`` string.
 
-iter 30 (NAR, 2026-06-05): NEW / MUKATSU / C / A / OP / other ensembles
-activated — six NAR sub-classes routed off ``nar_subclass``. ``B`` stays on the
-iter12 baseline (no ensemble registered).
+iter 30 (NAR, 2026-06-05): NEW / MUKATSU / C / A / OP / other ensembles were
+historically activated — six NAR sub-classes routed off ``nar_subclass``.
+``B`` stayed on the iter12 baseline (no ensemble registered).
 
 iter 19 (JRA, 2026-06-13): base-only deploy — all JRA per-class entries removed.
 See ``PER_CLASS_MODEL_VERSIONS`` comment block for full rationale.
@@ -77,10 +81,11 @@ class EnsembleMember:
 class PerClassEnsemble:
     """A per-class ensemble routing decision parsed from a manifest.json file.
 
-    ``model_version`` is the ensemble label written to the predictions table and
-    activated in ``finish_position_active_models``. ``members`` is the immutable
-    tuple of weighted booster versions; the rank-blend score function lives in
-    ``predict_lib.ensemble_scorer`` (Phase B-2B).
+    ``model_version`` is the historical ensemble label written to the
+    predictions table and formerly activated in ``finish_position_active_models``.
+    ``members`` is the immutable tuple of weighted booster versions; the
+    rank-blend score function lives in ``predict_lib.ensemble_scorer`` (Phase
+    B-2B).
     """
 
     model_version: str
@@ -90,16 +95,18 @@ class PerClassEnsemble:
     members: tuple[EnsembleMember, ...]
 
 
-# Phase B-2A registry. 005 / 016 / 703 ACTIVATED on 2026-06-05 with the iter 26
-# v4 ensemble (iter 26 relationship features: 馬体重 x 斤量 x 馬齢 x 距離 x
-# タイム interaction columns, 12 cols). iter 26 v4 re-optimised the ensemble
-# pool with the new relationship booster added and shipped major per-class
-# gains.
+# Historical Phase B-2A registry. 005 / 016 / 703 were activated on 2026-06-05
+# with the iter 26 v4 ensemble (iter 26 relationship features: 馬体重 x 斤量 x
+# 馬齢 x 距離 x タイム interaction columns, 12 cols). iter 26 v4 re-optimised the
+# ensemble pool with the new relationship booster added and shipped major
+# per-class gains. These registry rows are not production routing by
+# themselves; ``PER_CLASS_ENABLED_CATEGORIES`` must be explicitly monkeypatched
+# in tests / offline fixtures to exercise them.
 #
-# Phase F (2026-06-05) adds NAR per-class routing on top: six NAR sub-classes
-# (NEW / MUKATSU / C / A / OP / other) activated with iter 30 ensembles on
-# iter 12 NAR XGBoost baseline + iter 30 CatBoost residuals. ``B`` stays on
-# the iter 12 fallback (no ensemble registered).
+# Phase F (2026-06-05) added historical NAR per-class routing on top: six NAR
+# sub-classes (NEW / MUKATSU / C / A / OP / other) activated with iter 30
+# ensembles on iter 12 NAR XGBoost baseline + iter 30 CatBoost residuals. ``B``
+# stays on the iter 12 fallback (no ensemble registered).
 #
 # iter 36 (NAR class C, 2026-06-10) flips C from the iter 30 CatBoost ensemble
 # to ``iter36-nar-lgb-ensemble-C-v8`` — a blend that adds a LightGBM LambdaRank
@@ -142,12 +149,11 @@ NAMED_PER_CLASS_CODES_BY_CATEGORY: Final[dict[Category, frozenset[str]]] = {
 NAMED_PER_CLASS_CODES: Final[frozenset[str]] = NAMED_PER_CLASS_CODES_BY_CATEGORY["jra"]
 OTHER_CLASS_CODE: Final[str] = "other"
 
-# Categories that participate in per-class routing. Ban-ei is excluded so its
-# ``resolve_per_class_model_version`` always returns the category-global
-# model — adding it here would silently change routing behaviour, so the
-# allowlist is the single switch. Phase F (2026-06-05) adds ``nar`` alongside
-# ``jra`` for the iter 30 NAR ensemble rollout.
-PER_CLASS_ENABLED_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra", "nar"})
+# Categories that participate in per-class routing. The default is empty so
+# production imports / calls cannot reactivate the dormant JRA or NAR helper
+# path. Tests and offline fixtures that intentionally cover historical routing
+# should monkeypatch this allowlist together with any fixture registry rows.
+PER_CLASS_ENABLED_CATEGORIES: Final[frozenset[Category]] = frozenset()
 
 # Sub-directory under ``<models_dir>/{R2_KEY_PREFIX}/{category}/`` where
 # per-class artefacts (booster.json + ensemble manifest.json) live. Mirrors the
@@ -159,7 +165,7 @@ ENSEMBLE_MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 
 
 def is_per_class_enabled_for(category: Category) -> bool:
-    """Return True when ``category`` participates in per-class routing."""
+    """Return True when ``category`` is explicitly opted into legacy routing."""
     return category in PER_CLASS_ENABLED_CATEGORIES
 
 
@@ -190,11 +196,12 @@ def resolve_per_class_model_version(
     category: Category,
     class_code: str | None,
 ) -> str:
-    """Return per-class model_version if registered, else category fallback.
+    """Return per-class model_version if explicitly enabled, else fallback.
 
     Falls back to ``model_version_for(category)`` when:
 
-    * the category is not per-class enabled (Ban-ei), or
+    * the category is not per-class enabled (the production/default state for
+      every category), or
     * the normalised class code (see :func:`normalize_class_code`) has no
       registered per-class winner yet — i.e. the named-code-or-``"other"``
       bucket does not appear in ``PER_CLASS_MODEL_VERSIONS``.
@@ -218,9 +225,10 @@ def resolve_per_class_model_version(
 def per_class_codes_for(category: Category) -> tuple[str, ...]:
     """Return the registered per-class codes for ``category`` in sorted order.
 
-    Used by callers that need to pre-load per-class boosters at startup. Returns
-    an empty tuple for disabled categories AND for enabled categories that have
-    no registered per-class winners yet.
+    Used by legacy callers that need to pre-load per-class boosters at startup.
+    Returns an empty tuple for all default production categories, disabled
+    categories, and enabled categories that have no registered per-class
+    winners yet.
     """
     if not is_per_class_enabled_for(category):
         return ()
@@ -333,10 +341,10 @@ def load_ensemble_manifest(
 ) -> PerClassEnsemble | None:
     """Load and parse a per-class ensemble manifest, or return ``None``.
 
-    The model_version is derived from ``PER_CLASS_MODEL_VERSIONS`` rather than
-    discovered from the filesystem: registry is the single source of truth for
-    what runs in production. Returns ``None`` (caller falls back to the
-    single-model path) when:
+    The model_version is derived from historical ``PER_CLASS_MODEL_VERSIONS``
+    rather than discovered from the filesystem: registry is the fixture source
+    of truth for legacy helper paths, not production activation. Returns
+    ``None`` (caller falls back to the single-model path) when:
 
     * the ``(category, kyoso_joken_code)`` pair has no registry entry,
     * the manifest file does not exist on disk,
@@ -368,9 +376,9 @@ def resolve_per_class_resolution(
 
     Routing precedence:
 
-    1. If the category is per-class enabled AND an ensemble manifest exists on
-       disk for the normalised class code (named code or ``"other"``), return
-       the parsed ``PerClassEnsemble``.
+    1. If the category is explicitly per-class enabled AND an ensemble manifest
+       exists on disk for the normalised class code (named code or ``"other"``),
+       return the parsed ``PerClassEnsemble``.
     2. Otherwise return the string from ``resolve_per_class_model_version``
        (registered single model or category-global fallback).
 

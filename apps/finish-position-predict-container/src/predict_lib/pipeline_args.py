@@ -68,10 +68,11 @@ PACESTYLE_SCRIPT: Final[str] = "add-pacestyle-features.py"
 COURSE_NUMERICAL_SCRIPT: Final[str] = "add-course-numerical-features.py"
 
 # iter26 relationship layer (馬体重 x 斤量 x 馬齢 x 距離 x タイム interaction +
-# history-normalized speed, 12 cols). Required at inference for the per-class
-# ensemble residual / chain members trained on the relationship feature set
-# (JRA iter26 = 254 cols, NAR iter30 residual = 174 cols). Reads PG history,
-# so it takes ``--pg-url`` + ``--from-date`` + a source-filter ``--category``.
+# history-normalized speed, 12 cols). Required at inference for the cell-first
+# production stack and the historical/offline per-class experiments trained on
+# the relationship feature set (JRA iter26 = 254 cols, NAR iter30 residual =
+# 174 cols). Reads PG history, so it takes ``--pg-url`` + ``--from-date`` + a
+# source-filter ``--category``.
 RELATIONSHIP_SCRIPT: Final[str] = "add-relationship-r1-features.py"
 
 # iter-post exotic odds layer — NAR only (JRA ABORT per feasibility probe).
@@ -85,9 +86,10 @@ KOHAN3F_GOING_SCRIPT: Final[str] = "add_kohan3f_going_features.py"
 # similar-race context layer (19 sim_* cols: odds correlation, fav win rate,
 # entity stats pulled from historically-similar races). Runs on EVERY category
 # as the LAST layer (it reads PG history and appends 19 columns to the already
-# built parquet). The per-class router then routes only the effective cells
-# (JRA class 999, NAR B/C, Ban-ei pooled place) to the sim_*-trained models; the
-# columns are present for every race but carry near-zero importance elsewhere.
+# built parquet). Production dispatch is cell-first with category fallback; the
+# sim_*-trained cells correspond to the historical/offline per-class effective
+# cells (JRA class 999, NAR B/C, Ban-ei pooled place). The columns are present
+# for every race but carry near-zero importance elsewhere.
 # Takes ``--category {jra,nar,ban-ei}`` (jra -> jvd_se, nar/ban-ei -> nvd_se),
 # ``--pg-url`` + ``--from-date`` to bound the history scan, and DuckDB resource
 # caps (``--threads`` / ``--memory-limit``) to stay inside the container budget.

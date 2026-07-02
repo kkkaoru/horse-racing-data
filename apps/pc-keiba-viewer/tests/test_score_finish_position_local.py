@@ -91,8 +91,13 @@ def test_build_active_model_query_uses_finish_position_active_models_table():
     sql = subject.build_active_model_query("jra")
     assert (
         sql
-        == "select json_build_object('model_version', model_version, 'artifact_path', artifact_path) from finish_position_active_models where category = 'jra' limit 1"
+        == "select json_build_object('model_version', model_version, 'artifact_path', artifact_path) from finish_position_active_models where category = 'jra' and subclass is null limit 1"
     )
+
+
+def test_build_active_model_query_ignores_per_class_active_rows():
+    sql = subject.build_active_model_query("nar")
+    assert "and subclass is null" in sql
 
 
 def test_resolve_active_model_returns_active_pair():

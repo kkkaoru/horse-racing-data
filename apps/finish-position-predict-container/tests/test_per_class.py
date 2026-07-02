@@ -1,9 +1,12 @@
-"""Tests for the per-class JRA / NAR model routing helpers.
+"""Tests for the dormant per-class JRA / NAR model routing helpers.
 
 The helpers are pure functions backed by ``PER_CLASS_MODEL_VERSIONS`` /
-``PER_CLASS_ENABLED_CATEGORIES`` module-level dicts. Tests that need a non-empty
-or alternate registry use ``pytest.MonkeyPatch.setattr`` to temporarily mutate
-the module dict; tests that need a manifest file use the standard ``tmp_path``
+``PER_CLASS_ENABLED_CATEGORIES`` module-level fixtures. Production does not use
+per-class routing: ``PER_CLASS_ENABLED_CATEGORIES`` is empty by default so
+importing or calling ``per_class`` cannot reactivate JRA / NAR routing. Tests
+that intentionally exercise legacy helper paths use
+``pytest.MonkeyPatch.setattr`` to temporarily opt categories in and/or mutate
+the registry; tests that need a manifest file use the standard ``tmp_path``
 fixture and write a synthetic ``manifest.json`` mirroring the on-disk layout
 that ``build_per_class_manifest_path`` builds.
 
@@ -14,9 +17,10 @@ JRA per-class entries: ``PER_CLASS_MODEL_VERSIONS`` no longer contains any
 model ``jra-cb-v9-sim-2013`` (263 features with sim_*, identical to iter19 except
 train start 20130101).
 
-Phase F (2026-06-05) adds NAR per-class routing: six NAR sub-classes
-(NEW / MUKATSU / C / A / OP / other) activated with iter 30 ensembles. ``B``
-stays on the iter 12 fallback. NAR tests are unchanged by the iter 19 flip.
+Phase F (2026-06-05) added historical NAR per-class routing: six NAR
+sub-classes (NEW / MUKATSU / C / A / OP / other) were activated with iter 30
+ensembles. ``B`` stayed on the iter 12 fallback. Production now keeps those
+rows dormant unless a test or offline fixture explicitly opts NAR in.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib import per_class
+from predict_lib.model_meta import Category
 from predict_lib.per_class import (
     NAMED_PER_CLASS_CODES,
     NAMED_PER_CLASS_CODES_BY_CATEGORY,
@@ -72,6 +77,18 @@ NAR_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
 NAR_RESIDUAL_A: str = "iter30-nar-cb-residual-A-v8"
 NAR_RESIDUAL_OP: str = "iter30-nar-cb-residual-OP-v8"
 NAR_RESIDUAL_OTHER: str = "iter30-nar-cb-residual-other-v8"
+
+
+def _enable_per_class_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    *categories: Category,
+) -> None:
+    """Opt tests into dormant per-class routing for historical helper paths."""
+    monkeypatch.setattr(
+        per_class,
+        "PER_CLASS_ENABLED_CATEGORIES",
+        frozenset(categories),
+    )
 
 
 def _write_manifest(
@@ -118,7 +135,7 @@ def _canonical_703_payload() -> dict[str, object]:
 
 
 def _canonical_010_payload() -> dict[str, object]:
-    # Mirrors the production iter 25 v2 ensemble manifest activated 2026-06-05
+    # Mirrors the former-production iter 25 v2 ensemble manifest activated 2026-06-05
     # (+0.632pp top1 vs iter 14 baseline on 1583-race holdout).
     return {
         "model_version": JRA_CLASS_010_ENSEMBLE_MODEL_VERSION,
@@ -156,10 +173,10 @@ def _canonical_010_payload() -> dict[str, object]:
 
 
 def _canonical_other_payload() -> dict[str, object]:
-    # Mirrors the production iter 25 v2 ensemble manifest activated 2026-06-05
+    # Mirrors the former-production iter 25 v2 ensemble manifest activated 2026-06-05
     # (+0.094pp top1 vs iter 14 baseline on 1064-race holdout). iter14 carries
     # the dominant 0.637897 weight, with iter25 low-cap second at 0.195595
-    # — the exact production weights.
+    # — the exact historical weights.
     return {
         "model_version": JRA_CLASS_OTHER_ENSEMBLE_MODEL_VERSION,
         "category": "jra",
@@ -196,7 +213,7 @@ def _canonical_other_payload() -> dict[str, object]:
 
 
 def _canonical_005_payload() -> dict[str, object]:
-    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # Mirrors the former-production iter 26 v4 ensemble manifest activated 2026-06-05
     # (+0.572pp top1 vs iter 14 baseline on 3147-race holdout — the largest
     # 005 gain in the v8 loop, flipping the class from iter 25 v2 +0.095pp).
     # iter 26 relationship booster dominates the blend at weight 0.505597 with
@@ -247,7 +264,7 @@ def _canonical_005_payload() -> dict[str, object]:
 
 
 def _canonical_016_payload() -> dict[str, object]:
-    # Mirrors the production iter 26 v4 ensemble manifest activated 2026-06-05
+    # Mirrors the former-production iter 26 v4 ensemble manifest activated 2026-06-05
     # (+0.138pp top1 vs iter 14 baseline on 727-race holdout). NEW activation:
     # 016 was iter 14 fallback before (iter 25 v2 measured -0.550 REJECT).
     # iter 25 low-cap booster dominates the blend at weight 0.544315 with
@@ -292,20 +309,17 @@ def _canonical_016_payload() -> dict[str, object]:
     }
 
 
-def test_per_class_enabled_categories_contains_jra_and_nar() -> None:
-    # Phase F (2026-06-05) adds NAR alongside JRA. Ban-ei stays disabled — no
-    # per-class plan yet.
-    assert frozenset({"jra", "nar"}) == PER_CLASS_ENABLED_CATEGORIES
+def test_per_class_enabled_categories_is_empty_by_default() -> None:
+    # Production must not opt any category into the dormant helper by import.
+    assert frozenset() == PER_CLASS_ENABLED_CATEGORIES
 
 
-def test_is_per_class_enabled_for_jra_returns_true() -> None:
-    assert is_per_class_enabled_for("jra") is True
+def test_is_per_class_enabled_for_jra_returns_false_by_default() -> None:
+    assert is_per_class_enabled_for("jra") is False
 
 
-def test_is_per_class_enabled_for_nar_returns_true() -> None:
-    # Phase F flipped this from False to True. NAR now routes off
-    # ``nar_subclass`` to the iter 30 ensembles.
-    assert is_per_class_enabled_for("nar") is True
+def test_is_per_class_enabled_for_nar_returns_false_by_default() -> None:
+    assert is_per_class_enabled_for("nar") is False
 
 
 def test_is_per_class_enabled_for_banei_returns_false() -> None:
@@ -317,11 +331,8 @@ def test_resolve_falls_back_when_category_not_enabled_banei() -> None:
 
 
 def test_resolve_returns_base_fallback_when_kyoso_joken_code_is_none() -> None:
-    # iter 19 (2026-06-13): all JRA per-class entries removed. NULL
-    # ``kyoso_joken_code`` collapses to the ``"other"`` bucket via
-    # ``normalize_class_code``, but ``"other"`` is no longer registered in
-    # ``PER_CLASS_MODEL_VERSIONS`` — the resolver falls back to the
-    # category-global iter 19 base model.
+    # The default production gate is empty, so JRA falls back before any
+    # historical registry / normalisation path can route a per-class model.
     assert (
         resolve_per_class_model_version("jra", None)
         == JRA_FALLBACK_MODEL_VERSION
@@ -329,25 +340,31 @@ def test_resolve_returns_base_fallback_when_kyoso_joken_code_is_none() -> None:
 
 
 def test_resolve_falls_back_when_no_registered_model_for_named_code() -> None:
-    # 701 is one of the named class codes (``NAMED_PER_CLASS_CODES``) that
-    # has no registry entry; the normaliser keeps it as ``"701"`` (NOT mapped
-    # to ``"other"``) so the registry lookup misses and we fall back to the
-    # iter 19 base (previously iter 14).
+    # With the default production gate empty, a named JRA code cannot reach
+    # dormant registry routing.
     assert resolve_per_class_model_version("jra", "701") == JRA_FALLBACK_MODEL_VERSION
 
 
 def test_resolve_returns_base_fallback_for_unknown_kyoso_code() -> None:
-    # iter 19 (2026-06-13): ``"999"`` is not a named code — the normaliser
-    # collapses it to the ``"other"`` bucket, but ``"other"`` is no longer
-    # registered so the resolver returns the iter 19 category-global base.
-    # The same path covers ``"000"`` and any other unregistered numeric code.
+    # Unknown JRA codes also fall back by default because no category is opted
+    # into the dormant helper.
     assert (
         resolve_per_class_model_version("jra", "999")
         == JRA_FALLBACK_MODEL_VERSION
     )
 
 
+def test_resolve_ignores_historical_nar_registry_by_default() -> None:
+    # The historical NAR registry remains available for fixtures, but production
+    # calls fall back unless a test explicitly patches the enabled categories.
+    assert (
+        resolve_per_class_model_version("nar", "NEW")
+        == NAR_FALLBACK_MODEL_VERSION
+    )
+
+
 def test_resolve_returns_registered_model_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable_per_class_categories(monkeypatch, "jra")
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -359,6 +376,7 @@ def test_resolve_returns_registered_model_when_present(monkeypatch: pytest.Monke
 def test_resolve_returns_fallback_for_unregistered_code_when_registry_has_other(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "jra")
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -391,6 +409,7 @@ def test_per_class_codes_for_banei_returns_empty_when_disabled() -> None:
 def test_per_class_codes_for_jra_returns_codes_sorted_when_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "jra")
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -405,6 +424,7 @@ def test_per_class_codes_for_jra_returns_codes_sorted_when_registered(
 def test_per_class_codes_for_jra_filters_other_category_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "jra")
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -419,8 +439,8 @@ def test_per_class_codes_for_jra_filters_other_category_entries(
 def test_per_class_codes_for_disabled_category_ignores_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Ban-ei is the only disabled category in Phase F; even if a registry row
-    # were injected, the gate must short-circuit to an empty tuple.
+    # Even if a registry row were injected, a disabled category must
+    # short-circuit to an empty tuple.
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -432,9 +452,10 @@ def test_per_class_codes_for_disabled_category_ignores_registry(
 # --- Phase B-2A: registry + dataclass + ensemble-routing tests ------------
 
 
-def test_per_class_model_versions_includes_production_ensembles() -> None:
+def test_per_class_model_versions_keeps_historical_nar_ensembles() -> None:
     # iter 19 (2026-06-13): all JRA per-class entries removed — base-only.
-    # Only NAR entries remain in the registry.
+    # Only historical NAR entries remain in the registry. The empty default
+    # enabled-category gate means production does not route to these rows.
     assert PER_CLASS_MODEL_VERSIONS == {
         ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
         ("nar", "MUKATSU"): NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION,
@@ -485,15 +506,22 @@ def test_resolve_returns_base_fallback_for_other_after_iter19_flip() -> None:
 
 def test_per_class_codes_for_jra_returns_empty_after_iter19_base_only_flip() -> None:
     # iter 19 (2026-06-13): all JRA per-class entries removed from
-    # ``PER_CLASS_MODEL_VERSIONS``. ``per_class_codes_for`` returns an empty
-    # tuple because there are no registered JRA codes — same result as a
-    # disabled category but JRA remains in ``PER_CLASS_ENABLED_CATEGORIES``
-    # so the registry path is still taken (it just finds nothing).
+    # ``PER_CLASS_MODEL_VERSIONS``. With the production gate empty, JRA returns
+    # an empty tuple before consulting the dormant registry.
     assert per_class_codes_for("jra") == ()
 
 
-def test_per_class_codes_for_nar_returns_sorted_production_codes() -> None:
-    # Phase F production NAR codes: NEW / MUKATSU / C / A / OP / other.
+def test_per_class_codes_for_nar_returns_empty_by_default() -> None:
+    # Historical NAR rows remain in PER_CLASS_MODEL_VERSIONS, but production
+    # does not expose them while PER_CLASS_ENABLED_CATEGORIES is empty.
+    assert per_class_codes_for("nar") == ()
+
+
+def test_per_class_codes_for_nar_returns_sorted_historical_codes_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
+    # Historical Phase F NAR codes: NEW / MUKATSU / C / A / OP / other.
     # ``B`` is NOT registered (stays on iter 12 fallback) so it does not
     # appear here even though it lives in ``NAMED_PER_CLASS_CODES_BY_CATEGORY
     # ['nar']``. ASCII sort: 'A' (65) < 'C' < 'M' < 'N' < 'O' (79) < 'o'
@@ -598,7 +626,7 @@ def test_load_ensemble_manifest_returns_none_for_jra_703_after_iter19_flip(
 
 
 def test_load_ensemble_manifest_returns_none_when_file_missing(tmp_path: Path) -> None:
-    # NAR NEW has a registry entry but no manifest on disk — must return None.
+    # NAR NEW has a historical registry entry but no manifest on disk.
     assert load_ensemble_manifest(tmp_path, "nar", "NEW") is None
 
 
@@ -633,7 +661,6 @@ def test_load_ensemble_manifest_returns_none_when_code_not_registered(tmp_path: 
 def test_load_ensemble_manifest_returns_none_when_category_not_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Use Ban-ei so the test stays meaningful (NAR became enabled in Phase F).
     # load_ensemble_manifest does NOT gate on PER_CLASS_ENABLED_CATEGORIES —
     # it gates only on registry presence + filesystem. The category gate is
     # in resolve_per_class_resolution. This test pins that contract: a
@@ -670,8 +697,8 @@ def test_load_ensemble_manifest_returns_none_when_category_not_enabled(
 def test_load_ensemble_manifest_rejects_payload_with_wrong_category(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Use a hand-injected NAR NEW registry so the manifest validation logic
-    # (not just the registry miss) is exercised after the iter 19 JRA flip.
+    # Use a hand-injected historical NAR NEW registry so the manifest validation
+    # logic (not just the registry miss) is exercised after the iter 19 JRA flip.
     monkeypatch.setattr(
         per_class,
         "PER_CLASS_MODEL_VERSIONS",
@@ -912,9 +939,11 @@ def test_load_ensemble_manifest_rejects_payload_with_non_string_model_version(
 
 
 def test_resolve_per_class_resolution_returns_ensemble_when_manifest_present(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Use a NAR code (NAR per-class is still active after the iter 19 JRA flip).
+    _enable_per_class_categories(monkeypatch, "nar")
+    # Use a historical NAR code so the legacy manifest path is reachable.
     _write_manifest(
         tmp_path,
         "nar",
@@ -928,11 +957,14 @@ def test_resolve_per_class_resolution_returns_ensemble_when_manifest_present(
 
 
 def test_resolve_per_class_resolution_falls_back_to_string_when_no_manifest(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # NAR NEW is registered but no manifest exists on disk — must fall back to
-    # the registered ensemble label string (not the category-global fallback),
-    # because the booster loader will surface the error on its own.
+    _enable_per_class_categories(monkeypatch, "nar")
+    # NAR NEW is historically registered but no manifest exists on disk — when
+    # the legacy gate is patched on, the helper falls back to the registered
+    # ensemble label string (not the category-global fallback), because the
+    # booster loader will surface the error on its own.
     result = resolve_per_class_resolution(tmp_path, "nar", "NEW")
     assert result == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
     assert isinstance(result, str)
@@ -964,19 +996,20 @@ def test_resolve_per_class_resolution_returns_base_fallback_when_kyoso_joken_cod
 def test_resolve_per_class_resolution_returns_string_when_category_not_enabled(
     tmp_path: Path,
 ) -> None:
-    # Ban-ei stays disabled in Phase F — the guard must short-circuit to the
-    # Ban-ei global fallback even when a code is provided.
+    # The disabled-category guard must short-circuit to the Ban-ei global
+    # fallback even when a code is provided.
     result = resolve_per_class_resolution(tmp_path, "ban-ei", "703")
     assert result == BANEI_FALLBACK_MODEL_VERSION
     assert isinstance(result, str)
 
 
 def test_resolve_per_class_resolution_returns_string_when_manifest_invalid(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    # Use a NAR code so the manifest-validation branch is reachable (JRA has
-    # no registry entries after the iter 19 flip; malformed manifest under a
-    # JRA path would never be loaded).
+    _enable_per_class_categories(monkeypatch, "nar")
+    # Use a historical NAR code so the manifest-validation branch is reachable
+    # under the explicit legacy gate.
     target = (
         tmp_path
         / "finish-position"
@@ -990,7 +1023,7 @@ def test_resolve_per_class_resolution_returns_string_when_manifest_invalid(
     target.write_text("{ malformed", encoding="utf-8")
     result = resolve_per_class_resolution(tmp_path, "nar", "NEW")
     # Invalid manifest -> fall through to single-model registry, which returns
-    # the registered NAR NEW label (caller's booster loader surfaces the error).
+    # the historical NAR NEW label (caller's booster loader surfaces the error).
     assert result == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
     assert isinstance(result, str)
 
@@ -1268,7 +1301,7 @@ def test_resolve_per_class_resolution_unregistered_named_code_skips_other_manife
     assert isinstance(result, str)
 
 
-# --- Phase F: NAR named-code routing tests ------------------------------
+# --- Historical Phase F: NAR named-code routing tests -------------------
 
 
 def test_named_per_class_codes_by_category_pins_nar_offline_subclass_set() -> None:
@@ -1301,41 +1334,59 @@ def test_named_per_class_codes_backward_compat_alias_matches_jra() -> None:
     assert NAMED_PER_CLASS_CODES_BY_CATEGORY["jra"] == NAMED_PER_CLASS_CODES
 
 
-def test_resolve_returns_registered_nar_new_ensemble_string() -> None:
-    # NAR NEW was activated 2026-06-05 with the iter 30 ensemble.
+def test_resolve_returns_registered_nar_new_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
+    # NAR NEW was historically activated 2026-06-05 with the iter 30 ensemble.
     assert (
         resolve_per_class_model_version("nar", "NEW")
         == NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION
     )
 
 
-def test_resolve_returns_registered_nar_mukatsu_ensemble_string() -> None:
+def test_resolve_returns_registered_nar_mukatsu_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     assert (
         resolve_per_class_model_version("nar", "MUKATSU")
         == NAR_CLASS_MUKATSU_ENSEMBLE_MODEL_VERSION
     )
 
 
-def test_resolve_returns_registered_nar_c_ensemble_string() -> None:
+def test_resolve_returns_registered_nar_c_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     assert (
         resolve_per_class_model_version("nar", "C") == NAR_CLASS_C_ENSEMBLE_MODEL_VERSION
     )
 
 
-def test_resolve_returns_registered_nar_a_ensemble_string() -> None:
+def test_resolve_returns_registered_nar_a_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     assert (
         resolve_per_class_model_version("nar", "A") == NAR_CLASS_A_ENSEMBLE_MODEL_VERSION
     )
 
 
-def test_resolve_returns_registered_nar_op_ensemble_string() -> None:
+def test_resolve_returns_registered_nar_op_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     assert (
         resolve_per_class_model_version("nar", "OP")
         == NAR_CLASS_OP_ENSEMBLE_MODEL_VERSION
     )
 
 
-def test_resolve_returns_registered_nar_other_ensemble_string() -> None:
+def test_resolve_returns_registered_nar_other_ensemble_string_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # The literal ``"other"`` argument is the post-normalisation key.
     assert (
         resolve_per_class_model_version("nar", "other")
@@ -1343,7 +1394,10 @@ def test_resolve_returns_registered_nar_other_ensemble_string() -> None:
     )
 
 
-def test_resolve_falls_back_for_nar_b_class_unregistered() -> None:
+def test_resolve_falls_back_for_nar_b_class_unregistered_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # ``B`` is a named NAR code (in ``NAMED_PER_CLASS_CODES_BY_CATEGORY``) but
     # is NOT in ``PER_CLASS_MODEL_VERSIONS`` — the normaliser keeps it as
     # ``"B"`` so the registry lookup misses and the resolver returns the NAR
@@ -1351,7 +1405,10 @@ def test_resolve_falls_back_for_nar_b_class_unregistered() -> None:
     assert resolve_per_class_model_version("nar", "B") == NAR_FALLBACK_MODEL_VERSION
 
 
-def test_resolve_routes_unknown_nar_code_to_other_ensemble() -> None:
+def test_resolve_routes_unknown_nar_code_to_other_ensemble_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # Unknown sub-class strings collapse to ``"other"`` before the lookup —
     # same routing as NULL.
     assert (
@@ -1360,16 +1417,19 @@ def test_resolve_routes_unknown_nar_code_to_other_ensemble() -> None:
     )
 
 
-def test_resolve_routes_nar_null_subclass_to_other_ensemble() -> None:
+def test_resolve_routes_nar_null_subclass_to_other_ensemble_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # NULL ``nar_subclass`` (NAR row with no meisho match → ``other``) hits
-    # the registered ``other`` ensemble.
+    # the registered ``other`` ensemble only under explicit legacy opt-in.
     assert (
         resolve_per_class_model_version("nar", None)
         == NAR_CLASS_OTHER_ENSEMBLE_MODEL_VERSION
     )
 
 
-# --- Phase F: NAR ensemble manifest load tests --------------------------
+# --- Historical Phase F: NAR ensemble manifest load tests ---------------
 
 
 def _canonical_nar_new_payload() -> dict[str, object]:
@@ -1620,12 +1680,14 @@ def test_load_ensemble_manifest_returns_none_for_nar_b_no_registry(
     assert load_ensemble_manifest(tmp_path, "nar", "B") is None
 
 
-# --- Phase F: NAR resolve_per_class_resolution tests --------------------
+# --- Historical Phase F: NAR resolve_per_class_resolution tests ---------
 
 
 def test_resolve_per_class_resolution_returns_nar_new_ensemble_when_manifest_present(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     _write_manifest(
         tmp_path,
         "nar",
@@ -1640,10 +1702,12 @@ def test_resolve_per_class_resolution_returns_nar_new_ensemble_when_manifest_pre
 
 
 def test_resolve_per_class_resolution_returns_nar_other_ensemble_for_unknown(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # Unknown NAR sub-class strings collapse to ``"other"`` and route to the
-    # registered NAR other ensemble.
+    # registered NAR other ensemble only under explicit legacy opt-in.
     _write_manifest(
         tmp_path,
         "nar",
@@ -1658,8 +1722,10 @@ def test_resolve_per_class_resolution_returns_nar_other_ensemble_for_unknown(
 
 
 def test_resolve_per_class_resolution_nar_b_falls_back_to_iter12(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    _enable_per_class_categories(monkeypatch, "nar")
     # ``B`` is named but unregistered — even with ``other`` manifest on disk
     # the normaliser keeps it as ``"B"`` so the registry miss falls through to
     # the NAR iter 12 fallback.
@@ -1678,7 +1744,7 @@ def test_resolve_per_class_resolution_nar_b_falls_back_to_iter12(
 def test_resolve_per_class_resolution_banei_stays_on_fallback(
     tmp_path: Path,
 ) -> None:
-    # Ban-ei is still disabled in Phase F — never returns an ensemble.
+    # Ban-ei remains disabled by default and never returns an ensemble.
     result = resolve_per_class_resolution(tmp_path, "ban-ei", "703")
     assert result == BANEI_FALLBACK_MODEL_VERSION
     assert isinstance(result, str)
@@ -1689,9 +1755,8 @@ def test_resolve_per_class_resolution_banei_stays_on_fallback(
 
 def test_jra_per_class_codes_for_is_empty_after_iter19_base_only_flip() -> None:
     # All JRA per-class entries were removed from PER_CLASS_MODEL_VERSIONS.
-    # per_class_codes_for("jra") returns an empty tuple because the enabled-
-    # category gate passes (JRA is still in PER_CLASS_ENABLED_CATEGORIES) but
-    # the registry scan finds no ("jra", ...) keys.
+    # per_class_codes_for("jra") returns an empty tuple by default because the
+    # production enabled-category gate is empty.
     assert per_class_codes_for("jra") == ()
 
 

@@ -31,7 +31,7 @@ TRACK_CODE_FIELD: str = "track_code"
 # Per-category race-class column carrying the subgroup ``class_code`` value.
 # Mirrors ``predict_upcoming.CLASS_CODE_FIELD_BY_CATEGORY``: JRA reads the numeric
 # ``kyoso_joken_code``, NAR reads the derived ``nar_subclass``. Ban-ei has no
-# per-class column so its ``class_code`` stays ``None``.
+# race-class column so its ``class_code`` stays ``None``.
 CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
     "jra": "kyoso_joken_code",
     "nar": "nar_subclass",
@@ -54,10 +54,10 @@ def _coerce_optional_text(value: object) -> str | None:
 
 
 def _race_class_code(category: Category, entry: Mapping[str, object]) -> str | None:
-    """Return the race's per-class ``class_code`` from one entry, or ``None``.
+    """Return the race-class ``class_code`` from one entry, or ``None``.
 
     The column is per-category (JRA ``kyoso_joken_code`` / NAR ``nar_subclass``);
-    categories without a per-class column (Ban-ei) return ``None``.
+    categories without a race-class column (Ban-ei) return ``None``.
     """
     field = CLASS_CODE_FIELD_BY_CATEGORY.get(category)
     if field is None:
@@ -146,13 +146,13 @@ def build_prediction_rows(
     probabilities (mirrors the importer's ``flattenForInsert``).
 
     ``model_version`` defaults to the category-global label (``model_version_for``)
-    so existing callers stay backwards-compatible. Per-class JRA routing passes
-    the resolved ``resolve_per_class_model_version`` value so an active per-class
-    winner lands its predictions under its own ``model_version`` row in PG.
+    so existing callers stay backwards-compatible. Production dispatch resolves
+    the cell-specific model version first, then falls back to the category-global
+    label; historical/offline per-class labels are not active production routing.
 
     ``race_entry`` is the race's representative feature entry (any horse — the
     subgroup dimensions are race-level constants). It supplies ``kyori`` /
-    ``shusso_tosu`` / ``track_code`` / the per-class code so the trailing
+    ``shusso_tosu`` / ``track_code`` / the race-class code so the trailing
     ``upsert_sql.PREDICTION_SUBGROUP_COLUMNS`` of each row are populated. ``None`` leaves the
     entry-derived dimensions ``None`` (season still classifies from the
     ``race_id``).

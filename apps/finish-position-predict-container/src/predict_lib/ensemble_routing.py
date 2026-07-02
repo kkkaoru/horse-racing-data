@@ -59,6 +59,7 @@ from .per_class import (
     PER_CLASS_MODEL_VERSIONS,
     EnsembleMember,
     PerClassEnsemble,
+    is_per_class_enabled_for,
     load_ensemble_manifest,
 )
 from .scorer import BoosterLike, build_feature_matrix, score_matrix
@@ -271,6 +272,8 @@ def init_member_pool(models_dir: Path, category: Category) -> BoosterPool:
     member ``model_version`` strings across all registered ensembles for
     ``category``.
     """
+    if not is_per_class_enabled_for(category):
+        return BoosterPool(boosters={})
     paths_by_version: dict[str, Path] = {}
     arch_by_version: dict[str, Architecture] = {}
     names_by_version: dict[str, tuple[str, ...]] = {}

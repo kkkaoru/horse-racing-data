@@ -50,7 +50,7 @@ from predict_lib.ensemble_routing import (
     score_member,
     score_race_with_resolution,
 )
-from predict_lib.model_meta import Architecture
+from predict_lib.model_meta import Architecture, Category
 from predict_lib.per_class import EnsembleMember, PerClassEnsemble
 from predict_lib.scorer import BoosterLike
 
@@ -69,6 +69,14 @@ NAR_CLASS_C_ENSEMBLE_MODEL_VERSION: str = "iter36-nar-lgb-ensemble-C-v8"
 NAR_LGB_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
 
 
+def _enable_per_class_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    *categories: Category,
+) -> None:
+    """Opt a test into dormant per-class routing."""
+    monkeypatch.setattr(per_class, "PER_CLASS_ENABLED_CATEGORIES", frozenset(categories))
+
+
 def _inject_jra_703_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patch PER_CLASS_MODEL_VERSIONS in BOTH per_class and ensemble_routing.
 
@@ -80,6 +88,7 @@ def _inject_jra_703_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     Required for all JRA ensemble path tests after the iter 19 base-only flip
     (2026-06-13), which removed all JRA per-class registry entries.
     """
+    _enable_per_class_categories(monkeypatch, "jra")
     registry = {("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION}
     monkeypatch.setattr(per_class, "PER_CLASS_MODEL_VERSIONS", registry)
     monkeypatch.setattr(ensemble_routing_module, "PER_CLASS_MODEL_VERSIONS", registry)
@@ -615,6 +624,23 @@ def test_init_member_pool_skips_when_manifest_missing(tmp_path: Path) -> None:
     assert pool.model_versions() == ()
 
 
+def test_init_member_pool_default_disabled_ignores_historical_nar_registry(
+    tmp_path: Path,
+) -> None:
+    """Historical NAR registry rows cannot load members unless explicitly enabled."""
+    _write_manifest(
+        tmp_path,
+        "nar",
+        "NEW",
+        NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
+        _canonical_nar_new_payload(),
+    )
+
+    pool = init_member_pool(tmp_path, "nar")
+
+    assert pool.model_versions() == ()
+
+
 def test_init_member_pool_filters_out_missing_member_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -661,6 +687,7 @@ def test_init_member_pool_skips_other_categories_registry_entries(
         ("jra", "703"): JRA_CLASS_703_ENSEMBLE_MODEL_VERSION,
         ("nar", "NEW"): NAR_CLASS_NEW_ENSEMBLE_MODEL_VERSION,
     }
+    _enable_per_class_categories(monkeypatch, "jra")
     monkeypatch.setattr(per_class, "PER_CLASS_MODEL_VERSIONS", registry)
     monkeypatch.setattr(ensemble_routing_module, "PER_CLASS_MODEL_VERSIONS", registry)
     _write_manifest(
@@ -711,6 +738,7 @@ def test_init_member_pool_loads_nar_mixed_arch_members(
     member so the scorer routes each to the matching feature-matrix dtype.
     Confirms the architecture-aware walker bound up in
     :func:`predict_lib.ensemble_routing.init_member_pool`."""
+    _enable_per_class_categories(monkeypatch, "nar")
     _write_manifest(
         tmp_path,
         "nar",
@@ -765,6 +793,7 @@ def test_init_member_pool_nar_loads_baseline_only_once_when_perclass_dup(
     (e.g. an offline ensemble drop that placed the baseline in both layouts),
     the per-class copy wins and the category-root copy is skipped — the pool
     only records the baseline once."""
+    _enable_per_class_categories(monkeypatch, "nar")
     _write_manifest(
         tmp_path,
         "nar",
@@ -828,6 +857,7 @@ def test_init_member_pool_nar_skips_baseline_when_absent(
     when that file is missing it must NOT show up in the pool, and the per-
     class residual still loads. Mirrors the JRA missing-member test for the
     Phase F baseline path."""
+    _enable_per_class_categories(monkeypatch, "nar")
     _write_manifest(
         tmp_path,
         "nar",
@@ -864,6 +894,7 @@ def test_init_member_pool_loads_nar_lightgbm_member(
     ``model.txt`` (NOT ``model.json``), load it through the LightGBM adapter,
     and record the ``lightgbm`` arch so the scorer routes it to the float64
     matrix path. End-to-end pin of the iter 36 container half."""
+    _enable_per_class_categories(monkeypatch, "nar")
     _write_manifest(
         tmp_path,
         "nar",

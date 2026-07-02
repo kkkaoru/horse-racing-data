@@ -91,7 +91,7 @@ def normalize_arguments(args: argparse.Namespace) -> PhaseBArguments:
 def build_active_model_query(category: str) -> str:
     return (
         "select json_build_object('model_version', model_version, 'artifact_path', artifact_path) "
-        f"from {ACTIVE_MODELS_TABLE} where category = '{category}' limit 1"
+        f"from {ACTIVE_MODELS_TABLE} where category = '{category}' and subclass is null limit 1"
     )
 
 
