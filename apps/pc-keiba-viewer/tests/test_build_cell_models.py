@@ -188,8 +188,10 @@ def test_all_gated_metrics_improved_requires_min_delta_for_finish_position() -> 
     assert all_gated_metrics_improved(deltas) is False
 
 
-def test_all_gated_metrics_improved_is_finish_position_only() -> None:
+def test_all_gated_metrics_improved_uses_running_style_metric_profile() -> None:
     deltas = {"top1": 0.001, "place2": 0.001, "place3": 0.001}
+    assert all_gated_metrics_improved(deltas, prediction_target="running_style") is True
+    deltas["place3"] = 0.0001
     assert all_gated_metrics_improved(deltas, prediction_target="running_style") is False
 
 
@@ -373,6 +375,21 @@ def test_evaluate_cell_running_style_rejects_without_accuracy_improvement() -> N
     )
     assert result.adopted is False
     assert "no top1 among improved primary metrics" in result.rejection_reasons
+
+
+def test_evaluate_cell_running_style_adopts_all_metric_improvement_with_weak_lb95() -> None:
+    baseline = _metrics("BASE", race_count=200, top1=0.400, place2=0.650, place3=0.300)
+    candidate = _metrics("CAND", race_count=200, top1=0.401, place2=0.651, place3=0.301)
+    result = evaluate_cell(
+        _cell(),
+        baseline,
+        candidate,
+        n_boot=300,
+        now=_NOW,
+        prediction_target="running_style",
+    )
+    assert result.adopted is True
+    assert not any("bootstrap LB95" in reason for reason in result.rejection_reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1016,11 @@ def _db_row(
     top1: float = 0.40,
     subgroup: str = "subgroup-703",
     metric_payload: dict[str, object] | None = None,
+    model_version: str = "",
+    architecture: str = "",
+    method: str = "",
+    cell_model_key: str = "",
+    cell_variant_id: str = "",
 ) -> tuple[object, ...]:
     return (
         "jra",
@@ -1020,6 +1042,11 @@ def _db_row(
         _FRESH,
         ["f1", "f2"],
         metric_payload if metric_payload is not None else {},
+        model_version,
+        architecture,
+        method,
+        cell_model_key,
+        cell_variant_id,
     )
 
 
@@ -1032,7 +1059,7 @@ def test_parse_row_maps_distance_band_to_router_cell() -> None:
         racetrack="05",
         season="summer",
         surface="turf",
-        cell_subgroup="subgroup-703",
+        cell_subgroup="",
     )
     assert metrics.race_count == 1000
     assert metrics.top1 == pytest.approx(0.40)
@@ -1073,6 +1100,25 @@ def test_parse_row_reads_model_provenance_from_extra_payload() -> None:
     assert metrics.model_version == "auto-jra-1"
     assert metrics.architecture == "catboost"
     assert metrics.method == "block_tpe"
+
+
+def test_parse_row_reads_runtime_identity_from_columns() -> None:
+    _, metrics = parse_row(
+        _db_row(
+            "CAND",
+            model_version="rs-cell-v1",
+            architecture="lightgbm",
+            method="train-cells",
+            cell_model_key="running-style/models/jra/cells/cell-a.flatbin",
+            cell_variant_id="cell-a",
+        ),
+        prediction_target="running_style",
+    )
+    assert metrics.model_version == "rs-cell-v1"
+    assert metrics.architecture == "lightgbm"
+    assert metrics.method == "train-cells"
+    assert metrics.cell_model_key == "running-style/models/jra/cells/cell-a.flatbin"
+    assert metrics.cell_variant_id == "cell-a"
 
 
 def test_parse_row_normalizes_canonical_finish_position_subgroup() -> None:
@@ -1121,22 +1167,23 @@ def test_load_cell_metrics_groups_rows_by_cell() -> None:
         subject._SELECT_CELLS, ("finish_position", "jra")
     )
     assert len(grouped) == 2
-    cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf", "subgroup-703")
+    cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf", "")
     assert {m.feature_set_hash for m in grouped[cell_a]} == {"BASE", "CAND"}
 
 
-def test_load_cell_metrics_groups_blank_and_canonical_finish_position_subgroups() -> None:
+def test_load_cell_metrics_groups_finish_position_subgroups_into_cell() -> None:
     cursor = MagicMock()
     cursor.fetchall.return_value = [
         _db_row("BASE", subgroup=""),
         _db_row("CAND", subgroup="jra_turf_mile_A_summer_05"),
+        _db_row("ALT", subgroup="legacy-per-class-703"),
     ]
     conn = MagicMock()
     conn.cursor.return_value.__enter__.return_value = cursor
     grouped = load_cell_metrics(conn, "jra", "finish_position")
     assert len(grouped) == 1
     cell = CellKey("jra", "A", "mile", "05", "summer", "turf", "")
-    assert {m.feature_set_hash for m in grouped[cell]} == {"BASE", "CAND"}
+    assert {m.feature_set_hash for m in grouped[cell]} == {"BASE", "CAND", "ALT"}
 
 
 def test_load_cell_metrics_keeps_distinct_db_subgroups_as_distinct_cells() -> None:

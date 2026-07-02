@@ -172,8 +172,17 @@ CREATE TABLE IF NOT EXISTS cell_training_evaluations (
     feature_names_array TEXT[] NOT NULL,
     cell_vector         TEXT[] NOT NULL,
     metric_payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    model_version       TEXT NOT NULL DEFAULT '',
+    architecture        TEXT NOT NULL DEFAULT '',
+    method              TEXT NOT NULL DEFAULT '',
+    cell_model_key      TEXT NOT NULL DEFAULT '',
+    cell_variant_id     TEXT NOT NULL DEFAULT '',
     evaluated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
+    PRIMARY KEY (
+        prediction_target, feature_set_hash, category, surface, distance_band,
+        class_label, season, venue, subgroup, model_version, architecture,
+        method, cell_model_key, cell_variant_id
+    )
 )
 """
 
@@ -186,6 +195,21 @@ ADD COLUMN IF NOT EXISTS subgroup TEXT NOT NULL DEFAULT '';
 
 ALTER TABLE cell_training_evaluations
 ADD COLUMN IF NOT EXISTS metric_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS architecture TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS method TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS cell_model_key TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS cell_variant_id TEXT NOT NULL DEFAULT '';
 
 UPDATE cell_training_evaluations
 SET metric_payload = jsonb_build_object(
@@ -218,9 +242,28 @@ SET metric_payload = jsonb_build_object(
 )
 WHERE metric_payload = '{}'::jsonb;
 
+UPDATE cell_training_evaluations
+SET
+    model_version = COALESCE(NULLIF(metric_payload->>'model_version', ''), NULLIF(metric_payload#>>'{extra,model_version}', ''), model_version, ''),
+    architecture = COALESCE(NULLIF(metric_payload->>'architecture', ''), NULLIF(metric_payload#>>'{extra,architecture}', ''), NULLIF(metric_payload->>'model_architecture', ''), architecture, ''),
+    method = COALESCE(NULLIF(metric_payload->>'method', ''), NULLIF(metric_payload->>'search_method', ''), NULLIF(metric_payload->>'exploration_method', ''), NULLIF(metric_payload#>>'{extra,method}', ''), NULLIF(metric_payload#>>'{extra,search_method}', ''), NULLIF(metric_payload#>>'{extra,exploration_method}', ''), method, ''),
+    cell_model_key = COALESCE(NULLIF(metric_payload->>'cell_model_key', ''), NULLIF(metric_payload->>'cellModelKey', ''), NULLIF(metric_payload#>>'{extra,cell_model_key}', ''), NULLIF(metric_payload#>>'{extra,cellModelKey}', ''), cell_model_key, ''),
+    cell_variant_id = COALESCE(NULLIF(metric_payload->>'cell_variant_id', ''), NULLIF(metric_payload->>'cellVariantId', ''), NULLIF(metric_payload#>>'{extra,cell_variant_id}', ''), NULLIF(metric_payload#>>'{extra,cellVariantId}', ''), cell_variant_id, '')
+WHERE model_version = ''
+   OR architecture = ''
+   OR method = ''
+   OR cell_model_key = ''
+   OR cell_variant_id = '';
+
 DO $$
 DECLARE
     pk_cols TEXT[];
+    desired_pk_cols TEXT[] := ARRAY[
+        'prediction_target', 'feature_set_hash', 'category', 'surface',
+        'distance_band', 'class_label', 'season', 'venue', 'subgroup',
+        'model_version', 'architecture', 'method', 'cell_model_key',
+        'cell_variant_id'
+    ];
 BEGIN
     SELECT array_agg(a.attname ORDER BY u.ordinality)
     INTO pk_cols
@@ -230,20 +273,15 @@ BEGIN
     WHERE c.conrelid = 'cell_training_evaluations'::regclass
       AND c.contype = 'p';
 
-    IF pk_cols = ARRAY[
-        'feature_set_hash', 'category', 'surface', 'distance_band',
-        'class_label', 'season', 'venue'
-    ] OR pk_cols = ARRAY[
-        'prediction_target', 'feature_set_hash', 'category', 'surface',
-        'distance_band', 'class_label', 'season', 'venue'
-    ] THEN
+    IF pk_cols IS DISTINCT FROM desired_pk_cols THEN
         ALTER TABLE cell_training_evaluations
         DROP CONSTRAINT cell_training_evaluations_pkey;
 
         ALTER TABLE cell_training_evaluations
         ADD PRIMARY KEY (
             prediction_target, feature_set_hash, category, surface,
-            distance_band, class_label, season, venue, subgroup
+            distance_band, class_label, season, venue, subgroup,
+            model_version, architecture, method, cell_model_key, cell_variant_id
         );
     END IF;
 END $$;
@@ -256,11 +294,17 @@ INSERT INTO cell_training_evaluations (
     top1_accuracy, place2_accuracy, place3_accuracy,
     place4_accuracy, place5_accuracy, place6_accuracy,
     top3_box_accuracy,
-    accuracy_vector, feature_names_array, cell_vector, metric_payload
+    accuracy_vector, feature_names_array, cell_vector, metric_payload,
+    model_version, architecture, method, cell_model_key, cell_variant_id
 ) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+    %s, %s, %s, %s, %s
 )
-ON CONFLICT (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
+ON CONFLICT (
+    prediction_target, feature_set_hash, category, surface, distance_band,
+    class_label, season, venue, subgroup, model_version, architecture,
+    method, cell_model_key, cell_variant_id
+)
 DO UPDATE SET
     feature_count = EXCLUDED.feature_count,
     race_count = EXCLUDED.race_count,
@@ -292,6 +336,10 @@ CREATE INDEX IF NOT EXISTS idx_cell_eval_top1
     ON cell_training_evaluations (prediction_target, category, top1_accuracy DESC);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_category_subgroup
     ON cell_training_evaluations (prediction_target, category, subgroup);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_identity
+    ON cell_training_evaluations (prediction_target, category, method, model_version);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_cell_variant
+    ON cell_training_evaluations (prediction_target, category, cell_model_key, cell_variant_id);
 """
 
 _TRIAL_LOG_TABLE: Final[str] = "trial_exploration_log"
@@ -722,6 +770,8 @@ class CellAccuracyStore:
         model_version: str | None = None,
         architecture: str | None = None,
         method: str | None = None,
+        cell_model_key: str | None = None,
+        cell_variant_id: str | None = None,
     ) -> int:
         assert self._con is not None
         sorted_names = sorted(feature_names) if feature_names is not None else []
@@ -757,9 +807,16 @@ class CellAccuracyStore:
                     "model_version": model_version,
                     "architecture": architecture,
                     "method": method,
+                    "cell_model_key": cell_model_key,
+                    "cell_variant_id": cell_variant_id,
                 }.items():
                     if value is not None:
                         metric_payload.setdefault(key, value)
+                row_model_version = str(metric_payload.get("model_version") or "")
+                row_architecture = str(metric_payload.get("architecture") or "")
+                row_method = str(metric_payload.get("method") or "")
+                row_cell_model_key = str(metric_payload.get("cell_model_key") or "")
+                row_cell_variant_id = str(metric_payload.get("cell_variant_id") or "")
                 cur.execute(
                     _CELL_EVAL_UPSERT,
                     (
@@ -786,6 +843,11 @@ class CellAccuracyStore:
                         sorted_names,
                         cell_vector,
                         json.dumps(metric_payload, ensure_ascii=False),
+                        row_model_version,
+                        row_architecture,
+                        row_method,
+                        row_cell_model_key,
+                        row_cell_variant_id,
                     ),
                 )
                 saved += 1

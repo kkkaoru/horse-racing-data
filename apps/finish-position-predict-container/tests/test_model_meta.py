@@ -19,6 +19,7 @@ from predict_lib import model_meta
 from predict_lib.model_meta import (
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
+    NAR_ETOP2_ADOPT_CLASSES,
     NAR_TRANSFORMER_BLEND_WEIGHT,
     NAR_TRANSFORMER_MODEL_VERSION,
     architecture_for,
@@ -325,12 +326,12 @@ def test_env_flag_unrecognised_token_returns_default(monkeypatch: pytest.MonkeyP
 # at >=95% on all four metrics without shrinking the measured file set.)
 
 
-def test_get_train_start_year_returns_per_class_override() -> None:
-    assert get_train_start_year("nar", "NEW") == 2015
+def test_get_train_start_year_ignores_class_code() -> None:
+    assert get_train_start_year("nar", "NEW") == 2006
+    assert get_train_start_year("nar", "OP") == 2006
 
 
 def test_get_train_start_year_falls_back_to_category_default() -> None:
-    # ("jra", "000") has no per-class override -> the JRA category default.
     assert get_train_start_year("jra", "000") == 2013
 
 
@@ -347,6 +348,10 @@ def test_build_r2_xgb_etop2_key() -> None:
 
 def test_build_r2_nar_etop2_key() -> None:
     assert build_r2_nar_etop2_key("model.json") == ("finish-position/nar/cb-nar-2013-v8/model.json")
+
+
+def test_nar_etop2_adopt_classes_empty() -> None:
+    assert frozenset() == NAR_ETOP2_ADOPT_CLASSES
 
 
 def test_build_r2_nar_transformer_key() -> None:

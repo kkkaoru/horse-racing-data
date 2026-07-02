@@ -30,6 +30,11 @@ create table if not exists cell_training_evaluations (
   feature_names_array text[] not null,
   cell_vector text[] not null,
   metric_payload jsonb not null default '{}'::jsonb,
+  model_version text not null default '',
+  architecture text not null default '',
+  method text not null default '',
+  cell_model_key text not null default '',
+  cell_variant_id text not null default '',
   evaluated_at timestamptz not null default now(),
   primary key (
     prediction_target,
@@ -40,7 +45,12 @@ create table if not exists cell_training_evaluations (
     class_label,
     season,
     venue,
-    subgroup
+    subgroup,
+    model_version,
+    architecture,
+    method,
+    cell_model_key,
+    cell_variant_id
   )
 );
 

@@ -145,7 +145,8 @@ SELECT category, class_label, distance_band, venue, season, surface, subgroup,
        feature_set_hash, race_count,
        top1_accuracy, place2_accuracy, place3_accuracy,
        place4_accuracy, place5_accuracy, place6_accuracy,
-       top3_box_accuracy, evaluated_at, feature_names_array, metric_payload
+       top3_box_accuracy, evaluated_at, feature_names_array, metric_payload,
+       model_version, architecture, method, cell_model_key, cell_variant_id
 FROM cell_training_evaluations
 WHERE prediction_target = %s AND category = %s
 """
@@ -178,6 +179,8 @@ class CellMetrics:
     model_version: str | None = None
     architecture: str | None = None
     method: str | None = None
+    cell_model_key: str | None = None
+    cell_variant_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,9 +259,7 @@ def all_gated_metrics_improved(
     min_delta: float = DEFAULT_MIN_DELTA,
     prediction_target: PredictionTarget = "finish_position",
 ) -> bool:
-    """Return true when every finish-position gated metric clears ``min_delta``."""
-    if prediction_target != "finish_position":
-        return False
+    """Return true when every target-specific gated metric clears ``min_delta``."""
     profile = _ADOPTION_PROFILES[prediction_target]
     return all(
         deltas.get(name, 0.0) >= min_delta for name in profile.no_regression_metrics
@@ -420,15 +421,24 @@ def variant_name_for_result(result: AdoptionResult) -> str:
         candidate.model_version is None
         and candidate.architecture is None
         and candidate.method is None
+        and candidate.cell_model_key is None
+        and candidate.cell_variant_id is None
     ):
         return variant_name_for_hash(candidate.feature_set_hash)
+    identity_fields: dict[str, str] = {
+        "feature_set_hash": candidate.feature_set_hash,
+    }
+    for key, value in {
+        "model_version": candidate.model_version,
+        "architecture": candidate.architecture,
+        "method": candidate.method,
+        "cell_model_key": candidate.cell_model_key,
+        "cell_variant_id": candidate.cell_variant_id,
+    }.items():
+        if value is not None:
+            identity_fields[key] = value
     identity = json.dumps(
-        {
-            "feature_set_hash": candidate.feature_set_hash,
-            "model_version": candidate.model_version,
-            "architecture": candidate.architecture,
-            "method": candidate.method,
-        },
+        identity_fields,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -627,16 +637,16 @@ def _resolve_variant_model_identity(
         )
     missing: list[str] = []
     if candidate.model_version is None:
-        missing.append("metric_payload.model_version")
+        missing.append("model_version")
     if candidate.architecture is None:
-        missing.append("metric_payload.architecture")
+        missing.append("architecture")
     raise RoutingModelProvenanceError(
         "finish_position production routing requires real model provenance for "
         f"variant {variant_name!r} / feature_set_hash={candidate.feature_set_hash!r}; "
         f"missing {', '.join(missing)}. Re-run local training so "
-        "cell_training_evaluations.metric_payload stores model_version and "
-        "architecture, or pass --allow-synthetic-model-version only for local "
-        "analysis output that will not be deployed."
+        "cell_training_evaluations stores model_version and architecture, or pass "
+        "--allow-synthetic-model-version only for local analysis output that will "
+        "not be deployed."
     )
 
 
@@ -696,6 +706,15 @@ def generate_running_style_feature_selection_json(
             "feature_set_hash": results[0].candidate.feature_set_hash,
             "feature_names": sorted(results[0].candidate.feature_names),
         }
+        for key, value in {
+            "model_version": results[0].candidate.model_version,
+            "architecture": results[0].candidate.architecture,
+            "method": results[0].candidate.method,
+            "cell_model_key": results[0].candidate.cell_model_key,
+            "cell_variant_id": results[0].candidate.cell_variant_id,
+        }.items():
+            if value is not None:
+                cast("dict[str, object]", variant_specs[variant_name])[key] = value
         for result in sorted(results, key=lambda r: _cell_sort_key(r.cell)):
             rules.append(
                 {
@@ -722,17 +741,6 @@ def generate_running_style_feature_selection_json(
     }
 
 
-def _canonical_finish_position_subgroup(
-    category: str,
-    surface: str,
-    distance_band: str,
-    class_label: str,
-    season: str,
-    venue: str,
-) -> str:
-    return f"{category}_{surface}_{distance_band}_{class_label}_{season}_{venue}"
-
-
 def _normalize_cell_subgroup(
     *,
     prediction_target: PredictionTarget,
@@ -746,11 +754,7 @@ def _normalize_cell_subgroup(
 ) -> str:
     if prediction_target != "finish_position":
         return cell_subgroup
-    if cell_subgroup == _canonical_finish_position_subgroup(
-        category, surface, distance_band, class_label, season, venue
-    ):
-        return ""
-    return cell_subgroup
+    return ""
 
 
 def _payload_mapping(value: object) -> Mapping[str, object]:
@@ -777,6 +781,15 @@ def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:
             value = extra.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
+    return None
+
+
+def _row_string(row: Sequence[object], index: int) -> str | None:
+    if len(row) <= index:
+        return None
+    value = row[index]
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
@@ -824,9 +837,16 @@ def parse_row(
         evaluated_at=cast("datetime", row[16]),
         feature_set_hash=str(row[7]),
         feature_names=feature_names,
-        model_version=_payload_string(payload, "model_version", "modelVersion"),
-        architecture=_payload_string(payload, "architecture", "model_architecture"),
-        method=_payload_string(payload, "method", "search_method", "exploration_method"),
+        model_version=_payload_string(payload, "model_version", "modelVersion")
+        or _row_string(row, 19),
+        architecture=_payload_string(payload, "architecture", "model_architecture")
+        or _row_string(row, 20),
+        method=_payload_string(payload, "method", "search_method", "exploration_method")
+        or _row_string(row, 21),
+        cell_model_key=_payload_string(payload, "cell_model_key", "cellModelKey")
+        or _row_string(row, 22),
+        cell_variant_id=_payload_string(payload, "cell_variant_id", "cellVariantId")
+        or _row_string(row, 23),
     )
     return cell, metrics
 

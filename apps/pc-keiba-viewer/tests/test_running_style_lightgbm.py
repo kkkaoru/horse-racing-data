@@ -2255,6 +2255,8 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
                 "feature_set_hash": "a" * 64,
                 "feature_columns": ["feature_b", "feature_a"],
                 "cell_training_evaluation": metrics,
+                "model_key": "running-style/models/jra/cells/rs-cell-v1-cell-a.flatbin",
+                "variant_id": "cell-a",
             },
             {
                 "feature_set_hash": "a" * 64,
@@ -2278,6 +2280,12 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
     assert isinstance(forwarded_metrics, list)
     first_metric = cast(Mapping[str, object], forwarded_metrics[0])
     assert first_metric["subgroup"] == "OPEN"
+    first_payload = cast(Mapping[str, object], first_metric["metric_payload"])
+    assert (
+        first_payload["cell_model_key"]
+        == "running-style/models/jra/cells/rs-cell-v1-cell-a.flatbin"
+    )
+    assert first_payload["cell_variant_id"] == "cell-a"
     second_metric = cast(Mapping[str, object], forwarded_metrics[1])
     assert second_metric["subgroup"] == ""
     assert calls[0]["feature_count"] == 2

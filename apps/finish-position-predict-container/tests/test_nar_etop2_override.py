@@ -1,8 +1,9 @@
-"""Tests for predict_lib.nar_etop2_override — NAR E-top2 per-class CB override.
+"""Tests for predict_lib.nar_etop2_override — historical NAR E-top2 CB override.
 
 The NAR override is the mirror image of the JRA one: XGBoost is the BASE and
-CatBoost CB-2013 supplies the override signal, gated by per-class routing
-(``NAR_ETOP2_ADOPT_CLASSES`` = {A, B, NEW, other}).
+CatBoost CB-2013 supplies the override signal. Production keeps
+``NAR_ETOP2_ADOPT_CLASSES`` empty; tests that exercise the old swap algorithm
+opt into the historical allowlist explicitly.
 
 Covers:
   - ADOPT class, CB#1 == XGB#2 (override fires, XGB#1/XGB#2 swap, XGB#3 unchanged)
@@ -22,8 +23,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+import predict_lib.nar_etop2_override as subject
 from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
@@ -37,14 +41,28 @@ ADOPT_OTHER: str = "other"
 REJECT_C: str = "C"
 REJECT_OP: str = "OP"
 REJECT_MUKATSU: str = "MUKATSU"
+HISTORICAL_ADOPT_CLASSES: frozenset[str] = frozenset(
+    {ADOPT_A, ADOPT_B, ADOPT_NEW, ADOPT_OTHER}
+)
+
+
+def _enable_historical_adopt_classes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subject, "NAR_ETOP2_ADOPT_CLASSES", HISTORICAL_ADOPT_CLASSES)
+
+
+def test_nar_etop2_adopt_classes_empty_by_default() -> None:
+    assert frozenset() == subject.NAR_ETOP2_ADOPT_CLASSES
 
 
 # ---------------------------------------------------------------------------
 # apply_nar_etop2_scores — ADOPT class, CB#1 == XGB#2 (override fires)
 
 
-def test_cb1_equals_xgb2_swaps_rank1_and_rank2() -> None:
+def test_cb1_equals_xgb2_swaps_rank1_and_rank2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When CB#1 == XGB#2 the scores at rank-1 and rank-2 positions are swapped."""
+    _enable_historical_adopt_classes(monkeypatch)
     # XGB ranking: horse A=3.0 (rank-1), B=2.0 (rank-2), C=1.0 (rank-3)
     # CB: horse B is CB#1 (highest cb score)
     xgb_scores = [3.0, 2.0, 1.0]  # A, B, C
@@ -57,8 +75,11 @@ def test_cb1_equals_xgb2_swaps_rank1_and_rank2() -> None:
     assert result[2] == xgb_scores[2], "XGB#3 score must be unchanged"
 
 
-def test_cb1_equals_xgb2_xgb3_stays_at_rank3() -> None:
+def test_cb1_equals_xgb2_xgb3_stays_at_rank3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """XGB#3 position is preserved by construction after the override."""
+    _enable_historical_adopt_classes(monkeypatch)
     # 5-horse race; XGB ranking by score: 5,4,3,2,1 → horse 0=rank1, 1=rank2, ...
     xgb_scores = [5.0, 4.0, 3.0, 2.0, 1.0]
     cb_scores = [1.0, 9.0, 0.5, 0.3, 0.1]  # horse 1 is CB#1 == XGB#2
@@ -75,8 +96,11 @@ def test_cb1_equals_xgb2_xgb3_stays_at_rank3() -> None:
     assert result[4] == xgb_scores[4]
 
 
-def test_cb1_equals_xgb2_exactly_one_rank1() -> None:
+def test_cb1_equals_xgb2_exactly_one_rank1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """After override there is exactly one horse with the maximum score."""
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [10.0, 8.0, 6.0]
     cb_scores = [2.0, 15.0, 1.0]  # index 1 is CB#1 == XGB#2
     result = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class=ADOPT_NEW)
@@ -85,8 +109,11 @@ def test_cb1_equals_xgb2_exactly_one_rank1() -> None:
     assert n_max == 1, "Exactly one horse should have the maximum score"
 
 
-def test_cb1_equals_xgb2_injected_scores_above_all_xgb() -> None:
+def test_cb1_equals_xgb2_injected_scores_above_all_xgb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Promoted pair receive scores above the highest original XGB score."""
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [10.0, 8.0, 6.0]
     cb_scores = [2.0, 15.0, 1.0]
     result = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class=ADOPT_OTHER)
@@ -95,8 +122,9 @@ def test_cb1_equals_xgb2_injected_scores_above_all_xgb() -> None:
     assert result[0] > xgb_max, "New rank-2 horse score must exceed original XGB max"
 
 
-def test_promoted_score_offsets_match_spec() -> None:
+def test_promoted_score_offsets_match_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     """Promoted gets max(xgb)+1.0, demoted gets max(xgb)+0.5 (exact offsets)."""
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [10.0, 8.0, 6.0]
     cb_scores = [2.0, 15.0, 1.0]  # index 1 is CB#1 == XGB#2
     result = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class=ADOPT_A)
@@ -187,7 +215,10 @@ def test_class_none_never_overrides() -> None:
 # apply_nar_etop2_scores — every ADOPT class fires, every REJECT class does not
 
 
-def test_all_adopt_classes_fire_when_condition_met() -> None:
+def test_all_historical_adopt_classes_fire_when_condition_met(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [5.0, 4.0, 3.0]
     cb_scores = [1.0, 9.0, 0.5]  # CB#1 == XGB#2
     for cls in (ADOPT_A, ADOPT_B, ADOPT_NEW, ADOPT_OTHER):
@@ -215,8 +246,9 @@ def test_single_horse_no_override() -> None:
     assert result == xgb_scores
 
 
-def test_two_horse_race_override_fires() -> None:
+def test_two_horse_race_override_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two-horse ADOPT race: CB#1 == XGB#2 → swap."""
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [4.0, 2.0]
     cb_scores = [0.5, 8.0]  # horse 1 is CB#1 == XGB#2
     result = apply_nar_etop2_scores(xgb_scores, cb_scores, nar_class=ADOPT_B)
@@ -255,7 +287,8 @@ def test_result_length_matches_input() -> None:
 # is_nar_etop2_override_active
 
 
-def test_active_when_cb1_equals_xgb2() -> None:
+def test_active_when_cb1_equals_xgb2(monkeypatch: pytest.MonkeyPatch) -> None:
+    _enable_historical_adopt_classes(monkeypatch)
     xgb_scores = [5.0, 4.0, 3.0]
     cb_scores = [1.0, 9.0, 0.5]  # CB#1 = horse 1 = XGB#2
     assert is_nar_etop2_override_active(xgb_scores, cb_scores, nar_class=ADOPT_A) is True
@@ -289,8 +322,9 @@ def test_not_active_single_horse() -> None:
     assert is_nar_etop2_override_active([5.0], [9.0], nar_class=ADOPT_A) is False
 
 
-def test_active_consistent_with_apply() -> None:
+def test_active_consistent_with_apply(monkeypatch: pytest.MonkeyPatch) -> None:
     """is_nar_etop2_override_active() == (argmax changed by apply_nar_etop2_scores)."""
+    _enable_historical_adopt_classes(monkeypatch)
     test_cases = [
         ([5.0, 4.0, 3.0], [1.0, 9.0, 0.5], ADOPT_A),  # should fire
         ([5.0, 4.0, 3.0], [9.0, 2.0, 0.5], ADOPT_B),  # CB#1==XGB#1, no fire
@@ -314,8 +348,9 @@ def test_active_consistent_with_apply() -> None:
 # apply_nar_etop2_scores — property: place3 structurally preserved
 
 
-def test_place3_preserved_when_override_fires() -> None:
+def test_place3_preserved_when_override_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     """When override fires, the horse at XGB#3 must remain at output rank-3."""
+    _enable_historical_adopt_classes(monkeypatch)
     # 6-horse race; XGB#3 is horse 2 (score=3.0)
     xgb_scores = [5.0, 4.0, 3.0, 2.0, 1.0, 0.5]
     cb_scores = [0.1, 9.0, 0.5, 0.3, 0.2, 0.1]  # horse 1 is CB#1 == XGB#2

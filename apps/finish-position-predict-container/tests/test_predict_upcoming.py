@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Import the cross-module helpers directly so the tests stay I/O-free.
+import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
 from predict_lib.cell_router import build_base_model_r2_key
 from predict_lib.model_meta import (
@@ -553,8 +554,15 @@ def _run_nar_etop2(
     return score_one_race_nar_etop2(xgb, cb, _NAR_RACE_ID, "nar", entries, ["feat"])
 
 
-def test_score_one_race_nar_etop2_override_promotes_xgb_rank2() -> None:
+def test_score_one_race_nar_etop2_override_promotes_xgb_rank2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When CB#1 == XGB#2 in an ADOPT class, XGB#2 is promoted to rank-1."""
+    monkeypatch.setattr(
+        nar_etop2_override,
+        "NAR_ETOP2_ADOPT_CLASSES",
+        frozenset({"A", "B", "NEW", "other"}),
+    )
     # XGB base ranking: H1 (0.9) > H2 (0.5) > H3 (0.1) -> XGB#2 = H2 (umaban 2).
     xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
     # CB rank-1 = H2 (umaban 2) -> equals XGB#2, so the override fires.

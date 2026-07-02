@@ -18,6 +18,10 @@ const metricPayloadMigrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260702010000_add_metric_payload_to_cell_training_evaluations.sql",
 );
+const identityMigrationPath = resolve(
+  import.meta.dirname,
+  "../../sql/20260703080000_add_identity_to_cell_training_evaluations.sql",
+);
 
 it("creates the per-cell evaluation table for fresh local PostgreSQL databases", () => {
   const sql = readFileSync(createMigrationPath, "utf8");
@@ -28,14 +32,20 @@ it("creates the per-cell evaluation table for fresh local PostgreSQL databases",
   ).toStrictEqual("create table if not exists cell_training_evaluations");
   expect(
     normalized.match(
-      /primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup \)/,
+      /primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup, model_version, architecture, method, cell_model_key, cell_variant_id \)/,
     )?.[0],
   ).toStrictEqual(
-    "primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup )",
+    "primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup, model_version, architecture, method, cell_model_key, cell_variant_id )",
   );
   expect(
     normalized.match(/metric_payload jsonb not null default '\{\}'::jsonb/)?.[0],
   ).toStrictEqual("metric_payload jsonb not null default '{}'::jsonb");
+  expect(normalized.match(/model_version text not null default ''/)?.[0]).toStrictEqual(
+    "model_version text not null default ''",
+  );
+  expect(normalized.match(/cell_variant_id text not null default ''/)?.[0]).toStrictEqual(
+    "cell_variant_id text not null default ''",
+  );
 });
 
 it("adds prediction_target and backfills existing finish-position rows", () => {
@@ -176,5 +186,32 @@ it("adds metric_payload for target-native cell metrics", () => {
     )?.[0],
   ).toStrictEqual(
     "set metric_payload = jsonb_build_object( 'metric_schema_version', 'cell_training_evaluation_scalar_v1'",
+  );
+});
+
+it("adds first-class runtime identity columns for per-cell methods", () => {
+  const sql = readFileSync(identityMigrationPath, "utf8");
+  const normalized = sql.replaceAll(/\s+/g, " ").trim().toLowerCase();
+
+  expect(normalized).toContain(
+    "alter table cell_training_evaluations add column if not exists model_version text not null default ''",
+  );
+  expect(normalized).toContain(
+    "alter table cell_training_evaluations add column if not exists cell_model_key text not null default ''",
+  );
+  expect(normalized).toContain("metric_payload->>'model_version'");
+  expect(normalized).toContain("metric_payload->>'cell_variant_id'");
+  expect(
+    normalized.match(
+      /add primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup, model_version, architecture, method, cell_model_key, cell_variant_id \)/,
+    )?.[0],
+  ).toStrictEqual(
+    "add primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup, model_version, architecture, method, cell_model_key, cell_variant_id )",
+  );
+  expect(normalized).toContain(
+    "create index if not exists cell_training_evaluations_target_identity_idx",
+  );
+  expect(normalized).toContain(
+    "create index if not exists cell_training_evaluations_target_cell_variant_idx",
   );
 });

@@ -69,9 +69,8 @@ def load_model_meta(
 
 _resolved_versions, _resolved_counts = load_model_meta()
 
-# Per-class JRA model registry — see predict_lib/per_class.py for routing logic.
-# MODEL_VERSION_BY_CATEGORY['jra'] is the fallback model when no class-specific
-# model is registered.
+# Category-default model registry. Per-class routing is historical only; current
+# production routing is cell-first and then category-level fallback.
 MODEL_VERSION_BY_CATEGORY: Final[dict[Category, str]] = _resolved_versions
 
 ARCHITECTURE_BY_CATEGORY: Final[dict[Category, Architecture]] = {
@@ -151,10 +150,9 @@ NAR_ETOP2_CB_MODEL_VERSION: Final[str] = "cb-nar-2013-v8"
 # ["nar"] so iter23-nar-etop2 rows are queryable separately.
 NAR_ETOP2_MODEL_VERSION: Final[str] = "iter23-nar-etop2"
 
-# Per-class routing allowlist: the override is applied ONLY for these NAR
-# sub-classes (net positive for top1 + place2 in offline eval). Classes C, OP,
-# MUKATSU showed a place2 regression and stay on the pure XGB base.
-NAR_ETOP2_ADOPT_CLASSES: Final[frozenset[str]] = frozenset({"A", "B", "NEW", "other"})
+# NAR E-top2 is closed. Keep the helper importable for historical tests and
+# offline comparison, but no NAR subclass may activate it in production.
+NAR_ETOP2_ADOPT_CLASSES: Final[frozenset[str]] = frozenset()
 # LightGBM boosters are serialised with the native text dump
 # (``Booster.save_model`` -> ``model.txt``) rather than the CatBoost / XGBoost
 # JSON format, so a per-class LightGBM member's artifact file is named
@@ -198,19 +196,11 @@ def member_model_file_name(model_version: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Per-class training start year configuration
+# Category training start year configuration
 # ---------------------------------------------------------------------------
-# Per-class optimal start years from walk-forward window ablation (2006/2010/2013/2015).
-# Values below are defaults (2006); update per-class after full evaluation + deploy gate.
-#
-# Ablation results (NAR, walk-forward, from team-lead 2026-06-19):
-#   OP: 2010 (+1.07pp top1), NEW: 2010 (+0.73pp top1), MUKATSU: 2013 (+0.56pp top1),
-#   other: 2013 (+0.26pp top1), C: 2010 (+0.08pp, nearly flat),
-#   B: 2006 (baseline best), A: 2006 (baseline best).
-#
-# The mapping key is (category, class_code) where class_code uses the same
-# normalised codes as PER_CLASS_MODEL_VERSIONS (nar_subclass for NAR, etc.).
-# The default category-wide start year when no class-specific override exists:
+# Current production and local routing are per-cell, not per-class. Keep only
+# category-wide defaults here so a class/subclass label cannot change the
+# training window.
 _DEFAULT_TRAIN_START_YEAR: Final[int] = 2006
 
 _CATEGORY_DEFAULT_TRAIN_START_YEAR: Final[dict[str, int]] = {
@@ -219,32 +209,17 @@ _CATEGORY_DEFAULT_TRAIN_START_YEAR: Final[dict[str, int]] = {
     "ban-ei": 2006,
 }
 
-# Per-class train start year overrides (NAR XGB walk-forward ablation 2026-06-19).
-PER_CLASS_TRAIN_START_YEAR: Final[Mapping[tuple[str, str], int]] = {
-    ("nar", "NEW"): 2015,
-    ("nar", "MUKATSU"): 2013,
-    ("nar", "C"): 2010,
-    ("nar", "B"): 2006,
-    ("nar", "A"): 2006,
-    ("nar", "OP"): 2010,
-    ("nar", "other"): 2013,
-}
+PER_CLASS_TRAIN_START_YEAR: Final[Mapping[tuple[str, str], int]] = {}
 
 
 def get_train_start_year(category: str, class_code: str) -> int:
-    """Return the training start year for a (category, class_code) pair.
+    """Return the category-wide training start year.
 
-    Checks ``PER_CLASS_TRAIN_START_YEAR`` first; falls back to the
-    category-wide default from ``_CATEGORY_DEFAULT_TRAIN_START_YEAR``; falls
-    back to ``_DEFAULT_TRAIN_START_YEAR`` when the category is unrecognised.
-
-    The class_code should already be normalised (via ``normalize_class_code``
-    in per_class.py) before calling this function — un-normalised raw codes
-    that are not registered will fall through to the category default.
+    ``class_code`` is accepted for backward-compatible callers but ignored:
+    per-class training-window overrides are not part of the current production
+    or local model-selection authority.
     """
-    per_class_year = PER_CLASS_TRAIN_START_YEAR.get((category, class_code))
-    if per_class_year is not None:
-        return per_class_year
+    _ = class_code
     return _CATEGORY_DEFAULT_TRAIN_START_YEAR.get(category, _DEFAULT_TRAIN_START_YEAR)
 
 

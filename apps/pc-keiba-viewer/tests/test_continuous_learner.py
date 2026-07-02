@@ -5347,12 +5347,13 @@ def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
     assert mock_conn.commit.call_count == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 23
+    assert len(params) == 28
     assert params[0] == "finish_position"
     assert params[8] == "jra_turf_mile_E_summer_10"
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == []
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
+    assert params[23:28] == ("", "", "", "", "")
     payload = json.loads(cast(str, params[22]))
     assert payload["metric_schema_version"] == "cell_training_evaluation_scalar_v1"
     assert payload["prediction_target"] == "finish_position"
@@ -5412,12 +5413,13 @@ def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
     assert saved == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 23
+    assert len(params) == 28
     assert params[0] == "running_style"
     assert params[8] == "jra_turf_mile_E_summer_10"
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == ["feat_a", "feat_b"]
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
+    assert params[23:28] == ("", "", "", "", "")
     payload = json.loads(cast(str, params[22]))
     assert payload["metric_schema_version"] == "cell_training_evaluation_scalar_v1"
     assert payload["prediction_target"] == "running_style"
@@ -5522,6 +5524,7 @@ def test_cell_accuracy_store_adds_model_provenance_to_metric_payload(
     assert payload["model_version"] == "auto-jra-1"
     assert payload["architecture"] == "catboost"
     assert payload["method"] == "block_tpe"
+    assert params[23:28] == ("auto-jra-1", "catboost", "block_tpe", "", "")
 
 
 def test_cell_accuracy_store_keeps_existing_payload_provenance(tmp_path: Path) -> None:
@@ -5573,6 +5576,7 @@ def test_cell_accuracy_store_keeps_existing_payload_provenance(tmp_path: Path) -
     assert payload["model_version"] == "payload-model"
     assert payload["architecture"] == "lightgbm"
     assert payload["method"] == "block_tpe"
+    assert params[23:28] == ("payload-model", "lightgbm", "block_tpe", "", "")
 
 
 def test_sire_venue_bias_adds_five_columns() -> None:

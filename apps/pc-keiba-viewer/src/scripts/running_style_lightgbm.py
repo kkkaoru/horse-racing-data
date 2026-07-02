@@ -2690,6 +2690,19 @@ def save_running_style_cell_training_evaluations(
         feature_names = tuple(str(name) for name in raw_feature_columns)
         metrics = dict(cast(Mapping[str, object], raw_metrics))
         metrics["subgroup"] = metrics.get("subgroup") or ""
+        metric_payload = metrics.get("metric_payload")
+        if isinstance(metric_payload, Mapping):
+            metric_payload = dict(metric_payload)
+        else:
+            metric_payload = {}
+        for payload_key, cell_key in (
+            ("cell_model_key", "model_key"),
+            ("cell_variant_id", "variant_id"),
+        ):
+            raw_value = cell.get(cell_key)
+            if isinstance(raw_value, str) and raw_value:
+                metric_payload.setdefault(payload_key, raw_value)
+        metrics["metric_payload"] = metric_payload
         key: tuple[str, tuple[str, ...]] = (raw_hash, feature_names)
         if key not in grouped:
             grouped[key] = []
