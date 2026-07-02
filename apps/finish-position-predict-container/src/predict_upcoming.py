@@ -104,6 +104,7 @@ from predict_lib.rescore import (
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
     CacheMissError,
+    FocusedFullCompletionFn,
     ParquetPayloadFn,
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
@@ -132,6 +133,13 @@ R2_ACCESS_KEY_ID_ENV: str = "R2_ACCESS_KEY_ID"
 R2_SECRET_ACCESS_KEY_ENV: str = "R2_SECRET_ACCESS_KEY"
 R2_BUCKET_ENV: str = "R2_BUCKET"
 NEON_DATABASE_URL_ENV: str = "NEON_DATABASE_URL"
+FOCUSED_FULL_COMPLETION_CONNECT_TIMEOUT_SECONDS: int = 10
+"""Connect timeout for the focused-full completion check against Neon.
+
+Kept short (vs. the retrying ``connect_postgres_with_retry`` used for the
+prediction UPSERT) because a completion-check failure is swallowed and
+treated as "not complete" -- a slow/unreachable Neon must never delay
+launching a genuine prediction pipeline."""
 # Optional override: source URL for the DuckDB feature-build subprocess. When
 # set, feature building (which sustains a long-running ATTACH against Postgres
 # and is sensitive to Neon's compute idle timeout) uses this URL instead of
@@ -1345,6 +1353,79 @@ def _scope_from_params(params: PredictParams) -> RaceScope:
     return RaceScope(keibajo_code=params.keibajo_code, race_bango=params.race_bango)
 
 
+def _focused_full_prediction_complete(database_url: str, params: PredictParams) -> bool:
+    """Return True when race *params* already has complete predictions in Neon.
+
+    Mirrors finish-position-cron/src/focused-full-completion.ts: complete when
+    some model_version has scored as many distinct horses (ketto_toroku_bango)
+    as race_entry_corner_features lists for the race. Best-effort: any error or
+    zero expected rows returns False so a genuine prediction still launches.
+    """
+    keibajo_code = params.keibajo_code
+    race_bango = params.race_bango
+    if keibajo_code is None or race_bango is None:
+        return False
+    source = "jra" if params.category == "jra" else "nar"
+    kaisai_nen = params.run_date[:4]
+    kaisai_tsukihi = params.run_date[4:8]
+    try:
+        import psycopg
+
+        conn = psycopg.connect(
+            database_url, connect_timeout=FOCUSED_FULL_COMPLETION_CONNECT_TIMEOUT_SECONDS
+        )
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                with expected as (
+                  select distinct ketto_toroku_bango
+                  from race_entry_corner_features
+                  where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
+                    and keibajo_code = %s and race_bango = %s
+                ),
+                expected_total as (select count(*)::int as expected_rows from expected),
+                model_counts as (
+                  select p.model_version, count(distinct p.ketto_toroku_bango)::int as actual_rows
+                  from race_finish_position_model_predictions p
+                  join expected e on e.ketto_toroku_bango = p.ketto_toroku_bango
+                  where p.source = %s and p.kaisai_nen = %s and p.kaisai_tsukihi = %s
+                    and p.keibajo_code = %s and p.race_bango = %s
+                  group by p.model_version
+                )
+                select
+                  expected_total.expected_rows,
+                  coalesce(
+                    bool_or(model_counts.actual_rows = expected_total.expected_rows), false
+                  ) as complete
+                from expected_total
+                left join model_counts on true
+                group by expected_total.expected_rows
+                """,
+                (
+                    source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                    source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            expected_rows = int(row[0]) if row[0] is not None else 0
+            return expected_rows > 0 and bool(row[1])
+        finally:
+            conn.close()
+    except Exception as exc:
+        print(f"[predict-serve] completion check failed: {exc}", file=sys.stderr, flush=True)
+        return False
+
+
+def _make_focused_full_completion_fn(database_url: str) -> FocusedFullCompletionFn:
+    def _fn(params: PredictParams) -> bool:
+        return _focused_full_prediction_complete(database_url, params)
+
+    return _fn
+
+
 class _PredictHandler(http.server.BaseHTTPRequestHandler):
     """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
 
@@ -1352,6 +1433,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
     parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn  # injected by make_handler_class
     rescore_factory: RescoreFactory | None  # injected by make_handler_class
+    focused_full_completion_fn: FocusedFullCompletionFn | None  # injected by make_handler_class
 
     @override
     def log_message(self, format: str, *args: object) -> None:
@@ -1405,6 +1487,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 rescore_fn=rescore_fn,
                 parquet_payload_fn=self.parquet_payload_fn,
                 per_race_parquet_payload_fn=effective_per_race_fn,
+                focused_full_completion_fn=self.focused_full_completion_fn,
             ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()
@@ -1437,6 +1520,7 @@ def make_handler_class(
     parquet_payload_fn: ParquetPayloadFn,
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None,
+    focused_full_completion_fn: FocusedFullCompletionFn | None,
 ) -> type[_PredictHandler]:
     """Return a ``_PredictHandler`` subclass with bound callables.
 
@@ -1445,11 +1529,14 @@ def make_handler_class(
     inject ``self`` when accessed on an instance.  ``rescore_factory`` is invoked
     per request inside ``do_GET`` with the request's race scope, so it is also
     stored as a ``staticmethod`` to avoid the same ``self`` injection.
+    ``focused_full_completion_fn`` follows the same optional-``staticmethod``
+    pattern as ``rescore_factory`` since it may be ``None`` in tests / local runs.
     """
     _predict: PredictCategoryFn = predict_fn
     _parquet_payload: ParquetPayloadFn = parquet_payload_fn
     _per_race_parquet_payload: PerRaceParquetPayloadFn = per_race_parquet_payload_fn
     _rescore_factory: RescoreFactory | None = rescore_factory
+    _completion: FocusedFullCompletionFn | None = focused_full_completion_fn
 
     @final
     class _BoundHandler(_PredictHandler):
@@ -1457,6 +1544,9 @@ def make_handler_class(
         parquet_payload_fn = staticmethod(_parquet_payload)
         per_race_parquet_payload_fn = staticmethod(_per_race_parquet_payload)
         rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
+        focused_full_completion_fn = (
+            staticmethod(_completion) if _completion is not None else None
+        )
 
     return _BoundHandler
 
@@ -1467,6 +1557,7 @@ def serve_http(
     parquet_payload_fn: ParquetPayloadFn,
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None = None,
+    focused_full_completion_fn: FocusedFullCompletionFn | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
 
@@ -1477,7 +1568,11 @@ def serve_http(
     in ``tests/test_serve.py``.
     """
     handler_cls = make_handler_class(
-        predict_fn, parquet_payload_fn, per_race_parquet_payload_fn, rescore_factory
+        predict_fn,
+        parquet_payload_fn,
+        per_race_parquet_payload_fn,
+        rescore_factory,
+        focused_full_completion_fn,
     )
     with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
@@ -1517,7 +1612,15 @@ def main() -> int:
             database_url, models_dir, source_url, r2
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
-        serve_http(HTTP_PORT, predict_fn, parquet_payload_fn, per_race_payload_fn, rescore_factory)
+        focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
+        serve_http(
+            HTTP_PORT,
+            predict_fn,
+            parquet_payload_fn,
+            per_race_payload_fn,
+            rescore_factory,
+            focused_full_completion_fn,
+        )
         return 0  # unreachable but satisfies the return type
 
     started = time.monotonic()

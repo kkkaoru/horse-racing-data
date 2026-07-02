@@ -96,6 +96,12 @@ export interface PredictQueueMessage {
   // consumer skips the per-category claimRun dedup gate. Absent/false keeps the
   // normal dedup path.
   skipDedup?: boolean;
+  // Number of times this focused per-race full message has been re-enqueued
+  // because the container's single per-process pipeline slot was busy with a
+  // DIFFERENT race. Each busy re-enqueue creates a fresh message (resetting the
+  // Cloudflare retry attempt count) with this incremented, bounded by
+  // MAX_BUSY_REQUEUES in queue-consumer.ts. Absent on the first send.
+  busyRequeueCount?: number;
 }
 
 export interface PredictRunState {

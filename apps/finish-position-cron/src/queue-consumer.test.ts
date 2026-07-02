@@ -86,6 +86,7 @@ import { handleQueue } from "./queue-consumer";
 
 const ackMock = vi.fn();
 const retryMock = vi.fn();
+const sendMock = vi.fn();
 const idFromNameMock = vi.fn(() => ({ name: "test-id" }));
 const stubFetchMock = vi.fn(
   async () =>
@@ -107,7 +108,7 @@ const makeEnv = (): Env => ({
   } as unknown as Env["FINISH_POSITION_PREDICT_CONTAINER"],
   NEON_DATABASE_URL: "postgres://example",
   PREDICT_DAYS_AHEAD: "2",
-  PREDICT_QUEUE: {} as unknown as Env["PREDICT_QUEUE"],
+  PREDICT_QUEUE: { send: sendMock } as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
   REALTIME_DB: {} as unknown as D1Database,
   TRIGGER_TOKEN: "secret-token",
@@ -134,6 +135,8 @@ const makeBatch = (messages: Message<PredictQueueMessage>[]): MessageBatch<Predi
 beforeEach(() => {
   ackMock.mockClear();
   retryMock.mockClear();
+  sendMock.mockClear();
+  sendMock.mockResolvedValue(undefined);
   idFromNameMock.mockClear();
   getMock.mockClear();
   stubFetchMock.mockClear();
@@ -972,6 +975,152 @@ test("retries focused skipDedup full messages with a fixed delay when result sta
   expect(ackMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
   consoleSpy.mockRestore();
+});
+
+test("re-enqueues a fresh message with a short delay when result status is busy", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(sendMock).toHaveBeenCalledTimes(1);
+  expect(sendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      busyRequeueCount: 1,
+      category: "nar",
+      keibajoCode: "35",
+      raceBango: "01",
+      runYmd: "20260629",
+    }),
+    { delaySeconds: 60 },
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+test("increments an existing busyRequeueCount when result status is busy again", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        busyRequeueCount: 5,
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ busyRequeueCount: 6 }), {
+    delaySeconds: 60,
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("retries toward the DLQ instead of re-enqueueing once the busy requeue budget is exhausted", async () => {
+  const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        busyRequeueCount: 40,
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).toHaveBeenCalledWith();
+  expect(ackMock).not.toHaveBeenCalled();
+  consoleWarn.mockRestore();
+});
+
+test("acks focused skipDedup full messages when result status is already-complete", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "already-complete",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+test("falls through focused skipDedup full messages with result status success to the shared success path", async () => {
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 1,
+    category: "jra",
+    status: "success",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
 });
 
 test("does not treat a category-level full message with status accepted as focused-full acceptance", async () => {

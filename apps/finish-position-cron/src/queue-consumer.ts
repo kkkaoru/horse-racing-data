@@ -33,6 +33,17 @@ const RESULT_SUCCESS_STATUS = "success";
 // limit. See FOCUSED_FULL_RETRY_DELAY_SECONDS below for how completion is
 // polled afterward.
 const FOCUSED_FULL_ACCEPTED_STATUS = "accepted";
+const FOCUSED_FULL_BUSY_STATUS = "busy";
+const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
+// The container returns "busy" when another race in the same category holds its
+// single per-process pipeline slot. Re-enqueue a fresh copy (which resets the
+// message's retry attempt count) with a short delay so the starved race keeps
+// waiting for the slot WITHOUT burning the DLQ retry budget, bounded by
+// MAX_BUSY_REQUEUES so a permanently-stuck slot still surfaces via the DLQ.
+const BUSY_REQUEUE_DELAY_SECONDS = 60;
+const MAX_BUSY_REQUEUES = 40;
+const BUSY_REQUEUE_COUNT_ZERO = 0;
+const BUSY_REQUEUE_COUNT_INCREMENT = 1;
 // Retry budget reasoning: the Python container's focused-full fire-and-forget
 // pipeline (DuckDB base build + 10-16 sequential v7 layer scripts +
 // CatBoost/XGBoost scoring + Neon UPSERT) has been observed taking 10-20+
@@ -190,6 +201,66 @@ const raceScopeSuffix = (keibajoCode?: string, raceBango?: string): string => {
   return suffix;
 };
 
+// This focused-full message's race never started: the container's single
+// per-process pipeline slot for this category was busy with a DIFFERENT race.
+const requeueBusyFocusedFull = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+): Promise<void> => {
+  const { busyRequeueCount, category, keibajoCode, raceBango, runYmd } = message.body;
+  const currentCount = busyRequeueCount ?? BUSY_REQUEUE_COUNT_ZERO;
+  const suffix = raceScopeSuffix(keibajoCode, raceBango);
+  if (currentCount >= MAX_BUSY_REQUEUES) {
+    console.warn(
+      `Focused full slot busy budget exhausted category=${category} runYmd=${runYmd}${suffix} busyRequeueCount=${currentCount} -- retrying toward DLQ`,
+    );
+    message.retry();
+    return;
+  }
+  const nextCount = currentCount + BUSY_REQUEUE_COUNT_INCREMENT;
+  await env.PREDICT_QUEUE.send(
+    { ...message.body, busyRequeueCount: nextCount },
+    { delaySeconds: BUSY_REQUEUE_DELAY_SECONDS },
+  );
+  console.log(
+    `Focused full slot busy, re-enqueued category=${category} runYmd=${runYmd}${suffix} busyRequeueCount=${nextCount}`,
+  );
+  message.ack();
+};
+
+// Dispatches focused per-race full statuses ("accepted" / "already-complete" /
+// "busy") to their handling and returns whether the status was one of these
+// (in which case processMessage's caller must stop, having already
+// acked/retried). Returns false for any other status (e.g. "success" or
+// "error") so the caller falls through to the shared success/error handling.
+const handleFocusedFullStatus = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+  status: string | undefined,
+): Promise<boolean> => {
+  const { category, keibajoCode, raceBango, runYmd } = message.body;
+  const suffix = raceScopeSuffix(keibajoCode, raceBango);
+  if (status === FOCUSED_FULL_ACCEPTED_STATUS) {
+    console.log(
+      `Focused full accepted, still in progress category=${category} runYmd=${runYmd}${suffix} -- will re-check on redelivery`,
+    );
+    message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+    return true;
+  }
+  if (status === FOCUSED_FULL_ALREADY_COMPLETE_STATUS) {
+    console.log(
+      `Focused full already complete (container) category=${category} runYmd=${runYmd}${suffix}`,
+    );
+    message.ack();
+    return true;
+  }
+  if (status === FOCUSED_FULL_BUSY_STATUS) {
+    await requeueBusyFocusedFull(message, env);
+    return true;
+  }
+  return false;
+};
+
 const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressLine): void => {
   console.log(
     `Predict progress category=${message.category} runYmd=${message.runYmd} keibajo=${
@@ -310,16 +381,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         logPredictProgress(message.body, line);
       },
     });
-    if (isFocusedSkipDedup && result.status === FOCUSED_FULL_ACCEPTED_STATUS) {
-      console.log(
-        `Focused full accepted, still in progress category=${category} runYmd=${runYmd}${raceScopeSuffix(
-          keibajoCode,
-          raceBango,
-        )} -- will re-check on redelivery`,
-      );
-      message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
-      return;
-    }
+    if (isFocusedSkipDedup && (await handleFocusedFullStatus(message, env, result.status))) return;
     assertPredictResultSucceeded(result);
     if (shouldCompleteCategoryRun) {
       await completeRun({

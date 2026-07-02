@@ -30,7 +30,12 @@ export interface PerRaceParquetEntry {
 // container launched the real pipeline on a background thread and returned
 // immediately instead of blocking until it finishes. See queue-consumer.ts's
 // FOCUSED_FULL_ACCEPTED_STATUS handling for how it is polled to completion.
-export type PredictResultStatus = "success" | "error" | "accepted";
+// "busy" means a DIFFERENT race in the same category held the container's
+// single per-process pipeline slot, so this race's build never started. See
+// queue-consumer.ts's FOCUSED_FULL_BUSY_STATUS handling for the re-enqueue.
+// "already-complete" means Neon already had complete predictions for this
+// race, so no pipeline was launched at all.
+export type PredictResultStatus = "success" | "error" | "accepted" | "busy" | "already-complete";
 
 export interface PredictResultLine extends NdjsonLine {
   type: "result";

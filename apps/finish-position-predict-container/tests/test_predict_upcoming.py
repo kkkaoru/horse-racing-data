@@ -398,7 +398,11 @@ def _fake_rescore_factory(
 def test_make_handler_class_predict_fn_callable_without_instance() -> None:
     """predict_fn on the handler class must be callable as a plain 3-arg function."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     # Call directly on the class (no instance) — must NOT inject self.
     result = handler_cls.predict_fn("nar", "20260618", 0, None, None)
@@ -408,7 +412,11 @@ def test_make_handler_class_predict_fn_callable_without_instance() -> None:
 def test_make_handler_class_parquet_payload_fn_callable_without_instance() -> None:
     """parquet_payload_fn stored as staticmethod must be callable without an instance."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     fn: ParquetPayloadFn = handler_cls.__dict__["parquet_payload_fn"].__func__
     result = fn()
@@ -418,7 +426,11 @@ def test_make_handler_class_parquet_payload_fn_callable_without_instance() -> No
 def test_make_handler_class_per_race_parquet_payload_fn_callable_without_instance() -> None:
     """per_race_parquet_payload_fn stored as staticmethod must be callable without an instance."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     fn: PerRaceParquetPayloadFn = handler_cls.__dict__["per_race_parquet_payload_fn"].__func__
     result = fn()
@@ -428,7 +440,11 @@ def test_make_handler_class_per_race_parquet_payload_fn_callable_without_instanc
 def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     """rescore_factory on the handler class must be callable without an instance."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     factory = handler_cls.rescore_factory
     assert factory is not None
@@ -441,7 +457,7 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
 def test_make_handler_class_rescore_factory_none_when_not_provided() -> None:
     """When rescore_factory=None, the class attribute must also be None."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, None
+        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, None, None
     )
     assert handler_cls.rescore_factory is None
 
@@ -449,7 +465,11 @@ def test_make_handler_class_rescore_factory_none_when_not_provided() -> None:
 def test_make_handler_class_predict_fn_not_bound_method() -> None:
     """Accessing predict_fn on the class must NOT produce a bound method."""
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     import inspect
 
@@ -469,7 +489,11 @@ def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
     import inspect
 
     handler_cls = make_handler_class(
-        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, _fake_rescore_factory
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
     )
     sig = inspect.signature(handler_cls.predict_fn)
     params = list(sig.parameters.values())
