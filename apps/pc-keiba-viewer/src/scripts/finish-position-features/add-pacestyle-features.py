@@ -13,18 +13,21 @@ Motivation:
   per-category layer chain so the runtime container can rebuild the same vector
   for upcoming races.
 
-Features added (per horse x race) — exactly 10 columns:
+Features added (per horse x race) — exactly 13 columns:
   - past_style_x_field_pace_match   AVAILABLE all years (uses field pressure)
   - sire_x_field_pace_score         AVAILABLE all years (uses field pressure)
   - rs_p_nige / rs_p_senkou / rs_p_sashi / rs_p_oikomi  (running-style v3 model
     probability, 2024+ only via PG ``race_running_style_model_predictions``)
   - rs_predicted_class              (model integer class, 2024+)
+  - rs_predicted_corner_front_score (expected front score from rs probabilities)
+  - rs_predicted_corner_rank        (race-level rank by the expected front score)
+  - rs_predicted_corner_rank_pct    (rank normalized by shusso_tosu when available)
   - rs_confidence_entropy           (-sum p log p, 2024+)
   - rs_p_nige_x_field_pace          (cross term, 2024+)
   - rs_sire_style_match             (sum over k of p_k * sire_k_rate, 2024+)
 
 For races whose running-style probabilities are not yet in PG (pre-2024 history
-or a year where no rs model has scored yet), the seven rs_* columns are
+or a year where no rs model has scored yet), the rs_* columns are
 emitted as NULL — CatBoost/XGBoost treat absent numeric inputs as 0.
 
 Data leakage 防止: rs_* features only join when the rs_predictions row exists
@@ -199,21 +202,37 @@ def stage_rs_predictions_from_pg(
     con.execute(
         f"""
         create or replace temp table rs_preds as
+        with rs_source as (
+          select
+            '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
+              || ':' || keibajo_code || ':' || race_bango as race_id,
+            ketto_toroku_bango,
+            cast(p_nige as double) as rs_p_nige,
+            cast(p_senkou as double) as rs_p_senkou,
+            cast(p_sashi as double) as rs_p_sashi,
+            cast(p_oikomi as double) as rs_p_oikomi,
+            cast(predicted_class as integer) as rs_predicted_class,
+            cast(cell_model_key as varchar) as rs_cell_model_key,
+            cast(cell_variant_id as varchar) as rs_cell_variant_id
+          from pg.race_running_style_model_predictions
+          where source = '{category}'
+            and ({version_filter})
+            {target_filter}
+        ),
+        rs_scored as (
+          select
+            *,
+            rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi
+              as rs_predicted_corner_front_score
+          from rs_source
+        )
         select
-          '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
-            || ':' || keibajo_code || ':' || race_bango as race_id,
-          ketto_toroku_bango,
-          cast(p_nige as double) as rs_p_nige,
-          cast(p_senkou as double) as rs_p_senkou,
-          cast(p_sashi as double) as rs_p_sashi,
-          cast(p_oikomi as double) as rs_p_oikomi,
-          cast(predicted_class as integer) as rs_predicted_class,
-          cast(cell_model_key as varchar) as rs_cell_model_key,
-          cast(cell_variant_id as varchar) as rs_cell_variant_id
-        from pg.race_running_style_model_predictions
-        where source = '{category}'
-          and ({version_filter})
-          {target_filter}
+          *,
+          row_number() over (
+            partition by race_id
+            order by rs_predicted_corner_front_score asc, rs_p_nige desc, ketto_toroku_bango asc
+          ) as rs_predicted_corner_rank
+        from rs_scored
         """
     )
     con.execute(
@@ -276,20 +295,36 @@ def stage_rs_predictions_from_r2(
     con.execute(
         f"""
         create or replace temp table rs_preds as
+        with rs_source as (
+          select
+            '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
+              || ':' || keibajo_code || ':' || race_bango as race_id,
+            ketto_toroku_bango,
+            cast(p_nige as double) as rs_p_nige,
+            cast(p_senkou as double) as rs_p_senkou,
+            cast(p_sashi as double) as rs_p_sashi,
+            cast(p_oikomi as double) as rs_p_oikomi,
+            cast(predicted_class as integer) as rs_predicted_class,
+            cast(cell_model_key as varchar) as rs_cell_model_key,
+            cast(cell_variant_id as varchar) as rs_cell_variant_id
+          from rs_preds_raw
+          where true
+            {target_filter}
+        ),
+        rs_scored as (
+          select
+            *,
+            rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi
+              as rs_predicted_corner_front_score
+          from rs_source
+        )
         select
-          '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
-            || ':' || keibajo_code || ':' || race_bango as race_id,
-          ketto_toroku_bango,
-          cast(p_nige as double) as rs_p_nige,
-          cast(p_senkou as double) as rs_p_senkou,
-          cast(p_sashi as double) as rs_p_sashi,
-          cast(p_oikomi as double) as rs_p_oikomi,
-          cast(predicted_class as integer) as rs_predicted_class,
-          cast(cell_model_key as varchar) as rs_cell_model_key,
-          cast(cell_variant_id as varchar) as rs_cell_variant_id
-        from rs_preds_raw
-        where true
-          {target_filter}
+          *,
+          row_number() over (
+            partition by race_id
+            order by rs_predicted_corner_front_score asc, rs_p_nige desc, ketto_toroku_bango asc
+          ) as rs_predicted_corner_rank
+        from rs_scored
         """
     )
     con.execute(
@@ -323,6 +358,12 @@ def append_features_sql(input_glob: str, category: str) -> str:
     rs_extra = (
         "rs.rs_p_nige, rs.rs_p_senkou, rs.rs_p_sashi, rs.rs_p_oikomi, "
         "rs.rs_predicted_class, "
+        "rs.rs_predicted_corner_front_score, "
+        "rs.rs_predicted_corner_rank, "
+        "CASE WHEN rs.rs_predicted_corner_rank IS NOT NULL"
+        " AND b.shusso_tosu IS NOT NULL AND b.shusso_tosu > 1 THEN"
+        " (rs.rs_predicted_corner_rank - 1) / cast((b.shusso_tosu - 1) as double)"
+        " END as rs_predicted_corner_rank_pct, "
         "CASE WHEN rs.rs_p_nige IS NOT NULL THEN"
         " -(rs.rs_p_nige * ln(rs.rs_p_nige + 1e-9)"
         " + rs.rs_p_senkou * ln(rs.rs_p_senkou + 1e-9)"

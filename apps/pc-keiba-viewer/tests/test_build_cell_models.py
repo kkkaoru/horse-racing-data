@@ -43,6 +43,7 @@ def _cell(
     racetrack: str = "05",
     season: str = "summer",
     surface: str = "turf",
+    cell_subgroup: str = "",
 ) -> CellKey:
     return CellKey(
         category=category,
@@ -51,6 +52,7 @@ def _cell(
         racetrack=racetrack,
         season=season,
         surface=surface,
+        cell_subgroup=cell_subgroup,
     )
 
 
@@ -453,6 +455,7 @@ def test_generate_running_style_feature_selection_json_is_not_worker_routing() -
             racetrack="05",
             season="spring",
             surface="turf",
+            cell_subgroup="703",
         ),
         candidate=_metrics("hashRS001", feature_names=["feature_b", "feature_a"]),
         baseline=_metrics("BASE"),
@@ -494,10 +497,34 @@ def test_generate_running_style_feature_selection_json_is_not_worker_routing() -
                 {"dimension": "season", "values": ["spring"]},
                 {"dimension": "surface", "values": ["turf"]},
                 {"dimension": "venue", "values": ["05"]},
+                {"dimension": "subgroup", "values": ["703"]},
             ],
             "variant": "cell-hashRS00",
         }
     ]
+
+
+def test_generate_routing_json_omits_db_subgroup_for_finish_position_routing() -> None:
+    result = AdoptionResult(
+        cell=_cell(cell_subgroup="703"),
+        candidate=_metrics("CANDIDATEHASH", feature_names=["f1", "f2", "f3"]),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    config = generate_routing_json(
+        "jra",
+        "jra-production",
+        130,
+        "catboost",
+        {"cell-CANDIDAT": [result]},
+    )
+    jra = cast("dict[str, object]", config["jra"])
+    rules = cast("list[dict[str, object]]", jra["rules"])
+    conditions = cast("list[dict[str, object]]", rules[0]["conditions"])
+    assert {"dimension": "distance_band", "values": ["mile"]} in conditions
+    assert {"dimension": "subgroup", "values": ["703"]} not in conditions
 
 
 def test_generate_running_style_feature_selection_json_with_no_variants() -> None:
@@ -528,6 +555,7 @@ def _db_row(
     *,
     class_label: str = "A",
     top1: float = 0.40,
+    subgroup: str = "subgroup-703",
 ) -> tuple[object, ...]:
     return (
         "jra",
@@ -536,7 +564,7 @@ def _db_row(
         "05",
         "summer",
         "turf",
-        "subgroup-703",
+        subgroup,
         feature_set_hash,
         1000,
         top1,
@@ -551,15 +579,16 @@ def _db_row(
     )
 
 
-def test_parse_row_maps_columns_to_cell_and_metrics() -> None:
+def test_parse_row_maps_distance_band_to_router_cell() -> None:
     cell, metrics = parse_row(_db_row("BASE"))
     assert cell == CellKey(
         category="jra",
         class_label="A",
-        subgroup="subgroup-703",
+        subgroup="mile",
         racetrack="05",
         season="summer",
         surface="turf",
+        cell_subgroup="subgroup-703",
     )
     assert metrics.race_count == 1000
     assert metrics.top1 == pytest.approx(0.40)
@@ -582,8 +611,23 @@ def test_load_cell_metrics_groups_rows_by_cell() -> None:
         subject._SELECT_CELLS, ("finish_position", "jra")
     )
     assert len(grouped) == 2
-    cell_a = CellKey("jra", "A", "subgroup-703", "05", "summer", "turf")
+    cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf", "subgroup-703")
     assert {m.feature_set_hash for m in grouped[cell_a]} == {"BASE", "CAND"}
+
+
+def test_load_cell_metrics_keeps_distinct_db_subgroups_as_distinct_cells() -> None:
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        _db_row("BASE", subgroup="703"),
+        _db_row("CAND", subgroup="703"),
+        _db_row("BASE", subgroup="OP"),
+    ]
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    grouped = load_cell_metrics(conn, "jra", "running_style")
+    assert len(grouped) == 2
+    assert CellKey("jra", "A", "mile", "05", "summer", "turf", "703") in grouped
+    assert CellKey("jra", "A", "mile", "05", "summer", "turf", "OP") in grouped
 
 
 def test_load_cell_metrics_can_filter_running_style_target() -> None:

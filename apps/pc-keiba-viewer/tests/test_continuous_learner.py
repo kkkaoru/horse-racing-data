@@ -600,6 +600,15 @@ def test_explore_round_passes_screening_true() -> None:
         assert mock_run.call_args.kwargs["screening"] is True
 
 
+def test_explore_round_passes_auto_tuned_num_threads() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(registry=reg)
+        learner._round_num_threads = 3
+        with patch("learning.continuous_learner.run_exploration") as mock_run:
+            learner._explore_round(0, n_trials=20)
+        assert mock_run.call_args.kwargs["num_threads"] == 3
+
+
 def test_explore_round_uses_two_validation_years_when_not_saturated() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
@@ -4602,6 +4611,7 @@ def test_run_auto_tunes_once_per_round_when_enabled() -> None:
         ):
             learner.run(max_rounds=1)
         mock_tune.assert_called_once()
+        assert learner._round_num_threads == 4
 
 
 def test_auto_tune_default_is_true() -> None:
@@ -5337,12 +5347,13 @@ def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
     assert mock_conn.commit.call_count == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 22
+    assert len(params) == 23
     assert params[0] == "finish_position"
     assert params[8] == "jra_turf_mile_E_summer_10"
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == []
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
+    assert json.loads(cast(str, params[22])) == {}
 
 
 def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
@@ -5385,12 +5396,66 @@ def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
     assert saved == 1
     call_args = mock_cursor.execute.call_args[0]
     params = call_args[1]
-    assert len(params) == 22
+    assert len(params) == 23
     assert params[0] == "running_style"
     assert params[8] == "jra_turf_mile_E_summer_10"
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == ["feat_a", "feat_b"]
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
+    assert json.loads(cast(str, params[22])) == {}
+
+
+def test_cell_accuracy_store_save_metric_payload(tmp_path: Path) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    metric = SubgroupMetrics(
+        subgroup="jra_turf_mile_E_summer_10",
+        category="jra",
+        surface="turf",
+        distance_band="mile",
+        class_label="E",
+        season="summer",
+        venue="10",
+        race_count=50,
+        ndcg_at_3=0.85,
+        top1_accuracy=0.42,
+        place2_accuracy=0.38,
+        place3_accuracy=0.35,
+        place4_accuracy=0.30,
+        place5_accuracy=0.25,
+        place6_accuracy=0.20,
+        top3_box_accuracy=0.15,
+    )
+    metric_with_payload = cast(
+        SubgroupMetrics,
+        {
+            **metric,
+            "metric_payload": {
+                "metric_schema_version": "running_style_cell_v2",
+                "race_level": {
+                    "corner_rank_spearman": float("nan"),
+                    "finish_weighted_accuracy": 0.5,
+                },
+            },
+        },
+    )
+    store.save_cell_metrics("abc123", 120, [metric_with_payload])
+    params = mock_cursor.execute.call_args[0][1]
+    payload = json.loads(cast(str, params[22]))
+    assert payload == {
+        "metric_schema_version": "running_style_cell_v2",
+        "race_level": {
+            "corner_rank_spearman": None,
+            "finish_weighted_accuracy": 0.5,
+        },
+    }
 
 
 def test_sire_venue_bias_adds_five_columns() -> None:

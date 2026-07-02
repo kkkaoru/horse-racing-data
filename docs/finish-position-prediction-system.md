@@ -369,7 +369,9 @@ bun run --filter pc-keiba-viewer dev:running-style-train-cells -- \
   --csv <feature-parquet> \
   --model-version <version> \
   --output-root <output-dir> \
-  --output-routing-json <output-dir>/cell_routing.json
+  --output-routing-json <output-dir>/cell_routing.json \
+  --save-cell-metrics-to-postgres \
+  --pg-url postgresql://horse_racing:horse_racing@127.0.0.1:<POSTGRES_PORT>/horse_racing
 ```
 
 local PostgreSQL に保存する場合、`--pg-url` の host port は `apps/local-postgresql/.env` の `POSTGRES_PORT` を使う。container 内部の `PGPORT` と取り違えると、学習後の `cell_training_evaluations` 保存だけが接続拒否で失敗する。
@@ -395,6 +397,8 @@ local PostgreSQL に保存する場合、`--pg-url` の host port は `apps/loca
 
 `cell_training_evaluations` の共有列へ保存する場合、running-style profile は `top1_accuracy = accuracy`、`place2_accuracy = top2_accuracy`、`place3_accuracy = macro_f1` として扱う。`build_cell_models.py --prediction-target running_style` は `top1_accuracy` の改善を必須とし、`top2_accuracy` または `macro_f1` のどちらかも改善した cell だけを採用対象にする。
 
+running-style の新方式 cell 精度は、共有列に加えて `metric_payload` JSONB に保存する。payload は `metric_schema_version = running_style_cell_v2`、`prediction_count`、`top2_hit_count`、`accuracy`、`top2_accuracy`、`macro_f1`、`multi_log_loss`、`per_class_*`、`confusion_matrix`、`per_class_log_loss_*`、`race_level.corner_rank_spearman`、`race_level.finish_weighted_accuracy` などを持つ。`NaN` は JSONB に保存できないため `null` に正規化する。採用比較では互換列を使い、分析・再集計では `metric_payload` の class 別 / race-level 指標を使う。
+
 promotion は「metrics が良い」だけでは完了しない。production で参照される object は flatbin だけであり、R2 に upload されていない local artifact、または `RUNNING_STYLE_CELL_ROUTING_JSON` に反映されていない variant は production に存在しないものとして扱う。
 
 Cloudflare 側で確認する項目:
@@ -408,6 +412,8 @@ Cloudflare 側で確認する項目:
 ### 4.6 着順予測との結合
 
 着順特徴量は `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-pacestyle-features.py` で脚質予測を読む。通常の pacestyle layer は `--category jra|nar` を対象とし、Ban-ei を通常の RS/pacestyle 対象として扱わない。
+
+`add-pacestyle-features.py` は actual corner 通過順を特徴量として読まない。脚質予測確率から `rs_predicted_corner_front_score = rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi` を生成し、race 内で `rs_predicted_corner_rank` と `rs_predicted_corner_rank_pct` を作る。これらは脚質モデルが生成した事前予測だけを使うため、本番の特徴量生成でも local 学習でも同じロジックで利用できる。
 
 `add-pacestyle-features.py` は R2 daily prediction Parquet を優先でき、R2 が使えない場合は Neon `race_running_style_model_predictions` を読む。join は same race + `ketto_toroku_bango` で行い、missing row は `rs_p_*` / `rs_predicted_class` などの nullable `rs_*` として残る。missing running-style を reason に着順 feature build 全体を落としてはいけない。
 
@@ -690,22 +696,24 @@ cell = category × surface × distance_band × class_label × season × venue
 
 学習パイプラインの `CellAccuracyStore` が Neon PostgreSQL の `cell_training_evaluations` テーブルに cell ごとの精度を永続化する。
 
-PRIMARY KEY: `(prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue)`
+PRIMARY KEY: `(prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)`
 
-| カラム                                 | 説明                                                                  |
-| -------------------------------------- | --------------------------------------------------------------------- |
-| `prediction_target`                    | `finish_position` / `running_style`。着順と脚質の cell 評価を分離する |
-| `ndcg_at_3`                            | NDCG@3（relevance: 1着=3.0, 2着=2.0, 3着=1.0）                        |
-| `top1_accuracy`                        | 1 着的中率                                                            |
-| `place2_accuracy` 〜 `place6_accuracy` | 厳密 2〜6 着的中率                                                    |
-| `top3_box_accuracy`                    | 上位 3 頭が順不同で一致した率                                         |
-| `accuracy_vector`                      | 全指標を配列化したもの                                                |
-| `feature_names_array`                  | 使用した特徴量名リスト                                                |
-| `cell_vector`                          | cell 次元値の配列                                                     |
+| カラム                                 | 説明                                                                                                                                               |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prediction_target`                    | `finish_position` / `running_style`。着順と脚質の cell 評価を分離する                                                                              |
+| `ndcg_at_3`                            | NDCG@3（relevance: 1着=3.0, 2着=2.0, 3着=1.0）                                                                                                     |
+| `top1_accuracy`                        | 1 着的中率                                                                                                                                         |
+| `place2_accuracy` 〜 `place6_accuracy` | 厳密 2〜6 着的中率                                                                                                                                 |
+| `top3_box_accuracy`                    | 上位 3 頭が順不同で一致した率                                                                                                                      |
+| `accuracy_vector`                      | 全指標を配列化したもの                                                                                                                             |
+| `feature_names_array`                  | 使用した特徴量名リスト                                                                                                                             |
+| `cell_vector`                          | cell 次元値の配列                                                                                                                                  |
+| `subgroup`                             | running-style では `kyoso_joken_code` / `nar_subclass` 由来の cell subgroup。finish-position では canonical subgroup key または空文字              |
+| `metric_payload`                       | target 固有の詳細 JSONB。running-style は `running_style_cell_v2` として class 別指標、confusion matrix、race-level corner / finish 指標を保存する |
 
 着順・脚質とも特徴量セットの hash は `learning.feature_selection_policy.compute_feature_set_hash()` を使う。特徴量名は重複排除・sort 後に SHA-256 化するため、local 探索、cell 評価、本番用 routing artifact で同じ組み合わせを同じ `feature_set_hash` として扱う。
 
-脚質 `train-cells --save-cell-metrics-to-postgres` は `CellAccuracyStore` の DDL / migration / upsert を再利用する。ローカル PostgreSQL では `apps/local-postgresql/sql/20260701000000_add_prediction_target_to_cell_training_evaluations.sql` が既存の target 非対応 primary key を `prediction_target` 付き key に昇格し、target-aware index を追加する。
+脚質 `train-cells --save-cell-metrics-to-postgres` は `CellAccuracyStore` の DDL / migration / upsert を再利用する。ローカル PostgreSQL では `apps/local-postgresql/sql/20260701000000_add_prediction_target_to_cell_training_evaluations.sql` が既存の target 非対応 primary key を `prediction_target` 付き key に昇格し、`20260702000000_add_subgroup_to_cell_training_evaluations.sql` が full cell key を保持し、`20260702010000_add_metric_payload_to_cell_training_evaluations.sql` が target 固有詳細 metric の JSONB 保存先を追加する。
 
 cell 次元の派生（`cell_training_evaluations` を populate する際の binning。`continuous_learner.py` が `learning/subgroup_diagnostics.py` の `get_distance_band()` / `_distance_band_expr()` で導出する）:
 

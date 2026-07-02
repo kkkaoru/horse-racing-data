@@ -280,7 +280,7 @@ def train_catboost_ranker(
         "od_wait": args.early_stopping_rounds,
         "random_seed": args.seed,
         "task_type": "CPU",
-        "thread_count": DEFAULT_THREAD_COUNT,
+        "thread_count": int(getattr(args, "thread_count", DEFAULT_THREAD_COUNT)),
         "verbose": 50,
     }
     bagging_temp = getattr(args, "bagging_temperature", None)

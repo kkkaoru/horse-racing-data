@@ -261,6 +261,7 @@ class RunningStyleCellAdoptionMetrics(TypedDict):
     accuracy_vector: list[float]
     cell_vector: list[str]
     metric_mapping: dict[str, str]
+    metric_payload: dict[str, object]
 
 
 @dataclass(frozen=True, order=True)
@@ -1114,6 +1115,11 @@ def running_style_cell_metrics_for_adoption(
         0.0,
         0.0,
     ]
+    metric_mapping = {
+        "top1_accuracy": "accuracy",
+        "place2_accuracy": "top2_accuracy",
+        "place3_accuracy": "macro_f1",
+    }
     return {
         "prediction_target": "running_style",
         "feature_set_hash": feature_set_hash,
@@ -1144,10 +1150,29 @@ def running_style_cell_metrics_for_adoption(
             cell.venue,
             subgroup,
         ],
-        "metric_mapping": {
-            "top1_accuracy": "accuracy",
-            "place2_accuracy": "top2_accuracy",
-            "place3_accuracy": "macro_f1",
+        "metric_mapping": metric_mapping,
+        "metric_payload": {
+            "metric_schema_version": "running_style_cell_v2",
+            "prediction_target": "running_style",
+            "feature_set_hash": feature_set_hash,
+            "prediction_count": metrics["prediction_count"],
+            "top2_hit_count": metrics["top2_hit_count"],
+            "accuracy": metrics["accuracy"],
+            "top2_accuracy": metrics["top2_accuracy"],
+            "macro_f1": metrics["macro_f1"],
+            "multi_log_loss": metrics["multi_log_loss"],
+            "race_level": metrics["race_level"],
+            "per_class_accuracy": metrics["per_class_accuracy"],
+            "per_class_f1": metrics["per_class_f1"],
+            "per_class_precision": metrics["per_class_precision"],
+            "per_class_recall": metrics["per_class_recall"],
+            "per_class_support": metrics["per_class_support"],
+            "predicted_class_support": metrics["predicted_class_support"],
+            "confusion_matrix": metrics["confusion_matrix"],
+            "per_class_log_loss_sum": metrics["per_class_log_loss_sum"],
+            "per_class_log_loss_count": metrics["per_class_log_loss_count"],
+            "per_class_log_loss": metrics["per_class_log_loss"],
+            "metric_mapping": metric_mapping,
         },
     }
 

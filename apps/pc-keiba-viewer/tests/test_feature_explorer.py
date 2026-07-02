@@ -1603,6 +1603,23 @@ def test_predict_fold_with_backend_lightgbm_returns_merged_predictions() -> None
     mock_wf.assert_called_once()
 
 
+def test_run_fold_with_backend_lightgbm_passes_num_threads() -> None:
+    fold = _make_fold()
+    preds_df = pl.DataFrame({
+        "race_id": ["2022_race_01", "2022_race_01", "2022_race_01", "2022_race_01"],
+        "ketto_toroku_bango": ["horse_000", "horse_001", "horse_002", "horse_003"],
+        "predicted_rank": [1, 2, 3, 4],
+    })
+    with patch(
+        "learning.feature_explorer.run_walk_forward_fold",
+        return_value=(MagicMock(), preds_df, {"ndcg_at_3": 0.8}),
+    ) as mock_wf:
+        subject.run_fold_with_backend(
+            fold, "lightgbm", subject.DEFAULT_PARAMS, num_threads=3
+        )
+    assert mock_wf.call_args.kwargs["num_threads"] == 3
+
+
 def test_predict_fold_with_backend_xgboost_returns_valid_predictions() -> None:
     fold = _make_fold()
     valid_preds = pl.DataFrame({
@@ -2189,6 +2206,37 @@ def test_run_exploration_screening_true_passes_screen_args_to_build_objective() 
     kwargs = mock_build.call_args.kwargs
     assert kwargs["xgb_args"] is subject._SCREEN_XGB_ARGS
     assert kwargs["cb_args"] is subject._SCREEN_CB_ARGS
+    assert kwargs["num_threads"] is None
+
+
+def test_run_exploration_screening_true_clones_args_with_num_threads() -> None:
+    df = _make_df()
+    mock_study = MagicMock()
+    mock_study.trials = []
+    with FeatureRegistry(Path(":memory:")) as registry:
+        with (
+            patch(
+                "learning.feature_explorer.optuna.create_study", return_value=mock_study
+            ),
+            patch(
+                "learning.feature_explorer.build_objective",
+                return_value=subject.FeatureObjective(lambda t: 0.5, []),
+            ) as mock_build,
+        ):
+            subject.run_exploration(
+                df,
+                registry,
+                n_trials=1,
+                warm_start=False,
+                screening=True,
+                num_threads=2,
+            )
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["xgb_args"] is not subject._SCREEN_XGB_ARGS
+    assert kwargs["cb_args"] is not subject._SCREEN_CB_ARGS
+    assert kwargs["xgb_args"].nthread == 2
+    assert kwargs["cb_args"].thread_count == 2
+    assert kwargs["num_threads"] == 2
 
 
 def test_run_exploration_screening_false_passes_none_args_to_build_objective() -> None:

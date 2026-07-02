@@ -1675,6 +1675,23 @@ def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():
         "place2_accuracy": "top2_accuracy",
         "place3_accuracy": "macro_f1",
     }
+    payload = adoption["metric_payload"]
+    assert payload["metric_schema_version"] == "running_style_cell_v2"
+    assert payload["prediction_target"] == "running_style"
+    assert payload["feature_set_hash"] == "hash123"
+    assert payload["accuracy"] == pytest.approx(metrics["accuracy"])
+    assert payload["top2_accuracy"] == pytest.approx(metrics["top2_accuracy"])
+    assert payload["macro_f1"] == pytest.approx(metrics["macro_f1"])
+    assert payload["race_level"] == metrics["race_level"]
+    assert payload["per_class_accuracy"] == metrics["per_class_accuracy"]
+    assert payload["per_class_f1"] == metrics["per_class_f1"]
+    assert payload["per_class_precision"] == metrics["per_class_precision"]
+    assert payload["per_class_recall"] == metrics["per_class_recall"]
+    assert payload["per_class_support"] == metrics["per_class_support"]
+    assert payload["predicted_class_support"] == metrics["predicted_class_support"]
+    assert payload["confusion_matrix"] == metrics["confusion_matrix"]
+    assert payload["per_class_log_loss"] == metrics["per_class_log_loss"]
+    assert payload["metric_mapping"] == adoption["metric_mapping"]
 
 
 def test_compute_top2_accuracy_returns_fractional_hit_rate():

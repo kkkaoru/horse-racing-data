@@ -10,6 +10,10 @@ const subgroupMigrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260702000000_add_subgroup_to_cell_training_evaluations.sql",
 );
+const metricPayloadMigrationPath = resolve(
+  import.meta.dirname,
+  "../../sql/20260702010000_add_metric_payload_to_cell_training_evaluations.sql",
+);
 
 it("adds prediction_target and backfills existing finish-position rows", () => {
   const sql = readFileSync(migrationPath, "utf8");
@@ -129,5 +133,18 @@ it("has a follow-up migration for already migrated databases", () => {
     )?.[0],
   ).toStrictEqual(
     "add primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup )",
+  );
+});
+
+it("adds metric_payload for target-native cell metrics", () => {
+  const sql = readFileSync(metricPayloadMigrationPath, "utf8");
+  const normalized = sql.replaceAll(/\s+/g, " ").trim().toLowerCase();
+
+  expect(
+    normalized.match(
+      /alter table cell_training_evaluations add column if not exists metric_payload jsonb not null default '\{\}'::jsonb/,
+    )?.[0],
+  ).toStrictEqual(
+    "alter table cell_training_evaluations add column if not exists metric_payload jsonb not null default '{}'::jsonb",
   );
 });

@@ -133,6 +133,15 @@ _SCREEN_CB_ARGS: Final[argparse.Namespace] = argparse.Namespace(
     presorted=True,
 )
 
+def _with_optional_thread_arg(
+    args: argparse.Namespace,
+    attr_name: str,
+    num_threads: int | None,
+) -> argparse.Namespace:
+    if num_threads is None:
+        return args
+    return argparse.Namespace(**vars(args), **{attr_name: num_threads})
+
 _LABEL_COLS: Final[frozenset[str]] = frozenset(LABEL_COLUMNS)
 
 _EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | _LABEL_COLS
@@ -563,8 +572,10 @@ def _xgb_numeric_features(df: pl.DataFrame, feature_names: list[str]) -> list[st
     return [c for c in feature_names if c in numeric]
 
 
-def _run_fold_lightgbm(fold: FoldSplit, params: TrainingParams) -> float:
-    _, predictions, _ = run_walk_forward_fold(fold, params)
+def _run_fold_lightgbm(
+    fold: FoldSplit, params: TrainingParams, num_threads: int | None = None
+) -> float:
+    _, predictions, _ = run_walk_forward_fold(fold, params, num_threads=num_threads)
     valid_with_pos = fold["valid_df"].select(
         ["race_id", "ketto_toroku_bango", "finish_position"]
     ).join(
@@ -613,9 +624,10 @@ def run_fold_with_backend(
     lgb_params: TrainingParams,
     xgb_args: argparse.Namespace | None = None,
     cb_args: argparse.Namespace | None = None,
+    num_threads: int | None = None,
 ) -> float | None:
     if backend == "lightgbm":
-        return _run_fold_lightgbm(fold, lgb_params)
+        return _run_fold_lightgbm(fold, lgb_params, num_threads)
     if backend == "xgboost":
         return _run_fold_xgboost(fold, xgb_args)
     return _run_fold_catboost(fold, cb_args)
@@ -894,6 +906,7 @@ def build_objective(
     cb_args: argparse.Namespace | None = None,
     co_optimize_hp: bool = False,
     trial_dedup: TrialDeduplicator | None = None,
+    num_threads: int | None = None,
 ) -> FeatureObjective:
     fold_plans: list[_FoldPlan] = []
     for year in validation_years:
@@ -953,6 +966,8 @@ def build_objective(
                 relevance_rank3=1,
                 presorted=True,
             )
+            if num_threads is not None:
+                trial_xgb_args.nthread = num_threads
             trial_cb_args = argparse.Namespace(
                 learning_rate=hp_learning_rate,
                 depth=hp_depth,
@@ -966,6 +981,8 @@ def build_objective(
                 no_cat_features=False,
                 presorted=True,
             )
+            if num_threads is not None:
+                trial_cb_args.thread_count = num_threads
         else:
             trial_xgb_args = xgb_args
             trial_cb_args = cb_args
@@ -974,7 +991,14 @@ def build_objective(
             fold_with_features = plan.select(feature_set)
             fold_scores: list[float] = []
             for backend in backends:
-                score = run_fold_with_backend(fold_with_features, backend, params, trial_xgb_args, trial_cb_args)
+                score = run_fold_with_backend(
+                    fold_with_features,
+                    backend,
+                    params,
+                    trial_xgb_args,
+                    trial_cb_args,
+                    num_threads,
+                )
                 if score is not None:
                     fold_scores.append(score)
             if fold_scores:
@@ -1153,6 +1177,7 @@ def run_exploration(
     co_optimize_hp: bool = False,
     screening: bool = False,
     trial_dedup: TrialDeduplicator | None = None,
+    num_threads: int | None = None,
 ) -> list[ExplorationResult]:
     """Run one Optuna feature-selection study and return its scored trials.
 
@@ -1166,8 +1191,16 @@ def run_exploration(
     """
     effective_years = list(validation_years) if validation_years is not None else list(DEFAULT_VALIDATION_YEARS)
     candidate_features = resolve_feature_columns(list(df.columns))
-    screen_xgb = _SCREEN_XGB_ARGS if screening else None
-    screen_cb = _SCREEN_CB_ARGS if screening else None
+    screen_xgb = (
+        _with_optional_thread_arg(_SCREEN_XGB_ARGS, "nthread", num_threads)
+        if screening
+        else None
+    )
+    screen_cb = (
+        _with_optional_thread_arg(_SCREEN_CB_ARGS, "thread_count", num_threads)
+        if screening
+        else None
+    )
     objective = build_objective(
         df,
         candidate_features,
@@ -1181,6 +1214,7 @@ def run_exploration(
         cb_args=screen_cb,
         co_optimize_hp=co_optimize_hp,
         trial_dedup=trial_dedup,
+        num_threads=num_threads,
     )
     study = optuna.create_study(
         direction="maximize",
@@ -1250,6 +1284,7 @@ def run_combined_exploration(
     per_trial_timeout_s: float | None = None,
     warm_start: bool = True,
     screening: bool = False,
+    num_threads: int | None = None,
 ) -> list[ExplorationResult]:
     """Stepwise warm-start followed by block TPE exploration.
 
@@ -1306,4 +1341,5 @@ def run_combined_exploration(
         co_optimize_hp=co_optimize_hp,
         screening=screening,
         trial_dedup=cast("TrialDeduplicator | None", trial_store),
+        num_threads=num_threads,
     )

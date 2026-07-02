@@ -822,7 +822,7 @@ def test_train_catboost_ranker_presorted_matches_unsorted_labels_and_groups(
 def test_train_catboost_ranker_caps_thread_count_at_six(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """thread_count must be 6 to respect the nthread<=6 memory-budget hard rule."""
+    """Default thread_count stays 6 to respect the nthread<=6 memory-budget hard rule."""
     train_df = pl.DataFrame({
         "race_id": ["r1", "r1"],
         "umaban": [1.0, 2.0],
@@ -846,6 +846,34 @@ def test_train_catboost_ranker_caps_thread_count_at_six(
     subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
     params = cast(dict[str, object], mock_catboost_cls.call_args.args[0])
     assert params["thread_count"] == 6
+
+
+def test_train_catboost_ranker_uses_explicit_thread_count(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    train_df = pl.DataFrame({
+        "race_id": ["r1", "r1"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.1, 0.2],
+    })
+    valid_df = pl.DataFrame({
+        "race_id": ["r2", "r2"],
+        "umaban": [1.0, 2.0],
+        "finish_position": [1.0, 2.0],
+        "feature_a": [0.3, 0.4],
+    })
+    fake_model = MagicMock()
+    fake_model.predict.return_value = np.array([0.9, 0.5])
+    fake_model.get_best_iteration.return_value = 1
+    fake_model.tree_count_ = 1
+    mock_catboost_cls = MagicMock(return_value=fake_model)
+    monkeypatch.setattr(subject, "CatBoost", mock_catboost_cls)
+    monkeypatch.setattr(subject, "Pool", MagicMock())
+    args = _make_args(thread_count=2)
+    subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
+    params = cast(dict[str, object], mock_catboost_cls.call_args.args[0])
+    assert params["thread_count"] == 2
 
 
 def test_train_catboost_ranker_uses_no_cat_features_when_flag_set(

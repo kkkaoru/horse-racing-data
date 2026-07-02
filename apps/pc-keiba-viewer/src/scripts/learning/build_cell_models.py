@@ -86,8 +86,11 @@ _ADOPTION_PROFILES: Final[dict[PredictionTarget, AdoptionProfile]] = {
 }
 
 # CellKey field -> the router dimension name the field routes on. ``subgroup``
-# carries the distance band and ``racetrack`` carries the venue code, both of
-# which map onto dimensions ``cell_router`` resolves on the fly.
+# carries the distance band for this legacy router shape and ``racetrack``
+# carries the venue code, both of which map onto dimensions ``cell_router``
+# resolves on the fly. ``cell_subgroup`` is only emitted for running-style
+# feature-selection routing, whose local trainer understands the subgroup
+# dimension; finish-position production routing keeps the legacy dimensions.
 _CELL_DIMENSIONS: Final[tuple[tuple[str, str], ...]] = (
     ("class", "class_label"),
     ("distance_band", "subgroup"),
@@ -146,6 +149,7 @@ class CellKey:
     racetrack: str
     season: str
     surface: str
+    cell_subgroup: str = ""
 
 
 @dataclass(frozen=True)
@@ -384,18 +388,29 @@ def group_variants(
     return groups
 
 
-def _cell_sort_key(cell: CellKey) -> tuple[str, str, str, str, str]:
-    return (cell.class_label, cell.subgroup, cell.season, cell.surface, cell.racetrack)
+def _cell_sort_key(cell: CellKey) -> tuple[str, str, str, str, str, str]:
+    return (
+        cell.class_label,
+        cell.subgroup,
+        cell.season,
+        cell.surface,
+        cell.racetrack,
+        cell.cell_subgroup,
+    )
 
 
-def _cell_conditions(cell: CellKey) -> list[dict[str, object]]:
-    pairs = (
+def _cell_conditions(
+    cell: CellKey, *, include_cell_subgroup: bool = False
+) -> list[dict[str, object]]:
+    pairs: tuple[tuple[str, str], ...] = (
         ("class", cell.class_label),
         ("distance_band", cell.subgroup),
         ("season", cell.season),
         ("surface", cell.surface),
         ("venue", cell.racetrack),
     )
+    if include_cell_subgroup and cell.cell_subgroup:
+        pairs = (*pairs, ("subgroup", cell.cell_subgroup))
     return [
         {"dimension": dimension, "values": [value]}
         for dimension, value in pairs
@@ -458,7 +473,12 @@ def generate_running_style_feature_selection_json(
         }
         for result in sorted(results, key=lambda r: _cell_sort_key(r.cell)):
             rules.append(
-                {"conditions": _cell_conditions(result.cell), "variant": variant_name}
+                {
+                    "conditions": _cell_conditions(
+                        result.cell, include_cell_subgroup=True
+                    ),
+                    "variant": variant_name,
+                }
             )
     return {
         "schema_version": RUNNING_STYLE_FEATURE_SELECTION_SCHEMA_VERSION,
@@ -482,10 +502,11 @@ def parse_row(row: Sequence[object]) -> tuple[CellKey, CellMetrics]:
     cell = CellKey(
         category=str(row[0]),
         class_label=str(row[1]),
-        subgroup=str(row[6] or row[2]),
+        subgroup=str(row[2]),
         racetrack=str(row[3]),
         season=str(row[4]),
         surface=str(row[5]),
+        cell_subgroup=str(row[6] or ""),
     )
     feature_names = [str(name) for name in cast("Sequence[object]", row[17])]
     metrics = CellMetrics(

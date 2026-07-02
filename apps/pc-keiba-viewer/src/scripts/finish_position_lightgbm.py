@@ -377,10 +377,14 @@ def train_lambdarank(
     params: TrainingParams,
     *,
     exploration_mode: bool = False,
+    num_threads: int | None = None,
 ) -> tuple["lgb.Booster", TrainingResult]:
     started = perf_counter()
     lgb_params = build_lightgbm_params(
-        params, train_bundle["feature_columns"], exploration_mode=exploration_mode
+        params,
+        train_bundle["feature_columns"],
+        exploration_mode=exploration_mode,
+        num_threads=num_threads,
     )
     valid_sets: list[lgb.Dataset] = [train_bundle["dataset"]]
     valid_names: list[str] = ["train"]
@@ -687,6 +691,7 @@ def run_walk_forward_fold(
     params: TrainingParams,
     sample_weight_mode: str = SAMPLE_WEIGHT_MODE_NONE,
     relevance_tier_name: str | None = None,
+    num_threads: int | None = None,
 ) -> tuple["lgb.Booster", pl.DataFrame, FoldMetrics]:
     train_bundle = prepare_lgb_dataset(
         fold["train_df"], params["objective"], sample_weight_mode, relevance_tier_name
@@ -694,7 +699,9 @@ def run_walk_forward_fold(
     valid_bundle = prepare_lgb_dataset(
         fold["valid_df"], params["objective"], SAMPLE_WEIGHT_MODE_NONE, relevance_tier_name
     )
-    booster, training_result = train_lambdarank(train_bundle, valid_bundle, params)
+    booster, training_result = train_lambdarank(
+        train_bundle, valid_bundle, params, num_threads=num_threads
+    )
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
     metrics: FoldMetrics = {

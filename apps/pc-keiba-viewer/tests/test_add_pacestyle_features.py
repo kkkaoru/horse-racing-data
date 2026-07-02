@@ -197,10 +197,13 @@ def test_build_version_filter_sql_unknown_category_returns_false() -> None:
     assert sql == "false"
 
 
-def test_append_features_sql_emits_all_ten_pacestyle_columns() -> None:
+def test_append_features_sql_emits_all_thirteen_pacestyle_columns() -> None:
     sql = subject.append_features_sql("dummy.parquet", "jra")
     assert "past_style_x_field_pace_match" in sql
     assert "sire_x_field_pace_score" in sql
+    assert "rs_predicted_corner_front_score" in sql
+    assert "rs_predicted_corner_rank" in sql
+    assert "rs_predicted_corner_rank_pct" in sql
 
 
 def test_append_features_sql_pace_cross_terms_use_case_when_not_coalesce() -> None:
@@ -222,6 +225,9 @@ def test_append_features_sql_pace_cross_terms_use_case_when_not_coalesce() -> No
     assert "rs_p_sashi" in sql
     assert "rs_p_oikomi" in sql
     assert "rs_predicted_class" in sql
+    assert "rs_predicted_corner_front_score" in sql
+    assert "rs_predicted_corner_rank" in sql
+    assert "rs_predicted_corner_rank_pct" in sql
     assert "rs_confidence_entropy" in sql
     assert "rs_p_nige_x_field_pace" in sql
     assert "rs_sire_style_match" in sql
@@ -323,6 +329,14 @@ def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_jra() -> None:
     assert "from rs_preds_raw" in create_sql
     assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
     assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
+    assert "rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi" in create_sql
+    assert "as rs_predicted_corner_front_score" in create_sql
+    assert "row_number() over" in create_sql
+    assert "partition by race_id" in create_sql
+    assert (
+        "order by rs_predicted_corner_front_score asc, rs_p_nige desc, "
+        "ketto_toroku_bango asc"
+    ) in create_sql
 
 
 def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_nar() -> None:
@@ -392,6 +406,14 @@ def test_stage_rs_predictions_from_pg_uses_pg_attach_table() -> None:
     assert "where source = 'jra'" in create_sql
     assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
     assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
+    assert "rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi" in create_sql
+    assert "as rs_predicted_corner_front_score" in create_sql
+    assert "row_number() over" in create_sql
+    assert "partition by race_id" in create_sql
+    assert (
+        "order by rs_predicted_corner_front_score asc, rs_p_nige desc, "
+        "ketto_toroku_bango asc"
+    ) in create_sql
 
 
 def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids() -> None:
@@ -744,6 +766,7 @@ def _base_parquet(tmp_path: Path) -> str:
             "keibajo_code": ["01", "01"],
             "race_bango": ["1", "1"],
             "ketto_toroku_bango": ["a", "b"],
+            "shusso_tosu": [2, 2],
             # base_extra referenced columns — all nullable, set to NULL for simplicity
             "past_nige_rate_self": nullable_float,
             "past_senkou_rate_self": nullable_float,
@@ -792,6 +815,8 @@ def _rs_preds_df() -> pl.DataFrame:
         "rs_p_sashi": [0.1],
         "rs_p_oikomi": [0.1],
         "rs_predicted_class": ["nige"],
+        "rs_predicted_corner_front_score": [0.7],
+        "rs_predicted_corner_rank": [1],
         "model_version": ["v1.0"],
         "race_date": ["20240101"],
     })
@@ -820,6 +845,47 @@ def test_append_features_sql_rs_confidence_entropy_null_for_unscored_horse(tmp_p
     assert horse_b["rs_confidence_entropy"] is None, (
         "unscored horse must have NULL entropy, not 0 (0 would falsely imply max confidence)"
     )
+
+
+def test_append_features_sql_corner_rank_pct_values(tmp_path: Path):
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect()
+    con.register(
+        "rs_preds",
+        pl.DataFrame({
+            "race_id": ["jra:2024:0101:01:1", "jra:2024:0101:01:1"],
+            "ketto_toroku_bango": ["a", "b"],
+            "rs_p_nige": [0.6, 0.1],
+            "rs_p_senkou": [0.2, 0.4],
+            "rs_p_sashi": [0.1, 0.3],
+            "rs_p_oikomi": [0.1, 0.2],
+            "rs_predicted_class": [0, 1],
+            "rs_predicted_corner_front_score": [0.7, 1.6],
+            "rs_predicted_corner_rank": [1, 2],
+        }),
+    )
+    result = con.execute(subject.append_features_sql(input_glob, "jra")).pl()
+
+    horse_a = result.filter(pl.col("ketto_toroku_bango") == "a").row(0, named=True)
+    horse_b = result.filter(pl.col("ketto_toroku_bango") == "b").row(0, named=True)
+    assert horse_a["rs_predicted_corner_front_score"] == pytest.approx(0.7)
+    assert horse_a["rs_predicted_corner_rank"] == 1
+    assert horse_a["rs_predicted_corner_rank_pct"] == pytest.approx(0.0)
+    assert horse_b["rs_predicted_corner_front_score"] == pytest.approx(1.6)
+    assert horse_b["rs_predicted_corner_rank"] == 2
+    assert horse_b["rs_predicted_corner_rank_pct"] == pytest.approx(1.0)
+
+
+def test_append_features_sql_corner_rank_pct_null_for_unscored_horse(tmp_path: Path):
+    input_glob = _base_parquet(tmp_path)
+    con = duckdb.connect()
+    con.register("rs_preds", _rs_preds_df())
+    result = con.execute(subject.append_features_sql(input_glob, "jra")).pl()
+
+    horse_b = result.filter(pl.col("ketto_toroku_bango") == "b").row(0, named=True)
+    assert horse_b["rs_predicted_corner_front_score"] is None
+    assert horse_b["rs_predicted_corner_rank"] is None
+    assert horse_b["rs_predicted_corner_rank_pct"] is None
 
 
 def test_append_features_sql_cross_terms_null_for_unscored_horse(tmp_path: Path):

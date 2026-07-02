@@ -6,6 +6,7 @@ import argparse
 import glob
 import json
 import logging
+import math
 import os
 import shutil
 import signal
@@ -17,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Final, TypedDict, cast, get_args
+from typing import TYPE_CHECKING, Final, Mapping, TypedDict, cast, get_args
 
 if TYPE_CHECKING:
     import psycopg
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS cell_training_evaluations (
     accuracy_vector     DOUBLE PRECISION[] NOT NULL,
     feature_names_array TEXT[] NOT NULL,
     cell_vector         TEXT[] NOT NULL,
+    metric_payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
     evaluated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
 )
@@ -175,6 +177,9 @@ ADD COLUMN IF NOT EXISTS prediction_target TEXT NOT NULL DEFAULT 'finish_positio
 
 ALTER TABLE cell_training_evaluations
 ADD COLUMN IF NOT EXISTS subgroup TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE cell_training_evaluations
+ADD COLUMN IF NOT EXISTS metric_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 DO $$
 DECLARE
@@ -214,9 +219,9 @@ INSERT INTO cell_training_evaluations (
     top1_accuracy, place2_accuracy, place3_accuracy,
     place4_accuracy, place5_accuracy, place6_accuracy,
     top3_box_accuracy,
-    accuracy_vector, feature_names_array, cell_vector
+    accuracy_vector, feature_names_array, cell_vector, metric_payload
 ) VALUES (
-    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
 )
 ON CONFLICT (prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup)
 DO UPDATE SET
@@ -233,6 +238,7 @@ DO UPDATE SET
     accuracy_vector = EXCLUDED.accuracy_vector,
     feature_names_array = EXCLUDED.feature_names_array,
     cell_vector = EXCLUDED.cell_vector,
+    metric_payload = EXCLUDED.metric_payload,
     evaluated_at = NOW()
 """
 
@@ -247,6 +253,8 @@ CREATE INDEX IF NOT EXISTS idx_cell_eval_category_season_venue
     ON cell_training_evaluations (prediction_target, category, season, venue);
 CREATE INDEX IF NOT EXISTS idx_cell_eval_top1
     ON cell_training_evaluations (prediction_target, category, top1_accuracy DESC);
+CREATE INDEX IF NOT EXISTS idx_cell_eval_category_subgroup
+    ON cell_training_evaluations (prediction_target, category, subgroup);
 """
 
 _TRIAL_LOG_TABLE: Final[str] = "trial_exploration_log"
@@ -527,6 +535,52 @@ def compute_feature_set_hash(feature_names: list[str]) -> str:
     return compute_normalized_feature_set_hash(feature_names)
 
 
+def _json_safe(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return value
+
+
+def _metric_payload_from_subgroup_metric(metric: Mapping[str, object]) -> dict[str, object]:
+    raw_payload = metric.get("metric_payload")
+    if isinstance(raw_payload, Mapping):
+        return cast(dict[str, object], _json_safe(raw_payload))
+    reserved = {
+        "subgroup",
+        "category",
+        "surface",
+        "distance_band",
+        "class_label",
+        "season",
+        "venue",
+        "race_count",
+        "ndcg_at_3",
+        "top1_accuracy",
+        "place2_accuracy",
+        "place3_accuracy",
+        "place4_accuracy",
+        "place5_accuracy",
+        "place6_accuracy",
+        "top3_box_accuracy",
+    }
+    payload = {str(k): v for k, v in metric.items() if str(k) not in reserved}
+    return cast(dict[str, object], _json_safe(payload))
+
+
+def _cell_evaluation_key(metric: Mapping[str, object]) -> str:
+    return (
+        f"{metric['category']}_{metric['surface']}_{metric['distance_band']}_"
+        f"{metric['class_label']}_{metric['season']}_{metric['venue']}_"
+        f"{metric.get('subgroup', '')}"
+    )
+
+
 class CellAccuracyStore:
     def __init__(self, pg_url: str = _LOCAL_PG_URL) -> None:
         self._pg_url: str = pg_url
@@ -568,7 +622,17 @@ class CellAccuracyStore:
                 (prediction_target, feature_set_hash),
             )
             return {
-                f"{row[0]}_{row[1]}_{row[2]}_{row[3]}_{row[4]}_{row[5]}_{row[6]}"
+                _cell_evaluation_key(
+                    {
+                        "category": row[0],
+                        "surface": row[1],
+                        "distance_band": row[2],
+                        "class_label": row[3],
+                        "season": row[4],
+                        "venue": row[5],
+                        "subgroup": row[6],
+                    }
+                )
                 for row in cur.fetchall()
             }
 
@@ -602,6 +666,9 @@ class CellAccuracyStore:
                     m["venue"],
                     m["subgroup"],
                 ]
+                metric_payload = _metric_payload_from_subgroup_metric(
+                    cast(Mapping[str, object], m)
+                )
                 cur.execute(
                     _CELL_EVAL_UPSERT,
                     (
@@ -627,6 +694,7 @@ class CellAccuracyStore:
                         accuracy_vector,
                         sorted_names,
                         cell_vector,
+                        json.dumps(metric_payload, ensure_ascii=False),
                     ),
                 )
                 saved += 1
@@ -956,6 +1024,7 @@ class ContinuousLearner:
         self._pg_url: str = pg_url
         self._exploration_method: str = exploration_method
         self._trial_store: TrialExplorationStore | None = trial_store
+        self._round_num_threads: int | None = None
         if cell_filter:
             original_len = len(self._df)
             self._df = filter_dataframe_by_cell(self._df, cell_filter)
@@ -1037,6 +1106,9 @@ class ContinuousLearner:
             if self._auto_tune:
                 nthread = self._auto_tune_resources()
                 _logger.info("round %d auto-tuned nthread: %d", round_num, nthread)
+            else:
+                nthread = None
+            self._round_num_threads = nthread
 
             actual_trials = self._n_trials
             sleep_secs = 0.0
@@ -1145,6 +1217,7 @@ class ContinuousLearner:
                 per_trial_timeout_s=self._per_trial_timeout_s,
                 screening=True,
                 trial_store=self._trial_store,
+                num_threads=self._round_num_threads,
             )
             return
         run_exploration(
@@ -1159,6 +1232,7 @@ class ContinuousLearner:
             enqueue_subsets=self._priority_subsets(),
             screening=True,
             trial_dedup=self._trial_store,
+            num_threads=self._round_num_threads,
         )
 
     def _check_and_try_inverses(self, round_num: int, n_trials: int) -> None:
@@ -1459,7 +1533,7 @@ class ContinuousLearner:
             "subgroup diagnostics (active set, %d features):", len(feature_names)
         )
         for m in metrics:
-            cell_key = f"{m['category']}_{m['surface']}_{m['distance_band']}_{m['class_label']}_{m['season']}_{m['venue']}"
+            cell_key = _cell_evaluation_key(cast(Mapping[str, object], m))
             if cell_key in already_evaluated:
                 skipped += 1
                 continue
