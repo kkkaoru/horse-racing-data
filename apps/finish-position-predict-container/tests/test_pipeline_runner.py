@@ -320,6 +320,67 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     )
 
 
+def test_build_pipeline_resets_stale_category_work_dirs_before_rename(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """A 2nd same-category race in one process must reset the category-scoped
+    work dirs left by the 1st race so ``current.rename(final_dir)`` lands on a
+    clean target (the production write-gap: rename onto a non-empty ``final_dir``
+    fails with ENOTEMPTY after every layer already logged "done").
+
+    Exercises the cleanup through the PUBLIC ``build_pipeline`` API only: a
+    stale ``final_dir`` (non-empty), a stale base dir, and a stale layer dir are
+    pre-created, then ``build_pipeline`` must succeed and the stale markers must
+    be gone (final_dir reset then repopulated by the layer rename).
+    """
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "layer_chain_for", lambda _category: ("script-a.py",))
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+
+    # Simulate the 1st race's leftovers: a populated final_dir + base + layer dir.
+    final_dir = work_dir / "feat-jra-v7-final"
+    final_dir.mkdir()
+    (final_dir / "stale.parquet").write_bytes(b"PAR1-stale")
+    stale_base = work_dir / "feat-jra-base"
+    stale_base.mkdir()
+    (stale_base / "stale_base.parquet").write_bytes(b"PAR1-stale-base")
+    stale_layer = work_dir / "feat-jra-layer-0"
+    stale_layer.mkdir()
+    (stale_layer / "stale_layer.parquet").write_bytes(b"PAR1-stale-layer")
+
+    def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
+        output_dir = args[5]
+        return ["base", str(output_dir)]
+
+    def fake_layer_argv(*args: object, **kwargs: object) -> list[str]:
+        output_dir = args[4]
+        return ["layer", str(output_dir)]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", fake_base_argv)
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    built = pipeline_runner.build_pipeline(
+        "jra", "20260702", 0, "postgresql://u:p@h/db", final_dir, target_race="05:11"
+    )
+
+    assert built is True
+    # final_dir was reset (stale.parquet gone) then repopulated by the rename.
+    assert final_dir.exists()
+    assert not (final_dir / "stale.parquet").exists()
+    # The stale base marker is gone (base dir was cleared before the base build).
+    assert not (stale_base / "stale_base.parquet").exists()
+
+
 def test_record_layer_timing_row_writes_row_via_mocked_connection(
     monkeypatch: pytest.MonkeyPatch,
 ):

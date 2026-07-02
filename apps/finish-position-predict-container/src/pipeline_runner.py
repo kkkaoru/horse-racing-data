@@ -35,6 +35,7 @@ built by the pure, unit-tested ``predict_lib.pipeline_args`` builders.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -388,6 +389,37 @@ def has_parquet_output(directory: Path) -> bool:
     return any(directory.rglob("*.parquet"))
 
 
+def _reset_category_work_dirs(category: Category, final_dir: Path) -> None:
+    """Remove the CATEGORY-scoped work dirs left by a prior race in this process.
+
+    ``build_pipeline`` writes intermediate feature parquet to work directories
+    keyed by ``category`` only -- the base build dir (``feat-{category}-base``),
+    each layer dir (``feat-{category}-layer-{index}``), and the final dir
+    (``final_dir`` == ``feat-{category}-v7-final``) -- and finishes with
+    ``current.rename(final_dir)``.
+
+    The focused-full single-slot dispatch now runs multiple same-category races
+    SEQUENTIALLY in one long-lived container process. Without this reset the
+    2nd+ race would find ``final_dir`` (and the base / layer dirs) already
+    populated by the 1st race, so ``current.rename(final_dir)`` fails with
+    ``OSError`` (ENOTEMPTY) AFTER every layer already logged "done" -- the
+    pipeline completes with no scoring and no Neon write (the production
+    write-gap this fixes). Clearing these dirs at the start of each race makes
+    the post-layer rename land on a clean target every time.
+
+    The race-scoped ``duckdb-spill`` dir is intentionally NOT removed here: it
+    is already keyed per race (category + target_date + target_race) and cleaned
+    separately, so it never collides across sequential same-category races.
+
+    ``shutil.rmtree(..., ignore_errors=True)`` makes a missing dir (the first
+    race in a process) a no-op.
+    """
+    shutil.rmtree(WORK_DIR / f"feat-{category}-base", ignore_errors=True)
+    shutil.rmtree(final_dir, ignore_errors=True)
+    for layer_dir in WORK_DIR.glob(f"feat-{category}-layer-*"):
+        shutil.rmtree(layer_dir, ignore_errors=True)
+
+
 def build_pipeline(
     category: Category,
     target_date: str,
@@ -415,6 +447,11 @@ def build_pipeline(
     is built instead of every race on ``target_date``.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+    # Reset the category-scoped work dirs left by any prior race in this
+    # long-lived process (sequential same-category focused-full races) so the
+    # post-layer ``current.rename(final_dir)`` lands on a clean target instead
+    # of failing with ENOTEMPTY. See ``_reset_category_work_dirs``.
+    _reset_category_work_dirs(category, final_dir)
     base_dir = WORK_DIR / f"feat-{category}-base"
     duckdb_temp_dir = _duckdb_temp_dir(category, target_date, target_race)
     duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
