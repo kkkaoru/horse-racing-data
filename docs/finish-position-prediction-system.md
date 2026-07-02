@@ -348,11 +348,13 @@ routing のログ・summary では `cellModelKey` と `cellVariantId` を確認�
 1. `running_style_lightgbm.py train-cells` で候補 cell variant を学習し、cell ごとの `model.txt` / `metadata.json`、Worker routing 候補 JSON、`cell_metrics.json` を出力する。このコマンド自体は walk-forward prediction parquet を出力しない。
 2. `cell_metrics.json` の各 `trained_cells[*].metrics` は rate だけでなく、`prediction_count`、`top2_hit_count`、`race_level`、`confusion_matrix`、`per_class_log_loss_sum/count` を含む。cell 間・期間間の集計は rate 平均ではなく raw count / sum から再計算する。
 3. `trained_cells[*].cell_training_evaluation` は `cell_training_evaluations.prediction_target = 'running_style'` として保存する互換 mapping を持つ。永続化する場合は `train-cells --save-cell-metrics-to-postgres --pg-url <postgres-url>` を使い、`CellAccuracyStore` と同じ upsert 経路で保存する。`feature_set_hash` が同じ cell は `feature_names_array` と合わせて保存され、着順と脚質は `prediction_target` で分離される。
-4. `build_cell_models.py --prediction-target running_style` で baseline variant と候補 variant を同じ cell 定義・同じ holdout window で比較する。
-5. 採用 cell だけを feature-selection routing JSON に残す。`build_cell_models.py --prediction-target running_style` が出力する JSON は `type = running_style_cell_feature_selection_routing` / `worker_production_routing = false` のローカル学習用 control plane であり、Worker production routing JSON ではない。variant には `feature_set_hash` と `feature_names` を含める。
-6. `running_style_lightgbm.py train-cells --cell-feature-selection-json <routing.json>` で採用 cell ごとの `feature_names` を読み、cell ごとに最良だった特徴量セットで local model artifact を作る。未採用 cell は全体特徴量または source latest に fallback する。
-7. 採用 variant の LightGBM artifact を Worker が読む header metadata 込み flatbin へ変換し、`RUNNING_STYLE_MODELS` R2 に upload する。
-8. upload 済み R2 key だけを `RUNNING_STYLE_CELL_ROUTING_JSON` の `variants[*].modelKey` に反映し、Cloudflare Worker の設定として promote する。
+4. walk-forward / local prediction parquet は `apply-running-style-postproc.ts` で `predicted_corner_front_score = p_senkou + 2*p_sashi + 3*p_oikomi` と race 内 `predicted_corner_rank` を生成する。これは脚質確率から作るコーナー通過順予測であり、actual corner 列を scoring input にしてはならない。
+5. `evaluate-running-style-bucket-21y.ts` は `load_running_style_predictions.py` 経由で `predicted_corner_front_score` を PostgreSQL temp table に読み、`running_style_model_bucket_evaluations` へ cell provenance（`cell_model_key` / `cell_variant_id`）付きで `corner1_pair_score_sum/count`、`corner3_pair_score_sum/count`、`corner4_pair_score_sum/count`、`finish_pair_score_sum/count` を upsert する。これが新方式の cell 単位コーナー順序評価の永続化経路である。metrics JSON を 1 行ずつ反映する補助経路 `insert_running_style_bucket_evaluation_row.py` も同じ 51 列構成で保存する。
+6. `build_cell_models.py --prediction-target running_style` で baseline variant と候補 variant を同じ cell 定義・同じ holdout window で比較する。
+7. 採用 cell だけを feature-selection routing JSON に残す。`build_cell_models.py --prediction-target running_style` が出力する JSON は `type = running_style_cell_feature_selection_routing` / `worker_production_routing = false` のローカル学習用 control plane であり、Worker production routing JSON ではない。variant には `feature_set_hash` と `feature_names` を含める。
+8. `running_style_lightgbm.py train-cells --cell-feature-selection-json <routing.json>` で採用 cell ごとの `feature_names` を読み、cell ごとに最良だった特徴量セットで local model artifact を作る。未採用 cell は全体特徴量または source latest に fallback する。
+9. 採用 variant の LightGBM artifact を Worker が読む header metadata 込み flatbin へ変換し、`RUNNING_STYLE_MODELS` R2 に upload する。
+10. upload 済み R2 key だけを `RUNNING_STYLE_CELL_ROUTING_JSON` の `variants[*].modelKey` に反映し、Cloudflare Worker の設定として promote する。
 
 `train-cells` の LightGBM resource control は `--num-threads auto` が既定である。auto は macOS の load average、available memory（free / inactive / speculative / purgeable）、compressor 使用量から fit ごとの thread 数を決め、さらに `/tmp` の slot lock で同時 fit 数を制御する。明示的な固定値が必要な検証時だけ `--num-threads 1` のように指定する。
 
@@ -723,6 +725,10 @@ cell 次元の派生（`cell_training_evaluations` を populate する際の bin
 > これとは別に、serve 精度レポート用の bucket-eval 経路（`serve_accuracy_report.py:classify_distance_band` / `aggregate_bucket_eval_duckdb.py:build_distance_band_case_sql`）は **≤1400 / ≤1800 / ≤2200 / ≤2800 / >2800** という独自の binning を用いるが、これは `cell_training_evaluations` の `distance_band` ではなく serve 精度のバケット集計レポート専用である。さらに `finish_position_features_duckdb.py` の数値特徴 `KYORI_BAND*`（sprint ≤1300 / mile ≤1700 / intermediate ≤2200）は cell 次元ではなくモデル入力特徴であり、これも別系統である。
 
 serve 精度レポート用の durable bucket evaluation は `running_style_model_bucket_evaluations` に raw count / sum を保存する。generated running-style predictions は bucket / race 内で actual の通過順・最終着順と照合し、horse pair ごとに予測順序が合っているかを score 化する。永続列は rate ではなく、`corner1_pair_score_sum/count`、`corner3_pair_score_sum/count`、`corner4_pair_score_sum/count`、`finish_pair_score_sum/count` である。集計・比較時は保存済み rate を平均せず、各 bucket の sum / count を加算してから `sum / count` を再計算する。
+
+新方式のコーナー通過順評価では、`apply-running-style-postproc.ts` が脚質確率から生成した `predicted_corner_front_score` を評価の single source とする。`evaluate-running-style-bucket-sql.ts` は同じ式を SQL 内で再計算せず、loader temp table の `predicted_corner_front_score` を読み、同一 race 内の horse pair で actual `corner1_norm` / `corner3_norm` / `corner4_norm` / `finish_position` と比較する。保存単位は `model_version`、`running_style_feature_version`、`category`、`cell_model_key`、`cell_variant_id`、race bucket dimensions の組であり、cell 外の category 平均だけを根拠に採用判断してはならない。
+
+`running_style_model_bucket_evaluations` の DDL は旧 schema の local / Neon にも再実行できる。`cell_model_key` / `cell_variant_id` と pair score 列を `add column if not exists` で追加し、旧 unique / lookup index が cell provenance を含まない場合は drop して新定義で再作成する。旧 index のまま `insert_running_style_bucket_evaluation_row.py` や batch upsert を実行すると `ON CONFLICT` が cell 単位にならないため、DDL bootstrap を先に通す。
 
 ### 6.3 cell_routing.json によるデータ駆動ルーティング
 

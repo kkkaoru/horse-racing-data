@@ -127,6 +127,8 @@ def test_normalize_row_defaults_nullable_dims_to_none():
     assert normalized["track_code"] is None
     assert normalized["grade_code"] is None
     assert normalized["race_name"] is None
+    assert normalized["cell_model_key"] is None
+    assert normalized["cell_variant_id"] is None
 
 
 def test_normalize_row_keeps_optional_strings():
@@ -138,6 +140,8 @@ def test_normalize_row_keeps_optional_strings():
             "track_code": "10",
             "grade_code": "A",
             "race_name": "有馬記念",
+            "cell_model_key": "cell-05-2400",
+            "cell_variant_id": "variant-a",
         }
     )
     assert normalized["kyoso_joken_code"] == "703"
@@ -145,6 +149,8 @@ def test_normalize_row_keeps_optional_strings():
     assert normalized["track_code"] == "10"
     assert normalized["grade_code"] == "A"
     assert normalized["race_name"] == "有馬記念"
+    assert normalized["cell_model_key"] == "cell-05-2400"
+    assert normalized["cell_variant_id"] == "variant-a"
 
 
 def test_normalize_row_coerces_non_string_to_str_for_optional_dim():
@@ -159,6 +165,10 @@ def test_normalize_row_defaults_cm_counts_to_zero():
     assert normalized["log_loss_nige_sum"] == 0.0
     assert normalized["log_loss_oikomi_count"] == 0
     assert normalized["top2_hit_count"] == 0
+    assert normalized["corner1_pair_score_sum"] == 0.0
+    assert normalized["corner1_pair_score_count"] == 0
+    assert normalized["finish_pair_score_sum"] == 0.0
+    assert normalized["finish_pair_score_count"] == 0
 
 
 def test_to_int_accepts_bool():
@@ -256,13 +266,27 @@ def test_build_upsert_sql_includes_top2_hit_count_additive():
     ) in sql
 
 
+def test_build_upsert_sql_includes_pair_score_columns_additive():
+    sql = subject.build_upsert_sql()
+    assert (
+        "corner1_pair_score_sum = excluded.corner1_pair_score_sum + "
+        "running_style_model_bucket_evaluations.corner1_pair_score_sum"
+    ) in sql
+    assert (
+        "finish_pair_score_count = excluded.finish_pair_score_count + "
+        "running_style_model_bucket_evaluations.finish_pair_score_count"
+    ) in sql
+
+
 def test_build_upsert_sql_includes_evaluated_at_now():
     sql = subject.build_upsert_sql()
     assert "evaluated_at = now()" in sql
 
 
-def test_build_upsert_sql_lists_14_conflict_columns_with_coalesce():
+def test_build_upsert_sql_lists_16_conflict_columns_with_coalesce():
     sql = subject.build_upsert_sql()
+    assert "coalesce(cell_model_key,'')" in sql
+    assert "coalesce(cell_variant_id,'')" in sql
     assert "coalesce(race_name,'')" in sql
     assert "coalesce(kyoso_joken_code,'')" in sql
     assert "coalesce(condition_key,'')" in sql
@@ -270,13 +294,13 @@ def test_build_upsert_sql_lists_14_conflict_columns_with_coalesce():
     assert "coalesce(grade_code,'')" in sql
 
 
-def test_build_row_template_has_41_placeholders_plus_now():
+def test_build_row_template_has_51_placeholders_plus_now():
     template = subject.build_row_template()
-    assert template.count("%s") == 41
+    assert template.count("%s") == 51
     assert template.endswith(", now())")
 
 
-def test_build_metric_columns_lists_16_cm_8_log_loss_top2_in_order():
+def test_build_metric_columns_lists_cm_log_loss_top2_and_pair_scores_in_order():
     expected = [
         "race_count",
         "prediction_count",
@@ -305,20 +329,30 @@ def test_build_metric_columns_lists_16_cm_8_log_loss_top2_in_order():
         "log_loss_sashi_count",
         "log_loss_oikomi_count",
         "top2_hit_count",
+        "corner1_pair_score_sum",
+        "corner1_pair_score_count",
+        "corner3_pair_score_sum",
+        "corner3_pair_score_count",
+        "corner4_pair_score_sum",
+        "corner4_pair_score_count",
+        "finish_pair_score_sum",
+        "finish_pair_score_count",
     ]
     assert subject.build_metric_columns() == expected
 
 
-def test_build_insert_columns_includes_14_dimensions_first():
+def test_build_insert_columns_includes_16_dimensions_first():
     columns = subject.build_insert_columns()
     assert columns[0] == "model_version"
     assert columns[1] == "running_style_feature_version"
     assert columns[2] == "category"
-    assert columns[13] == "race_name"
-    assert len(columns) == 14 + 27
+    assert columns[3] == "cell_model_key"
+    assert columns[4] == "cell_variant_id"
+    assert columns[15] == "race_name"
+    assert len(columns) == 16 + 35
 
 
-def test_build_row_tuple_maps_into_41_column_order():
+def test_build_row_tuple_maps_into_51_column_order():
     row = subject.normalize_row(
         {
             "source": "jra",
@@ -330,6 +364,8 @@ def test_build_row_tuple_maps_into_41_column_order():
             "track_code": "10",
             "grade_code": None,
             "race_name": None,
+            "cell_model_key": "cell-05-2400",
+            "cell_variant_id": "variant-a",
             "race_count": 1,
             "prediction_count": 16,
             "cm_actual_nige_pred_nige_count": 2,
@@ -345,6 +381,14 @@ def test_build_row_tuple_maps_into_41_column_order():
             "log_loss_oikomi_sum": 4.5,
             "log_loss_oikomi_count": 1,
             "top2_hit_count": 12,
+            "corner1_pair_score_sum": 8.0,
+            "corner1_pair_score_count": 10,
+            "corner3_pair_score_sum": 7.0,
+            "corner3_pair_score_count": 10,
+            "corner4_pair_score_sum": 6.0,
+            "corner4_pair_score_count": 10,
+            "finish_pair_score_sum": 9.0,
+            "finish_pair_score_count": 10,
         }
     )
     tup = subject.build_row_tuple(
@@ -359,6 +403,8 @@ def test_build_row_tuple_maps_into_41_column_order():
         "jra-vX",
         "v1",
         "jra",
+        "cell-05-2400",
+        "variant-a",
         "20240101",
         "20251231",
         "jra",
@@ -397,6 +443,14 @@ def test_build_row_tuple_maps_into_41_column_order():
         4,
         1,
         12,
+        8.0,
+        10,
+        7.0,
+        10,
+        6.0,
+        10,
+        9.0,
+        10,
     )
 
 
@@ -428,6 +482,10 @@ def test_execute_upsert_calls_execute_values_with_template_and_commits():
     assert "cm_actual_nige_pred_nige_count" in sql_arg
     assert "log_loss_oikomi_count" in sql_arg
     assert "top2_hit_count" in sql_arg
+    assert "cell_model_key" in sql_arg
+    assert "cell_variant_id" in sql_arg
+    assert "corner1_pair_score_sum" in sql_arg
+    assert "finish_pair_score_count" in sql_arg
     assert execute_values_mock.call_args.kwargs["template"] == subject.build_row_template()
     connection.commit.assert_called_once()
 
@@ -450,6 +508,12 @@ def test_main_reads_file_normalizes_rows_and_calls_execute_upsert(
                     "log_loss_nige_sum": 1.0,
                     "log_loss_nige_count": 1,
                     "top2_hit_count": 14,
+                    "cell_model_key": "cell-05-2400",
+                    "cell_variant_id": "variant-a",
+                    "corner1_pair_score_sum": 8.0,
+                    "corner1_pair_score_count": 10,
+                    "finish_pair_score_sum": 9.0,
+                    "finish_pair_score_count": 10,
                 }
             ]
         ),
@@ -482,6 +546,8 @@ def test_main_reads_file_normalizes_rows_and_calls_execute_upsert(
     assert tuples_arg[0][0] == "jra-vX"
     assert tuples_arg[0][1] == "v1"
     assert tuples_arg[0][2] == "jra"
+    assert tuples_arg[0][3] == "cell-05-2400"
+    assert tuples_arg[0][4] == "variant-a"
 
 
 def test_default_execute_values_uses_executemany_not_psycopg_extras():

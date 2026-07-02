@@ -136,10 +136,10 @@ const buildOrderPairValueSql = (actualColumn: string, positiveOnly = false): str
                when j1.${actualColumn} is null or j2.${actualColumn} is null${
                  positiveOnly ? ` or j1.${actualColumn} <= 0 or j2.${actualColumn} <= 0` : ""
                } then null
-               when j1.predicted_front_score = j2.predicted_front_score
+               when j1.predicted_corner_front_score = j2.predicted_corner_front_score
                  or j1.${actualColumn} = j2.${actualColumn}
                then 0.5
-               when (j1.predicted_front_score < j2.predicted_front_score)
+               when (j1.predicted_corner_front_score < j2.predicted_corner_front_score)
                  = (j1.${actualColumn} < j2.${actualColumn})
                then 1.0
                else 0.0
@@ -150,6 +150,20 @@ const buildOrderPairAddColumnDdl = (): string =>
     `alter table ${BUCKET_TABLE} add column if not exists ${buildOrderPairScoreColumn(metric)} numeric not null default 0;`,
     `alter table ${BUCKET_TABLE} add column if not exists ${buildOrderPairCountColumn(metric)} integer not null default 0;`,
   ]).join("\n    ");
+
+const buildDropIndexWhenMissingColumnDdl = (indexName: string, requiredColumn: string): string => `
+    do $$
+    begin
+      if exists (
+        select 1
+          from pg_indexes
+         where tablename = '${BUCKET_TABLE}'
+           and indexname = '${indexName}'
+           and position('${requiredColumn}' in indexdef) = 0
+      ) then
+        drop index ${indexName};
+      end if;
+    end $$;`;
 
 export const BUCKET_RACE_NAME_INDEX_SQL = `create index if not exists ${BUCKET_TABLE}_race_name
       on ${BUCKET_TABLE} (category, source, race_name, keibajo_code, kyori)
@@ -219,14 +233,16 @@ export const buildRunningStyleBucketEvaluationsDdl = (): string => `
       finish_pair_score_count  integer not null default 0,
       evaluated_at         timestamptz not null default now()
     );
+    alter table ${BUCKET_TABLE} add column if not exists cell_model_key text;
+    alter table ${BUCKET_TABLE} add column if not exists cell_variant_id text;
+    ${buildOrderPairAddColumnDdl()}
+    ${buildDropIndexWhenMissingColumnDdl(`${BUCKET_TABLE}_uq`, "cell_model_key")}
+    ${buildDropIndexWhenMissingColumnDdl(`${BUCKET_TABLE}_lookup`, "cell_model_key")}
     create unique index if not exists ${BUCKET_TABLE}_uq
       on ${BUCKET_TABLE} (${BUCKET_UNIQUE_INDEX_COLUMNS.join(", ")});
     create index if not exists ${BUCKET_TABLE}_lookup
       on ${BUCKET_TABLE} (${BUCKET_LOOKUP_INDEX_COLUMNS.join(", ")});
     ${BUCKET_RACE_NAME_INDEX_SQL};
-    alter table ${BUCKET_TABLE} add column if not exists cell_model_key text;
-    alter table ${BUCKET_TABLE} add column if not exists cell_variant_id text;
-    ${buildOrderPairAddColumnDdl()}
     ${BUCKET_REPLICA_IDENTITY_SQL};
   `;
 
@@ -270,6 +286,7 @@ export const buildRunningStyleBucketAggregateSql = (
              ketto_toroku_bango, predicted_class, second_predicted_class,
              target_running_style_class,
              p_nige, p_senkou, p_sashi, p_oikomi,
+             predicted_corner_front_score,
              cell_model_key, cell_variant_id
       from ${PREDICTIONS_TEMP_TABLE}
       where model_version = '${escapeSqlLiteral(modelVersion)}'
@@ -308,7 +325,7 @@ export const buildRunningStyleBucketAggregateSql = (
              p.ketto_toroku_bango,
              p.predicted_class, p.second_predicted_class, p.target_running_style_class,
              p.p_nige, p.p_senkou, p.p_sashi, p.p_oikomi,
-             (p.p_senkou + (2 * p.p_sashi) + (3 * p.p_oikomi)) predicted_front_score,
+             p.predicted_corner_front_score,
              rec.corner1_norm, rec.corner3_norm, rec.corner4_norm, rec.finish_position
       from race_dims d
       join predictions p

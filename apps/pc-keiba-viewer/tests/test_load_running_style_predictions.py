@@ -252,6 +252,8 @@ def test_build_create_temp_table_sql_includes_all_columns_and_on_commit_drop():
     assert "p_senkou numeric not null" in sql
     assert "p_sashi numeric not null" in sql
     assert "p_oikomi numeric not null" in sql
+    assert "predicted_corner_front_score numeric not null" in sql
+    assert "predicted_corner_rank integer not null" in sql
     assert "model_version text not null" in sql
     assert "running_style_feature_version text not null" in sql
     assert "race_date date not null" in sql
@@ -265,6 +267,8 @@ def test_temp_table_schema_includes_driver_required_columns():
     assert "model_version" in column_names
     assert "running_style_feature_version" in column_names
     assert "race_date" in column_names
+    assert "predicted_corner_front_score" in column_names
+    assert "predicted_corner_rank" in column_names
     assert "cell_model_key" in column_names
     assert "cell_variant_id" in column_names
 
@@ -295,6 +299,8 @@ def test_csv_encode_row_emits_empty_field_for_none_target_running_style_class():
         0.20,
         0.30,
         0.40,
+        2.0,
+        4,
         "jra-running-style-lgbm-prod-v2",
         "v1",
         "2006-01-31",
@@ -347,6 +353,8 @@ def test_default_copy_into_pg_writes_empty_csv_field_for_null_target(
             0.20,
             0.30,
             0.40,
+            2.0,
+            4,
             "jra-running-style-lgbm-prod-v2",
             "v1",
             "2006-01-31",
@@ -365,6 +373,8 @@ def test_load_columns_includes_driver_required_columns():
     assert "model_version" in subject.LOAD_COLUMNS
     assert "running_style_feature_version" in subject.LOAD_COLUMNS
     assert "race_date" in subject.LOAD_COLUMNS
+    assert "predicted_corner_front_score" in subject.LOAD_COLUMNS
+    assert "predicted_corner_rank" in subject.LOAD_COLUMNS
     assert "cell_model_key" in subject.LOAD_COLUMNS
     assert "cell_variant_id" in subject.LOAD_COLUMNS
 
@@ -372,6 +382,8 @@ def test_load_columns_includes_driver_required_columns():
 def test_parquet_select_columns_includes_model_version():
     assert "model_version" in subject.PARQUET_SELECT_COLUMNS
     assert "running_style_feature_version" in subject.PARQUET_SELECT_COLUMNS
+    assert "predicted_corner_front_score" in subject.PARQUET_SELECT_COLUMNS
+    assert "predicted_corner_rank" in subject.PARQUET_SELECT_COLUMNS
     assert "cell_model_key" in subject.PARQUET_SELECT_COLUMNS
     assert "cell_variant_id" in subject.PARQUET_SELECT_COLUMNS
 
@@ -555,6 +567,8 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         0.40,
         0.30,
         0.25,
+        None,
+        None,
         "v1",
         "jra-running-style-lgbm-prod-v2",
         "jra:2026:05:01",
@@ -575,6 +589,8 @@ def test_attach_second_predicted_class_inserts_second_into_row():
         0.40,
         0.30,
         0.25,
+        1.75,
+        1,
         "jra-running-style-lgbm-prod-v2",
         "v1",
         "2024-01-01",
@@ -597,6 +613,8 @@ def test_attach_second_predicted_class_falls_back_when_second_equals_predicted()
         0.40,
         0.30,
         0.25,
+        None,
+        None,
         "v1",
         "nar-running-style-lgbm-v2.0",
         "nar:2026:55:01",
@@ -620,17 +638,21 @@ def test_attach_second_predicted_class_appends_model_and_feature_version():
         0.40,
         0.30,
         0.25,
+        1.5,
+        3,
         "v1",
         "jra-running-style-lgbm-prod-v2",
         "jra:2026:05:01",
         "prod",
     )
     attached = subject.attach_second_predicted_class(parquet_row)
-    assert attached[13] == "jra-running-style-lgbm-prod-v2"
-    assert attached[14] == "v1"
-    assert attached[15] == "2023-12-31"
-    assert attached[16] == "jra:2026:05:01"
-    assert attached[17] == "prod"
+    assert attached[13] == 1.5
+    assert attached[14] == 3
+    assert attached[15] == "jra-running-style-lgbm-prod-v2"
+    assert attached[16] == "v1"
+    assert attached[17] == "2023-12-31"
+    assert attached[18] == "jra:2026:05:01"
+    assert attached[19] == "prod"
 
 
 def test_derive_race_date_builds_iso_string_from_nen_and_tsukihi():
@@ -967,6 +989,8 @@ def test_load_predictions_into_temp_table_invokes_copy_and_returns_row_count():
             0.60,
             0.20,
             0.15,
+            1.45,
+            1,
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",
@@ -987,6 +1011,8 @@ def test_load_predictions_into_temp_table_invokes_copy_and_returns_row_count():
             0.25,
             0.50,
             0.20,
+            1.85,
+            2,
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",
@@ -1109,6 +1135,8 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
             0.60,
             0.20,
             0.15,
+            None,
+            None,
             "v1",
             "jra-running-style-lgbm-v1.0",
             "jra:2026:05:01",
@@ -1120,6 +1148,8 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
     table_info_call.fetchall.return_value = [
         (0, "cell_model_key"),
         (1, "cell_variant_id"),
+        (2, "predicted_corner_front_score"),
+        (3, "predicted_corner_rank"),
     ]
     duckdb_con.execute.side_effect = [create_call, table_info_call, mismatch_call, select_call]
 
@@ -1146,6 +1176,8 @@ def test_default_read_predictions_reads_rows_when_no_mismatch(
         0.60,
         0.20,
         0.15,
+        1.45,
+        1,
         "jra-running-style-lgbm-v1.0",
         "v1",
         "2024-01-01",
@@ -1191,6 +1223,8 @@ def test_default_read_predictions_treats_none_mismatch_row_as_zero(
     table_info_call.fetchall.return_value = [
         (0, "cell_model_key"),
         (1, "cell_variant_id"),
+        (2, "predicted_corner_front_score"),
+        (3, "predicted_corner_rank"),
     ]
     duckdb_con.execute.side_effect = [create_call, table_info_call, mismatch_call, select_call]
 
@@ -1245,6 +1279,8 @@ def test_default_copy_into_pg_runs_begin_set_create_copy_and_waits_for_exit(
             0.60,
             0.20,
             0.15,
+            1.45,
+            1,
             "jra-running-style-lgbm-v1.0",
             "v1",
             "2024-01-01",

@@ -2,6 +2,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import {
+  assignPredictedCornerRanks,
   applyArg,
   applyPostprocToRow,
   applyPostprocToRows,
@@ -10,6 +11,7 @@ import {
   buildReadInputSql,
   buildUsageText,
   buildWriteOutputCopySql,
+  computePredictedCornerFrontScore,
   detectProbabilityResolver,
   initialOptions,
   parseArgs,
@@ -349,6 +351,27 @@ describe("apply-running-style-postproc", () => {
 
   test("buildLabelFromClass returns empty string for out-of-range class", () => {
     expect(buildLabelFromClass(99)).toBe("");
+  });
+
+  test("computePredictedCornerFrontScore maps running-style probabilities to front-order score", () => {
+    expect(computePredictedCornerFrontScore([0.4, 0.3, 0.2, 0.1])).toBe(1);
+  });
+
+  test("applyPostprocToRow emits predicted corner front score from running-style probabilities", () => {
+    const row = applyPostprocToRow({
+      raw: {
+        ...RACE_KEY_FIELDS,
+        ...PASSTHROUGH_FIELDS,
+        p_nige: 0.4,
+        p_senkou: 0.3,
+        p_sashi: 0.2,
+        p_oikomi: 0.1,
+      },
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
+    });
+    expect(row.predicted_corner_front_score).toBeCloseTo(1);
+    expect(row.predicted_corner_rank).toBe(1);
   });
 
   test("detectProbabilityResolver prefers logit columns when both present", () => {
@@ -897,6 +920,86 @@ describe("apply-running-style-postproc", () => {
     expect(rows[2]?.predicted_class).toBe(0);
   });
 
+  test("applyPostprocToRows ranks predicted corner order within each race", () => {
+    const rows = applyPostprocToRows({
+      rows: [
+        {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          ketto_toroku_bango: "HORSE1",
+          p_nige: 0.1,
+          p_senkou: 0.1,
+          p_sashi: 0.1,
+          p_oikomi: 0.7,
+        },
+        {
+          ...RACE_KEY_FIELDS,
+          ...PASSTHROUGH_FIELDS,
+          ketto_toroku_bango: "HORSE2",
+          p_nige: 0.8,
+          p_senkou: 0.1,
+          p_sashi: 0.1,
+          p_oikomi: 0,
+        },
+      ],
+      runningStyleFeatureVersion: "v1",
+      nigeThreshold: 0,
+    });
+    expect(rows[0]?.predicted_corner_rank).toBe(2);
+    expect(rows[1]?.predicted_corner_rank).toBe(1);
+  });
+
+  test("assignPredictedCornerRanks breaks score ties by higher nige probability", () => {
+    const rows = assignPredictedCornerRanks([
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "05",
+        race_bango: "02",
+        ketto_toroku_bango: "LOW",
+        p_nige: 0.3,
+        p_senkou: 0.4,
+        p_sashi: 0.3,
+        p_oikomi: 0,
+        predicted_class: 1,
+        second_predicted_class: 2,
+        predicted_label: "senkou",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
+        cell_model_key: null,
+        cell_variant_id: null,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 1,
+      },
+      {
+        source: "jra",
+        kaisai_nen: "2026",
+        kaisai_tsukihi: "0530",
+        keibajo_code: "05",
+        race_bango: "02",
+        ketto_toroku_bango: "HIGH",
+        p_nige: 0.5,
+        p_senkou: 0.4,
+        p_sashi: 0.3,
+        p_oikomi: 0,
+        predicted_class: 1,
+        second_predicted_class: 2,
+        predicted_label: "senkou",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
+        cell_model_key: null,
+        cell_variant_id: null,
+        model_version: "jra-rs-prod",
+        running_style_feature_version: "v1",
+        target_running_style_class: 1,
+      },
+    ]);
+    expect(rows[0]?.predicted_corner_rank).toBe(2);
+    expect(rows[1]?.predicted_corner_rank).toBe(1);
+  });
+
   test("applyPostprocToRows respects nige=senkou tie by preferring lowest class index", () => {
     const rows = applyPostprocToRows({
       rows: [
@@ -1007,6 +1110,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
         cell_model_key: "jra-default-model",
         cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
@@ -1034,6 +1139,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
         cell_model_key: "jra-default-model",
         cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
@@ -1060,6 +1167,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
         cell_model_key: "jra-default-model",
         cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
@@ -1069,7 +1178,7 @@ describe("apply-running-style-postproc", () => {
     ]);
     expect(
       sql.includes(
-        "cell_model_key, cell_variant_id, model_version, running_style_feature_version, target_running_style_class",
+        "predicted_corner_front_score, predicted_corner_rank, cell_model_key, cell_variant_id, model_version, running_style_feature_version, target_running_style_class",
       ) satisfies boolean,
     ).toBe(true);
   });
@@ -1090,6 +1199,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
         cell_model_key: "jra-default-model",
         cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
@@ -1116,6 +1227,8 @@ describe("apply-running-style-postproc", () => {
         predicted_class: 0,
         second_predicted_class: 1,
         predicted_label: "nige",
+        predicted_corner_front_score: 1,
+        predicted_corner_rank: 1,
         cell_model_key: "jra-default-model",
         cell_variant_id: "cell-05-2400",
         model_version: "jra-rs-prod",
@@ -1199,6 +1312,8 @@ describe("apply-running-style-postproc", () => {
           predicted_class: 0,
           second_predicted_class: 1,
           predicted_label: "nige",
+          predicted_corner_front_score: 1,
+          predicted_corner_rank: 1,
           cell_model_key: "jra-default-model",
           cell_variant_id: "cell-05-2400",
           model_version: "jra-rs-prod",

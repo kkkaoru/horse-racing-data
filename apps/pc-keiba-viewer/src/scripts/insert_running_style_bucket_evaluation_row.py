@@ -56,6 +56,17 @@ LOG_LOSS_COUNT_COLUMNS: tuple[str, ...] = (
 
 TOP2_COLUMN: str = "top2_hit_count"
 
+ORDER_PAIR_SCORE_COLUMNS: tuple[str, ...] = (
+    "corner1_pair_score_sum",
+    "corner1_pair_score_count",
+    "corner3_pair_score_sum",
+    "corner3_pair_score_count",
+    "corner4_pair_score_sum",
+    "corner4_pair_score_count",
+    "finish_pair_score_sum",
+    "finish_pair_score_count",
+)
+
 INT_BASE_COLUMNS: tuple[str, ...] = (
     "race_count",
     "prediction_count",
@@ -65,6 +76,8 @@ DIMENSION_COLUMNS: tuple[str, ...] = (
     "model_version",
     "running_style_feature_version",
     "category",
+    "cell_model_key",
+    "cell_variant_id",
     "evaluation_window_from",
     "evaluation_window_to",
     "source",
@@ -82,6 +95,8 @@ CONFLICT_COLUMNS: tuple[str, ...] = (
     "model_version",
     "running_style_feature_version",
     "category",
+    "coalesce(cell_model_key,'')",
+    "coalesce(cell_variant_id,'')",
     "evaluation_window_from",
     "evaluation_window_to",
     "source",
@@ -106,6 +121,8 @@ class BucketRowPayload(TypedDict):
     track_code: str | None
     grade_code: str | None
     race_name: str | None
+    cell_model_key: str | None
+    cell_variant_id: str | None
     race_count: int
     prediction_count: int
     cm_actual_nige_pred_nige_count: int
@@ -133,6 +150,14 @@ class BucketRowPayload(TypedDict):
     log_loss_oikomi_sum: float
     log_loss_oikomi_count: int
     top2_hit_count: int
+    corner1_pair_score_sum: float
+    corner1_pair_score_count: int
+    corner3_pair_score_sum: float
+    corner3_pair_score_count: int
+    corner4_pair_score_sum: float
+    corner4_pair_score_count: int
+    finish_pair_score_sum: float
+    finish_pair_score_count: int
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -186,6 +211,8 @@ def normalize_row(raw_row: dict[str, object]) -> BucketRowPayload:
         track_code=to_optional_str(raw_row.get("track_code")),
         grade_code=to_optional_str(raw_row.get("grade_code")),
         race_name=to_optional_str(raw_row.get("race_name")),
+        cell_model_key=to_optional_str(raw_row.get("cell_model_key")),
+        cell_variant_id=to_optional_str(raw_row.get("cell_variant_id")),
         race_count=to_int(raw_row.get("race_count")),
         prediction_count=to_int(raw_row.get("prediction_count")),
         cm_actual_nige_pred_nige_count=to_int(raw_row.get("cm_actual_nige_pred_nige_count")),
@@ -221,6 +248,14 @@ def normalize_row(raw_row: dict[str, object]) -> BucketRowPayload:
         log_loss_oikomi_sum=to_float(raw_row.get("log_loss_oikomi_sum")),
         log_loss_oikomi_count=to_int(raw_row.get("log_loss_oikomi_count")),
         top2_hit_count=to_int(raw_row.get("top2_hit_count")),
+        corner1_pair_score_sum=to_float(raw_row.get("corner1_pair_score_sum")),
+        corner1_pair_score_count=to_int(raw_row.get("corner1_pair_score_count")),
+        corner3_pair_score_sum=to_float(raw_row.get("corner3_pair_score_sum")),
+        corner3_pair_score_count=to_int(raw_row.get("corner3_pair_score_count")),
+        corner4_pair_score_sum=to_float(raw_row.get("corner4_pair_score_sum")),
+        corner4_pair_score_count=to_int(raw_row.get("corner4_pair_score_count")),
+        finish_pair_score_sum=to_float(raw_row.get("finish_pair_score_sum")),
+        finish_pair_score_count=to_int(raw_row.get("finish_pair_score_count")),
     )
 
 
@@ -243,6 +278,7 @@ def build_metric_columns() -> list[str]:
         *LOG_LOSS_SUM_COLUMNS,
         *LOG_LOSS_COUNT_COLUMNS,
         TOP2_COLUMN,
+        *ORDER_PAIR_SCORE_COLUMNS,
     ]
 
 
@@ -286,6 +322,8 @@ def build_row_tuple(
         model_version,
         running_style_feature_version,
         category,
+        row["cell_model_key"],
+        row["cell_variant_id"],
         window_from,
         window_to,
         row["source"],
@@ -324,6 +362,14 @@ def build_row_tuple(
         row["log_loss_sashi_count"],
         row["log_loss_oikomi_count"],
         row["top2_hit_count"],
+        row["corner1_pair_score_sum"],
+        row["corner1_pair_score_count"],
+        row["corner3_pair_score_sum"],
+        row["corner3_pair_score_count"],
+        row["corner4_pair_score_sum"],
+        row["corner4_pair_score_count"],
+        row["finish_pair_score_sum"],
+        row["finish_pair_score_count"],
     )
 
 

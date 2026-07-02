@@ -95,6 +95,8 @@ interface PostprocPredictionRow {
   predicted_class: number;
   second_predicted_class: number;
   predicted_label: string;
+  predicted_corner_front_score: number;
+  predicted_corner_rank: number;
   cell_model_key: string | null;
   cell_variant_id: string | null;
   model_version: string;
@@ -121,6 +123,7 @@ const ZERO_SUM_FALLBACK_PROB = 1 / CLASS_COUNT;
 const IN_MEMORY_DB_PATH = ":memory:";
 const NIGE_CLASS_INDEX = 0;
 const DEFAULT_NIGE_THRESHOLD = 0;
+const DEFAULT_SINGLE_ROW_CORNER_RANK = 1;
 
 const requireValue = (name: string, value: string | undefined): string => {
   if (value === undefined) throw new Error(`${name} requires a value.`);
@@ -280,6 +283,13 @@ export const pickArgmaxWithNigeThreshold = (
 export const buildLabelFromClass = (predictedClass: number): string =>
   CLASS_LABELS[predictedClass] ?? "";
 
+export const computePredictedCornerFrontScore = (probabilities: readonly number[]): number => {
+  const senkou = probabilities[1] ?? 0;
+  const sashi = probabilities[2] ?? 0;
+  const oikomi = probabilities[3] ?? 0;
+  return senkou + 2 * sashi + 3 * oikomi;
+};
+
 interface RawRowProbabilityResolver {
   resolve: (raw: Record<string, unknown>) => number[];
 }
@@ -371,6 +381,8 @@ const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictio
     predicted_class: predictedClass,
     second_predicted_class: secondPredictedClass,
     predicted_label: buildLabelFromClass(predictedClass),
+    predicted_corner_front_score: computePredictedCornerFrontScore(probabilities),
+    predicted_corner_rank: DEFAULT_SINGLE_ROW_CORNER_RANK,
     cell_model_key: passthrough.cell_model_key,
     cell_variant_id: passthrough.cell_variant_id,
     model_version: passthrough.model_version,
@@ -405,13 +417,57 @@ interface ApplyPostprocToRowsParams {
 }
 
 export const applyPostprocToRows = (params: ApplyPostprocToRowsParams): PostprocPredictionRow[] =>
-  params.rows.map((row) =>
-    applyPostprocToRow({
-      raw: row,
-      runningStyleFeatureVersion: params.runningStyleFeatureVersion,
-      nigeThreshold: params.nigeThreshold,
-    }),
+  assignPredictedCornerRanks(
+    params.rows.map((row) =>
+      applyPostprocToRow({
+        raw: row,
+        runningStyleFeatureVersion: params.runningStyleFeatureVersion,
+        nigeThreshold: params.nigeThreshold,
+      }),
+    ),
   );
+
+const buildRaceGroupKey = (row: PostprocPredictionRow): string =>
+  [row.source, row.kaisai_nen, row.kaisai_tsukihi, row.keibajo_code, row.race_bango].join("\u001f");
+
+const comparePredictedCornerOrder = (
+  left: PostprocPredictionRow,
+  right: PostprocPredictionRow,
+): number => {
+  if (left.predicted_corner_front_score !== right.predicted_corner_front_score) {
+    return left.predicted_corner_front_score - right.predicted_corner_front_score;
+  }
+  if (left.p_nige !== right.p_nige) return right.p_nige - left.p_nige;
+  return left.ketto_toroku_bango.localeCompare(right.ketto_toroku_bango);
+};
+
+export const assignPredictedCornerRanks = (
+  rows: readonly PostprocPredictionRow[],
+): PostprocPredictionRow[] => {
+  const groups = new Map<string, PostprocPredictionRow[]>();
+  for (const row of rows) {
+    const key = buildRaceGroupKey(row);
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, [row]);
+      continue;
+    }
+    group.push(row);
+  }
+  const rankByHorse = new Map<string, number>();
+  for (const group of groups.values()) {
+    const ordered = group.toSorted(comparePredictedCornerOrder);
+    ordered.forEach((row, index) => {
+      rankByHorse.set(`${buildRaceGroupKey(row)}\u001f${row.ketto_toroku_bango}`, index + 1);
+    });
+  }
+  return rows.map((row) => ({
+    ...row,
+    predicted_corner_rank:
+      rankByHorse.get(`${buildRaceGroupKey(row)}\u001f${row.ketto_toroku_bango}`) ??
+      DEFAULT_SINGLE_ROW_CORNER_RANK,
+  }));
+};
 
 export const buildReadInputSql = (logitsParquet: string): string =>
   `SELECT * FROM read_parquet('${logitsParquet}')`;
@@ -443,6 +499,8 @@ const formatRowAsValuesTuple = (row: PostprocPredictionRow): string =>
     formatValueForSql(row.predicted_class),
     formatValueForSql(row.second_predicted_class),
     formatValueForSql(row.predicted_label),
+    formatValueForSql(row.predicted_corner_front_score),
+    formatValueForSql(row.predicted_corner_rank),
     formatValueForSql(row.cell_model_key),
     formatValueForSql(row.cell_variant_id),
     formatValueForSql(row.model_version),
@@ -464,6 +522,8 @@ const OUTPUT_COLUMN_NAMES = [
   "predicted_class",
   "second_predicted_class",
   "predicted_label",
+  "predicted_corner_front_score",
+  "predicted_corner_rank",
   "cell_model_key",
   "cell_variant_id",
   "model_version",
@@ -486,6 +546,8 @@ export const buildEmptyOutputCopySql = (outputParquet: string): string => {
     "CAST(NULL AS INTEGER) AS predicted_class",
     "CAST(NULL AS INTEGER) AS second_predicted_class",
     "CAST(NULL AS VARCHAR) AS predicted_label",
+    "CAST(NULL AS DOUBLE) AS predicted_corner_front_score",
+    "CAST(NULL AS INTEGER) AS predicted_corner_rank",
     "CAST(NULL AS VARCHAR) AS cell_model_key",
     "CAST(NULL AS VARCHAR) AS cell_variant_id",
     "CAST(NULL AS VARCHAR) AS model_version",

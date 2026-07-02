@@ -265,13 +265,6 @@ test("buildRunningStyleBucketEvaluationsDdl emits 16 cm + 8 log_loss + top2 + or
       finish_pair_score_count  integer not null default 0,
       evaluated_at         timestamptz not null default now()
     );
-    create unique index if not exists running_style_model_bucket_evaluations_uq
-      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, coalesce(cell_model_key,''), coalesce(cell_variant_id,''), evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, coalesce(kyoso_joken_code,''), coalesce(condition_key,''), coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,''));
-    create index if not exists running_style_model_bucket_evaluations_lookup
-      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, cell_model_key, cell_variant_id, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code);
-    create index if not exists running_style_model_bucket_evaluations_race_name
-      on running_style_model_bucket_evaluations (category, source, race_name, keibajo_code, kyori)
-      where race_name is not null;
     alter table running_style_model_bucket_evaluations add column if not exists cell_model_key text;
     alter table running_style_model_bucket_evaluations add column if not exists cell_variant_id text;
     alter table running_style_model_bucket_evaluations add column if not exists corner1_pair_score_sum numeric not null default 0;
@@ -282,6 +275,39 @@ test("buildRunningStyleBucketEvaluationsDdl emits 16 cm + 8 log_loss + top2 + or
     alter table running_style_model_bucket_evaluations add column if not exists corner4_pair_score_count integer not null default 0;
     alter table running_style_model_bucket_evaluations add column if not exists finish_pair_score_sum numeric not null default 0;
     alter table running_style_model_bucket_evaluations add column if not exists finish_pair_score_count integer not null default 0;
+    
+    do $$
+    begin
+      if exists (
+        select 1
+          from pg_indexes
+         where tablename = 'running_style_model_bucket_evaluations'
+           and indexname = 'running_style_model_bucket_evaluations_uq'
+           and position('cell_model_key' in indexdef) = 0
+      ) then
+        drop index running_style_model_bucket_evaluations_uq;
+      end if;
+    end $$;
+    
+    do $$
+    begin
+      if exists (
+        select 1
+          from pg_indexes
+         where tablename = 'running_style_model_bucket_evaluations'
+           and indexname = 'running_style_model_bucket_evaluations_lookup'
+           and position('cell_model_key' in indexdef) = 0
+      ) then
+        drop index running_style_model_bucket_evaluations_lookup;
+      end if;
+    end $$;
+    create unique index if not exists running_style_model_bucket_evaluations_uq
+      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, coalesce(cell_model_key,''), coalesce(cell_variant_id,''), evaluation_window_from, evaluation_window_to, source, keibajo_code, kyori, kyoso_shubetsu_code, coalesce(kyoso_joken_code,''), coalesce(condition_key,''), coalesce(track_code,''), coalesce(grade_code,''), coalesce(race_name,''));
+    create index if not exists running_style_model_bucket_evaluations_lookup
+      on running_style_model_bucket_evaluations (model_version, running_style_feature_version, category, cell_model_key, cell_variant_id, source, keibajo_code, kyori, kyoso_shubetsu_code, kyoso_joken_code, condition_key, track_code, grade_code);
+    create index if not exists running_style_model_bucket_evaluations_race_name
+      on running_style_model_bucket_evaluations (category, source, race_name, keibajo_code, kyori)
+      where race_name is not null;
     alter table running_style_model_bucket_evaluations
       replica identity full;
   `);
@@ -311,6 +337,21 @@ test("buildRunningStyleBucketEvaluationsDdl places ALTER TABLE replica identity 
   expect(uniqueIndexOffset < replicaIdentityOffset).toBe(true);
 });
 
+test("buildRunningStyleBucketEvaluationsDdl migrates old indexes after adding cell columns", () => {
+  const ddl = buildRunningStyleBucketEvaluationsDdl();
+  const addCellColumnOffset = ddl.indexOf(
+    "alter table running_style_model_bucket_evaluations add column if not exists cell_model_key text",
+  );
+  const dropOldUniqueOffset = ddl.indexOf("drop index running_style_model_bucket_evaluations_uq");
+  const uniqueIndexOffset = ddl.indexOf(
+    "create unique index if not exists running_style_model_bucket_evaluations_uq",
+  );
+  expect(addCellColumnOffset).toBeGreaterThanOrEqual(0);
+  expect(addCellColumnOffset < dropOldUniqueOffset).toBe(true);
+  expect(dropOldUniqueOffset < uniqueIndexOffset).toBe(true);
+  expect(ddl).toContain("drop index running_style_model_bucket_evaluations_lookup");
+});
+
 test("buildRunningStyleBucketAggregateSql for jra emits aggregate with order-pair evaluation", () => {
   const sql = buildRunningStyleBucketAggregateSql({
     modelVersion: "vX",
@@ -327,7 +368,8 @@ test("buildRunningStyleBucketAggregateSql for jra emits aggregate with order-pai
   expect(sql).toContain("where true");
   expect(sql).toContain("p.ketto_toroku_bango");
   expect(sql).toContain("cell_model_key, cell_variant_id");
-  expect(sql).toContain("(p.p_senkou + (2 * p.p_sashi) + (3 * p.p_oikomi)) predicted_front_score");
+  expect(sql).toContain("predicted_corner_front_score");
+  expect(sql).toContain("p.predicted_corner_front_score");
   expect(sql).toContain("left join race_entry_corner_features rec");
   expect(sql).toContain(
     "rec.corner1_norm, rec.corner3_norm, rec.corner4_norm, rec.finish_position",

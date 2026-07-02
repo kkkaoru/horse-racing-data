@@ -74,6 +74,8 @@ LOAD_COLUMNS: tuple[str, ...] = (
     "p_senkou",
     "p_sashi",
     "p_oikomi",
+    "predicted_corner_front_score",
+    "predicted_corner_rank",
     "model_version",
     "running_style_feature_version",
     "race_date",
@@ -94,6 +96,8 @@ PARQUET_SELECT_COLUMNS: tuple[str, ...] = (
     "p_senkou",
     "p_sashi",
     "p_oikomi",
+    "predicted_corner_front_score",
+    "predicted_corner_rank",
     "running_style_feature_version",
     "model_version",
     "cell_model_key",
@@ -114,6 +118,8 @@ TEMP_TABLE_SCHEMA: tuple[tuple[str, str], ...] = (
     ("p_senkou", "numeric not null"),
     ("p_sashi", "numeric not null"),
     ("p_oikomi", "numeric not null"),
+    ("predicted_corner_front_score", "numeric not null"),
+    ("predicted_corner_rank", "integer not null"),
     ("model_version", "text not null"),
     ("running_style_feature_version", "text not null"),
     ("race_date", "date not null"),
@@ -127,10 +133,12 @@ DOUBLED_SINGLE_QUOTE: str = "''"
 P_NIGE_INDEX_IN_ROW: int = 8
 P_OIKOMI_INDEX_IN_ROW: int = 11
 PREDICTED_CLASS_INDEX_IN_ROW: int = 6
-RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW: int = 12
-MODEL_VERSION_INDEX_IN_ROW: int = 13
-CELL_MODEL_KEY_INDEX_IN_ROW: int = 14
-CELL_VARIANT_ID_INDEX_IN_ROW: int = 15
+PREDICTED_CORNER_FRONT_SCORE_INDEX_IN_ROW: int = 12
+PREDICTED_CORNER_RANK_INDEX_IN_ROW: int = 13
+RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW: int = 14
+MODEL_VERSION_INDEX_IN_ROW: int = 15
+CELL_MODEL_KEY_INDEX_IN_ROW: int = 16
+CELL_VARIANT_ID_INDEX_IN_ROW: int = 17
 KAISAI_NEN_INDEX_IN_ROW: int = 1
 KAISAI_TSUKIHI_INDEX_IN_ROW: int = 2
 
@@ -361,6 +369,16 @@ def attach_second_predicted_class(
         coerce_float(parquet_row[P_OIKOMI_INDEX_IN_ROW]),
     )
     second = compute_second_predicted_class(probabilities, predicted_class)
+    predicted_corner_front_score = (
+        probabilities[1] + 2 * probabilities[2] + 3 * probabilities[3]
+        if parquet_row[PREDICTED_CORNER_FRONT_SCORE_INDEX_IN_ROW] is None
+        else coerce_float(parquet_row[PREDICTED_CORNER_FRONT_SCORE_INDEX_IN_ROW])
+    )
+    predicted_corner_rank = (
+        1
+        if parquet_row[PREDICTED_CORNER_RANK_INDEX_IN_ROW] is None
+        else coerce_int(parquet_row[PREDICTED_CORNER_RANK_INDEX_IN_ROW])
+    )
     running_style_feature_version = parquet_row[RUNNING_STYLE_FEATURE_VERSION_INDEX_IN_ROW]
     model_version = parquet_row[MODEL_VERSION_INDEX_IN_ROW]
     race_date = derive_race_date(
@@ -375,6 +393,8 @@ def attach_second_predicted_class(
         second,
         target,
         *probabilities,
+        predicted_corner_front_score,
+        predicted_corner_rank,
         model_version,
         running_style_feature_version,
         race_date,
@@ -397,6 +417,14 @@ def ensure_optional_cell_columns(duckdb_con: DuckDbExecutor) -> None:
     if "cell_variant_id" not in columns:
         duckdb_con.execute(
             "alter table raw_running_style_predictions add column cell_variant_id varchar"
+        )
+    if "predicted_corner_front_score" not in columns:
+        duckdb_con.execute(
+            "alter table raw_running_style_predictions add column predicted_corner_front_score double"
+        )
+    if "predicted_corner_rank" not in columns:
+        duckdb_con.execute(
+            "alter table raw_running_style_predictions add column predicted_corner_rank integer"
         )
 
 
