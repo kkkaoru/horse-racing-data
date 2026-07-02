@@ -3,7 +3,6 @@ import { expect, test } from "vitest";
 import {
   ACTIVE_MODELS_TABLE,
   buildActivateModelSql,
-  buildActivatePerClassModelSql,
   buildActiveModelsSubclassUniqueIndexSql,
   buildActiveModelsTableDdl,
   buildAddSubclassColumnSql,
@@ -168,15 +167,6 @@ test("buildActivateModelSql upserts the category fallback (NULL subclass) row", 
   expect(sql).toContain("insert into finish_position_active_models");
   expect(sql).toContain("(category, subclass, model_version)");
   expect(sql).toContain("values ($1, null, $2)");
-  expect(sql).toContain("on conflict (category, coalesce(subclass, ''))");
-  expect(sql).toContain("model_version = excluded.model_version");
-});
-
-test("buildActivatePerClassModelSql upserts a per-class (category, subclass) row", () => {
-  const sql = buildActivatePerClassModelSql();
-  expect(sql).toContain("insert into finish_position_active_models");
-  expect(sql).toContain("(category, subclass, model_version)");
-  expect(sql).toContain("values ($1, $2, $3)");
   expect(sql).toContain("on conflict (category, coalesce(subclass, ''))");
   expect(sql).toContain("model_version = excluded.model_version");
 });

@@ -750,11 +750,23 @@ const PERCLASS_703_RUNNERS: Runner[] = [
   },
 ];
 
-it("getFinishPositionLambdarankPredictions emits subclass-aware active CTE referencing kyosoJokenCode", async () => {
+const NAR_CELL_RACE: RaceDetail = {
+  ...PERCLASS_703_RACE,
+  gradeCode: "E",
+  kaisaiTsukihi: "0702",
+  keibajoCode: "54",
+  kyori: "1400",
+  kyosoJokenCode: null,
+  raceBango: "03",
+  source: "nar",
+  trackCode: "20",
+};
+
+it("getFinishPositionLambdarankPredictions ignores stale subclass active rows", async () => {
   executeMock.mockResolvedValue({
     rows: [
       {
-        model_version: "iter23-jra-cb-ensemble-703-v8",
+        model_version: "jra-cb-v9-sim-2013",
         predicted_rank: 1,
         predicted_score: "0.91",
         shusso_tosu: 2,
@@ -768,30 +780,42 @@ it("getFinishPositionLambdarankPredictions emits subclass-aware active CTE refer
   expect(queryText).toMatch(/from finish_position_active_models/u);
   expect(queryText).toMatch(/where category = /u);
   expect(queryText).toMatch(/'jra'/u);
-  expect(queryText).toMatch(/and \(subclass = /u);
-  expect(queryText).toMatch(/'703'/u);
-  expect(queryText).toMatch(/or subclass is null\)/u);
-  expect(queryText).toMatch(/order by \(subclass is null\) asc/u);
+  expect(queryText).toMatch(/and subclass is null/u);
+  expect(queryText).not.toMatch(/subclass = /u);
+  expect(queryText).not.toMatch(/order by \(subclass is null\) asc/u);
 });
 
-it("getFinishPositionLambdarankPredictions emits priority 1 active fallback guarded by exists clause", async () => {
+it("getFinishPositionLambdarankPredictions prioritizes the NAR per-cell model", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/select\s+p_cell\.model_version,\s+0 as priority/u);
+  expect(queryText).toMatch(/p_cell\.model_version = 'nar-xgb-cell-a957d8b4-v1'/u);
+  expect(queryText).toMatch(/'nar'/u);
+});
+
+it("getFinishPositionLambdarankPredictions emits priority 2 active fallback guarded by exists clause", async () => {
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
-  expect(queryText).toMatch(/select active\.model_version, 1 as priority/u);
+  expect(queryText).toMatch(/select active\.model_version, 2 as priority/u);
   expect(queryText).toMatch(
     /where exists \(\s*select 1\s*from race_finish_position_model_predictions p2\s*where p2\.model_version = active\.model_version/u,
   );
 });
 
-it("getFinishPositionLambdarankPredictions emits priority 2 fallback over any race prediction", async () => {
+it("getFinishPositionLambdarankPredictions emits priority 3 fallback over any race prediction", async () => {
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
-  expect(queryText).toMatch(/select p3\.model_version, 2 as priority/u);
+  expect(queryText).toMatch(/select p3\.model_version, 3 as priority/u);
   expect(queryText).toMatch(/from race_finish_position_model_predictions p3/u);
+  expect(queryText).toMatch(/from finish_position_active_models stale/u);
+  expect(queryText).toMatch(/stale\.subclass is not null/u);
+  expect(queryText).toMatch(/stale\.model_version = p3\.model_version/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
 });

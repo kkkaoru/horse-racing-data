@@ -5,6 +5,9 @@ pre-commit:
       run: shellcheck {staged_files}
     oxfmt:
       glob: "*.{ts,json,jsonc,yaml,yml,md,toml,css,html}"
+      exclude:
+        # Native ML model JSON is loader-sensitive; formatting can change XGBoost numeric token types.
+        - "apps/finish-position-predict-container/models/finish-position/**/model.json"
       run: bunx oxfmt --check {staged_files}
     oxlint:
       glob: "*.ts"

@@ -78,7 +78,7 @@ R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET (optional)
    - Fetch upcoming race keys (keibajo_code, race_bango) from Neon via `SOURCE_DATABASE_URL`
    - Fetch realtime odds + bataiju from Cloudflare hot-worker endpoints (5s timeout each)
    - Build v8 feature parquet via subprocess (DuckDB + 14 layer scripts)
-   - Load production model + per-class ensemble members from `/models`
+   - Load production category model + non-default cell variants from `/models`
    - Score each race, rank within race, dedupe, chunk, UPSERT to Neon
    - Record audit row in `finish_position_cron_executions`
 
@@ -166,7 +166,8 @@ File: `apps/finish-position-predict-container/src/predict_upcoming.py` + model a
 **Model artifacts:**
 
 - Baked into image at `/models/finish-position/{category}/{modelVersion}/{model.json,metadata.json}`
-- Per-class ensemble members (JRA 703): `/models/finish-position/jra/per-class/{kyoso_joken_code}/{memberVersion}/...`
+- Non-default cell variants: `/models/finish-position/{category}/{cellModelVersion}/{model.json,metadata.json}`
+- Per-class ensemble members under `/models/finish-position/*/per-class/...` are historical artifacts and are not production dispatch inputs.
 - E-top2 XGB companion (STAGED): `/models/finish-position/jra/xgb-jra-2013-v8/model.json` (loaded if `JRA_ETOP2_ENABLED=True`)
 
 **Production models (v8 iter as of 2026-06-18):**
@@ -179,10 +180,10 @@ File: `apps/finish-position-predict-container/src/predict_upcoming.py` + model a
 
 1. Load metadata (feature names) from JSON, assert count matches expected (244 JRA / 192 NAR / 111 Ban-ei)
 2. Build feature matrix from parquet rows (per entry per horse)
-3. Route to per-class model if registered (`kyoso_joken_code` JRA, `nar_subclass` NAR); else fallback to category-global
+3. Resolve non-default cell variant first via `cell_routing.json`; if unmatched, use category default / explicitly enabled category-level path
 4. Score via CatBoost/XGBoost/LightGBM native predict (single-threaded per race; races scored serially)
 5. Rank within race by predicted score (descending)
-6. Apply E-top2 override if enabled (XGB#1 == CB#2 && class != 701 → promote CB#2 to rank 1)
+6. Apply E-top2 override only if explicitly enabled for the category
 
 ### F. Prediction Row Building & Upsert
 

@@ -2,13 +2,9 @@
 
 const PREDICTIONS_TABLE = "race_finish_position_model_predictions";
 const ACTIVE_MODELS_TABLE = "finish_position_active_models";
-// Phase B per-class JRA routing — see apps/finish-position-predict-container/src/predict_lib/per_class.py
-// and docs/finish-position-accuracy/runbook/PER_CLASS_ROUTING.md.
-// ``subclass = NULL`` is the category-global fallback row (current production
-// behaviour). A non-NULL ``subclass`` registers a per-class model_version for
-// kyoso_joken_code; one row per (category, subclass) is allowed, plus one
-// NULL-subclass fallback per category (enforced by the unique index on
-// (category, coalesce(subclass, ''))).
+// ``subclass`` remains for historical rows, but current production activation
+// only writes the NULL-subclass category default. Per-cell routing is resolved
+// from cell_routing.json / prediction model_version rows, not this table.
 const ACTIVE_MODELS_SUBCLASS_INDEX = `${ACTIVE_MODELS_TABLE}_category_subclass_idx`;
 
 const PRIMARY_KEY_COLUMNS = [
@@ -127,12 +123,6 @@ export const buildBatchInsertSql = (rowCount: number): string => {
 export const buildActivateModelSql = (): string =>
   `insert into ${ACTIVE_MODELS_TABLE} (category, subclass, model_version)
      values ($1, null, $2)
-     on conflict (category, coalesce(subclass, ''))
-     do update set model_version = excluded.model_version, activated_at = now()`;
-
-export const buildActivatePerClassModelSql = (): string =>
-  `insert into ${ACTIVE_MODELS_TABLE} (category, subclass, model_version)
-     values ($1, $2, $3)
      on conflict (category, coalesce(subclass, ''))
      do update set model_version = excluded.model_version, activated_at = now()`;
 

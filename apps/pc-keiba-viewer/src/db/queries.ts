@@ -2892,6 +2892,36 @@ const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
   return "nar";
 };
 
+const NAR_MILE_E_VENUE54_CELL_MODEL_VERSION = "nar-xgb-cell-a957d8b4-v1";
+
+const toInteger = (value: string | null): number | null => {
+  if (value === null) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const resolveFinishPositionCellModelVersion = (
+  category: string,
+  race: RaceDetail,
+): string | null => {
+  const distance = toInteger(race.kyori);
+  const month = toInteger(race.kaisaiTsukihi.slice(0, 2));
+  if (
+    category === "nar" &&
+    race.gradeCode === "E" &&
+    race.keibajoCode === "54" &&
+    distance !== null &&
+    distance >= 1200 &&
+    distance < 1600 &&
+    month !== null &&
+    month >= 6 &&
+    month <= 8
+  ) {
+    return NAR_MILE_E_VENUE54_CELL_MODEL_VERSION;
+  }
+  return null;
+};
+
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
     return withDbQueryCache(
@@ -2907,6 +2937,7 @@ export const getFinishPositionLambdarankPredictions = cache(
       async () => {
         if (runners.length <= 1) return [];
         const category = CATEGORY_FROM_RACE(race);
+        const cellModelVersion = resolveFinishPositionCellModelVersion(category, race);
         try {
           const result = await getDb().execute<{
             model_version: string;
@@ -2919,14 +2950,26 @@ export const getFinishPositionLambdarankPredictions = cache(
               select model_version
               from finish_position_active_models
               where category = ${category}
-                and (subclass = ${race.kyosoJokenCode} or subclass is null)
-              order by (subclass is null) asc
+                and subclass is null
               limit 1
             ),
             selected_model as (
               select model_version
               from (
-                select p.model_version, 0 as priority, max(p.prediction_generated_at) as recency
+                select
+                  p_cell.model_version,
+                  0 as priority,
+                  max(p_cell.prediction_generated_at) as recency
+                from race_finish_position_model_predictions p_cell
+                where ${cellModelVersion === null ? sql`false` : sql`p_cell.model_version = ${cellModelVersion}`}
+                  and p_cell.source = ${race.source}
+                  and p_cell.kaisai_nen = ${race.kaisaiNen}
+                  and p_cell.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                  and p_cell.keibajo_code = ${race.keibajoCode}
+                  and p_cell.race_bango = ${race.raceBango}
+                group by p_cell.model_version
+                union all
+                select p.model_version, 1 as priority, max(p.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p
                 join active on p.model_version =
                   active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
@@ -2937,7 +2980,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p.race_bango = ${race.raceBango}
                 group by p.model_version
                 union all
-                select active.model_version, 1 as priority, null::timestamptz as recency
+                select active.model_version, 2 as priority, null::timestamptz as recency
                 from active
                 where exists (
                   select 1
@@ -2950,13 +2993,19 @@ export const getFinishPositionLambdarankPredictions = cache(
                     and p2.race_bango = ${race.raceBango}
                 )
                 union all
-                select p3.model_version, 2 as priority, max(p3.prediction_generated_at) as recency
+                select p3.model_version, 3 as priority, max(p3.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p3
                 where p3.source = ${race.source}
                   and p3.kaisai_nen = ${race.kaisaiNen}
                   and p3.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p3.keibajo_code = ${race.keibajoCode}
                   and p3.race_bango = ${race.raceBango}
+                  and not exists (
+                    select 1
+                    from finish_position_active_models stale
+                    where stale.subclass is not null
+                      and stale.model_version = p3.model_version
+                  )
                 group by p3.model_version
               ) candidates
               order by priority, recency desc nulls last
