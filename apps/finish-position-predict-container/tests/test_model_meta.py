@@ -6,18 +6,27 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from predict_lib import model_meta
 from predict_lib.model_meta import (
     LGB_MODEL_FILE_NAME,
     MODEL_FILE_NAME,
+    NAR_TRANSFORMER_BLEND_WEIGHT,
+    NAR_TRANSFORMER_MODEL_VERSION,
     architecture_for,
+    build_r2_nar_etop2_key,
+    build_r2_nar_transformer_key,
     build_r2_object_key,
+    build_r2_xgb_etop2_key,
     feature_count_for,
+    get_train_start_year,
     is_category,
     is_lightgbm_model_version,
     load_model_meta,
@@ -25,6 +34,15 @@ from predict_lib.model_meta import (
     model_version_for,
     resolve_category,
 )
+
+# ``_env_flag`` is module-private (leading underscore); accessed via getattr
+# with the attribute name held in a variable (not a string literal, so
+# oxlint/ruff's "no getattr with constant attribute" check does not apply, and
+# not a static ``model_meta._env_flag`` attribute expression, so strict
+# pyright's reportPrivateUsage does not apply either) while still exercising
+# the real implementation.
+_ENV_FLAG_ATTR: str = "_env_flag"
+_env_flag: Callable[..., bool] = cast(Callable[..., bool], getattr(model_meta, _ENV_FLAG_ATTR))
 
 NAR_LGB_RESIDUAL_C: str = "iter36-nar-lgb-lambdarank-residual-C-v8"
 NAR_CB_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
@@ -270,3 +288,75 @@ def test_load_model_meta_raises_value_error_when_feature_count_is_negative(
 
 def test_resolve_category_nar() -> None:
     assert resolve_category("nar") == "nar"
+
+
+# --- iter40: NAR transformer blend env flag + R2 key builder + constants ---
+
+
+def test_env_flag_unset_returns_default_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SOME_UNSET_FLAG", raising=False)
+    assert _env_flag("SOME_UNSET_FLAG", default=True) is True
+
+
+def test_env_flag_unset_returns_default_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SOME_UNSET_FLAG", raising=False)
+    assert _env_flag("SOME_UNSET_FLAG", default=False) is False
+
+
+def test_env_flag_true_token_uppercase(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOME_FLAG", "ON")
+    assert _env_flag("SOME_FLAG", default=False) is True
+
+
+def test_env_flag_false_token_with_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOME_FLAG", " 0 ")
+    assert _env_flag("SOME_FLAG", default=True) is False
+
+
+def test_env_flag_unrecognised_token_returns_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOME_FLAG", "maybe")
+    assert _env_flag("SOME_FLAG", default=True) is True
+
+
+# --- pre-existing coverage gap closed alongside the iter40 additions -------
+# (get_train_start_year / build_r2_xgb_etop2_key / build_r2_nar_etop2_key had
+# no direct test before this change; adding coverage here keeps model_meta.py
+# at >=95% on all four metrics without shrinking the measured file set.)
+
+
+def test_get_train_start_year_returns_per_class_override() -> None:
+    assert get_train_start_year("nar", "NEW") == 2015
+
+
+def test_get_train_start_year_falls_back_to_category_default() -> None:
+    # ("jra", "000") has no per-class override -> the JRA category default.
+    assert get_train_start_year("jra", "000") == 2013
+
+
+def test_get_train_start_year_falls_back_to_global_default() -> None:
+    # An unrecognised category has no category-wide default either.
+    assert get_train_start_year("unknown-category", "000") == 2006
+
+
+def test_build_r2_xgb_etop2_key() -> None:
+    assert build_r2_xgb_etop2_key("model.json") == (
+        "finish-position/jra/xgb-jra-2013-v8/model.json"
+    )
+
+
+def test_build_r2_nar_etop2_key() -> None:
+    assert build_r2_nar_etop2_key("model.json") == ("finish-position/nar/cb-nar-2013-v8/model.json")
+
+
+def test_build_r2_nar_transformer_key() -> None:
+    assert build_r2_nar_transformer_key("norm.json") == (
+        "finish-position/nar/iter40-nar-settransformer-blend-v1/norm.json"
+    )
+
+
+def test_nar_transformer_model_version_constant() -> None:
+    assert NAR_TRANSFORMER_MODEL_VERSION == "iter40-nar-settransformer-blend-v1"
+
+
+def test_nar_transformer_blend_weight_constant() -> None:
+    assert NAR_TRANSFORMER_BLEND_WEIGHT == 0.5

@@ -3,8 +3,9 @@
 Some categories benefit from scoring different cells (category x class x
 subgroup x racetrack x season x surface) with different baked models. Ban-ei
 routes class=E races to the v8 base model (111 features) while everything else
-uses the v9 sim model (130 features); JRA and NAR have no routing and always
-use their single ``MODEL_VERSION_BY_CATEGORY`` model.
+uses the v9 sim model (130 features). NAR can route narrow cells, such as
+``dirt / mile / E / summer / venue 54``, to a focused cell model while every
+unmatched race falls back to the category default model.
 
 A rule matches a race when *all* of its conditions hold (logical AND), so a
 single rule can target a multi-dimensional cell such as ``venue=03`` AND
@@ -53,6 +54,8 @@ class VariantSpec:
     model_version: str
     feature_count: int
     architecture: str
+    feature_set_hash: str | None = None
+    feature_names: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -218,10 +221,17 @@ def _parse_rule(value: object) -> CellRouteRule:
 
 def _parse_variant_spec(value: object) -> VariantSpec:
     spec = _as_mapping(value, "variant")
+    feature_names: tuple[str, ...] | None = None
+    if "feature_names" in spec:
+        feature_names = tuple(
+            str(name) for name in _as_sequence(spec["feature_names"], "feature_names")
+        )
     return VariantSpec(
         model_version=str(spec["model_version"]),
         feature_count=int(str(spec["feature_count"])),
         architecture=str(spec["architecture"]),
+        feature_set_hash=(str(spec["feature_set_hash"]) if "feature_set_hash" in spec else None),
+        feature_names=feature_names,
     )
 
 

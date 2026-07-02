@@ -9,25 +9,57 @@ docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md section
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
 class XgboostBoosterLike(Protocol):
-    def predict(self, data: object) -> Iterable[float]: ...
+    def predict(
+        self,
+        data: object,
+        *,
+        iteration_range: tuple[int, int] | None = None,
+    ) -> Iterable[float]: ...
+
+
+@runtime_checkable
+class XgboostBestIterationLike(Protocol):
+    best_iteration: int | str | None
+
+
+def _best_iteration_range(booster: object) -> tuple[int, int] | None:
+    if not isinstance(booster, XgboostBestIterationLike):
+        return None
+    try:
+        best_iteration = booster.best_iteration
+    except AttributeError:
+        return None
+    if best_iteration is None:
+        return None
+    best_iteration_int = int(best_iteration)
+    if best_iteration_int < 0:
+        return None
+    return (0, best_iteration_int + 1)
 
 
 class XgboostBooster:
     """Adapt a loaded XGBoost Booster to the scorer's ``predict`` signature."""
 
     _booster: XgboostBoosterLike
+    _iteration_range: tuple[int, int] | None
 
     def __init__(self, booster: XgboostBoosterLike) -> None:
         self._booster = booster
+        self._iteration_range = _best_iteration_range(booster)
 
     def predict(self, matrix: Sequence[Sequence[float]]) -> Sequence[float]:
         import xgboost
 
-        return [float(score) for score in self._booster.predict(xgboost.DMatrix(matrix))]
+        data = xgboost.DMatrix(matrix)
+        if self._iteration_range is None:
+            scores = self._booster.predict(data)
+        else:
+            scores = self._booster.predict(data, iteration_range=self._iteration_range)
+        return [float(score) for score in scores]
 
 
 def load_xgboost_booster(model_path: str) -> XgboostBooster:

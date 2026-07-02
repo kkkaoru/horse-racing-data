@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import http.server
 import json
 import os
@@ -52,7 +53,7 @@ import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import final, get_args, override
+from typing import cast, final, get_args, override
 
 from db_driver import ConnectionLike, connect_postgres_with_retry, is_transient_error
 from predict_lib.audit import (
@@ -62,15 +63,9 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
-from predict_lib.booster_pool import BoosterPool
 from predict_lib.cell_router import build_base_model_r2_key, load_cell_router
 from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
-from predict_lib.ensemble_routing import (
-    EnsembleRouteOutcome,
-    init_member_pool,
-    score_race_with_resolution,
-)
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
@@ -79,12 +74,14 @@ from predict_lib.model_meta import (
     JRA_ETOP2_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
-    NAR_ETOP2_ENABLED,
     NAR_ETOP2_MODEL_VERSION,
+    NAR_TRANSFORMER_BLEND_ENABLED,
+    NAR_TRANSFORMER_BLEND_WEIGHT,
+    NAR_TRANSFORMER_MODEL_VERSION,
     Architecture,
     Category,
     architecture_for,
-    build_r2_nar_etop2_key,
+    build_r2_nar_transformer_key,
     build_r2_object_key,
     build_r2_xgb_etop2_key,
     feature_count_for,
@@ -94,7 +91,6 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
-from predict_lib.per_class import resolve_per_class_resolution
 from predict_lib.rescore import (
     RaceFreshSnapshot,
     RaceScope,
@@ -116,7 +112,12 @@ from predict_lib.serve import (
     parse_predict_params,
     parse_request_path,
 )
-from predict_lib.upcoming import build_prediction_rows, rank_race_entries
+from predict_lib.transformer_scorer import (
+    TransformerScorer,
+    fuse_ensemble_transformer,
+    load_transformer,
+)
+from predict_lib.upcoming import KETTO_FIELD, build_prediction_rows, rank_race_entries
 from predict_lib.upsert_sql import (
     DEFAULT_CHUNK_SIZE,
     build_upsert_sql,
@@ -160,17 +161,14 @@ CATEGORIES_ENV: str = "PREDICT_CATEGORIES"
 DEFAULT_DAYS_AHEAD: int = 2
 RACE_ID_KETTO_INDEX: int = 6
 RACE_ID_PART_RANGE: range = range(1, 6)
-# Per-category feature-parquet column name carrying the per-class routing
+# Per-category feature-parquet column name carrying the historical race-class
 # code. JRA uses ``kyoso_joken_code`` (000/005/010/016/701/703/...) which the
 # DuckDB base build projects directly from the source rows. NAR uses
 # ``nar_subclass`` (NEW / MUKATSU / C / B / A / OP / other) which the DuckDB
 # base build derives from ``kyoso_joken_meisho`` via a regex CASE expression
 # (apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py
-# ``nar_subclass_case_sql``). Ban-ei has no per-class registry today so its
-# entry is omitted; the upstream extractor short-circuits for disabled
-# categories. Used by predict_lib.per_class.resolve_per_class_model_version
-# to route a race to its per-class model when one is registered; absent /
-# None / disabled defers to the category-global fallback.
+# ``nar_subclass_case_sql``). Production serving no longer uses this for
+# per-class routing; it remains for E-top2 helper tests and diagnostics.
 CLASS_CODE_FIELD_BY_CATEGORY: Mapping[Category, str] = {
     "jra": "kyoso_joken_code",
     "nar": "nar_subclass",
@@ -281,16 +279,13 @@ def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
 def extract_race_class_code(
     category: Category, entries: Sequence[Mapping[str, object]]
 ) -> str | None:
-    """Return the race's per-class routing code from the first entry, or None.
+    """Return the legacy race-class diagnostic code from the first entry.
 
     The column name is per-category: JRA reads ``kyoso_joken_code`` (numeric
     race-class code), NAR reads ``nar_subclass`` (derived sub-class string).
-    Categories not in :data:`CLASS_CODE_FIELD_BY_CATEGORY` (Ban-ei today)
-    return ``None`` so the per-class router short-circuits to the
-    category-global fallback. All entries of one race share the same
-    race-class, so the first entry is representative. ``None`` and empty
-    strings collapse to ``None`` so the per-class router falls back to the
-    category-global model.
+    Categories not in :data:`CLASS_CODE_FIELD_BY_CATEGORY` return ``None``.
+    All entries of one race share the same race-class, so the first entry is
+    representative. ``None`` and empty strings collapse to ``None``.
     """
     if not entries:
         return None
@@ -319,41 +314,6 @@ def _representative_entry(
     if not entries:
         return None
     return entries[0]
-
-
-def _score_one_race(
-    fallback_booster: BoosterLike,
-    pool: BoosterPool,
-    models_dir: Path,
-    race_id: str,
-    category: Category,
-    entries: Sequence[Mapping[str, object]],
-    feature_names: Sequence[str],
-    architecture: Architecture,
-) -> list[list[object]]:
-    class_code = extract_race_class_code(category, entries)
-    resolution = resolve_per_class_resolution(models_dir, category, class_code)
-    outcome: EnsembleRouteOutcome = score_race_with_resolution(
-        resolution=resolution,
-        race_id=race_id,
-        entries=entries,
-        feature_names=feature_names,
-        architecture=architecture,
-        pool=pool,
-        fallback_booster=fallback_booster,
-        fallback_model_version=model_version_for(category),
-    )
-    if outcome.fallback_reason is not None:
-        print(
-            f"[predict-upcoming] ensemble fallback category={category} "
-            f"race_id={race_id} class_code={class_code} "
-            f"reason={outcome.fallback_reason}",
-            file=sys.stderr,
-        )
-    ranked = rank_race_entries(entries, outcome.scores)
-    return build_prediction_rows(
-        race_id, category, ranked, outcome.model_version, _representative_entry(entries)
-    )
 
 
 def _score_one_race_etop2(
@@ -526,6 +486,38 @@ def _as_architecture(value: str) -> Architecture:
     raise ValueError(f"unknown base_architecture: {value!r}")
 
 
+def _feature_set_hash(feature_names: Sequence[str]) -> str:
+    """Order-independent hash matching local feature-selection policy."""
+    normalized = sorted({name.strip() for name in feature_names if name.strip()})
+    canonical = json.dumps(normalized, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _validate_variant_feature_contract(
+    variant_name: str,
+    model_version: str,
+    metadata_feature_names: Sequence[str],
+    config_feature_names: Sequence[str] | None,
+    config_feature_set_hash: str | None,
+) -> None:
+    """Ensure a cell-routing variant's config matches its baked artifact."""
+    if config_feature_names is not None and tuple(metadata_feature_names) != tuple(
+        config_feature_names
+    ):
+        raise ValueError(
+            f"cell-routing variant={variant_name} model_version={model_version} "
+            "feature_names do not match metadata.json"
+        )
+    if config_feature_set_hash is not None:
+        actual_hash = _feature_set_hash(metadata_feature_names)
+        if actual_hash != config_feature_set_hash:
+            raise ValueError(
+                f"cell-routing variant={variant_name} model_version={model_version} "
+                f"feature_set_hash mismatch: config={config_feature_set_hash} "
+                f"metadata={actual_hash}"
+            )
+
+
 @dataclass(frozen=True)
 class VariantModel:
     """A loaded cell-routing variant: its booster plus its feature contract.
@@ -551,14 +543,15 @@ def score_races(
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
 
-    Builds the (per-category) booster pool + E-top2 companion once, then routes
-    each race through the JRA E-top2 override, the NAR E-top2 per-class override,
-    or the ensemble/per-class path.
+    Loads the category default booster and any non-default cell variants once,
+    then routes each race through data-driven cell routing first. A matching
+    cell variant is scored directly. Otherwise the request falls back to the
+    category default model, except for the explicitly enabled JRA E-top2
+    override path.
     Connection-free and CPU-bound so the caller can defer the Neon connect until
     the first write (avoiding Neon autosuspend during the long score phase).
     """
     fallback_booster = _load_booster(models_dir, category)
-    pool = init_member_pool(models_dir, category)
     cell_router = load_cell_router()
     variant_pool: dict[str, VariantModel] = {}
     if cell_router.has_routing(category):
@@ -577,6 +570,13 @@ def score_races(
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
             fnames = list(metadata["feature_names"])
             assert_feature_count(fnames, vspec.feature_count)
+            _validate_variant_feature_contract(
+                vname,
+                vspec.model_version,
+                fnames,
+                vspec.feature_names,
+                vspec.feature_set_hash,
+            )
             variant_pool[vname] = VariantModel(
                 booster=booster,
                 feature_names=fnames,
@@ -591,9 +591,9 @@ def score_races(
     xgb_etop2_booster: BoosterLike | None = None
     if JRA_ETOP2_ENABLED and category == "jra":
         xgb_etop2_booster = _load_xgb_etop2_booster(models_dir)
-    cb_nar_etop2_booster: BoosterLike | None = None
-    if NAR_ETOP2_ENABLED and category == "nar":
-        cb_nar_etop2_booster = _load_cb_nar_etop2_booster(models_dir)
+    nar_transformer: TransformerScorer | None = None
+    if NAR_TRANSFORMER_BLEND_ENABLED and category == "nar":
+        nar_transformer = _load_nar_transformer(models_dir, feature_names)
     scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
         effective_booster = fallback_booster
@@ -636,25 +636,23 @@ def score_races(
                 entries,
                 effective_feature_names,
             )
-        elif cb_nar_etop2_booster is not None:
-            rows = score_one_race_nar_etop2(
+        elif nar_transformer is not None:
+            rows = _score_one_race_nar_blend(
                 effective_booster,
-                cb_nar_etop2_booster,
+                nar_transformer,
                 race_id,
-                category,
                 entries,
                 effective_feature_names,
             )
         else:
-            rows = _score_one_race(
+            rows = _score_one_race_direct(
                 effective_booster,
-                pool,
-                models_dir,
                 race_id,
                 category,
                 entries,
                 effective_feature_names,
                 effective_architecture,
+                model_version_for(category),
             )
         scored.append(rows)
     return scored
@@ -674,6 +672,86 @@ def _score_one_race_direct(
     ranked = rank_race_entries(entries, scores)
     return build_prediction_rows(
         race_id, category, ranked, model_version, _representative_entry(entries)
+    )
+
+
+def _load_nar_transformer(
+    models_dir: Path, feature_names: Sequence[str]
+) -> TransformerScorer | None:
+    """Load the NAR transformer-blend artifact, or None for ensemble-only fallback.
+
+    Fail-closed at startup (mirrors the E-top2 companion-load pattern): a missing
+    / unreadable artifact OR a feature-contract gap (any of the 117 transformer
+    features absent from the category's 192-feature production build) returns
+    None so ``score_races`` scores NAR with the pure iter12 ensemble unchanged.
+    Loaded once per category run from the baked MODELS_DIR (no runtime R2 read).
+    """
+    artifact_dir = (models_dir / build_r2_nar_transformer_key("norm.json")).parent
+    try:
+        transformer = load_transformer(artifact_dir)
+    except BaseException as load_error:
+        print(
+            f"[nar-transformer] load failed -> ensemble-only: {load_error}",
+            file=sys.stderr,
+        )
+        return None
+    known = set(feature_names)
+    missing = [name for name in transformer.feature_order if name not in known]
+    if missing:
+        print(
+            f"[nar-transformer] feature-contract gap ({len(missing)}) "
+            f"-> ensemble-only: {missing[:5]}",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[nar-transformer] loaded seeds={len(transformer.seeds)} "
+        f"features={len(transformer.feature_order)} "
+        f"version={NAR_TRANSFORMER_MODEL_VERSION}",
+        file=sys.stderr,
+    )
+    return transformer
+
+
+def _score_one_race_nar_blend(
+    fallback_booster: BoosterLike,
+    transformer: TransformerScorer,
+    race_id: str,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+) -> list[list[object]]:
+    """Score one NAR race with the Set-Transformer x ensemble rank-fusion blend.
+
+    The pure iter12 XGBoost base scores the 192-feature matrix; the transformer
+    contributes its within-race seed-rank-mean over the 117-feature subset. The
+    two are fused 0.5/0.5 at the rank level (ketto-ascending tie-break == serve),
+    reproducing the deploy gate. Fail-closed per race: field < 2, a feature gap
+    on this race's entries, or any transformer exception falls back to the pure
+    base ranking under the category-global model_version (auditable); blended
+    rows write NAR_TRANSFORMER_MODEL_VERSION.
+    """
+    matrix = build_feature_matrix(entries, feature_names, "xgboost")
+    base_scores = score_matrix(fallback_booster, matrix)
+    ketto_list = [str(entry[KETTO_FIELD]) for entry in entries]
+    scores: Sequence[float] = base_scores
+    model_version = model_version_for("nar")
+    if len(entries) >= 2 and not transformer.missing_feature_keys(entries):
+        try:
+            seed_rank_mean = transformer.seed_rank_mean(entries, ketto_list)
+            scores = fuse_ensemble_transformer(
+                base_scores, seed_rank_mean, ketto_list, NAR_TRANSFORMER_BLEND_WEIGHT
+            )
+            model_version = NAR_TRANSFORMER_MODEL_VERSION
+        except BaseException as blend_error:
+            print(
+                f"[nar-transformer] race fail -> ensemble-only race_id={race_id}: {blend_error}",
+                file=sys.stderr,
+            )
+            scores = base_scores
+            model_version = model_version_for("nar")
+    ranked = rank_race_entries(entries, scores)
+    return build_prediction_rows(
+        race_id, "nar", ranked, model_version, _representative_entry(entries)
     )
 
 
@@ -772,19 +850,6 @@ def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
     from xgboost_adapter import load_xgboost_booster  # bundled in image
 
     return load_xgboost_booster(str(model_path))
-
-
-def _load_cb_nar_etop2_booster(models_dir: Path) -> BoosterLike:
-    """Load the CatBoost CB-2013 override model for E-top2 NAR override.
-
-    Resolves the artifact at ``models/finish-position/nar/cb-nar-2013-v8/
-    model.json`` (same path as baked into the image alongside XGB iter12).
-    Called once at category startup when NAR_ETOP2_ENABLED is True.
-    """
-    model_path = models_dir / build_r2_nar_etop2_key(MODEL_FILE_NAME)
-    from catboost_adapter import load_catboost_booster  # bundled in image
-
-    return load_catboost_booster(str(model_path))
 
 
 def _build_feature_rows(
@@ -1300,7 +1365,7 @@ def _make_rescore_fn(
        per-race split seeds R2 with the rebuilt features.
     5. Filters to the requested race scope (a single race or whole keibajo when
        ``keibajoCode`` / ``raceBango`` are set; all races otherwise).
-    6. Scores (NAR ensemble routing / JRA E-top2) and UPSERTs the predictions.
+    6. Scores (cell routing / JRA E-top2) and UPSERTs the predictions.
 
     Returns ``(rescore_fn, per_race_payloads_fn)``; the second fn re-splits the
     refreshed parquet by ``race_id`` so :func:`iter_predict_chunks` can embed the
@@ -1386,12 +1451,32 @@ def _scope_from_params(params: PredictParams) -> RaceScope:
     return RaceScope(keibajo_code=params.keibajo_code, race_bango=params.race_bango)
 
 
+def _expected_model_version_for_entries(
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+) -> str:
+    """Return the model_version current production routing should write.
+
+    A focused full run must not be skipped just because an older per-class/base
+    model already scored the same race. Completion is tied to the same
+    per-cell-first routing contract used by ``score_races``.
+    """
+    cell_router = load_cell_router()
+    if cell_router.has_routing(category):
+        routing = cell_router.routing_for(category)
+        variant = cell_router.resolve_variant(category, entries)
+        spec = routing.variants.get(variant)
+        if spec is not None:
+            return spec.model_version
+    return model_version_for(category)
+
+
 def _focused_full_prediction_complete(database_url: str, params: PredictParams) -> bool:
     """Return True when race *params* already has complete predictions in Neon.
 
-    Mirrors finish-position-cron/src/focused-full-completion.ts: complete when
-    some model_version has scored as many distinct horses (ketto_toroku_bango)
-    as race_entry_corner_features lists for the race. Best-effort: any error or
+    Complete only when the model_version selected by current per-cell-first
+    routing has scored as many distinct horses (ketto_toroku_bango) as
+    race_entry_corner_features lists for the race. Best-effort: any error or
     zero expected rows returns False so a genuine prediction still launches.
     """
     keibajo_code = params.keibajo_code
@@ -1411,40 +1496,70 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
             cursor = conn.cursor()
             cursor.execute(
                 """
+                select distinct
+                  ketto_toroku_bango,
+                  grade_code,
+                  track_code,
+                  kyori,
+                  kaisai_tsukihi,
+                  keibajo_code
+                from race_entry_corner_features
+                where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
+                  and keibajo_code = %s and race_bango = %s
+                """,
+                (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango),
+            )
+            expected_rows = cursor.fetchall()
+            expected_horses = {str(row[0]).strip() for row in expected_rows if row[0] is not None}
+            if not expected_horses:
+                return False
+            category = cast(Category, params.category)
+            entries = [
+                {
+                    "ketto_toroku_bango": row[0],
+                    "grade_code": row[1],
+                    "track_code": row[2],
+                    "kyori": row[3],
+                    "kaisai_tsukihi": row[4],
+                    "keibajo_code": row[5],
+                }
+                for row in expected_rows
+            ]
+            expected_model_version = _expected_model_version_for_entries(category, entries)
+            cursor.execute(
+                """
                 with expected as (
                   select distinct ketto_toroku_bango
                   from race_entry_corner_features
                   where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
                     and keibajo_code = %s and race_bango = %s
-                ),
-                expected_total as (select count(*)::int as expected_rows from expected),
-                model_counts as (
-                  select p.model_version, count(distinct p.ketto_toroku_bango)::int as actual_rows
-                  from race_finish_position_model_predictions p
-                  join expected e on e.ketto_toroku_bango = p.ketto_toroku_bango
-                  where p.source = %s and p.kaisai_nen = %s and p.kaisai_tsukihi = %s
-                    and p.keibajo_code = %s and p.race_bango = %s
-                  group by p.model_version
                 )
-                select
-                  expected_total.expected_rows,
-                  coalesce(
-                    bool_or(model_counts.actual_rows = expected_total.expected_rows), false
-                  ) as complete
-                from expected_total
-                left join model_counts on true
-                group by expected_total.expected_rows
+                select count(distinct p.ketto_toroku_bango)::int as actual_rows
+                from race_finish_position_model_predictions p
+                join expected e on e.ketto_toroku_bango = p.ketto_toroku_bango
+                where p.source = %s and p.kaisai_nen = %s and p.kaisai_tsukihi = %s
+                  and p.keibajo_code = %s and p.race_bango = %s
+                  and p.model_version = %s
                 """,
                 (
-                    source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-                    source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                    source,
+                    kaisai_nen,
+                    kaisai_tsukihi,
+                    keibajo_code,
+                    race_bango,
+                    source,
+                    kaisai_nen,
+                    kaisai_tsukihi,
+                    keibajo_code,
+                    race_bango,
+                    expected_model_version,
                 ),
             )
             row = cursor.fetchone()
             if row is None:
                 return False
-            expected_rows = int(row[0]) if row[0] is not None else 0
-            return expected_rows > 0 and bool(row[1])
+            actual_rows = int(row[0]) if row[0] is not None else 0
+            return actual_rows >= len(expected_horses)
         finally:
             conn.close()
     except Exception as exc:
@@ -1577,9 +1692,7 @@ def make_handler_class(
         parquet_payload_fn = staticmethod(_parquet_payload)
         per_race_parquet_payload_fn = staticmethod(_per_race_parquet_payload)
         rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
-        focused_full_completion_fn = (
-            staticmethod(_completion) if _completion is not None else None
-        )
+        focused_full_completion_fn = staticmethod(_completion) if _completion is not None else None
 
     return _BoundHandler
 

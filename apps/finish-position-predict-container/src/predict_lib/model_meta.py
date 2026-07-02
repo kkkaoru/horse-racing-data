@@ -23,6 +23,7 @@ E-top2 (iter22-jra-etop2, STAGED 2026-06-18):
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, Literal, get_args
@@ -83,6 +84,28 @@ FEATURE_COUNT_BY_CATEGORY: Final[dict[Category, int]] = _resolved_counts
 
 R2_KEY_PREFIX: Final[str] = "finish-position"
 MODEL_FILE_NAME: Final[str] = "model.json"
+
+_ENV_TRUE_TOKENS: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSE_TOKENS: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    """Read a boolean feature flag from the environment (instant-rollback seam).
+
+    Returns ``default`` when the variable is unset or holds an unrecognised
+    token; otherwise ``1/true/yes/on`` -> True and ``0/false/no/off`` -> False
+    (case-insensitive, whitespace-trimmed). Lets an operator flip a deployed
+    flag through the container / Worker env without a redeploy."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    token = raw.strip().lower()
+    if token in _ENV_TRUE_TOKENS:
+        return True
+    if token in _ENV_FALSE_TOKENS:
+        return False
+    return default
+
 
 # ---------------------------------------------------------------------------
 # E-top2 place-preserving override (iter22-jra-etop2, STAGED 2026-06-18)
@@ -281,3 +304,43 @@ def build_r2_nar_etop2_key(file_name: str) -> str:
     directory and must not be confused with the category-global XGB model path.
     """
     return f"{R2_KEY_PREFIX}/nar/{NAR_ETOP2_CB_MODEL_VERSION}/{file_name}"
+
+
+# ---------------------------------------------------------------------------
+# NAR Set-Transformer x ensemble rank-fusion blend (iter40, 2026-07-03)
+# ---------------------------------------------------------------------------
+# A 117-feature listwise Set Transformer (3 seeds, all-history 2006-2025) whose
+# within-race seed-rank-mean is fused 0.5/0.5 with the NAR production base
+# (iter12-nar-xgb-hpo-v8) within-race rank. The forward is numpy-only
+# (predict_lib.transformer_scorer) and bit-exact to MLX eager. Deploy gate
+# (walk-forward 3-fold, serve-exact ketto tie-break): top1 +0.680 [LB95 +0.518],
+# place2 +0.427 [+0.192], place3 +0.381 [+0.138] -> ADOPT. Mutually exclusive
+# with the NAR E-top2 override (the blend re-ranks the base output), so
+# NAR_ETOP2_ENABLED stays False while this is on.
+#
+# ENABLED reads the environment at import so an operator can force the blend OFF
+# (instant rollback to the pure iter12 ensemble) by setting
+# NAR_TRANSFORMER_BLEND_ENABLED=0 in the container / Worker env with no redeploy.
+# Default True = the blend is live.
+NAR_TRANSFORMER_BLEND_ENABLED: Final[bool] = _env_flag(
+    "NAR_TRANSFORMER_BLEND_ENABLED", default=True
+)
+
+# The blend artifact version baked at
+# models/finish-position/nar/iter40-nar-settransformer-blend-v1/ (norm.json +
+# weights_s{1,2,3}.npz). Written as the predictions ``model_version`` for blended
+# NAR rows; fallback rows keep MODEL_VERSION_BY_CATEGORY["nar"].
+NAR_TRANSFORMER_MODEL_VERSION: Final[str] = "iter40-nar-settransformer-blend-v1"
+
+# Fusion weight on the transformer seed-rank-mean (1 - w on the base rank).
+NAR_TRANSFORMER_BLEND_WEIGHT: Final[float] = 0.5
+
+
+def build_r2_nar_transformer_key(file_name: str) -> str:
+    """Build the R2 object key for a NAR transformer-blend artifact file.
+
+    Constructs ``finish-position/nar/{NAR_TRANSFORMER_MODEL_VERSION}/{file}``.
+    The artifact (norm.json + weights_s{1,2,3}.npz) lives under its own
+    ``model_version`` directory, mirroring the E-top2 companion-artifact key
+    builders, and is loaded from the baked ``MODELS_DIR`` at container startup."""
+    return f"{R2_KEY_PREFIX}/nar/{NAR_TRANSFORMER_MODEL_VERSION}/{file_name}"

@@ -144,6 +144,21 @@ def test_load_cell_router_real_config_routes_nar_mile_e_54_cell() -> None:
     )
     assert routing.variants[variant_name].feature_count == 10
     assert routing.variants[variant_name].architecture == "xgboost"
+    assert routing.variants[variant_name].feature_set_hash == (
+        "a957d8b4d2bbc7c1ab2a0b320a308b063cf3e4f407240eacbfb21e797a282055"
+    )
+    assert routing.variants[variant_name].feature_names == (
+        "jockey_keibajo_win_rate",
+        "damsire_avg_finish_at_track",
+        "odds_score",
+        "recent_win_count_5",
+        "tansho_odds",
+        "tansho_ninkijun",
+        "kaisai_month",
+        "same_distance_win_rate_rank_in_race",
+        "jockey_recent_win_rate_diff_from_race_avg",
+        "sim_odds_rank_correlation",
+    )
 
     matching_entry = {
         "grade_code": "E",
@@ -191,6 +206,39 @@ def test_load_cell_router_custom_path(tmp_path: Path) -> None:
     assert router.has_routing("ban-ei") is True
     assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
     assert router.resolve_variant("ban-ei", [{"grade_code": "A"}]) == "sim"
+
+
+def test_load_cell_router_parses_optional_variant_feature_contract(tmp_path: Path) -> None:
+    config = {
+        "nar": {
+            "default_variant": "sim",
+            "variants": {
+                "sim": {
+                    "model_version": "iter12-nar-xgb-hpo-v8",
+                    "feature_count": 192,
+                    "architecture": "xgboost",
+                },
+                "cell": {
+                    "model_version": "nar-cell-v1",
+                    "feature_count": 2,
+                    "architecture": "xgboost",
+                    "feature_set_hash": "hash-v1",
+                    "feature_names": ["f2", "f1"],
+                },
+            },
+            "rules": [
+                {
+                    "conditions": [{"dimension": "venue", "values": ["54"]}],
+                    "variant": "cell",
+                }
+            ],
+        }
+    }
+    config_path = tmp_path / "cell_routing.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    spec = load_cell_router(config_path).routing_for("nar").variants["cell"]
+    assert spec.feature_set_hash == "hash-v1"
+    assert spec.feature_names == ("f2", "f1")
 
 
 def test_build_base_model_r2_key() -> None:

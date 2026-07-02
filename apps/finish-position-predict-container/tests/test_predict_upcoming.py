@@ -17,6 +17,7 @@ import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import final, override
 from unittest.mock import patch
 
@@ -122,7 +123,7 @@ def testextract_race_class_code_jra_returns_none_when_missing() -> None:
 
 def testextract_race_class_code_jra_returns_none_for_empty_string() -> None:
     # PG returns the empty string for some legacy races; we collapse it to
-    # None so the per-class router falls back to iter14.
+    # None for legacy diagnostics.
     entries = [{"kyoso_joken_code": "  ", "umaban": 1}]
     assert extract_race_class_code("jra", entries) is None
 
@@ -504,14 +505,13 @@ def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
 
 
 # ---------------------------------------------------------------------------
-# NAR E-top2 per-class override wiring (iter23-nar-etop2)
+# NAR E-top2 historical helper (iter23-nar-etop2)
 # ---------------------------------------------------------------------------
 #
-# NAR production scores with XGBoost as the BASE and the CatBoost CB-2013 model
-# supplies the override signal (mirror image of the JRA path). These tests pin
-# the wiring of ``score_one_race_nar_etop2`` (the per-race override) and the
-# ``score_races`` branch that loads the CB override booster only for NAR when
-# NAR_ETOP2_ENABLED is True.
+# NAR production dispatch no longer uses this helper. These tests keep the
+# historical place-preserving helper behavior pinned while separate tests assert
+# that ``score_races`` ignores a synthetic NAR E-top2 flag and uses per-cell or
+# category-default direct scoring.
 
 
 @final
@@ -603,33 +603,23 @@ class _NoRoutingRouter:
         return False
 
 
-def test_score_races_loads_cb_override_booster_for_nar() -> None:
-    """score_races loads the CB override booster for NAR and routes via the override."""
+def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
+    """NAR production dispatch is per-cell first, then category default direct."""
     entries = _nar_entries()
     races = {"nar:20260620:30:02:11": entries}
     xgb = _ScoreByUmaban([0.9, 0.5, 0.1])
-    cb = _ScoreByUmaban([0.2, 0.8, 0.1])
-    loaded: list[str] = []
-
-    def _fake_load_cb(models_dir: Path) -> BoosterLike:
-        del models_dir
-        loaded.append("cb")
-        return cb
 
     with (
         patch("predict_upcoming._load_booster", return_value=xgb),
-        patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
-        patch("predict_upcoming._load_cb_nar_etop2_booster", side_effect=_fake_load_cb),
-        patch("predict_upcoming.NAR_ETOP2_ENABLED", True),
+        patch("predict_upcoming.NAR_ETOP2_ENABLED", True, create=True),
     ):
         scored = score_races(races, "nar", Path("/models"), ["feat"])
 
-    assert loaded == ["cb"], "the CB override booster must be loaded exactly once for NAR"
     rows = scored[0]
-    assert all(row[0] == NAR_ETOP2_MODEL_VERSION for row in rows)
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8" for row in rows)
     by_rank = {row[9]: row[7] for row in rows}
-    assert by_rank[1] == 2, "override must promote XGB#2 (umaban 2) to rank-1"
+    assert by_rank[1] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -649,10 +639,20 @@ def test_score_races_loads_cb_override_booster_for_nar() -> None:
 class _FakeVariantSpec:
     """Stand-in for ``cell_router.VariantSpec`` (model_version/feature_count/architecture)."""
 
-    def __init__(self, model_version: str, feature_count: int, architecture: str) -> None:
+    def __init__(
+        self,
+        model_version: str,
+        feature_count: int,
+        architecture: str,
+        *,
+        feature_names: tuple[str, ...] | None = None,
+        feature_set_hash: str | None = None,
+    ) -> None:
         self.model_version = model_version
         self.feature_count = feature_count
         self.architecture = architecture
+        self.feature_names = feature_names
+        self.feature_set_hash = feature_set_hash
 
 
 @final
@@ -746,7 +746,6 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     with (
         patch("predict_upcoming.load_cell_router", return_value=router),
         patch("predict_upcoming._load_booster", return_value=fallback),
-        patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
     ):
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
@@ -758,6 +757,61 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
     assert all(row[0] == "banei-base-v8" for row in rows)
+
+
+def test_score_races_rejects_cell_variant_feature_contract_mismatch(
+    tmp_path: Path,
+) -> None:
+    """Config feature_names must match the baked metadata contract exactly."""
+    _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "cell": _FakeVariantSpec(
+                "nar-cell-v1",
+                1,
+                "xgboost",
+                feature_names=("other_feat",),
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([0.9])),
+        patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
+        pytest.raises(ValueError, match=r"feature_names do not match metadata\.json"),
+    ):
+        score_races({"nar:20260620:54:01:01": _nar_entries()}, "nar", tmp_path, ["feat"])
+
+
+def test_score_races_rejects_cell_variant_feature_hash_mismatch(tmp_path: Path) -> None:
+    """Config feature_set_hash must match the baked metadata feature names."""
+    _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "cell": _FakeVariantSpec(
+                "nar-cell-v1",
+                1,
+                "xgboost",
+                feature_names=("feat",),
+                feature_set_hash="not-the-metadata-hash",
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([0.9])),
+        patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
+        pytest.raises(ValueError, match="feature_set_hash mismatch"),
+    ):
+        score_races({"nar:20260620:54:01:01": _nar_entries()}, "nar", tmp_path, ["feat"])
 
 
 def test_score_races_cell_variant_bypasses_nar_per_class_ensemble(tmp_path: Path) -> None:
@@ -782,14 +836,10 @@ def test_score_races_cell_variant_bypasses_nar_per_class_ensemble(tmp_path: Path
     with (
         patch("predict_upcoming.load_cell_router", return_value=router),
         patch("predict_upcoming._load_booster", return_value=fallback),
-        patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
-        patch("predict_upcoming.NAR_ETOP2_ENABLED", False),
-        patch("predict_upcoming.score_race_with_resolution") as score_ensemble,
     ):
         scored = score_races(races, "nar", tmp_path, ["feat"])
 
-    score_ensemble.assert_not_called()
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2
@@ -818,7 +868,6 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
     with (
         patch("predict_upcoming.load_cell_router", return_value=router),
         patch("predict_upcoming._load_booster", return_value=fallback),
-        patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
     ):
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
@@ -826,6 +875,29 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1, "the fallback booster must drive the ranking for the default variant"
+    assert all(row[0] == "banei-cb-v9-sim-2011" for row in rows)
+
+
+def test_score_races_nar_default_uses_category_model_without_per_class() -> None:
+    """NAR defaults score directly with the category model, not per-class routing."""
+    routing = _FakeRouting(
+        variants={"sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8", 1, "xgboost")},
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="sim")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+
+    races = {"nar:20260620:54:01:01": _nar_entries()}
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+    ):
+        scored = score_races(races, "nar", Path("/models"), ["feat"])
+
+    rows = scored[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 1
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8" for row in rows)
 
 
 def test_score_races_warns_when_resolved_non_default_variant_missing(
@@ -853,7 +925,6 @@ def test_score_races_warns_when_resolved_non_default_variant_missing(
     with (
         patch("predict_upcoming.load_cell_router", return_value=router),
         patch("predict_upcoming._load_booster", return_value=fallback),
-        patch("predict_upcoming.init_member_pool", return_value=object()),
         patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
     ):
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
@@ -863,6 +934,71 @@ def test_score_races_warns_when_resolved_non_default_variant_missing(
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
+
+
+@pytest.mark.parametrize(("actual_rows", "expected"), [(0, False), (2, True)])
+def test_focused_full_prediction_complete_checks_expected_cell_model_version(
+    monkeypatch: pytest.MonkeyPatch,
+    actual_rows: int,
+    expected: bool,
+) -> None:
+    """Existing rows for another model_version must not skip a routed cell run."""
+
+    @final
+    class _FocusedCursor:
+        def __init__(self) -> None:
+            self.executed_params: list[object] = []
+
+        def execute(self, query: str, params: object = None) -> None:
+            del query
+            self.executed_params.append(params)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                ("H1", "E", "20", 1400, "0702", "54"),
+                ("H2", "E", "20", 1400, "0702", "54"),
+            ]
+
+        def fetchone(self) -> tuple[int]:
+            return (actual_rows,)
+
+    @final
+    class _FocusedConnection:
+        def __init__(self, cursor: _FocusedCursor) -> None:
+            self._cursor = cursor
+            self.closed = False
+
+        def cursor(self) -> _FocusedCursor:
+            return self._cursor
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = _FocusedCursor()
+    connection = _FocusedConnection(cursor)
+
+    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
+        assert database_url == "postgresql://example"
+        assert connect_timeout > 0
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
+    params = PredictParams(
+        category="nar",
+        run_date="20260702",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="54",
+        race_bango="03",
+    )
+
+    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
+    assert callable(completion_fn)
+    assert completion_fn("postgresql://example", params) is expected
+    final_params = cursor.executed_params[-1]
+    assert isinstance(final_params, tuple)
+    assert final_params[-1] == "nar-xgb-cell-a957d8b4-v1"
+    assert connection.closed is True
 
 
 # ---------------------------------------------------------------------------
