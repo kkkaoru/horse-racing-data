@@ -4,13 +4,39 @@
 // container alive without any keepalive loop. sleepAfter resets automatically
 // per CF docs while the HTTP request is in-flight. container-class.ts is
 // excluded from the coverage gate (see vitest.config.ts).
+//
+// SLEEP_AFTER is "30m" (was "30s") because of the focused-full fire-and-forget
+// fix: for a focused per-race full request (mode=full with both
+// keibajoCode/raceBango set), the container's /predict endpoint now returns
+// almost instantly after launching the real DuckDB+layer+scoring+Neon
+// pipeline on a background thread (see queue-consumer.ts's
+// FOCUSED_FULL_ACCEPTED_STATUS handling), rather than holding the response
+// open for the whole 10-20+ minute run. That means the in-flight
+// containerFetch no longer keeps sleepAfter reset for the pipeline's full
+// duration -- the idle timer starts counting down from the moment the fast
+// response is sent, not from when the background pipeline actually finishes.
+// A short sleepAfter would risk the container being SIGTERM'd (default
+// onActivityExpired behavior, not overridden here) mid-pipeline, killing the
+// in-flight background thread before it ever reaches Neon.
 
 import { Container } from "@cloudflare/containers";
 import { proxyParquetFromNdjson } from "./container-ndjson-proxy";
 import type { Env } from "./types";
 
 const DEFAULT_PORT = 8080;
-const SLEEP_AFTER = "30s";
+// 30m matches the same total retry-budget reasoning as
+// FOCUSED_FULL_RETRY_DELAY_SECONDS * max_retries in queue-consumer.ts /
+// wrangler.jsonc (2.5min x 12 retries = 30min), so the container reliably
+// outlives a single worst-case background pipeline run even if, for some
+// reason, no redelivery arrives in time to reset the timer via a new request.
+// This value applies to ALL request types on this container class (day-batch,
+// rescore, focused-full): day-batch/rescore already hold their own connection
+// open continuously during their (currently unchanged, still-blocking)
+// execution, so this mostly extends their post-completion idle tail -- an
+// acceptable, deliberate cost/safety tradeoff for this fix. sleepAfter is not
+// conditional per-request-type; that's not supported by the Container base
+// class.
+const SLEEP_AFTER = "30m";
 const MODELS_DIR_DEFAULT = "/models";
 const EMPTY_ENV_VALUE = "";
 const ADMIN_STOP_PATH = "/__admin/stop-container";

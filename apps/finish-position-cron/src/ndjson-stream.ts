@@ -26,7 +26,11 @@ export interface PerRaceParquetEntry {
   parquetKey: string;
 }
 
-export type PredictResultStatus = "success" | "error";
+// "accepted" is the focused-full fire-and-forget fast-path status: the
+// container launched the real pipeline on a background thread and returned
+// immediately instead of blocking until it finishes. See queue-consumer.ts's
+// FOCUSED_FULL_ACCEPTED_STATUS handling for how it is polled to completion.
+export type PredictResultStatus = "success" | "error" | "accepted";
 
 export interface PredictResultLine extends NdjsonLine {
   type: "result";

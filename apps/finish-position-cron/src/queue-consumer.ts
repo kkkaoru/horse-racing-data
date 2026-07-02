@@ -26,6 +26,25 @@ const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
 const RESCORE_MODE = "rescore";
 const RESULT_SUCCESS_STATUS = "success";
+// The Container's focused-full fire-and-forget path (mode=full with both
+// keibajoCode/raceBango set) returns this instead of blocking until the real
+// DuckDB+layer+scoring+Neon pipeline finishes, so the queue consumer can ack
+// the invocation well under the platform's Worker/Queue-consumer duration
+// limit. See FOCUSED_FULL_RETRY_DELAY_SECONDS below for how completion is
+// polled afterward.
+const FOCUSED_FULL_ACCEPTED_STATUS = "accepted";
+// Retry budget reasoning: the Python container's focused-full fire-and-forget
+// pipeline (DuckDB base build + 10-16 sequential v7 layer scripts +
+// CatBoost/XGBoost scoring + Neon UPSERT) has been observed taking 10-20+
+// minutes end-to-end (NAR ~13-17 min extrapolated from partial timing; JRA has
+// ~1.6x as many layers so plausibly up to ~25-27 min).
+// FOCUSED_FULL_RETRY_DELAY_SECONDS (2.5 min) x max_retries (12, set in
+// wrangler.jsonc) gives a 30-minute total retry budget per message --
+// comfortably above the worst-case observed/extrapolated single-run duration,
+// while each individual redelivery is a cheap fast "accepted" check (not a
+// re-run) once the in-container single-slot guard sees the pipeline already
+// in flight for that category.
+const FOCUSED_FULL_RETRY_DELAY_SECONDS = 150;
 const JRA_CATEGORY = "jra";
 const NAR_CATEGORY = "nar";
 const BAN_EI_CATEGORY = "ban-ei";
@@ -291,6 +310,16 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         logPredictProgress(message.body, line);
       },
     });
+    if (isFocusedSkipDedup && result.status === FOCUSED_FULL_ACCEPTED_STATUS) {
+      console.log(
+        `Focused full accepted, still in progress category=${category} runYmd=${runYmd}${raceScopeSuffix(
+          keibajoCode,
+          raceBango,
+        )} -- will re-check on redelivery`,
+      );
+      message.retry({ delaySeconds: FOCUSED_FULL_RETRY_DELAY_SECONDS });
+      return;
+    }
     assertPredictResultSucceeded(result);
     if (shouldCompleteCategoryRun) {
       await completeRun({

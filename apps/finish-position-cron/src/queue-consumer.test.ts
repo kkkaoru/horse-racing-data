@@ -947,6 +947,77 @@ test("retries focused skipDedup full messages with result status error without c
   errorSpy.mockRestore();
 });
 
+test("retries focused skipDedup full messages with a fixed delay when result status is accepted", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "accepted",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(completeRunMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
+test("does not treat a category-level full message with status accepted as focused-full acceptance", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "accepted",
+  });
+  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+  expect(completeRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error", racesPredicted: 0 }),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).toHaveBeenCalledWith();
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("does not treat a per-race rescore message with status accepted as focused-full acceptance", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "jra",
+    status: "accepted",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).toHaveBeenCalledWith();
+  expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
 test("does not treat per-race rescore as skipDedup even if skipDedup is set", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await handleQueue(

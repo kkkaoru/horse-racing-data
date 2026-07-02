@@ -131,6 +131,21 @@
         // most 3 concurrent category DOs run — well under max_instances: 10
         // above — while letting a hung category stop blocking the others.
         "max_concurrency": 3,
+        // max_retries: 12 replaces the implicit Cloudflare platform default of
+        // 3 retries. Focused per-race full messages (mode=full with both
+        // keibajoCode/raceBango) now get a fast "accepted" result while the
+        // container's real pipeline (10-20+ min) keeps running in a
+        // background thread; the queue consumer retries with a 150s delay
+        // (FOCUSED_FULL_RETRY_DELAY_SECONDS in src/queue-consumer.ts) purely
+        // to poll for completion via ackIfFocusedFullAlreadyComplete, not to
+        // re-run the pipeline. 150s x 12 retries = a 30-minute total retry
+        // budget per message, comfortably above the worst-case
+        // observed/extrapolated single-run duration. Other (non-"accepted"-
+        // status) error retries on this queue also get more attempts as a
+        // side effect of this change, which is acceptable since
+        // dead_letter_queue below is still the eventual backstop for genuine
+        // persistent failures.
+        "max_retries": 12,
         "dead_letter_queue": "finish-position-predict-dlq",
       },
     ],

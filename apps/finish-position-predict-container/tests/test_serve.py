@@ -23,21 +23,25 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from collections.abc import Callable
 
 import pytest
 
 from predict_lib.serve import (
+    FOCUSED_FULL_ACCEPTED_STATUS,
     CacheMissError,
     PredictCategoryFn,
     PredictParams,
     R2Config,
     SleepFn,
     TimeFn,
+    build_focused_full_race_key,
     build_progress_line,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     build_result_line,
+    is_focused_full_request,
     iter_predict_chunks,
     mask_error_message,
     parse_predict_params,
@@ -1599,3 +1603,373 @@ def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None
     assert last["type"] == "result"
     assert last["status"] == "error"
     assert "RuntimeError" in last["error"]
+
+
+# ---------------------------------------------------------------------------
+# is_focused_full_request
+# ---------------------------------------------------------------------------
+
+
+def test_is_focused_full_request_true_for_full_with_both_scope_fields() -> None:
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="05",
+        race_bango="09",
+    )
+    assert is_focused_full_request(params) is True
+
+
+def test_is_focused_full_request_false_for_rescore_with_both_scope_fields() -> None:
+    """mode=rescore is never treated as a focused-full fire-and-forget request,
+    even when both race-scope fields are present."""
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="09",
+    )
+    assert is_focused_full_request(params) is False
+
+
+def test_is_focused_full_request_false_for_full_with_no_scope() -> None:
+    """A day/category batch request (mode=full, no scope) is not focused-full."""
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    assert is_focused_full_request(params) is False
+
+
+def test_is_focused_full_request_false_for_full_with_only_keibajo_code() -> None:
+    params = PredictParams(
+        category="jra", run_date="20260619", days_ahead=0, mode="full", keibajo_code="05"
+    )
+    assert is_focused_full_request(params) is False
+
+
+def test_is_focused_full_request_false_for_full_with_only_race_bango() -> None:
+    params = PredictParams(
+        category="jra", run_date="20260619", days_ahead=0, mode="full", race_bango="09"
+    )
+    assert is_focused_full_request(params) is False
+
+
+# ---------------------------------------------------------------------------
+# build_focused_full_race_key
+# ---------------------------------------------------------------------------
+
+
+def testbuild_focused_full_race_key_format() -> None:
+    params = PredictParams(
+        category="nar",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="30",
+        race_bango="11",
+    )
+    assert build_focused_full_race_key(params) == "nar:20260619:30:11"
+
+
+def testbuild_focused_full_race_key_differs_per_race() -> None:
+    """Two different races in the same category/date must yield distinct keys
+    (identity token only -- the guard slot itself is single-process-wide)."""
+    base = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="05",
+        race_bango="01",
+    )
+    other = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="05",
+        race_bango="02",
+    )
+    assert build_focused_full_race_key(base) != build_focused_full_race_key(other)
+
+
+# ---------------------------------------------------------------------------
+# iter_predict_chunks — focused per-race full fire-and-forget dispatch
+# ---------------------------------------------------------------------------
+
+
+def _make_focused_full_params(keibajo_code: str = "05", race_bango: str = "09") -> PredictParams:
+    return PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+
+
+def test_iter_predict_chunks_focused_full_returns_accepted_without_blocking() -> None:
+    """A focused per-race full request must yield an 'accepted' result quickly,
+    launching predict_fn in the background rather than waiting for it to finish.
+    """
+    invoked = threading.Event()
+
+    def _slow_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        # A real pipeline would take minutes; this must not block the generator.
+        invoked.set()
+        return 1
+
+    params = _make_focused_full_params()
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _slow_predict,
+            focused_full_claim_fn=lambda _key: True,
+            focused_full_release_fn=lambda _key: None,
+            sleep_fn=_noop_sleep,
+        )
+    )
+
+    # Only the initial "starting"/"predict" pre-flight progress lines plus the
+    # final result may appear -- never the keepalive poll/join loop's repeated
+    # "predict" lines (which would mean the generator blocked on the thread).
+    assert len(chunks) <= 3, (
+        f"focused-full dispatch must return almost immediately, got {len(chunks)} chunks"
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["type"] == "result"
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
+    assert last["category"] == "jra"
+    assert last["runDate"] == "20260619"
+    # The background thread was actually launched (predict_fn got invoked).
+    assert invoked.wait(timeout=2.0), "predict_fn was never invoked in the background"
+
+
+def test_iter_predict_chunks_focused_full_claim_fails_skips_launch() -> None:
+    """When the single-process guard rejects the claim, predict_fn must never be
+    invoked -- yet the response must still report status='accepted' (the caller
+    relies on the in-flight pipeline's own eventual Neon write)."""
+    call_count = [0]
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        call_count[0] += 1
+        return 1
+
+    params = _make_focused_full_params(keibajo_code="83", race_bango="01")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_claim_fn=lambda _key: False,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
+    assert call_count[0] == 0, "predict_fn must not be launched when the claim fails"
+
+
+def test_iter_predict_chunks_focused_full_release_called_once_with_race_key() -> None:
+    """After the background pipeline completes, the release fn must be called
+    exactly once with the race key that was passed to the claim fn."""
+    release_calls: list[str] = []
+    released = threading.Event()
+
+    def _claim(_key: str) -> bool:
+        return True
+
+    def _release(key: str) -> None:
+        release_calls.append(key)
+        released.set()
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        return 9
+
+    params = _make_focused_full_params(keibajo_code="30", race_bango="02")
+    expected_key = build_focused_full_race_key(params)
+
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_claim_fn=_claim,
+            focused_full_release_fn=_release,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+
+    assert released.wait(timeout=2.0), "release_fn was never called"
+    assert release_calls == [expected_key]
+
+
+def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error() -> None:
+    """The release fn must run even when the launched predict_fn raises -- the
+    slot must not be left permanently claimed after a failed background run."""
+    released = threading.Event()
+
+    def _release(key: str) -> None:
+        released.set()
+
+    def _predict_raises(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        raise RuntimeError("background pipeline failed")
+
+    params = _make_focused_full_params(keibajo_code="44", race_bango="04")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict_raises,
+            focused_full_claim_fn=lambda _key: True,
+            focused_full_release_fn=_release,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    # The HTTP response itself is unaffected by the later background failure --
+    # it already returned "accepted" before predict_fn ran.
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert released.wait(timeout=2.0), "release_fn must run even after predict_fn raises"
+
+
+def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -> None:
+    """End-to-end exercise of the REAL module-level single-process guard (no
+    focused_full_claim_fn / focused_full_release_fn injected -- i.e. the
+    default ``_claim_focused_full_slot`` / ``_release_focused_full_slot``):
+
+    1. A focused-full request for race A launches its pipeline in the
+       background (predict_fn actually runs) -- the claim succeeds.
+    2. While race A's pipeline is still in flight, a focused-full request for
+       a DIFFERENT race B in the same category is rejected by the guard --
+       predict_fn for B is never invoked -- exercising the "already claimed"
+       branch through the public API only (no private-module access).
+    3. Once race A's pipeline finishes and releases the slot, a follow-up
+       request (race C) can claim it again -- confirming the guard neither
+       wedges permanently nor leaks state for later tests.
+
+    This single test is intentionally self-contained (it both claims and
+    fully drains the shared process-wide slot before returning) so it has no
+    ordering dependency on any other test in this module.
+    """
+    a_started = threading.Event()
+    a_release = threading.Event()
+    b_called = threading.Event()
+    c_called = threading.Event()
+
+    def _predict_a(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        a_started.set()
+        a_release.wait(timeout=5.0)
+        return 1
+
+    def _predict_b(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        b_called.set()
+        return 2
+
+    def _predict_c(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        c_called.set()
+        return 3
+
+    params_a = _make_focused_full_params(keibajo_code="05", race_bango="01")
+    params_b = _make_focused_full_params(keibajo_code="05", race_bango="02")
+    params_c = _make_focused_full_params(keibajo_code="05", race_bango="03")
+
+    chunks_a = list(iter_predict_chunks(params_a, _predict_a, sleep_fn=_noop_sleep))
+    assert json.loads(chunks_a[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+
+    chunks_b = list(iter_predict_chunks(params_b, _predict_b, sleep_fn=_noop_sleep))
+    assert json.loads(chunks_b[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert not b_called.wait(timeout=0.2), (
+        "race B predict_fn must not run while race A's pipeline is still in flight"
+    )
+
+    # Let race A finish, which releases the slot in its background thread.
+    a_release.set()
+
+    # Poll (via the public API only) until the slot frees up again: retry
+    # launching race C until its predict_fn actually fires, bounded by a
+    # generous deadline so a real bug fails the test instead of hanging.
+    deadline = time.monotonic() + 5.0
+    launched = False
+    while time.monotonic() < deadline and not launched:
+        list(iter_predict_chunks(params_c, _predict_c, sleep_fn=_noop_sleep))
+        launched = c_called.wait(timeout=0.1)
+    assert launched, "race C was never able to claim the slot after race A released it"
+
+
+def test_iter_predict_chunks_focused_full_does_not_affect_rescore_mode() -> None:
+    """mode=rescore with race scope must keep the original blocking behaviour
+    (never routed through the focused-full fire-and-forget branch)."""
+    params = PredictParams(
+        category="nar",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="30",
+        race_bango="11",
+    )
+    chunks = list(
+        iter_predict_chunks(
+            params, _mock_predict_ok, rescore_fn=_mock_rescore_ok, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 7
+
+
+def test_iter_predict_chunks_focused_full_does_not_affect_batch_full_mode() -> None:
+    """mode=full without race scope (day/category batch) must keep the original
+    blocking behaviour (never routed through the focused-full branch)."""
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+    chunks = list(iter_predict_chunks(params, _mock_predict_ok, sleep_fn=_noop_sleep))
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert last["racesPredicted"] == 42
