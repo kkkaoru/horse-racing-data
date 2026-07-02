@@ -119,14 +119,15 @@ E-top2 は「XGB の 1 着予測が CatBoost の 2 着予測と一致するレ�
 
 ### 2.4 NAR per-class ensemble routing（本番で active）
 
-NAR は §2 table の `iter12-nar-xgb-hpo-v8`（category-global base）を全レースに単一適用しているのではなく、レースの `nar_subclass`（DuckDB base build が `kyoso_joken_meisho` から regex で導出）に応じて class ごとに異なる ensemble へ routing する。E-top2 とは独立で、E-top2 が無効（`NAR_ETOP2_ENABLED=False`）である現在、NAR の本番 serve path は必ずこの per-class routing を通る（`predict_upcoming.py::score_races` の dispatch は JRA E-top2 → NAR E-top2 → per-class の順で、両 E-top2 が off のため NAR は per-class 分岐に落ちる）。
+NAR は §2 table の `iter12-nar-xgb-hpo-v8`（category-global base）を全レースに単一適用しているのではなく、レースの `nar_subclass`（DuckDB base build が `kyoso_joken_meisho` から regex で導出）に応じて class ごとに異なる ensemble へ routing する。E-top2 とは独立で、E-top2 が無効（`NAR_ETOP2_ENABLED=False`）である現在、non-default の `cell_routing.json` が一致しない通常の NAR serve path はこの per-class routing を通る。`cell_routing.json` の non-default variant が race に一致した場合は、その cell variant が per-class ensemble より優先され、variant model で直接 scoring する。
 
 配線は Container 内の以下：
 
 - `src/predict_lib/per_class.py` の `PER_CLASS_MODEL_VERSIONS`（registry。何が本番で走るかの single source of truth）
 - `src/predict_lib/ensemble_routing.py`（起動時の member pool 構築 `init_member_pool` + レース単位 rank-blend scoring `score_race_with_resolution` + fallback）
 - `src/predict_lib/booster_pool.py`（architecture-aware な member loader）
-- `src/predict_upcoming.py::_score_one_race`（`resolve_per_class_resolution` → `score_race_with_resolution`）
+- `src/predict_upcoming.py::score_races`（`cell_routing.json` の non-default variant を先に解決し、該当しない場合だけ E-top2 / per-class path へ進む）
+- `src/predict_upcoming.py::_score_one_race`（通常 NAR path: `resolve_per_class_resolution` → `score_race_with_resolution`）
 
 各 NAR class が実際に serve する model_version と blend member（`ensemble_type=rank_blend`、weight は manifest 由来）は以下。member の architecture は model_version 内の token（`-xgb-` / `-cb-` / `-lgb-`／`-lambdarank-`）で dispatch される。baseline member（`iter12-nar-xgb-hpo-v8`、192-feat XGBoost）を先に scoring し、その raw score を `iter12_score` として注入した上で residual member（≈174-feat の chain model）を scoring する two-pass 構成。
 
@@ -144,6 +145,8 @@ NAR は §2 table の `iter12-nar-xgb-hpo-v8`（category-global base）を全レ
 - 本番で書き込まれる model_version は上表の serve 列に等しい。これが 2026-07-02 に Neon で観測された 7 種（`iter30-nar-cb-ensemble-{NEW,MUKATSU,A,OP,other}-v8` の 5 種 ＋ `iter36-nar-lgb-ensemble-C-v8` ＋ `iter12-nar-xgb-hpo-v8`）の内訳であり、うち `iter12-nar-xgb-hpo-v8` は class B の single-model path と ensemble fallback（下記）の両方から出る。
 
 **Fallback 設計（production-safety）**: `score_race_with_resolution` は per-class ensemble path で member 欠落（`member-missing`）／必要列不足（`member-column-gap`）／member scoring 例外（`score-error`）／blend 例外／shape 不一致のいずれかが起きると、category-global fallback booster（`iter12-nar-xgb-hpo-v8`）で単一 scoring し直し、書き込む `model_version` も `iter12-nar-xgb-hpo-v8` に固定する（`fallback_reason` を stderr に 1 行 log 出力）。per-class artifact の corruption が当日の予測全体を止めない設計である。加えて起動時、CatBoost member の native 列順が metadata と食い違う場合はその member を `init_member_pool` が drop する（`member-order-mismatch`、照合は `catboost_model_feature_names`）。
+
+**Cell routing override**: NAR の `dirt / mile / E / summer / venue 54` は `cell_routing.json` の non-default variant `cell-a957d8b4-nar-xgb-cell-a957d8b4-v1-56559522` に routing され、`nar-xgb-cell-a957d8b4-v1`（XGBoost, 10 features）で直接 scoring する。この path では per-class ensemble を fallback 入力として使わず、Neon へ書き込む `model_version` も `nar-xgb-cell-a957d8b4-v1` になる。該当しない NAR race は従来通り per-class / base fallback path を使う。
 
 **deploy 経緯と gate 記録**（記録は存在する）:
 
@@ -768,6 +771,16 @@ flowchart TB
 
 Ban-ei では `grade_code == "E"` のレースを `base` variant（v8 window2011）へルーティングし、それ以外は `default_variant = sim`（v9-sim）を用いる。
 
+NAR では `dirt / mile / E / summer / venue 54` の cell を `nar-xgb-cell-a957d8b4-v1` へルーティングする。これは `feature_set_hash = a957d8b4d2bbc7c1ab2a0b320a308b063cf3e4f407240eacbfb21e797a282055`、`architecture = xgboost`、`feature_count = 10` の focused-feature model で、artifact は `apps/finish-position-predict-container/models/finish-position/nar/nar-xgb-cell-a957d8b4-v1/` に置く。`model_meta.json` の NAR default（`iter12-nar-xgb-hpo-v8`, 192 features）は変更せず、該当 cell だけ `cell_routing.json` で切り替える。
+
+この NAR cell は baseline `d79657af0d78c116bf4e8458646616ee8501d78a86db291be76874cedcd5223d` に対し、top1 +0.215983pp、place2 +0.215983pp、place3 +0.431965pp、place4 +1.079914pp、place5 +0.431965pp、place6 +1.295896pp、top3_box +0.215983pp と全 gated metrics が改善したため、§7.3 / §8.12 の finish-position LB95 例外で採用する。`cell_training_evaluations.metric_payload` には `model_version = nar-xgb-cell-a957d8b4-v1` / `architecture = xgboost` / `method = focus-features-xgb` を保持し、production routing 生成時は `--model-artifacts-root` で実 artifact の存在と feature count を検証する。
+
+本番反映前の最短検証は次の 3 点である。
+
+1. `build_cell_models.py --prediction-target finish_position --category nar --baseline-hash d79657af0d78c116bf4e8458646616ee8501d78a86db291be76874cedcd5223d --model-artifacts-root apps/finish-position-predict-container/models/finish-position` が `selected_cells=1 variants=1` を出す。
+2. `load_cell_router()` が `grade_code=E, keibajo_code=54, kyori=1400, kaisai_tsukihi=0702, track_code=20` を `cell-a957d8b4-nar-xgb-cell-a957d8b4-v1-56559522` に解決する。
+3. `models/finish-position/nar/nar-xgb-cell-a957d8b4-v1/metadata.json.feature_names` が 10 件で、`model.json` が同 directory に存在する。
+
 本番 `cell_routing.json` の非 default variant は、必ず実在する model artifact を指す。`model_version` は `apps/finish-position-predict-container/models/finish-position/{category}/{model_version}/` 配下の `model.json` / `metadata.json` と対応し、`metadata.json.feature_names` の件数は routing variant の `feature_count` と一致していなければならない。`build_cell_models.py` はデフォルトで `metric_payload.model_version` と `metric_payload.architecture` を持たない finish-position 候補を拒否する。旧評価行を local で確認する場合だけ `--allow-synthetic-model-version` を使い、本番出力前は `--model-artifacts-root apps/finish-position-predict-container/models/finish-position` で artifact 存在も検証する。
 
 ---
@@ -792,6 +805,7 @@ flowchart TB
     G2{"place2 / place3 の<br/>うち 1 つ以上が positive?"}
     G3{"いずれの primary も<br/>回帰 > -0.05pp なし?"}
     DELTA{"改善 delta >= +0.08pp?"}
+    LB{"LB95 > 0<br/>または finish-position の<br/>全 gated metrics が改善?"}
     ADOPT["ADOPT"]
     REJECT["REJECT"]
 
@@ -803,10 +817,12 @@ flowchart TB
     G3 -->|"no（回帰あり）"| REJECT
     G3 -->|"yes"| DELTA
     DELTA -->|"no"| REJECT
-    DELTA -->|"yes"| ADOPT
+    DELTA -->|"yes"| LB
+    LB -->|"no"| REJECT
+    LB -->|"yes"| ADOPT
 ```
 
-- **gate 条件**: `{top1, place2, place3}` のうち **2 つ以上が positive**、かつ `{place2, place3}` のうち **1 つ以上が positive**、かつ **回帰が -0.05pp を超えない**こと。
+- **gate 条件**: `{top1, place2, place3}` のうち **2 つ以上が positive**、かつ `{place2, place3}` のうち **1 つ以上が positive**、かつ **回帰が -0.05pp を超えない**こと。finish-position cell routing ではこれに加えて LB95 > 0、または全 gated metrics（top1〜place6 / top3_box）の +0.08pp 以上改善が必要である。running-style は §4.5 / §8.12 の target-specific gate を使う。
 - **有意改善の閾値**: delta **>= +0.08pp** を実効果ありとみなす。
 - per-class 評価で一部 class が改善・他 class が悪化する場合は、global reject せず serve 時の class routing で「効く class だけ」新 variant を適用してよい（class-conditional adoption）。
 
@@ -964,7 +980,7 @@ odds / jockey / pedigree / running_style / corner / speed / similar_race / weath
 2. **鮮度**: `evaluated_at` が 14 日以内（`DEFAULT_FRESHNESS_DAYS`）。
 3. **多指標改善（着順）**: primary `{top1, place2, place3}` のうち **>= 2 個**が **+0.08pp（0.0008）** 以上改善し、うち **>= 1 個が place2 / place3**（`check_multi_metric_gate`）。
 4. **多指標改善（脚質）**: `top1_accuracy = accuracy` の改善を必須とし、さらに `place2_accuracy = top2_accuracy` または `place3_accuracy = macro_f1` のどちらかも改善した cell のみ採用する。
-5. **no-regression**: 着順は 8 指標すべて、脚質は accuracy / top2_accuracy / macro_f1 が **-0.05pp（-0.0005）** を割り込まない。
+5. **no-regression**: 着順は 7 gated metrics（top1〜place6 / top3_box）すべて、脚質は accuracy / top2_accuracy / macro_f1 が **-0.05pp（-0.0005）** を割り込まない。
 6. **bootstrap / all-metric sweep**: primary metric の bootstrap LB95 が **> 0.0**（2000 resamples、`DEFAULT_N_BOOT`）。ただし finish-position では、全 gated metrics が +0.08pp 以上改善している cell は LB95 が 0 を跨いでも採用可能にする。例: NAR `dirt / mile / E / summer / venue 54` は `a957d8b4...` が baseline `d79657af...` に対して top1 +0.215983pp、place2 +0.215983pp、place3 +0.431965pp、place4 +1.079914pp、place5 +0.431965pp、place6 +1.295896pp、top3_box +0.215983pp と全 gated metrics が実効果閾値以上のため、評価上は採用対象にできる。脚質ではこの LB95 例外を使わない。
 7. **baseline 存在**: 比較対象 baseline cell が存在すること。
 

@@ -133,6 +133,34 @@ def test_load_cell_router_real_config_new_format() -> None:
     assert condition.values == frozenset({"E"})
 
 
+def test_load_cell_router_real_config_routes_nar_mile_e_54_cell() -> None:
+    router = load_cell_router()
+    assert router.has_routing("nar") is True
+    routing = router.routing_for("nar")
+    variant_name = next(
+        name
+        for name, spec in routing.variants.items()
+        if spec.model_version == "nar-xgb-cell-a957d8b4-v1"
+    )
+    assert routing.variants[variant_name].feature_count == 10
+    assert routing.variants[variant_name].architecture == "xgboost"
+
+    matching_entry = {
+        "grade_code": "E",
+        "keibajo_code": "54",
+        "kyori": 1400,
+        "kaisai_tsukihi": "0702",
+        "track_code": "20",
+    }
+    assert router.resolve_variant("nar", [matching_entry]) == variant_name
+    assert router.resolve_variant(
+        "nar", [{**matching_entry, "grade_code": "S"}]
+    ) == "sim"
+    assert router.resolve_variant(
+        "nar", [{**matching_entry, "kaisai_tsukihi": "0902"}]
+    ) == "sim"
+
+
 def test_load_cell_router_missing_file_returns_empty_router(tmp_path: Path) -> None:
     missing = tmp_path / "does_not_exist.json"
     router = load_cell_router(missing)

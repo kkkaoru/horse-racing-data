@@ -540,6 +540,7 @@ class VariantModel:
     booster: BoosterLike
     feature_names: Sequence[str]
     architecture: Architecture
+    model_version: str
 
 
 def score_races(
@@ -577,7 +578,10 @@ def score_races(
             fnames = list(metadata["feature_names"])
             assert_feature_count(fnames, vspec.feature_count)
             variant_pool[vname] = VariantModel(
-                booster=booster, feature_names=fnames, architecture=arch
+                booster=booster,
+                feature_names=fnames,
+                architecture=arch,
+                model_version=vspec.model_version,
             )
             print(
                 f"[cell-routing] loaded variant={vname} category={category} "
@@ -595,6 +599,7 @@ def score_races(
         effective_booster = fallback_booster
         effective_feature_names = feature_names
         effective_architecture = architecture_for(category)
+        cell_variant_model: VariantModel | None = None
         if variant_pool:
             variant = cell_router.resolve_variant(category, entries)
             if variant in variant_pool:
@@ -602,6 +607,7 @@ def score_races(
                 effective_booster = vm.booster
                 effective_feature_names = vm.feature_names
                 effective_architecture = vm.architecture
+                cell_variant_model = vm
                 print(
                     f"[cell-routing] race={race_id} category={category} -> {variant}",
                     file=sys.stderr,
@@ -612,7 +618,17 @@ def score_races(
                     f"resolved missing variant={variant}; using default",
                     file=sys.stderr,
                 )
-        if xgb_etop2_booster is not None:
+        if cell_variant_model is not None:
+            rows = _score_one_race_direct(
+                effective_booster,
+                race_id,
+                category,
+                entries,
+                effective_feature_names,
+                effective_architecture,
+                cell_variant_model.model_version,
+            )
+        elif xgb_etop2_booster is not None:
             rows = _score_one_race_etop2(
                 effective_booster,
                 xgb_etop2_booster,
@@ -642,6 +658,23 @@ def score_races(
             )
         scored.append(rows)
     return scored
+
+
+def _score_one_race_direct(
+    booster: BoosterLike,
+    race_id: str,
+    category: Category,
+    entries: Sequence[Mapping[str, object]],
+    feature_names: Sequence[str],
+    architecture: Architecture,
+    model_version: str,
+) -> list[list[object]]:
+    matrix = build_feature_matrix(entries, feature_names, architecture)
+    scores = score_matrix(booster, matrix)
+    ranked = rank_race_entries(entries, scores)
+    return build_prediction_rows(
+        race_id, category, ranked, model_version, _representative_entry(entries)
+    )
 
 
 def _flush_scored(

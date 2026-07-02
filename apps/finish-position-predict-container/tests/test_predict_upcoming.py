@@ -32,7 +32,6 @@ from predict_lib.model_meta import (
     NAR_ETOP2_MODEL_VERSION,
     Architecture,
     Category,
-    model_version_for,
 )
 from predict_lib.rescore import RaceScope
 from predict_lib.scorer import BoosterLike
@@ -595,6 +594,15 @@ def test_score_one_race_nar_etop2_no_override_for_reject_class() -> None:
     assert by_rank[3] == 3
 
 
+@final
+class _NoRoutingRouter:
+    """Cell-router stub for tests focused on non-routing score paths."""
+
+    def has_routing(self, category: str) -> bool:
+        del category
+        return False
+
+
 def test_score_races_loads_cb_override_booster_for_nar() -> None:
     """score_races loads the CB override booster for NAR and routes via the override."""
     entries = _nar_entries()
@@ -611,6 +619,7 @@ def test_score_races_loads_cb_override_booster_for_nar() -> None:
     with (
         patch("predict_upcoming._load_booster", return_value=xgb),
         patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming.load_cell_router", return_value=_NoRoutingRouter()),
         patch("predict_upcoming._load_cb_nar_etop2_booster", side_effect=_fake_load_cb),
         patch("predict_upcoming.NAR_ETOP2_ENABLED", True),
     ):
@@ -696,10 +705,16 @@ def _write_variant_metadata(
 def test_variant_model_holds_booster_and_feature_contract() -> None:
     """VariantModel is a frozen carrier for the booster + feature order + arch."""
     booster = _ScoreByUmaban([0.1])
-    vm = VariantModel(booster=booster, feature_names=["a", "b"], architecture="catboost")
+    vm = VariantModel(
+        booster=booster,
+        feature_names=["a", "b"],
+        architecture="catboost",
+        model_version="cell-v1",
+    )
     assert vm.booster is booster
     assert list(vm.feature_names) == ["a", "b"]
     assert vm.architecture == "catboost"
+    assert vm.model_version == "cell-v1"
 
 
 def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) -> None:
@@ -742,7 +757,43 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
-    assert all(row[0] == model_version_for("ban-ei") for row in rows)
+    assert all(row[0] == "banei-base-v8" for row in rows)
+
+
+def test_score_races_cell_variant_bypasses_nar_per_class_ensemble(tmp_path: Path) -> None:
+    """A routed cell variant is the selected model, not an ensemble fallback input."""
+    _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "cell": _FakeVariantSpec("nar-cell-v1", 1, "xgboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])
+
+    def _fake_load_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
+        del model_path, architecture
+        return variant_booster
+
+    races = {"nar:20260620:54:01:01": _banei_entries()}
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming.init_member_pool", return_value=object()),
+        patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
+        patch("predict_upcoming.NAR_ETOP2_ENABLED", False),
+        patch("predict_upcoming.score_race_with_resolution") as score_ensemble,
+    ):
+        scored = score_races(races, "nar", tmp_path, ["feat"])
+
+    score_ensemble.assert_not_called()
+    rows = scored[0]
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 2
+    assert all(row[0] == "nar-cell-v1" for row in rows)
 
 
 def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path) -> None:

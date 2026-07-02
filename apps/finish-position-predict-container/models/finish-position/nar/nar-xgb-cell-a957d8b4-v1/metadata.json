@@ -1,0 +1,14 @@
+{
+  "feature_names": [
+    "jockey_keibajo_win_rate",
+    "damsire_avg_finish_at_track",
+    "odds_score",
+    "recent_win_count_5",
+    "tansho_odds",
+    "tansho_ninkijun",
+    "kaisai_month",
+    "same_distance_win_rate_rank_in_race",
+    "jockey_recent_win_rate_diff_from_race_avg",
+    "sim_odds_rank_correlation"
+  ]
+}
