@@ -94,12 +94,14 @@ it("buildInsertSql renders SQL with null bamei and decimal probabilities", () =>
       p_oikomi: 0.2,
       p_sashi: 0.3,
       p_senkou: 0.4,
+      predicted_corner_front_score: 1.7,
+      predicted_corner_rank: 5,
       predicted_at: "2026-05-24T11:00:00+09:00",
       predicted_label: "senkou",
       race_key: "jra:2026:0524:08:01",
     }),
   ).toBe(
-    "insert or replace into race_running_styles (\n  race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,\n  model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at\n) values (\n  'jra:2026:0524:08:01',\n  1,\n  '2024100001',\n  null,\n  'jra',\n  '2026',\n  'v7-lineage',\n  0.1,\n  0.4,\n  0.3,\n  0.2,\n  'senkou',\n  '2026-05-24T11:00:00+09:00'\n);",
+    "insert or replace into race_running_styles (\n  race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,\n  model_version, p_nige, p_senkou, p_sashi, p_oikomi,\n  predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at\n) values (\n  'jra:2026:0524:08:01',\n  1,\n  '2024100001',\n  null,\n  'jra',\n  '2026',\n  'v7-lineage',\n  0.1,\n  0.4,\n  0.3,\n  0.2,\n  1.7,\n  5,\n  'senkou',\n  '2026-05-24T11:00:00+09:00'\n);",
   );
 });
 
@@ -116,12 +118,14 @@ it("buildInsertSql escapes single quotes in string values", () => {
       p_oikomi: 0,
       p_sashi: 0,
       p_senkou: 1,
+      predicted_corner_front_score: 0,
+      predicted_corner_rank: 1,
       predicted_at: "x",
       predicted_label: "nige",
       race_key: "key",
     }),
   ).toBe(
-    "insert or replace into race_running_styles (\n  race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,\n  model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at\n) values (\n  'key',\n  2,\n  '2024100002',\n  'サ''ンプル',\n  'jra',\n  '2026',\n  'v7-lineage',\n  0,\n  1,\n  0,\n  0,\n  'nige',\n  'x'\n);",
+    "insert or replace into race_running_styles (\n  race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,\n  model_version, p_nige, p_senkou, p_sashi, p_oikomi,\n  predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at\n) values (\n  'key',\n  2,\n  '2024100002',\n  'サ''ンプル',\n  'jra',\n  '2026',\n  'v7-lineage',\n  0,\n  1,\n  0,\n  0,\n  0,\n  1,\n  'nige',\n  'x'\n);",
   );
 });
 
@@ -178,6 +182,8 @@ it("readLocalRows returns results from wrangler --json stdout", async () => {
                 p_oikomi: 0.2,
                 p_sashi: 0.3,
                 p_senkou: 0.4,
+                predicted_corner_front_score: 1.7,
+                predicted_corner_rank: 5,
                 predicted_at: "2026-05-24T11:00:00+09:00",
                 predicted_label: "senkou",
                 race_key: "jra:2026:0524:08:01",
@@ -278,6 +284,8 @@ it("run writes SQL and invokes wrangler when local rows are present", async () =
                   p_oikomi: 0.2,
                   p_sashi: 0.3,
                   p_senkou: 0.4,
+                  predicted_corner_front_score: 1.7,
+                  predicted_corner_rank: 5,
                   predicted_at: "2026-05-24T11:00:00+09:00",
                   predicted_label: "senkou",
                   race_key: "jra:2026:0524:08:01",

@@ -60,6 +60,8 @@ interface D1ExportRow {
   p_oikomi: number;
   p_sashi: number;
   p_senkou: number;
+  predicted_corner_front_score: number;
+  predicted_corner_rank: number;
   predicted_at: string;
   predicted_label: string;
   race_key: string;
@@ -73,7 +75,8 @@ const formatSqlValue = (value: string | null): string =>
 export const buildInsertSql = (row: D1ExportRow): string =>
   `insert or replace into race_running_styles (
   race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
-  model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
+  model_version, p_nige, p_senkou, p_sashi, p_oikomi,
+  predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at
 ) values (
   '${escapeSqlString(row.race_key)}',
   ${row.horse_number},
@@ -86,6 +89,8 @@ export const buildInsertSql = (row: D1ExportRow): string =>
   ${row.p_senkou},
   ${row.p_sashi},
   ${row.p_oikomi},
+  ${row.predicted_corner_front_score},
+  ${row.predicted_corner_rank},
   '${escapeSqlString(row.predicted_label)}',
   '${escapeSqlString(row.predicted_at)}'
 );`;
@@ -106,7 +111,37 @@ export const spawnWrangler = async (args: readonly string[]): Promise<void> => {
 };
 
 export const readLocalRows = async (dateYmd: string): Promise<D1ExportRow[]> => {
-  const command = `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen, model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at from race_running_styles where race_key like '%${dateYmd}%' order by race_key, horse_number`;
+  const command = `
+    select
+      race_key,
+      horse_number,
+      ketto_toroku_bango,
+      bamei,
+      category,
+      kaisai_nen,
+      model_version,
+      p_nige,
+      p_senkou,
+      p_sashi,
+      p_oikomi,
+      coalesce(predicted_corner_front_score, p_senkou + 2 * p_sashi + 3 * p_oikomi)
+        as predicted_corner_front_score,
+      coalesce(
+        predicted_corner_rank,
+        row_number() over (
+          partition by race_key
+          order by coalesce(predicted_corner_front_score, p_senkou + 2 * p_sashi + 3 * p_oikomi) asc,
+                   p_nige desc,
+                   ketto_toroku_bango asc,
+                   horse_number asc
+        )
+      ) as predicted_corner_rank,
+      predicted_label,
+      predicted_at
+    from race_running_styles
+    where race_key like '%${dateYmd}%'
+    order by race_key, horse_number
+  `.trim();
   const stderrChunks: Buffer[] = [];
   const stdoutChunks: Buffer[] = [];
   const child = spawn(

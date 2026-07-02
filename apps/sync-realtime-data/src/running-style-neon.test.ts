@@ -13,6 +13,9 @@ type QueryFn = (sql: string, values?: unknown[]) => Promise<unknown>;
 const buildPool = (queryFn: QueryFn = vi.fn(async () => {})): Pool =>
   ({ query: queryFn }) as unknown as Pool;
 
+const lastQueryCall = (queryFn: QueryFn): [string, unknown[] | undefined] =>
+  vi.mocked(queryFn).mock.calls.at(-1) as [string, unknown[] | undefined];
+
 const buildRow = (overrides?: Partial<RaceRunningStyleRow>): RaceRunningStyleRow => ({
   bamei: "テスト馬",
   category: "jra",
@@ -27,6 +30,8 @@ const buildRow = (overrides?: Partial<RaceRunningStyleRow>): RaceRunningStyleRow
   pSashi: 0.2,
   pSenkou: 0.2,
   predictedAt: "2026-06-19T00:00:00.000Z",
+  predictedCornerFrontScore: 0.7,
+  predictedCornerRank: 1,
   predictedLabel: "nige",
   raceKey: "jra:20260619:08:01",
   ...overrides,
@@ -46,13 +51,17 @@ it("upserts a single valid row and returns 1", async () => {
   const row = buildRow();
   const result = await upsertRunningStylePredictionsToNeon(pool, [row]);
   expect(result).toBe(1);
-  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(1);
-  const sql = vi.mocked(queryFn).mock.calls[0]?.[0] ?? "";
+  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(queryFn).mock.calls[0]?.[0]).toMatch(
+    /add column if not exists predicted_corner_front_score/,
+  );
+  const [sql, values = []] = lastQueryCall(queryFn);
   expect(sql.startsWith("insert into race_running_style_model_predictions")).toBe(true);
   expect(sql.indexOf("on conflict") > -1).toBe(true);
-  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
   expect(values[8]).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
   expect(values[9]).toBe("tokyo-turf");
+  expect(values[14]).toBe(0.7);
+  expect(values[15]).toBe(1);
 });
 
 it("filters rows with invalid race_key format", async () => {
@@ -92,9 +101,9 @@ it("correctly maps label to class index: nige=0 senkou=1 sashi=2 oikomi=3", asyn
     buildRow({ horseNumber: 4, predictedLabel: "oikomi", kettoTorokuBango: "2022101237" }),
   ];
   await upsertRunningStylePredictionsToNeon(pool, rows);
-  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
-  const classIndexOffset = 15;
-  const colCount = 16;
+  const [, values = []] = lastQueryCall(queryFn);
+  const classIndexOffset = 17;
+  const colCount = 18;
   expect(values[classIndexOffset]).toBe(0);
   expect(values[colCount + classIndexOffset]).toBe(1);
   expect(values[colCount * 2 + classIndexOffset]).toBe(2);
@@ -106,7 +115,7 @@ it("binds null cell provenance when a row omits it", async () => {
   const pool = buildPool(queryFn);
   const row = buildRow({ cellModelKey: undefined, cellVariantId: undefined });
   await upsertRunningStylePredictionsToNeon(pool, [row]);
-  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
+  const [, values = []] = lastQueryCall(queryFn);
   expect(values[8]).toBe(null);
   expect(values[9]).toBe(null);
 });
@@ -118,7 +127,7 @@ it("batches large row sets into NEON_BATCH_SIZE chunks", async () => {
     buildRow({ horseNumber: index + 1, kettoTorokuBango: String(2022100000 + index) }),
   );
   await upsertRunningStylePredictionsToNeon(pool, rows);
-  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(4);
 });
 
 it("parses source from race_key correctly", async () => {
@@ -126,7 +135,7 @@ it("parses source from race_key correctly", async () => {
   const pool = buildPool(queryFn);
   const row = buildRow({ raceKey: "nar:20260619:45:01" });
   await upsertRunningStylePredictionsToNeon(pool, [row]);
-  const values = vi.mocked(queryFn).mock.calls[0]?.[1] ?? [];
+  const [, values = []] = lastQueryCall(queryFn);
   expect(values[1]).toBe("nar");
   expect(values[3]).toBe("0619");
   expect(values[4]).toBe("45");

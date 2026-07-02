@@ -21,6 +21,8 @@ export interface RaceRunningStyleRow {
   pSenkou: number;
   pSashi: number;
   pOikomi: number;
+  predictedCornerFrontScore: number;
+  predictedCornerRank: number;
   predictedLabel: RunningStyleClassLabel;
   predictedAt: string;
 }
@@ -66,8 +68,8 @@ const D1_BATCH_SIZE = 50;
 const INSERT_SQL = `insert or replace into race_running_styles (
   race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
   model_version, cell_model_key, cell_variant_id, p_nige, p_senkou, p_sashi, p_oikomi,
-  predicted_label, predicted_at
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
 const bindValues = (row: RaceRunningStyleRow): unknown[] => [
   row.raceKey,
@@ -83,6 +85,8 @@ const bindValues = (row: RaceRunningStyleRow): unknown[] => [
   row.pSenkou,
   row.pSashi,
   row.pOikomi,
+  row.predictedCornerFrontScore,
+  row.predictedCornerRank,
   row.predictedLabel,
   row.predictedAt,
 ];
@@ -181,7 +185,20 @@ const queryRaceRunningStylesForRace = async (
     .prepare(
       `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
               model_version, cell_model_key, cell_variant_id,
-              p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at
+              p_nige, p_senkou, p_sashi, p_oikomi,
+              coalesce(predicted_corner_front_score, p_senkou + 2 * p_sashi + 3 * p_oikomi)
+                as predicted_corner_front_score,
+              coalesce(
+                predicted_corner_rank,
+                row_number() over (
+                  partition by race_key
+                  order by coalesce(predicted_corner_front_score, p_senkou + 2 * p_sashi + 3 * p_oikomi) asc,
+                           p_nige desc,
+                           ketto_toroku_bango asc,
+                           horse_number asc
+                )
+              ) as predicted_corner_rank,
+              predicted_label, predicted_at
          from race_running_styles
         where race_key = ?
         order by horse_number`,
@@ -200,6 +217,8 @@ const queryRaceRunningStylesForRace = async (
       p_oikomi: number;
       p_sashi: number;
       p_senkou: number;
+      predicted_corner_front_score: number;
+      predicted_corner_rank: number;
       predicted_at: string;
       predicted_label: RaceRunningStyleRow["predictedLabel"];
       race_key: string;
@@ -218,6 +237,8 @@ const queryRaceRunningStylesForRace = async (
     pSashi: Number(row.p_sashi),
     pSenkou: Number(row.p_senkou),
     predictedAt: row.predicted_at,
+    predictedCornerFrontScore: Number(row.predicted_corner_front_score),
+    predictedCornerRank: Number(row.predicted_corner_rank),
     predictedLabel: row.predicted_label,
     raceKey: row.race_key,
   }));

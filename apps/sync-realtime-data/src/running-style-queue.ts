@@ -20,6 +20,7 @@ import {
   markRunningStyleInferenceFailed,
   markRunningStyleInferenceProcessing,
   type RaceRunningStyleRow,
+  upsertRaceRunningStyles,
 } from "./running-style-d1";
 import { loadOrBuildRunningStyleFeatureParquet } from "./running-style-feature-materialize";
 import {
@@ -301,6 +302,7 @@ const cacheAndSyncCompletedRunningStyles = async (
     if (rows.length === 0) {
       return { cacheWritten: false, neonWrittenCount: 0 };
     }
+    await upsertRaceRunningStyles(env.REALTIME_DB, rows);
     const [cacheWritten, neonResult] = await Promise.all([
       putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
         console.error("Running-style cache write failed:", formatError(error));

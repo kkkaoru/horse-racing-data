@@ -46,11 +46,20 @@ const buildPlaceholders = (rowCount: number, colCount: number): string =>
       `(${Array.from({ length: colCount }, (__, colIndex) => `$${rowIndex * colCount + colIndex + 1}`).join(", ")})`,
   ).join(", ");
 
+export const ensureRunningStylePredictionNeonSchema = async (pool: Pool): Promise<void> => {
+  await pool.query(`
+    alter table race_running_style_model_predictions
+      add column if not exists predicted_corner_front_score numeric;
+    alter table race_running_style_model_predictions
+      add column if not exists predicted_corner_rank integer;
+  `);
+};
+
 const upsertNeonBatch = async (
   pool: Pool,
   rows: ReadonlyArray<RaceRunningStyleRow>,
 ): Promise<void> => {
-  const COL_COUNT = 16;
+  const COL_COUNT = 18;
   const values = rows.flatMap((row) => {
     const parsed = parseRaceKey(row.raceKey)!;
     const predictedClass = LABEL_CLASS_INDEX[row.predictedLabel]!;
@@ -69,6 +78,8 @@ const upsertNeonBatch = async (
       row.pSenkou,
       row.pSashi,
       row.pOikomi,
+      row.predictedCornerFrontScore,
+      row.predictedCornerRank,
       row.predictedLabel,
       predictedClass,
     ];
@@ -79,7 +90,8 @@ const upsertNeonBatch = async (
     `insert into race_running_style_model_predictions
        (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
         ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
-        p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
+        p_nige, p_senkou, p_sashi, p_oikomi,
+        predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_class)
      values ${actualPlaceholders}
      on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
      do update set
@@ -90,6 +102,8 @@ const upsertNeonBatch = async (
        p_senkou = excluded.p_senkou,
        p_sashi = excluded.p_sashi,
        p_oikomi = excluded.p_oikomi,
+       predicted_corner_front_score = excluded.predicted_corner_front_score,
+       predicted_corner_rank = excluded.predicted_corner_rank,
        predicted_label = excluded.predicted_label,
        predicted_class = excluded.predicted_class,
        prediction_generated_at = now()`,
@@ -106,6 +120,8 @@ export const upsertRunningStylePredictionsToNeon = async (
     const parsed = parseRaceKey(row.raceKey);
     return parsed !== null && LABEL_CLASS_INDEX[row.predictedLabel] !== undefined;
   });
+  if (validRows.length === 0) return 0;
+  await ensureRunningStylePredictionNeonSchema(pool);
   for (let start = 0; start < validRows.length; start += NEON_BATCH_SIZE) {
     await upsertNeonBatch(pool, validRows.slice(start, start + NEON_BATCH_SIZE));
   }

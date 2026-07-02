@@ -30,6 +30,7 @@ vi.mock("./running-style-d1", () => ({
   markRunningStyleInferenceCompleted: vi.fn(async () => {}),
   markRunningStyleInferenceFailed: vi.fn(async () => {}),
   markRunningStyleInferenceProcessing: vi.fn(async () => {}),
+  upsertRaceRunningStyles: vi.fn(async () => 0),
 }));
 vi.mock("./running-style-feature-materialize", () => ({
   loadOrBuildRunningStyleFeatureParquet: vi.fn(),
@@ -105,7 +106,7 @@ it("returns null when RUNNING_STYLE_D1_WRITE_ENABLED is not '1'", async () => {
 
 it("returns a skipped summary when state already completed and counts meet expectations", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
-  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace, upsertRaceRunningStyles } =
     await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -138,6 +139,13 @@ it("returns a skipped summary when state already completed and counts meet expec
   expect(errorSpy).toHaveBeenCalledWith(
     "Finish-position full trigger not sent for jra:20260512:08:01: missing FINISH_POSITION_PREDICT_QUEUE and FINISH_POSITION_CRON bindings",
   );
+  expect(upsertRaceRunningStyles).toHaveBeenCalledWith({}, [
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+    { raceKey: "jra:20260512:08:01" },
+  ]);
 });
 
 it("sends finish-position predict queue message when state is already completed", async () => {

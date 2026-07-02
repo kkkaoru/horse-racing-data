@@ -37,6 +37,8 @@ const ROW: RaceRunningStyleRow = {
   pSashi: 0.3,
   pSenkou: 0.4,
   predictedAt: "2026-05-12T11:30:00+09:00",
+  predictedCornerFrontScore: 1.6,
+  predictedCornerRank: 1,
   predictedLabel: "senkou",
   raceKey: "jra:2026:0512:08:01",
 };

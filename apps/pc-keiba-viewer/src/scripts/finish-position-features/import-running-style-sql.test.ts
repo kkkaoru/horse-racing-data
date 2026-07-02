@@ -18,6 +18,7 @@ import {
   EVALUATIONS_TABLE,
   INSERT_COLUMNS,
   LABEL_COLUMNS,
+  PREDICTED_CORNER_COLUMNS,
   PREDICTIONS_TABLE,
   PROBABILITY_COLUMNS,
 } from "./import-running-style-sql";
@@ -43,6 +44,13 @@ describe("import-running-style-sql constants", () => {
     expect(LABEL_COLUMNS).toStrictEqual(["predicted_label", "predicted_class"]);
   });
 
+  test("predicted corner columns preserve running-style derived passage order", () => {
+    expect(PREDICTED_CORNER_COLUMNS).toStrictEqual([
+      "predicted_corner_front_score",
+      "predicted_corner_rank",
+    ]);
+  });
+
   test("cell provenance columns are cell_model_key and cell_variant_id", () => {
     expect(CELL_PROVENANCE_COLUMNS).toStrictEqual(["cell_model_key", "cell_variant_id"]);
   });
@@ -63,6 +71,8 @@ describe("import-running-style-sql constants", () => {
       "p_senkou",
       "p_sashi",
       "p_oikomi",
+      "predicted_corner_front_score",
+      "predicted_corner_rank",
       "predicted_label",
       "predicted_class",
     ]);
@@ -97,10 +107,18 @@ describe("buildPredictionsTableDdl", () => {
     expect(ddl).toContain("p_senkou numeric not null");
     expect(ddl).toContain("p_sashi numeric not null");
     expect(ddl).toContain("p_oikomi numeric not null");
+    expect(ddl).toContain("predicted_corner_front_score numeric");
+    expect(ddl).toContain("predicted_corner_rank integer");
     expect(ddl).toContain("predicted_label text not null");
     expect(ddl).toContain("predicted_class integer not null");
     expect(ddl).toContain("cell_model_key text");
     expect(ddl).toContain("cell_variant_id text");
+    expect(ddl).toContain(
+      "alter table race_running_style_model_predictions add column if not exists predicted_corner_front_score numeric",
+    );
+    expect(ddl).toContain(
+      "alter table race_running_style_model_predictions add column if not exists predicted_corner_rank integer",
+    );
     expect(ddl).toContain(
       "primary key (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)",
     );
@@ -155,21 +173,21 @@ describe("buildPredictionsCellLookupIndexSql", () => {
 });
 
 describe("buildBatchInsertSql", () => {
-  test("emits sequential placeholders for a single row of 16 columns", () => {
+  test("emits sequential placeholders for a single row of 18 columns", () => {
     const sql = buildBatchInsertSql(1);
     expect(sql).toContain("insert into race_running_style_model_predictions");
     expect(sql).toContain(
-      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     );
   });
 
   test("multi-row batch keeps placeholder numbering correct", () => {
     const sql = buildBatchInsertSql(2);
     expect(sql).toContain(
-      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+      "($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     );
     expect(sql).toContain(
-      "($17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32)",
+      "($19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)",
     );
   });
 
@@ -178,6 +196,8 @@ describe("buildBatchInsertSql", () => {
     expect(sql).toContain("cell_model_key = excluded.cell_model_key");
     expect(sql).toContain("cell_variant_id = excluded.cell_variant_id");
     expect(sql).toContain("p_nige = excluded.p_nige");
+    expect(sql).toContain("predicted_corner_front_score = excluded.predicted_corner_front_score");
+    expect(sql).toContain("predicted_corner_rank = excluded.predicted_corner_rank");
     expect(sql).toContain("predicted_label = excluded.predicted_label");
     expect(sql).toContain("predicted_class = excluded.predicted_class");
   });

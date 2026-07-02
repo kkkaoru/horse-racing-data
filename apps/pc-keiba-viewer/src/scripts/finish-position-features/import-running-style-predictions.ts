@@ -39,10 +39,14 @@ interface RunningStylePredictionRecord {
   race_id: string;
   ketto_toroku_bango: string;
   umaban: number;
+  cell_model_key: string | null;
+  cell_variant_id: string | null;
   p_nige: number;
   p_senkou: number;
   p_sashi: number;
   p_oikomi: number;
+  predicted_corner_front_score: number;
+  predicted_corner_rank: number | null;
   predicted_label: string;
   predicted_class: number;
 }
@@ -116,6 +120,21 @@ const requireNumeric = (raw: unknown, field: string): number => {
   throw new Error(`predicted record missing or invalid ${field}`);
 };
 
+const optionalString = (raw: unknown): string | null =>
+  typeof raw === "string" && raw.trim() !== "" ? raw : null;
+
+const optionalNumeric = (raw: unknown, field: string): number | null => {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  throw new Error(`predicted record has invalid ${field}`);
+};
+
+const computePredictedCornerFrontScore = (record: {
+  p_oikomi: number;
+  p_sashi: number;
+  p_senkou: number;
+}): number => record.p_senkou + 2 * record.p_sashi + 3 * record.p_oikomi;
+
 const parsePredictionLine = (line: string): RunningStylePredictionRecord => {
   const raw: unknown = JSON.parse(line);
   if (!isRecord(raw)) throw new Error(`Prediction line is not an object: ${line}`);
@@ -130,16 +149,25 @@ const parsePredictionLine = (line: string): RunningStylePredictionRecord => {
   if (typeof raw.predicted_class !== "number") {
     throw new Error("predicted record missing predicted_class");
   }
-  return {
+  const parsed = {
     ketto_toroku_bango: raw.ketto_toroku_bango,
     p_nige: requireNumeric(raw.p_nige, "p_nige"),
     p_oikomi: requireNumeric(raw.p_oikomi, "p_oikomi"),
     p_sashi: requireNumeric(raw.p_sashi, "p_sashi"),
     p_senkou: requireNumeric(raw.p_senkou, "p_senkou"),
     predicted_class: raw.predicted_class,
+    predicted_corner_rank: optionalNumeric(raw.predicted_corner_rank, "predicted_corner_rank"),
     predicted_label: raw.predicted_label,
     race_id: raw.race_id,
     umaban: raw.umaban,
+  };
+  return {
+    ...parsed,
+    cell_model_key: optionalString(raw.cell_model_key),
+    cell_variant_id: optionalString(raw.cell_variant_id),
+    predicted_corner_front_score:
+      optionalNumeric(raw.predicted_corner_front_score, "predicted_corner_front_score") ??
+      computePredictedCornerFrontScore(parsed),
   };
 };
 
@@ -157,10 +185,14 @@ const flattenForInsert = (
     parts.race_bango,
     record.ketto_toroku_bango,
     record.umaban,
+    record.cell_model_key,
+    record.cell_variant_id,
     record.p_nige,
     record.p_senkou,
     record.p_sashi,
     record.p_oikomi,
+    record.predicted_corner_front_score,
+    record.predicted_corner_rank,
     record.predicted_label,
     record.predicted_class,
   ];

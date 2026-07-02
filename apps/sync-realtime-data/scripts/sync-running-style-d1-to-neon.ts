@@ -41,6 +41,8 @@ interface D1Row {
   p_senkou: number;
   p_sashi: number;
   p_oikomi: number;
+  predicted_corner_front_score: number | null;
+  predicted_corner_rank: number | null;
   predicted_label: string;
   predicted_at: string;
 }
@@ -60,6 +62,8 @@ interface NeonRow {
   p_senkou: number;
   p_sashi: number;
   p_oikomi: number;
+  predicted_corner_front_score: number;
+  predicted_corner_rank: number;
   predicted_label: string;
   predicted_class: number;
   predicted_at: string;
@@ -129,7 +133,7 @@ const fetchD1Batch = async (datePattern: string, offset: number): Promise<D1Row[
     "--remote",
     "--json",
     "--command",
-    `select race_key, horse_number, ketto_toroku_bango, kaisai_nen, model_version, cell_model_key, cell_variant_id, p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_at from race_running_styles where race_key like '${datePattern}' order by race_key, horse_number limit ${D1_BATCH_SIZE} offset ${offset}`,
+    `select race_key, horse_number, ketto_toroku_bango, kaisai_nen, model_version, cell_model_key, cell_variant_id, p_nige, p_senkou, p_sashi, p_oikomi, predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at from race_running_styles where race_key like '${datePattern}' order by race_key, horse_number limit ${D1_BATCH_SIZE} offset ${offset}`,
   ];
   const result = (await spawnJson(command)) as Array<{ results: D1Row[] }>;
   return result[0]?.results ?? [];
@@ -152,7 +156,24 @@ const parseRaceKey = (
   return { keibajoCode, raceBango, source, kaisaiTsukihi: datePart.slice(4, 8) };
 };
 
-const toNeonRow = (row: D1Row): NeonRow | null => {
+const computePredictedCornerFrontScore = (row: D1Row): number =>
+  Number(row.p_senkou) + 2 * Number(row.p_sashi) + 3 * Number(row.p_oikomi);
+
+const getPredictedCornerFrontScore = (row: D1Row): number =>
+  row.predicted_corner_front_score === null
+    ? computePredictedCornerFrontScore(row)
+    : Number(row.predicted_corner_front_score);
+
+export const ensureRunningStylePredictionNeonSchema = async (pool: Pool): Promise<void> => {
+  await pool.query(`
+    alter table race_running_style_model_predictions
+      add column if not exists predicted_corner_front_score numeric;
+    alter table race_running_style_model_predictions
+      add column if not exists predicted_corner_rank integer;
+  `);
+};
+
+const toNeonRow = (row: D1Row, predictedCornerRank: number): NeonRow | null => {
   const parsed = parseRaceKey(row.race_key);
   if (parsed === null) return null;
   const predictedClass = LABEL_CLASS_INDEX[row.predicted_label];
@@ -169,6 +190,9 @@ const toNeonRow = (row: D1Row): NeonRow | null => {
     p_oikomi: Number(row.p_oikomi),
     p_sashi: Number(row.p_sashi),
     p_senkou: Number(row.p_senkou),
+    predicted_corner_front_score: getPredictedCornerFrontScore(row),
+    predicted_corner_rank:
+      row.predicted_corner_rank === null ? predictedCornerRank : Number(row.predicted_corner_rank),
     predicted_at: row.predicted_at,
     predicted_class: predictedClass,
     predicted_label: row.predicted_label,
@@ -178,9 +202,37 @@ const toNeonRow = (row: D1Row): NeonRow | null => {
   };
 };
 
+export const mapD1RowsToNeonRows = (rows: readonly D1Row[]): NeonRow[] => {
+  const grouped = new Map<string, D1Row[]>();
+  rows.forEach((row) => {
+    const raceRows = grouped.get(row.race_key);
+    if (raceRows === undefined) {
+      grouped.set(row.race_key, [row]);
+      return;
+    }
+    raceRows.push(row);
+  });
+  const ranks = new Map<string, number>();
+  grouped.forEach((raceRows) => {
+    [...raceRows]
+      .sort(
+        (left, right) =>
+          getPredictedCornerFrontScore(left) - getPredictedCornerFrontScore(right) ||
+          Number(right.p_nige) - Number(left.p_nige) ||
+          left.ketto_toroku_bango.localeCompare(right.ketto_toroku_bango) ||
+          Number(left.horse_number) - Number(right.horse_number),
+      )
+      .forEach((row, index) => ranks.set(`${row.race_key}:${row.horse_number}`, index + 1));
+  });
+  return rows.flatMap((row) => {
+    const mapped = toNeonRow(row, ranks.get(`${row.race_key}:${row.horse_number}`)!);
+    return mapped === null ? [] : [mapped];
+  });
+};
+
 const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => {
   if (rows.length === 0) return 0;
-  const colCount = 16;
+  const colCount = 18;
   const placeholders = rows
     .map(
       (_, rowIndex) =>
@@ -202,6 +254,8 @@ const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => 
     row.p_senkou,
     row.p_sashi,
     row.p_oikomi,
+    row.predicted_corner_front_score,
+    row.predicted_corner_rank,
     row.predicted_label,
     row.predicted_class,
   ]);
@@ -209,7 +263,8 @@ const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => 
     `insert into race_running_style_model_predictions
        (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
         ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
-        p_nige, p_senkou, p_sashi, p_oikomi, predicted_label, predicted_class)
+        p_nige, p_senkou, p_sashi, p_oikomi,
+        predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_class)
      values ${placeholders}
      on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
      do update set
@@ -220,6 +275,8 @@ const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => 
        p_senkou = excluded.p_senkou,
        p_sashi = excluded.p_sashi,
        p_oikomi = excluded.p_oikomi,
+       predicted_corner_front_score = excluded.predicted_corner_front_score,
+       predicted_corner_rank = excluded.predicted_corner_rank,
        predicted_label = excluded.predicted_label,
        predicted_class = excluded.predicted_class,
        prediction_generated_at = now()`,
@@ -250,10 +307,7 @@ const syncDate = async (pool: Pool, pattern: string): Promise<number> => {
   for (;;) {
     const d1Rows = await fetchD1Batch(pattern, offset);
     if (d1Rows.length === 0) break;
-    const neonRows = d1Rows.flatMap((row) => {
-      const mapped = toNeonRow(row);
-      return mapped === null ? [] : [mapped];
-    });
+    const neonRows = mapD1RowsToNeonRows(d1Rows);
     for (let batchStart = 0; batchStart < neonRows.length; batchStart += NEON_BATCH_SIZE) {
       const batch = neonRows.slice(batchStart, batchStart + NEON_BATCH_SIZE);
       const upserted = await upsertNeonBatch(pool, batch);
@@ -272,6 +326,7 @@ const run = async (): Promise<void> => {
   console.log(`[sync] dates=${patterns.length} from=${args.fromDate} to=${args.toDate}`);
   const pool = new Pool({ connectionString: args.neonUrl, ssl: { rejectUnauthorized: false } });
   try {
+    await ensureRunningStylePredictionNeonSchema(pool);
     let total = 0;
     for (const pattern of patterns) {
       total += await syncDate(pool, pattern);

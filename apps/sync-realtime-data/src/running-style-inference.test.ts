@@ -160,7 +160,7 @@ test("runRunningStyleInference predicts nige for class-0 dominated leaves", asyn
     modelKey: "model/key",
     predictedAt: "2026-05-18T10:00:00Z",
   });
-  expect(calls[0]?.[13]).toBe("nige");
+  expect(calls[0]?.[15]).toBe("nige");
 });
 
 test("runRunningStyleInference binds null cell provenance for legacy JSON model inference", async () => {
@@ -255,6 +255,20 @@ test("runRunningStyleInferenceForRowsWithFlatModel loads model from R2 and runs 
   expect(summary.horseCount).toBe(2);
 });
 
+test("runRunningStyleInferenceForRowsWithFlatModel breaks rank ties by ketto number", async () => {
+  const bucket = buildMockFlatBucket("flat/key");
+  const { calls, db } = buildMockD1();
+  await runRunningStyleInferenceForRowsWithFlatModel(bucket, db, {
+    modelKey: "flat/key",
+    predictedAt: "2026-05-18T10:00:00Z",
+    rows: [HORSE_ROW_1, HORSE_ROW_2],
+  });
+  expect(calls[0]?.[13]).toBeCloseTo(1.0495342142667805);
+  expect(calls[0]?.[14]).toBe(2);
+  expect(calls[1]?.[13]).toBeCloseTo(1.0495342142667805);
+  expect(calls[1]?.[14]).toBe(1);
+});
+
 test("runRunningStyleInferenceRowsWithFlatModel writes predictions when given a loaded flat model", async () => {
   const bucket = buildMockFlatBucket("flat/key");
   const { calls, db } = buildMockD1();
@@ -266,7 +280,7 @@ test("runRunningStyleInferenceRowsWithFlatModel writes predictions when given a 
   expect(summary.writtenCount).toBe(1);
   expect(calls[0]?.[7]).toBe("flat/key");
   expect(calls[0]?.[8]).toBe(null);
-  expect(calls[0]?.[13]).toBe("nige");
+  expect(calls[0]?.[15]).toBe("nige");
 });
 
 test("runRunningStyleInferenceForRowsWithFlatModel binds configured cell provenance", async () => {
@@ -333,5 +347,5 @@ test("runRunningStyleInferenceRowsWithFlatModel without calibrators produces sam
     predictedAt: "2026-05-18T10:00:00Z",
     rows: [HORSE_ROW_1],
   });
-  expect(calls[0]?.[13]).toBe("nige");
+  expect(calls[0]?.[15]).toBe("nige");
 });

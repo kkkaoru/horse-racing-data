@@ -15,6 +15,7 @@ const PRIMARY_KEY_COLUMNS = [
 ];
 
 const PROBABILITY_COLUMNS = ["p_nige", "p_senkou", "p_sashi", "p_oikomi"];
+const PREDICTED_CORNER_COLUMNS = ["predicted_corner_front_score", "predicted_corner_rank"];
 const LABEL_COLUMNS = ["predicted_label", "predicted_class"];
 const CELL_PROVENANCE_COLUMNS = ["cell_model_key", "cell_variant_id"];
 
@@ -23,6 +24,7 @@ const INSERT_COLUMNS = [
   "umaban",
   ...CELL_PROVENANCE_COLUMNS,
   ...PROBABILITY_COLUMNS,
+  ...PREDICTED_CORNER_COLUMNS,
   ...LABEL_COLUMNS,
 ];
 
@@ -30,6 +32,7 @@ const UPDATABLE_COLUMNS = [
   "umaban",
   ...CELL_PROVENANCE_COLUMNS,
   ...PROBABILITY_COLUMNS,
+  ...PREDICTED_CORNER_COLUMNS,
   ...LABEL_COLUMNS,
 ];
 
@@ -74,6 +77,8 @@ const buildPredictionsTableDdl = (): string => `
       p_senkou numeric not null,
       p_sashi numeric not null,
       p_oikomi numeric not null,
+      predicted_corner_front_score numeric,
+      predicted_corner_rank integer,
       predicted_label text not null,
       predicted_class integer not null,
       prediction_generated_at timestamptz not null default now(),
@@ -81,6 +86,8 @@ const buildPredictionsTableDdl = (): string => `
     );
     alter table ${PREDICTIONS_TABLE} add column if not exists cell_model_key text;
     alter table ${PREDICTIONS_TABLE} add column if not exists cell_variant_id text;
+    alter table ${PREDICTIONS_TABLE} add column if not exists predicted_corner_front_score numeric;
+    alter table ${PREDICTIONS_TABLE} add column if not exists predicted_corner_rank integer;
   `;
 
 const buildActiveModelsTableDdl = (): string => `
@@ -196,6 +203,7 @@ export {
   EVALUATIONS_TABLE,
   INSERT_COLUMNS,
   LABEL_COLUMNS,
+  PREDICTED_CORNER_COLUMNS,
   PREDICTIONS_TABLE,
   CELL_PROVENANCE_COLUMNS,
   PRIMARY_KEY_COLUMNS,

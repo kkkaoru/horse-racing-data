@@ -24,6 +24,8 @@ const ROW: RaceRunningStyleRow = {
   pSashi: 0.3,
   pSenkou: 0.4,
   predictedAt: "2026-05-12T11:30:00+09:00",
+  predictedCornerFrontScore: 1.6,
+  predictedCornerRank: 2,
   predictedLabel: "senkou",
   raceKey: "jra:20260512:08:01",
 };
@@ -47,7 +49,7 @@ it("upsertRaceRunningStyles returns 0 and skips batch when rows empty", async ()
 it("upsertRaceRunningStyles batches statements and returns row count", async () => {
   const { upsertRaceRunningStyles } = await import("./running-style-d1");
   const bind = vi.fn(() => ({ bind: vi.fn() }));
-  const prepare = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_: string) => ({ bind }));
   const batch = vi.fn(async () => []);
   const db = { batch, prepare } as unknown as D1Database;
   const count = await upsertRaceRunningStyles(db, [ROW, ROW]);
@@ -82,6 +84,8 @@ it("upsertRaceRunningStyles binds cell provenance before probabilities", async (
     0.4,
     0.3,
     0.2,
+    1.6,
+    2,
     "senkou",
     "2026-05-12T11:30:00+09:00",
   ]);
@@ -150,6 +154,8 @@ it("listRaceRunningStylesForRace bypasses cache when bypassCache=true", async ()
         p_oikomi: 0.2,
         p_sashi: 0.3,
         p_senkou: 0.4,
+        predicted_corner_front_score: 1.6,
+        predicted_corner_rank: 2,
         predicted_at: "2026-05-12T11:30:00+09:00",
         predicted_label: "senkou",
         race_key: "jra:20260512:08:01",
@@ -157,10 +163,18 @@ it("listRaceRunningStylesForRace bypasses cache when bypassCache=true", async ()
     ],
   }));
   const bind = vi.fn(() => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
+  let preparedSql = "";
+  const prepare = vi.fn((sql: string) => {
+    preparedSql = sql;
+    return { bind };
+  });
   const db = { prepare } as unknown as D1Database;
   const rows = await listRaceRunningStylesForRace(db, "jra:20260512:08:01", { bypassCache: true });
   expect(rows).toStrictEqual([ROW]);
+  expect(preparedSql).toMatch(/row_number\(\) over/);
+  expect(preparedSql).toMatch(
+    /order by coalesce\(predicted_corner_front_score, p_senkou \+ 2 \* p_sashi \+ 3 \* p_oikomi\) asc,\s+p_nige desc,\s+ketto_toroku_bango asc,\s+horse_number asc/,
+  );
   expect(withD1QueryCache).not.toHaveBeenCalled();
 });
 

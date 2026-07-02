@@ -46,6 +46,8 @@ const ROW: RaceRunningStyleRow = {
   pSashi: 0.3,
   pSenkou: 0.4,
   predictedAt: "2026-05-12T11:30:00+09:00",
+  predictedCornerFrontScore: 1.6,
+  predictedCornerRank: 1,
   predictedLabel: "senkou",
   raceKey: "jra:2026:0512:08:01",
 };
@@ -144,6 +146,8 @@ it("putViewerRunningStyleRaceCache writes nar race under the 4-colon viewer race
     pSashi: 0.2,
     pSenkou: 0.3,
     predictedAt: "2026-06-02T11:30:00+09:00",
+    predictedCornerFrontScore: 1.0,
+    predictedCornerRank: 1,
     predictedLabel: "nige",
     raceKey: "nar:20260602:43:07",
   };
@@ -208,6 +212,8 @@ it("putViewerRunningStyleRaceCache zero-pads keibajo and race bango into the vie
     pSashi: 0.3,
     pSenkou: 0.4,
     predictedAt: "2026-05-12T11:30:00+09:00",
+    predictedCornerFrontScore: 1.6,
+    predictedCornerRank: 1,
     predictedLabel: "senkou",
     raceKey: "jra:20260512:8:1",
   };

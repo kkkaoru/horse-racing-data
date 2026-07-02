@@ -61,14 +61,41 @@ describe("parsePredictionLine", () => {
       p_senkou: 0.62,
       p_sashi: 0.25,
       p_oikomi: 0.08,
+      cell_model_key: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      cell_variant_id: "tokyo-turf",
+      predicted_corner_front_score: 1.36,
+      predicted_corner_rank: 2,
       predicted_label: "senkou",
       predicted_class: 1,
     });
     const record = parsePredictionLine(line);
     expect(record.race_id).toBe("jra:2025:0101:05:01");
     expect(record.p_senkou).toBe(0.62);
+    expect(record.cell_model_key).toBe("running-style/models/jra/cells/tokyo-turf.flatbin");
+    expect(record.cell_variant_id).toBe("tokyo-turf");
+    expect(record.predicted_corner_front_score).toBe(1.36);
+    expect(record.predicted_corner_rank).toBe(2);
     expect(record.predicted_label).toBe("senkou");
     expect(record.predicted_class).toBe(1);
+  });
+
+  test("computes predicted_corner_front_score and preserves null rank for legacy JSONL", () => {
+    const line = JSON.stringify({
+      race_id: "jra:2025:0101:05:01",
+      ketto_toroku_bango: "2022100001",
+      umaban: 3,
+      p_nige: 0.05,
+      p_senkou: 0.62,
+      p_sashi: 0.25,
+      p_oikomi: 0.08,
+      predicted_label: "senkou",
+      predicted_class: 1,
+    });
+    const record = parsePredictionLine(line);
+    expect(record.cell_model_key).toBeNull();
+    expect(record.cell_variant_id).toBeNull();
+    expect(record.predicted_corner_front_score).toBeCloseTo(1.36);
+    expect(record.predicted_corner_rank).toBeNull();
   });
 
   test("rejects missing probability fields", () => {
@@ -109,10 +136,14 @@ describe("flattenForInsert", () => {
         race_id: "jra:2025:0101:05:01",
         ketto_toroku_bango: "h1",
         umaban: 1,
+        cell_model_key: "model-key",
+        cell_variant_id: "variant-id",
         p_nige: 0.05,
         p_senkou: 0.62,
         p_sashi: 0.25,
         p_oikomi: 0.08,
+        predicted_corner_front_score: 1.36,
+        predicted_corner_rank: 4,
         predicted_label: "senkou",
         predicted_class: 1,
       },
@@ -127,10 +158,14 @@ describe("flattenForInsert", () => {
       "01",
       "h1",
       1,
+      "model-key",
+      "variant-id",
       0.05,
       0.62,
       0.25,
       0.08,
+      1.36,
+      4,
       "senkou",
       1,
     ]);

@@ -112,6 +112,11 @@ const extractPeerInputs = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
 ): ReadonlyArray<HorsePeerInputs> => rows.map((row) => row.peerInputs);
 
+const computePredictedCornerFrontScore = (prediction: RunningStylePrediction): number =>
+  prediction.probabilities.senkou +
+  2 * prediction.probabilities.sashi +
+  3 * prediction.probabilities.oikomi;
+
 const predictionRowFromResult = (
   row: RaceHorseFeatureRow,
   prediction: RunningStylePrediction,
@@ -133,9 +138,27 @@ const predictionRowFromResult = (
   pSashi: prediction.probabilities.sashi,
   pSenkou: prediction.probabilities.senkou,
   predictedAt,
+  predictedCornerFrontScore: computePredictedCornerFrontScore(prediction),
+  predictedCornerRank: 0,
   predictedLabel: prediction.predictedLabel,
   raceKey: row.raceKey,
 });
+
+const assignPredictedCornerRanks = (
+  rows: ReadonlyArray<RaceRunningStyleRow>,
+): RaceRunningStyleRow[] => {
+  const ranks = new Map<number, number>();
+  [...rows]
+    .sort(
+      (left, right) =>
+        left.predictedCornerFrontScore - right.predictedCornerFrontScore ||
+        right.pNige - left.pNige ||
+        left.kettoTorokuBango.localeCompare(right.kettoTorokuBango) ||
+        left.horseNumber - right.horseNumber,
+    )
+    .forEach((row, index) => ranks.set(row.horseNumber, index + 1));
+  return rows.map((row) => ({ ...row, predictedCornerRank: ranks.get(row.horseNumber)! }));
+};
 
 const buildPredictionForHorse = (
   row: RaceHorseFeatureRow,
@@ -166,12 +189,14 @@ const predictRace = (
   predictedAt: string,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  return rows.map((row, index) =>
-    predictionRowFromResult(
-      row,
-      buildPredictionForHorse(row, fieldRows[index]!, model),
-      model.model_version,
-      predictedAt,
+  return assignPredictedCornerRanks(
+    rows.map((row, index) =>
+      predictionRowFromResult(
+        row,
+        buildPredictionForHorse(row, fieldRows[index]!, model),
+        model.model_version,
+        predictedAt,
+      ),
     ),
   );
 };
@@ -185,14 +210,16 @@ const predictRaceFlat = (
   cellVariantId?: string | null,
 ): RaceRunningStyleRow[] => {
   const fieldRows = computeFieldFeaturesPerHorse(extractPeerInputs(rows));
-  return rows.map((row, index) =>
-    predictionRowFromResult(
-      row,
-      buildFlatPredictionForHorse(row, fieldRows[index]!, model, calibrators),
-      model.header.model_version,
-      predictedAt,
-      cellModelKey,
-      cellVariantId,
+  return assignPredictedCornerRanks(
+    rows.map((row, index) =>
+      predictionRowFromResult(
+        row,
+        buildFlatPredictionForHorse(row, fieldRows[index]!, model, calibrators),
+        model.header.model_version,
+        predictedAt,
+        cellModelKey,
+        cellVariantId,
+      ),
     ),
   );
 };

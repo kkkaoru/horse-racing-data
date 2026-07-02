@@ -19,6 +19,8 @@ const buildRow = (horseNumber: number): RaceRunningStyleRow => ({
   pSashi: 0.1,
   pSenkou: 0.7,
   predictedAt: "2026-05-24T00:00:00.000Z",
+  predictedCornerFrontScore: 1.2,
+  predictedCornerRank: horseNumber,
   predictedLabel: "senkou",
   raceKey: "nar:20260524:35:01",
 });

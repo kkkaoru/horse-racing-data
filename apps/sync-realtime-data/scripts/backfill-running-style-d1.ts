@@ -39,6 +39,8 @@ interface PredictionJoinedRow {
   p_senkou: string;
   p_sashi: string;
   p_oikomi: string;
+  predicted_corner_front_score: string;
+  predicted_corner_rank: string;
   predicted_label: string;
   predicted_at: string;
 }
@@ -122,6 +124,8 @@ export const buildInsertSqlForRow = (row: PredictionJoinedRow): string => {
     "p_senkou",
     "p_sashi",
     "p_oikomi",
+    "predicted_corner_front_score",
+    "predicted_corner_rank",
     "predicted_label",
     "predicted_at",
   ].join(", ");
@@ -137,6 +141,8 @@ export const buildInsertSqlForRow = (row: PredictionJoinedRow): string => {
     String(Number(row.p_senkou)),
     String(Number(row.p_sashi)),
     String(Number(row.p_oikomi)),
+    String(Number(row.predicted_corner_front_score)),
+    String(Number(row.predicted_corner_rank)),
     formatStringValue(row.predicted_label),
     formatStringValue(row.predicted_at),
   ].join(", ");
@@ -165,6 +171,23 @@ export const buildFetchSql = (): string => `
     p.p_senkou,
     p.p_sashi,
     p.p_oikomi,
+    coalesce(
+      p.predicted_corner_front_score,
+      p.p_senkou + 2 * p.p_sashi + 3 * p.p_oikomi
+    ) as predicted_corner_front_score,
+    coalesce(
+      p.predicted_corner_rank,
+      row_number() over (
+        partition by p.source, p.kaisai_nen, p.kaisai_tsukihi, p.keibajo_code, p.race_bango
+        order by coalesce(
+                   p.predicted_corner_front_score,
+                   p.p_senkou + 2 * p.p_sashi + 3 * p.p_oikomi
+                 ) asc,
+                 p.p_nige desc,
+                 p.ketto_toroku_bango asc,
+                 p.umaban asc
+      )
+    ) as predicted_corner_rank,
     p.predicted_label,
     p.prediction_generated_at::text as predicted_at
   from race_running_style_model_predictions p

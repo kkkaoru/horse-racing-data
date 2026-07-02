@@ -47,7 +47,7 @@ describe("formatStringValue", () => {
 });
 
 describe("buildInsertSqlForRow", () => {
-  test("emits INSERT OR REPLACE with all 13 columns", () => {
+  test("emits INSERT OR REPLACE with corner columns", () => {
     const sql = buildInsertSqlForRow({
       source: "jra",
       kaisai_nen: "2025",
@@ -63,16 +63,14 @@ describe("buildInsertSqlForRow", () => {
       p_senkou: "0.62",
       p_sashi: "0.25",
       p_oikomi: "0.08",
+      predicted_corner_front_score: "1.36",
+      predicted_corner_rank: "4",
       predicted_label: "senkou",
       predicted_at: "2025-05-17 01:00:00+00",
     });
-    expect(sql).toContain("insert or replace into race_running_styles");
-    expect(sql).toContain("'jra:20250517:05:11'");
-    expect(sql).toContain("3, ");
-    expect(sql).toContain("'2020100001'");
-    expect(sql).toContain("'ロードカナロア'");
-    expect(sql).toContain("0.05");
-    expect(sql).toContain("'senkou'");
+    expect(sql).toBe(
+      "insert or replace into race_running_styles (race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen, model_version, p_nige, p_senkou, p_sashi, p_oikomi, predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_at) values ('jra:20250517:05:11', 3, '2020100001', 'ロードカナロア', 'jra', '2025', 'jra-rs-v1.0', 0.05, 0.62, 0.25, 0.08, 1.36, 4, 'senkou', '2025-05-17 01:00:00+00');",
+    );
   });
 
   test("encodes NULL bamei correctly", () => {
@@ -91,6 +89,8 @@ describe("buildInsertSqlForRow", () => {
       p_senkou: "0.20",
       p_sashi: "0.30",
       p_oikomi: "0.40",
+      predicted_corner_front_score: "2",
+      predicted_corner_rank: "7",
       predicted_label: "oikomi",
       predicted_at: "2025-02-28 07:00:00+00",
     });
@@ -113,6 +113,8 @@ describe("buildInsertSqlForRow", () => {
       p_senkou: "0.25",
       p_sashi: "0.25",
       p_oikomi: "0.25",
+      predicted_corner_front_score: "1.5",
+      predicted_corner_rank: "2",
       predicted_label: "sashi",
       predicted_at: "2025-05-17 01:00:00+00",
     });
@@ -167,6 +169,9 @@ describe("buildFetchSql", () => {
     expect(sql).toContain("running_style_active_models");
     expect(sql).toContain("nvd_se");
     expect(sql).toContain("p.kaisai_nen between $1 and $2");
+    expect(sql).toMatch(/coalesce\(\s+p\.predicted_corner_front_score/);
+    expect(sql).toMatch(/row_number\(\) over/);
+    expect(sql).toMatch(/as predicted_corner_rank/);
   });
 });
 
