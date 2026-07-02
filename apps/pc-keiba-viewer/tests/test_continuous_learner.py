@@ -5479,6 +5479,102 @@ def test_cell_accuracy_store_save_metric_payload(tmp_path: Path) -> None:
     }
 
 
+def test_cell_accuracy_store_adds_model_provenance_to_metric_payload(
+    tmp_path: Path,
+) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    metric = SubgroupMetrics(
+        subgroup="jra_turf_mile_E_summer_10",
+        category="jra",
+        surface="turf",
+        distance_band="mile",
+        class_label="E",
+        season="summer",
+        venue="10",
+        race_count=50,
+        ndcg_at_3=0.85,
+        top1_accuracy=0.42,
+        place2_accuracy=0.38,
+        place3_accuracy=0.35,
+        place4_accuracy=0.30,
+        place5_accuracy=0.25,
+        place6_accuracy=0.20,
+        top3_box_accuracy=0.15,
+    )
+    store.save_cell_metrics(
+        "abc123",
+        120,
+        [metric],
+        model_version="auto-jra-1",
+        architecture="catboost",
+        method="block_tpe",
+    )
+    params = mock_cursor.execute.call_args[0][1]
+    payload = json.loads(cast(str, params[22]))
+    assert payload["model_version"] == "auto-jra-1"
+    assert payload["architecture"] == "catboost"
+    assert payload["method"] == "block_tpe"
+
+
+def test_cell_accuracy_store_keeps_existing_payload_provenance(tmp_path: Path) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    mock_cursor = MagicMock()
+    mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+    mock_cursor.__exit__ = MagicMock(return_value=False)
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cursor
+    store = CellAccuracyStore.__new__(CellAccuracyStore)
+    store._con = mock_conn
+    metric = cast(
+        SubgroupMetrics,
+        {
+            "subgroup": "jra_turf_mile_E_summer_10",
+            "category": "jra",
+            "surface": "turf",
+            "distance_band": "mile",
+            "class_label": "E",
+            "season": "summer",
+            "venue": "10",
+            "race_count": 50,
+            "ndcg_at_3": 0.85,
+            "top1_accuracy": 0.42,
+            "place2_accuracy": 0.38,
+            "place3_accuracy": 0.35,
+            "place4_accuracy": 0.30,
+            "place5_accuracy": 0.25,
+            "place6_accuracy": 0.20,
+            "top3_box_accuracy": 0.15,
+            "metric_payload": {
+                "metric_schema_version": "custom",
+                "model_version": "payload-model",
+                "architecture": "lightgbm",
+            },
+        },
+    )
+    store.save_cell_metrics(
+        "abc123",
+        120,
+        [metric],
+        model_version="fallback-model",
+        architecture="catboost",
+        method="block_tpe",
+    )
+    params = mock_cursor.execute.call_args[0][1]
+    payload = json.loads(cast(str, params[22]))
+    assert payload["model_version"] == "payload-model"
+    assert payload["architecture"] == "lightgbm"
+    assert payload["method"] == "block_tpe"
+
+
 def test_sire_venue_bias_adds_five_columns() -> None:
     df = pl.DataFrame({
         "ketto_toroku_bango": ["H1", "H2", "H3", "H4"],

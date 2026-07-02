@@ -15,6 +15,7 @@ from learning.build_cell_models import (
     AdoptionResult,
     CellKey,
     CellMetrics,
+    all_gated_metrics_improved,
     bootstrap_lb95,
     check_multi_metric_gate,
     check_no_regression,
@@ -27,6 +28,7 @@ from learning.build_cell_models import (
     load_cell_metrics,
     main,
     parse_row,
+    select_best_adoptions_by_cell,
     synthesize_hit_vector,
     variant_name_for_hash,
 )
@@ -69,6 +71,9 @@ def _metrics(
     top3_box: float = 0.50,
     evaluated_at: datetime = _FRESH,
     feature_names: list[str] | None = None,
+    model_version: str | None = None,
+    architecture: str | None = None,
+    method: str | None = None,
 ) -> CellMetrics:
     return CellMetrics(
         race_count=race_count,
@@ -82,6 +87,9 @@ def _metrics(
         evaluated_at=evaluated_at,
         feature_set_hash=feature_set_hash,
         feature_names=feature_names if feature_names is not None else ["f1", "f2"],
+        model_version=model_version,
+        architecture=architecture,
+        method=method,
     )
 
 
@@ -171,6 +179,18 @@ def test_no_regression_fails_when_a_metric_drops_beyond_threshold() -> None:
     passed, reasons = check_no_regression(deltas)
     assert passed is False
     assert reasons == ["place4 regressed by -0.01000 (<= -0.0005)"]
+
+
+def test_all_gated_metrics_improved_requires_min_delta_for_finish_position() -> None:
+    deltas = {name: 0.001 for name in subject._NO_REGRESSION_METRICS}
+    assert all_gated_metrics_improved(deltas) is True
+    deltas["place4"] = 0.0001
+    assert all_gated_metrics_improved(deltas) is False
+
+
+def test_all_gated_metrics_improved_is_finish_position_only() -> None:
+    deltas = {"top1": 0.001, "place2": 0.001, "place3": 0.001}
+    assert all_gated_metrics_improved(deltas, prediction_target="running_style") is False
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +289,62 @@ def test_evaluate_cell_rejects_on_weak_lb95() -> None:
     assert any("bootstrap LB95" in reason for reason in result.rejection_reasons)
 
 
+def test_evaluate_cell_adopts_all_metric_improvement_with_weak_lb95() -> None:
+    baseline = _metrics(
+        "BASE",
+        race_count=200,
+        top1=0.400,
+        place2=0.300,
+        place3=0.250,
+        place4=0.200,
+        place5=0.180,
+        place6=0.150,
+        top3_box=0.500,
+    )
+    candidate = _metrics(
+        "CAND",
+        race_count=200,
+        top1=0.401,
+        place2=0.301,
+        place3=0.251,
+        place4=0.201,
+        place5=0.181,
+        place6=0.151,
+        top3_box=0.501,
+    )
+    result = evaluate_cell(_cell(), baseline, candidate, n_boot=300, now=_NOW)
+    assert result.adopted is True
+    assert not any("bootstrap LB95" in reason for reason in result.rejection_reasons)
+
+
+def test_evaluate_cell_does_not_rescue_when_non_primary_metric_improves_too_little() -> None:
+    baseline = _metrics(
+        "BASE",
+        race_count=200,
+        top1=0.400,
+        place2=0.300,
+        place3=0.250,
+        place4=0.200,
+        place5=0.180,
+        place6=0.150,
+        top3_box=0.500,
+    )
+    candidate = _metrics(
+        "CAND",
+        race_count=200,
+        top1=0.401,
+        place2=0.301,
+        place3=0.251,
+        place4=0.2001,
+        place5=0.181,
+        place6=0.151,
+        top3_box=0.501,
+    )
+    result = evaluate_cell(_cell(), baseline, candidate, n_boot=300, now=_NOW)
+    assert result.adopted is False
+    assert any("bootstrap LB95" in reason for reason in result.rejection_reasons)
+
+
 def test_evaluate_cell_running_style_uses_accuracy_required_profile() -> None:
     baseline = _metrics("BASE", top1=0.40, place2=0.65, place3=0.30)
     candidate = _metrics("CAND", top1=0.50, place2=0.75, place3=0.30)
@@ -351,6 +427,165 @@ def test_group_variants_groups_by_feature_set_hash() -> None:
     assert len(groups["cell-hash1aaa"]) == 2
 
 
+def test_group_variants_splits_same_hash_by_runtime_model_identity() -> None:
+    baseline = _metrics("BASE")
+    result_a = AdoptionResult(
+        cell=_cell(class_label="A"),
+        candidate=_metrics(
+            "hash1aaaa",
+            model_version="model-a",
+            architecture="xgboost",
+        ),
+        baseline=baseline,
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    result_b = AdoptionResult(
+        cell=_cell(class_label="B"),
+        candidate=_metrics(
+            "hash1aaaa",
+            model_version="model-b",
+            architecture="lightgbm",
+        ),
+        baseline=baseline,
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    groups = group_variants([result_a, result_b])
+    assert len(groups) == 2
+    assert sorted(len(results) for results in groups.values()) == [1, 1]
+
+
+def test_select_best_adoptions_by_cell_keeps_strongest_candidate() -> None:
+    cell = _cell()
+    baseline = _metrics("BASE")
+    weak = AdoptionResult(
+        cell=cell,
+        candidate=_metrics("weakhash", race_count=400),
+        baseline=baseline,
+        deltas={
+            "top1": 0.002,
+            "place2": 0.002,
+            "place3": 0.002,
+            "place4": 0.001,
+            "place5": 0.001,
+            "place6": 0.001,
+            "top3_box": 0.001,
+        },
+        adopted=True,
+        rejection_reasons=[],
+    )
+    strong = AdoptionResult(
+        cell=cell,
+        candidate=_metrics("stronghash", race_count=400),
+        baseline=baseline,
+        deltas={
+            "top1": 0.005,
+            "place2": 0.004,
+            "place3": 0.004,
+            "place4": 0.001,
+            "place5": 0.001,
+            "place6": 0.001,
+            "top3_box": 0.001,
+        },
+        adopted=True,
+        rejection_reasons=[],
+    )
+    selected = select_best_adoptions_by_cell([weak, strong])
+    assert selected == [strong]
+    assert select_best_adoptions_by_cell([strong, weak]) == [strong]
+
+
+def test_select_best_adoptions_by_cell_retains_distinct_cells() -> None:
+    baseline = _metrics("BASE")
+    result_a = AdoptionResult(
+        cell=_cell(class_label="A"),
+        candidate=_metrics("hash-a"),
+        baseline=baseline,
+        deltas={"top1": 0.002, "place2": 0.002, "place3": 0.002},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    result_b = AdoptionResult(
+        cell=_cell(class_label="B"),
+        candidate=_metrics("hash-b"),
+        baseline=baseline,
+        deltas={"top1": 0.002, "place2": 0.002, "place3": 0.002},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    selected = select_best_adoptions_by_cell([result_b, result_a])
+    assert selected == [result_a, result_b]
+
+
+def test_select_best_adoptions_by_cell_ignores_finish_position_cell_subgroup() -> None:
+    baseline = _metrics("BASE")
+    legacy_subgroup = AdoptionResult(
+        cell=_cell(cell_subgroup="legacy-subgroup"),
+        candidate=_metrics("legacyhash"),
+        baseline=baseline,
+        deltas={
+            "top1": 0.002,
+            "place2": 0.002,
+            "place3": 0.002,
+            "place4": 0.001,
+            "place5": 0.001,
+            "place6": 0.001,
+            "top3_box": 0.001,
+        },
+        adopted=True,
+        rejection_reasons=[],
+    )
+    stronger_blank_subgroup = AdoptionResult(
+        cell=_cell(cell_subgroup=""),
+        candidate=_metrics("stronghash"),
+        baseline=baseline,
+        deltas={
+            "top1": 0.004,
+            "place2": 0.004,
+            "place3": 0.004,
+            "place4": 0.001,
+            "place5": 0.001,
+            "place6": 0.001,
+            "top3_box": 0.001,
+        },
+        adopted=True,
+        rejection_reasons=[],
+    )
+    selected = select_best_adoptions_by_cell(
+        [legacy_subgroup, stronger_blank_subgroup],
+        "finish_position",
+    )
+    assert selected == [stronger_blank_subgroup]
+
+
+def test_select_best_adoptions_by_cell_keeps_running_style_cell_subgroup() -> None:
+    baseline = _metrics("BASE")
+    subgroup_a = AdoptionResult(
+        cell=_cell(cell_subgroup="703"),
+        candidate=_metrics("hash-a"),
+        baseline=baseline,
+        deltas={"top1": 0.002, "place2": 0.002, "place3": 0.002},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    subgroup_b = AdoptionResult(
+        cell=_cell(cell_subgroup="OP"),
+        candidate=_metrics("hash-b"),
+        baseline=baseline,
+        deltas={"top1": 0.002, "place2": 0.002, "place3": 0.002},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    selected = select_best_adoptions_by_cell(
+        [subgroup_b, subgroup_a],
+        "running_style",
+    )
+    assert selected == [subgroup_a, subgroup_b]
+
+
 # ---------------------------------------------------------------------------
 # generate_routing_json
 
@@ -402,6 +637,36 @@ def test_generate_routing_json_with_variant_and_rule() -> None:
                 }
             ],
         }
+    }
+
+
+def test_generate_routing_json_uses_candidate_model_provenance_when_present() -> None:
+    result = AdoptionResult(
+        cell=_cell(class_label="E", subgroup="mile", racetrack="54", surface="dirt"),
+        candidate=_metrics(
+            "hashNAR54",
+            feature_names=["f1", "f2", "f3"],
+            model_version="nar-mile-e-54-lgbm-v1",
+            architecture="lightgbm",
+            method="cell-train-lgbm",
+        ),
+        baseline=_metrics("BASE"),
+        deltas={},
+        adopted=True,
+        rejection_reasons=[],
+    )
+    variants = group_variants([result])
+    config = generate_routing_json("nar", "nar-prod", 200, "xgboost", variants)
+    nar = cast("dict[str, object]", config["nar"])
+    variant_specs = cast("dict[str, dict[str, object]]", nar["variants"])
+    variant_name = next(name for name in variant_specs if name != "sim")
+    assert variant_specs[variant_name] == {
+        "model_version": "nar-mile-e-54-lgbm-v1",
+        "feature_count": 3,
+        "feature_set_hash": "hashNAR54",
+        "feature_names": ["f1", "f2", "f3"],
+        "architecture": "lightgbm",
+        "method": "cell-train-lgbm",
     }
 
 
@@ -556,6 +821,7 @@ def _db_row(
     class_label: str = "A",
     top1: float = 0.40,
     subgroup: str = "subgroup-703",
+    metric_payload: dict[str, object] | None = None,
 ) -> tuple[object, ...]:
     return (
         "jra",
@@ -576,6 +842,7 @@ def _db_row(
         0.50,
         _FRESH,
         ["f1", "f2"],
+        metric_payload if metric_payload is not None else {},
     )
 
 
@@ -595,6 +862,40 @@ def test_parse_row_maps_distance_band_to_router_cell() -> None:
     assert metrics.feature_set_hash == "BASE"
     assert metrics.feature_names == ["f1", "f2"]
     assert metrics.evaluated_at == _FRESH
+
+
+def test_parse_row_reads_model_provenance_from_metric_payload() -> None:
+    _, metrics = parse_row(
+        _db_row(
+            "CAND",
+            metric_payload={
+                "model_version": "nar-mile-e-54-lgbm-v1",
+                "architecture": "lightgbm",
+                "method": "cell-train-lgbm",
+            },
+        )
+    )
+    assert metrics.model_version == "nar-mile-e-54-lgbm-v1"
+    assert metrics.architecture == "lightgbm"
+    assert metrics.method == "cell-train-lgbm"
+
+
+def test_parse_row_reads_model_provenance_from_extra_payload() -> None:
+    _, metrics = parse_row(
+        _db_row(
+            "CAND",
+            metric_payload={
+                "extra": {
+                    "model_version": "auto-jra-1",
+                    "architecture": "catboost",
+                    "exploration_method": "block_tpe",
+                }
+            },
+        )
+    )
+    assert metrics.model_version == "auto-jra-1"
+    assert metrics.architecture == "catboost"
+    assert metrics.method == "block_tpe"
 
 
 def test_parse_row_normalizes_canonical_finish_position_subgroup() -> None:
@@ -761,6 +1062,68 @@ def test_main_writes_output_file(tmp_path: Path) -> None:
     assert jra["variants"]["sim"]["feature_count"] == 2
     assert jra["variants"]["cell-CANDIDAT"]["feature_count"] == 3
     assert len(jra["rules"]) == 1
+
+
+def test_main_writes_only_best_candidate_for_each_cell(tmp_path: Path) -> None:
+    output_path = tmp_path / "cell_routing.json"
+    cell = _cell()
+    baseline = _metrics(
+        "BASE",
+        top1=0.40,
+        place2=0.30,
+        place3=0.25,
+        evaluated_at=datetime.now(timezone.utc),
+    )
+    weaker = _metrics(
+        "WEAKERHASH",
+        top1=0.50,
+        place2=0.40,
+        place3=0.35,
+        evaluated_at=datetime.now(timezone.utc),
+        feature_names=["f1", "f2", "weak"],
+    )
+    stronger = _metrics(
+        "STRONGERHASH",
+        top1=0.55,
+        place2=0.45,
+        place3=0.40,
+        evaluated_at=datetime.now(timezone.utc),
+        feature_names=["f1", "f2", "strong"],
+    )
+    conn = MagicMock()
+    with patch.object(subject, "_connect", return_value=conn), patch.object(
+        subject,
+        "load_cell_metrics",
+        return_value={cell: [baseline, weaker, stronger]},
+    ):
+        main(
+            [
+                "--pg-url",
+                "postgresql://example",
+                "--category",
+                "jra",
+                "--baseline-hash",
+                "BASE",
+                "--output-path",
+                str(output_path),
+            ]
+        )
+    config = json.loads(output_path.read_text(encoding="utf-8"))
+    jra = config["jra"]
+    assert "cell-STRONGER" in jra["variants"]
+    assert "cell-WEAKERHA" not in jra["variants"]
+    assert jra["rules"] == [
+        {
+            "conditions": [
+                {"dimension": "class", "values": ["A"]},
+                {"dimension": "distance_band", "values": ["mile"]},
+                {"dimension": "season", "values": ["summer"]},
+                {"dimension": "surface", "values": ["turf"]},
+                {"dimension": "venue", "values": ["05"]},
+            ],
+            "variant": "cell-STRONGER",
+        }
+    ]
 
 
 def _patched_banei_grouped() -> dict[CellKey, list[CellMetrics]]:

@@ -2541,6 +2541,7 @@ def save_running_style_cell_training_evaluations(
     trained_cells: Sequence[Mapping[str, object]],
     *,
     pg_url: str,
+    model_version: str,
 ) -> int:
     from learning.continuous_learner import CellAccuracyStore
     from learning.subgroup_diagnostics import SubgroupMetrics
@@ -2575,6 +2576,9 @@ def save_running_style_cell_training_evaluations(
                 cast(list[SubgroupMetrics], list(metrics)),
                 list(feature_names),
                 prediction_target="running_style",
+                model_version=model_version,
+                architecture="lightgbm",
+                method="train-cells",
             )
     return saved
 
@@ -2692,6 +2696,7 @@ def run_train_cells_command(args: argparse.Namespace) -> None:
         saved_cell_training_evaluations = save_running_style_cell_training_evaluations(
             trained_cells,
             pg_url=args.pg_url,
+            model_version=args.model_version,
         )
     elapsed = perf_counter() - started
     print(

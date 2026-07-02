@@ -91,6 +91,12 @@ _TRAINING_SCRIPT: Final[dict[str, str]] = {
     "ban-ei": "train_finish_position_catboost_walk_forward.py",
 }
 
+_ARCHITECTURE_BY_CATEGORY: Final[dict[str, str]] = {
+    "jra": "catboost",
+    "nar": "xgboost",
+    "ban-ei": "catboost",
+}
+
 _CATEGORY_TRAIN_START: Final[dict[str, str]] = {
     "jra": "20130101",
     "nar": "20060101",
@@ -713,6 +719,9 @@ class CellAccuracyStore:
         metrics: list[SubgroupMetrics],
         feature_names: list[str] | None = None,
         prediction_target: str = "finish_position",
+        model_version: str | None = None,
+        architecture: str | None = None,
+        method: str | None = None,
     ) -> int:
         assert self._con is not None
         sorted_names = sorted(feature_names) if feature_names is not None else []
@@ -744,6 +753,13 @@ class CellAccuracyStore:
                     accuracy_vector=cast(list[object], accuracy_vector),
                     cell_vector=cast(list[object], cell_vector),
                 )
+                for key, value in {
+                    "model_version": model_version,
+                    "architecture": architecture,
+                    "method": method,
+                }.items():
+                    if value is not None:
+                        metric_payload.setdefault(key, value)
                 cur.execute(
                     _CELL_EVAL_UPSERT,
                     (
@@ -1637,7 +1653,13 @@ class ContinuousLearner:
 
         if self._cell_accuracy_store is not None and new_metrics:
             saved = self._cell_accuracy_store.save_cell_metrics(
-                feature_set_hash, len(feature_names), new_metrics, feature_names
+                feature_set_hash,
+                len(feature_names),
+                new_metrics,
+                feature_names,
+                prediction_target="finish_position",
+                architecture=_ARCHITECTURE_BY_CATEGORY.get(self._category),
+                method=self._exploration_method,
             )
             _logger.info("cell accuracy store: saved %d cell evaluations", saved)
 

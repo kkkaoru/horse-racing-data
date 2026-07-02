@@ -2130,6 +2130,9 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
             feature_names: list[str],
             *,
             prediction_target: str,
+            model_version: str | None = None,
+            architecture: str | None = None,
+            method: str | None = None,
         ) -> int:
             calls.append(
                 {
@@ -2139,6 +2142,9 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
                     "metrics": metrics,
                     "feature_names": feature_names,
                     "prediction_target": prediction_target,
+                    "model_version": model_version,
+                    "architecture": architecture,
+                    "method": method,
                 }
             )
             return len(metrics)
@@ -2183,6 +2189,7 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
             },
         ],
         pg_url="postgresql://local/test",
+        model_version="rs-cell-v1",
     )
 
     assert saved == 2
@@ -2198,6 +2205,9 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
     assert calls[0]["feature_count"] == 2
     assert calls[0]["feature_names"] == ["feature_b", "feature_a"]
     assert calls[0]["prediction_target"] == "running_style"
+    assert calls[0]["model_version"] == "rs-cell-v1"
+    assert calls[0]["architecture"] == "lightgbm"
+    assert calls[0]["method"] == "train-cells"
     assert len(cast(list[object], calls[0]["metrics"])) == 2
 
 

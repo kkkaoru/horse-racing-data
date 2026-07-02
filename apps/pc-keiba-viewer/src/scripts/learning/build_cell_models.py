@@ -4,9 +4,10 @@ Reads cell-level Walk-Forward evaluations written by ``continuous_learner`` into
 the PostgreSQL table ``cell_training_evaluations`` and, for each cell, compares a
 candidate feature set against the production baseline through a multi-metric
 adoption gate (sample size, multi-metric improvement, no-regression, bootstrap
-LB95, freshness, baseline-exists). Cells that adopt a candidate are grouped by
-feature-set hash into routing *variants* and emitted as the N-variant
-``cell_routing.json`` consumed by ``predict_lib.cell_router`` /
+LB95 or all-metric point improvement, freshness, baseline-exists). When multiple
+candidates pass for the same cell, the best target-specific candidate is kept,
+then cells are grouped by feature-set hash into routing *variants* and emitted
+as the N-variant ``cell_routing.json`` consumed by ``predict_lib.cell_router`` /
 ``predict_upcoming``.
 
 The module is importable without side effects: nothing connects to PostgreSQL or
@@ -16,6 +17,7 @@ touches the filesystem at import time.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import sys
@@ -135,7 +137,7 @@ SELECT category, class_label, distance_band, venue, season, surface, subgroup,
        feature_set_hash, race_count,
        top1_accuracy, place2_accuracy, place3_accuracy,
        place4_accuracy, place5_accuracy, place6_accuracy,
-       top3_box_accuracy, evaluated_at, feature_names_array
+       top3_box_accuracy, evaluated_at, feature_names_array, metric_payload
 FROM cell_training_evaluations
 WHERE prediction_target = %s AND category = %s
 """
@@ -165,6 +167,9 @@ class CellMetrics:
     evaluated_at: datetime
     feature_set_hash: str
     feature_names: list[str]
+    model_version: str | None = None
+    architecture: str | None = None
+    method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,6 +241,20 @@ def check_no_regression(
         if deltas.get(name, 0.0) <= threshold
     ]
     return not reasons, reasons
+
+
+def all_gated_metrics_improved(
+    deltas: Mapping[str, float],
+    min_delta: float = DEFAULT_MIN_DELTA,
+    prediction_target: PredictionTarget = "finish_position",
+) -> bool:
+    """Return true when every finish-position gated metric clears ``min_delta``."""
+    if prediction_target != "finish_position":
+        return False
+    profile = _ADOPTION_PROFILES[prediction_target]
+    return all(
+        deltas.get(name, 0.0) >= min_delta for name in profile.no_regression_metrics
+    )
 
 
 def synthesize_hit_vector(accuracy: float, race_count: int) -> list[float]:
@@ -312,6 +331,7 @@ def evaluate_cell(
     )
     reasons.extend(no_regression_reasons)
 
+    bootstrap_reasons: list[str] = []
     for name in profile.primary_metrics:
         if deltas[name] < min_delta:
             continue
@@ -321,7 +341,12 @@ def evaluate_cell(
             n_boot=n_boot,
         )
         if lb95 <= 0.0:
-            reasons.append(f"{name} bootstrap LB95 {lb95:+.5f} <= 0")
+            bootstrap_reasons.append(f"{name} bootstrap LB95 {lb95:+.5f} <= 0")
+
+    if bootstrap_reasons and not all_gated_metrics_improved(
+        deltas, min_delta, prediction_target
+    ):
+        reasons.extend(bootstrap_reasons)
 
     return AdoptionResult(
         cell=cell,
@@ -377,15 +402,107 @@ def variant_name_for_hash(feature_set_hash: str) -> str:
     return f"cell-{feature_set_hash[:8]}"
 
 
+def _slug_for_variant(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in value.lower()).strip("-")
+
+
+def variant_name_for_result(result: AdoptionResult) -> str:
+    candidate = result.candidate
+    if (
+        candidate.model_version is None
+        and candidate.architecture is None
+        and candidate.method is None
+    ):
+        return variant_name_for_hash(candidate.feature_set_hash)
+    identity = json.dumps(
+        {
+            "feature_set_hash": candidate.feature_set_hash,
+            "model_version": candidate.model_version,
+            "architecture": candidate.architecture,
+            "method": candidate.method,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    suffix = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:8]
+    model_hint = (
+        f"-{_slug_for_variant(candidate.model_version)[:24]}"
+        if candidate.model_version
+        else f"-{_slug_for_variant(candidate.method)[:24]}"
+        if candidate.method
+        else ""
+    )
+    return f"cell-{candidate.feature_set_hash[:8]}{model_hint}-{suffix}"
+
+
 def group_variants(
     adopted: Sequence[AdoptionResult],
 ) -> dict[str, list[AdoptionResult]]:
-    """Group adopted cells by candidate feature-set hash -> variant name."""
+    """Group adopted cells by candidate runtime identity -> variant name."""
     groups: dict[str, list[AdoptionResult]] = {}
     for result in adopted:
-        variant = variant_name_for_hash(result.candidate.feature_set_hash)
+        variant = variant_name_for_result(result)
         groups.setdefault(variant, []).append(result)
     return groups
+
+
+def _adoption_sort_key(
+    result: AdoptionResult,
+    prediction_target: PredictionTarget,
+) -> tuple[float, float, float, int, datetime, str]:
+    profile = _ADOPTION_PROFILES[prediction_target]
+    primary_score = sum(
+        result.deltas.get(name, 0.0) for name in profile.primary_metrics
+    )
+    required_score = sum(
+        result.deltas.get(name, 0.0) for name in profile.required_improved_metrics
+    )
+    safety_score = sum(
+        result.deltas.get(name, 0.0) for name in profile.no_regression_metrics
+    )
+    return (
+        primary_score,
+        required_score,
+        safety_score,
+        result.candidate.race_count,
+        result.candidate.evaluated_at,
+        result.candidate.feature_set_hash,
+    )
+
+
+def _cell_selection_key(
+    cell: CellKey,
+    prediction_target: PredictionTarget,
+) -> tuple[str, str, str, str, str, str, str]:
+    cell_subgroup = cell.cell_subgroup if prediction_target == "running_style" else ""
+    return (
+        cell.category,
+        cell.class_label,
+        cell.subgroup,
+        cell.season,
+        cell.surface,
+        cell.racetrack,
+        cell_subgroup,
+    )
+
+
+def select_best_adoptions_by_cell(
+    adopted: Sequence[AdoptionResult],
+    prediction_target: PredictionTarget = "finish_position",
+) -> list[AdoptionResult]:
+    """Keep exactly one target-specific best adopted candidate per cell."""
+    best_by_cell: dict[tuple[str, str, str, str, str, str, str], AdoptionResult] = {}
+    for result in adopted:
+        if not result.adopted:
+            continue
+        key = _cell_selection_key(result.cell, prediction_target)
+        current = best_by_cell.get(key)
+        if current is None or _adoption_sort_key(
+            result, prediction_target
+        ) > _adoption_sort_key(current, prediction_target):
+            best_by_cell[key] = result
+    return [best_by_cell[key] for key in sorted(best_by_cell)]
 
 
 def _cell_sort_key(cell: CellKey) -> tuple[str, str, str, str, str, str]:
@@ -436,12 +553,18 @@ def generate_routing_json(
     rules: list[dict[str, object]] = []
     for variant_name in sorted(variants):
         results = variants[variant_name]
+        first_candidate = results[0].candidate
+        variant_spec: dict[str, object] = {
+            "model_version": first_candidate.model_version or variant_name,
+            "feature_count": len(first_candidate.feature_names),
+            "feature_set_hash": first_candidate.feature_set_hash,
+            "feature_names": sorted(first_candidate.feature_names),
+            "architecture": first_candidate.architecture or default_architecture,
+        }
+        if first_candidate.method is not None:
+            variant_spec["method"] = first_candidate.method
         variant_specs[variant_name] = {
-            "model_version": variant_name,
-            "feature_count": len(results[0].candidate.feature_names),
-            "feature_set_hash": results[0].candidate.feature_set_hash,
-            "feature_names": sorted(results[0].candidate.feature_names),
-            "architecture": default_architecture,
+            **variant_spec,
         }
         for result in sorted(results, key=lambda r: _cell_sort_key(r.cell)):
             rules.append(
@@ -528,6 +651,33 @@ def _normalize_cell_subgroup(
     return cell_subgroup
 
 
+def _payload_mapping(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return cast("Mapping[str, object]", value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, Mapping):
+            return cast("Mapping[str, object]", parsed)
+    return {}
+
+
+def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    extra = payload.get("extra")
+    if isinstance(extra, Mapping):
+        for key in keys:
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
 def parse_row(
     row: Sequence[object],
     prediction_target: PredictionTarget = "finish_position",
@@ -558,6 +708,7 @@ def parse_row(
         surface=surface,
         cell_subgroup=cell_subgroup,
     )
+    payload = _payload_mapping(row[18] if len(row) > 18 else {})
     feature_names = [str(name) for name in cast("Sequence[object]", row[17])]
     metrics = CellMetrics(
         race_count=int(cast("SupportsInt", row[8])),
@@ -571,6 +722,9 @@ def parse_row(
         evaluated_at=cast("datetime", row[16]),
         feature_set_hash=str(row[7]),
         feature_names=feature_names,
+        model_version=_payload_string(payload, "model_version", "modelVersion"),
+        architecture=_payload_string(payload, "architecture", "model_architecture"),
+        method=_payload_string(payload, "method", "search_method", "exploration_method"),
     )
     return cell, metrics
 
@@ -677,7 +831,8 @@ def main(argv: list[str] | None = None) -> None:
         freshness_days=int(args.freshness_days),
         prediction_target=prediction_target,
     )
-    adopted = [result for result in results if result.adopted]
+    candidate_adoptions = [result for result in results if result.adopted]
+    adopted = select_best_adoptions_by_cell(candidate_adoptions, prediction_target)
     variants = group_variants(adopted)
     if prediction_target == "running_style":
         config = generate_running_style_feature_selection_json(
@@ -696,11 +851,13 @@ def main(argv: list[str] | None = None) -> None:
     payload = json.dumps(config, ensure_ascii=False, indent=2)
 
     _logger.info(
-        "category=%s prediction_target=%s cells=%d candidates=%d adopted=%d variants=%d",
+        "category=%s prediction_target=%s cells=%d candidates=%d adopted_candidates=%d "
+        "selected_cells=%d variants=%d",
         category,
         prediction_target,
         len(grouped),
         len(results),
+        len(candidate_adoptions),
         len(adopted),
         len(variants),
     )

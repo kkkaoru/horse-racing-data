@@ -351,10 +351,11 @@ routing のログ・summary では `cellModelKey` と `cellVariantId` を確認�
 4. walk-forward / local prediction parquet は `apply-running-style-postproc.ts` で `predicted_corner_front_score = p_senkou + 2*p_sashi + 3*p_oikomi` と race 内 `predicted_corner_rank` を生成する。これは脚質確率から作るコーナー通過順予測であり、actual corner 列を scoring input にしてはならない。
 5. `evaluate-running-style-bucket-21y.ts` は `load_running_style_predictions.py` 経由で `predicted_corner_front_score` を PostgreSQL temp table に読み、`running_style_model_bucket_evaluations` へ cell provenance（`cell_model_key` / `cell_variant_id`）付きで `corner1_pair_score_sum/count`、`corner3_pair_score_sum/count`、`corner4_pair_score_sum/count`、`finish_pair_score_sum/count` を upsert する。これが新方式の cell 単位コーナー順序評価の永続化経路である。metrics JSON を 1 行ずつ反映する補助経路 `insert_running_style_bucket_evaluation_row.py` も同じ 51 列構成で保存する。
 6. `build_cell_models.py --prediction-target running_style` で baseline variant と候補 variant を同じ cell 定義・同じ holdout window で比較する。
-7. 採用 cell だけを feature-selection routing JSON に残す。`build_cell_models.py --prediction-target running_style` が出力する JSON は `type = running_style_cell_feature_selection_routing` / `worker_production_routing = false` のローカル学習用 control plane であり、Worker production routing JSON ではない。variant には `feature_set_hash` と `feature_names` を含める。
-8. `running_style_lightgbm.py train-cells --cell-feature-selection-json <routing.json>` で採用 cell ごとの `feature_names` を読み、cell ごとに最良だった特徴量セットで local model artifact を作る。未採用 cell は全体特徴量または source latest に fallback する。
-9. 採用 variant の LightGBM artifact を Worker が読む header metadata 込み flatbin へ変換し、`RUNNING_STYLE_MODELS` R2 に upload する。
-10. upload 済み R2 key だけを `RUNNING_STYLE_CELL_ROUTING_JSON` の `variants[*].modelKey` に反映し、Cloudflare Worker の設定として promote する。
+7. adoption gate を通過した候補が同一 cell に複数ある場合、cell ごとに target-specific score が最良の 1 candidate（method / `model_version` / `feature_set_hash`）へ絞る。routing JSON へ出すのは gate 通過候補すべてではなく、この per-cell winner のみである。
+8. 採用 cell だけを feature-selection routing JSON に残す。`build_cell_models.py --prediction-target running_style` が出力する JSON は `type = running_style_cell_feature_selection_routing` / `worker_production_routing = false` のローカル学習用 control plane であり、Worker production routing JSON ではない。variant には `feature_set_hash` と `feature_names` を含める。
+9. `running_style_lightgbm.py train-cells --cell-feature-selection-json <routing.json>` で採用 cell ごとの `feature_names` を読み、cell ごとに最良だった特徴量セットで local model artifact を作る。未採用 cell は全体特徴量または source latest に fallback する。
+10. 採用 variant の LightGBM artifact を Worker が読む header metadata 込み flatbin へ変換し、`RUNNING_STYLE_MODELS` R2 に upload する。
+11. upload 済み R2 key だけを `RUNNING_STYLE_CELL_ROUTING_JSON` の `variants[*].modelKey` に反映し、Cloudflare Worker の設定として promote する。
 
 `train-cells` の LightGBM resource control は `--num-threads auto` が既定である。auto は macOS の load average、available memory（free / inactive / speculative / purgeable）、compressor 使用量から fit ごとの thread 数を決め、さらに `/tmp` の slot lock で同時 fit 数を制御する。明示的な固定値が必要な検証時だけ `--num-threads 1` のように指定する。
 
@@ -738,6 +739,8 @@ serve 精度レポート用の durable bucket evaluation は `running_style_mode
 
 `running_style_model_bucket_evaluations` の DDL は旧 schema の local / Neon にも再実行できる。`cell_model_key` / `cell_variant_id` と pair score 列を `add column if not exists` で追加し、旧 unique / lookup index が cell provenance を含まない場合は drop して新定義で再作成する。旧 index のまま `insert_running_style_bucket_evaluation_row.py` や batch upsert を実行すると `ON CONFLICT` が cell 単位にならないため、DDL bootstrap を先に通す。
 
+`cell_training_evaluations.metric_payload` は target-native metric に加えて optional provenance として `model_version`、`architecture`、`method` を保持できる。専用列は追加しない。`CellAccuracyStore` は caller が provenance を渡した場合だけ JSONB に追記し、payload が既に同名キーを持つ場合は payload 側を優先する。`build_cell_models.py` はこの provenance がある候補では routing variant の `model_version` / `architecture` / `method` に反映し、無い既存行は従来通り `cell-<feature_set_hash prefix>` の後方互換 variant として扱う。
+
 ### 6.3 cell_routing.json によるデータ駆動ルーティング
 
 `apps/finish-position-predict-container/src/predict_lib/cell_routing.json` が data-driven なモデルルーティングを駆動する。
@@ -827,7 +830,8 @@ flowchart LR
 
 - WF は時系列の blind fold を **3 つ**用いる（例: 2023 / 2024 / 2025 を blind year とする）。
 - 各 fold は **その年より前の年で学習し、当該 fold の年で予測**する（leak-free な chronological 構成）。
-- **LB95**（bootstrap 95% 信頼区間下限、2000 iterations）を採否の主指標とする。positive を主張する metric は **LB95 > 0** が必須（点推定が正でも LB95 が 0 を跨ぐ場合は採用しない）。
+- **LB95**（bootstrap 95% 信頼区間下限、2000 iterations）を採否の主指標とする。global / pooled の positive を主張する metric は **LB95 > 0** が必須（点推定が正でも LB95 が 0 を跨ぐ場合は global 採用しない）。
+- 例外として、`build_cell_models.py` の finish-position cell routing 採用では、sample / freshness / multi-metric / no-regression を満たし、かつ **着順の全 gated metrics（top1〜place6 / top3_box）が +0.08pp（0.0008）以上改善**している cell は LB95 が 0 を跨いでも採用できる。これは NAR `mile / E / venue 54` のような狭い cell pocket を routing で限定適用するためのルールであり、category/global model の改善主張には使わない。脚質ではこの LB95 例外を使わない。
 - **HPO は同一 fold を再利用すると選択バイアスが生じる**ため、deploy 前に**別個の blind holdout**（single-config）で confirm すること（必須、selection bias protection）。
 - WF 精度は必ず serve 精度と突合せる。WF が隠した本番劣化（serve-skew）が頭打ちの中核要因となった事例がある。
 
@@ -945,22 +949,24 @@ odds / jockey / pedigree / running_style / corner / speed / similar_race / weath
 
 - 着順・脚質の特徴量列解決は `learning.feature_selection_policy.resolve_feature_columns_for_target()` を正とする。着順は `finish_position` target、脚質は `running_style` target を指定し、脚質では `rs_p_*` leakage 列と cell 派生列を学習特徴量から除外する。
 - routing / evaluation に必要な metadata 列（`source`, `keibajo_code`, `track_code`, `kyori`, `grade_code`, `race_date` 等）は入力 DataFrame に保持するが、target-specific policy で明示的に許可されない限り学習特徴量には含めない。
-- local 探索で cell ごとに最良だった特徴量セットは `feature_names_array` と `feature_set_hash` として `cell_training_evaluations` に保存する。`build_cell_models.py` は `--prediction-target finish_position|running_style` で対象を分け、採用 variant の routing JSON に `feature_names` / `feature_set_hash` を出力する。
+- local 探索で cell ごとに最良だった特徴量セットは `feature_names_array` と `feature_set_hash` として `cell_training_evaluations` に保存する。候補が実 model artifact を持つ場合は `metric_payload` に `model_version` / `architecture` / `method` も保存する。`build_cell_models.py` は `--prediction-target finish_position|running_style` で対象を分け、adoption gate 後に cell 単位で最良 method / model / feature-set を 1 つ選び、その winner だけを routing JSON に出力する。
 - 脚質の `running_style_lightgbm.py train-cells` は `--cell-feature-selection-json` でこの routing JSON を読み、cell ごとの採用特徴量セットを使って model artifact を作る。着順も脚質も「local で cell 精度が良かった特徴量組み合わせ」を本番参照 artifact に反映する。
 - **TPESampler**（`multivariate=True`、`feature_explorer.py:1036-1039`）で feature group の joint interaction をモデル化。startup random trial 数は 5。
 - **cell-weighted NDCG@3**: canonical cell key（`category_surface_distance_class_season_venue`）ごとに逆精度重み `1 / max(accuracy, 0.01)` を mean 正規化して付与（`compute_cell_weights_from_accuracy` / `weighted_ndcg_at_3`）。弱い cell ほど重みが大きくなり、苦手領域の改善を優先する。`weighted_ndcg_at_3` は `learning.subgroup_diagnostics.assign_subgroup_keys()` を使い、cell 評価・採用と同じキーで per-race の重みを引く。
 
 ### 8.12 Cell model adoption gate（`build_cell_models.py`）
 
-`build_cell_models.py` は候補 feature-set の cell 別精度を `cell_training_evaluations` から読み、`--prediction-target` ごとの採用プロファイルで以下の全条件を満たした cell のみ採用する。
+`build_cell_models.py` は候補 feature-set の cell 別精度を `cell_training_evaluations` から読み、`--prediction-target` ごとの採用プロファイルで以下の条件を満たした cell のみ採用する。
 
 1. **サンプル数**: `race_count >= 200`（`DEFAULT_MIN_RACES`）。
 2. **鮮度**: `evaluated_at` が 14 日以内（`DEFAULT_FRESHNESS_DAYS`）。
 3. **多指標改善（着順）**: primary `{top1, place2, place3}` のうち **>= 2 個**が **+0.08pp（0.0008）** 以上改善し、うち **>= 1 個が place2 / place3**（`check_multi_metric_gate`）。
 4. **多指標改善（脚質）**: `top1_accuracy = accuracy` の改善を必須とし、さらに `place2_accuracy = top2_accuracy` または `place3_accuracy = macro_f1` のどちらかも改善した cell のみ採用する。
 5. **no-regression**: 着順は 8 指標すべて、脚質は accuracy / top2_accuracy / macro_f1 が **-0.05pp（-0.0005）** を割り込まない。
-6. **bootstrap LB95 > 0.0**（2000 resamples、`DEFAULT_N_BOOT`）。
+6. **bootstrap / all-metric sweep**: primary metric の bootstrap LB95 が **> 0.0**（2000 resamples、`DEFAULT_N_BOOT`）。ただし finish-position では、全 gated metrics が +0.08pp 以上改善している cell は LB95 が 0 を跨いでも採用可能にする。例: NAR の `mile / E / venue 54` のように top1〜place6 / top3_box が全て実効果閾値以上に改善している cell は、狭い cell routing として採用できる。脚質ではこの例外を使わない。
 7. **baseline 存在**: 比較対象 baseline cell が存在すること。
+
+同一 routing cell で複数 candidate が採用条件を満たす場合、`build_cell_models.py` は `--prediction-target` の primary metrics 合計、required metrics 合計、no-regression metrics 合計、`race_count`、`evaluated_at`、`feature_set_hash` の順で deterministic に比較し、cell ごとに最良 candidate を 1 つだけ残す。finish-position は production routing に `cell_subgroup` を出さないため、`class / distance_band / season / surface / venue` が同じ行は同一 routing cell として比較する。running-style は `cell_subgroup` を routing 条件に含めるため、`kyoso_joken_code` / `nar_subclass` 由来の subgroup まで含めて別 cell として扱う。これにより同じ cell 条件を指す routing rule が複数 variant に重複して出ることを防ぎ、cell ごとに最適なモデル / 手法 / feature-set を動的に保持して利用する。
 
 採用された cell をまとめて cell model を構築し、`cell_routing.json`（§6.3）の routing に反映する。
 
