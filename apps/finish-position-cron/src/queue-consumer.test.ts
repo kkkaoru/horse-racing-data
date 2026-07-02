@@ -1068,7 +1068,7 @@ test("retries toward the DLQ instead of re-enqueueing once the busy requeue budg
   await handleQueue(
     makeBatch([
       makeMessage({
-        busyRequeueCount: 40,
+        busyRequeueCount: 80,
         category: "nar",
         keibajoCode: "35",
         mode: "full",

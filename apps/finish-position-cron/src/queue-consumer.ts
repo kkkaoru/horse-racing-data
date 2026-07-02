@@ -40,8 +40,17 @@ const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
 // message's retry attempt count) with a short delay so the starved race keeps
 // waiting for the slot WITHOUT burning the DLQ retry budget, bounded by
 // MAX_BUSY_REQUEUES so a permanently-stuck slot still surfaces via the DLQ.
+// BUSY_REQUEUE_DELAY_SECONDS stays at 60: each busy redelivery re-runs the Neon
+// focused-full completion guard, so 60s balances slot-pickup latency against
+// Neon query cost -- do NOT lower it.
 const BUSY_REQUEUE_DELAY_SECONDS = 60;
-const MAX_BUSY_REQUEUES = 40;
+// 60s x 80 = ~80-minute busy budget, sized to cover ~2-3 slow/retrying
+// predecessor pipelines ahead in the same category. The 2026-07-02 production
+// smoke showed a single predecessor occupying the slot ~38 min across
+// cold-start retries, which alone nearly exhausted the previous 40-min (60s x
+// 40) budget; the only added cost of the higher cap is queue ops (one send per
+// busy re-enqueue) plus one Neon completion-check query per redelivery.
+const MAX_BUSY_REQUEUES = 80;
 const BUSY_REQUEUE_COUNT_ZERO = 0;
 const BUSY_REQUEUE_COUNT_INCREMENT = 1;
 // Retry budget reasoning: the Python container's focused-full fire-and-forget
