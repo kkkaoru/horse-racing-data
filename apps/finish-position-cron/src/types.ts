@@ -34,6 +34,12 @@ export interface Env {
   // sync-realtime-data. "1" enables the internal rescore endpoint; any other
   // value accepts the request as a no-op so full generation can drain first.
   RESCORE_ENABLED?: string;
+  // Feature flag forwarded into the container env: "1" enables the NAR
+  // Set-Transformer x ensemble rank-fusion blend (iter40); any other value
+  // (including unset) keeps the container on the pure iter12 base. Set via
+  // `wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED`. Optional so existing
+  // callers/tests need not set it.
+  NAR_TRANSFORMER_BLEND_ENABLED?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;
