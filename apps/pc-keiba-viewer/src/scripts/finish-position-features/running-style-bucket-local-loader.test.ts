@@ -106,6 +106,7 @@ test("buildRunningStyleLoaderArgv emits flags for jra category", () => {
       predictionsParquetGlob: "/tmp/p/**/*.parquet",
       tempTableName: "bucket_running_style_predictions_loaded",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "jra-model-v1",
       category: "jra",
       yearFrom: 2005,
       yearTo: 2026,
@@ -129,6 +130,8 @@ test("buildRunningStyleLoaderArgv emits flags for jra category", () => {
     "2026",
     "--running-style-feature-version",
     "v1",
+    "--model-version",
+    "jra-model-v1",
   ]);
 });
 
@@ -140,6 +143,7 @@ test("buildRunningStyleLoaderArgv emits flags for nar category", () => {
       predictionsParquetGlob: "/p/**/*.parquet",
       tempTableName: "bucket_running_style_predictions_loaded",
       runningStyleFeatureVersion: "v2",
+      modelVersion: "nar-model-v2",
       category: "nar",
       yearFrom: 2010,
       yearTo: 2015,
@@ -163,6 +167,8 @@ test("buildRunningStyleLoaderArgv emits flags for nar category", () => {
     "2015",
     "--running-style-feature-version",
     "v2",
+    "--model-version",
+    "nar-model-v2",
   ]);
 });
 
@@ -175,6 +181,7 @@ test("createRunningStyleBucketEvalRpcClient invokes spawn with python-loader arg
       pgUrl: "postgres://x",
       predictionsParquetGlob: "/tmp/p/**/*.parquet",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "jra-model-v1",
       category: "jra",
       yearFrom: 2005,
       yearTo: 2026,
@@ -201,6 +208,8 @@ test("createRunningStyleBucketEvalRpcClient invokes spawn with python-loader arg
       "2026",
       "--running-style-feature-version",
       "v1",
+      "--model-version",
+      "jra-model-v1",
     ],
     {
       stdin: "pipe",
@@ -220,6 +229,7 @@ test("createRunningStyleBucketEvalRpcClient honours custom temp-table-name", () 
       predictionsParquetGlob: "/p/**/*.parquet",
       tempTableName: "custom_table",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "nar-model-v1",
       category: "nar",
       yearFrom: 2020,
       yearTo: 2021,
@@ -238,6 +248,7 @@ test("createRunningStyleBucketEvalRpcClient returns BucketEvalRpcClient with rea
       pgUrl: "postgres://x",
       predictionsParquetGlob: "/p/**/*.parquet",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "jra-model-v1",
       category: "jra",
       yearFrom: 2024,
       yearTo: 2024,
@@ -258,6 +269,7 @@ test("createRunningStyleBucketEvalRpcClient close awaits both inner client close
       pgUrl: "postgres://x",
       predictionsParquetGlob: "/p/**/*.parquet",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "jra-model-v1",
       category: "jra",
       yearFrom: 2024,
       yearTo: 2024,
@@ -282,6 +294,7 @@ test("createRunningStyleBucketEvalRpcClient pumps stdout chunks into the inner c
       pgUrl: "postgres://x",
       predictionsParquetGlob: "/p/**/*.parquet",
       runningStyleFeatureVersion: "v1",
+      modelVersion: "jra-model-v1",
       category: "jra",
       yearFrom: 2024,
       yearTo: 2024,

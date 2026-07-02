@@ -1669,7 +1669,7 @@ def test_running_style_cell_metrics_for_adoption_maps_running_style_metrics():
         metrics["top2_accuracy"],
         metrics["macro_f1"],
     ]
-    assert adoption["cell_vector"] == ["jra", "turf", "mile", "G1", "spring", "05"]
+    assert adoption["cell_vector"] == ["jra", "turf", "mile", "G1", "spring", "05", "OPEN"]
     assert adoption["metric_mapping"] == {
         "top1_accuracy": "accuracy",
         "place2_accuracy": "top2_accuracy",
@@ -2081,7 +2081,9 @@ def test_run_train_cells_command_trains_cells_saves_models_and_writes_outputs(
     assert len(str(trained_cells[0]["feature_set_hash"])) == 64
     cell_eval = trained_cells[0]["cell_training_evaluation"]
     assert cell_eval["prediction_target"] == "running_style"
-    assert cell_eval["subgroup"] == trained_cells[0]["cell"]["subgroup"]
+    expected_subgroup = trained_cells[0]["cell"]["subgroup"] or ""
+    assert cell_eval["subgroup"] == expected_subgroup
+    assert cell_eval["cell_vector"][-1] == expected_subgroup
     assert cell_eval["top1_accuracy"] == trained_cells[0]["metrics"]["accuracy"]
     assert cell_eval["place2_accuracy"] == trained_cells[0]["metrics"]["top2_accuracy"]
     assert cell_eval["place3_accuracy"] == trained_cells[0]["metrics"]["macro_f1"]
@@ -2156,7 +2158,7 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
             {
                 "feature_set_hash": "a" * 64,
                 "feature_columns": ["feature_b", "feature_a"],
-                "cell_training_evaluation": {**metrics, "venue": "06"},
+                "cell_training_evaluation": {**metrics, "venue": "06", "subgroup": None},
             },
             {
                 "feature_set_hash": "b" * 64,
@@ -2174,10 +2176,44 @@ def test_save_running_style_cell_training_evaluations_uses_cell_accuracy_store(
     assert isinstance(forwarded_metrics, list)
     first_metric = cast(Mapping[str, object], forwarded_metrics[0])
     assert first_metric["subgroup"] == "OPEN"
+    second_metric = cast(Mapping[str, object], forwarded_metrics[1])
+    assert second_metric["subgroup"] == ""
     assert calls[0]["feature_count"] == 2
     assert calls[0]["feature_names"] == ["feature_b", "feature_a"]
     assert calls[0]["prediction_target"] == "running_style"
     assert len(cast(list[object], calls[0]["metrics"])) == 2
+
+
+def test_running_style_cell_metrics_for_adoption_normalizes_missing_subgroup():
+    cell = subject.RunningStyleCellKey(
+        category="nar",
+        class_label="E",
+        distance_band="mile",
+        season="winter",
+        surface="dirt",
+        venue="54",
+        subgroup=None,
+    )
+    metrics = subject.compute_running_style_metrics(
+        np.array(
+            [
+                [0.6, 0.2, 0.1, 0.1],
+                [0.1, 0.6, 0.2, 0.1],
+            ],
+            dtype=np.float64,
+        ),
+        np.array([0, 1], dtype=np.int64),
+    )
+
+    adoption = subject.running_style_cell_metrics_for_adoption(
+        cell,
+        metrics,
+        feature_set_hash="a" * 64,
+        race_count=2,
+    )
+
+    assert adoption["subgroup"] == ""
+    assert adoption["cell_vector"] == ["nar", "dirt", "mile", "E", "winter", "54", ""]
 
 
 def test_parse_train_cells_accepts_postgres_persistence_options(tmp_path: Path):

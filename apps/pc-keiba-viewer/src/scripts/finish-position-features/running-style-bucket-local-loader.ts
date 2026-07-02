@@ -15,6 +15,7 @@ export interface CreateRunningStyleBucketEvalRpcClientArgs {
   predictionsParquetGlob: string;
   tempTableName?: string;
   runningStyleFeatureVersion: string;
+  modelVersion: string;
   category: "jra" | "nar";
   yearFrom: number;
   yearTo: number;
@@ -26,6 +27,7 @@ export interface RunningStyleLoaderArgv {
   predictionsParquetGlob: string;
   tempTableName: string;
   runningStyleFeatureVersion: string;
+  modelVersion: string;
   category: "jra" | "nar";
   yearFrom: number;
   yearTo: number;
@@ -87,6 +89,8 @@ export const buildRunningStyleLoaderArgv = (args: RunningStyleLoaderArgv): strin
   String(args.yearTo),
   "--running-style-feature-version",
   args.runningStyleFeatureVersion,
+  "--model-version",
+  args.modelVersion,
 ];
 
 const wrapChildStdio = (proc: SpawnedChildLike): BucketEvalRpcChildLike => ({
@@ -121,6 +125,7 @@ const buildLoaderArgvFromCliArgs = (args: CreateRunningStyleBucketEvalRpcClientA
     predictionsParquetGlob: args.predictionsParquetGlob,
     tempTableName: resolveTempTableName(args.tempTableName),
     runningStyleFeatureVersion: args.runningStyleFeatureVersion,
+    modelVersion: args.modelVersion,
     category: args.category,
     yearFrom: args.yearFrom,
     yearTo: args.yearTo,

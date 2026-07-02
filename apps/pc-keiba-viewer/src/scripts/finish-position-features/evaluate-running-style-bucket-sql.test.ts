@@ -342,6 +342,8 @@ test("buildRunningStyleBucketAggregateSql for jra emits aggregate with order-pai
   expect(sql).toContain("or j1.finish_position <= 0 or j2.finish_position <= 0");
   expect(sql).toContain("from labeled j1");
   expect(sql).toContain("join labeled j2");
+  expect(sql).toContain("and coalesce(j1.cell_model_key, '') = coalesce(j2.cell_model_key, '')");
+  expect(sql).toContain("and coalesce(j1.cell_variant_id, '') = coalesce(j2.cell_variant_id, '')");
   expect(sql).toContain("j1.ketto_toroku_bango < j2.ketto_toroku_bango");
   expect(sql).toMatch(
     /group by source, keibajo_code, kyori, kyoso_shubetsu_code,\s+kyoso_joken_code, condition_key, track_code, grade_code, race_name/u,

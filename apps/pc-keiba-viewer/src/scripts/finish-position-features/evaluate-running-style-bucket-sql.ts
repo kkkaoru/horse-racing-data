@@ -358,6 +358,8 @@ export const buildRunningStyleBucketAggregateSql = (
          and j1.kaisai_tsukihi = j2.kaisai_tsukihi
          and j1.keibajo_code = j2.keibajo_code
          and j1.race_bango = j2.race_bango
+         and coalesce(j1.cell_model_key, '') = coalesce(j2.cell_model_key, '')
+         and coalesce(j1.cell_variant_id, '') = coalesce(j2.cell_variant_id, '')
          and j1.ketto_toroku_bango < j2.ketto_toroku_bango
       ) pairs
       group by source, keibajo_code, kyori, kyoso_shubetsu_code,

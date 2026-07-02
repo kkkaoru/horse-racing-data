@@ -95,7 +95,17 @@ SELECT_BUCKET_ROWS_SQL: str = """
       log_loss_sashi_count,
       log_loss_oikomi_sum,
       log_loss_oikomi_count,
-      top2_hit_count
+      top2_hit_count,
+      cell_model_key,
+      cell_variant_id,
+      corner1_pair_score_sum,
+      corner1_pair_score_count,
+      corner3_pair_score_sum,
+      corner3_pair_score_count,
+      corner4_pair_score_sum,
+      corner4_pair_score_count,
+      finish_pair_score_sum,
+      finish_pair_score_count
     from running_style_model_bucket_evaluations
     where running_style_feature_version = %s
       and (
@@ -116,6 +126,8 @@ class BucketDimensions:
     track_code: str | None
     grade_code: str | None
     race_name: str | None
+    cell_model_key: str | None
+    cell_variant_id: str | None
 
 
 @dataclass(frozen=True)
@@ -126,6 +138,18 @@ class BucketMetrics:
     log_loss_sum: dict[str, float]
     log_loss_count: dict[str, int]
     top2_hit_count: int
+    corner1_pair_score_sum: float = 0.0
+    corner1_pair_score_count: int = 0
+    corner1_pair_score: float = 0.0
+    corner3_pair_score_sum: float = 0.0
+    corner3_pair_score_count: int = 0
+    corner3_pair_score: float = 0.0
+    corner4_pair_score_sum: float = 0.0
+    corner4_pair_score_count: int = 0
+    corner4_pair_score: float = 0.0
+    finish_pair_score_sum: float = 0.0
+    finish_pair_score_count: int = 0
+    finish_pair_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -151,6 +175,18 @@ class AggregateMetrics:
     top2_accuracy: float
     log_loss: float
     per_class: dict[str, PerClassMetrics]
+    corner1_pair_score_sum: float = 0.0
+    corner1_pair_score_count: int = 0
+    corner1_pair_score: float = 0.0
+    corner3_pair_score_sum: float = 0.0
+    corner3_pair_score_count: int = 0
+    corner3_pair_score: float = 0.0
+    corner4_pair_score_sum: float = 0.0
+    corner4_pair_score_count: int = 0
+    corner4_pair_score: float = 0.0
+    finish_pair_score_sum: float = 0.0
+    finish_pair_score_count: int = 0
+    finish_pair_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -284,6 +320,8 @@ def parse_db_row(row: Sequence[object]) -> BucketRecord:
         track_code=to_optional_str(row[6]),
         grade_code=to_optional_str(row[7]),
         race_name=to_optional_str(row[8]),
+        cell_model_key=to_optional_str(row[36]),
+        cell_variant_id=to_optional_str(row[37]),
     )
     log_sum, log_count = build_log_loss_from_row(row)
     metrics = BucketMetrics(
@@ -293,6 +331,18 @@ def parse_db_row(row: Sequence[object]) -> BucketRecord:
         log_loss_sum=log_sum,
         log_loss_count=log_count,
         top2_hit_count=to_int(row[35]),
+        corner1_pair_score_sum=to_float(row[38]),
+        corner1_pair_score_count=to_int(row[39]),
+        corner1_pair_score=safe_divide(to_float(row[38]), to_int(row[39])),
+        corner3_pair_score_sum=to_float(row[40]),
+        corner3_pair_score_count=to_int(row[41]),
+        corner3_pair_score=safe_divide(to_float(row[40]), to_int(row[41])),
+        corner4_pair_score_sum=to_float(row[42]),
+        corner4_pair_score_count=to_int(row[43]),
+        corner4_pair_score=safe_divide(to_float(row[42]), to_int(row[43])),
+        finish_pair_score_sum=to_float(row[44]),
+        finish_pair_score_count=to_int(row[45]),
+        finish_pair_score=safe_divide(to_float(row[44]), to_int(row[45])),
     )
     return BucketRecord(dims=dims, metrics=metrics)
 
@@ -353,6 +403,14 @@ def aggregate_metrics(records: list[BucketRecord]) -> AggregateMetrics:
     race_total = 0
     pred_total = 0
     top2_total = 0
+    corner1_pair_score_sum = 0.0
+    corner1_pair_score_count = 0
+    corner3_pair_score_sum = 0.0
+    corner3_pair_score_count = 0
+    corner4_pair_score_sum = 0.0
+    corner4_pair_score_count = 0
+    finish_pair_score_sum = 0.0
+    finish_pair_score_count = 0
     for record in records:
         for key, val in record.metrics.confusion.items():
             confusion[key] += val
@@ -362,6 +420,14 @@ def aggregate_metrics(records: list[BucketRecord]) -> AggregateMetrics:
         race_total += record.metrics.race_count
         pred_total += record.metrics.prediction_count
         top2_total += record.metrics.top2_hit_count
+        corner1_pair_score_sum += record.metrics.corner1_pair_score_sum
+        corner1_pair_score_count += record.metrics.corner1_pair_score_count
+        corner3_pair_score_sum += record.metrics.corner3_pair_score_sum
+        corner3_pair_score_count += record.metrics.corner3_pair_score_count
+        corner4_pair_score_sum += record.metrics.corner4_pair_score_sum
+        corner4_pair_score_count += record.metrics.corner4_pair_score_count
+        finish_pair_score_sum += record.metrics.finish_pair_score_sum
+        finish_pair_score_count += record.metrics.finish_pair_score_count
     diagonal = sum(confusion[confusion_key(label, label)] for label in CLASS_LABELS)
     total = sum(confusion.values())
     return AggregateMetrics(
@@ -371,6 +437,18 @@ def aggregate_metrics(records: list[BucketRecord]) -> AggregateMetrics:
         top2_accuracy=safe_divide(top2_total, pred_total),
         log_loss=safe_divide(log_sum_total, log_count_total),
         per_class=compute_per_class_metrics(confusion),
+        corner1_pair_score_sum=corner1_pair_score_sum,
+        corner1_pair_score_count=corner1_pair_score_count,
+        corner1_pair_score=safe_divide(corner1_pair_score_sum, corner1_pair_score_count),
+        corner3_pair_score_sum=corner3_pair_score_sum,
+        corner3_pair_score_count=corner3_pair_score_count,
+        corner3_pair_score=safe_divide(corner3_pair_score_sum, corner3_pair_score_count),
+        corner4_pair_score_sum=corner4_pair_score_sum,
+        corner4_pair_score_count=corner4_pair_score_count,
+        corner4_pair_score=safe_divide(corner4_pair_score_sum, corner4_pair_score_count),
+        finish_pair_score_sum=finish_pair_score_sum,
+        finish_pair_score_count=finish_pair_score_count,
+        finish_pair_score=safe_divide(finish_pair_score_sum, finish_pair_score_count),
     )
 
 
@@ -505,6 +583,9 @@ def render_section_overall_table(metrics: AggregateMetrics, label: str) -> list[
         f"- Accuracy: {format_percent(metrics.accuracy)} / Top-2 accuracy: {format_percent(metrics.top2_accuracy)} / Log loss: {format_float(metrics.log_loss)}"
     )
     lines.append(
+        f"- Pair score: C1 {format_float(metrics.corner1_pair_score)} / C3 {format_float(metrics.corner3_pair_score)} / C4 {format_float(metrics.corner4_pair_score)} / Finish {format_float(metrics.finish_pair_score)}"
+    )
+    lines.append(
         f"- Race count: {format_int(metrics.race_count)} / Prediction count: {format_int(metrics.prediction_count)}"
     )
     lines.append("")
@@ -532,11 +613,11 @@ def render_section_train_oos_gap(report: CategoryReport) -> list[str]:
     lines.append(f"- OOS avg accuracy: {format_percent(report.oos_metrics.accuracy)}")
     lines.append(f"- Train - OOS gap: {gap_pp:+.2f}pp")
     lines.append("")
-    lines.append("| Year | Predictions | Accuracy | Top-2 | Log loss |")
-    lines.append("| ---: | ---: | ---: | ---: | ---: |")
+    lines.append("| Year | Predictions | Accuracy | Top-2 | Log loss | C1 pair | C3 pair | C4 pair | Finish pair |")
+    lines.append("| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for ym in report.per_year:
         lines.append(
-            f"| {ym.year} | {format_int(ym.metrics.prediction_count)} | {format_percent(ym.metrics.accuracy)} | {format_percent(ym.metrics.top2_accuracy)} | {format_float(ym.metrics.log_loss)} |"
+            f"| {ym.year} | {format_int(ym.metrics.prediction_count)} | {format_percent(ym.metrics.accuracy)} | {format_percent(ym.metrics.top2_accuracy)} | {format_float(ym.metrics.log_loss)} | {format_float(ym.metrics.corner1_pair_score)} | {format_float(ym.metrics.corner3_pair_score)} | {format_float(ym.metrics.corner4_pair_score)} | {format_float(ym.metrics.finish_pair_score)} |"
         )
     lines.append("")
     if report.drift_years:

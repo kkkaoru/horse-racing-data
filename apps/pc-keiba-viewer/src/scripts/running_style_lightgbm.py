@@ -1105,6 +1105,7 @@ def running_style_cell_metrics_for_adoption(
     surface = cell.surface or "unknown"
     distance_band = cell.distance_band or "unknown"
     season = cell.season or "unknown"
+    subgroup = cell.subgroup or ""
     adoption_vector = [
         metrics["accuracy"],
         metrics["top2_accuracy"],
@@ -1122,7 +1123,7 @@ def running_style_cell_metrics_for_adoption(
         "class_label": cell.class_label,
         "season": season,
         "venue": cell.venue,
-        "subgroup": cell.subgroup,
+        "subgroup": subgroup,
         "race_count": race_count,
         "prediction_count": metrics["prediction_count"],
         "ndcg_at_3": metrics["accuracy"],
@@ -1141,6 +1142,7 @@ def running_style_cell_metrics_for_adoption(
             cell.class_label,
             season,
             cell.venue,
+            subgroup,
         ],
         "metric_mapping": {
             "top1_accuracy": "accuracy",
@@ -2532,7 +2534,8 @@ def save_running_style_cell_training_evaluations(
         if not isinstance(raw_metrics, Mapping):
             continue
         feature_names = tuple(str(name) for name in raw_feature_columns)
-        metrics = cast(Mapping[str, object], raw_metrics)
+        metrics = dict(cast(Mapping[str, object], raw_metrics))
+        metrics["subgroup"] = metrics.get("subgroup") or ""
         key: tuple[str, tuple[str, ...]] = (raw_hash, feature_names)
         if key not in grouped:
             grouped[key] = []

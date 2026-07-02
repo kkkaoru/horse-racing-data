@@ -36,6 +36,8 @@ def _make_dims(
         track_code=None,
         grade_code=None,
         race_name=None,
+        cell_model_key=None,
+        cell_variant_id=None,
     )
 
 
@@ -51,6 +53,14 @@ def _make_record(
     log_loss_sum: dict[str, float] | None = None,
     log_loss_count: dict[str, int] | None = None,
     top2_hit_count: int = 0,
+    corner1_pair_score_sum: float = 0.0,
+    corner1_pair_score_count: int = 0,
+    corner3_pair_score_sum: float = 0.0,
+    corner3_pair_score_count: int = 0,
+    corner4_pair_score_sum: float = 0.0,
+    corner4_pair_score_count: int = 0,
+    finish_pair_score_sum: float = 0.0,
+    finish_pair_score_count: int = 0,
 ) -> subject.BucketRecord:
     actual_confusion = confusion if confusion is not None else _empty_confusion()
     if log_loss_sum is None or log_loss_count is None:
@@ -73,6 +83,18 @@ def _make_record(
         log_loss_sum=actual_sum,
         log_loss_count=actual_count,
         top2_hit_count=top2_hit_count,
+        corner1_pair_score_sum=corner1_pair_score_sum,
+        corner1_pair_score_count=corner1_pair_score_count,
+        corner1_pair_score=subject.safe_divide(corner1_pair_score_sum, corner1_pair_score_count),
+        corner3_pair_score_sum=corner3_pair_score_sum,
+        corner3_pair_score_count=corner3_pair_score_count,
+        corner3_pair_score=subject.safe_divide(corner3_pair_score_sum, corner3_pair_score_count),
+        corner4_pair_score_sum=corner4_pair_score_sum,
+        corner4_pair_score_count=corner4_pair_score_count,
+        corner4_pair_score=subject.safe_divide(corner4_pair_score_sum, corner4_pair_score_count),
+        finish_pair_score_sum=finish_pair_score_sum,
+        finish_pair_score_count=finish_pair_score_count,
+        finish_pair_score=subject.safe_divide(finish_pair_score_sum, finish_pair_score_count),
     )
     return subject.BucketRecord(dims=dims, metrics=metrics)
 
@@ -301,6 +323,14 @@ def test_aggregate_metrics_sums_per_record_counts():
         top2_hit_count=7,
         log_loss_sum={"nige": 2.0, "senkou": 0.0, "sashi": 0.0, "oikomi": 0.0},
         log_loss_count={"nige": 5, "senkou": 0, "sashi": 0, "oikomi": 0},
+        corner1_pair_score_sum=6.0,
+        corner1_pair_score_count=10,
+        corner3_pair_score_sum=7.0,
+        corner3_pair_score_count=10,
+        corner4_pair_score_sum=8.0,
+        corner4_pair_score_count=10,
+        finish_pair_score_sum=9.0,
+        finish_pair_score_count=10,
     )
     record_b = _make_record(
         confusion=confusion_b,
@@ -309,6 +339,14 @@ def test_aggregate_metrics_sums_per_record_counts():
         top2_hit_count=4,
         log_loss_sum={"nige": 1.0, "senkou": 0.0, "sashi": 0.0, "oikomi": 0.0},
         log_loss_count={"nige": 3, "senkou": 0, "sashi": 0, "oikomi": 0},
+        corner1_pair_score_sum=3.0,
+        corner1_pair_score_count=5,
+        corner3_pair_score_sum=4.0,
+        corner3_pair_score_count=5,
+        corner4_pair_score_sum=5.0,
+        corner4_pair_score_count=5,
+        finish_pair_score_sum=6.0,
+        finish_pair_score_count=5,
     )
     aggregate = subject.aggregate_metrics([record_a, record_b])
     assert aggregate.prediction_count == 15
@@ -316,6 +354,12 @@ def test_aggregate_metrics_sums_per_record_counts():
     assert aggregate.top2_accuracy == pytest.approx(11.0 / 15.0)
     assert aggregate.log_loss == pytest.approx(3.0 / 8.0)
     assert aggregate.accuracy == 1.0
+    assert aggregate.corner1_pair_score_sum == 9.0
+    assert aggregate.corner1_pair_score_count == 15
+    assert aggregate.corner1_pair_score == pytest.approx(9.0 / 15.0)
+    assert aggregate.corner3_pair_score == pytest.approx(11.0 / 15.0)
+    assert aggregate.corner4_pair_score == pytest.approx(13.0 / 15.0)
+    assert aggregate.finish_pair_score == pytest.approx(15.0 / 15.0)
 
 
 def test_group_records_by_year_buckets_records_by_window():
@@ -759,14 +803,32 @@ def test_parse_db_row_returns_bucket_record_with_dims_and_metrics():
         0.0,
         0,
         14,
+        "cell-a",
+        "variant-1",
+        decimal.Decimal("8.0"),
+        10,
+        decimal.Decimal("7.0"),
+        10,
+        decimal.Decimal("6.0"),
+        10,
+        decimal.Decimal("5.0"),
+        10,
     ]
     record = subject.parse_db_row(row)
     assert record.dims.category == "jra"
     assert record.dims.kyori == 1600
     assert record.dims.kyoso_joken_code == "703"
+    assert record.dims.cell_model_key == "cell-a"
+    assert record.dims.cell_variant_id == "variant-1"
     assert record.metrics.prediction_count == 16
     assert record.metrics.top2_hit_count == 14
     assert record.metrics.log_loss_sum["nige"] == 1.5
+    assert record.metrics.corner1_pair_score_sum == 8.0
+    assert record.metrics.corner1_pair_score_count == 10
+    assert record.metrics.corner1_pair_score == 0.8
+    assert record.metrics.finish_pair_score_sum == 5.0
+    assert record.metrics.finish_pair_score_count == 10
+    assert record.metrics.finish_pair_score == 0.5
 
 
 def test_format_percent_renders_two_decimals():
@@ -799,6 +861,7 @@ def test_render_section_overall_lists_all_three_period_tables():
     assert "#### All" in rendered
     assert "#### Train (2016-2025)" in rendered
     assert "#### OOS (pre-2016 + 2026+)" in rendered
+    assert "Pair score: C1" in rendered
 
 
 def test_render_section_train_oos_gap_lists_year_table_and_gap():
@@ -817,6 +880,7 @@ def test_render_section_train_oos_gap_lists_year_table_and_gap():
     rendered = "\n".join(lines)
     assert "Section 2:" in rendered
     assert "Train - OOS gap" in rendered
+    assert "Finish pair" in rendered
     assert "2020" in rendered
 
 
@@ -1169,6 +1233,16 @@ def _make_db_row(
     prediction_count: int = 0,
     race_count: int = 1,
     top2_hit_count: int = 0,
+    cell_model_key: str = "cell-a",
+    cell_variant_id: str = "variant-1",
+    corner1_pair_score_sum: float = 0.0,
+    corner1_pair_score_count: int = 0,
+    corner3_pair_score_sum: float = 0.0,
+    corner3_pair_score_count: int = 0,
+    corner4_pair_score_sum: float = 0.0,
+    corner4_pair_score_count: int = 0,
+    finish_pair_score_sum: float = 0.0,
+    finish_pair_score_count: int = 0,
 ) -> tuple[object, ...]:
     return (
         category,
@@ -1207,6 +1281,16 @@ def _make_db_row(
         decimal.Decimal("0.0"),
         0,
         top2_hit_count,
+        cell_model_key,
+        cell_variant_id,
+        decimal.Decimal(str(corner1_pair_score_sum)),
+        corner1_pair_score_count,
+        decimal.Decimal(str(corner3_pair_score_sum)),
+        corner3_pair_score_count,
+        decimal.Decimal(str(corner4_pair_score_sum)),
+        corner4_pair_score_count,
+        decimal.Decimal(str(finish_pair_score_sum)),
+        finish_pair_score_count,
     )
 
 
@@ -1227,9 +1311,15 @@ def test_fetch_bucket_rows_parses_returned_rows_via_query():
     call_args = query_mock.call_args.args
     assert call_args[0] == "postgres://test"
     assert "running_style_model_bucket_evaluations" in call_args[1]
+    assert "cell_model_key" in call_args[1]
+    assert "cell_variant_id" in call_args[1]
+    assert "corner1_pair_score_sum" in call_args[1]
+    assert "finish_pair_score_count" in call_args[1]
     assert call_args[2] == ("v1", "jra", "jra-v2", "nar", "nar-v1.5")
     assert len(records) == 2
     assert records[0].dims.category == "jra"
+    assert records[0].dims.cell_model_key == "cell-a"
+    assert records[0].dims.cell_variant_id == "variant-1"
     assert records[1].dims.category == "nar"
 
 

@@ -299,7 +299,7 @@ routing のログ・summary では `cellModelKey` と `cellVariantId` を確認�
 
 ### 4.5 脚質 cell 学習・評価・promotion（ローカル）
 
-脚質 cell model の学習・評価・promotion plan はローカルの `apps/pc-keiba-viewer/src/scripts/running_style_lightgbm.py train-cells` で行う。これは model artifact を作るための作業であり、本番推論をローカルで実行するものではない。学習・評価・採用判定の単位は category や source の粗い集計ではなく **cell variant 単位**であり、cell 外の平均で改善・回帰を判断してはならない。
+脚質 cell model の学習・評価・promotion plan はローカルの `apps/pc-keiba-viewer/src/scripts/running_style_lightgbm.py train-cells` で行う。これは model artifact を作るための作業であり、本番推論をローカルで実行するものではない。学習・評価・採用判定の単位は category や source の粗い集計ではなく **cell variant 単位**であり、cell 外の平均で改善・回帰を判断してはならない。異なる cell の行を混ぜて単一の「脚質 cell 評価」として扱うことは禁止する。
 
 実行単位は `source` / `category` / cell variant で、入力は脚質 feature Parquet と `target_running_style_class` を持つ labeled rows である。`target_running_style_class` は `nige=0` / `senkou=1` / `sashi=2` / `oikomi=3` の 4-class softmax target であり、着順の rank metric では評価しない。
 
@@ -330,6 +330,8 @@ bun run --filter pc-keiba-viewer dev:running-style-train-cells -- \
   --output-routing-json <output-dir>/cell_routing.json
 ```
 
+local PostgreSQL に保存する場合、`--pg-url` の host port は `apps/local-postgresql/.env` の `POSTGRES_PORT` を使う。container 内部の `PGPORT` と取り違えると、学習後の `cell_training_evaluations` 保存だけが接続拒否で失敗する。
+
 脚質評価で使う metric は running-style 固有であり、finish-position の top1 / place2〜place6 / NDCG gate を流用しない。
 
 | metric                             | 用途                                                                                                                                   |
@@ -344,8 +346,10 @@ bun run --filter pc-keiba-viewer dev:running-style-train-cells -- \
 | `confusion_matrix`                 | actual class × predicted class の raw count。集計時はこの count を加算してから precision / recall / F1 を再計算する                    |
 | `top2_hit_count`                   | top2 的中数。`top2_accuracy` の再集計では count を加算してから `prediction_count` で割る                                               |
 | `race_level`                       | race 単位で脚質分布・脚質 count・corner passage order・finish position との整合性を見る派生 metric 群                                  |
+| `race_level_pair_metrics`          | race 内の horse pair ごとに、予測 front score の順序が corner 通過順・最終着順から導出した順序と一致するかを見る pair metric 群        |
+| `race_level_per_class_metrics`     | race 内で導出した actual class ごとの precision / recall / F1 / support。`nige` / `senkou` / `sashi` / `oikomi` を4クラス固定で見る    |
 
-`race_level` は generated running-style prediction を horse 単位の class 一致だけでなく、同一 race 内の並びとして評価する。`style_distribution_mae` / `style_count_mae` / `style_count_bias` / `nige_count_mae` / `front_group_count_mae` は race 内の脚質構成のずれを測る。`corner_rank_spearman` は予測 front score と `corner1_norm` の順位相関で、通過順と脚質予測の順序整合を確認する。`finish_weighted_accuracy` / `top1_finish_style_accuracy` / `top3_finish_style_accuracy` は `finish_position` で上位馬を重く見た脚質 class 一致率であり、着順 rank metric ではなく、脚質予測が最終着順上位の馬で崩れていないかを見る補助指標である。
+`race_level` は generated running-style prediction を horse 単位の class 一致だけでなく、同一 race 内の並びとして評価する。評価対象は生成された脚質予測割合だけではない。`style_distribution_mae` / `style_count_mae` / `style_count_bias` / `nige_count_mae` / `front_group_count_mae` は race 内の脚質構成のずれを測る。`corner_rank_spearman` は予測 front score と `corner1_norm` の順位相関で、通過順と脚質予測の順序整合を確認する。加えて、corner 通過順および `finish_position` から race-level pair metrics を導出し、同一 race 内の horse pair の前後関係が予測 front score と整合しているかを見る。per-class metrics は `nige` / `senkou` / `sashi` / `oikomi` の4クラス固定で計算し、特定 class の崩れを race-level aggregate に埋もれさせない。`finish_weighted_accuracy` / `top1_finish_style_accuracy` / `top3_finish_style_accuracy` は `finish_position` で上位馬を重く見た脚質 class 一致率であり、着順 rank metric ではなく、脚質予測が最終着順上位の馬で崩れていないかを見る補助指標である。
 
 `cell_training_evaluations` の共有列へ保存する場合、running-style profile は `top1_accuracy = accuracy`、`place2_accuracy = top2_accuracy`、`place3_accuracy = macro_f1` として扱う。`build_cell_models.py --prediction-target running_style` は `top1_accuracy` の改善を必須とし、`top2_accuracy` または `macro_f1` のどちらかも改善した cell だけを採用対象にする。
 
@@ -554,6 +558,8 @@ secret 値はドキュメントに記載しない。運用上必要な名前だ�
 production verification evidence は、Cloudflare 側の D1 `daily_race_entries` / `running_style_inference_state` / `fetch_logs`、D1 `race_running_styles`、Neon `race_running_style_model_predictions`、Neon `race_finish_position_model_predictions` から取得する。手元 scheduler / ローカル Docker process の起動有無を本番完了の証跡にしてはならない。
 
 2026-06-29 の本番 evidence として、`nar:20260629:35:01` の脚質 job は secret / write-pool 修正後に `cellModelKey` / `cellVariantId` と `neonWrittenCount=9` を記録した。着順 end-to-end は、Container log または `race_finish_position_model_predictions` の対象 race 行で確認できるまでは「脚質完了後 trigger まで確認済み」と保守的に扱う。
+
+2026-07-01 の本番確認では、旧 `sync-realtime-data` 経路の D1 `race_running_styles` と Neon `race_running_style_model_predictions` に NAR 48 レース / 535 頭分の脚質予測が反映済みであることを確認した。一方、`sync-realtime-data-features-db` 側は `skeleton-disabled` 状態で、同日の脚質 feature / prediction は未生成だった。したがってこの日の evidence は「旧 `sync-realtime-data` D1 + Neon には反映済み、features-db 経路は未生成」として扱い、features-db を同日の本番生成成功証跡として数えない。
 
 **2026-07-02 investigation: 着順 end-to-end が全カテゴリで未確認と確定 → 同日中に root-cause 特定・fix・JRA で live 確認済み（RESOLVED、残タスクは末尾参照）**
 
