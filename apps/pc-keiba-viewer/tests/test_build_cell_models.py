@@ -597,6 +597,38 @@ def test_parse_row_maps_distance_band_to_router_cell() -> None:
     assert metrics.evaluated_at == _FRESH
 
 
+def test_parse_row_normalizes_canonical_finish_position_subgroup() -> None:
+    cell, _ = parse_row(
+        _db_row("BASE", subgroup="jra_turf_mile_A_summer_05"),
+        prediction_target="finish_position",
+    )
+    assert cell == CellKey(
+        category="jra",
+        class_label="A",
+        subgroup="mile",
+        racetrack="05",
+        season="summer",
+        surface="turf",
+        cell_subgroup="",
+    )
+
+
+def test_parse_row_keeps_canonical_running_style_subgroup() -> None:
+    cell, _ = parse_row(
+        _db_row("BASE", subgroup="jra_turf_mile_A_summer_05"),
+        prediction_target="running_style",
+    )
+    assert cell == CellKey(
+        category="jra",
+        class_label="A",
+        subgroup="mile",
+        racetrack="05",
+        season="summer",
+        surface="turf",
+        cell_subgroup="jra_turf_mile_A_summer_05",
+    )
+
+
 def test_load_cell_metrics_groups_rows_by_cell() -> None:
     cursor = MagicMock()
     cursor.fetchall.return_value = [
@@ -613,6 +645,20 @@ def test_load_cell_metrics_groups_rows_by_cell() -> None:
     assert len(grouped) == 2
     cell_a = CellKey("jra", "A", "mile", "05", "summer", "turf", "subgroup-703")
     assert {m.feature_set_hash for m in grouped[cell_a]} == {"BASE", "CAND"}
+
+
+def test_load_cell_metrics_groups_blank_and_canonical_finish_position_subgroups() -> None:
+    cursor = MagicMock()
+    cursor.fetchall.return_value = [
+        _db_row("BASE", subgroup=""),
+        _db_row("CAND", subgroup="jra_turf_mile_A_summer_05"),
+    ]
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    grouped = load_cell_metrics(conn, "jra", "finish_position")
+    assert len(grouped) == 1
+    cell = CellKey("jra", "A", "mile", "05", "summer", "turf", "")
+    assert {m.feature_set_hash for m in grouped[cell]} == {"BASE", "CAND"}
 
 
 def test_load_cell_metrics_keeps_distinct_db_subgroups_as_distinct_cells() -> None:

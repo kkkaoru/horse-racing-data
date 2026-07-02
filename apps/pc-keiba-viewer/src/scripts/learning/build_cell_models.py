@@ -497,16 +497,66 @@ def generate_running_style_feature_selection_json(
     }
 
 
-def parse_row(row: Sequence[object]) -> tuple[CellKey, CellMetrics]:
+def _canonical_finish_position_subgroup(
+    category: str,
+    surface: str,
+    distance_band: str,
+    class_label: str,
+    season: str,
+    venue: str,
+) -> str:
+    return f"{category}_{surface}_{distance_band}_{class_label}_{season}_{venue}"
+
+
+def _normalize_cell_subgroup(
+    *,
+    prediction_target: PredictionTarget,
+    category: str,
+    surface: str,
+    distance_band: str,
+    class_label: str,
+    season: str,
+    venue: str,
+    cell_subgroup: str,
+) -> str:
+    if prediction_target != "finish_position":
+        return cell_subgroup
+    if cell_subgroup == _canonical_finish_position_subgroup(
+        category, surface, distance_band, class_label, season, venue
+    ):
+        return ""
+    return cell_subgroup
+
+
+def parse_row(
+    row: Sequence[object],
+    prediction_target: PredictionTarget = "finish_position",
+) -> tuple[CellKey, CellMetrics]:
     """Map one ``_SELECT_CELLS`` row to its CellKey and CellMetrics."""
-    cell = CellKey(
-        category=str(row[0]),
-        class_label=str(row[1]),
-        subgroup=str(row[2]),
-        racetrack=str(row[3]),
-        season=str(row[4]),
-        surface=str(row[5]),
+    category = str(row[0])
+    class_label = str(row[1])
+    distance_band = str(row[2])
+    venue = str(row[3])
+    season = str(row[4])
+    surface = str(row[5])
+    cell_subgroup = _normalize_cell_subgroup(
+        prediction_target=prediction_target,
+        category=category,
+        surface=surface,
+        distance_band=distance_band,
+        class_label=class_label,
+        season=season,
+        venue=venue,
         cell_subgroup=str(row[6] or ""),
+    )
+    cell = CellKey(
+        category=category,
+        class_label=class_label,
+        subgroup=distance_band,
+        racetrack=venue,
+        season=season,
+        surface=surface,
+        cell_subgroup=cell_subgroup,
     )
     feature_names = [str(name) for name in cast("Sequence[object]", row[17])]
     metrics = CellMetrics(
@@ -536,7 +586,7 @@ def load_cell_metrics(
         rows = cur.fetchall()
     grouped: dict[CellKey, list[CellMetrics]] = {}
     for row in rows:
-        cell, metrics = parse_row(row)
+        cell, metrics = parse_row(row, prediction_target)
         grouped.setdefault(cell, []).append(metrics)
     return grouped
 
