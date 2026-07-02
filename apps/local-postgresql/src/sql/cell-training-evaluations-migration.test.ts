@@ -6,6 +6,10 @@ const migrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260701000000_add_prediction_target_to_cell_training_evaluations.sql",
 );
+const createMigrationPath = resolve(
+  import.meta.dirname,
+  "../../sql/20260630000000_create_cell_training_evaluations.sql",
+);
 const subgroupMigrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260702000000_add_subgroup_to_cell_training_evaluations.sql",
@@ -14,6 +18,25 @@ const metricPayloadMigrationPath = resolve(
   import.meta.dirname,
   "../../sql/20260702010000_add_metric_payload_to_cell_training_evaluations.sql",
 );
+
+it("creates the per-cell evaluation table for fresh local PostgreSQL databases", () => {
+  const sql = readFileSync(createMigrationPath, "utf8");
+  const normalized = sql.replaceAll(/\s+/g, " ").trim().toLowerCase();
+
+  expect(
+    normalized.match(/create table if not exists cell_training_evaluations/)?.[0],
+  ).toStrictEqual("create table if not exists cell_training_evaluations");
+  expect(
+    normalized.match(
+      /primary key \( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup \)/,
+    )?.[0],
+  ).toStrictEqual(
+    "primary key ( prediction_target, feature_set_hash, category, surface, distance_band, class_label, season, venue, subgroup )",
+  );
+  expect(
+    normalized.match(/metric_payload jsonb not null default '\{\}'::jsonb/)?.[0],
+  ).toStrictEqual("metric_payload jsonb not null default '{}'::jsonb");
+});
 
 it("adds prediction_target and backfills existing finish-position rows", () => {
   const sql = readFileSync(migrationPath, "utf8");
@@ -146,5 +169,12 @@ it("adds metric_payload for target-native cell metrics", () => {
     )?.[0],
   ).toStrictEqual(
     "alter table cell_training_evaluations add column if not exists metric_payload jsonb not null default '{}'::jsonb",
+  );
+  expect(
+    normalized.match(
+      /set metric_payload = jsonb_build_object\( 'metric_schema_version', 'cell_training_evaluation_scalar_v1'/,
+    )?.[0],
+  ).toStrictEqual(
+    "set metric_payload = jsonb_build_object( 'metric_schema_version', 'cell_training_evaluation_scalar_v1'",
   );
 });

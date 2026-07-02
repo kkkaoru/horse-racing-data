@@ -5353,7 +5353,23 @@ def test_cell_accuracy_store_save_cell_metrics(tmp_path: Path) -> None:
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == []
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
-    assert json.loads(cast(str, params[22])) == {}
+    payload = json.loads(cast(str, params[22]))
+    assert payload["metric_schema_version"] == "cell_training_evaluation_scalar_v1"
+    assert payload["prediction_target"] == "finish_position"
+    assert payload["feature_set_hash"] == "abc123"
+    assert payload["feature_count"] == 120
+    assert payload["race_count"] == 50
+    assert payload["cell"] == {
+        "category": "jra",
+        "surface": "turf",
+        "distance_band": "mile",
+        "class_label": "E",
+        "season": "summer",
+        "venue": "10",
+        "subgroup": "jra_turf_mile_E_summer_10",
+    }
+    assert payload["metrics"]["top1_accuracy"] == 0.42
+    assert payload["accuracy_vector"] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
 
 
 def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
@@ -5402,7 +5418,12 @@ def test_cell_accuracy_store_save_with_feature_names(tmp_path: Path) -> None:
     assert params[19] == [0.42, 0.38, 0.35, 0.30, 0.25, 0.20]
     assert params[20] == ["feat_a", "feat_b"]
     assert params[21] == ["jra", "turf", "mile", "E", "summer", "10", "jra_turf_mile_E_summer_10"]
-    assert json.loads(cast(str, params[22])) == {}
+    payload = json.loads(cast(str, params[22]))
+    assert payload["metric_schema_version"] == "cell_training_evaluation_scalar_v1"
+    assert payload["prediction_target"] == "running_style"
+    assert payload["feature_set_hash"] == "abc123"
+    assert payload["feature_count"] == 120
+    assert payload["metrics"]["place3_accuracy"] == 0.35
 
 
 def test_cell_accuracy_store_save_metric_payload(tmp_path: Path) -> None:

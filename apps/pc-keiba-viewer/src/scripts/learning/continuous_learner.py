@@ -181,6 +181,37 @@ ADD COLUMN IF NOT EXISTS subgroup TEXT NOT NULL DEFAULT '';
 ALTER TABLE cell_training_evaluations
 ADD COLUMN IF NOT EXISTS metric_payload JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+UPDATE cell_training_evaluations
+SET metric_payload = jsonb_build_object(
+    'metric_schema_version', 'cell_training_evaluation_scalar_v1',
+    'prediction_target', prediction_target,
+    'feature_set_hash', feature_set_hash,
+    'feature_count', feature_count,
+    'cell', jsonb_build_object(
+        'category', category,
+        'surface', surface,
+        'distance_band', distance_band,
+        'class_label', class_label,
+        'season', season,
+        'venue', venue,
+        'subgroup', subgroup
+    ),
+    'race_count', race_count,
+    'metrics', jsonb_build_object(
+        'ndcg_at_3', ndcg_at_3,
+        'top1_accuracy', top1_accuracy,
+        'place2_accuracy', place2_accuracy,
+        'place3_accuracy', place3_accuracy,
+        'place4_accuracy', place4_accuracy,
+        'place5_accuracy', place5_accuracy,
+        'place6_accuracy', place6_accuracy,
+        'top3_box_accuracy', top3_box_accuracy
+    ),
+    'accuracy_vector', to_jsonb(accuracy_vector),
+    'cell_vector', to_jsonb(cell_vector)
+)
+WHERE metric_payload = '{}'::jsonb;
+
 DO $$
 DECLARE
     pk_cols TEXT[];
@@ -547,9 +578,17 @@ def _json_safe(value: object) -> object:
     return value
 
 
-def _metric_payload_from_subgroup_metric(metric: Mapping[str, object]) -> dict[str, object]:
+def _metric_payload_from_subgroup_metric(
+    metric: Mapping[str, object],
+    *,
+    prediction_target: str,
+    feature_set_hash: str,
+    feature_count: int,
+    accuracy_vector: list[object],
+    cell_vector: list[object],
+) -> dict[str, object]:
     raw_payload = metric.get("metric_payload")
-    if isinstance(raw_payload, Mapping):
+    if isinstance(raw_payload, Mapping) and raw_payload:
         return cast(dict[str, object], _json_safe(raw_payload))
     reserved = {
         "subgroup",
@@ -568,8 +607,39 @@ def _metric_payload_from_subgroup_metric(metric: Mapping[str, object]) -> dict[s
         "place5_accuracy",
         "place6_accuracy",
         "top3_box_accuracy",
+        "metric_payload",
     }
-    payload = {str(k): v for k, v in metric.items() if str(k) not in reserved}
+    extra = {str(k): v for k, v in metric.items() if str(k) not in reserved}
+    payload: dict[str, object] = {
+        "metric_schema_version": "cell_training_evaluation_scalar_v1",
+        "prediction_target": prediction_target,
+        "feature_set_hash": feature_set_hash,
+        "feature_count": feature_count,
+        "cell": {
+            "category": metric["category"],
+            "surface": metric["surface"],
+            "distance_band": metric["distance_band"],
+            "class_label": metric["class_label"],
+            "season": metric["season"],
+            "venue": metric["venue"],
+            "subgroup": metric.get("subgroup", ""),
+        },
+        "race_count": metric["race_count"],
+        "metrics": {
+            "ndcg_at_3": metric["ndcg_at_3"],
+            "top1_accuracy": metric["top1_accuracy"],
+            "place2_accuracy": metric["place2_accuracy"],
+            "place3_accuracy": metric["place3_accuracy"],
+            "place4_accuracy": metric["place4_accuracy"],
+            "place5_accuracy": metric["place5_accuracy"],
+            "place6_accuracy": metric["place6_accuracy"],
+            "top3_box_accuracy": metric["top3_box_accuracy"],
+        },
+        "accuracy_vector": accuracy_vector,
+        "cell_vector": cell_vector,
+    }
+    if extra:
+        payload["extra"] = extra
     return cast(dict[str, object], _json_safe(payload))
 
 
@@ -667,7 +737,12 @@ class CellAccuracyStore:
                     m["subgroup"],
                 ]
                 metric_payload = _metric_payload_from_subgroup_metric(
-                    cast(Mapping[str, object], m)
+                    cast(Mapping[str, object], m),
+                    prediction_target=prediction_target,
+                    feature_set_hash=feature_set_hash,
+                    feature_count=feature_count,
+                    accuracy_vector=cast(list[object], accuracy_vector),
+                    cell_vector=cast(list[object], cell_vector),
                 )
                 cur.execute(
                     _CELL_EVAL_UPSERT,
