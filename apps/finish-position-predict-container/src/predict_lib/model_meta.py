@@ -318,12 +318,15 @@ def build_r2_nar_etop2_key(file_name: str) -> str:
 # with the NAR E-top2 override (the blend re-ranks the base output), so
 # NAR_ETOP2_ENABLED stays False while this is on.
 #
-# ENABLED reads the environment at import so an operator can force the blend OFF
-# (instant rollback to the pure iter12 ensemble) by setting
-# NAR_TRANSFORMER_BLEND_ENABLED=0 in the container / Worker env with no redeploy.
-# Default True = the blend is live.
+# ENABLED reads the environment at import so an operator can turn the blend ON
+# once the serve path has been smoke-tested — by setting
+# NAR_TRANSFORMER_BLEND_ENABLED=1 in the container / Worker env with no redeploy.
+# Default False = opt-in: the blend stays OFF (pure iter12 ensemble) until the
+# Container serve path is smoke-tested and an operator explicitly enables it via
+# env. The forward has only been validated offline (walk-forward), not on a live
+# Container, so the safe default is OFF to avoid activating an unverified path.
 NAR_TRANSFORMER_BLEND_ENABLED: Final[bool] = _env_flag(
-    "NAR_TRANSFORMER_BLEND_ENABLED", default=True
+    "NAR_TRANSFORMER_BLEND_ENABLED", default=False
 )
 
 # The blend artifact version baked at

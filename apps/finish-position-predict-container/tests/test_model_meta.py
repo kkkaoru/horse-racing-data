@@ -4,6 +4,7 @@ Ban-ei=banei-cb-v9-sim-2011)."""
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from collections.abc import Callable
@@ -360,3 +361,24 @@ def test_nar_transformer_model_version_constant() -> None:
 
 def test_nar_transformer_blend_weight_constant() -> None:
     assert NAR_TRANSFORMER_BLEND_WEIGHT == 0.5
+
+
+def test_nar_transformer_blend_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The blend defaults to OFF (opt-in): the serve path has only been validated
+    # offline, so an operator must set NAR_TRANSFORMER_BLEND_ENABLED=1 in the
+    # container env to activate it after a Container serve-smoke. Reload with the
+    # env unset to confirm the module wires ``default=False``.
+    monkeypatch.delenv("NAR_TRANSFORMER_BLEND_ENABLED", raising=False)
+    reloaded = importlib.reload(model_meta)
+    assert reloaded.NAR_TRANSFORMER_BLEND_ENABLED is False
+
+
+def test_nar_transformer_blend_enabled_by_env_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    # An operator opts in by setting the env flag; reload picks it up at import.
+    monkeypatch.setenv("NAR_TRANSFORMER_BLEND_ENABLED", "1")
+    reloaded = importlib.reload(model_meta)
+    assert reloaded.NAR_TRANSFORMER_BLEND_ENABLED is True
+    # Restore the module to its env-unset (default-OFF) state so the reloaded
+    # global does not leak the opt-in value into later tests.
+    monkeypatch.delenv("NAR_TRANSFORMER_BLEND_ENABLED", raising=False)
+    importlib.reload(model_meta)
