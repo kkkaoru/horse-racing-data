@@ -81,16 +81,18 @@ flowchart TB
 
 ---
 
-## 2. 本番モデル（2026-07-03 時点）
+## 2. 本番モデル（2026-07-04 時点）
 
 着順本番モデルのバージョンと特徴量数は、Container 内の `apps/finish-position-predict-container/src/predict_lib/model_meta.json` を single source of truth とする。
 
 | カテゴリ | model_version                        | アーキテクチャ                                      | 特徴量数                        | 学習窓        | ランキング loss                                    |
 | -------- | ------------------------------------ | --------------------------------------------------- | ------------------------------- | ------------- | -------------------------------------------------- |
-| JRA      | `jra-cb-v9-sim-2013`                 | CatBoost                                            | 263                             | 2013+         | YetiRank                                           |
+| JRA      | `jra-cb-v9-sim-2013-clean`           | CatBoost                                            | 250                             | 2013+         | YetiRank                                           |
 | NAR      | `iter40-nar-settransformer-blend-v1` | XGBoost base × Set Transformer score-level z-fusion | 192（base）＋117（transformer） | full（2006+） | rank:pairwise ＋ listnet（0.5/0.5 score-z fusion） |
 | Ban-ei   | `banei-cb-v9-sim-2011`               | CatBoost                                            | 130                             | 2011+         | YetiRank                                           |
 
+> **JRA within-race leak 除去 + clean-retrain deploy（2026-07-04、LIVE）**: 旧 `jra-cb-v9-sim-2013`（263 feat）は 4 つの **within-race leak 列**（`target_corner_1_norm` / `target_corner_3_norm` / `target_corner_4_norm` / `target_running_style_class` ＝予測対象レースでのその馬自身の in-race コーナー通過位置・脚質、genuine serve では NULL）を feature に含んでいた。deployed model importance で `target_corner_4_norm` が #1、4 列合計で importance の 33〜40/100 を占め、serve では対象レース未走のため corner=NULL となり、model が odds 追従へ collapse する——これが documented serve-skew tax（JRA backtest→serve −6.2pp）の root cause だった。stored の高精度は post-race backfill による leak inflation（timing receipt で確認）であり、2026 実 120 races では deployed serve top1 27.5% < market 31.67% だった。**Source fix**: `finish_position_catboost.py` / `finish_position_xgboost.py` の `LABEL_COLUMNS` が 2 列のみで leak 4 列を resolver が feature として含めていた（commit `1c7442ed`、4 列追加で全 future retrain が自動 leak-free 化。`finish_position_lightgbm.py` は 4 列を正しく列挙済みで無 leak だった）。**Deploy**: clean retrain（250 feat、leak 0、full-train 2013-2025）を serve-realistic WF（top1 +0.724[LB95 +0.164] 全 fold 正）で確認後、`jra-cb-v9-sim-2013-clean` として commit `51a074c9` で deploy（`model_meta.json` 更新 + baked model dir + `active_models` を local PG(15432)/Neon 双方で flip + predict_lib 実 serve path smoke 8 races 0 feat missing）。旧 `jra-cb-v9-sim-2013` dir は rollback 用に温存（pure pointer revert）。**NAR も同じ 4 leak 列を含む**（`iter12-nar-xgb-hpo-v8` base + iter40 transformer blend 両方）が、clean-retrain は削除済みの full-192-feature store の regen（disk-I/O bound、数時間）待ちで、本ドキュメント時点では **pending**（reduced-store 方向感は top1 +4.375[LB95 +3.972] だが full store で確認前）。詳細は §9 のリークの見分け方ルール、§7.3 の評価ルール、§11 JRA frontier ブロックを参照。
+>
 > **NAR iter40 transformer blend = Cloudflare production ENABLED（2026-07-03）**: NAR は 2026-07-03 に iter40 transformer blend（`iter40-nar-settransformer-blend-v1`）を Cloudflare Worker / Queue / Container の production path で有効化済み。表の NAR 行は iter12 base（192 feat XGBoost）に 117-feat listwise Set Transformer を **score-level z-fusion（0.5/0.5、2026-07-03 に rank-fusion から更新＝ deployed win #2、commit `a90161f4`、model_version は iter40 維持）** した現行 serving 構成を指す（fallback は iter12）。有効化方式は **CF worker path**——`container-class.ts` が env を container へ forward（commit `28c89abf`）＋ wrangler **secret** `NAR_TRANSFORMER_BLEND_ENABLED=1`（redeploy で消えない）＋ worker deploy（Version `0d2d99c7-cbe1-4989-a497-255e73e77388`）。Neon-write smoke は CLEAN（iter40 行が本番 Neon に landing・fusion が iter12 と異なる・fallback 確認済み）。rollback は CF secret を 0 に戻す。ローカル `.env` の flag は診断・backfill wrapper 用で、本番 authority ではない。**初回 genuine 本番 write 確認済み（2026-07-03、production LIVE）**——Cloudflare production path の per-race full serve が feature build → iter12 base → transformer fusion → iter40 Neon write を完走し、48 NAR レース（499 頭行）を 03:05 JST に本番 Neon `race_finish_position_model_predictions` へ書き込んだ（`model_version=iter40-nar-settransformer-blend-v1`、`prediction_generated_at` 18:05:32-18:05:47 UTC ＝ 03:05 JST）。viewer は当日 48 NAR レース全てで iter40 を表示（latest-for-race resolution、iter40 が 48/48 で勝ち）。詳細・検証・rollback は §2.5 / §5.9、統制・機構は §11。
 
 > **重要な留保・更新（2026-07-02 investigation → 同日中に 3 カテゴリすべてで解決、詳細は §5.9）**: 本欄は当初、「本番の per-race パイプラインが実際にこれらのモデルで着順予測を完走し Neon に書き込んだという確認済みの証跡が、テーブル観測可能な履歴の範囲（2026-05-15 以降、約 1.5 ヶ月）で 3 カテゴリいずれについても存在しない」という critical finding を記録していた。**同日中の root-cause 特定と 4 段階の fix（commit `2d3535be` instrumentation → commit `af1ca40e` queue-consumer hold time 分離 → commit `f4b3ea7a` same-category slot starvation 修正 → commit `c3a48694` per-race work-dir cleanup）により、JRA / NAR / Ban-ei の 3 カテゴリすべてで live smoke test で genuine な per-race Neon 書き込みを確認済み**。現行 production の着順 routing は **per-cell を最優先**し、non-default cell に一致しない race は category default / 明示的に有効な category-level path（例: JRA E-top2、NAR transformer blend）へ進む。`nar_subclass` による per-class ensemble routing は production dispatch から外し、履歴・オフライン検証用の記録としてのみ扱う。
@@ -171,6 +173,18 @@ NAR の iter40 transformer blend（`iter40-nar-settransformer-blend-v1`）は 20
 - **serve**: `apps/finish-position-predict-container/src/predict_lib/transformer_scorer.py`（pure numpy float64・MLX-eager 実装に byte-exact ＝順位 flip 0 で Container 側は MLX 不要）。scoring は per-race（`score_races` の per-race ループ内 `_score_one_race_nar_blend`・docs §9 の per-race 原則を遵守）。**3-tier fail-closed fallback**（field<2 頭 / feature 欠損 / 例外 のいずれかで iter12 ensemble に落ちる）。R2 weights: `pc-keiba-finish-position-models/finish-position/nar/iter40-nar-settransformer-blend-v1/`（`weights_s1/2/3.npz` ＋ `norm.json`）。
 - **flag と有効化（Cloudflare production path で ENABLED=1）**: `NAR_TRANSFORMER_BLEND_ENABLED`（env override）。**CF production path で env=1 有効化済み**——wrangler **secret** `NAR_TRANSFORMER_BLEND_ENABLED=1` として設定（redeploy で消えない drop-proof、live-rollbackable）、`container-class.ts`（commit `28c89abf`）が env を container へ forward、worker deploy Version `0d2d99c7-cbe1-4989-a497-255e73e77388`（container image 再利用、crons/queue/observability intact）。次回 per-race container start で有効。**rollback**（redeploy 不要）: `printf 0 | bunx wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED`。即時に pure iter12 ensemble へ戻る。**注意**: base image は default=False を bake している（HEAD からの rebuild + redeploy でも transformer は default OFF）ため、有効化は上記 secret / env=1 の明示で成立している。詳細は §5.9。
 - **精度**: serve-exact（ketto tie-break）gate で ADOPT。pooled blind 2023 / 2024 / 2025 で **top1 Δ+0.629pp[LB95 +0.467]／place2 Δ+0.432[+0.199]／place3 Δ+0.499[+0.260]**、全 fold 全 primary が正。**本キャンペーン初の「アーキテクチャ lever」による deployable win**（30+ の特徴量 lever は市場効率の壁で REJECT だった）。
+
+### 2.6 within-race leak 発見・修正・JRA clean-retrain deploy（2026-07-04）
+
+JRA / NAR の deployed model が 4 つの **within-race leak 列**（`target_corner_1_norm` / `target_corner_3_norm` / `target_corner_4_norm` / `target_running_style_class`）を feature として含んでいたことが判明し、同日中に根本原因を特定・修正・JRA を deploy した。本節はこのキャンペーンの要約。詳細な cell 内訳・masked-lever 再検証結果は §11 JRA frontier ブロック、リークの見分け方ルールは §9、評価ルールは §7.3 を参照。
+
+- **何が漏れていたか**: 4 列は「予測対象レースにおけるその馬自身の in-race コーナー通過位置・脚質」——post-race にしか確定しない値で、genuine な pre-race serve では NULL。deployed model importance で `target_corner_4_norm` が #1、4 列合計で 33〜40/100 を占めていた。serve では対象レース未走のため NULL となり、model が事実上 odds 追従へ collapse する構造で、これが documented serve-skew tax（backtest→serve の乖離）の root cause だった。stored の高精度自体は post-race backfill による leak inflation（timing receipt で確認）であり、2026 実 120 races では deployed serve top1 27.5% が market の favorite 的中率 31.67% を下回っていた。
+- **なぜ混入したか（source root cause）**: `apps/pc-keiba-viewer/src/scripts/finish_position_catboost.py` / `finish_position_xgboost.py` の `LABEL_COLUMNS` が 2 列（`finish_position` 系）のみを列挙しており、feature 列 resolver が残る leak 4 列を除外し損ねていた。`finish_position_lightgbm.py` は 4 列を正しく列挙していたため LightGBM 経路は無 leak だった。
+- **恒久修正（commit `1c7442ed`）**: `LABEL_COLUMNS` に leak 4 列を追加。これにより将来のあらゆる再学習が自動的に leak-free になる（テスト同伴、`python:check` 4126 passed / cov 97.49%、lefthook clean）。
+- **JRA clean-retrain + deploy（commit `51a074c9`、LIVE）**: 250 feat（leak 0）で 2013-2025 full-train した clean artifact を serve-realistic WF（leak 列を両 arm NULL 化した A/B、3 seed × 3 blind fold、bootstrap LB95 2000）で検証——**top1 +0.724pp[LB95 +0.164]（全 3 fold 正）／place2 +0.135／top3_box +0.309／place3 −0.145（noise 域）**。`model_meta.json`（jra: `jra-cb-v9-sim-2013-clean`、263→250）+ `active_models`（local PG 15432 + Neon 双方）flip + predict_lib 実 serve path smoke（8 races、0/250 feature_names missing、matrix 幅 250、有効な 1..n rank）を経て deploy。旧 `jra-cb-v9-sim-2013` model dir は rollback 用に温存（pure pointer revert、データ削除なし）。
+- **NAR は pending**: NAR も同じ 4 leak 列を含む（`iter12-nar-xgb-hpo-v8` base + iter40 transformer blend の両方）。reduced（117/192 feat）store での clean-retrain 方向感は **top1 +4.375pp[LB95 +3.972]** と強いが、**full 192-feature store（`feat-nar-v8-iter9-pacestyle`）が削除済みのため regen が必要**（disk-I/O bound、数時間規模）。regen 完了・full-store での magnitude 確認・NAR clean deploy は本ドキュメント時点で未完了。手順は full-store regen → clean iter12 + clean transformer blend 再検証 → serve-realistic 確認 → deploy（Mac `.env` / CF secret flag は既存の enable 機構を踏襲、rollback=flag=0）。
+- **deploy checklist の教訓（§5.9 に既存記載のガイドを補強）**: 本番 image `finish-position-predict-local:split2` は working tree を直読みせず `docker build` 時点の `src/`/`models/` を焼き込むため、model / pointer 変更後は **明示的な image rebuild が必須**（`finish-position-predict-daily.sh` はタグが missing の場合のみ自動 build するため、既存タグがあると stale image が黙って使われ続ける）。JRA deploy 時は Colima 起動確認 + image rebuild + 検証を実施した。再利用可能な dry-run チェックリスト・full-train wrapper は `apps/pc-keiba-viewer/tmp/candidate-deploy-rail/`（`checklist.md` / `full_train_with_extras.py`）に用意済み。
+- **masked-lever 再検証（クリーン baseline で見えなくなっていた候補の再確認）**: leak が過去の REJECT 判定を masking していた可能性を排除するため、clean baseline で same-day track-bias / horse-draw-affinity / draw ablation / straight×closer の 4 lever を再検証したが、**全て STILL-REJECT**（leak-independent、leaked baseline との delta 差がほぼ無く masking は確認されなかった）。詳細は §11 JRA frontier ブロック。
 
 ---
 
@@ -726,6 +740,13 @@ Cloudflare production path の NAR focused per-race run（`nar:20260703:54:10`�
 39. **serve validation（REAL prod-v3 serve probs、R2 by-day parquet）**: 実 serve path の prod-v3 確率を R2 `running-style/predictions/by-day`（2026-06 + 2026-07-01）から読み、2000-iter bootstrap で評価。NAR 1,106 races corner3+4 pooled +0.096pp[LB95 +0.016]、finish +0.219pp[LB95 +0.103]；JRA 240 races corner3+4 pooled +0.352pp[LB95 +0.154]、finish +0.476pp[LB95 +0.215]。serve refit は candidate と構造一致（senkou<1、sashi ∈ [1.3, 1.7]、monotone）。artifact: `apps/pc-keiba-viewer/tmp/candidate-corner-eval/`（`baseline_report.json` / `lever_report.json` / `lever_v2_report.json` / `serve_validation_r2_report.json`）。
 40. **運用上の観測（§4.3 の design を否定しない範囲で記録）**: sampling した window では本番 Neon `race_running_style_model_predictions` の prod-v3 行が sparse（R2-miss put-back のみ）だったため、serve 検証の representative source として R2 by-day parquet を用いた。これは §4.3 の design（worker が Neon へ mirror する）と矛盾しない——design はそのままで、観測された local sample が sparse だったという運用上の note である。
 
+**2026-07-04 JRA clean-retrain deploy + 再利用可能な deploy-rail チェックリスト整備**
+
+JRA leak-free clean-retrain（§2.6）の deploy（commit `51a074c9`）に際し、Mac launchd 本番 image の bake gotcha を再確認した上で、次回以降の同種 deploy（例: 現在進行中の meetingday-waku / jockey-winrate / pedigree-winrate / class-ordinal / tokubetsu-market lever のいずれかが ADOPT した場合の追加 retrain）を機械的に行えるチェックリスト + スクリプトを用意した。
+
+41. **image bake gotcha（既知、今回も踏襲）**: 本番 image `finish-position-predict-local:split2` は `docker build` 時点で `src/` / `models/` を焼き込み、working tree を実行時に直読みしない。`finish-position-predict-daily.sh` はイメージタグが存在しない場合のみ自動 build するため、model / pointer を変更しただけでは古い image が再利用され続ける——明示的な `docker build -f apps/finish-position-predict-container/Dockerfile -t finish-position-predict-local:split2 .` が必須。JRA deploy 時は Colima 起動確認（memory free 89%）+ image rebuild + `PREDICT_CATEGORIES=jra bash finish-position-predict-daily.sh`（races_predicted=466, exit 0）で確認した。
+42. **deploy-rail の再利用可能な準備物（`apps/pc-keiba-viewer/tmp/candidate-deploy-rail/`）**: `checklist.md` に、full-train → bake → `model_meta.json`/test fixture 更新（前例 `51a074c9` の変更ファイル一覧を記載）→ image rebuild（既存タグの retag-then-overwrite 慣習込み）→ `active_models` flip（local 15432 + Neon、`NEON_DIRECT_DATABASE_URL` 経由）→ predict_lib 実 serve path smoke → pointer rollback、の手順を明文化。`full_train_with_extras.py` は §2.6 の clean baseline（250 feat）に任意の candidate 列を WF harness と同じ join ロジック（`race_id, ketto_toroku_bango` left-join）で追加して full-train するラッパで、`--validate-only` モードは実 lever parquet 2 本（jockey-winrate / pedigree-winrate）に対し join 健全性（行数保存・null 率）を学習ゼロで確認済み。
+
 ---
 
 ## 6. cell-level 評価（カテゴリ単位評価は禁止）
@@ -932,7 +953,9 @@ flowchart LR
 - **LB95**（bootstrap 95% 信頼区間下限、2000 iterations）を採否の主指標とする。global / pooled の positive を主張する metric は **LB95 > 0** が必須（点推定が正でも LB95 が 0 を跨ぐ場合は global 採用しない）。
 - 例外として、`build_cell_models.py` の finish-position cell routing 採用では、sample / freshness / multi-metric / no-regression を満たし、かつ **着順の全 gated metrics（top1〜place6 / top3_box）が +0.08pp（0.0008）以上改善**している cell は LB95 が 0 を跨いでも採用できる。これは NAR `mile / E / venue 54` のような狭い cell pocket を routing で限定適用するためのルールであり、category/global model の改善主張には使わない。脚質ではこの LB95 例外を使わない。
 - **HPO は同一 fold を再利用すると選択バイアスが生じる**ため、deploy 前に**別個の blind holdout**（single-config）で confirm すること（必須、selection bias protection）。
-- WF 精度は必ず serve 精度と突合せる。WF が隠した本番劣化（serve-skew）が頭打ちの中核要因となった事例がある。
+- WF 精度は必ず serve 精度と突合せる。WF が隠した本番劣化（serve-skew）が頭打ちの中核要因となった事例がある。**2026-07-04 に root cause 確定**: この serve-skew は within-race leak 列（`target_corner_*` / `target_running_style_class`、§2.6 / §9 参照）が backtest/backfill を leak-inflate していたことが原因だった。
+- **serve-realistic 評価は必須ルール（2026-07-04 に確定教訓として明文化）**: accuracy の主張は必ず serve-realistic（post-race にしか確定しない feature は predict 時点で NULL 化した状態）で行う。backtest / backfill の数値は post-race 情報が紛れ込み leak-inflate されている可能性があり、単体では accuracy の証拠にしない。deployed model の実際の feature 一覧は各 model の `metadata.json` の `feature_names` で確認する（`model_meta.json` は version + count のみで feature 内容は保証しない）。
+- **harness 実装ルール（2026-07-04 に発見・修正されたバグに基づく）**: cell / subgroup 単位の claim を出す harness は、per-race の予測 frame と mask の元になる frame の **両方を race_id で sort してから** boolean mask を適用すること。`group_by()` の出力順は sort 済みとは限らず、mask 元と対象 frame の行順が食い違うと誤った race に mask が適用され、偽の LB95>0 cell を量産する（`retest_wf.py` の `paired()` 内でこのバグが実際に発生し、過去の doc に記載していた一部 cell の主張を撤回・修正する事態になった）。
 
 ---
 
@@ -1102,6 +1125,8 @@ flowchart TB
     G["blind holdout なしの HPO<br/>→ 選択バイアスで却下"]
     H["日付単位の一括予測生成<br/>→ per-race 単位必須"]
     I["ローカル scheduler 依存の本番運用<br/>→ CF Queue / Cron / Worker"]
+    J["target_* / rec.* / current-row 由来特徴<br/>→ within-race leak 候補、要精査"]
+    K["sort 前 group_by mask での<br/>cell 単位 claim → 偽陽性の温床"]
 
     PROHIBITED(("PROHIBITED"))
     A --> PROHIBITED
@@ -1113,6 +1138,8 @@ flowchart TB
     G --> PROHIBITED
     H --> PROHIBITED
     I --> PROHIBITED
+    J --> PROHIBITED
+    K --> PROHIBITED
 ```
 
 1. **カテゴリ単位評価の禁止** — 必ず cell 単位（§6）で評価する。
@@ -1124,6 +1151,8 @@ flowchart TB
 7. **blind holdout なしの HPO 禁止** — 選択バイアスを避けるため、deploy 前に独立 holdout で confirm する。
 8. **日付単位・カテゴリ一括の本番予測生成禁止** — 本番の特徴量生成・脚質予測・着順予測は常にレース単位（per-race）で実行する。日付単位やカテゴリ一括のバッチ処理を新規に構築してはならない。日次 cron であっても内部はレース単位の collect の集約として構成すること（§5.4 参照）。
 9. **ローカル scheduler 依存の本番運用禁止** — ローカル scheduler、手元 shell script を本番 trigger / ordering / retry / fallback に使わない。本番順序は Cloudflare Cron / Queue / Worker / Container で担保し、service binding / API は queue primary path が使えない環境の fallback に限る。
+10. **within-race leak 候補特徴の見分け方（2026-07-04 追加）** — 列名やロジックが `target_*` / `rec.*` である、または「予測対象レース当日・当該レースの現在行から直接計算される」特徴量は within-race leak 候補として扱い、genuine な pre-race serve で NULL になるかを必ず確認してから feature に加える。`past_*` / prior-N（当該レースより前の履歴）集計は合法。実際に `target_corner_1/3/4_norm` / `target_running_style_class` の 4 列がこのパターンで JRA / NAR モデルに混入していた（§2.6）。
+11. **sort 前 group_by mask での cell 単位 claim 禁止（2026-07-04 追加）** — cell / subgroup 単位の精度 claim を出す harness は、per-race 予測 frame と mask 元 frame の両方を `race_id` で sort してから boolean mask を適用すること。sort せずに `group_by()` の出力順のまま mask すると行順が食い違い、偽の LB95>0 cell を生成する（§7.3 に詳細、`retest_wf.py` の実バグ事例）。
 
 ---
 
@@ -1192,6 +1221,15 @@ flowchart TB
     - **gate（additive to 263、CatBoost YetiRank WF 2013+ 3-fold blind、bootstrap LB95 2000）**: 5 arm（ratios / zrelative / interactions / topprobe / all-41-kitchen-sink）全て REJECT——**どの arm も primary metric（top1 / place2 / place3）で LB95>0 がゼロ**（各 arm `primary_positives=0`）。kitchen-sink（upper bound）でも pooled top1 +0.18pp[LB95 -0.15] / place2 -0.15 / place3 -0.11。
     - **cell-routing なし**: 6-way cell は 0 cells>=200 races で細かすぎ（全 arm `cells_ge200=[]`）、単一次元（>=300）では 5 cell が top1 LB95>0 だが 400 test 中の chance 期待 ~10 未満・arm / cell 不一致・各々 place2 / 3 regression 随伴、**per-year 確認で 3 年全て hold する cell ゼロ**（例 `venue03` "+1.53" は 2024 単年 +3.33 spike）= textbook 多重比較ノイズ、既 REJECT の `project_jra_field_difficulty_reject_2026_06_23` と同型の罠。
     - **共通所見（forward note）**: 並行の合成 ability（`jra-oddsfree-ability`）・condition fit（`jra-oddsfree-fit`）campaign も probe で REJECT lean——**ability こそ市場が price するので odds-free 構築でも odds 相関が残り priced**。gate 完了後に本節へ追記予定。
+- **JRA 夏競馬（札幌/函館/福島/小倉）cell 精度 campaign 2026-07-04 — 診断 1 件 + lever 6 件 REJECT、frontier 再確認**: leak-free clean baseline（§2.6）確立後、2025+2026 の実着順・オッズ乖離に着目した 4 summer venue の serve-realistic cell 診断を実施し、複数 lever を検証したが**採用ゼロ**。診断結果とレビュー済み probe doc は `apps/pc-keiba-viewer/docs/probes/*2026-07-04*.md` を参照。
+  - **診断（採用判定なし、知見のみ）**: 4 venue とも弱 cell が存在し、Kokura/Sapporo が特に fragile、Hakodate は相対的に堅調。**inside-waku（内枠）rank-1 pick の overconfidence が Kokura/Sapporo/Fukushima の 3 venue で real（該当 cell の実勝率が venue 平均より約 -7pp）** と確認したが、既存の draw-affinity / track-bias 特徴で説明が付かず、feature 追加では修正できない（rank-1-pick の overconfidence 自体が venue 条件付きの calibration 課題）。**E-grade（特別戦）レースが 4 venue 全てで upset-winner rate +5.5〜12.1pp** という新知見も得たが、これは追加 feature ではなく calibration layer 的な知見として記録（race 定数、既存特徴の外挿では捕捉不可）。layoff / 前走着順は夏特異性ゼロ、洋芝初経験は符号不安定で feature 化を見送り。
+  - **same-day track-bias（masked-lever #2 相当）REJECT** — clean baseline 再検証でも leak-independent（leaked baseline とほぼ同じ delta）で masking なし、DO-NOT-RETEST。
+  - **horse-draw-affinity（masked-lever #4）REJECT** — 同上。
+  - **draw ablation（wakuban + venue×dist draw-zone-edge、masked-lever #6）REJECT** — pooled top1 +0.029[LB95 -0.161]、leaked +0.077 vs clean +0.029 で unmasking なし。masked-lever 3 本（#2/#4/#6）全 REJECT で「いずれも leak に masked されていなかった」ことが確定。
+  - **straight-length × closing-kick 交互作用（`closer_x_straight` / `front_x_straight`、短い直線が逃げ・先行に有利という仮説）REJECT** — summer-restricted で top1 +0.368pp だが LB95 -0.272 で信頼区間が 0 を跨ぎ、Fukushima は逆方向（模型と逆の符号）。物理的仮説は妥当だが summer venue の母数（年間約 2,000-2,450 races）ではこの粒度の interaction を bootstrap で検出するには力不足。
+  - **父/母父 venue・dist・洋芝 shrunk win-rate（jockey-winrate/pedigree-winrate 条件 D 系列の一部、upset 分析由来の派生候補）は評価中/追加検証** — 本ドキュメント時点で #3/#4/#9/#10 の WF 結果は係属中（下記プレースホルダ参照）。
+  - **総括**: 4 venue とも診断上の弱点は実在するが、既存の計算特徴・市場効率の壁により修正可能な lever は今回のラウンドで見つからなかった。JRA summer-venue frontier は現状維持（2013+ window / v9-sim baseline のまま）。
+  - **プレースホルダ（2026-07-04 更新予定）**: task #3（meetingday×waku 交互作用）/ #4（jockey win-rate 交互作用）/ #9（class-ordinal エンコーディング修正）/ #10（market-rank×tokubetsu(E-grade) 交互作用）の WF 結果は本ドキュメント執筆時点で係属中。ADOPT が出た場合はこの節と §2 本番モデル表を追って更新する。
 - **NAR**: feature / 学習窓 / 単一アーキ切替（CatBoost）/ venue routing の各 lever はいずれも REJECT で、これらの軸では iter12 XGBoost が frontier。ただし **アーキテクチャ lever（listwise Set Transformer × XGBoost blend）は本物の deployable win（2026-07-02 深夜に gate 通過、2026-07-03 に `iter40-nar-settransformer-blend-v1` を本番 image へ deploy → Neon-write smoke CLEAN → Cloudflare production path で ENABLED → 初回 genuine 本番 write 確認、本キャンペーン初のアーキテクチャ lever win）** であり、この 1 点で従来の「NAR frontier 確定」を更新する。現行 NAR serving = iter40 transformer blend（2026-07-03 production LIVE 確認済み、同日 fusion を rank → score-level z-fusion に更新＝ deployed win #2）。**アーキテクチャ lever から 2 つの deployable win が本番稼働**（rank-fusion +0.63pp top1 / score-z +0.25pp top1、下記 score-z ブロック参照）。アーキテクチャ lever の全 knob（architecture variant c1/c2/c3・fusion 方式 rank/score-z・blend weight tw・per-cell routing・seed 数）を検証完了し、**deployed = 3-seed c2 listwise + score-z fusion が最適配置**と確定（seed 数 sweep は下記 seed 数 sweep ブロック参照、3-SEED-SATURATED）。
   - **listwise Set Transformer × XGBoost blend = genuine deployable win（gate 通過 2026-07-02 深夜、prod-base gate + serve-exact gate 通過・2026-07-03 Cloudflare production ENABLED = iter40、CF env=1、本キャンペーン初のアーキテクチャ lever win）** — 過去の全アンサンブル campaign（`project_ensemble_campaign_complete_2026_06_18`、5-for-5 ABORT）に反し、**単一アーキテクチャの swap ではなくレース内 cross-horse attention を持つ listwise Set Transformer を XGBoost に blend する**という新しい lever が NAR で初めて accept gate を通過した。
     - **手法**: `RaceSetTransformer`——レース内の各馬を token とし multi-head self-attention（cross-horse set attention）で馬同士を相互参照させ、listnet（listwise）loss で学習（MLX / Metal GPU）。これを単体でなく本番 `iter12`（XGBoost）と **within-race rank fusion（0.5 / 0.5 weight）** で blend し、3-seed ensemble を取る。
