@@ -12,6 +12,7 @@ import {
   useProductionApiProxy,
 } from "../../../../../../../../../lib/production-api-proxy.server";
 import {
+  isFinalRaceTrendPayloadComplete,
   RACE_TREND_CACHE_REFRESH_PARAM,
   RACE_TREND_CACHE_WARM_PARAM,
   RACE_TREND_PAST14_LOOKBACK_DAYS,
@@ -152,7 +153,13 @@ export async function GET(request: Request, context: RouteContext) {
     // the most frequent 429 victim under load; the client otherwise sees
     // `fetchWithRetry` exhaust its budget and the trend section stays
     // skeleton, mirroring the recent-results route fix.
-    const persistCachePut = putRaceTrendCache({ body, cacheKey, race }).catch(() => undefined);
+    const isTrendPayloadComplete = isFinalRaceTrendPayloadComplete(payload.starterRows);
+    const persistCachePut = putRaceTrendCache({
+      body,
+      cacheKey,
+      isTrendPayloadComplete,
+      race,
+    }).catch(() => undefined);
     const cloudflareCtx = await safeGetCloudflareExecutionContext();
     if (cloudflareCtx) {
       cloudflareCtx.waitUntil(persistCachePut);

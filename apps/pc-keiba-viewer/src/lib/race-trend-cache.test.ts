@@ -13,6 +13,7 @@ import {
   buildRaceTrendTodayCacheKey,
   getRaceStartTimeMs,
   getRaceTrendCacheTtlSeconds,
+  isFinalRaceTrendPayloadComplete,
   isRaceBeforeTargetRace,
 } from "./race-trend-cache";
 
@@ -277,5 +278,70 @@ describe("getRaceTrendCacheTtlSeconds same-day cap", () => {
         600,
       ),
     ).toBe(86400);
+  });
+
+  it("returns the short self-healing TTL for a yesterday race when the payload is incomplete", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0529" },
+        100_000,
+        undefined,
+        false,
+      ),
+    ).toBe(600);
+  });
+
+  it("returns the short self-healing TTL for a today race past its final buffer when the payload is incomplete", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "0900", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        600,
+        undefined,
+        false,
+      ),
+    ).toBe(600);
+  });
+});
+
+describe("isFinalRaceTrendPayloadComplete", () => {
+  it("returns true for an empty row list since there is nothing to heal", () => {
+    expect(isFinalRaceTrendPayloadComplete([])).toBe(true);
+  });
+
+  it("returns true when the ranked ratio is above the 50% threshold", () => {
+    expect(
+      isFinalRaceTrendPayloadComplete([
+        { finishPosition: 1 },
+        { finishPosition: 2 },
+        { finishPosition: 0 },
+      ]),
+    ).toBe(true);
+  });
+
+  it("returns true when exactly 50% of rows are ranked (boundary)", () => {
+    expect(
+      isFinalRaceTrendPayloadComplete([
+        { finishPosition: 1 },
+        { finishPosition: 2 },
+        { finishPosition: 0 },
+        { finishPosition: 0 },
+      ]),
+    ).toBe(true);
+  });
+
+  it("returns false when the ranked ratio is below the 50% threshold", () => {
+    expect(
+      isFinalRaceTrendPayloadComplete([
+        { finishPosition: 0 },
+        { finishPosition: 0 },
+        { finishPosition: 3 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("returns false when no rows are ranked", () => {
+    expect(isFinalRaceTrendPayloadComplete([{ finishPosition: 0 }, { finishPosition: 0 }])).toBe(
+      false,
+    );
   });
 });

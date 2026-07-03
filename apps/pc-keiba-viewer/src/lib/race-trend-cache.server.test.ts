@@ -230,3 +230,38 @@ it("putRaceTrendCache is a no-op when ttlSeconds is zero (hassoJikoku unparseabl
   expect(kv.put).not.toHaveBeenCalled();
   expect(kv.get).not.toHaveBeenCalled();
 });
+
+it("putRaceTrendCache uses the full final-result TTL when isTrendPayloadComplete is true", async () => {
+  const kv = buildKvStub();
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: "{}",
+    cacheKey: "race-trend-key-F",
+    isTrendPayloadComplete: true,
+    race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
+  });
+  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 86400 });
+});
+
+it("putRaceTrendCache uses the short self-healing TTL when isTrendPayloadComplete is false", async () => {
+  const kv = buildKvStub();
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: "{}",
+    cacheKey: "race-trend-key-G",
+    isTrendPayloadComplete: false,
+    race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
+  });
+  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 600 });
+});
+
+it("putRaceTrendCache defaults to the full final-result TTL when isTrendPayloadComplete is omitted", async () => {
+  const kv = buildKvStub();
+  getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
+  await putRaceTrendCache({
+    body: "{}",
+    cacheKey: "race-trend-key-H",
+    race: buildRaceDetail({ kaisaiNen: "2020", kaisaiTsukihi: "0101" }),
+  });
+  expect(kv.put.mock.calls[1]?.[2]).toStrictEqual({ expirationTtl: 86400 });
+});

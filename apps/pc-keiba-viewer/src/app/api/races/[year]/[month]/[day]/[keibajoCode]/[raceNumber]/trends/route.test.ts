@@ -3,6 +3,13 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+interface PutRaceTrendCacheCallInput {
+  body: string;
+  cacheKey: string;
+  isTrendPayloadComplete?: boolean;
+  race: RaceDetail;
+}
+
 const mocks = vi.hoisted(() => ({
   buildPast14WindowForTargetMock: vi.fn<(...args: never[]) => unknown>(),
   fetchProductionApiMock: vi.fn<(...args: never[]) => unknown>(),
@@ -20,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   getRaceTrendTodaySiblingRunnerDataMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceTrendTodayStarterRowsMock: vi.fn<(...args: never[]) => unknown>(),
   notifyRaceTrendRoomIfChangedMock: vi.fn<(...args: never[]) => unknown>(),
-  putRaceTrendCacheMock: vi.fn<(...args: never[]) => unknown>(),
+  putRaceTrendCacheMock: vi.fn<(input: PutRaceTrendCacheCallInput) => Promise<void>>(),
   useProductionApiProxyMock: vi.fn<() => boolean>(),
 }));
 
@@ -755,6 +762,36 @@ it("GET writes cache when payload has both starterRows and historicalRunningStyl
   expect(putRaceTrendCacheMock).toHaveBeenCalledTimes(1);
   expect(notifyRaceTrendRoomIfChangedMock).toHaveBeenCalledTimes(1);
   expect(response.headers.get("X-Race-Trend-Cache")).toBe("MISS-STORED");
+});
+
+it("GET passes isTrendPayloadComplete true to putRaceTrendCache when starter rows are ranked", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([
+    buildStarterRow({ finishPosition: 1, raceBango: "01" }),
+  ]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+  ]);
+  await GET(buildTrendRequest(), buildTrendContext());
+  expect(putRaceTrendCacheMock.mock.calls[0]?.[0]?.isTrendPayloadComplete).toBe(true);
+});
+
+it("GET passes isTrendPayloadComplete false to putRaceTrendCache when starter rows are mostly unranked", async () => {
+  getRaceDetailMock.mockResolvedValue(buildRaceDetail());
+  getRaceTrendPast14StarterRowsMock.mockResolvedValue([
+    buildStarterRow({ finishPosition: 0, raceBango: "01", umaban: "01" }),
+    buildStarterRow({ finishPosition: 0, raceBango: "01", umaban: "02" }),
+    buildStarterRow({ finishPosition: 1, raceBango: "01", umaban: "03" }),
+  ]);
+  fetchRaceTrendDailyTrackMock.mockResolvedValue({ rows: [], status: "miss" });
+  getRaceTrendTodayStarterRowsMock.mockResolvedValue([]);
+  getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([
+    { horseNumber: "1", predictedLabel: "nige", raceKey: "jra:2026:0529:05:01" },
+  ]);
+  await GET(buildTrendRequest(), buildTrendContext());
+  expect(putRaceTrendCacheMock.mock.calls[0]?.[0]?.isTrendPayloadComplete).toBe(false);
 });
 
 it("GET skips cache write when notifyRaceTrendRoomIfChanged rejects but still returns 200", async () => {

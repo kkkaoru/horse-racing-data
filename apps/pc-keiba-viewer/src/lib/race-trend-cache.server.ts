@@ -155,14 +155,24 @@ const putKvIfNotInFlight = async ({
 export const putRaceTrendCache = async ({
   body,
   cacheKey,
+  isTrendPayloadComplete = true,
   race,
 }: {
   body: string;
   cacheKey: string;
+  // Whether the payload's past-race rows are actually ranked (see
+  // isFinalRaceTrendPayloadComplete). Defaults to true so callers that
+  // predate this signal keep the previous full-TTL behavior.
+  isTrendPayloadComplete?: boolean;
   race: RaceDetail;
 }): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
-  const ttlSeconds = getRaceTrendCacheTtlSeconds(race, getConfiguredAfterStartSeconds(env));
+  const ttlSeconds = getRaceTrendCacheTtlSeconds(
+    race,
+    getConfiguredAfterStartSeconds(env),
+    Date.now(),
+    isTrendPayloadComplete,
+  );
   if (ttlSeconds <= 0) {
     return;
   }

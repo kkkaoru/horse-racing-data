@@ -52,6 +52,19 @@ export const RACE_TREND_CACHE_MAX_TTL_FOR_TODAY_SECONDS = 60;
 // pipeline with no fallback if a transient upstream call failed.
 export const RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS = 24 * 60 * 60;
 
+// Guard for the 24h final-result TTL above: the upstream per-race parquet
+// store only rebuilds past races' data during its JST 06:00-21:00 cron
+// window, so a trends request made before that rebuild can observe a
+// payload where most past-race rows still carry the pre-rebuild
+// `finishPosition: 0` placeholder. Caching that incomplete snapshot for 24h
+// would freeze stale data past the rebuild; this short TTL instead lets the
+// entry self-heal on the next request once upstream has caught up.
+export const RACE_TREND_CACHE_INCOMPLETE_FINAL_RESULT_TTL_SECONDS = 10 * 60;
+
+// Below this ranked-row ratio a "final" payload is considered incomplete
+// (see RACE_TREND_CACHE_INCOMPLETE_FINAL_RESULT_TTL_SECONDS above).
+const RACE_TREND_FINAL_RESULT_MIN_RANKED_RATIO = 0.5;
+
 const RACE_TREND_FINAL_RESULT_BUFFER_SECONDS = 2 * 60 * 60;
 
 export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 1;
@@ -254,6 +267,20 @@ const isRaceResultFinal = (
   return nowMs - raceStartTime >= RACE_TREND_FINAL_RESULT_BUFFER_SECONDS * 1000;
 };
 
+// Rows are "ranked" once the upstream rebuild has attached a real finish
+// position; `finishPosition` is 0 for the pre-rebuild placeholder rows
+// described above. An empty row list has nothing to heal, so it is treated
+// as complete rather than incomplete.
+export const isFinalRaceTrendPayloadComplete = (
+  rows: ReadonlyArray<{ finishPosition: number }>,
+): boolean => {
+  if (rows.length === 0) {
+    return true;
+  }
+  const rankedCount = rows.filter((row) => row.finishPosition > 0).length;
+  return rankedCount / rows.length >= RACE_TREND_FINAL_RESULT_MIN_RANKED_RATIO;
+};
+
 export const getRaceTrendCacheTtlSeconds = (
   race: {
     hassoJikoku?: string | null;
@@ -262,13 +289,16 @@ export const getRaceTrendCacheTtlSeconds = (
   },
   afterStartSeconds = RACE_TREND_CACHE_AFTER_START_SECONDS,
   nowMs = Date.now(),
+  isFinalResultPayloadComplete = true,
 ): number => {
   const raceStartTime = getRaceStartTimeMs(race);
   if (raceStartTime === null) {
     return 0;
   }
   if (isRaceResultFinal(race, raceStartTime, nowMs)) {
-    return RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS;
+    return isFinalResultPayloadComplete
+      ? RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS
+      : RACE_TREND_CACHE_INCOMPLETE_FINAL_RESULT_TTL_SECONDS;
   }
   const expiresAt = raceStartTime + afterStartSeconds * 1000;
   const naturalTtl = Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
