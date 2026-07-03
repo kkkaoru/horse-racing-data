@@ -8,6 +8,7 @@ import {
   buildRealtimePayloadForRequest,
   fetchHorseWeightsLatest,
   fetchOddsFromHot,
+  isConfirmedPastRaceRequest,
   loadInitialRealtimePayloadServer,
   resolveHorseWeights,
 } from "./realtime-payload.server";
@@ -528,6 +529,7 @@ it("loadInitialRealtimePayloadServer returns full payload when bindings respond 
   );
   const result = await loadInitialRealtimePayloadServer({
     env: { REALTIME_HOT: { fetch: hotFetch } },
+    now: new Date("2026-05-29T09:00:00+09:00"),
     request: {
       day: "29",
       keibajoCode: "05",
@@ -567,6 +569,7 @@ it("loadInitialRealtimePayloadServer returns null when bindings exceed timeout",
   );
   const result = await loadInitialRealtimePayloadServer({
     env: { REALTIME_HOT: { fetch: slowFetch } },
+    now: new Date("2026-05-29T09:00:00+09:00"),
     request: {
       day: "29",
       keibajoCode: "05",
@@ -583,6 +586,7 @@ it("loadInitialRealtimePayloadServer returns null when bindings exceed timeout",
 it("loadInitialRealtimePayloadServer returns degraded payload when env is null", async () => {
   const result = await loadInitialRealtimePayloadServer({
     env: null,
+    now: new Date("2026-05-29T09:00:00+09:00"),
     request: {
       day: "29",
       keibajoCode: "47",
@@ -607,6 +611,7 @@ it("loadInitialRealtimePayloadServer returns degraded payload when env is null",
 it("loadInitialRealtimePayloadServer uses default timeout when none is provided", async () => {
   const result = await loadInitialRealtimePayloadServer({
     env: null,
+    now: new Date("2026-05-29T09:00:00+09:00"),
     request: {
       day: "29",
       keibajoCode: "47",
@@ -625,4 +630,61 @@ it("loadInitialRealtimePayloadServer uses default timeout when none is provided"
     source: null,
     trackCondition: null,
   });
+});
+
+it("isConfirmedPastRaceRequest returns true for a request date before JST today", () => {
+  const result = isConfirmedPastRaceRequest(
+    { day: "28", keibajoCode: "05", month: "05", raceNumber: "01", source: "jra", year: "2026" },
+    new Date("2026-05-29T09:00:00+09:00"),
+  );
+  expect(result).toBe(true);
+});
+
+it("isConfirmedPastRaceRequest returns false for a request date equal to JST today", () => {
+  const result = isConfirmedPastRaceRequest(
+    { day: "29", keibajoCode: "05", month: "05", raceNumber: "01", source: "jra", year: "2026" },
+    new Date("2026-05-29T09:00:00+09:00"),
+  );
+  expect(result).toBe(false);
+});
+
+it("isConfirmedPastRaceRequest returns false for a request date after JST today", () => {
+  const result = isConfirmedPastRaceRequest(
+    { day: "30", keibajoCode: "05", month: "05", raceNumber: "01", source: "jra", year: "2026" },
+    new Date("2026-05-29T09:00:00+09:00"),
+  );
+  expect(result).toBe(false);
+});
+
+it("isConfirmedPastRaceRequest defaults now to the current date when omitted", () => {
+  const result = isConfirmedPastRaceRequest({
+    day: "01",
+    keibajoCode: "05",
+    month: "01",
+    raceNumber: "01",
+    source: "jra",
+    year: "2000",
+  });
+  expect(result).toBe(true);
+});
+
+it("loadInitialRealtimePayloadServer returns null immediately for a confirmed past race without calling bindings", async () => {
+  const hotFetch = vi.fn<HotFetch>(async () =>
+    Promise.resolve(new Response("{}", { status: 200 })),
+  );
+  const result = await loadInitialRealtimePayloadServer({
+    env: { REALTIME_HOT: { fetch: hotFetch } },
+    now: new Date("2026-05-29T09:00:00+09:00"),
+    request: {
+      day: "28",
+      keibajoCode: "05",
+      month: "05",
+      raceNumber: "01",
+      source: "jra",
+      year: "2026",
+    },
+    timeoutMs: 5_000,
+  });
+  expect(result).toBeNull();
+  expect(hotFetch).not.toHaveBeenCalled();
 });

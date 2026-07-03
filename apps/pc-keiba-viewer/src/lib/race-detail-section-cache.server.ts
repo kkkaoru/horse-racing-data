@@ -12,6 +12,7 @@ import {
   serializeStaleDetailSectionEnvelope,
 } from "./race-detail-section-stale";
 import type { RaceDetail } from "./race-types";
+import { isBanEiKeibajoCode } from "./runner-format";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/";
@@ -26,6 +27,17 @@ const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 // keep serving a payload that is hours past the most recent D1 write.
 const STALE_CACHE_KEY_PREFIX = "stale";
 const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+// 2026-07-04: the 21:00-JST-day-before pre-warm computes the "training"
+// section before netkeiba's premium training reviews / stable comments have
+// been scraped, so the payload it caches has zero premium content. Nothing
+// busts that cache once the premium fetch eventually lands, so the empty
+// section used to persist for the full `race start + 6h` TTL. Detecting
+// emptiness at write time and using a much shorter TTL lets the section
+// self-heal: the entry expires quickly, the next request recomputes it, and
+// once the premium fetch has landed the recompute is cached with the normal
+// long TTL again.
+const EMPTY_PREMIUM_SECTION_CACHE_TTL_SECONDS = 10 * 60;
 
 type CacheSource = "cache-api" | "kv";
 
@@ -159,6 +171,89 @@ export const buildStaleDetailSectionResponse = (body: string): Response =>
     },
   });
 
+const hasPremiumTrainingReviewContent = (training: unknown): boolean =>
+  typeof training === "object" &&
+  training !== null &&
+  (("premiumCommentText" in training && Boolean(training.premiumCommentText)) ||
+    ("premiumEvaluationGrade" in training && Boolean(training.premiumEvaluationGrade)) ||
+    ("premiumEvaluationText" in training && Boolean(training.premiumEvaluationText)));
+
+// Mirrors the shape written by the "training" `getDetailSectionPayload`
+// branch: `{ type: "training", stableComments: [...], trainings: [...] }`,
+// where each `training` row only carries `premiumCommentText` /
+// `premiumEvaluationGrade` / `premiumEvaluationText` once a premium review
+// was merged onto it.
+const isEmptyPremiumTrainingSectionBody = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("type" in parsed) ||
+      parsed.type !== "training" ||
+      !("stableComments" in parsed) ||
+      !Array.isArray(parsed.stableComments) ||
+      !("trainings" in parsed) ||
+      !Array.isArray(parsed.trainings)
+    ) {
+      return false;
+    }
+    return (
+      parsed.stableComments.length === 0 && !parsed.trainings.some(hasPremiumTrainingReviewContent)
+    );
+  } catch {
+    return false;
+  }
+};
+
+// Defense-in-depth mirror of the "premium-data-top" emptiness check the
+// `[section]` route already applies before calling `putDetailSectionCache`
+// (so a route-level regression there would still self-heal via this cache
+// layer instead of caching an empty result for the full long TTL).
+const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("type" in parsed) ||
+      parsed.type !== "premium-data-top" ||
+      !("dataTopHorses" in parsed) ||
+      !Array.isArray(parsed.dataTopHorses)
+    ) {
+      return false;
+    }
+    return parsed.dataTopHorses.length === 0;
+  } catch {
+    return false;
+  }
+};
+
+// Premium training reviews / stable comments only ever exist for JRA races —
+// `fetchPremiumRacePayload` in detail-section-data.ts short-circuits to an
+// empty payload for every other source. An empty NAR training section is
+// therefore a permanent state, not a transient "premium fetch hasn't landed
+// yet" state, so it must keep the normal long TTL; giving it the short TTL
+// would just re-run the same empty recompute every 10 minutes forever with
+// nothing to self-heal into.
+const canTrainingSectionHavePremiumContent = (race: RaceDetail): boolean => race.source === "jra";
+
+// getPremiumDataTopHorsesWithCache (via detail-section-data.ts) short-circuits
+// to an empty payload for Ban-ei races specifically (not NAR as a whole), so
+// the same permanent-vs-transient distinction applies there.
+const canPremiumDataTopSectionHaveContent = (race: RaceDetail): boolean =>
+  !(race.source === "nar" && isBanEiKeibajoCode(race.keibajoCode));
+
+const isSelfHealableEmptyPremiumSectionBody = (body: string, race: RaceDetail): boolean => {
+  if (isEmptyPremiumTrainingSectionBody(body)) {
+    return canTrainingSectionHavePremiumContent(race);
+  }
+  if (isEmptyPremiumDataTopSectionBody(body)) {
+    return canPremiumDataTopSectionHaveContent(race);
+  }
+  return false;
+};
+
 export const putDetailSectionCache = async ({
   body,
   cacheKey,
@@ -169,7 +264,10 @@ export const putDetailSectionCache = async ({
   race: RaceDetail;
 }): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
-  const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
+  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(race, env);
+  const ttlSeconds = isSelfHealableEmptyPremiumSectionBody(body, race)
+    ? Math.min(fullTtlSeconds, EMPTY_PREMIUM_SECTION_CACHE_TTL_SECONDS)
+    : fullTtlSeconds;
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   // The 30-day stale snapshot is written even when fresh TTL is already
   // 0 (the race finished more than 6h ago) so future visits still get an

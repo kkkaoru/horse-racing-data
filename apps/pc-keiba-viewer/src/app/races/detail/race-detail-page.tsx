@@ -51,7 +51,10 @@ import { RACE_TREND_PAST14_LOOKBACK_DAYS } from "../../../lib/race-trend-cache";
 import { shouldRestrictTrendDisplayToToday } from "../../../lib/race-trend-display";
 import { getRaceTrendTargetsFromSearchParams } from "../../../lib/race-trend-query";
 import type { HorseRaceResult, RaceDetail, Runner } from "../../../lib/race-types";
-import { loadInitialRealtimePayloadServer } from "../../../lib/realtime-payload.server";
+import {
+  isConfirmedPastRaceRequest,
+  loadInitialRealtimePayloadServer,
+} from "../../../lib/realtime-payload.server";
 import {
   formatCarriedWeight,
   formatHorseWeight,
@@ -382,11 +385,17 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   } satisfies RealtimeRaceRequest;
-  const realtimeEnv = await safeGetCloudflareEnv();
-  const initialRealtimePayload = await loadInitialRealtimePayloadServer({
-    env: realtimeEnv,
-    request: { day, keibajoCode, month, raceNumber, source: raceSource, year },
-  }).catch(() => null);
+  // safeGetCloudflareEnv() resolves the realtime Worker bindings (an actual
+  // Cloudflare API round-trip in local dev, see cloudflare-context.server.ts).
+  // Skip it entirely for confirmed-past race dates since
+  // loadInitialRealtimePayloadServer would just discard the env unused.
+  const realtimePayloadRequest = { day, keibajoCode, month, raceNumber, source: raceSource, year };
+  const initialRealtimePayload = isConfirmedPastRaceRequest(realtimePayloadRequest)
+    ? null
+    : await loadInitialRealtimePayloadServer({
+        env: await safeGetCloudflareEnv(),
+        request: realtimePayloadRequest,
+      }).catch(() => null);
   // D1 (race_result_snapshots) seed for the 着順 column when the PostgreSQL
   // mirror has not imported the finish yet. Precedence in RunnersTable:
   // live realtime payload > this D1 seed > PG kakuteiChakujun.

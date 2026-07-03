@@ -228,14 +228,16 @@ export function RunnersTable({
     const effectiveSnapshot = horseWeightSnapshot ?? payload?.horseWeights ?? null;
     const horses = effectiveSnapshot?.horses ?? [];
     return new Map(
-      horses.map((horse) => [
-        formatRunnerNumber(horse.horseNumber),
-        formatHorseWeight(
-          horse.weight === null ? null : String(horse.weight),
-          horse.changeSign,
-          horse.changeAmount === null ? null : String(horse.changeAmount),
-        ),
-      ]),
+      horses
+        .filter((horse) => horse.weight !== null)
+        .map((horse) => [
+          formatRunnerNumber(horse.horseNumber),
+          formatHorseWeight(
+            String(horse.weight),
+            horse.changeSign,
+            horse.changeAmount === null ? null : String(horse.changeAmount),
+          ),
+        ]),
     );
   }, [horseWeightSnapshot, payload]);
   const realtimeResultByHorse = useMemo(

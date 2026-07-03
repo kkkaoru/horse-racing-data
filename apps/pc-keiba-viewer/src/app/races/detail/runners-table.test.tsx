@@ -363,7 +363,7 @@ describe("runners table", () => {
     expect(screen.queryByText("元 坂井瑠星")).toBeNull();
   });
 
-  it("formats realtime horse weights with missing values", () => {
+  it("falls back to the postgresql horse weight when the realtime weight is null", () => {
     render(
       <RunnersTable
         initialRealtimePayload={{
@@ -392,11 +392,19 @@ describe("runners table", () => {
           raceKey: "nar:2026:0510:83:09",
           source: null,
         }}
-        runners={[runner({ bamei: "一番", umaban: "01" })]}
+        runners={[
+          runner({
+            bamei: "一番",
+            bataiju: "480",
+            umaban: "01",
+            zogenFugo: null,
+            zogenSa: null,
+          }),
+        ]}
       />,
     );
 
-    expect(screen.getAllByText("-").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("480kg")).toBeTruthy();
   });
 
   it("shows '-' for 馬体重 when bataiju is null and no realtime weight is provided", () => {

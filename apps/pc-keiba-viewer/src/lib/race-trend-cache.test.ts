@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS,
   RACE_TREND_CACHE_WARM_VARIANT_COUNT,
   addDaysToYmd,
   buildDefaultRaceTrendCacheOptions,
@@ -206,13 +207,31 @@ describe("getRaceTrendCacheTtlSeconds same-day cap", () => {
     ).toBe(79800);
   });
 
-  it("returns natural TTL for a yesterday race without capping", () => {
+  it("returns the final-result flat TTL for a yesterday race regardless of afterStartSeconds", () => {
     expect(
       getRaceTrendCacheTtlSeconds(
         { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0529" },
         100_000,
       ),
-    ).toBe(6400);
+    ).toBe(86400);
+  });
+
+  it("returns the final-result flat TTL for a yesterday race even with a tiny afterStartSeconds", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0529" },
+        1,
+      ),
+    ).toBe(RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS);
+  });
+
+  it("returns natural TTL for a race two days ahead without treating it as final", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0601" },
+        1_000_000,
+      ),
+    ).toBe(1165600);
   });
 
   it("caps TTL to 60 seconds for a today race that has not yet started", () => {
@@ -240,5 +259,23 @@ describe("getRaceTrendCacheTtlSeconds same-day cap", () => {
         3630,
       ),
     ).toBe(30);
+  });
+
+  it("returns the final-result flat TTL for a today race more than 2 hours past its start", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "0900", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        600,
+      ),
+    ).toBe(86400);
+  });
+
+  it("returns the final-result flat TTL for a today race exactly 2 hours past its start", () => {
+    expect(
+      getRaceTrendCacheTtlSeconds(
+        { hassoJikoku: "1000", kaisaiNen: "2026", kaisaiTsukihi: "0530" },
+        600,
+      ),
+    ).toBe(86400);
   });
 });

@@ -219,13 +219,13 @@ it("putRaceTrendCache still writes body when in-flight marker put fails", async 
   expect(kv.put.mock.calls[1]?.[0]).toBe("race-trend-key-D");
 });
 
-it("putRaceTrendCache is a no-op when ttlSeconds is zero (past race)", async () => {
+it("putRaceTrendCache is a no-op when ttlSeconds is zero (hassoJikoku unparseable)", async () => {
   const kv = buildKvStub();
   getCloudflareContextMock.mockResolvedValue({ env: { DETAIL_SECTION_CACHE_KV: kv }, ctx: null });
   await putRaceTrendCache({
     body: "{}",
     cacheKey: "race-trend-key-E",
-    race: buildRaceDetail({ kaisaiNen: "2000" }),
+    race: buildRaceDetail({ hassoJikoku: null }),
   });
   expect(kv.put).not.toHaveBeenCalled();
   expect(kv.get).not.toHaveBeenCalled();

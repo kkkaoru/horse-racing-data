@@ -43,6 +43,17 @@ export const RACE_TREND_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
 // even though `viewer-trend-cache-bust` has already evicted KV globally.
 export const RACE_TREND_CACHE_MAX_TTL_FOR_TODAY_SECONDS = 60;
 
+// Once a race's result is final (see isRaceResultFinal), the trend payload
+// will not change again, so it is safe to cache far longer than the 60s
+// same-day cap. Without this, any race viewed on a later calendar day than
+// its own got TTL=0 forever (naturalTtl always evaluates to 0 once the day
+// has rolled over past a 6h-post-start cutoff), meaning the outer cache was
+// never populated and every page view re-ran the full upstream fetch
+// pipeline with no fallback if a transient upstream call failed.
+export const RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS = 24 * 60 * 60;
+
+const RACE_TREND_FINAL_RESULT_BUFFER_SECONDS = 2 * 60 * 60;
+
 export const RACE_TREND_CACHE_WARM_VARIANT_COUNT = 1;
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
@@ -221,6 +232,28 @@ const isTodayJst = (race: IsTodayJstParams, nowMs: number): boolean => {
   return race.kaisaiNen === year && race.kaisaiTsukihi === `${month}${day}`;
 };
 
+const isRacePastDayJst = (race: IsTodayJstParams, nowMs: number): boolean => {
+  const jstNow = new Date(nowMs + JST_OFFSET_MS);
+  const year = String(jstNow.getUTCFullYear());
+  const month = String(jstNow.getUTCMonth() + 1).padStart(PAD_WIDTH, "0");
+  const day = String(jstNow.getUTCDate()).padStart(PAD_WIDTH, "0");
+  return `${race.kaisaiNen}${race.kaisaiTsukihi}` < `${year}${month}${day}`;
+};
+
+const isRaceResultFinal = (
+  race: IsTodayJstParams,
+  raceStartTime: number,
+  nowMs: number,
+): boolean => {
+  if (isRacePastDayJst(race, nowMs)) {
+    return true;
+  }
+  if (!isTodayJst(race, nowMs)) {
+    return false;
+  }
+  return nowMs - raceStartTime >= RACE_TREND_FINAL_RESULT_BUFFER_SECONDS * 1000;
+};
+
 export const getRaceTrendCacheTtlSeconds = (
   race: {
     hassoJikoku?: string | null;
@@ -233,6 +266,9 @@ export const getRaceTrendCacheTtlSeconds = (
   const raceStartTime = getRaceStartTimeMs(race);
   if (raceStartTime === null) {
     return 0;
+  }
+  if (isRaceResultFinal(race, raceStartTime, nowMs)) {
+    return RACE_TREND_CACHE_FINAL_RESULT_TTL_SECONDS;
   }
   const expiresAt = raceStartTime + afterStartSeconds * 1000;
   const naturalTtl = Math.max(0, Math.floor((expiresAt - nowMs) / 1000));

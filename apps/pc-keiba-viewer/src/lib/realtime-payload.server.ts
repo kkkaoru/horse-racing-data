@@ -18,6 +18,7 @@ import {
   type HotOddsPayload,
   isHotOddsPayload,
 } from "./hot-odds-payload.server";
+import { getJstDateParts } from "./race-detail-section-cache";
 
 export interface RealtimePayloadRequest {
   day: string;
@@ -63,6 +64,7 @@ export interface BuildRealtimePayloadForRequestParams {
 }
 
 export interface LoadInitialRealtimePayloadServerParams extends BuildRealtimePayloadForRequestParams {
+  now?: Date;
   timeoutMs?: number;
 }
 
@@ -168,9 +170,24 @@ const sleepThenNull = (timeoutMs: number): Promise<null> =>
     setTimeout(() => resolve(null), timeoutMs);
   });
 
+const buildYmd = (parts: { day: string; month: string; year: string }): string =>
+  `${parts.year}${parts.month}${parts.day}`;
+
+// A "confirmed past" race date has already fully elapsed in JST, so the
+// PostgreSQL mirror is the source of truth and the realtime layer (hot odds +
+// horse-weight snapshots) has nothing useful left to offer. Plain string
+// comparison is safe because both sides are fixed-width zero-padded YYYYMMDD.
+export const isConfirmedPastRaceRequest = (
+  request: RealtimePayloadRequest,
+  now: Date = new Date(),
+): boolean => buildYmd(request) < buildYmd(getJstDateParts(now));
+
 export const loadInitialRealtimePayloadServer = async (
   params: LoadInitialRealtimePayloadServerParams,
 ): Promise<RealtimeRacePayload | null> => {
+  if (isConfirmedPastRaceRequest(params.request, params.now)) {
+    return null;
+  }
   const timeoutMs = params.timeoutMs ?? DEFAULT_SSR_TIMEOUT_MS;
   try {
     return await Promise.race([
