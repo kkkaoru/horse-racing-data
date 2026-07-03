@@ -36,7 +36,7 @@ import {
   getRunningStyleInferenceState,
   listRaceRunningStyles,
 } from "./storage";
-import { getTodayJst } from "./time";
+import { getTodayJst, shiftYyyymmddByDays } from "./time";
 import type { DailyRaceEntryRow, Env, Job, RaceJobKey } from "./types";
 
 const MIGRATION_STATE_KV_PREFIX = "features:migration";
@@ -50,6 +50,7 @@ const BUILD_STATE_FRESHNESS_PAST14_MS = 7 * 24 * 60 * 60 * 1000;
 // snapshots were NEVER rebuilt with confirmed results, ever). This constant
 // is a separate, always-available reservation.
 const PAST14_RESERVED_QUOTA = 25;
+const YESTERDAY_OFFSET_DAYS = -1;
 const BUILD_RACE_FEATURES_JOB_TYPE = "build-race-features";
 const YMD_PATTERN = /^\d{8}$/u;
 const VALID_PREDICT_FOR_DAY_SOURCES = new Set<string>(["jra", "nar", "all"]);
@@ -687,6 +688,7 @@ export const runScheduledFeaturesPlan = async (
     return emptyPlanResult(false);
   }
   const todayJst = getTodayJst(now);
+  const yesterdayJst = shiftYyyymmddByDays(todayJst, YESTERDAY_OFFSET_DAYS);
   const batchSize = await readNextBatchSize(env);
   const todayRaceKeys = await listTodayRaceKeysWithKvCache({
     context: {},
@@ -694,6 +696,16 @@ export const runScheduledFeaturesPlan = async (
     yyyymmdd: todayJst,
   });
   const tomorrowRaceKeys = await listTomorrowRaceKeysWithKvCache({ context: {}, env, now });
+  // Yesterday's keys feed venue-tuple derivation ONLY (buildPast14Targets
+  // below) so a venue that raced yesterday but isn't racing today/tomorrow
+  // still gets its past-14-day window rebuilt. They intentionally do NOT join
+  // todayJobs/tomorrowJobs: the today/tomorrow build-enqueue loop must stay
+  // scoped to races actually happening today/tomorrow.
+  const yesterdayRaceKeys = await listTodayRaceKeysWithKvCache({
+    context: {},
+    env,
+    yyyymmdd: yesterdayJst,
+  });
   const todayJobs = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   const tomorrowJobs = tomorrowRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   const past14Jobs = sortPast14JobsByRecency(
@@ -701,6 +713,7 @@ export const runScheduledFeaturesPlan = async (
       todayJst,
       todayKeys: todayRaceKeys,
       tomorrowKeys: tomorrowRaceKeys,
+      yesterdayKeys: yesterdayRaceKeys,
     }),
   );
   const candidates = buildCandidateList(todayJobs, tomorrowJobs);

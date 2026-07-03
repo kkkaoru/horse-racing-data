@@ -1,7 +1,12 @@
 // Run with bun. Phase F: compute past-14-day RaceJobKey targets for each
-// (source, keibajoCode, raceBango) that appears in today's OR tomorrow's race
-// list. Lets the scheduled handler backfill recent results into per-race
-// Parquet without any external seed script.
+// (source, keibajoCode, raceBango) that appears in today's, tomorrow's, OR
+// yesterday's race list. Yesterday's venue tuples close the gap where a venue
+// raced yesterday but is not racing today/tomorrow (e.g. NAR venues that only
+// race on non-consecutive days): without it, that venue's own past14 window
+// (which always includes yesterday) never becomes a rebuild candidate, so its
+// stale finish-position Parquet is never refreshed. Lets the scheduled
+// handler backfill recent results into per-race Parquet without any external
+// seed script.
 
 import type { TodayRaceKey } from "./scheduled-race-list";
 import { shiftYyyymmddByDays } from "./time";
@@ -21,6 +26,7 @@ interface VenueRaceTuple {
 interface BuildPast14TargetsInput {
   todayKeys: TodayRaceKey[];
   tomorrowKeys: TodayRaceKey[];
+  yesterdayKeys: TodayRaceKey[];
   todayJst: string;
 }
 
@@ -33,23 +39,16 @@ const toVenueTupleFromTodayKey = (entry: TodayRaceKey): VenueRaceTuple => ({
   source: entry.source,
 });
 
-const collectUniqueVenueTuples = (entries: TodayRaceKey[]): Map<string, VenueRaceTuple> => {
-  const map = new Map<string, VenueRaceTuple>();
-  entries.forEach((entry) => {
-    const tuple = toVenueTupleFromTodayKey(entry);
-    map.set(toVenueTupleKey(tuple), tuple);
-  });
-  return map;
-};
-
-const mergeUniqueVenueTuples = (
-  todayKeys: TodayRaceKey[],
-  tomorrowKeys: TodayRaceKey[],
-): VenueRaceTuple[] => {
-  const merged = collectUniqueVenueTuples(todayKeys);
-  tomorrowKeys.forEach((entry) => {
-    const tuple = toVenueTupleFromTodayKey(entry);
-    merged.set(toVenueTupleKey(tuple), tuple);
+// Takes a list of race-key lists (today / tomorrow / yesterday) rather than
+// separate parameters, both to stay under the 3-argument limit and so any
+// future additional source list can merge in without another signature change.
+const mergeUniqueVenueTuples = (keyLists: TodayRaceKey[][]): VenueRaceTuple[] => {
+  const merged = new Map<string, VenueRaceTuple>();
+  keyLists.forEach((entries) => {
+    entries.forEach((entry) => {
+      const tuple = toVenueTupleFromTodayKey(entry);
+      merged.set(toVenueTupleKey(tuple), tuple);
+    });
   });
   return Array.from(merged.values());
 };
@@ -98,9 +97,10 @@ const dedupeByRaceKey = (jobs: RaceJobKey[]): RaceJobKey[] => {
 export const buildPast14Targets = ({
   todayKeys,
   tomorrowKeys,
+  yesterdayKeys,
   todayJst,
 }: BuildPast14TargetsInput): RaceJobKey[] => {
-  const venueTuples = mergeUniqueVenueTuples(todayKeys, tomorrowKeys);
+  const venueTuples = mergeUniqueVenueTuples([todayKeys, tomorrowKeys, yesterdayKeys]);
   if (venueTuples.length === 0) {
     return [];
   }

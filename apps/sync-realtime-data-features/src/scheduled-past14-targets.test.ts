@@ -3,9 +3,14 @@ import { expect, it } from "vitest";
 
 import { buildPast14Targets } from "./scheduled-past14-targets";
 
-it("returns empty when both today and tomorrow are empty", () => {
+it("returns empty when today, tomorrow, and yesterday are all empty", () => {
   expect(
-    buildPast14Targets({ todayJst: "20260529", todayKeys: [], tomorrowKeys: [] }),
+    buildPast14Targets({
+      todayJst: "20260529",
+      todayKeys: [],
+      tomorrowKeys: [],
+      yesterdayKeys: [],
+    }),
   ).toStrictEqual([]);
 });
 
@@ -23,6 +28,7 @@ it("produces 14 entries for a single venue tuple from today only", () => {
       },
     ],
     tomorrowKeys: [],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(14);
   expect(result[0]).toStrictEqual({
@@ -66,6 +72,7 @@ it("merges identical (source, keibajo, raceBango) across today and tomorrow only
         source: "nar",
       },
     ],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(14);
 });
@@ -101,6 +108,7 @@ it("counts distinct venue tuples across today and tomorrow", () => {
         source: "nar",
       },
     ],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(42);
 });
@@ -119,6 +127,7 @@ it("handles month boundary backshift correctly", () => {
       },
     ],
     tomorrowKeys: [],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(14);
   expect(result[0]).toStrictEqual({
@@ -161,13 +170,19 @@ it("deduplicates entries that resolve to identical race_key", () => {
       },
     ],
     tomorrowKeys: [],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(14);
 });
 
 it("returns empty when only tomorrow but tomorrow itself is empty", () => {
   expect(
-    buildPast14Targets({ todayJst: "20260529", todayKeys: [], tomorrowKeys: [] }),
+    buildPast14Targets({
+      todayJst: "20260529",
+      todayKeys: [],
+      tomorrowKeys: [],
+      yesterdayKeys: [],
+    }),
   ).toStrictEqual([]);
 });
 
@@ -185,6 +200,7 @@ it("populates only tomorrow keys correctly", () => {
         source: "jra",
       },
     ],
+    yesterdayKeys: [],
   });
   expect(result.length).toBe(14);
   expect(result[0]).toStrictEqual({
@@ -195,4 +211,69 @@ it("populates only tomorrow keys correctly", () => {
     raceKey: "jra:2026:0515:06:12",
     source: "jra",
   });
+});
+
+it("produces tuples for a yesterday-only venue not present in today or tomorrow", () => {
+  const result = buildPast14Targets({
+    todayJst: "20260704",
+    todayKeys: [
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0704",
+        keibajoCode: "43",
+        raceBango: "01",
+        raceKey: "nar:2026:0704:43:01",
+        source: "nar",
+      },
+    ],
+    tomorrowKeys: [],
+    yesterdayKeys: [
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0703",
+        keibajoCode: "44",
+        raceBango: "02",
+        raceKey: "nar:2026:0703:44:02",
+        source: "nar",
+      },
+    ],
+  });
+  expect(result.length).toBe(28);
+  expect(result.some((job) => job.keibajoCode === "44" && job.raceBango === "02")).toBe(true);
+  expect(result[14]).toStrictEqual({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0620",
+    keibajoCode: "44",
+    raceBango: "02",
+    raceKey: "nar:2026:0620:44:02",
+    source: "nar",
+  });
+});
+
+it("dedupes a venue tuple that appears in both today and yesterday", () => {
+  const result = buildPast14Targets({
+    todayJst: "20260704",
+    todayKeys: [
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0704",
+        keibajoCode: "43",
+        raceBango: "01",
+        raceKey: "nar:2026:0704:43:01",
+        source: "nar",
+      },
+    ],
+    tomorrowKeys: [],
+    yesterdayKeys: [
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0703",
+        keibajoCode: "43",
+        raceBango: "01",
+        raceKey: "nar:2026:0703:43:01",
+        source: "nar",
+      },
+    ],
+  });
+  expect(result.length).toBe(14);
 });

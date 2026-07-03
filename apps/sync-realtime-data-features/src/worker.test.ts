@@ -1421,6 +1421,52 @@ it("runScheduledFeaturesPlan enqueues past14 builds tracked in past14Count", asy
   expect(result.enqueuedRaceCount).toBe(15);
 });
 
+it("runScheduledFeaturesPlan includes a venue that raced yesterday but is absent from today/tomorrow in past14 targets", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
+  vi.mocked(listTodayRaceKeysWithKvCache)
+    .mockResolvedValueOnce([
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0529",
+        keibajoCode: "30",
+        raceBango: "08",
+        raceKey: "nar:2026:0529:30:08",
+        source: "nar",
+      },
+    ])
+    .mockResolvedValueOnce([
+      {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0528",
+        keibajoCode: "44",
+        raceBango: "03",
+        raceKey: "nar:2026:0528:44:03",
+        source: "nar",
+      },
+    ]);
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockResolvedValueOnce([]);
+  const env = buildEnv({
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  // Venue 44/03 raced yesterday (2026-05-28) but has no race today or
+  // tomorrow, so it would never have become a past14 rebuild candidate before
+  // this fix. Its own tuple now explodes across the past-14-day window
+  // (2026-05-15..2026-05-28) same as today's tuple, giving 2 tuples * 14 = 28
+  // raw candidates capped to the reserved quota of 25.
+  expect(result.past14Count).toBe(25);
+  expect(queueSend).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "44",
+    raceBango: "03",
+    raceKey: "nar:2026:0528:44:03",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
 it("runScheduledFeaturesPlan skips tomorrow when freshness 6h is current", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
