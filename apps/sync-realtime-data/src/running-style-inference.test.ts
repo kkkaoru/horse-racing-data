@@ -263,9 +263,9 @@ test("runRunningStyleInferenceForRowsWithFlatModel breaks rank ties by ketto num
     predictedAt: "2026-05-18T10:00:00Z",
     rows: [HORSE_ROW_1, HORSE_ROW_2],
   });
-  expect(calls[0]?.[13]).toBeCloseTo(1.0495342142667805);
+  expect(calls[0]?.[13]).toBeCloseTo(0.8866299619524447);
   expect(calls[0]?.[14]).toBe(2);
-  expect(calls[1]?.[13]).toBeCloseTo(1.0495342142667805);
+  expect(calls[1]?.[13]).toBeCloseTo(0.8866299619524447);
   expect(calls[1]?.[14]).toBe(1);
 });
 

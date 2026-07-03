@@ -124,6 +124,12 @@ export const readLocalRows = async (dateYmd: string): Promise<D1ExportRow[]> => 
       p_senkou,
       p_sashi,
       p_oikomi,
+      -- This coalesce only backfills legacy pre-migration rows whose
+      -- predicted_corner_front_score is NULL; fresh rows already carry
+      -- category-aware scores written by the inference path
+      -- (running-style-corner-weights.ts). The fixed (0, 1, 2, 3) fallback is
+      -- intentional and mirrors the finish-position feature pipeline, which
+      -- also stays fixed by design.
       coalesce(predicted_corner_front_score, p_senkou + 2 * p_sashi + 3 * p_oikomi)
         as predicted_corner_front_score,
       coalesce(

@@ -183,6 +183,12 @@ const queryRaceRunningStylesForRace = async (
 ): Promise<RaceRunningStyleRow[]> => {
   const result = await db
     .prepare(
+      // This coalesce only backfills legacy pre-migration rows whose
+      // predicted_corner_front_score is NULL; fresh rows already carry
+      // category-aware scores written by the inference path
+      // (running-style-corner-weights.ts). The fixed (0, 1, 2, 3) fallback is
+      // intentional and mirrors the finish-position feature pipeline, which
+      // also stays fixed by design.
       `select race_key, horse_number, ketto_toroku_bango, bamei, category, kaisai_nen,
               model_version, cell_model_key, cell_variant_id,
               p_nige, p_senkou, p_sashi, p_oikomi,

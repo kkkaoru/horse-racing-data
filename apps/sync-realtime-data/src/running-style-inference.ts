@@ -30,6 +30,10 @@ import {
   applyRunningStyleCalibration,
   type RunningStyleCalibrationTable,
 } from "./running-style-calibration";
+import {
+  computeCornerFrontScore,
+  resolveCornerFrontScoreWeights,
+} from "./running-style-corner-weights";
 
 export interface InferenceConfig {
   modelKey: string;
@@ -112,11 +116,6 @@ const extractPeerInputs = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
 ): ReadonlyArray<HorsePeerInputs> => rows.map((row) => row.peerInputs);
 
-const computePredictedCornerFrontScore = (prediction: RunningStylePrediction): number =>
-  prediction.probabilities.senkou +
-  2 * prediction.probabilities.sashi +
-  3 * prediction.probabilities.oikomi;
-
 const predictionRowFromResult = (
   row: RaceHorseFeatureRow,
   prediction: RunningStylePrediction,
@@ -138,7 +137,10 @@ const predictionRowFromResult = (
   pSashi: prediction.probabilities.sashi,
   pSenkou: prediction.probabilities.senkou,
   predictedAt,
-  predictedCornerFrontScore: computePredictedCornerFrontScore(prediction),
+  predictedCornerFrontScore: computeCornerFrontScore(
+    prediction.probabilities,
+    resolveCornerFrontScoreWeights(row.category),
+  ),
   predictedCornerRank: 0,
   predictedLabel: prediction.predictedLabel,
   raceKey: row.raceKey,

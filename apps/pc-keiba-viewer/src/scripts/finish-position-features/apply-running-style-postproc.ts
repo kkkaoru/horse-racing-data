@@ -25,6 +25,12 @@
 // W11-X2-Async: refactored onto the @duckdb/node-api neo async API
 // (DuckDBInstance.create + connection.runAndReadAll + connection.run).
 
+import {
+  type CornerFrontScoreWeights,
+  computeCornerFrontScore,
+  resolveCornerFrontScoreWeightsForRace,
+} from "./running-style-corner-weights";
+
 interface ApplyRunningStylePostprocOptions {
   logitsParquet: string;
   outputParquet: string;
@@ -283,12 +289,10 @@ export const pickArgmaxWithNigeThreshold = (
 export const buildLabelFromClass = (predictedClass: number): string =>
   CLASS_LABELS[predictedClass] ?? "";
 
-export const computePredictedCornerFrontScore = (probabilities: readonly number[]): number => {
-  const senkou = probabilities[1] ?? 0;
-  const sashi = probabilities[2] ?? 0;
-  const oikomi = probabilities[3] ?? 0;
-  return senkou + 2 * sashi + 3 * oikomi;
-};
+export const computePredictedCornerFrontScore = (
+  probabilities: readonly number[],
+  weights: CornerFrontScoreWeights,
+): number => computeCornerFrontScore(probabilities, weights);
 
 interface RawRowProbabilityResolver {
   resolve: (raw: Record<string, unknown>) => number[];
@@ -381,7 +385,13 @@ const buildPredictionRow = (params: BuildPredictionRowParams): PostprocPredictio
     predicted_class: predictedClass,
     second_predicted_class: secondPredictedClass,
     predicted_label: buildLabelFromClass(predictedClass),
-    predicted_corner_front_score: computePredictedCornerFrontScore(probabilities),
+    predicted_corner_front_score: computePredictedCornerFrontScore(
+      probabilities,
+      resolveCornerFrontScoreWeightsForRace({
+        source: raceKey.source,
+        keibajoCode: raceKey.keibajo_code,
+      }),
+    ),
     predicted_corner_rank: DEFAULT_SINGLE_ROW_CORNER_RANK,
     cell_model_key: passthrough.cell_model_key,
     cell_variant_id: passthrough.cell_variant_id,

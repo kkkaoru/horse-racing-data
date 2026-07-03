@@ -25,6 +25,11 @@ import {
   softmaxNormalize,
   writeOutputRows,
 } from "./apply-running-style-postproc";
+import {
+  FIXED_CORNER_FRONT_SCORE_WEIGHTS,
+  JRA_CORNER_FRONT_SCORE_WEIGHTS,
+  NAR_CORNER_FRONT_SCORE_WEIGHTS,
+} from "./running-style-corner-weights";
 
 const RACE_KEY_FIELDS = {
   source: "jra",
@@ -353,11 +358,25 @@ describe("apply-running-style-postproc", () => {
     expect(buildLabelFromClass(99)).toBe("");
   });
 
-  test("computePredictedCornerFrontScore maps running-style probabilities to front-order score", () => {
-    expect(computePredictedCornerFrontScore([0.4, 0.3, 0.2, 0.1])).toBe(1);
+  test("computePredictedCornerFrontScore maps running-style probabilities to front-order score with fixed weights", () => {
+    expect(
+      computePredictedCornerFrontScore([0.4, 0.3, 0.2, 0.1], FIXED_CORNER_FRONT_SCORE_WEIGHTS),
+    ).toBe(1);
   });
 
-  test("applyPostprocToRow emits predicted corner front score from running-style probabilities", () => {
+  test("computePredictedCornerFrontScore applies learned JRA weights to the same probabilities", () => {
+    expect(
+      computePredictedCornerFrontScore([0.4, 0.3, 0.2, 0.1], JRA_CORNER_FRONT_SCORE_WEIGHTS),
+    ).toBe(0.7470000000000001);
+  });
+
+  test("computePredictedCornerFrontScore applies learned NAR weights to the same probabilities", () => {
+    expect(
+      computePredictedCornerFrontScore([0.4, 0.3, 0.2, 0.1], NAR_CORNER_FRONT_SCORE_WEIGHTS),
+    ).toBe(0.782);
+  });
+
+  test("applyPostprocToRow emits predicted corner front score from running-style probabilities under JRA weights", () => {
     const row = applyPostprocToRow({
       raw: {
         ...RACE_KEY_FIELDS,
@@ -370,7 +389,7 @@ describe("apply-running-style-postproc", () => {
       runningStyleFeatureVersion: "v1",
       nigeThreshold: 0,
     });
-    expect(row.predicted_corner_front_score).toBeCloseTo(1);
+    expect(row.predicted_corner_front_score).toBeCloseTo(0.747);
     expect(row.predicted_corner_rank).toBe(1);
   });
 
