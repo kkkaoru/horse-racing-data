@@ -52,6 +52,7 @@ import {
 } from "./scheduled-race-list";
 import {
   buildAndPersistRaceFeatures,
+  computeNextPast14Cursor,
   handleFetchRequest,
   handleGetFinishPositions,
   handleGetRunningStyles,
@@ -65,6 +66,7 @@ import {
   handleRoot,
   handleScheduled,
   runScheduledFeaturesPlan,
+  sliceWithWraparound,
 } from "./worker";
 import type { DailyRaceEntryRow, Env, Job } from "./types";
 
@@ -1041,12 +1043,18 @@ it("runScheduledFeaturesPlan enqueues today builds plus today inference jobs (ba
   });
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(result.ran).toBe(true);
-  expect(result.enqueuedRaceCount).toBe(2);
+  // past14-starvation fix: past14 now has its own reserved quota (25) that is
+  // NOT shared with the adaptive batchSize (2) above. These 2 today keys
+  // explode into 2 tuples x 14 past days = 28 past14 candidates, capped to
+  // the reserved quota of 25 (all unlocked/no-state under the default KV
+  // mock, so all 25 get enqueued). Previously past14Count was 0 here because
+  // today alone exhausted the shared batchSize=2.
+  expect(result.enqueuedRaceCount).toBe(27);
   expect(result.todayCount).toBe(2);
   expect(result.tomorrowCount).toBe(0);
-  expect(result.past14Count).toBe(0);
+  expect(result.past14Count).toBe(25);
   expect(result.batchSize).toBe(2);
-  expect(queueSend).toHaveBeenCalledTimes(6);
+  expect(queueSend).toHaveBeenCalledTimes(31);
 });
 
 it("runScheduledFeaturesPlan skips enqueue when lock is held for every candidate", async () => {
@@ -1281,7 +1289,12 @@ it("runScheduledFeaturesPlan enqueues tomorrow builds tracked in tomorrowCount",
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
   expect(result.tomorrowCount).toBe(1);
   expect(result.todayCount).toBe(0);
-  expect(result.past14Count).toBe(0);
+  // past14-starvation fix: past14 has its own reserved quota independent of
+  // the batchSize=1 that tomorrow's single build already exhausted. The
+  // tomorrow tuple explodes into 14 past14 candidates, all enqueued under the
+  // default (unlocked/no-state) KV mock. Previously this was 0 because
+  // past14 shared the same already-exhausted batchSize as tomorrow.
+  expect(result.past14Count).toBe(14);
   expect(queueSend).toHaveBeenCalledWith({
     kaisaiNen: "2026",
     kaisaiTsukihi: "0530",
@@ -1310,10 +1323,15 @@ it("runScheduledFeaturesPlan enqueues past14 builds tracked in past14Count", asy
     REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
   });
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  // past14-starvation fix: past14 has its own reserved quota (25), separate
+  // from the batchSize=3 above. The single today tuple explodes into 14
+  // past14 candidates, all enqueued under the default (unlocked/no-state) KV
+  // mock. Previously past14Count was 2 because past14 shared the leftover of
+  // the same batchSize=3 that today's single candidate had already consumed.
   expect(result.todayCount).toBe(1);
-  expect(result.past14Count).toBe(2);
+  expect(result.past14Count).toBe(14);
   expect(result.tomorrowCount).toBe(0);
-  expect(result.enqueuedRaceCount).toBe(3);
+  expect(result.enqueuedRaceCount).toBe(15);
 });
 
 it("runScheduledFeaturesPlan skips tomorrow when freshness 6h is current", async () => {
@@ -1415,7 +1433,15 @@ it("runScheduledFeaturesPlan honors adaptive batchSize cap of 0", async () => {
     REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
   });
   const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
-  expect(result.enqueuedRaceCount).toBe(0);
+  // The adaptive batchSize cap of 0 only governs the today/tomorrow loop
+  // (guard `counts.total(0) >= batchSize(0)` trips immediately, so today's
+  // candidate lock/state is never even checked) — this part is unchanged.
+  // past14 is decoupled from that batchSize (intentional: past14 must make
+  // guaranteed progress regardless of today/tomorrow congestion), so its 14
+  // candidates (1 tuple) still get processed and enqueued via the default
+  // (unlocked/no-state) KV mock.
+  expect(result.enqueuedRaceCount).toBe(14);
+  expect(result.past14Count).toBe(14);
   expect(result.todayCount).toBe(0);
   expect(queueSend).not.toHaveBeenCalledWith({
     kaisaiNen: "2026",
@@ -1471,6 +1497,98 @@ it("shouldRebuildRaceFeatures returns true when last build older than 10 min", a
       new Date("2026-05-29T03:00:00Z"),
     ),
   ).toBe(true);
+});
+
+it("runScheduledFeaturesPlan no longer starves past14 when today+tomorrow alone exceed the reserved past14 quota", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "01",
+      raceKey: "nar:2026:0529:30:01",
+      source: "nar",
+    },
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "02",
+      raceKey: "nar:2026:0529:30:02",
+      source: "nar",
+    },
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "03",
+      raceKey: "nar:2026:0529:30:03",
+      source: "nar",
+    },
+  ]);
+  vi.mocked(listTomorrowRaceKeysWithKvCache).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0530",
+      keibajoCode: "42",
+      raceBango: "01",
+      raceKey: "nar:2026:0530:42:01",
+      source: "nar",
+    },
+  ]);
+  const env = buildEnv({
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  // batchSize=1 is fully consumed by the today/tomorrow loop: 4 combined
+  // candidates (3 today + 1 tomorrow) far exceed batchSize=1, so only the
+  // very first candidate is enqueued and the loop stops there.
+  expect(result.todayCount).toBe(1);
+  expect(result.tomorrowCount).toBe(0);
+  expect(result.batchSize).toBe(1);
+  // This is the core regression check: past14 no longer shares that
+  // exhausted batchSize. It has its own reserved quota (25), so it still
+  // makes guaranteed progress even though today+tomorrow already consumed
+  // the entire shared batchSize. The 4 venue tuples (3 today + 1 tomorrow)
+  // explode to 4*14=56 past14 candidates, capped to the reserved quota.
+  // Before the fix this was always 0 in this scenario.
+  expect(result.past14Count).toBe(25);
+});
+
+it("sliceWithWraparound returns [] for an empty list", async () => {
+  expect(sliceWithWraparound([], 0, 5)).toStrictEqual([]);
+});
+
+it("sliceWithWraparound returns the first N items in order when cursor is 0", async () => {
+  expect(sliceWithWraparound(["a", "b", "c", "d", "e"], 0, 3)).toStrictEqual(["a", "b", "c"]);
+});
+
+it("sliceWithWraparound wraps mid-list returning the tail then the head with no duplicates", async () => {
+  expect(sliceWithWraparound(["a", "b", "c", "d", "e"], 3, 3)).toStrictEqual(["d", "e", "a"]);
+});
+
+it("sliceWithWraparound with quota >= length returns all items exactly once starting at the normalized cursor", async () => {
+  const result = sliceWithWraparound(["a", "b", "c", "d", "e"], 2, 20);
+  expect(result).toStrictEqual(["c", "d", "e", "a", "b"]);
+  expect(result.length).toBe(5);
+});
+
+it("sliceWithWraparound normalizes a negative cursor correctly", async () => {
+  expect(sliceWithWraparound(["a", "b", "c"], -1, 2)).toStrictEqual(["c", "a"]);
+});
+
+it("computeNextPast14Cursor returns 0 when totalCount is 0", async () => {
+  expect(computeNextPast14Cursor(5, 25, 0)).toBe(0);
+});
+
+it("computeNextPast14Cursor wraps via modulo in the normal case", async () => {
+  expect(computeNextPast14Cursor(3, 5, 10)).toBe(8);
+});
+
+it("computeNextPast14Cursor wraps to 0 when cursor + quota exactly equals totalCount", async () => {
+  expect(computeNextPast14Cursor(10, 15, 25)).toBe(0);
 });
 
 it("handleScheduled dispatches scheduled tick", async () => {

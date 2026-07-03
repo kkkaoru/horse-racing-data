@@ -20,6 +20,7 @@ import {
 } from "./gates/build-state-kv";
 import { acquireEnqueueLock, isEnqueueLocked } from "./gates/enqueue-lock-kv";
 import { writeLatestFeaturesToKv } from "./gates/latest-features-kv-mirror";
+import { readPast14Cursor, writePast14Cursor } from "./gates/past14-cursor-kv";
 import { shouldRunFeaturesCron } from "./gates/polling-window-gate";
 import { jsonResponse } from "./http";
 import { handleRunningStylePredictionJob } from "./running-style/inference";
@@ -41,6 +42,13 @@ const MIGRATION_STATE_KV_PREFIX = "features:migration";
 const BUILD_STATE_FRESHNESS_MS = 10 * 60 * 1000;
 const BUILD_STATE_FRESHNESS_FUTURE_MS = 6 * 60 * 60 * 1000;
 const BUILD_STATE_FRESHNESS_PAST14_MS = 7 * 24 * 60 * 60 * 1000;
+// Past14 rebuild candidates must NOT share the adaptive `batchSize` budget
+// used for today/tomorrow: on any day with several active NAR venues,
+// today+tomorrow candidates alone regularly exceed batchSize (max 30), which
+// starved past14 out entirely (confirmed in production: some races' Parquet
+// snapshots were NEVER rebuilt with confirmed results, ever). This constant
+// is a separate, always-available reservation.
+const PAST14_RESERVED_QUOTA = 25;
 const BUILD_RACE_FEATURES_JOB_TYPE = "build-race-features";
 const YMD_PATTERN = /^\d{8}$/u;
 const VALID_PREDICT_FOR_DAY_SOURCES = new Set<string>(["jra", "nar", "all"]);
@@ -503,42 +511,57 @@ const emptyPlanResult = (ran: boolean): ScheduledFeaturesPlanResult => ({
   tomorrowCount: 0,
 });
 
+const toRaceDateYmd = (job: RaceJobKey): string => `${job.kaisaiNen}${job.kaisaiTsukihi}`;
+
+const compareRaceJobKeysByRecencyDescending = (left: RaceJobKey, right: RaceJobKey): number =>
+  toRaceDateYmd(right).localeCompare(toRaceDateYmd(left));
+
+const sortPast14JobsByRecency = (jobs: RaceJobKey[]): RaceJobKey[] =>
+  jobs.toSorted(compareRaceJobKeysByRecencyDescending);
+
+// Wraps the cursor into range and returns up to `quota` items starting at the
+// cursor, wrapping back to the start of the list without ever repeating an
+// item within the same call (quota is capped at the list length so a quota
+// larger than the list can never produce duplicates).
+export const sliceWithWraparound = <T>(items: readonly T[], cursor: number, quota: number): T[] => {
+  if (items.length === 0) {
+    return [];
+  }
+  const normalizedCursor = ((cursor % items.length) + items.length) % items.length;
+  const effectiveQuota = Math.min(quota, items.length);
+  const firstPart = items.slice(normalizedCursor, normalizedCursor + effectiveQuota);
+  const remaining = effectiveQuota - firstPart.length;
+  const secondPart = remaining > 0 ? items.slice(0, remaining) : [];
+  return [...firstPart, ...secondPart];
+};
+
+export const computeNextPast14Cursor = (
+  cursor: number,
+  quota: number,
+  totalCount: number,
+): number => (totalCount === 0 ? 0 : (cursor + quota) % totalCount);
+
 const buildCandidateList = (
   todayKeys: RaceJobKey[],
   tomorrowKeys: RaceJobKey[],
-  past14Keys: RaceJobKey[],
 ): BuildCandidate[] => [
   ...todayKeys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_MS, key })),
   ...tomorrowKeys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_FUTURE_MS, key })),
-  ...past14Keys.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_PAST14_MS, key })),
 ];
 
 interface BuildEnqueueCounts {
   total: number;
   today: number;
   tomorrow: number;
-  past14: number;
 }
 
-const classifyEnqueue = (
-  candidateIndex: number,
-  todayCount: number,
-  tomorrowCount: number,
-): "today" | "tomorrow" | "past14" => {
-  if (candidateIndex < todayCount) {
-    return "today";
-  }
-  if (candidateIndex < todayCount + tomorrowCount) {
-    return "tomorrow";
-  }
-  return "past14";
-};
+const classifyEnqueue = (candidateIndex: number, todayCount: number): "today" | "tomorrow" =>
+  candidateIndex < todayCount ? "today" : "tomorrow";
 
 const stepBuildEnqueueLoop = async (
   env: Env,
   candidates: BuildCandidate[],
   todayCount: number,
-  tomorrowCount: number,
   batchSize: number,
   now: Date,
   index: number,
@@ -548,41 +571,65 @@ const stepBuildEnqueueLoop = async (
     return counts;
   }
   const enqueued = await tryEnqueueBuildCandidate(env, candidates[index]!, now);
-  const bucket = classifyEnqueue(index, todayCount, tomorrowCount);
+  const bucket = classifyEnqueue(index, todayCount);
   const nextCounts: BuildEnqueueCounts = enqueued
     ? {
-        past14: bucket === "past14" ? counts.past14 + 1 : counts.past14,
         today: bucket === "today" ? counts.today + 1 : counts.today,
         tomorrow: bucket === "tomorrow" ? counts.tomorrow + 1 : counts.tomorrow,
         total: counts.total + 1,
       }
     : counts;
-  return stepBuildEnqueueLoop(
-    env,
-    candidates,
-    todayCount,
-    tomorrowCount,
-    batchSize,
-    now,
-    index + 1,
-    nextCounts,
-  );
+  return stepBuildEnqueueLoop(env, candidates, todayCount, batchSize, now, index + 1, nextCounts);
 };
 
 const runBuildEnqueueLoop = (
   env: Env,
   candidates: BuildCandidate[],
   todayCount: number,
-  tomorrowCount: number,
   batchSize: number,
   now: Date,
 ): Promise<BuildEnqueueCounts> =>
-  stepBuildEnqueueLoop(env, candidates, todayCount, tomorrowCount, batchSize, now, 0, {
-    past14: 0,
+  stepBuildEnqueueLoop(env, candidates, todayCount, batchSize, now, 0, {
     today: 0,
     tomorrow: 0,
     total: 0,
   });
+
+// Past14 is intentionally NOT chained onto stepBuildEnqueueLoop: it only needs
+// a total count (no today/tomorrow bucketing) and it must run against its own
+// reserved quota, independent of the adaptive batchSize used above.
+const stepPast14EnqueueLoop = async (
+  env: Env,
+  candidates: BuildCandidate[],
+  now: Date,
+  index: number,
+  total: number,
+): Promise<number> => {
+  if (index >= candidates.length) {
+    return total;
+  }
+  const enqueued = await tryEnqueueBuildCandidate(env, candidates[index]!, now);
+  return stepPast14EnqueueLoop(env, candidates, now, index + 1, enqueued ? total + 1 : total);
+};
+
+const runPast14EnqueueLoop = async (
+  env: Env,
+  sortedPast14Jobs: RaceJobKey[],
+  now: Date,
+): Promise<number> => {
+  if (sortedPast14Jobs.length === 0) {
+    return 0;
+  }
+  const cursor = await readPast14Cursor(env);
+  const window = sliceWithWraparound(sortedPast14Jobs, cursor, PAST14_RESERVED_QUOTA);
+  const candidates = window.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_PAST14_MS, key }));
+  const total = await stepPast14EnqueueLoop(env, candidates, now, 0, 0);
+  await writePast14Cursor(
+    env,
+    computeNextPast14Cursor(cursor, PAST14_RESERVED_QUOTA, sortedPast14Jobs.length),
+  );
+  return total;
+};
 
 const runTodayInferenceEnqueueLoop = async (
   env: Env,
@@ -612,25 +659,21 @@ export const runScheduledFeaturesPlan = async (
   const tomorrowRaceKeys = await listTomorrowRaceKeysWithKvCache({ context: {}, env, now });
   const todayJobs = todayRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
   const tomorrowJobs = tomorrowRaceKeys.map(toRaceJobKeyFromTodayRaceKey);
-  const past14Jobs = buildPast14Targets({
-    todayJst,
-    todayKeys: todayRaceKeys,
-    tomorrowKeys: tomorrowRaceKeys,
-  });
-  const candidates = buildCandidateList(todayJobs, tomorrowJobs, past14Jobs);
-  const counts = await runBuildEnqueueLoop(
-    env,
-    candidates,
-    todayJobs.length,
-    tomorrowJobs.length,
-    batchSize,
-    now,
+  const past14Jobs = sortPast14JobsByRecency(
+    buildPast14Targets({
+      todayJst,
+      todayKeys: todayRaceKeys,
+      tomorrowKeys: tomorrowRaceKeys,
+    }),
   );
+  const candidates = buildCandidateList(todayJobs, tomorrowJobs);
+  const counts = await runBuildEnqueueLoop(env, candidates, todayJobs.length, batchSize, now);
+  const past14Total = await runPast14EnqueueLoop(env, past14Jobs, now);
   await runTodayInferenceEnqueueLoop(env, todayJobs, now.toISOString());
   return {
     batchSize,
-    enqueuedRaceCount: counts.total,
-    past14Count: counts.past14,
+    enqueuedRaceCount: counts.total + past14Total,
+    past14Count: past14Total,
     ran: true,
     todayCount: counts.today,
     tomorrowCount: counts.tomorrow,
