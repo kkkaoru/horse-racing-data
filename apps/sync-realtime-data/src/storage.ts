@@ -695,7 +695,11 @@ export const completeTrackConditionFetch = async (
 export const updateLastFetch = async (
   db: D1Database,
   raceKey: string,
-  column: "last_odds_fetch_at" | "last_result_fetch_at" | "last_weight_fetch_at",
+  column:
+    | "last_odds_fetch_at"
+    | "last_result_fetch_at"
+    | "last_weight_fetch_at"
+    | "last_weight_fetch_attempt_at",
   fetchedAt: string,
 ): Promise<void> => {
   await db
@@ -1794,6 +1798,36 @@ export const getPremiumRacePayload = async (
 // dropped finish positions for siblings whose result-fetch was starving
 // behind the backlog. Keeping `keibajo_code != '83'` as defense-in-depth
 // in case Ban-ei keibajo codes ever migrate into `source='jra'`.
+//
+// 2026-07-04: missing `premium_training_reviews` / `premium_stable_comments`
+// rows are an additional incompleteness reason, but they must NOT be bare
+// top-level `or not exists (...)` clauses — that bypassed every existing
+// suppression rule (backoff, near-start freshness, post-start cutoff) and
+// re-queued races whose data-top fetch already succeeded, even seconds
+// before or long after race start. They are nested inside the existing
+// near-start/post-start freshness branch as an alternative reason the
+// branch is "true", and gated to `rs.source = 'jra'` because NAR races
+// never receive training reviews or stable comments by design — without
+// the source gate, NAR rows (once re-enabled for data-top fetches) would
+// perpetually re-qualify since they can never satisfy that exists check.
+// A practical side effect: once the race is more than 15 minutes past
+// its start, the freshness branch's outer time gate is false and short
+// circuits, so missing training/comments stops forcing a re-queue too
+// (training reviews are pre-race content; if absent by then, retrying is
+// pointless and only wastes queue capacity).
+//
+// 2026-07-04: source filter relaxed back to `'jra' or (nar and non-Ban-ei)`,
+// restoring `isPremiumRaceDataTarget`'s pre-2026-06-28 semantics now that the
+// original failure mode is closed from two directions: worker.ts's
+// isPremiumDataTopHtmlAuthorized rejects netkeiba's unauthenticated teaser
+// page instead of silently persisting a fabricated pick, and an unauthorized
+// data-top fetch feeds the existing auth-retry backoff (status='auth_required'
+// + retry_after), which this query already respects above — so a NAR race
+// whose session never authenticates is retried at most once per hour instead
+// of every 2-min planner cycle forever. Ban-ei stays excluded via the
+// pre-existing `keibajo_code != '83'` AND (now doing double duty: it is also
+// folded into the nar disjunct so a Ban-ei nar row cannot slip through even
+// if the outer AND were ever removed).
 export const listPremiumRaceDataFetchCandidatesByDate = async (
   db: D1Database,
   targetDate: string,
@@ -1806,7 +1840,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
         from realtime_race_sources rs
         inner join premium_race_links link on link.race_key = rs.race_key
         left join premium_race_data_fetch_state state on state.race_key = rs.race_key
-        where rs.source = 'jra'
+        where (rs.source = 'jra' or (rs.source = 'nar' and rs.keibajo_code != '83'))
           and rs.keibajo_code != '83'
           and rs.kaisai_nen = ?
           and rs.kaisai_tsukihi = ?
@@ -1832,8 +1866,25 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
                   rs.race_start_at_jst is not null
                   and datetime(rs.race_start_at_jst) > datetime(?, '-15 minutes')
                   and (
-                    state.last_fetch_at is null
-                    or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
+                    (
+                      state.last_fetch_at is null
+                      or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
+                    )
+                    or (
+                      rs.source = 'jra'
+                      and (
+                        not exists (
+                          select 1
+                          from premium_training_reviews training_reviews
+                          where training_reviews.race_key = rs.race_key
+                        )
+                        or not exists (
+                          select 1
+                          from premium_stable_comments stable_comments
+                          where stable_comments.race_key = rs.race_key
+                        )
+                      )
+                    )
                   )
                 )
               )

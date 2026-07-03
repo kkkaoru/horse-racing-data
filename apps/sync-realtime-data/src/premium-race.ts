@@ -103,13 +103,20 @@ const HTML_ENTITY_MAP: Record<string, string> = {
 
 export const BAN_EI_KEIBAJO_CODE = "83";
 
-// 2026-06-28: restricted from "jra or non-Ban-ei nar" to "jra only".
-// NAR premium scraping returns no data from netkeiba and the failing
-// fetches clog the main jobs queue, blocking fetch-results / fetch-weights
-// for hours during race-day. Same JRA-only gate as fetch-premium-paddock.
+// 2026-06-28 (d72de7ca): restricted from "jra or non-Ban-ei nar" to "jra only"
+// after NAR premium fetches were observed clogging the queue. 2026-07-04:
+// restored to "jra or non-Ban-ei nar" now that the real failure mode is
+// closed off from two directions: (1) isPremiumDataTopHtmlAuthorized rejects
+// netkeiba's unauthenticated teaser page instead of silently persisting a
+// fabricated pick, and (2) an unauthorized data-top fetch now feeds the
+// existing auth-retry backoff (resolvePremiumRaceDataStatus / worker.ts),
+// so a race that never authenticates gets retried at most once per hour
+// instead of every planner cycle forever. Ban-ei stays excluded — the user
+// deliberately excludes it from data-top coverage.
 export const isPremiumRaceDataTarget = (
   race: Pick<NarRaceSource, "keibajoCode" | "source">,
-): boolean => race.source === "jra";
+): boolean =>
+  race.source === "jra" || (race.source === "nar" && race.keibajoCode !== BAN_EI_KEIBAJO_CODE);
 
 const DEFAULT_NAR_PREMIUM_ORIGIN = "https://nar.netkeiba.com";
 
@@ -642,6 +649,23 @@ const PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS = "Comment_Table_Show_All";
 
 export const isPremiumStableCommentHtmlAuthorized = (html: string): boolean =>
   html.includes(PREMIUM_STABLE_COMMENT_FULL_TABLE_CLASS);
+
+// netkeiba serves an unauthenticated "sign up for premium" teaser page from the
+// data-top URL that structurally contains exactly one <dl> block matching
+// parsePremiumDataTopHorses's pattern, so a naive parse silently stores one
+// fabricated horse pick instead of the real 2-3 picks. Production data
+// (2026-05-31 through 2026-06-28, NAR): 1000/1000 unauthenticated fetches carried
+// both teaser markers below and never Icon_Account; all 558 authenticated
+// fetches (JRA + NAR, 2026-05-25 through 2026-06-28) carried Icon_Account and
+// neither teaser marker. Require the positive marker and reject both negative
+// ones so a future teaser-page redesign that drops one marker still trips this.
+const PREMIUM_DATA_TOP_TEASER_DUMMY_BOX_MARKER = "DummyBox";
+const PREMIUM_DATA_TOP_TEASER_REGIST_BOX_MARKER = "Premium_Regist_Box";
+
+export const isPremiumDataTopHtmlAuthorized = (html: string): boolean =>
+  html.includes(PREMIUM_HTML_AUTHENTICATED_MARKER) &&
+  !html.includes(PREMIUM_DATA_TOP_TEASER_DUMMY_BOX_MARKER) &&
+  !html.includes(PREMIUM_DATA_TOP_TEASER_REGIST_BOX_MARKER);
 
 // netkeiba renders this gate text whenever the upstream session is unauthenticated.
 // Production verified 2026-06-20: the proxy intermittently returns HTTP 200 with the

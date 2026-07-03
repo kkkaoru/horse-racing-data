@@ -582,7 +582,7 @@ it("fetch-premium-race-data records ok with commentError(String) when comment re
     if (typeof url === "string" && url.includes("/c/")) {
       throw "comment string boom";
     }
-    return "<table>data-top</table>";
+    return '<div class="Icon_Account"></div><table>data-top</table>';
   });
   await handleJob(
     buildEnv({

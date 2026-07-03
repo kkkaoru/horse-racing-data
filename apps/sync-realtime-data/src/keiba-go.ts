@@ -94,6 +94,21 @@ export interface RaceResultTanshoOddsRow {
   tanshoOdds: number;
 }
 
+// Typed so call sites can distinguish "upstream returned a non-OK status" (and
+// which status) from other thrown errors without brittle message parsing.
+// A DebaTable / RaceList 404 is a legitimate "no race" signal (see comment
+// above TOP_PAGE_RETRYABLE_STATUSES) and fetchRaceLinksFromRaceList narrows on
+// `status === 404` via `instanceof FetchStatusError` to treat only that case
+// as empty instead of a failure.
+export class FetchStatusError extends Error {
+  readonly status: number;
+  constructor(url: string, status: number) {
+    super(`Failed to fetch ${url}: ${status}`);
+    this.name = "FetchStatusError";
+    this.status = status;
+  }
+}
+
 export const buildRaceKey = (
   year: string,
   monthDay: string,
@@ -146,7 +161,7 @@ const fetchHtml = async (url: string, options?: FetchHtmlOptions): Promise<strin
     retryableStatuses: options?.retryableStatuses,
   });
   if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status}`);
+    throw new FetchStatusError(url, response.status);
   }
   const buffer = await response.arrayBuffer();
   const charset =
@@ -207,6 +222,21 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
   return urls.length > 0 ? urls : allKnownRaceListUrls(targetDate);
 };
 
+// A specific NAR venue's RaceList page 404s whenever that venue has no race
+// on the target day — a legitimate "no race today" signal, not a failure.
+// Only that 404 is swallowed here; 5xx / timeouts / network errors still
+// propagate so real upstream failures keep surfacing to the caller.
+const fetchRaceListPageHtml = async (url: string): Promise<string | null> => {
+  try {
+    return await fetchHtml(url);
+  } catch (error) {
+    if (error instanceof FetchStatusError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+};
+
 export const fetchRaceLinksFromRaceList = async (
   raceListUrl: string,
 ): Promise<KeibaGoRaceLink[]> => {
@@ -217,7 +247,10 @@ export const fetchRaceLinksFromRaceList = async (
     return [];
   }
 
-  const html = await fetchHtml(raceListUrl);
+  const html = await fetchRaceListPageHtml(raceListUrl);
+  if (html === null) {
+    return [];
+  }
   const seen = new Set<string>();
   const links: KeibaGoRaceLink[] = [];
 

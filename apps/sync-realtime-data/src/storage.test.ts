@@ -279,6 +279,18 @@ it("updateLastFetch builds the SQL with the requested column name", async () => 
   );
 });
 
+it("updateLastFetch builds the SQL for the last_weight_fetch_attempt_at column", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await updateLastFetch(db, "key", "last_weight_fetch_attempt_at", "2026-07-03T11:30:00+09:00");
+  expect(prepare.mock.calls[0]![0]).toBe(
+    "update realtime_race_sources set last_weight_fetch_attempt_at = ?, updated_at = ? where race_key = ?",
+  );
+  expect(bind).toHaveBeenCalledWith("2026-07-03T11:30:00+09:00", expect.any(String), "key");
+});
+
 it("markResultFetchQueued returns immediately when raceKeys is empty", async () => {
   const batch = vi.fn(async () => []);
   const db = { batch, prepare: vi.fn() } as unknown as D1Database;
@@ -936,27 +948,121 @@ it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placehol
   );
 });
 
-// 2026-06-28: contract test ensuring the SQL keeps NAR rows out of the
-// candidate set. The `isPremiumRaceDataTarget` JRA-only gate at the handler
-// layer (commit d72de7ca) only blocks WORK when a job lands; the planner
-// queries this SQL to decide which rows to enqueue. Before this guard the
-// SQL `where rs.source in ('jra', 'nar')` clause still emitted NAR
-// candidates that already had a `premium_race_links` row, so the planner
-// re-enqueued thousands of NAR `skip:non-jra` jobs every 2 min — clogging
-// the queue and starving today's `fetch-results`. Validate that the SQL
-// fragment scopes to source='jra' by matching it against a regex.
-const PREMIUM_RACE_DATA_CANDIDATE_JRA_FILTER_REGEX = /rs\.source\s*=\s*'jra'/u;
-const PREMIUM_RACE_DATA_CANDIDATE_LEGACY_FILTER_REGEX = /rs\.source\s+in\s*\(/u;
+// 2026-07-04: contract test ensuring the SQL includes non-Ban-ei NAR rows
+// again, restoring the pre-2026-06-28 `isPremiumRaceDataTarget` semantics.
+// The 2026-06-28 JRA-only tightening (commit d72de7ca / 72b26f4c) was needed
+// because NAR premium fetches never authenticated and their failures had no
+// backoff, so the planner re-enqueued thousands of NAR `skip:non-jra` jobs
+// every 2 min. That failure mode is now closed from two directions:
+// isPremiumDataTopHtmlAuthorized (premium-race.ts) rejects netkeiba's
+// unauthenticated teaser page instead of silently persisting a fabricated
+// pick, and an unauthorized data-top fetch feeds the auth-retry backoff
+// below (`status='auth_required'` + `retry_after`), bounding worst-case
+// re-fetch frequency to once per hour per race instead of every cycle
+// forever. Ban-ei (keibajo 83) stays excluded either way — the user
+// deliberately excludes it from data-top coverage.
+const PREMIUM_RACE_DATA_CANDIDATE_JRA_OR_NAR_FILTER_REGEX =
+  /\(\s*rs\.source\s*=\s*'jra'\s*or\s*\(\s*rs\.source\s*=\s*'nar'\s*and\s*rs\.keibajo_code\s*!=\s*'83'\s*\)\s*\)/u;
+const PREMIUM_RACE_DATA_CANDIDATE_BAN_EI_EXCLUSION_REGEX = /rs\.keibajo_code\s*!=\s*'83'/u;
+const PREMIUM_RACE_DATA_CANDIDATE_RETRY_AFTER_BACKOFF_REGEX =
+  /state\.retry_after is null or state\.retry_after <= \?/u;
 
-it("listPremiumRaceDataFetchCandidatesByDate SQL restricts source to JRA only", async () => {
+it("listPremiumRaceDataFetchCandidatesByDate SQL includes non-Ban-ei NAR alongside JRA (restored 2026-07-04)", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));
   const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
   const db = { prepare } as unknown as D1Database;
-  await listPremiumRaceDataFetchCandidatesByDate(db, "20260628", "2026-06-28T21:00:00+09:00");
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
   const sql = String(prepare.mock.calls[0]![0]);
-  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_JRA_FILTER_REGEX);
-  expect(PREMIUM_RACE_DATA_CANDIDATE_LEGACY_FILTER_REGEX.test(sql)).toBe(false);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_JRA_OR_NAR_FILTER_REGEX);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_BAN_EI_EXCLUSION_REGEX);
+});
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL retains the auth-retry backoff clause that bounds re-fetch frequency", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_RETRY_AFTER_BACKOFF_REGEX);
+});
+
+// 2026-07-04: the completeness gate used to only check
+// `premium_data_top_horses` for emptiness, so a race whose data-top rows
+// landed but whose training-review / stable-comment scrape failed (or was
+// never queued) looked "complete" and was never retried again — the gap
+// persisted across days instead of self-healing. Validate the SQL also
+// treats an empty `premium_training_reviews` or `premium_stable_comments`
+// as a retry-worthy incompleteness signal, independently of data-top.
+const PREMIUM_RACE_DATA_CANDIDATE_TRAINING_REVIEWS_NOT_EXISTS_REGEX =
+  /not exists\s*\(\s*select 1\s*from premium_training_reviews training_reviews\s*where training_reviews\.race_key = rs\.race_key\s*\)/u;
+const PREMIUM_RACE_DATA_CANDIDATE_STABLE_COMMENTS_NOT_EXISTS_REGEX =
+  /not exists\s*\(\s*select 1\s*from premium_stable_comments stable_comments\s*where stable_comments\.race_key = rs\.race_key\s*\)/u;
+const PREMIUM_RACE_DATA_CANDIDATE_DATA_TOP_NOT_EXISTS_REGEX =
+  /not exists\s*\(\s*select 1\s*from premium_data_top_horses data_top\s*where data_top\.race_key = rs\.race_key\s*\)/u;
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL retries when training_reviews is empty even if data_top has rows", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_DATA_TOP_NOT_EXISTS_REGEX);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_TRAINING_REVIEWS_NOT_EXISTS_REGEX);
+});
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL retries when stable_comments is empty even if data_top has rows", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_STABLE_COMMENTS_NOT_EXISTS_REGEX);
+});
+
+// 2026-07-04: the training/comments completeness checks must be nested
+// inside the near-start/post-start freshness branch and gated to
+// `rs.source = 'jra'` there, not sit as bare top-level `or not exists (...)`
+// clauses. A bare top-level clause would bypass every existing suppression
+// rule (backoff, near-start freshness, post-start cutoff) and would also
+// force NAR races (once re-enabled for data-top fetches) to re-qualify
+// forever, since NAR never receives training reviews or stable comments.
+// This regex requires the source gate and the training/comments not-exists
+// checks to appear together inside one `and (...)` group, distinguishing
+// it from the outer `where rs.source = 'jra'` base filter tested above.
+const PREMIUM_RACE_DATA_CANDIDATE_JRA_GATED_TRAINING_REGEX =
+  /rs\.source\s*=\s*'jra'\s*and\s*\(\s*not exists\s*\(\s*select 1\s*from premium_training_reviews training_reviews/u;
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL gates the training/comments completeness reasons to JRA only, nested (not top-level)", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_JRA_GATED_TRAINING_REGEX);
+});
+
+it("listPremiumRaceDataFetchCandidatesByDate keeps the same bind placeholder count after adding per-table completeness checks", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  expect(bind).toHaveBeenCalledWith(
+    "2026",
+    "0704",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
+  );
 });
 
 it("getLatestHorseWeights returns null when results are empty", async () => {

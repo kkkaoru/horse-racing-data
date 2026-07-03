@@ -522,6 +522,39 @@ it("isPremiumStableCommentHtmlAuthorized returns true only when full-table class
   expect(isPremiumStableCommentHtmlAuthorized("<div></div>")).toBe(false);
 });
 
+it("isPremiumDataTopHtmlAuthorized returns true when Icon_Account is present without teaser markers", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  expect(isPremiumDataTopHtmlAuthorized('<div class="Icon_Account">user</div>')).toBe(true);
+});
+
+it("isPremiumDataTopHtmlAuthorized returns false when Icon_Account is absent", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  expect(isPremiumDataTopHtmlAuthorized("<div>no account marker</div>")).toBe(false);
+});
+
+it("isPremiumDataTopHtmlAuthorized returns false on the unauthenticated teaser page", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  const html = '<div class="DummyBox"></div><div class="Premium_Regist_Box"></div>';
+  expect(isPremiumDataTopHtmlAuthorized(html)).toBe(false);
+});
+
+it("isPremiumDataTopHtmlAuthorized returns false when Icon_Account co-occurs with DummyBox", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  const html = '<div class="Icon_Account">user</div><div class="DummyBox"></div>';
+  expect(isPremiumDataTopHtmlAuthorized(html)).toBe(false);
+});
+
+it("isPremiumDataTopHtmlAuthorized returns false when Icon_Account co-occurs with Premium_Regist_Box", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  const html = '<div class="Icon_Account">user</div><div class="Premium_Regist_Box"></div>';
+  expect(isPremiumDataTopHtmlAuthorized(html)).toBe(false);
+});
+
+it("isPremiumDataTopHtmlAuthorized returns false on an empty body", async () => {
+  const { isPremiumDataTopHtmlAuthorized } = await import("./premium-race");
+  expect(isPremiumDataTopHtmlAuthorized("")).toBe(false);
+});
+
 it("detectPremiumLoginPrompt fires when both subscription-gate markers appear", async () => {
   const { detectPremiumLoginPrompt } = await import("./premium-race");
   const html = "<div>プレミアムサービス 登録でご覧になれます</div>";

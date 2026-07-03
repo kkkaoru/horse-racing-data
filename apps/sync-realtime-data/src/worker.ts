@@ -36,6 +36,7 @@ import {
 import { fetchJraTrackConditionWithPlaywright } from "./jra-track-condition";
 import { putPremiumDataTopCache } from "./premium-data-top-cache";
 import {
+  BAN_EI_KEIBAJO_CODE,
   buildPremiumUrl,
   buildPremiumRaceLinkFromRace,
   detectPremiumLoginPrompt,
@@ -44,6 +45,7 @@ import {
   fetchPremiumHtmlAttempts,
   getPremiumRaceConfig,
   hasPremiumRaceFetchConfig,
+  isPremiumDataTopHtmlAuthorized,
   isPremiumRaceDataTarget,
   isPremiumStableCommentHtmlAuthorized,
   matchPremiumLinkToRace,
@@ -405,9 +407,8 @@ export const WEIGHT_WATCHDOG_CRON = "*/2 * * * *";
 const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
 const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
 const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;
+const WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES = 15;
 const WEIGHT_WATCHDOG_MAX_PER_TICK = 8;
-const WEIGHT_WATCHDOG_INLINE_JRA_MAX_PER_TICK = 2;
-const WEIGHT_WATCHDOG_INLINE_NAR_MAX_PER_TICK = 2;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -1483,12 +1484,14 @@ export const writeWeightRaceListFallbackToKv = async (
 
 export interface StaleWeightFetchRace {
   lastWeightFetchAt: string | null;
+  lastWeightFetchAttemptAt: string | null;
   raceKey: string;
   raceStartAtJst: string;
 }
 
 interface StaleWeightFetchRaceRow {
   last_weight_fetch_at: string | null;
+  last_weight_fetch_attempt_at: string | null;
   race_key: string;
   race_start_at_jst: string;
 }
@@ -1539,22 +1542,27 @@ export const findStaleWeightFetchRaces = async (
   const staleJst = toJstIsoString(
     new Date(now.getTime() - WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES * MILLISECONDS_PER_MINUTE),
   );
+  const attemptBackoffJst = toJstIsoString(
+    new Date(now.getTime() - WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE),
+  );
   const result = await db
     .prepare(
       `
-        select race_key, race_start_at_jst, last_weight_fetch_at
+        select race_key, race_start_at_jst, last_weight_fetch_at, last_weight_fetch_attempt_at
         from realtime_race_sources
         where race_start_at_jst > ?
           and race_start_at_jst < ?
           and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
+          and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
         order by race_start_at_jst
         limit ?
       `,
     )
-    .bind(lookBackJst, lookAheadJst, staleJst, WEIGHT_WATCHDOG_MAX_PER_TICK)
+    .bind(lookBackJst, lookAheadJst, staleJst, attemptBackoffJst, WEIGHT_WATCHDOG_MAX_PER_TICK)
     .all<StaleWeightFetchRaceRow>();
   return result.results.map((row) => ({
     lastWeightFetchAt: row.last_weight_fetch_at,
+    lastWeightFetchAttemptAt: row.last_weight_fetch_attempt_at,
     raceKey: row.race_key,
     raceStartAtJst: row.race_start_at_jst,
   }));
@@ -1592,48 +1600,12 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
       type: "fetch-weights",
     }));
     await enqueueJobs(env, jobs);
-    let inlineAttempted = 0;
-    let inlineStored = 0;
-    let inlineError = 0;
-    for (const job of selectInlineRealtimeJobs(jobs, {
-      jra: WEIGHT_WATCHDOG_INLINE_JRA_MAX_PER_TICK,
-      nar: WEIGHT_WATCHDOG_INLINE_NAR_MAX_PER_TICK,
-    })) {
-      inlineAttempted += 1;
-      try {
-        const stored = await withHandlerTimeout({
-          label: "weight-watchdog-inline",
-          ms: QUEUE_HANDLER_TIMEOUT_MS,
-          task: fetchAndStoreWeights(env, job.raceKey),
-        });
-        if (stored) {
-          inlineStored += 1;
-        }
-      } catch (error: unknown) {
-        inlineError += 1;
-        await logFetch(
-          env.REALTIME_DB,
-          "weight-watchdog-inline",
-          "error",
-          job.raceKey,
-          formatError(error),
-          env.DETAIL_SECTION_CACHE_KV,
-        );
-      }
-    }
     await logFetch(
       env.REALTIME_DB,
       "weight-watchdog",
       "ok",
       null,
-      inlineAttempted === 0
-        ? JSON.stringify({ enqueued: jobs.length })
-        : JSON.stringify({
-            enqueued: jobs.length,
-            inlineAttempted,
-            inlineError,
-            inlineStored,
-          }),
+      JSON.stringify({ enqueued: jobs.length }),
       env.DETAIL_SECTION_CACHE_KV,
     );
   } catch (error: unknown) {
@@ -2930,11 +2902,34 @@ export const enqueueFetchWeightsBatch = async (
 };
 
 const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean> => {
+  // Skip entirely -- no D1 write, no HTTP fetch -- when a complete snapshot
+  // already exists. insertHorseWeightSnapshot is only ever reached after
+  // assertJraHorseWeightsComplete / assertNarHorseWeightsComplete pass, so
+  // any stored row set already represents every expected non-scratched
+  // horse; there is no partial state to worry about missing here. This also
+  // removes one source of repeat request pressure against already-solved
+  // races (2026-07-03 incident: races whose weight was already captured
+  // were still getting re-hit every watchdog tick).
+  const alreadyStored = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
+  if (alreadyStored !== null && alreadyStored.horses.length > 0) {
+    await logFetch(
+      env.REALTIME_DB,
+      "fetch-weights",
+      SKIP_STATUS.weightsAlreadyStored,
+      raceKey,
+      null,
+    );
+    return true;
+  }
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race) {
     throw new Error(`race source not found: ${raceKey}`);
   }
   const fetchedAt = toJstIsoString();
+  // Recorded before the HTTP call so a 404 / timeout / thrown parser error
+  // still leaves a backoff marker -- this is what findStaleWeightFetchRaces
+  // gates on to stop re-selecting a race that just failed moments ago.
+  await updateLastFetch(env.REALTIME_DB, raceKey, "last_weight_fetch_attempt_at", fetchedAt);
   const html = await fetchRacePage(race.debaUrl);
   const latestOdds = race.source === "jra" ? await fetchHotOddsPayload(env, raceKey) : null;
   const latestTanshoOdds = buildTanshoOddsRowsFromHotOdds(latestOdds);
@@ -3924,6 +3919,14 @@ const fetchAndStoreJraTrackCondition = async (
   }
 };
 
+// Mirrors isPremiumRaceDataTarget's source/keibajoCode check but operates on
+// the raw raceKey string (shape "<source>:<year>:<mmdd>:<keibajoCode>:<raceBango>")
+// so the queue handler's defensive pre-fetch guard does not need a race lookup.
+const isPremiumRaceDataQueueRaceKey = (raceKey: string): boolean => {
+  const parts = raceKey.split(":");
+  return parts[0] === "jra" || (parts[0] === "nar" && parts[3] !== BAN_EI_KEIBAJO_CODE);
+};
+
 const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || !isPremiumRaceDataTarget(race)) {
@@ -4008,6 +4011,16 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     : undefined;
   const dataTopHorses = dataTopHtml ? parsePremiumDataTopHorses(dataTopHtml, env) : undefined;
   const commentAuthorized = commentHtml ? isPremiumStableCommentHtmlAuthorized(commentHtml) : false;
+  // netkeiba's unauthenticated data-top teaser page structurally contains
+  // exactly one <dl> block matching parsePremiumDataTopHorses's pattern, so a
+  // naive parse silently "succeeds" with one fabricated horse pick instead of
+  // the real 2-3. detectPremiumLoginPrompt below is tuned to a different gate
+  // string that this teaser page does not contain (verified in production:
+  // 1000/1000 unauthenticated NAR fetches 2026-05-31..2026-06-28 carried the
+  // teaser markers but never tripped loginPromptDetected), so data-top needs
+  // its own authenticity check rather than relying on that shared detector.
+  const dataTopAuthorized = dataTopHtml ? isPremiumDataTopHtmlAuthorized(dataTopHtml) : false;
+  const dataTopAuthRequired = Boolean(dataTopHtml) && !dataTopAuthorized;
   // Detect the netkeiba subscription-prompt page across all three HTMLs.
   // Production verified 2026-06-20: HTTP 200 responses occasionally contain
   // only the login gate, and used to be persisted as `status='ok'` with zero
@@ -4023,9 +4036,12 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   // The fetch state below still records `commentAuthRequired: true` so the
   // planner re-queues the race.
   const stableComments = commentHtml && !commentAuthorized ? undefined : parsedStableComments;
-  // Suppress data_top replace as well when the login prompt was hit, so we
-  // do not wipe a previously stored authenticated snapshot with an empty list.
-  const dataTopHorsesForReplace = loginPromptDetected ? undefined : dataTopHorses;
+  // Suppress data_top replace when the login prompt was hit OR the data-top
+  // page itself failed its own authenticity check, so we never persist a
+  // fabricated teaser pick and never wipe a previously stored authenticated
+  // snapshot with one.
+  const dataTopHorsesForReplace =
+    loginPromptDetected || dataTopAuthRequired ? undefined : dataTopHorses;
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses: dataTopHorsesForReplace,
     fetchedAt,
@@ -4045,18 +4061,32 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
     (trainingReviews?.length ?? 0) > 0 ||
     (parsedStableComments?.length ?? 0) > 0 ||
     (dataTopHorses?.length ?? 0) > 0;
+  // Bust the viewer's per-race cache as soon as new premium training/stable
+  // comment content lands, not only after results land later. Without this,
+  // a same-day cache pre-warm that ran before premium data was ready keeps
+  // serving a stale/empty training section until race-start+6h. Skip the
+  // bust when this fetch produced nothing (empty/failed) so we do not spend
+  // it on a no-op.
+  if (hasAnyData) {
+    await runRaceCacheBust(env, raceKey, race);
+  }
   const commentAuthRequired = Boolean(commentHtml) && !commentAuthorized;
+  // Data-top's own authenticity failure feeds the same shared auth-retry
+  // backoff as the login-prompt detector: both mean "this race needs a
+  // re-fetch once the session is authenticated again", not "fetch failed".
+  const anyAuthIssueDetected = loginPromptDetected || dataTopAuthRequired;
   const previousState = await getPremiumRaceDataFetchState(env.REALTIME_DB, raceKey);
   const previousMessage = parsePremiumStateMessage(previousState?.message ?? null);
-  const nextAuthRetryCount = loginPromptDetected ? previousMessage.authRetryCount + 1 : 0;
+  const nextAuthRetryCount = anyAuthIssueDetected ? previousMessage.authRetryCount + 1 : 0;
   const authRetryExhausted = nextAuthRetryCount > PREMIUM_RACE_DATA_AUTH_RETRY_MAX_ATTEMPTS;
-  const authRetryAfter = loginPromptDetected
+  const authRetryAfter = anyAuthIssueDetected
     ? toJstIsoString(
         new Date(getNow(env).getTime() + resolveAuthRetryDelaySeconds(authRetryExhausted) * 1000),
       )
     : null;
   const resolvedStatus = resolvePremiumRaceDataStatus({
     commentAuthRequired,
+    dataTopAuthRequired,
     hasAnyData,
     loginPromptDetected,
   });
@@ -4080,6 +4110,8 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
             : String(dataTopResult.reason)
           : null,
       dataTopHtmlLength: dataTopHtml.length,
+      dataTopAuthorized: dataTopHtml ? dataTopAuthorized : null,
+      dataTopPersisted: dataTopHorsesForReplace !== undefined,
       dataTopHasIconAccount: dataTopHtml ? dataTopHtml.includes("Icon_Account") : null,
       dataTopHasDummyBox: dataTopHtml ? dataTopHtml.includes("DummyBox") : null,
       dataTopHasPremiumRegist: dataTopHtml ? dataTopHtml.includes("Premium_Regist_Box") : null,
@@ -4110,12 +4142,13 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
 
 interface ResolvePremiumStatusInput {
   commentAuthRequired: boolean;
+  dataTopAuthRequired: boolean;
   hasAnyData: boolean;
   loginPromptDetected: boolean;
 }
 
 const resolvePremiumRaceDataStatus = (input: ResolvePremiumStatusInput): string => {
-  if (input.loginPromptDetected || input.commentAuthRequired) {
+  if (input.loginPromptDetected || input.commentAuthRequired || input.dataTopAuthRequired) {
     return "auth_required";
   }
   return input.hasAnyData ? "ok" : "empty";
@@ -4548,12 +4581,11 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
     }
     if (job.type === "fetch-premium-race-data") {
       // Defensive: isPremiumRaceDataTarget already gates planning + discovery to
-      // source==="jra" (2026-06-28), but legacy queue entries enqueued before the
-      // gate or a future manual enqueue could land a non-JRA job here. Skip it
-      // before fetchAndStorePremiumRaceData does an HTTP fetch / D1 write loop —
-      // the failing NAR fetches were clogging the main jobs queue and blocking
-      // fetch-results / fetch-weights for hours during race-day.
-      if (!job.raceKey.startsWith("jra:")) {
+      // jra + non-Ban-ei nar (restored 2026-07-04, see isPremiumRaceDataTarget's
+      // comment), but legacy queue entries enqueued before this gate or a future
+      // manual enqueue could land a Ban-ei job here. Skip it before
+      // fetchAndStorePremiumRaceData does an HTTP fetch / D1 write loop.
+      if (!isPremiumRaceDataQueueRaceKey(job.raceKey)) {
         await logFetch(env.REALTIME_DB, job.type, "skip:non-jra", job.raceKey, null);
         return;
       }

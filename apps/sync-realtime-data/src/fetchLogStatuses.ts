@@ -20,6 +20,7 @@ export interface SkipStatuses {
   readonly notFinished: "skip:not-finished";
   readonly paddockUrlMissing: "skip:paddock-url-missing";
   readonly raceNotFound: "skip:race-not-found";
+  readonly weightsAlreadyStored: "skip:weights-already-stored";
   readonly weightsEmpty: "skip:weights-empty";
   readonly weightsSparse: "skip:weights-sparse";
 }
@@ -34,6 +35,7 @@ export const SKIP_STATUS: SkipStatuses = {
   notFinished: "skip:not-finished",
   paddockUrlMissing: "skip:paddock-url-missing",
   raceNotFound: "skip:race-not-found",
+  weightsAlreadyStored: "skip:weights-already-stored",
   weightsEmpty: "skip:weights-empty",
   weightsSparse: "skip:weights-sparse",
 };

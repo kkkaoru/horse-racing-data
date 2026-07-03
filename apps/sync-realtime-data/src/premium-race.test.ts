@@ -21,16 +21,16 @@ it("isPremiumRaceDataTarget returns true for jra", () => {
   expect(isPremiumRaceDataTarget({ keibajoCode: "08", source: "jra" })).toBe(true);
 });
 
-it("isPremiumRaceDataTarget returns false for nar non-Ban-ei (JRA-only gate, 2026-06-28)", () => {
-  expect(isPremiumRaceDataTarget({ keibajoCode: "55", source: "nar" })).toBe(false);
+it("isPremiumRaceDataTarget returns true for nar non-Ban-ei (restored 2026-07-04)", () => {
+  expect(isPremiumRaceDataTarget({ keibajoCode: "55", source: "nar" })).toBe(true);
 });
 
-it("isPremiumRaceDataTarget returns false for nar Ban-ei keibajo (JRA-only gate, 2026-06-28)", () => {
+it("isPremiumRaceDataTarget returns false for nar Ban-ei keibajo", () => {
   expect(isPremiumRaceDataTarget({ keibajoCode: "83", source: "nar" })).toBe(false);
 });
 
-it("isPremiumRaceDataTarget returns false for nar with another keibajo code", () => {
-  expect(isPremiumRaceDataTarget({ keibajoCode: "44", source: "nar" })).toBe(false);
+it("isPremiumRaceDataTarget returns true for nar with another keibajo code", () => {
+  expect(isPremiumRaceDataTarget({ keibajoCode: "44", source: "nar" })).toBe(true);
 });
 
 it("getPremiumRaceConfig reads every env var when all are provided", () => {

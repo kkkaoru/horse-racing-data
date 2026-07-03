@@ -683,6 +683,33 @@ describe("worker scheduling with Miniflare", () => {
       )
       .bind("jra:2026:0512:08:01")
       .run();
+    // premium_training_reviews / premium_stable_comments must also have rows
+    // for this race, otherwise the per-table completeness gate (2026-07-04
+    // fix) treats it as a genuinely incomplete fetch and requeues it — this
+    // test isolates the race-start-freshness branch, so the data-completeness
+    // branch must independently read as "complete" across all three tables.
+    await db
+      .prepare(
+        `
+          insert into premium_training_reviews (
+            race_key, source_race_id, fetched_at, horse_number, created_at
+          )
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', '1', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_stable_comments (
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
+          )
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', '1', 'sample', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
 
     await worker.queue(TEST_QUEUE, [
       {
@@ -744,6 +771,33 @@ describe("worker scheduling with Miniflare", () => {
       )
       .bind("jra:2026:0512:08:01")
       .run();
+    // premium_training_reviews / premium_stable_comments must also have rows
+    // for this race, otherwise the per-table completeness gate (2026-07-04
+    // fix) treats it as a genuinely incomplete fetch and requeues it — this
+    // test isolates the race-start-freshness branch, so the data-completeness
+    // branch must independently read as "complete" across all three tables.
+    await db
+      .prepare(
+        `
+          insert into premium_training_reviews (
+            race_key, source_race_id, fetched_at, horse_number, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_stable_comments (
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', 'sample', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
 
     await worker.queue(TEST_QUEUE, [
       {
@@ -768,6 +822,176 @@ describe("worker scheduling with Miniflare", () => {
       last_queued_at: null,
       status: "ok",
     });
+  });
+
+  // 2026-07-04 regression test for the completeness-gate fix: previously the
+  // gate only checked premium_data_top_horses for emptiness, so a race whose
+  // data-top scrape landed but whose training-review / stable-comment scrape
+  // failed (or was never run) looked "complete" and was never retried again.
+  // last_fetch_at is deliberately recent + close to race start here (the
+  // same shape as the "does not requeue ... close to race start" fixture
+  // above) so the only thing that can explain a requeue is the per-table
+  // completeness gate, not the race-start-freshness branch.
+  it("requeues premium race data when data_top has rows but training_reviews and stable_comments are still empty", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:55:00+09:00', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', 1, '1', 'sample', '[]', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-race-data-partial-completeness",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_race_data_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toEqual({
+      last_queued_at: "2026-05-12T12:00:00+09:00",
+      status: "queued",
+    });
+  });
+
+  // 2026-07-04: NAR races never receive premium_training_reviews /
+  // premium_stable_comments rows by design (only JRA races are scraped for
+  // them), so the completeness gate must not treat a missing training
+  // review / stable comment as a reason to requeue a NAR race — otherwise
+  // it would perpetually re-qualify and never settle, once NAR rows are
+  // allowed through the planner's source filter for data-top fetches.
+  it("does not requeue a NAR race for missing training_reviews / stable_comments even with data_top rows", async () => {
+    await seedRace("nar:2026:0512:55:01", "2026-05-12T12:20:00+09:00", { source: "nar" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605125501', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("nar:2026:0512:55:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:55:00+09:00', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605125501', '2026-05-12T11:55:00+09:00', 1, '1', 'sample', '[]', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  // 2026-07-04: training reviews / stable comments are pre-race content —
+  // once a race is more than 15 minutes past its start, netkeiba will never
+  // publish them, so a missing row must not keep forcing a requeue forever.
+  // The near-start/post-start freshness branch's own time gate must win
+  // over the missing-training/comments reason, exactly like it already
+  // wins over the "data exists but might be stale" reason.
+  it("does not requeue a JRA race for missing training_reviews / stable_comments once the race start has clearly passed", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates).toEqual([]);
   });
 
   it("requeues premium race data stuck in 'queued' status for more than 15 minutes", async () => {

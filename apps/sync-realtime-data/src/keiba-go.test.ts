@@ -1,11 +1,15 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  fetchRaceLinksFromRaceList,
   fetchRacePage,
   fetchTodayRaceListUrls,
   parseRaceResultTanshoOdds,
   TOP_PAGE_RETRYABLE_STATUSES,
 } from "./keiba-go";
+
+const TEST_RACE_LIST_URL =
+  "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F07%2F04&k_babaCode=36";
 
 const SJIS_TOKYO_BYTES = [0x93, 0x8c, 0x8b, 0x9e];
 const TEST_URL = "https://www.keiba.go.jp/test";
@@ -220,6 +224,50 @@ it("fetchRacePage does not retry on 404 (sub-page 404 bubbles immediately)", asy
     "Failed to fetch https://www.keiba.go.jp/test: 404",
   );
   expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("fetchRaceLinksFromRaceList returns an empty array when the RaceList page 404s (no race today for this venue)", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("nope", { status: 404 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await fetchRaceLinksFromRaceList(TEST_RACE_LIST_URL);
+  expect(result).toStrictEqual([]);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+
+it("fetchRaceLinksFromRaceList propagates a 500 RaceList response instead of treating it as no-race", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("nope", { status: 500 }));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(fetchRaceLinksFromRaceList(TEST_RACE_LIST_URL)).rejects.toThrowError(
+    "Failed to fetch https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F07%2F04&k_babaCode=36: 500",
+  );
+});
+
+it("fetchRaceLinksFromRaceList propagates a raw network failure unmodified", async () => {
+  const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error("network unreachable"));
+  vi.stubGlobal("fetch", fetchMock);
+  await expect(fetchRaceLinksFromRaceList(TEST_RACE_LIST_URL)).rejects.toThrowError(
+    "network unreachable",
+  );
+});
+
+it("fetchRaceLinksFromRaceList parses race links from a successful RaceList response", async () => {
+  const html =
+    '<a href="/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F07%2F04&amp;k_raceNo=1&amp;k_babaCode=36">1R</a>';
+  const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+    new Response(html, {
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+      status: 200,
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await fetchRaceLinksFromRaceList(TEST_RACE_LIST_URL);
+  expect(result).toStrictEqual([
+    {
+      babaCode: "36",
+      raceNumber: "01",
+      url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F07%2F04&k_raceNo=1&k_babaCode=36",
+    },
+  ]);
 });
 
 it("parseRaceResultTanshoOdds extracts horseNumber + popularity + tanshoOdds from current layout rows", () => {

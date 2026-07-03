@@ -2251,6 +2251,7 @@ it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit val
     "2026-06-07T11:30:00+09:00",
     "2026-06-07T15:00:00+09:00",
     "2026-06-07T11:55:00+09:00",
+    "2026-06-07T11:45:00+09:00",
     8,
   );
 });
@@ -2268,6 +2269,7 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
     "2026-06-13T10:43:00+09:00",
     "2026-06-13T14:13:00+09:00",
     "2026-06-13T11:08:00+09:00",
+    "2026-06-13T10:58:00+09:00",
     8,
   );
   // Watchdog SQL: race_start_at_jst > lookBack AND < lookAhead AND
@@ -2286,11 +2288,13 @@ it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records
     results: [
       {
         last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: null,
         race_key: "jra:2026:0607:05:06",
         race_start_at_jst: "2026-06-07T12:55:00+09:00",
       },
       {
         last_weight_fetch_at: "2026-06-07T11:30:00+09:00",
+        last_weight_fetch_attempt_at: "2026-06-07T11:30:00+09:00",
         race_key: "jra:2026:0607:05:11",
         race_start_at_jst: "2026-06-07T14:30:00+09:00",
       },
@@ -2303,15 +2307,53 @@ it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records
   expect(rows).toStrictEqual([
     {
       lastWeightFetchAt: null,
+      lastWeightFetchAttemptAt: null,
       raceKey: "jra:2026:0607:05:06",
       raceStartAtJst: "2026-06-07T12:55:00+09:00",
     },
     {
       lastWeightFetchAt: "2026-06-07T11:30:00+09:00",
+      lastWeightFetchAttemptAt: "2026-06-07T11:30:00+09:00",
       raceKey: "jra:2026:0607:05:11",
       raceStartAtJst: "2026-06-07T14:30:00+09:00",
     },
   ]);
+});
+
+// Regression test for the 2026-07-03 incident: a race that has never
+// succeeded (last_weight_fetch_at is null) but was attempted moments ago
+// (last_weight_fetch_attempt_at recent) must not be re-selected on every
+// */2 watchdog tick. The SQL predicate that enforces this is opaque to a
+// mocked D1, so this asserts the exact query text carries the new
+// last_weight_fetch_attempt_at backoff clause in addition to the unchanged
+// last_weight_fetch_at success-only clause, and that the attempt-backoff
+// bound is bound as the 4th parameter ahead of the row limit.
+it("findStaleWeightFetchRaces gates on last_weight_fetch_attempt_at in addition to last_weight_fetch_at", async () => {
+  const { findStaleWeightFetchRaces } = await import("./worker");
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await findStaleWeightFetchRaces(db, new Date("2026-07-03T03:00:00.000Z"));
+  expect(prepare.mock.calls[0]![0]).toBe(
+    `
+        select race_key, race_start_at_jst, last_weight_fetch_at, last_weight_fetch_attempt_at
+        from realtime_race_sources
+        where race_start_at_jst > ?
+          and race_start_at_jst < ?
+          and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
+          and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
+        order by race_start_at_jst
+        limit ?
+      `,
+  );
+  expect(bind).toHaveBeenCalledWith(
+    "2026-07-03T11:30:00+09:00",
+    "2026-07-03T15:00:00+09:00",
+    "2026-07-03T11:55:00+09:00",
+    "2026-07-03T11:45:00+09:00",
+    8,
+  );
 });
 
 it("runWeightWatchdog logs the no-stale path when there are no candidates", async () => {
@@ -2364,19 +2406,26 @@ it("runWeightWatchdog forwards the KV namespace to logFetch for dedupe when boun
   );
 });
 
-it("runWeightWatchdog enqueues fetch-weights jobs and inline-attempts stale JRA races", async () => {
+// 2026-07-03 incident: the watchdog used to also inline-run
+// fetchAndStoreWeights for a subset of the same jobs it had just enqueued,
+// duplicating the HTTP request to keiba.go.jp for the same race in the same
+// tick with no backoff on failure. This lane was removed entirely (not
+// zeroed) -- the watchdog now only enqueues, and getRaceSource (the first
+// dependency fetchAndStoreWeights touches) must never be called from here.
+it("runWeightWatchdog enqueues fetch-weights jobs for stale JRA races without inline-fetching them", async () => {
   const { runWeightWatchdog } = await import("./worker");
   const { getRaceSource, logFetch } = await import("./storage");
-  vi.mocked(getRaceSource).mockResolvedValue(null);
   const all = vi.fn(async () => ({
     results: [
       {
         last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: null,
         race_key: "jra:2026:0607:05:06",
         race_start_at_jst: "2026-06-07T12:55:00+09:00",
       },
       {
         last_weight_fetch_at: "2026-06-07T11:30:00+09:00",
+        last_weight_fetch_attempt_at: "2026-06-07T11:30:00+09:00",
         race_key: "jra:2026:0607:05:11",
         race_start_at_jst: "2026-06-07T14:30:00+09:00",
       },
@@ -2396,31 +2445,24 @@ it("runWeightWatchdog enqueues fetch-weights jobs and inline-attempts stale JRA 
     "weight-watchdog",
     "ok",
     null,
-    '{"enqueued":2,"inlineAttempted":2,"inlineError":2,"inlineStored":0}',
-    undefined,
-  );
-  expect(logFetch).toHaveBeenCalledWith(
-    expect.anything(),
-    "weight-watchdog-inline",
-    "error",
-    "jra:2026:0607:05:06",
-    "race source not found: jra:2026:0607:05:06",
+    '{"enqueued":2}',
     undefined,
   );
   expect(sendBatch).toHaveBeenCalledWith([
     { body: { raceKey: "jra:2026:0607:05:06", type: "fetch-weights" } },
     { body: { raceKey: "jra:2026:0607:05:11", type: "fetch-weights" } },
   ]);
+  expect(getRaceSource).not.toHaveBeenCalled();
 });
 
-it("runWeightWatchdog also attempts inline NAR weight fetches and keeps the watchdog alive on inline failure", async () => {
+it("runWeightWatchdog enqueues fetch-weights jobs for stale NAR races without inline-fetching them", async () => {
   const { runWeightWatchdog } = await import("./worker");
   const { getRaceSource, logFetch } = await import("./storage");
-  vi.mocked(getRaceSource).mockResolvedValueOnce(null);
   const all = vi.fn(async () => ({
     results: [
       {
         last_weight_fetch_at: null,
+        last_weight_fetch_attempt_at: null,
         race_key: "nar:2026:0607:44:07",
         race_start_at_jst: "2026-06-07T17:45:00+09:00",
       },
@@ -2437,21 +2479,14 @@ it("runWeightWatchdog also attempts inline NAR weight fetches and keeps the watc
   await runWeightWatchdog(env, new Date("2026-06-07T08:30:00.000Z"));
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
-    "weight-watchdog-inline",
-    "error",
-    "nar:2026:0607:44:07",
-    "race source not found: nar:2026:0607:44:07",
-    undefined,
-  );
-  expect(logFetch).toHaveBeenCalledWith(
-    expect.anything(),
     "weight-watchdog",
     "ok",
     null,
-    '{"enqueued":1,"inlineAttempted":1,"inlineError":1,"inlineStored":0}',
+    '{"enqueued":1}',
     undefined,
   );
   expect(send).toHaveBeenCalledWith({ raceKey: "nar:2026:0607:44:07", type: "fetch-weights" });
+  expect(getRaceSource).not.toHaveBeenCalled();
 });
 
 it("runWeightWatchdog logs an error when the d1 query throws and does not enqueue jobs", async () => {
