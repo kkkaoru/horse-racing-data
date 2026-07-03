@@ -5,6 +5,7 @@ import {
   computeTomorrowJst,
   getTodayJst,
   isJstPollingWindow,
+  raceDayEndJstMs,
   shiftYyyymmddByDays,
   toJstIsoString,
 } from "./time";
@@ -60,4 +61,17 @@ it("shiftYyyymmddByDays handles year boundary", () => {
 
 it("shiftYyyymmddByDays returns same date with zero delta", () => {
   expect(shiftYyyymmddByDays("20260529", 0)).toBe("20260529");
+});
+
+it("raceDayEndJstMs returns the UTC instant of JST 23:59:59.999 for the given date", () => {
+  expect(raceDayEndJstMs("20260528")).toBe(Date.parse("2026-05-28T14:59:59.999Z"));
+});
+
+it("raceDayEndJstMs handles month rollover", () => {
+  expect(raceDayEndJstMs("20260531")).toBe(Date.parse("2026-05-31T14:59:59.999Z"));
+});
+
+it("raceDayEndJstMs is after a same-day build timestamp made during JST daytime", () => {
+  const buildDuringRaceDayMs = Date.parse("2026-05-28T08:41:00.000Z");
+  expect(buildDuringRaceDayMs < raceDayEndJstMs("20260528")).toBe(true);
 });

@@ -16,6 +16,7 @@ import {
   type BuildStateRecord,
   getBuildStateFromKv,
   isBuildStateFresh,
+  isPast14BuildStateFresh,
   putBuildStateToKv,
 } from "./gates/build-state-kv";
 import { acquireEnqueueLock, isEnqueueLocked } from "./gates/enqueue-lock-kv";
@@ -201,8 +202,10 @@ export const buildAndPersistRaceFeatures = async (
   });
   await env.FEATURES_ARCHIVE.put(r2Key, parquetBytes);
   const builtAt = new Date().toISOString();
+  const rankedRowCount = rows.filter((row) => row.finish_position !== null).length;
   await putBuildStateToKv(env, raceJobKey.raceKey, {
     lastBuiltAt: builtAt,
+    rankedRowCount,
     rowCount: rows.length,
   });
   await writeLatestFeaturesToKv(env, raceJobKey.raceKey, rows);
@@ -420,6 +423,11 @@ interface BuildCandidate {
   freshnessMs: number;
 }
 
+interface Past14BuildCandidate {
+  key: RaceJobKey;
+  raceDateJst: string;
+}
+
 const toBuildJobMessage = (
   raceJobKey: RaceJobKey,
 ): Extract<Job, { type: "build-race-features" }> => ({
@@ -432,23 +440,49 @@ const toBuildJobMessage = (
   type: "build-race-features",
 });
 
+// Shared lock-check + enqueue plumbing for both the today/tomorrow lane
+// (isBuildStateFresh) and the past14 lane (isPast14BuildStateFresh), which
+// only differ in how "fresh" is decided for a given build-state.
+const tryEnqueueIfUnlockedAndStale = async (
+  env: Env,
+  key: RaceJobKey,
+  isFresh: (state: BuildStateRecord | null) => boolean,
+): Promise<boolean> => {
+  const locked = await isEnqueueLocked(env, key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+  if (locked) {
+    return false;
+  }
+  const state = await getBuildStateFromKv(env, key.raceKey);
+  if (isFresh(state)) {
+    return false;
+  }
+  await env.REALTIME_FEATURES_JOBS.send(toBuildJobMessage(key));
+  await acquireEnqueueLock(env, key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
+  return true;
+};
+
 const tryEnqueueBuildCandidate = async (
   env: Env,
   candidate: BuildCandidate,
   now: Date,
-): Promise<boolean> => {
-  const locked = await isEnqueueLocked(env, candidate.key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
-  if (locked) {
-    return false;
-  }
-  const state = await getBuildStateFromKv(env, candidate.key.raceKey);
-  if (isBuildStateFresh(state, candidate.freshnessMs, now)) {
-    return false;
-  }
-  await env.REALTIME_FEATURES_JOBS.send(toBuildJobMessage(candidate.key));
-  await acquireEnqueueLock(env, candidate.key.raceKey, BUILD_RACE_FEATURES_JOB_TYPE);
-  return true;
-};
+): Promise<boolean> =>
+  tryEnqueueIfUnlockedAndStale(env, candidate.key, (state) =>
+    isBuildStateFresh(state, candidate.freshnessMs, now),
+  );
+
+const tryEnqueuePast14BuildCandidate = async (
+  env: Env,
+  candidate: Past14BuildCandidate,
+  now: Date,
+): Promise<boolean> =>
+  tryEnqueueIfUnlockedAndStale(env, candidate.key, (state) =>
+    isPast14BuildStateFresh({
+      freshnessMs: BUILD_STATE_FRESHNESS_PAST14_MS,
+      now,
+      raceDateJst: candidate.raceDateJst,
+      state,
+    }),
+  );
 
 const enqueueRaceInferenceJobs = async (
   env: Env,
@@ -600,7 +634,7 @@ const runBuildEnqueueLoop = (
 // reserved quota, independent of the adaptive batchSize used above.
 const stepPast14EnqueueLoop = async (
   env: Env,
-  candidates: BuildCandidate[],
+  candidates: Past14BuildCandidate[],
   now: Date,
   index: number,
   total: number,
@@ -608,7 +642,7 @@ const stepPast14EnqueueLoop = async (
   if (index >= candidates.length) {
     return total;
   }
-  const enqueued = await tryEnqueueBuildCandidate(env, candidates[index]!, now);
+  const enqueued = await tryEnqueuePast14BuildCandidate(env, candidates[index]!, now);
   return stepPast14EnqueueLoop(env, candidates, now, index + 1, enqueued ? total + 1 : total);
 };
 
@@ -622,7 +656,10 @@ const runPast14EnqueueLoop = async (
   }
   const cursor = await readPast14Cursor(env);
   const window = sliceWithWraparound(sortedPast14Jobs, cursor, PAST14_RESERVED_QUOTA);
-  const candidates = window.map((key) => ({ freshnessMs: BUILD_STATE_FRESHNESS_PAST14_MS, key }));
+  const candidates: Past14BuildCandidate[] = window.map((key) => ({
+    key,
+    raceDateJst: toRaceDateYmd(key),
+  }));
   const total = await stepPast14EnqueueLoop(env, candidates, now, 0, 0);
   await writePast14Cursor(
     env,

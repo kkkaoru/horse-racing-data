@@ -51,3 +51,12 @@ export const shiftYyyymmddByDays = (yyyymmdd: string, deltaDays: number): string
 };
 
 export const computeTomorrowJst = (now: Date): string => shiftYyyymmddByDays(getTodayJst(now), 1);
+
+// UTC-instant equivalent of JST 23:59:59.999 for a given JST calendar date
+// (YYYYMMDD). Used to tell whether a recorded build happened before the race
+// day's results could possibly exist yet.
+export const raceDayEndJstMs = (yyyymmdd: string): number =>
+  parseYyyymmddAsUtcMidnight(yyyymmdd).getTime() +
+  MS_PER_DAY -
+  JST_OFFSET_MINUTES * MS_PER_MINUTE -
+  1;

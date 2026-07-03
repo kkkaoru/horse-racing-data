@@ -102,6 +102,66 @@ const buildEnv = (overrides: Partial<Env> = {}): Env =>
     ...overrides,
   }) as unknown as Env;
 
+// KV mock whose `get` resolves per-key from `valueByKey`, falling back to
+// null (miss) for everything else — needed once a test must tell the
+// enqueue-lock key apart from the build-state key for the same race.
+const buildKeyedKv = (valueByKey: Record<string, string>) => {
+  const kv = buildKv();
+  (kv.get as ReturnType<typeof vi.fn>).mockImplementation(async (key: string) =>
+    Object.hasOwn(valueByKey, key) ? valueByKey[key] : null,
+  );
+  return kv;
+};
+
+const buildDailyRow = (overrides: Partial<DailyRaceEntryRow> = {}): DailyRaceEntryRow => ({
+  babajotai_code_dirt: null,
+  babajotai_code_shiba: null,
+  bamei: null,
+  banushimei: null,
+  barei: null,
+  bataiju: null,
+  chokyoshimei_ryakusho: null,
+  corner1_norm: null,
+  corner2_norm: null,
+  corner3_norm: null,
+  corner4_norm: null,
+  corner_1: null,
+  corner_2: null,
+  corner_3: null,
+  corner_4: null,
+  finish_norm: null,
+  finish_position: null,
+  futan_juryo: null,
+  grade_code: null,
+  hasso_jikoku: null,
+  juryo_shubetsu_code: null,
+  kaisai_nen: "2026",
+  kaisai_tsukihi: "0529",
+  keibajo_code: "30",
+  ketto_toroku_bango: "2020100099",
+  kishumei_ryakusho: null,
+  kohan_3f: null,
+  kyori: null,
+  kyoso_joken_code: null,
+  kyoso_shubetsu_code: null,
+  race_bango: "08",
+  race_date: "2026-05-29",
+  race_name: null,
+  seibetsu_code: null,
+  shusso_tosu: null,
+  soha_time: null,
+  source: "nar",
+  tansho_ninkijun: null,
+  tansho_odds: null,
+  time_sa: null,
+  track_code: null,
+  umaban: 1,
+  wakuban: null,
+  zogen_fugo: null,
+  zogen_sa: null,
+  ...overrides,
+});
+
 beforeEach(() => {
   vi.unstubAllGlobals();
   vi.mocked(buildRaceFeatures).mockReset();
@@ -944,6 +1004,33 @@ it("buildAndPersistRaceFeatures writes build-state KV and latest features KV", a
   });
 });
 
+it("buildAndPersistRaceFeatures counts only rows with a resolved finish_position into rankedRowCount", async () => {
+  const env = buildEnv();
+  vi.mocked(buildRaceFeatures).mockResolvedValueOnce([
+    buildDailyRow({ finish_position: 1, umaban: 1 }),
+    buildDailyRow({ finish_position: 2, umaban: 2 }),
+    buildDailyRow({ finish_position: null, umaban: 3 }),
+  ]);
+  await buildAndPersistRaceFeatures(env, {
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0529",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0529:30:08",
+    source: "nar",
+  });
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:build-state:nar:2026:0529:30:08",
+    expect.stringContaining('"rankedRowCount":2'),
+    { expirationTtl: 86_400 },
+  );
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:build-state:nar:2026:0529:30:08",
+    expect.stringContaining('"rowCount":3'),
+    { expirationTtl: 86_400 },
+  );
+});
+
 it("routes POST /api/internal/recompute-and-build-parquet", async () => {
   const env = buildEnv();
   const response = await handleFetchRequest(
@@ -1375,7 +1462,7 @@ it("runScheduledFeaturesPlan skips tomorrow when freshness 6h is current", async
   });
 });
 
-it("runScheduledFeaturesPlan skips past14 builds when 7d freshness state present", async () => {
+it("runScheduledFeaturesPlan skips a past14 candidate whose build was recorded after race day end with ranked results", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
   vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
@@ -1388,24 +1475,65 @@ it("runScheduledFeaturesPlan skips past14 builds when 7d freshness state present
       source: "nar",
     },
   ]);
-  const kvGet = vi
-    .fn()
-    .mockResolvedValueOnce("1")
-    .mockResolvedValueOnce(null)
-    .mockResolvedValueOnce(
-      JSON.stringify({ lastBuiltAt: "2026-05-28T00:00:00.000Z", rowCount: 14 }),
-    )
-    .mockResolvedValue("1");
   const env = buildEnv({
-    FEATURES_KV: {
-      delete: vi.fn(),
-      get: kvGet,
-      put: vi.fn(),
-    } as unknown as KVNamespace,
+    FEATURES_KV: buildKeyedKv({
+      "features:build-state:nar:2026:0528:30:08": JSON.stringify({
+        lastBuiltAt: "2026-05-29T01:00:00.000Z",
+        rankedRowCount: 14,
+        rowCount: 14,
+      }),
+    }),
     REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
   });
-  await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  // The single today tuple explodes into 14 past14 candidates spanning
+  // 2026-05-15..2026-05-28. Only 2026-05-28's build-state satisfies the new
+  // past14 freshness predicate (recorded AFTER its race day ended, with
+  // ranked rows), so it alone is skipped; the other 13 have no KV state and
+  // get enqueued.
+  expect(result.todayCount).toBe(1);
+  expect(result.past14Count).toBe(13);
   expect(queueSend).not.toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "30",
+    raceBango: "08",
+    raceKey: "nar:2026:0528:30:08",
+    source: "nar",
+    type: "build-race-features",
+  });
+});
+
+it("runScheduledFeaturesPlan still rebuilds a past14 candidate whose build was recorded during race day despite rowCount > 0 (past14 starvation regression)", async () => {
+  const queueSend = vi.fn(async () => {});
+  vi.mocked(readNextBatchSize).mockResolvedValueOnce(1);
+  vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      source: "nar",
+    },
+  ]);
+  const env = buildEnv({
+    FEATURES_KV: buildKeyedKv({
+      "features:build-state:nar:2026:0528:30:08": JSON.stringify({
+        lastBuiltAt: "2026-05-28T08:41:00.000Z",
+        rowCount: 14,
+      }),
+    }),
+    REALTIME_FEATURES_JOBS: { send: queueSend } as unknown as Queue<Job>,
+  });
+  const result = await runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z"));
+  // Before this fix, isBuildStateFresh would have treated this record (built
+  // during race day, well within the old 7-day freshness window) as fresh
+  // forever, so the race's Parquet would never be rebuilt with finish
+  // positions. The new predicate requires both a post-race-day-end
+  // lastBuiltAt AND ranked rows, so this candidate correctly rebuilds.
+  expect(result.past14Count).toBe(14);
+  expect(queueSend).toHaveBeenCalledWith({
     kaisaiNen: "2026",
     kaisaiTsukihi: "0528",
     keibajoCode: "30",

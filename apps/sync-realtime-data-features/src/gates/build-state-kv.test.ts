@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import {
   getBuildStateFromKv,
   isBuildStateFresh,
+  isPast14BuildStateFresh,
   putBuildStateToKv,
   shouldSkipBuild,
 } from "./build-state-kv";
@@ -130,5 +131,95 @@ it("isBuildStateFresh returns false when older than freshness window", () => {
       60_000,
       new Date("2026-05-29T00:02:00Z"),
     ),
+  ).toBe(false);
+});
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+it("isPast14BuildStateFresh returns false when state is null", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: null,
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns false when rowCount is 0", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-29T01:00:00.000Z", rankedRowCount: 0, rowCount: 0 },
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns false when lastBuiltAt is unparseable", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "not-a-date", rankedRowCount: 14, rowCount: 14 },
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns false when the build was recorded before the race day ended (the past14 starvation bug)", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-28T08:41:00.000Z", rankedRowCount: 14, rowCount: 14 },
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns false when rankedRowCount is 0 despite being built after race day end", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-29T01:00:00.000Z", rankedRowCount: 0, rowCount: 14 },
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns false for a legacy record missing rankedRowCount", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-29T01:00:00.000Z", rowCount: 14 },
+    }),
+  ).toBe(false);
+});
+
+it("isPast14BuildStateFresh returns true when built after race day end with ranked rows and within the cap", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-05-29T03:00:00Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-29T01:00:00.000Z", rankedRowCount: 14, rowCount: 14 },
+    }),
+  ).toBe(true);
+});
+
+it("isPast14BuildStateFresh returns false when the outer freshnessMs cap has elapsed", () => {
+  expect(
+    isPast14BuildStateFresh({
+      freshnessMs: SEVEN_DAYS_MS,
+      now: new Date("2026-06-06T01:00:00.000Z"),
+      raceDateJst: "20260528",
+      state: { lastBuiltAt: "2026-05-29T01:00:00.000Z", rankedRowCount: 14, rowCount: 14 },
+    }),
   ).toBe(false);
 });
