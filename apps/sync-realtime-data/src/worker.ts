@@ -4036,12 +4036,15 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   // The fetch state below still records `commentAuthRequired: true` so the
   // planner re-queues the race.
   const stableComments = commentHtml && !commentAuthorized ? undefined : parsedStableComments;
-  // Suppress data_top replace when the login prompt was hit OR the data-top
-  // page itself failed its own authenticity check, so we never persist a
-  // fabricated teaser pick and never wipe a previously stored authenticated
-  // snapshot with one.
-  const dataTopHorsesForReplace =
-    loginPromptDetected || dataTopAuthRequired ? undefined : dataTopHorses;
+  // Suppress data_top replace only when the data-top page itself fails its
+  // own authenticity check (dataTopAuthRequired, backed by
+  // isPremiumDataTopHtmlAuthorized). That gate is authoritative for this page
+  // and strictly stronger than the shared loginPromptDetected check: the
+  // shared detector is known to misfire on upsell furniture present on the
+  // sibling work/comment pages even when the data-top page itself is fully
+  // authenticated, so it must not be used to suppress data-top persistence
+  // (it wrongly wiped valid, already-fetched data-top data in production).
+  const dataTopHorsesForReplace = dataTopAuthRequired ? undefined : dataTopHorses;
   await replacePremiumRaceData(env.REALTIME_DB, {
     dataTopHorses: dataTopHorsesForReplace,
     fetchedAt,

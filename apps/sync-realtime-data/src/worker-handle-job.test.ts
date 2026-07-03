@@ -1699,6 +1699,91 @@ it("handleJob fetch-premium-race-data suppresses the unauthenticated data-top te
   expect(parsedMessage.authRetryCount).toBe(1);
 });
 
+it("handleJob fetch-premium-race-data persists data-top horses when the login prompt only fires on the comment page", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    getPremiumRaceDataFetchState,
+    updatePremiumRaceDataFetchState,
+    replacePremiumRaceData,
+  } = await import("./storage");
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(getPremiumRaceDataFetchState).mockResolvedValueOnce(null);
+  vi.mocked(fetchPremiumHtml).mockImplementation(async (_config: unknown, url: unknown) => {
+    if (typeof url === "string" && url.includes("/d/")) {
+      return `
+        <div class="Icon_Account">user</div>
+        <div class="DataPickupHorseArea">
+          <dl>
+            <dt><span class="Umaban_Num">1</span></dt>
+            <dd>
+              <a class="data_top_horse_link">本物馬</a>
+              <dd class="PickupDataBox"><ul><li>本当の理由</li></ul></dd>
+            </dd>
+          </dl>
+        </div>
+      `;
+    }
+    if (typeof url === "string" && url.includes("/c/")) {
+      return "<html><body>プレミアムサービス 登録でご覧になれます</body></html>";
+    }
+    return "";
+  });
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  const updateCall = vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1];
+  expect(updateCall?.status).toBe("auth_required");
+  expect(typeof updateCall?.retryAfter).toBe("string");
+  const replaceCall = vi.mocked(replacePremiumRaceData).mock.calls.at(-1)?.[1];
+  expect(replaceCall?.dataTopHorses).toStrictEqual([
+    { horseName: "本物馬", horseNumber: "1", rank: 1, reasons: ["本当の理由"] },
+  ]);
+  const parsedMessage = JSON.parse(String(updateCall?.message ?? "{}"));
+  expect(parsedMessage.loginPromptDetected).toBe(true);
+  expect(parsedMessage.dataTopAuthorized).toBe(true);
+  expect(parsedMessage.dataTopPersisted).toBe(true);
+  expect(parsedMessage.authRetryCount).toBe(1);
+});
+
 it("handleJob fetch-premium-race-data persists data-top horses when the authenticated marker is present", async () => {
   const { handleJob } = await import("./worker");
   const {
