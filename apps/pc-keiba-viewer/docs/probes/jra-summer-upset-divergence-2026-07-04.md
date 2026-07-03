@@ -284,14 +284,239 @@ question, not a feature-engineering one) and (b) the model's already-known,
 now twice-confirmed structural inability to catch pace-driven closer upsets
 — not by any missing strictly-prior signal this profile could locate.
 
+## 2024 extension (out-of-sample replication)
+
+- **Date**: 2026-07-04 (same day, follow-up task)
+- **Author note**: this section is owned by the task-#15 agent; the original
+  author of the sections above has been shut down. Extends the profile with a
+  genuinely out-of-sample year (2024 was not part of the original 2025+2026
+  profile) — the point is to see which of the findings above survive contact
+  with a year the original analysis never looked at.
+
+### Method
+
+Extended `build_upset_data.py` (additive — original two exports untouched)
+with `export_2024_extension()`: a 3-year (2024+2025+2026) summer-venue parquet
+(`summer_2024_2026.parquet`, 27,271 rows), reusing the same strictly-prior
+`starters`/`starters_enriched`/`jockey_enriched` build. This export also
+left-joins `predicted_rank`/`predicted_score`/`predicted_top1_prob`/
+`predicted_top3_prob` from local PG's `race_finish_position_model_predictions`
+table for a single reference model, `iter14-jra-cb-pacestyle-course-v8` — the
+campaign's long-running harness baseline with continuous 2007-2026 coverage
+(see `project_iter18_reject_s1_2026_06_05` memory). **This is a single
+consistent snapshot model chosen for coverage, not a reconstruction of
+whatever model was actually live-serving on each historical date** (that
+changed several times across 2024-2026) — the ninkijun-band finding below is a
+descriptive "does a representative ranking model already flag these horses"
+check, not a serve-accuracy claim. Join match rate: 25,027/27,271 rows (91.8%).
+
+`profile_upsets.py` (Part 1 logic) was generalized to take
+`(input_parquet, years_filter, output_json)` as positional args (previously
+hardcoded to `summer_2025_2026.parquet`) so the identical profiling code runs
+against three slices: **2024-only** (n=844 races, 276 upset winners,
+`profile_report_2024.json`), **pooled 2024+2025+2026** (n=2,011 races, 692
+upset winners, `profile_report_pooled_3yr.json`), and the original
+2025+2026-only (`profile_report.json`, unchanged, n=1,167/431). A new addendum
+script, `probe_summer_vs_nonsummer_by_year.py`, reuses
+`probe_candidates.py`'s `partial_spearman()` verbatim to compute the
+summer-vs-non-summer `pr_mkt` gap **per year** (2023/2024/2025) instead of only
+pooled, so the "no summer elevation" verdict can be checked in 2024 alone.
+
+Top-line rates hold up: pooled 3yr upset-race rate 67.76% / upset-winner rate
+35.07% (vs the original 2025+2026-only 69.5%/36.9%) — 2024 alone runs slightly
+cooler (65.4%/32.7%) but the same ballpark, confirming these are not
+2025-2026-specific artifacts.
+
+### Replication verdict per finding
+
+**(a) E-grade (tokubetsu) hot-spot — REPLICATES AT 2/4 VENUES ROBUSTLY, THE
+OTHER 2 ARE WEAKER THAN ORIGINALLY ESTIMATED, ONE FLIPS SIGN IN 2024 ALONE.**
+This is the single most important correction from this extension — the
+original "at every one of the 4 venues, +5.5 to +12.1pp" claim does not fully
+survive out-of-sample testing:
+
+| Venue     | 2025+2026 only (original) | 2024 only             | Pooled 2024-2026  |
+| --------- | ------------------------- | --------------------- | ----------------- |
+| Hakodate  | +12.1 (n=53/169)          | **+13.22** (n=33/107) | +12.58 (n=86/276) |
+| Sapporo   | +5.5 (n=40/122)           | +7.87 (n=41/122)      | +6.70 (n=81/244)  |
+| Fukushima | +9.8 (n=79/260)           | **+1.49** (n=54/181)  | +6.35 (n=133/441) |
+| Kokura    | +8.6 (n=102/311)          | **-4.50** (n=69/215)  | +3.22 (n=171/526) |
+
+(Δ = E-grade upset-winner-rate% minus ordinary-condition-race upset-winner-rate%,
+n = E-grade races / ordinary races.) Hakodate and Sapporo replicate cleanly and
+consistently across all three cuts (Hakodate is if anything the _strongest and
+most stable_ of the four, not just "one of four equal effects"). Fukushima's
+effect shrinks to near-zero in 2024 alone (+1.49, statistically indistinguishable
+from noise on n=54) and Kokura's **reverses sign** in 2024 alone (-4.50) before
+partially recovering once pooled with more years (+3.22, less than half its
+original 2025+2026-only estimate). **Verdict: demote Fukushima and especially
+Kokura's E-grade effect from "confirmed hot-spot" to "directionally weak,
+plausibly small-sample noise in the original 2025+2026 window"; keep Hakodate
+and Sapporo as the confirmed, stable E-grade hot-spots.** The original
+recommendation (do not propose a per-venue E-grade routing split — this
+campaign's venue-routing REJECT history stands) is unaffected either way, but
+anyone reusing "E-grade races run hot at all 4 summer venues" as a fact should
+now say "robustly at 2 of 4 (Hakodate, Sapporo); weak/unstable at the other 2."
+
+**(b) Closer (sashi+oikomi) overrepresentation — REPLICATES IN DIRECTION AT
+3/4 VENUES IN 2024 ALONE; HAKODATE FAILS SINGLE-YEAR REPLICATION BUT RECOVERS
+WHEN POOLED.** Pooled-across-venues 2024: upset winners 26.09% closers vs
+control 19.72% (Δ+6.37pp) — same direction as the original +11.9pp
+(29.6% vs 17.7%), roughly half the magnitude in this one year. Per venue
+(sashi-only, matching the original table's units):
+
+| Venue     | 2025+2026 only (original) | 2024 only                 | Pooled 2024-2026      |
+| --------- | ------------------------- | ------------------------- | --------------------- |
+| Sapporo   | +12.1 (22.9 vs 10.8)      | +9.88 (20.7 vs 10.8)      | +10.88 (21.7 vs 10.8) |
+| Fukushima | +4.7 (24.0 vs 19.3)       | **+10.10** (27.7 vs 17.6) | +6.89 (25.5 vs 18.6)  |
+| Kokura    | +13.5 (29.2 vs 15.7)      | +2.00 (19.4 vs 17.4)      | +9.15 (25.6 vs 16.4)  |
+| Hakodate  | +4.7 (19.2 vs 14.5)       | **-3.36** (14.3 vs 17.6)  | +1.67 (17.5 vs 15.8)  |
+
+Sapporo, Fukushima, and Kokura all replicate the positive direction in 2024
+alone (Fukushima notably stronger this year). Hakodate is the one venue that
+flips negative in the 2024-only cut, though the 3-year pool restores a small
+positive (+1.67, well below its already-modest original +4.7) — Hakodate's
+closer-overrepresentation looks like the weakest and least stable of the four,
+not a uniformly-confirmed pattern. **Verdict: the pooled cross-venue
+closer-overrepresentation pattern replicates (all 4 venues positive once 3
+years are pooled, matching the original "all 4 venues" claim), but Hakodate
+specifically is fragile enough that it should not be cited as an independently
+confirmed per-venue fact.** This does not change the existing recommendation —
+the mechanism was already independently WF-tested and rejected the same day
+(`straight_closer_wf.py`) — this section only checks the _descriptive_ claim's
+robustness, and the **DO-NOT-RETEST** status is unaffected.
+
+**(c) Layoff / prior-finish "no summer-specific elevation" — REPLICATES
+CLEANLY, EVEN MORE CONVINCINGLY THAN THE ORIGINAL POOLED-ONLY CHECK.** The
+new per-year `probe_summer_vs_nonsummer_by_year.py` addendum (summer `pr_mkt`
+minus non-summer `pr_mkt`, same partial-Spearman methodology) shows:
+
+| Candidate               | 2023 (summer − non-summer) | 2024 (summer − non-summer) | 2025 (summer − non-summer) |
+| ----------------------- | -------------------------- | -------------------------- | -------------------------- |
+| `layoff_days`           | +0.0109                    | -0.0094                    | +0.0007                    |
+| `prior_finish_position` | -0.0062                    | **-0.0283**                | -0.0166                    |
+
+`prior_finish_position` is consistently _negative_ (summer shows **less**
+odds-free signal than the rest of JRA) in all three years including 2024 —
+the strongest, cleanest replication in this whole extension. `layoff_days`
+bounces around zero in all three years (no consistent elevation either way).
+**Verdict: fully replicates — REJECT for a summer-specific slot stands, now on
+a 3-year-consistent per-year basis rather than a single pooled 2023-2025
+number.** 2024-only profile numbers corroborate directly: prior_finish_position
+upset-winner median 7 vs control median 3 (identical to the original 2025+2026
+median 7 vs 3) — this specific gap is remarkably stable across all three years.
+
+**(d) Jockey-local-specialist / late-meet-turf-wear — BOTH REMAIN REFUTED IN
+2024 ALONE.** Jockey venue-minus-career win-rate gap, 2024-only: upset winners
++1.14pp vs control +1.42pp (original pooled 2025+2026: +1.40 vs +1.59) —
+same near-identical-gap conclusion, refutation replicates cleanly. Meeting-day
+late(6+)-share direction stays inconsistent across venues in 2024 alone (no
+venue-general "later in the meet → hotter" pattern), matching the original
+"not supported" call. Venue-switch / first-time-at-venue also replicates in
+direction: 2024 upset winners are first-timers 47.46% of the time vs 52.46%
+control (original: 50.96% vs 56.52%) — same "upset winners are _less_ likely
+to be first-timers" direction, both years.
+
+### New angle 1 — ninkijun-band structure vs. the model's own place-tier ranking
+
+Banding upset winners' own `tansho_ninkijun` into 4-6 / 7-9 / 10+ and joining
+the reference model's `predicted_rank` for that same horse (pooled 3-year,
+n=651 matched upset winners) gives a clean, monotonic answer to "does the
+model's place2/3-tier ranking already catch mid-band upsets better than true
+longshots":
+
+| Ninkijun band | n   | Mean predicted_rank | Median predicted_rank | % in model's own top-3 | % in model's own top-5 |
+| ------------- | --- | ------------------- | --------------------- | ---------------------- | ---------------------- |
+| 4-6           | 378 | 3.08                | 3.0                   | **64.81%**             | 89.68%                 |
+| 7-9           | 168 | 4.61                | 5.0                   | 38.10%                 | 68.45%                 |
+| 10+           | 105 | 6.48                | 6.0                   | 20.00%                 | 43.81%                 |
+
+**Yes** — the model already has almost two-thirds of mid-band (4-6) upset
+winners inside its own top-3 predicted order despite not picking them to win,
+and 90% inside its own top-5. This degrades steadily and monotonically through
+the bands: only 20% of genuine longshot (10+) upset winners are in the model's
+own top-3, though a meaningful 44% are still inside its top-5 — the model is
+not blind to true longshots, it just doesn't have enough separation to rank
+them above the favorite. This is consistent with (and quantifies) this
+campaign's repeated finding that the model's **place2/place3 output already
+captures most of the exploitable signal** for the moderate-upset case; the
+真の longshot band (10+) is where the market and the model both run out of
+useful information, not a case of the model missing something a feature could
+fix. Per-venue×dist_band breakdown (smaller n per cell, same direction
+throughout) is in `band_and_cells_report.json`.
+
+### New angle 2 — stable "hardest cells" table (venue × class × dist, n≥50, 3-year pool)
+
+| Venue × Class × Dist                | n races | Upset-winner rate |
+| ----------------------------------- | ------- | ----------------- |
+| Kokura × E(tokubetsu) × sprint      | 58      | **50.00%**        |
+| Fukushima × ordinary × intermediate | 102     | 40.40%            |
+| Kokura × ordinary × sprint          | 189     | 39.46%            |
+| Kokura × ordinary × mile            | 114     | 38.39%            |
+| Fukushima × E(tokubetsu) × sprint   | 55      | 37.04%            |
+| Fukushima × ordinary × mile         | 113     | 36.36%            |
+| Fukushima × ordinary × long         | 59      | 36.21%            |
+| Hakodate × ordinary × mile          | 75      | 36.11%            |
+| Sapporo × ordinary × sprint         | 63      | 33.33%            |
+| Kokura × ordinary × intermediate    | 142     | 31.21%            |
+
+(Full 16-cell table with n≥50 in `band_and_cells_report.json`.) Notable:
+**only 2 of the 16 stable (n≥50) cells are E-grade** — most E-grade × dist
+combinations don't reach n=50 even pooling 3 years, which is itself informative
+given finding (a) above: the E-grade hot-spot is real at the venue level
+(larger n, aggregating across distances) but too sparse to support a stable
+per-distance E-grade claim beyond Kokura-sprint and Fukushima-sprint. Kokura ×
+E × sprint at 50.0% (n=58) is the single hardest, best-powered cell in the
+whole 3-year pool — the most concrete, reusable "hardest cell" fact from this
+campaign to date, ahead of the venue-level E-grade or dist-band findings alone.
+
+### Ranked handoff (2024-extension addendum)
+
+1. **Correct the "E-grade hot-spot at every venue" claim** wherever it's cited
+   downstream (e.g. calibration/confidence-shrinkage work referenced in the
+   original Part 2 handoff): it robustly replicates at Hakodate and Sapporo;
+   Fukushima and Kokura are directionally consistent pooled but not confirmed
+   as stable single-year effects (Kokura flips sign in 2024 alone).
+2. **No new WF-testable feature surfaces from this extension either** — the
+   new angles (ninkijun-band × predicted_rank, hardest-cells table) are both
+   segment/calibration-level findings (like the original E-grade finding),
+   not per-horse ranking features, for the same reason as before
+   (`grade_code`/ninkijun-derived aggregates are race-level or
+   target-adjacent, not strictly-prior per-horse signal). Consistent with
+   `project_score_additive_draw_speed_reject_2026_06_20`'s conclusion that
+   coarse rank-band signals don't beat the base model's own #1 pick.
+3. **The ninkijun-band × predicted_rank table is the most actionable new fact**:
+   if a calibration/confidence-shrinkage pass is ever built (flagged, not
+   proposed, per the original doc's own caveat about venue-routing REJECT
+   history), it should widen uncertainty specifically for the 7-9 and 10+
+   ninkijun bands, where the model's own top-3/top-5 catch rate is
+   demonstrably much lower — not treat all "upset winners" as one undifferentiated
+   miss category.
+4. **Kokura × E × sprint (n=58, 50.0% upset-winner rate) is the single
+   hardest, best-powered cell found in this whole campaign** — the strongest
+   candidate reference point for any future per-cell calibration or
+   confidence work, ahead of any venue-only or class-only cut.
+5. No candidate here newly qualifies for a WF slot — same bottom line as the
+   original doc, now confirmed against a genuinely out-of-sample year rather
+   than resting on the 2025+2026 window alone.
+
 ## Artifacts
 
 - Data build: `tmp/candidate-jra-summer-upset/build_upset_data.py` (local PG,
-  read-only, `starters`/`starters_enriched`/`jockey_enriched` → parquet)
-- Profile: `tmp/candidate-jra-summer-upset/profile_upsets.py` →
-  `profile_report.json`
+  read-only, `starters`/`starters_enriched`/`jockey_enriched` → parquet;
+  `export_2024_extension()` added 2026-07-04 for the 3-year pooled export +
+  reference-model `predicted_rank` join)
+- Profile: `tmp/candidate-jra-summer-upset/profile_upsets.py` (generalized
+  2026-07-04 to take input/year-filter/output args) → `profile_report.json`
+  (original, 2025+2026), `profile_report_2024.json` (2024-only),
+  `profile_report_pooled_3yr.json` (2024+2025+2026)
 - Probe: `tmp/candidate-jra-summer-upset/probe_candidates.py` →
-  `probe_report.json`
+  `probe_report.json`; addendum
+  `tmp/candidate-jra-summer-upset/probe_summer_vs_nonsummer_by_year.py` →
+  `probe_summer_vs_nonsummer_by_year.json` (per-year summer-vs-non-summer split)
+- New angles: `tmp/candidate-jra-summer-upset/band_and_cells.py` →
+  `band_and_cells_report.json` (ninkijun-band × predicted_rank,
+  hardest-cells table)
 - Related: `jra-summer-venue-cell-focus-2026-07-04.md` (parent diagnosis,
   cell accuracy + straight×closer WF), `jra-masked-lever-clean-retest-2026-07-04.md`
   (same-day draw-affinity/track-bias retest, corroborating REJECT)
