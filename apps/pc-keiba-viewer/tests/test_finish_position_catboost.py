@@ -160,6 +160,27 @@ def test_resolve_feature_columns_no_cat_excludes_categorical_names():
     assert "feature_a" in cols
 
 
+def test_resolve_feature_columns_excludes_within_race_leak_columns():
+    # The predicted race's OWN corner-passing positions + running-style class are
+    # POST-RACE (NULL at serve). They must never be used as features.
+    df = pl.DataFrame({
+        "race_id": ["r1", "r1"],
+        "finish_position": [1.0, 2.0],
+        "finish_norm": [1.0, 0.5],
+        "target_corner_1_norm": [0.1, 0.2],
+        "target_corner_3_norm": [0.3, 0.4],
+        "target_corner_4_norm": [0.5, 0.6],
+        "target_running_style_class": [0.0, 1.0],
+        "feature_a": [0.7, 0.8],
+    })
+    cols = subject.resolve_feature_columns(df, use_cat_features=True)
+    assert "target_corner_1_norm" not in cols
+    assert "target_corner_3_norm" not in cols
+    assert "target_corner_4_norm" not in cols
+    assert "target_running_style_class" not in cols
+    assert "feature_a" in cols
+
+
 # ---------------------------------------------------------------------------
 # resolve_cat_feature_indices
 # ---------------------------------------------------------------------------
@@ -719,6 +740,19 @@ def test_resolve_projection_columns_omits_runtime_column_absent_from_schema():
     schema_names = ["race_id", "race_date", "finish_position", "feat_a"]
     projection = subject.resolve_projection_columns(schema_names)
     assert "sample_weight" not in projection
+
+
+def test_resolve_projection_columns_excludes_within_race_leak_columns():
+    schema_names = [
+        "race_id", "finish_position", "target_corner_1_norm", "target_corner_3_norm",
+        "target_corner_4_norm", "target_running_style_class", "feat_a",
+    ]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert "target_corner_1_norm" not in projection
+    assert "target_corner_3_norm" not in projection
+    assert "target_corner_4_norm" not in projection
+    assert "target_running_style_class" not in projection
+    assert "feat_a" in projection
 
 
 # ---------------------------------------------------------------------------

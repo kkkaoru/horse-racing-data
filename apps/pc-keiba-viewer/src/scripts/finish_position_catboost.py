@@ -34,7 +34,11 @@ META_COLUMNS = (
     "race_bango", "ketto_toroku_bango", "bamei",
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
-LABEL_COLUMNS = ("finish_position", "finish_norm")
+LABEL_COLUMNS = (
+    "finish_position", "finish_norm",
+    "target_corner_1_norm", "target_corner_3_norm",
+    "target_corner_4_norm", "target_running_style_class",
+)
 CATEGORICAL_FEATURE_NAMES = ("keibajo_code", "track_code", "grade_code", "umaban")
 REQUIRED_RUNTIME_COLUMNS = (
     "race_id", "race_date", "ketto_toroku_bango",
