@@ -51,7 +51,23 @@ PGPORT="${PGPORT:-5432}"
 POSTGRES_USER="${POSTGRES_USER:-horse_racing}"
 POSTGRES_DB="${POSTGRES_DB:-horse_racing}"
 
-# --- 9. Wait for healthy (pg_isready via container exec) ---
+# --- 5. Container state helpers ---
+container_is_running() {
+  container list --quiet 2>/dev/null | grep -Fxq "$CONTAINER_NAME"
+}
+
+container_exists() {
+  container list --all --quiet 2>/dev/null | grep -Fxq "$CONTAINER_NAME"
+}
+
+show_container_diagnostics() {
+  echo "--- container logs: $CONTAINER_NAME ---" >&2
+  container logs -n 80 "$CONTAINER_NAME" >&2 2>/dev/null || true
+  echo "--- container inspect: $CONTAINER_NAME ---" >&2
+  container inspect "$CONTAINER_NAME" >&2 2>/dev/null || true
+}
+
+# --- 6. Wait for healthy (pg_isready via container exec) ---
 wait_for_healthy() {
   local retries="${POSTGRES_HEALTH_RETRIES:-24}"
   local attempt=0
@@ -67,66 +83,91 @@ wait_for_healthy() {
   done
 
   echo "postgres did not become healthy within $((retries * 5))s." >&2
-  container inspect "$CONTAINER_NAME" >&2 2>/dev/null || true
-  exit 1
+  show_container_diagnostics
+  return 1
+}
+
+delete_existing_container() {
+  if ! container_exists; then
+    return 0
+  fi
+
+  echo "Deleting existing container $CONTAINER_NAME..." >&2
+  container delete --force "$CONTAINER_NAME" >/dev/null 2>&1 || true
+}
+
+start_existing_container_if_possible() {
+  if container_is_running; then
+    echo "$CONTAINER_NAME is already running."
+    wait_for_healthy
+    return $?
+  fi
+
+  if ! container_exists; then
+    return 1
+  fi
+
+  echo "Starting existing container $CONTAINER_NAME..."
+  if ! container start "$CONTAINER_NAME"; then
+    echo "Existing container $CONTAINER_NAME could not be started." >&2
+    show_container_diagnostics
+    return 1
+  fi
+
+  wait_for_healthy
+}
+
+run_new_container() {
+  # --- 7. Pull image ---
+  echo "Pulling image $IMAGE..."
+  container image pull "$IMAGE"
+
+  # --- 8. Run container ---
+  echo "Starting $CONTAINER_NAME..."
+  container run -d \
+    --name "$CONTAINER_NAME" \
+    --user 999:999 \
+    -v "$APP_DIR/data/postgres:/var/lib/postgresql/data" \
+    -v "$APP_DIR/initdb:/docker-entrypoint-initdb.d" \
+    -p "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${PGPORT}" \
+    -m 20G \
+    -c 12 \
+    --env-file "$APP_DIR/.env" \
+    -e "PGDATA=/var/lib/postgresql/data" \
+    "$IMAGE" \
+    postgres \
+      -c wal_level=logical \
+      -c max_wal_senders=10 \
+      -c max_replication_slots=10 \
+      -c shared_buffers=6GB \
+      -c effective_cache_size=18GB \
+      -c work_mem=64MB \
+      -c maintenance_work_mem=1GB \
+      -c wal_buffers=16MB \
+      -c random_page_cost=1.1 \
+      -c effective_io_concurrency=256 \
+      -c max_wal_size=4GB \
+      -c min_wal_size=1GB \
+      -c checkpoint_timeout=15min \
+      -c checkpoint_completion_target=0.9 \
+      -c wal_compression=lz4 \
+      -c max_worker_processes=16 \
+      -c max_parallel_workers=12 \
+      -c max_parallel_workers_per_gather=8 \
+      -c max_parallel_maintenance_workers=4 \
+      -c jit=on \
+      -c default_statistics_target=200
+
+  wait_for_healthy
 }
 
 ensure_container_system
 
-# --- 5/6. Check if container is already running or exists ---
-if container list 2>/dev/null | grep -q "$CONTAINER_NAME"; then
-  echo "$CONTAINER_NAME is already running."
-  wait_for_healthy
+if start_existing_container_if_possible; then
   container list
   exit 0
 fi
 
-# Remove stopped container if it exists
-if container list --all 2>/dev/null | grep -q "$CONTAINER_NAME"; then
-  echo "Removing stopped container $CONTAINER_NAME..." >&2
-  container delete "$CONTAINER_NAME" >/dev/null 2>&1 || true
-fi
-
-# --- 7. Pull image ---
-echo "Pulling image $IMAGE..."
-container image pull "$IMAGE"
-
-# --- 8. Run container ---
-echo "Starting $CONTAINER_NAME..."
-container run -d \
-  --name "$CONTAINER_NAME" \
-  --user 999:999 \
-  -v "$APP_DIR/data/postgres:/var/lib/postgresql/data" \
-  -v "$APP_DIR/initdb:/docker-entrypoint-initdb.d" \
-  -p "${POSTGRES_HOST_BIND}:${POSTGRES_PORT}:${PGPORT}" \
-  -m 20G \
-  -c 12 \
-  --env-file "$APP_DIR/.env" \
-  -e "PGDATA=/var/lib/postgresql/data" \
-  "$IMAGE" \
-  postgres \
-    -c wal_level=logical \
-    -c max_wal_senders=10 \
-    -c max_replication_slots=10 \
-    -c shared_buffers=6GB \
-    -c effective_cache_size=18GB \
-    -c work_mem=64MB \
-    -c maintenance_work_mem=1GB \
-    -c wal_buffers=16MB \
-    -c random_page_cost=1.1 \
-    -c effective_io_concurrency=256 \
-    -c max_wal_size=4GB \
-    -c min_wal_size=1GB \
-    -c checkpoint_timeout=15min \
-    -c checkpoint_completion_target=0.9 \
-    -c wal_compression=lz4 \
-    -c max_worker_processes=16 \
-    -c max_parallel_workers=12 \
-    -c max_parallel_workers_per_gather=8 \
-    -c max_parallel_maintenance_workers=4 \
-    -c jit=on \
-    -c default_statistics_target=200
-
-# --- 9/10. Wait for healthy and show status ---
-wait_for_healthy
+delete_existing_container
+run_new_container
 container list
