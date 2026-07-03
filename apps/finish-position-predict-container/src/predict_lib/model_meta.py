@@ -18,6 +18,18 @@ E-top2 (iter22-jra-etop2, STAGED 2026-06-18):
   top1 LB95 +0.58pp, place2 LB95 +0.06pp, place3 +0.00pp — ADOPT.
   Flip is gated on orchestrator verification of place2 + active_models UPDATE.
   Config flag: JRA_ETOP2_ENABLED = True activates dual-model load at startup.
+
+JRA leak-free clean retrain (jra-cb-v9-sim-2013-clean, 2026-07-04):
+  jra-cb-v9-sim-2013 was found to carry 4 WITHIN-RACE LEAK columns
+  (target_corner_1_norm, target_corner_3_norm, target_corner_4_norm,
+  target_running_style_class — the horse's OWN in-race outcome for the race
+  being predicted, NULL at genuine pre-race serve). The label-column fix lives
+  in finish_position_catboost.py / xgboost.py (LABEL_COLUMNS). This clean
+  retrain (250 features, same 2013-2025 full-train window, 0 leak cols) is
+  now the production JRA model. Walk-forward pooled: top1 +0.724
+  [LB95 +0.164, all 3 folds positive], place2 +0.135, top3_box +0.309 -> ADOPT.
+  Rollback: flip model_versions.jra back to "jra-cb-v9-sim-2013" (263) and
+  feature_counts.jra back to 263; re-point finish_position_active_models.
 """
 
 from __future__ import annotations

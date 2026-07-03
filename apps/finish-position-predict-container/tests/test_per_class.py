@@ -14,8 +14,9 @@ Phase B-2A added ensemble routing for JRA (iter 25 / iter 26 per-class
 ensembles for 005 / 010 / 016 / 703 / other). iter 19 (2026-06-13) drops all
 JRA per-class entries: ``PER_CLASS_MODEL_VERSIONS`` no longer contains any
 ``("jra", ...)`` key. All JRA codes now fall back to the category-global base
-model ``jra-cb-v9-sim-2013`` (263 features with sim_*, identical to iter19 except
-train start 20130101).
+model ``jra-cb-v9-sim-2013-clean`` (250 features with sim_*, leak-free retrain
+of jra-cb-v9-sim-2013 with the 4 within-race leak columns excluded — see
+model_meta.py module docstring; train start 20130101).
 
 Phase F (2026-06-05) added historical NAR per-class routing: six NAR
 sub-classes (NEW / MUKATSU / C / A / OP / other) were activated with iter 30
@@ -53,7 +54,7 @@ from predict_lib.per_class import (
     resolve_per_class_resolution,
 )
 
-JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013"
+JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013-clean"
 NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
 BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v9-sim-2011"
 JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"

@@ -1,6 +1,6 @@
-"""Tests for the container-baked model metadata mapping (v9 sim_* deploy:
-JRA=jra-cb-v9-sim-2013, NAR=iter12-nar-xgb-hpo-v8 (sim_* REJECT),
-Ban-ei=banei-cb-v9-sim-2011)."""
+"""Tests for the container-baked model metadata mapping (leak-free JRA deploy:
+JRA=jra-cb-v9-sim-2013-clean (250 feat, 4 within-race leak cols excluded),
+NAR=iter12-nar-xgb-hpo-v8 (sim_* REJECT), Ban-ei=banei-cb-v9-sim-2011)."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ NAR_CB_RESIDUAL_C: str = "iter30-nar-cb-residual-C-v8"
 
 
 def test_model_version_jra() -> None:
-    assert model_version_for("jra") == "jra-cb-v9-sim-2013"
+    assert model_version_for("jra") == "jra-cb-v9-sim-2013-clean"
 
 
 def test_model_version_nar() -> None:
@@ -75,7 +75,7 @@ def test_architecture_banei_catboost() -> None:
 
 
 def test_feature_count_jra() -> None:
-    assert feature_count_for("jra") == 263
+    assert feature_count_for("jra") == 250
 
 
 def test_feature_count_nar() -> None:
@@ -88,7 +88,7 @@ def test_feature_count_banei() -> None:
 
 def test_build_r2_object_key_model() -> None:
     assert build_r2_object_key("jra", "model.json") == (
-        "finish-position/jra/jra-cb-v9-sim-2013/model.json"
+        "finish-position/jra/jra-cb-v9-sim-2013-clean/model.json"
     )
 
 
