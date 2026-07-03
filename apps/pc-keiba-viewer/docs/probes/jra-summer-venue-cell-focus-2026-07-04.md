@@ -159,13 +159,129 @@ SUMMER-RESTRICTED (primary target, + distance-band breakdown within summer).
 Script: `tmp/candidate-summer-pace-hypo/straight_closer_wf.py`. Report:
 `tmp/candidate-summer-pace-hypo/straight_closer_report.json`.
 
-### Result: PLACEHOLDER — training in progress at time of writing, see below.
+### Result: REJECT (both GLOBAL and SUMMER-RESTRICTED)
 
 <!-- RESULT_BLOCK -->
+
+WF completed: armC (252 feat) retrained 3 folds (2023/2024/2025) × 3 seeds
+(offsets 42/142/242), armB baseline predictions reused unmodified. Paired
+race-level bootstrap (2000 iter, seed 42) vs armB on the same held-out rows.
+Full data: `tmp/candidate-summer-pace-hypo/straight_closer_report.json`,
+`tmp/candidate-summer-pace-hypo/venue_breakdown.json` (per-venue follow-up,
+predict-only reuse of the already-trained armC models, no retraining).
+
+**GLOBAL** (all JRA venues pooled, n=10,365 races, 3-seed avg vs armB):
+
+| Metric   | Δ (pp) | LB95 avg | LB95 min |
+| -------- | ------ | -------- | -------- |
+| top1     | +0.193 | -0.119   | -0.251   |
+| place2   | -0.010 | -0.380   | -0.502   |
+| place3   | +0.016 | -0.379   | -0.540   |
+| place4   | -0.093 | -0.450   | -0.531   |
+| place5   | -0.077 | -0.405   | -0.521   |
+| place6   | +0.351 | +0.010   | -0.029   |
+| top3_box | +0.032 | -0.135   | -0.270   |
+
+No primary metric (top1/place2/place3/top3_box) clears LB95>0 globally
+(expected — this is a summer-restricted hypothesis). Two non-primary metrics
+(place4 -0.093pp, place5 -0.077pp) fall below the -0.05pp no-regression sanity
+threshold — a mild negative drift, though confined to secondary placings, not
+the primary accept-gate metrics.
+
+**SUMMER-RESTRICTED** (venues 01/02/03/10 pooled, n=2,448 races, 3-seed avg vs
+armB — the target population for this hypothesis):
+
+| Metric   | Δ (pp) | LB95 avg | LB95 min | Per-seed sign (42/142/242)   |
+| -------- | ------ | -------- | -------- | ---------------------------- |
+| top1     | +0.368 | -0.272   | -0.531   | +/+/+ (stable)               |
+| place2   | -0.191 | -0.994   | -1.266   | -/+/- (unstable, net neg)    |
+| place3   | +0.231 | -0.545   | -0.899   | +/+/- (unstable at seed 242) |
+| place4   | -0.150 | -0.885   | -1.144   | +/-/-                        |
+| place5   | -0.354 | -1.103   | -1.225   | -/-/- (stable negative)      |
+| place6   | +0.654 | -0.054   | -0.327   | +/+/+ (stable, LB95 near 0)  |
+| top3_box | +0.123 | -0.245   | -0.368   | +/+/+ (stable)               |
+
+Gate for summer-conditional adoption (primary delta ≥ +0.08pp AND LB95>0,
+multi-seed stable sign, plus global no-regression): **not met by any primary
+metric.** top1 (+0.368pp) and place3 (+0.231pp) are directionally positive and
+clear the +0.08pp delta bar, but both have LB95 firmly negative (-0.27 to
+-0.90pp), and place3's per-seed sign flips negative at seed 242. place2 is net
+negative. The point estimates are consistent with the physical hypothesis
+(front-runners favored on short straights) but n=2,448 races is too small for
+the paired bootstrap to distinguish this from noise.
+
+**SUMMER-RESTRICTED by distance band** (top1/place3/top3_box Δpp, 3-seed avg):
+
+| Band         | n   | top1 (LB95 avg) | place3 (LB95 avg) | top3_box (LB95 avg) |
+| ------------ | --- | --------------- | ----------------- | ------------------- |
+| sprint       | 305 | -0.437 (-2.514) | -0.437 (-2.514)   | 0.000 (0.000)       |
+| mile         | 631 | +0.740 (-0.423) | -0.158 (-1.532)   | 0.000 (-0.475)      |
+| intermediate | 950 | +0.526 (-0.632) | +0.632 (-0.668)   | +0.351 (-0.351)     |
+| long         | 295 | +0.113 (-1.469) | +1.243 (-0.904)   | +0.791 (-0.226)     |
+| extended     | 267 | +0.125 (-1.373) | -0.624 (-3.371)   | -0.999 (-2.372)     |
+
+`intermediate` (950 races) is the only band with all-positive direction across
+top1/place2/place3/top3_box simultaneously, but still no LB95>0. `sprint` and
+`extended` are net negative — the opposite of what the short-straight/closer
+hypothesis would predict if it held uniformly, suggesting no clean
+distance-conditional sub-signal either.
+
+**SUMMER-RESTRICTED by individual venue** (top1/place2/place3/top3_box Δpp,
+3-seed avg; follow-up predict-only run, no retraining):
+
+| Venue     | n   | top1   | place2 | place3 | top3_box |
+| --------- | --- | ------ | ------ | ------ | -------- |
+| Sapporo   | 504 | +0.794 | -0.728 | +1.190 | +0.728   |
+| Hakodate  | 432 | +0.231 | +0.617 | +1.389 | +0.540   |
+| Fukushima | 720 | +0.463 | -0.787 | -1.019 | -0.463   |
+| Kokura    | 792 | +0.084 | +0.253 | +0.126 | +0.042   |
+
+Hakodate is the only venue with all 4 primary metrics simultaneously positive
+(consistent with it already being flagged in Part 1 as the "consistently
+strong" summer venue), Sapporo is mixed (place2 negative), Kokura is
+essentially flat/no-effect, and Fukushima is net negative across 3 of 4
+primaries — the opposite direction from the hypothesis. None of the 4 venues
+individually reach LB95>0 on any primary metric (per-venue n=432-792 is even
+smaller than the pooled summer slice).
 
 ## Overall conclusion
 
 <!-- CONCLUSION_BLOCK -->
+
+**Verdict: REJECT. `closer_x_straight` / `front_x_straight` are DO-NOT-DEPLOY
+— do not fold into a clean retrain of the production JRA model.**
+
+Neither the GLOBAL sanity check nor the SUMMER-RESTRICTED target population
+clears the accept gate. Point estimates lean the direction the physical
+hypothesis predicts (short straights favor front-runners: summer-pooled top1
++0.368pp, place3 +0.231pp, all 3 seeds positive-signed for top1), but every
+primary metric's 95% lower bound stays negative (top1 LB95 avg -0.272pp,
+place3 -0.545pp), and place2 is net negative (-0.191pp) with an unstable
+per-seed sign. GLOBAL also shows a mild negative drift on place4/place5
+(-0.09/-0.08pp, below the -0.05pp no-regression sanity threshold), so this
+isn't even a clean "no-op elsewhere" candidate.
+
+The distance-band and per-venue cuts don't rescue it either: `intermediate`
+distance (950 races) and Hakodate (432 races) are the only sub-slices with
+all-positive primary-metric direction, but neither reaches LB95>0, and
+Fukushima is net negative across 3 of 4 primaries — directly contradicting
+the hypothesis at one of the four target venues. This is the same failure
+mode as the other venue/cell-specific candidate levers already REJECTed in
+this campaign ([[project_venue_cell_round2_2026_06_20]],
+[[project_cell_campaign_2026_07_02]]): the underlying mechanism is physically
+plausible, but the summer-venue population (~2,000-2,450 races/2023-2025,
+~500-800 per individual venue) is too small for a depth-8 CatBoost fit +
+paired bootstrap to resolve a niche interaction from noise, and per-venue
+model routing/specialization has independently been shown structurally
+infeasible for JRA in the same campaign.
+
+**Recommendation**: do not deploy. Mark
+`closer_x_straight`/`front_x_straight` DO-NOT-RETEST at the current sample
+size and model architecture. If revisited, the only path with a chance of
+clearing the gate would be pooling many more years of summer-venue history
+(analogous to the NAR full-window finding vs JRA's 2013 cutoff) to shrink the
+bootstrap CI — not a different feature engineering variant on the same
+2023-2025 window.
 
 ## Artifacts
 
