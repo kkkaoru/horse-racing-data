@@ -133,47 +133,20 @@ def test_load_cell_router_real_config_new_format() -> None:
     assert condition.values == frozenset({"E"})
 
 
-def test_load_cell_router_real_config_routes_nar_mile_e_54_cell() -> None:
+def test_load_cell_router_real_config_has_no_nar_routing() -> None:
+    # The nar-xgb-cell-a957d8b4-v1 route was reverted 2026-07-03 (adopted on
+    # broken cell_training_evaluations data). NAR must carry no cell routing so
+    # every race falls through to the category default path.
     router = load_cell_router()
-    assert router.has_routing("nar") is True
-    routing = router.routing_for("nar")
-    variant_name = next(
-        name
-        for name, spec in routing.variants.items()
-        if spec.model_version == "nar-xgb-cell-a957d8b4-v1"
-    )
-    assert routing.variants[variant_name].feature_count == 10
-    assert routing.variants[variant_name].architecture == "xgboost"
-    assert routing.variants[variant_name].feature_set_hash == (
-        "a957d8b4d2bbc7c1ab2a0b320a308b063cf3e4f407240eacbfb21e797a282055"
-    )
-    assert routing.variants[variant_name].feature_names == (
-        "jockey_keibajo_win_rate",
-        "damsire_avg_finish_at_track",
-        "odds_score",
-        "recent_win_count_5",
-        "tansho_odds",
-        "tansho_ninkijun",
-        "kaisai_month",
-        "same_distance_win_rate_rank_in_race",
-        "jockey_recent_win_rate_diff_from_race_avg",
-        "sim_odds_rank_correlation",
-    )
-
-    matching_entry = {
+    assert router.has_routing("nar") is False
+    former_cell_entry = {
         "grade_code": "E",
         "keibajo_code": "54",
         "kyori": 1400,
         "kaisai_tsukihi": "0702",
         "track_code": "20",
     }
-    assert router.resolve_variant("nar", [matching_entry]) == variant_name
-    assert router.resolve_variant(
-        "nar", [{**matching_entry, "grade_code": "S"}]
-    ) == "sim"
-    assert router.resolve_variant(
-        "nar", [{**matching_entry, "kaisai_tsukihi": "0902"}]
-    ) == "sim"
+    assert router.resolve_variant("nar", [former_cell_entry]) == "sim"
 
 
 def test_load_cell_router_missing_file_returns_empty_router(tmp_path: Path) -> None:

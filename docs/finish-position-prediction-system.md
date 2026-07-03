@@ -149,7 +149,7 @@ NAR の `nar_subclass`（DuckDB base build が `kyoso_joken_meisho` から regex
 
 **Fallback 設計（現行）**: per-cell variant の artifact / feature contract は起動時に検証し、`feature_count`、`feature_names`、`feature_set_hash` が一致しない場合は fail-fast する。non-default cell に一致しない race は category default booster で scoring する。per-class artifact の欠落や registry は production fallback 判定に使わない。
 
-**Cell routing override**: NAR の `dirt / mile / E / summer / venue 54` は `cell_routing.json` の non-default variant `cell-a957d8b4-nar-xgb-cell-a957d8b4-v1-56559522` に routing され、`nar-xgb-cell-a957d8b4-v1`（XGBoost, 10 features）で直接 scoring する。この path では per-class ensemble を fallback 入力として使わず、Neon へ書き込む `model_version` も `nar-xgb-cell-a957d8b4-v1` になる。該当しない NAR race も per-class へ戻さず、category default / 明示的に有効な category-level path を使う。
+**Cell routing override（NAR）— 2026-07-03 REVERTED**: NAR の `dirt / mile / E / summer / venue 54` cell を `nar-xgb-cell-a957d8b4-v1`（XGBoost, 10 features）へ routing する rule は 2026-07-03 に撤去した。採用（2026-07-02, commit `ab423d9e`）は壊れた `cell_training_evaluations` の finish_position 行（全カテゴリで top1 が ~5-16x deflate、§6.4 参照）を根拠にしており、正しい in-memory 再評価では有意な勝ちが無い（robust 58 cell で ADOPT 0/58）。撤去後、NAR は cell routing を持たず、全 race が category default（`iter12-nar-xgb-hpo-v8` base ＋ iter40 transformer blend）で serve される。詳細と回帰の内訳は §6.3。
 
 **deploy 経緯と gate 記録**（記録は存在する）:
 
@@ -821,19 +821,31 @@ flowchart TB
 
 Ban-ei では `grade_code == "E"` のレースを `base` variant（v8 window2011）へルーティングし、それ以外は `default_variant = sim`（v9-sim）を用いる。
 
-NAR では `dirt / mile / E / summer / venue 54` の cell を `nar-xgb-cell-a957d8b4-v1` へルーティングする。これは `feature_set_hash = a957d8b4d2bbc7c1ab2a0b320a308b063cf3e4f407240eacbfb21e797a282055`、`architecture = xgboost`、`feature_count = 10` の focused-feature model で、artifact は `apps/finish-position-predict-container/models/finish-position/nar/nar-xgb-cell-a957d8b4-v1/` に置く。`model_meta.json` の NAR default（`iter12-nar-xgb-hpo-v8`, 192 features）は変更せず、該当 cell だけ `cell_routing.json` で切り替える。該当しない NAR race は per-class へ戻さず、category default / 明示的に有効な category-level path を使う。
+**NAR `dirt / mile / E / summer / venue 54` cell route — 2026-07-03 REVERTED**: この cell を `nar-xgb-cell-a957d8b4-v1`（`feature_set_hash = a957d8b4d2bbc7c1ab2a0b320a308b063cf3e4f407240eacbfb21e797a282055`、`architecture = xgboost`、`feature_count = 10`）へ routing する rule を 2026-07-03 に `cell_routing.json` から撤去した。撤去後、`cell_router.has_routing("nar")` は `False` になり、NAR は cell routing を持たず、全 race が category default（`model_meta.json` の `iter12-nar-xgb-hpo-v8` base ＋ iter40 transformer blend）で serve される。artifact directory（`apps/finish-position-predict-container/models/finish-position/nar/nar-xgb-cell-a957d8b4-v1/`）は履歴として残置し、routing のみ撤去した。
 
-この NAR cell は baseline `d79657af0d78c116bf4e8458646616ee8501d78a86db291be76874cedcd5223d` に対し、top1 +0.215983pp、place2 +0.215983pp、place3 +0.431965pp、place4 +1.079914pp、place5 +0.431965pp、place6 +1.295896pp、top3_box +0.215983pp と全 gated metrics が改善したため、§7.3 / §8.12 の finish-position LB95 例外で採用する。`cell_training_evaluations` には `model_version = nar-xgb-cell-a957d8b4-v1` / `architecture = xgboost` / `method = focus-features-xgb` を metric_payload と first-class column の両方で保持し、production routing 生成時は `--model-artifacts-root` で実 artifact の存在と feature count を検証する。
+- **撤去理由**: 採用（2026-07-02, commit `ab423d9e`）は `cell_training_evaluations` の finish_position 行を根拠にしていたが、これらの行が壊れていた（top1 が全カテゴリで ~5-16x deflate、§6.4 参照）。a957 採用時に比較した「stored top1 4.54% vs baseline 4.32%」は双方 garbage であり、実際の NAR cell top1 は 45-60% 域である。
+- **正しい再評価（fp-track artifacts, `apps/pc-keiba-viewer/tmp/candidate-fp-cells/`）**: WF 済 arm を `feat-nar-v9-similar` の 2023-2025 held-out で in-memory 再 score（`score_cells.py` / `check_a957_cell.py`）した結果、(a) 10-feature a957 model は 65-feat reduced baseline に対し robust 58 cell で ADOPT 0/58、overall top1 -0.123pp。(b) routing cell 自体（E/mile/summer/54）は 2023-2025 で held-out ~72 race しか無く 200-race gate 未達で、全 metric が 1.39pp（＝1 race）刻みの noise。(c) 同 venue の robust neighbor `dirt/mile/unknown/summer/54`（n=448）では a957 が place3 -0.45pp / place5 -1.34 / place6 -3.80 / top3_box -1.12pp と回帰した。有意な勝ちが無く neighbor で回帰するため撤去する。
+- **旧 deploy 履歴（superseded）**: 2026-07-02 に Cloudflare production path の NAR focused per-race run が Neon へ `model_version = nar-xgb-cell-a957d8b4-v1` を書き込んだ smoke record が存在するが、これは cell hit 時に `cell_routing.json` の variant が transformer blend / category default より先に採用されることの配線確認に過ぎず、採用の妥当性を示すものではない。現行では NAR に cell route は無い。
 
-**2026-07-03 JST 本番確認**: Cloudflare production path の NAR focused per-race run（`nar:20260703:54:10`）が layer10 完了後に Neon へ `model_version = nar-xgb-cell-a957d8b4-v1` を書き込んだ。確認行は `2026-07-04 54:10` が 11 頭（`prediction_generated_at = 2026-07-02T17:20:38Z`）、`2026-07-05 54:10` が 8 頭（`prediction_generated_at = 2026-07-02T17:20:39Z`）。元 RA は `grade_code = E`、距離 1300 / 1400、`track_code = 24` で、NAR の cell router では `dirt / mile / E / summer / venue 54` に解決される。これにより、cell hit 時は NAR transformer blend / category default より先に `cell_routing.json` の variant が採用されることを本番 Neon write で確認済み。なお prediction table の `class_code` は NAR subclass 由来であり、router の `grade_code` とは別概念である。
+a957 撤去後の現行 NAR routing は `load_cell_router().has_routing("nar") == False` であり、`resolve_variant("nar", …)` は常に default（`sim` → category default path）へ解決する（`grade_code=E, keibajo_code=54, kyori=1400, kaisai_tsukihi=0702, track_code=20` も含む）。この不変条件は `test_cell_router.py::test_load_cell_router_real_config_has_no_nar_routing` で regression guard する。
 
-本番反映前の最短検証は次の 3 点である。
+今後 finish-position の cell route を新たに本番投入する場合の最短検証は次の 3 点である（現行 live 例は ban-ei の `grade_code == E` → base のみ）。
 
-1. `build_cell_models.py --prediction-target finish_position --category nar --baseline-hash d79657af0d78c116bf4e8458646616ee8501d78a86db291be76874cedcd5223d --model-artifacts-root apps/finish-position-predict-container/models/finish-position` が `selected_cells=1 variants=1` を出す。
-2. `load_cell_router()` が `grade_code=E, keibajo_code=54, kyori=1400, kaisai_tsukihi=0702, track_code=20` を `cell-a957d8b4-nar-xgb-cell-a957d8b4-v1-56559522` に解決する。
-3. `models/finish-position/nar/nar-xgb-cell-a957d8b4-v1/metadata.json.feature_names` が 10 件で、`model.json` が同 directory に存在する。
+1. `build_cell_models.py --prediction-target finish_position --category <cat> --baseline-hash <hash> --model-artifacts-root apps/finish-position-predict-container/models/finish-position` が `selected_cells>=1 variants>=1` を出す。
+2. `load_cell_router()` が対象 cell の代表 entry を狙った variant に解決する。
+3. `models/finish-position/<cat>/<model_version>/metadata.json.feature_names` の件数が routing variant の `feature_count` と一致し、`model.json` が同 directory に存在する。
+
+**採用判定の前提**: cell route の ADOPT は `cell_training_evaluations` の stored 行ではなく、WF 済 arm を held-out で in-memory 再 score した per-cell paired-bootstrap gate（`score_cells.py` 方式、robust cell = race_count >= 200）で行う。§6.4 の通り stored finish_position 行は現状 unusable である。
 
 本番 `cell_routing.json` の非 default variant は、必ず実在する model artifact を指す。`model_version` は `apps/finish-position-predict-container/models/finish-position/{category}/{model_version}/` 配下の `model.json` / `metadata.json` と対応し、`metadata.json.feature_names` の件数は routing variant の `feature_count` と一致していなければならない。`build_cell_models.py` はデフォルトで `model_version` と `architecture` を持たない finish-position 候補を拒否する（payload と first-class column の両方を参照）。旧評価行を local で確認する場合だけ `--allow-synthetic-model-version` を使い、本番出力前は `--model-artifacts-root apps/finish-position-predict-container/models/finish-position` で artifact 存在も検証する。
+
+### 6.4 `cell_training_evaluations` の finish_position 行は現状 unusable（採用判定に使わない）
+
+2026-07-03 時点で、`cell_training_evaluations` に格納済みの **finish_position** metric 行（`evaluated_at <= 2026-07-02` の 749 jra / 126 nar / 21 ban-ei 行）は eval driver の不具合により top1 が現実離れした値に deflate している（カテゴリ平均 top1 ≒ 5.6% jra / 7.1% nar / 12% ban-ei ＝ 実精度の ~5-16x 過小）。この壊れた行を根拠に採用したのが a957 cell route であり（§6.3 REVERTED）、正しい in-memory 再評価（`score_cells.py` 方式）では実 NAR cell top1 は 45-60% 域だった。
+
+- **影響範囲**: finish_position の stored 行のみ。**running_style（脚質）の行は健全**で、この不具合の影響を受けない。
+- **運用ルール**: eval driver が修正されるまで、finish-position cell の ADOPT/REJECT 判定に stored `cell_training_evaluations` 行を使ってはならない。判定は必ず WF 済 arm を held-out で in-memory 再 score した per-cell paired-bootstrap gate（`apps/pc-keiba-viewer/tmp/candidate-fp-cells/score_cells.py`）で行う。
+- **再有効化条件**: eval driver 修正後、既知 baseline（例: NAR overall top1 ≈ 40%）に対する sanity check（`sanity_eval.py`）を通してから stored 行を採用判定に戻す。
 
 ---
 

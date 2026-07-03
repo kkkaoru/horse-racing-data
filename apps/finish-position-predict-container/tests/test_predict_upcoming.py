@@ -34,6 +34,7 @@ from predict_lib.model_meta import (
     NAR_ETOP2_MODEL_VERSION,
     Architecture,
     Category,
+    model_version_for,
 )
 from predict_lib.rescore import RaceScope
 from predict_lib.scorer import BoosterLike
@@ -950,7 +951,12 @@ def test_focused_full_prediction_complete_checks_expected_cell_model_version(
     actual_rows: int,
     expected: bool,
 ) -> None:
-    """Existing rows for another model_version must not skip a routed cell run."""
+    """Existing rows for another model_version must not skip a run.
+
+    Completion is tied to the model_version current routing would write. NAR
+    carries no cell routing after the a957 revert (2026-07-03), so a venue-54
+    grade-E race resolves to the category default (``iter12-nar-xgb-hpo-v8``).
+    """
 
     @final
     class _FocusedCursor:
@@ -1005,7 +1011,7 @@ def test_focused_full_prediction_complete_checks_expected_cell_model_version(
     assert completion_fn("postgresql://example", params) is expected
     final_params = cursor.executed_params[-1]
     assert isinstance(final_params, tuple)
-    assert final_params[-1] == "nar-xgb-cell-a957d8b4-v1"
+    assert final_params[-1] == model_version_for("nar")
     assert connection.closed is True
 
 
