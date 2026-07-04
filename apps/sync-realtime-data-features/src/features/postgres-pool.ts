@@ -15,10 +15,18 @@ import type { Env } from "../types";
 // "timeout exceeded when trying to connect" (pg-pool wait-queue timeout).
 // CONNECTION_TIMEOUT_MS was bumped 5_000 -> 15_000 so a Hyperdrive cold-start
 // or origin reconnect does not flap the singleton during a single tick.
+// QUERY_TIMEOUT_MS was raised 60_000 -> 120_000 on 2026-07-04: queue
+// consumers rebuilding past (finished) races run result-history joins that
+// exceeded 60s under concurrent morning Neon load, surfacing as
+// "Query read timeout" (wrangler tail showed the fetchAllRaceFeatures ->
+// buildRaceFeatures exception at wallTime 60246ms). Normal (non-past) builds
+// finish in 5-15s, so this only extends the ceiling for the slow path. The
+// queue consumer's wall-time budget is I/O-bound waiting on Postgres, so
+// doubling the timeout is safe.
 const DEFAULT_POOL_SIZE = 24;
 const IDLE_TIMEOUT_MS = 10_000;
 const CONNECTION_TIMEOUT_MS = 15_000;
-const QUERY_TIMEOUT_MS = 60_000;
+const QUERY_TIMEOUT_MS = 120_000;
 
 let pool: Pool | null = null;
 
