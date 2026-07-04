@@ -626,7 +626,7 @@ def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
         scored = score_races(races, "nar", Path("/models"), ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "iter12-nar-xgb-hpo-v8" for row in rows)
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188" for row in rows)
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
 
@@ -890,7 +890,7 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
 def test_score_races_nar_default_uses_category_model_without_per_class() -> None:
     """NAR defaults score directly with the category model, not per-class routing."""
     routing = _FakeRouting(
-        variants={"sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8", 1, "xgboost")},
+        variants={"sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188", 1, "xgboost")},
         default_variant="sim",
     )
     router = _FakeRouter(routing, resolved="sim")
@@ -906,7 +906,7 @@ def test_score_races_nar_default_uses_category_model_without_per_class() -> None
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
-    assert all(row[0] == "iter12-nar-xgb-hpo-v8" for row in rows)
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188" for row in rows)
 
 
 def test_score_races_warns_when_resolved_non_default_variant_missing(
@@ -955,7 +955,8 @@ def test_focused_full_prediction_complete_checks_expected_cell_model_version(
 
     Completion is tied to the model_version current routing would write. NAR
     carries no cell routing after the a957 revert (2026-07-03), so a venue-54
-    grade-E race resolves to the category default (``iter12-nar-xgb-hpo-v8``).
+    grade-E race resolves to the category default
+    (``iter12-nar-xgb-hpo-v8-clean188``).
     """
 
     @final

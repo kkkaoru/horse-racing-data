@@ -187,8 +187,8 @@ def test_load_cell_router_parses_optional_variant_feature_contract(tmp_path: Pat
             "default_variant": "sim",
             "variants": {
                 "sim": {
-                    "model_version": "iter12-nar-xgb-hpo-v8",
-                    "feature_count": 192,
+                    "model_version": "iter12-nar-xgb-hpo-v8-clean188",
+                    "feature_count": 188,
                     "architecture": "xgboost",
                 },
                 "cell": {

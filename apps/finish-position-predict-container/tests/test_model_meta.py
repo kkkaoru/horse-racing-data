@@ -1,6 +1,7 @@
-"""Tests for the container-baked model metadata mapping (leak-free JRA deploy:
+"""Tests for the container-baked model metadata mapping (leak-free deploys:
 JRA=jra-cb-v9-sim-2013-clean (250 feat, 4 within-race leak cols excluded),
-NAR=iter12-nar-xgb-hpo-v8 (sim_* REJECT), Ban-ei=banei-cb-v9-sim-2011)."""
+NAR=iter12-nar-xgb-hpo-v8-clean188 (188 feat, same 4 leak cols excluded),
+Ban-ei=banei-cb-v9-sim-2011)."""
 
 from __future__ import annotations
 
@@ -55,7 +56,7 @@ def test_model_version_jra() -> None:
 
 
 def test_model_version_nar() -> None:
-    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8"
+    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8-clean188"
 
 
 def test_model_version_banei() -> None:
@@ -79,7 +80,7 @@ def test_feature_count_jra() -> None:
 
 
 def test_feature_count_nar() -> None:
-    assert feature_count_for("nar") == 192
+    assert feature_count_for("nar") == 188
 
 
 def test_feature_count_banei() -> None:
@@ -140,7 +141,7 @@ def test_is_lightgbm_model_version_false_for_catboost_member() -> None:
 
 
 def test_is_lightgbm_model_version_false_for_xgboost_baseline() -> None:
-    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8") is False
+    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8-clean188") is False
 
 
 def test_member_model_file_name_lightgbm_is_model_txt() -> None:
@@ -156,7 +157,7 @@ def test_member_model_file_name_catboost_is_model_json() -> None:
 
 
 def test_member_model_file_name_xgboost_is_model_json() -> None:
-    assert member_model_file_name("iter12-nar-xgb-hpo-v8") == "model.json"
+    assert member_model_file_name("iter12-nar-xgb-hpo-v8-clean188") == "model.json"
 
 
 # --- load_model_meta error cases --------------------------------------------

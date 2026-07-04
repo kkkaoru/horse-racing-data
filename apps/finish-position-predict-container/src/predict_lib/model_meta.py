@@ -30,6 +30,25 @@ JRA leak-free clean retrain (jra-cb-v9-sim-2013-clean, 2026-07-04):
   [LB95 +0.164, all 3 folds positive], place2 +0.135, top3_box +0.309 -> ADOPT.
   Rollback: flip model_versions.jra back to "jra-cb-v9-sim-2013" (263) and
   feature_counts.jra back to 263; re-point finish_position_active_models.
+
+NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188, 2026-07-04):
+  iter12-nar-xgb-hpo-v8 (192 features) carried the SAME 4 within-race leak
+  columns as the JRA model above (target_corner_1_norm, target_corner_3_norm,
+  target_corner_4_norm, target_running_style_class). This clean retrain (188
+  features, same full 2006-2025 training window, 0 leak cols, strict subset of
+  the deployed 192) is now the production NAR base model. Deploy-grade
+  walk-forward (3 seeds x 3 folds, serve-exact 192-name matrix for the "A"
+  arm): top1 +5.496pp [LB95 +5.102], place2 +2.360pp [LB95 +1.923], place3
+  +1.358pp [LB95 +0.966], place4/5/6 and top3_box all positive with LB95>0
+  too -> ADOPT (strict gate). NAR_TRANSFORMER_BLEND_ENABLED is held at 0/False
+  at this deploy (see the transformer-blend section below): the currently
+  baked iter40 transformer artifact was found to carry the same 4 leak
+  columns in its own feature_order, so blending it with the new clean base
+  would still serve a half-leaky score. A clean transformer retrain is a
+  planned fast-follow; re-enable the blend only after that artifact passes
+  its own gate. Rollback: flip model_versions.nar back to
+  "iter12-nar-xgb-hpo-v8" (192) and feature_counts.nar back to 192; re-point
+  finish_position_active_models.
 """
 
 from __future__ import annotations

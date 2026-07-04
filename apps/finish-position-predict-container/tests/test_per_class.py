@@ -55,7 +55,7 @@ from predict_lib.per_class import (
 )
 
 JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013-clean"
-NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8"
+NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8-clean188"
 BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v9-sim-2011"
 JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"
 JRA_CLASS_010_MODEL_VERSION: str = "iter21-jra-cb-class010-v8"
