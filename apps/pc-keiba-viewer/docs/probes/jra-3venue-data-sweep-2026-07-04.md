@@ -243,6 +243,103 @@ finer (venue-specific) granularity, verdicts the team had already reached
 JRA-wide today (weight/season, draw/waku, straight×closer, same-day bias) —
 useful as independent replication of those REJECTs, not as new levers.
 
+## WF follow-up (task #27, 2026-07-04): pace_reversal lever — REJECT
+
+Per team-lead approval, finding #1 (pace-shape × distance-band reversal) was
+tested as an explicit incremental feature via the **full standard 3-fold ×
+3-seed WF harness** (not a 1-fold cheap pass — those have produced fold-
+specific artifacts elsewhere today) on `tmp/candidate-masked-lever-retest/retest_wf.py`
+(new `pace_reversal` lever branch), reusing the already-cached CLEAN armB
+base models (9 fold×seed models, no retraining needed for control).
+
+**Candidate columns** (pure per-row arithmetic on already-loaded armB store
+columns, no PG join, no new data source — verified exact column names first:
+`field_nige_pressure`/`field_senkou_pressure`/`past_nige_rate_self`/
+`past_senkou_rate_self`/`past_sashi_rate_self`/`kyori` all already exist in
+the 250-feat armB set):
+
+- `dist_is_mile`, `dist_is_intermediate` — dummies from `kyori` (1200-1600 /
+  1600-2000), matching the sweep's own distance-band cutoffs (the store's
+  native `kyori_band` uses different edges — 1400-1700 / 1800-2200 — that
+  straddle the sweep's mile/intermediate boundary, so it could not be reused
+  directly for this test).
+- `field_front_pressure_x_mile` / `field_front_pressure_x_intermediate` —
+  `(field_nige_pressure + field_senkou_pressure) × dist_band` dummy.
+- `own_front_x_field_pressure_x_intermediate` — own
+  `(past_nige_rate_self + past_senkou_rate_self) × field_front_pressure ×
+dist_is_intermediate` (the Kokura-reversal carrier).
+- `own_sashi_x_field_pressure_x_mile` — own `past_sashi_rate_self ×
+field_front_pressure × dist_is_mile` (the textbook-direction carrier).
+
+**Spec**: CatBoost YetiRank, iterations=300, depth=8, lr=0.05, l2=3.0,
+no-early-stop, `cat_indices=[]` — identical to the live `jra-cb-v9-sim-2013`
+model. 3 blind folds (train 2013..Y-1, test Y) × 3 seeds (42/101/2026), paired
+race-level bootstrap (2000 iters).
+
+### Pooled result (seed-averaged, all JRA, n=10,365 races): REJECT
+
+| Metric | base%  | cand%  | Δpp    | LB95   |
+| ------ | ------ | ------ | ------ | ------ |
+| top1   | 33.796 | 33.883 | +0.087 | −0.097 |
+| place2 | 18.119 | 18.135 | +0.016 | −0.200 |
+| place3 | 14.163 | 14.256 | +0.093 | −0.135 |
+
+`0/3 primaries passed`, `ACCEPT_strict_gate=false`. Every metric's LB95
+crosses zero.
+
+### Target-cell cross-cut (the exact cells the sweep flagged)
+
+Reused the trained models, re-predicted on the same validation folds, cut by
+venue × distance-band (`tmp/candidate-pace-reversal-wf/target_cells_crosscut.py`
+→ `tmp/candidate-masked-lever-retest/reports/pace_reversal_target_cells_crosscut.json`).
+GLOBAL row matches the main report exactly (sanity check the cross-cut is
+wired correctly):
+
+| Cell                                           | n      | top1 Δ[LB95]    | place2 Δ[LB95]  | place3 Δ[LB95]      |
+| ---------------------------------------------- | ------ | --------------- | --------------- | ------------------- |
+| **TARGET** Kokura × intermediate               | 295    | +0.113 [−0.904] | +0.452 [−1.017] | **−1.243 [−2.712]** |
+| **TARGET** Hakodate × mile                     | 131    | +0.000 [−1.781] | −0.255 [−1.781] | −1.272 [−3.308]     |
+| **TARGET** Fukushima × mile                    | 165    | −0.202 [−2.222] | −1.010 [−2.828] | +0.202 [−1.616]     |
+| contrast: Kokura × mile                        | 198    | −0.168 [−1.515] | −0.000 [−1.179] | −0.673 [−1.852]     |
+| contrast: Hakodate × intermediate              | 171    | +0.975 [−0.585] | −0.975 [−3.704] | +0.975 [−0.780]     |
+| contrast: Fukushima × intermediate             | 269    | −0.620 [−1.859] | +1.115 [−0.248] | +1.115 [−0.496]     |
+| Summer-restricted primary (4 venues, all dist) | 2,448  | +0.191 [−0.232] | −0.041 [−0.517] | +0.272 [−0.218]     |
+| Summer(4) × mile                               | 631    | +0.159 [−0.581] | −0.159 [−0.951] | −0.106 [−0.845]     |
+| Summer(4) × intermediate                       | 950    | +0.351 [−0.351] | +0.210 [−0.702] | +0.105 [−0.737]     |
+| Non-summer × mile (contrast)                   | 2,707  | +0.209 [−0.123] | +0.148 [−0.283] | −0.099 [−0.554]     |
+| Non-summer × intermediate (contrast)           | 3,493  | −0.057 [−0.382] | +0.095 [−0.258] | +0.038 [−0.353]     |
+| GLOBAL (sanity check)                          | 10,365 | +0.087 [−0.097] | +0.016 [−0.200] | +0.093 [−0.135]     |
+
+**No cell clears LB95>0 on any primary — including the exact 3 cells the
+descriptive sweep found the strongest 4/4-year replication in.** The
+"contrast" cells (same venue, opposite distance band, where the effect
+should be absent if the mechanism is real) are statistically
+indistinguishable from the target cells, and the target-cell n (131-295) is
+underpowered on its own, but the total absence of any positive-LB95 anywhere
+— global, summer-restricted, or per-cell — is a clean, decisive signal, not
+an underpowered null.
+
+**Verdict: REJECT. DO-NOT-RETEST this construction.** This confirms the
+saturation risk flagged in finding #1's "expected WF cost" note: CatBoost
+depth=8 already extracts whatever signal exists from `kyori` +
+`field_{nige,senkou,sashi,oikomi}_pressure` + `past_{nige,senkou,sashi}_rate_self`
+on its own — explicitly crossing them with distance-band dummies added no
+incremental information the tree hadn't already found. This is the same
+outcome as `straight×closer`, `draw_affinity`, `draw_ablation`, and
+`sameday_bias` earlier today: a descriptively real pattern in raw actuals
+that the existing armB feature set already captures once given the raw
+ingredients. The 3-venue sweep's remaining value is as **independent
+replication of the "armB is saturated on pace/draw/position axes" finding**,
+not as a source of new deployable levers.
+
+Artifacts: `tmp/candidate-masked-lever-retest/retest_wf.py` (new
+`build_pace_reversal` function + `pace_reversal` dispatch branch),
+`tmp/candidate-masked-lever-retest/reports/pace_reversal.json` (main report),
+`tmp/candidate-pace-reversal-wf/target_cells_crosscut.py` +
+`tmp/candidate-masked-lever-retest/reports/pace_reversal_target_cells_crosscut.json`
+(target-cell cross-cut), `tmp/candidate-pace-reversal-wf/smoke_test.py`
+(pre-flight sanity check).
+
 ## Artifacts
 
 - `tmp/candidate-3venue-sweep/build_analysis_table.py` — extraction script

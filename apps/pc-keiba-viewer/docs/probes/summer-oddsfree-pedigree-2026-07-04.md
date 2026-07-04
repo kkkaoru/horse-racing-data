@@ -31,6 +31,17 @@ three are second-tier-attention sires, not marquee names, which is itself
 consistent with an efficient-market story (bettors price what they pay
 attention to).
 
+**Update (task #34, same day)**: a generalized, name-free version of the
+odds-free residual (own-baseline seasonal-delta EB columns, computable for
+every sire/damsire, no hardcoding) was built and WF-tested against the
+250-feature clean baseline. **REJECT** — 0/3 primaries pass pooled,
+summer-restricted, or on the yoshiba cell; no venue, ninkijun band, or cell
+clears the gate either. This closes condition D's pedigree×season axis for
+JRA completely, with the mechanism fully understood: the tendency is real,
+the market prices the famous names, and the small residual in obscure sires
+cannot be captured by any population-wide feature (level or delta) without
+overfitting to the specific sires that carry it. See the WF section below.
+
 ## Data & method
 
 - **Source**: local Postgres (port 15432), `jvd_se` (starts, finish position,
@@ -275,6 +286,118 @@ so while the sign is consistent across all 3 eras (and intensifying, not
 weakening), the future actionable volume of this signal is limited and
 declining.
 
+## Follow-up: task #34 — WF model-feature test of the generalized SEASONAL-DELTA axis
+
+Approved as a generalized follow-up (not a retest — see distinctness note
+below): does a strictly-prior, **name-free** own-baseline seasonal-delta
+column, computable for every sire/damsire, beat the clean 250-feature armB
+CatBoost baseline?
+
+**Construction** (`tmp/candidate-jra-sire-summer-delta/build_summer_delta.py`,
+no sire names hardcoded anywhere — the 3 candidates that survived the
+odds-independence check in task #32 were not used to build or filter these
+columns):
+
+- `sire_summer_delta_eb` = EB-shrunk (k=30) sire top3-rate at summer venues
+  (01/02/03/10) minus that sire's own year-round top3-rate, strictly-prior
+  expanding window. NULL unless the sire has ≥50 prior summer starts (hard
+  coverage floor, deliberately stricter than the pure-EB-shrinkage convention
+  used by the two REJECTed probes). Coverage: 87.4% of rows.
+- `damsire_summer_delta_eb` — same construction, damsire axis. Coverage: 83.4%.
+- `sire_yoshiba_delta_eb` = EB-shrunk (k=30) sire top3-rate at Sapporo+Hakodate
+  turf minus that sire's own **turf-only** baseline (holding surface constant
+  — the ダノンバラード mechanism generalized). NULL unless ≥50 prior yoshiba
+  starts. Coverage: 64.3% (lower by design; yoshiba is rare).
+
+**Distinctness from today's two REJECTs**: those tested marginal absolute
+LEVEL rates (`sire_venue_top3`, `sire_line_yoshiba_top3`, etc. — "how good is
+this sire at this venue/surface", full stop). This tests the OWN-BASELINE
+DELTA axis instead — "how much BETTER does this sire do at this venue than
+he does everywhere else" — the exact quantity #32's odds-free law was
+measured in. Never WF-tested before this task.
+
+**Method**: identical spec to the two REJECTed probes — CatBoost YetiRank
+iter=300/depth=8/lr=0.05/l2=3.0, no early-stop, all-numeric. Control = clean
+armB 250-feat (reused read-only from
+`tmp/candidate-masked-lever-retest/models/base/seed{42,101,2026}/fold-{2023,2024,2025}/`
+— checked the task-suggested path
+`tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/fold-*/` first and
+found it holds a single model per fold with no seed subdirectory, i.e. the
+single-seed production artifact, not the 3-seed WF-gate population every
+sibling probe today actually used — corrected to the verified path).
+3 blind folds (train 2013..Y-1, test Y for Y∈{2023,2024,2025}) × 3 seeds
+(42/101/2026), paired race-level bootstrap (2000 iter), same accept gate
+(≥2/3 primaries delta≥+0.08pp & LB95>0, ≥1 of place2/place3, no metric below
+-0.05pp), race_id-sort-fixed masks (the known bug from today's campaign).
+Added a ninkijun-band cell cut (1 / 2-3 / 4-6 / 7+, and each band ∩
+summer-restricted) as the model-facing analogue of #32's odds-independence
+check. Trained in 704.8s (11.7 min).
+
+### Result: REJECT — pooled, summer-restricted, AND yoshiba-only
+
+Pooled (seed-avg, n=10,365 races):
+
+| Metric     | Base   | Cand   | Δ (pp)     | LB95   |
+| ---------- | ------ | ------ | ---------- | ------ |
+| top1       | 33.796 | 33.861 | +0.064     | -0.116 |
+| place2     | 18.119 | 18.177 | +0.058     | -0.158 |
+| place3     | 14.163 | 13.986 | **-0.177** | -0.402 |
+| top3_box   | 9.410  | 9.458  | +0.048     | -0.055 |
+| fukusho_2p | 74.912 | 74.867 | -0.045     | -0.206 |
+
+Gate: `0/3 primaries`, worst delta -0.177pp (place3, breaches the -0.05
+no-regression bound) → **ACCEPT_strict_gate=false**.
+
+Summer-restricted (n=2,448): `0/3 primaries`, worst -0.177pp (top1) — also
+breaches. Yoshiba-only (n=936): `0/3 primaries`, worst **-0.534pp** (top1) —
+breaches badly.
+
+Per-fold: 2023 all 3 primaries negative (top1 -0.25, place2 -0.22, place3
+-0.13); 2024 top1/place2 positive but place3 negative (-0.15); 2025 top1
+positive but place2/place3 negative — the same sign-instability-around-a-
+near-zero-mean pattern as both of today's other pedigree REJECTs. Per-seed:
+seed42 top1/place2 positive, place3 negative; seed101 all 3 negative;
+seed2026 top1/place2 positive, place3 negative.
+
+Per-venue within summer: only Sapporo (01, n=504) shows a positive top1
+point estimate (+0.99pp) and it doesn't clear LB95>0 (-0.00); Hakodate (02)
+is negative on place2 (-1.08[-2.39]); Fukushima (03) negative on top1
+(-0.42[-1.20]); no venue clears the gate. Ninkijun-band: no band (nor any
+band∩summer cut) clears LB95>0 on 2+ primaries; band 4-6∩summer is the worst
+cell found (top1 -0.60[-1.41], place2 -0.97[-2.08]) — if anything the
+opposite of what a market-mispricing story would predict (the model doesn't
+gain more from the delta columns in the mid-popularity band where #32 found
+the odds-free residual concentrated). Cell scan (n≥200): 2 of ~30 cells show
+a single-primary LB95>0 (Kyoto top1 +0.56[+0.07] n=1535; Niigata place2
++1.35[+0.43] n=935) — consistent with chance at this test count, and neither
+replicates on a second primary at the same cell.
+
+### Verdict
+
+**REJECT.** The generalized, name-free seasonal-delta axis does not clear
+the gate anywhere — not pooled, not summer-restricted, not on the flagship
+yoshiba cell, not in any single venue, not in any ninkijun band (including
+the summer-restricted bands where a market-mispricing mechanism would
+predict the biggest gain). This closes the loop begun by #32's flagged
+follow-up: the odds-free law is real at the population-statistics level
+(validated by null-calibration in #32), but a 250-feature CatBoost model
+already extracts whatever of it is extractable through its existing dense
+feature set (`sire_distance_win_rate`, `sire_track_win_rate`,
+`dam_sire_distance_win_rate`, `sire_baba_win_rate`, `sim_sire_win_rate`, etc.
+interacting with venue/season via tree splits) — an EB-shrunk delta column,
+even built exactly in the odds-free-law's own units and even without
+hardcoding the 3 known-good names, adds no incremental signal a
+gradient-boosted tree with 250 existing features didn't already have access
+to. **This completes the pedigree × season/venue axis (condition D) for JRA
+with the mechanism understood**: real tendency → selectively priced by the
+market for famous names → but even for the residual, unpriced minority, a
+population-wide feature construction (whether LEVEL rates, as REJECTed
+earlier today, or the DELTA axis specifically targeting the odds-free
+residual) cannot isolate that minority's signal without overfitting to
+specific sires — which is precisely what the no-name-hardcoding guard was
+designed to prevent. **DO-NOT-RETEST** this delta construction on this
+baseline.
+
 ## Synthesis
 
 **Does 夏血統 exist?** Yes — validated two ways: (a) a purpose-built null-
@@ -320,15 +443,16 @@ pedigree feature (as tested today) washes out in aggregate — the genuinely
 exploitable cases are a small, specific minority of sires, not a general
 "pedigree × venue/season" axis.
 
-**Caveat on the 3 odds-free findings**: this probe is intentionally a
-descriptive/statistical existence test, not a model-feature validation. It
-does not claim that adding narrow, sire-specific columns for exactly these 3
-sires to the deployed CatBoost model would produce a WF-validated accept-gate
-pass — that would require actual model retraining (out of scope here, and
-per `DO-NOT-RETEST` convention on the broader pedigree axis, a narrow
-follow-up targeting only these 3 specific sires would be a materially
-different, much smaller-scope hypothesis than what was REJECTed today, not a
-retest of it). Flagging as a possible narrow follow-up, not executing it here.
+**Update (task #34, same day)**: the flagged narrow follow-up was approved in
+GENERALIZED form (no hardcoding of the 3 surviving names — see the WF section
+below) and WF-tested. **REJECT**, closing the loop cleanly: even a
+population-wide feature built in the odds-free law's own units (own-baseline
+seasonal delta, not absolute level) adds no incremental signal to the
+250-feature CatBoost baseline, anywhere. The mechanism is now fully
+understood end-to-end: real tendency → market prices it for famous names →
+the small odds-free residual in 2nd-tier sires cannot be captured by any
+population-wide pedigree feature construction (LEVEL or DELTA) without
+overfitting to the specific handful of sires that carry it.
 
 ## まとめ (日本語)
 
@@ -358,10 +482,18 @@ retest of it). Flagging as a possible narrow follow-up, not executing it here.
 中堅サイア)、**メイショウサムソン**(夏に弱い=フェード対象、ただし近年の
 産駒数が先細り)。3頭とも「有名血統ほど市場は正確、無名寄りの血統ほど市場は
 非効率」という一貫したパターンを示しており、条件Dの血統×季節軸に対する
-妥当な結論と考えられる。ただし本プローブは記述統計であり、この3頭限定の
-特徴量が実際にモデル精度を上げるかどうかは別途WF検証が必要(未実施、
-DO-NOT-RETESTの対象は今回REJECTされた集団プーリング型の構築であり、この
-3頭限定の狭い仮説は別物)。
+妥当な結論と考えられる。
+
+**追記(task #34、同日)**: 上記の「狭い仮説」を、3頭の名前をハードコードせず
+一般化した形(全サイア/母父に適用可能な EB-shrunk 自己ベースライン季節差分
+列、`sire_summer_delta_eb` / `damsire_summer_delta_eb` / `sire_yoshiba_delta_eb`)
+で構築し、実際にWF検証した。結果は**REJECT**——pooled/夏季限定/洋芝限定
+いずれもgate 0/3、venue別・人気順帯別・cellのどこにも有意な改善は無い。
+これにより条件D(血統×季節・venue軸)はJRAについて完全にクローズした:
+傾向は実在し、市場は有名血統について正確に価格付けしているが、無名寄りの
+血統に残るわずかな非効率は、集団全体に適用可能などんな特徴量構築
+(絶対値レートでも自己ベースライン差分でも)によっても、特定サイアへの
+過剰適合なしには捉えられない、という結論で決着した。
 
 ## Artifacts
 
@@ -380,3 +512,12 @@ DO-NOT-RETESTの対象は今回REJECTされた集団プーリング型の構築�
   `sire_line_summer_strict`, `sire_yoshiba`, `sire_line_yoshiba`,
   `null_calibration`, `line_concentration`, `line_concentration_top3`,
   `odds_independence`, `odds_independence_round2`)
+- **Task #34 WF follow-up**: feature build
+  `tmp/candidate-jra-sire-summer-delta/build_summer_delta.py` →
+  `summer_delta_features.parquet` (660,834 rows, 2013-2025); harness
+  `tmp/candidate-jra-sire-summer-delta/wf_summer_delta.py`; report
+  `tmp/candidate-jra-sire-summer-delta/reports/summer_delta.json`; log
+  `tmp/candidate-jra-sire-summer-delta/wf.log` (704.8s); trained treatment
+  models `tmp/candidate-jra-sire-summer-delta/models/summer_delta/seed{42,101,2026}/fold-{2023,2024,2025}/model.json`;
+  reused (read-only) control-arm models
+  `tmp/candidate-masked-lever-retest/models/base/seed{42,101,2026}/fold-{2023,2024,2025}/model.json`

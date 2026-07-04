@@ -167,6 +167,198 @@ from the REJECTED `is_meet_repeat`/`days_since_meet_first_start` bundle
 (angle 3 below) — this is a calendar-year cross-meet cumulative count, not a
 within-single-meet repeat flag.
 
+## WF follow-up (task #33): summer_campaign_start_number promoted to a model-feature test
+
+The angle-2 finding above was promoted to a full WF slot on 2026-07-04.
+**Verdict: REJECT.**
+
+**Candidates** (4, strictly prior, no odds/ninkijun interaction per
+instruction — market-free): `campaign_prior_starts_this_year` (count of this
+horse's earlier starts this calendar year at any of the 4 summer venues),
+`campaign_prior_starts_this_venue` (earlier starts this calendar year at the
+exact same venue as today's race, any venue), `days_since_campaign_first_start`
+(days since this horse's first earlier summer-venue start this year, NULL if
+none), `campaign_prior_starts_x_3yo` (age-band interaction, not market).
+Coverage: 99.996% for the first/second/fourth columns (non-null by
+construction after coalescing an empty-window-frame `SUM()` to 0 — see
+build notes), 31.17% for `days_since_campaign_first_start` (NULL whenever a
+horse has no earlier summer-venue start this year, expected).
+
+**Distinctness from the REJECTED `is_meet_repeat` bundle**
+(`jra-meet-repeat-2026-07-04.md`): that family keys on SAME-MEET identity
+(`keibajo_code x kaisai_nen x kaisai_kai`) — has this horse already started
+earlier in this specific multi-week gathering. This family keys on
+CALENDAR-YEAR × (any-of-4-summer-venues) / CALENDAR-YEAR × SAME-VENUE — a
+horse that ran Fukushima in April, Sapporo in July, and Hakodate in August
+has `campaign_prior_starts_this_year=2` for the August race despite zero
+`is_meet_repeat` overlap (three different meets, three different venues).
+Correlated, not redundant — and this construction was never previously
+tested as a model feature.
+
+**Harness**: CLEAN armB 250-feat (`jra-cb-v9-sim-2013` spec) + the 4
+candidates (254 total), CatBoost YetiRank, iterations=300, depth=8, lr=0.05,
+l2=3.0, no early-stop, `cat_indices=[]`. 3 blind folds (train 2013..Y-1, test
+Y, Y∈{2023,2024,2025}) × 3 seeds (42/101/2026, `seed=seed_base+fold_year`).
+Control models for `seed_base=42` reused byte-identical from
+`tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/fold-*/model.json`
+(verified: that cache's `random_seed=42+fy` exactly matches this harness's
+own derivation — confirmed by reading `jra_v9sim_wf.py` line 44 before
+reuse); `seed_base=101`/`2026` controls trained fresh. Paired race-level
+bootstrap, 2000 iterations, fixed seed 20260519. Sort-before-mask pattern
+applied throughout (mandatory per system doc). Runtime 808.1s.
+
+### Pooled (seed-avg, 3 folds × 3 seeds, n=10,365 races)
+
+| Metric     | Base   | Cand   | Delta (pp) | LB95   |
+| ---------- | ------ | ------ | ---------- | ------ |
+| top1       | 33.796 | 33.809 | +0.013     | -0.177 |
+| place2     | 18.119 | 18.125 | +0.006     | -0.199 |
+| place3     | 14.163 | 14.253 | +0.090     | -0.125 |
+| place4     | 12.166 | 12.037 | -0.129     | -0.344 |
+| place5     | 11.076 | 11.053 | -0.023     | -0.222 |
+| place6     | 10.416 | 10.590 | +0.174     | -0.039 |
+| top3_box   | 9.410  | 9.436  | +0.026     | -0.087 |
+| fukusho_2p | 74.912 | 74.832 | -0.080     | -0.245 |
+
+**Gate: `primaries_passed=0/3`, `lb95_positive=0/3`, `worst_delta=-0.129`
+(place4) → ACCEPT_strict_gate=false.** All 3 primaries sit within 0.1pp of
+zero.
+
+Per-seed (top1/place2/place3 delta[LB95]): seed42 `+0.203[-0.125] /
++0.280[-0.097] / +0.087[-0.289]`; seed101 `-0.289[-0.579] / +0.000[-0.386] /
++0.174[-0.203]`; seed2026 `+0.125[-0.193] / -0.261[-0.656] / +0.010[-0.405]`
+— sign-unstable, the same noise-centered-near-zero pattern seen throughout
+this campaign. Per-fold: 2023 `-0.232/-0.376/+0.010`, 2024
+`+0.222/+0.396[LB95=0.000]/+0.270`, 2025 `+0.048/+0.000/-0.010` — 2024 is the
+only fold with any positive lean and its `place2` LB95 sits exactly at the
+zero boundary (not `>0`), 2023 is net-negative, 2025 is flat.
+
+### Summer-restricted (01/02/03/10, n=2,448 races)
+
+| Metric     | Base   | Cand   | Delta (pp) | LB95   |
+| ---------- | ------ | ------ | ---------- | ------ |
+| top1       | 32.108 | 32.108 | +0.000     | -0.395 |
+| place2     | 16.217 | 15.931 | **-0.286** | -0.749 |
+| place3     | 13.508 | 13.521 | +0.014     | -0.449 |
+| place4     | 11.560 | 11.724 | +0.163     | -0.327 |
+| place5     | 11.234 | 11.411 | +0.177     | -0.272 |
+| place6     | 10.063 | 10.158 | +0.095     | -0.340 |
+| top3_box   | 8.456  | 8.524  | +0.068     | -0.150 |
+| fukusho_2p | 72.358 | 71.991 | -0.368     | -0.722 |
+
+**Gate: `0/3`, `worst_delta=-0.368` (fukusho_2p) → REJECT.** `top1` is
+exactly flat; `place2` shows a real regression.
+
+### High-campaign-longshot subpopulation (races with ≥1 entrant at
+
+`campaign_prior_starts_this_year>=2` — at least their 3rd start of the
+summer campaign — AND `tansho_ninkijun>=7`, n=4,808 — the exact
+intended-mechanism population, 8.07% of all rows meet this per-horse
+condition)
+
+| Metric     | Base   | Cand   | Delta (pp) | LB95   |
+| ---------- | ------ | ------ | ---------- | ------ |
+| top1       | 32.966 | 33.021 | +0.056     | -0.208 |
+| place2     | 17.103 | 17.207 | +0.104     | -0.222 |
+| place3     | 13.249 | 13.429 | +0.180     | -0.146 |
+| place4     | 11.841 | 11.696 | -0.146     | -0.492 |
+| place5     | 10.226 | 10.274 | +0.049     | -0.243 |
+| place6     | 9.720  | 9.852  | +0.132     | -0.180 |
+| top3_box   | 8.188  | 8.250  | +0.062     | -0.104 |
+| fukusho_2p | 72.761 | 72.594 | -0.166     | -0.402 |
+
+**Gate: `0/3`, `worst_delta=-0.166` → REJECT.** This is the closest any cut
+comes to the descriptive hypothesis — all 3 primaries lean positive — but
+none clear `LB95>0`, and the race-level cut with the flag OFF (n=5,557,
+`top1 -0.024/place2 -0.078/place3 +0.012`) is barely distinguishable from the
+flag-ON cut, i.e. the model does not show a materially different response
+in the intended-mechanism population versus the rest.
+
+### Summer × high-campaign-longshot cross-cell (n=1,500, the sharpest
+
+intended-mechanism cell)
+
+| Metric     | Base   | Cand   | Delta (pp) | LB95   |
+| ---------- | ------ | ------ | ---------- | ------ |
+| top1       | 31.667 | 31.533 | -0.133     | -0.622 |
+| place2     | 15.244 | 15.000 | **-0.244** | -0.844 |
+| place3     | 12.778 | 12.889 | +0.111     | -0.489 |
+| fukusho_2p | 70.178 | 69.711 | -0.467     | -0.933 |
+
+**Gate: `0/3`, `worst_delta=-0.467` → REJECT.** The exact cell the
+descriptive finding was built around (summer venue, longshot campaigner
+present) shows a net-negative `top1`/`place2`, not the hoped-for
+concentrated gain.
+
+### Per-venue cells (n≥200, seed-avg)
+
+| keibajo_code | n   | top1 delta[LB95]                                       | place2 delta[LB95] | place3 delta[LB95] |
+| ------------ | --- | ------------------------------------------------------ | ------------------ | ------------------ |
+| 01 Sapporo   | 504 | +0.595[-0.463]                                         | -0.132[-1.323]     | +0.265[-0.529]     |
+| 02 Hakodate  | 432 | +0.232[-0.694]                                         | **-1.543[-2.701]** | +0.386[-0.617]     |
+| 03 Fukushima | 720 | -0.694[-1.389]                                         | +0.185[-0.694]     | +0.324[-0.694]     |
+| 10 Kokura    | 792 | +0.126[-0.463]                                         | -0.126[-0.884]     | **-0.631[-1.516]** |
+| 04-09 (main) | —   | mixed, ±0.3, no cell clears LB95>0 in either direction |
+
+Hakodate's `place2` regression (`-1.54pp [LB95 -2.70]`, n=432) is the
+largest single-cell effect in this sweep — the same venue that showed the
+largest regression in the meet-repeat REJECT's Hokkaido cross-cell,
+reinforcing that additive engineered features targeting this specific venue
+have repeatedly hurt `place2` there rather than helped, across two
+independent feature families now.
+
+## Verdict: REJECT
+
+None of the 4 candidates clear the accept gate globally (`0/3`, no
+`LB95>0`), on the summer-restricted subset (`0/3`, `place2 -0.29pp`), on the
+high-campaign-longshot subpopulation (`0/3`, though directionally the
+closest of any cut), or on the summer × longshot cross-cell that is the
+precise intersection the descriptive finding was built around (`0/3`,
+`place2 -0.24pp`, largest regression `fukusho_2p -0.47pp`). Per-seed and
+per-fold sign instability (2023 negative, 2024 marginally positive but
+`place2` LB95 sitting exactly at 0, 2025 flat) is the same
+noise-centered-near-zero signature seen throughout this campaign for other
+REJECTed engineered-feature bundles.
+
+**Reconciling with the descriptive LAW** (angle 2 above, era-stable
+`pr_mkt≈-0.04` to `-0.05`, pooled 3-era 2015-2026): the underlying
+market-level effect is real by the odds-independence test, but small, and
+concentrated in an 8% subpopulation (longshot campaigners). A depth-8
+CatBoost with an existing 250-feature set that already carries
+`days_since_last_race`, `is_returning_from_layoff`,
+`weight_avg_5`/`weight_diff_from_avg`, `same_keibajo_win_rate`, and career
+win-rate features likely already captures most of what "how active/fit has
+this horse been on the local circuit this year" would predict through
+existing form-recency and venue-experience channels — the same conclusion
+reached for the REJECTED `is_meet_repeat` bundle and the REJECTED
+class-ordinal fix. This is now the third feature family in this campaign
+where a real, era-stable, odds-controlled descriptive signal did not survive
+translation into a raw additive GBDT feature at this scale.
+
+**DO-NOT-RETEST** this exact 4-column bundle (calendar-year summer-campaign
+sequence, any-venue + same-venue variants + age interaction) for JRA. A
+genuinely different construction — e.g. a per-cell calibration/confidence
+adjustment specifically for the longshot-campaigner segment rather than an
+additive ranking feature — would be a different candidate family, but this
+campaign's existing venue/cell-routing REJECT history
+(`project_venue_cell_round2_2026_06_20`,
+`project_jra_rs_cell_routing_reject_2026_07_03`) makes that an unpromising
+next step without a new mechanism, not a recommended WF slot.
+
+## WF Artifacts (task #33)
+
+- Feature build: `tmp/candidate-summer-campaign/build_candidates.py` (PG
+  jvd_se, strictly-prior window functions, 655,290 rows after excluding a
+  known isolated umaban='99' data artifact affecting 3 races on 2019-10-13;
+  fixed a `SUM()`-over-empty-window-frame NULL-vs-0 bug during validation —
+  see script comments)
+- Harness: `tmp/candidate-summer-campaign/wf.py`
+- Feature parquet: `tmp/candidate-summer-campaign/campaign_features.parquet`
+- Models: `tmp/candidate-summer-campaign/models/{base,cand}/seed*/fold-*/model.json`
+  (seed42 base models reused from `tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/`)
+- Report: `tmp/candidate-summer-campaign/reports/campaign.json`
+- Log: `tmp/candidate-summer-campaign/wf.log` (808.1s)
+
 ## Angle 3 — 転戦 geography (滞在 / circuit-hop / shipper)
 
 Transition categories (summer-venue starts only, by previous-race venue):
@@ -332,16 +524,16 @@ model-feature swap.
 
 ## Summary table
 
-| Angle                                  | Effect size (pr_mkt)        | Era verdict    | Odds verdict                             | Serve-feasibility                              | DO-NOT-RETEST overlap                     |
-| -------------------------------------- | --------------------------- | -------------- | ---------------------------------------- | ---------------------------------------------- | ----------------------------------------- |
-| 1. Rest interval (own effect)          | 0.05-0.08                   | LAW            | PARTIALLY-PRICED                         | none (already armB)                            | `layoff_days` REJECT (upset doc)          |
-| 1. Rest interval (summer elevation)    | −0.02 to −0.03 (negative)   | LAW            | refutes "summer reward"                  | n/a                                            | same                                      |
-| 2. Summer-campaign Nth start           | −0.04 to −0.05              | LAW            | PARTIALLY→ODDS-FREE                      | **new WF-testable candidate, not yet tested**  | none identified                           |
-| 3. is_meet_repeat (滞在, inversion)    | −0.01 to −0.03 (Hokkaido↑)  | LAW            | PARTIALLY-PRICED (underpriced, not over) | none new                                       | `jra-meet-repeat` REJECT (feature bundle) |
-| 3. summer_to_summer_diff (circuit-hop) | 0.0005-0.011                | PARTIAL/NOISE  | too weak to call                         | none                                           | none                                      |
-| 3b. NAR→JRA transfer                   | ~0.01                       | insufficient n | FULLY-PRICED                             | none                                           | none                                      |
-| 4. class_diff (own effect)             | 0.017-0.033                 | LAW            | PARTIALLY-PRICED                         | class-ordinal swap already REJECTED as feature | `jra-class-ordinal-fix` REJECT            |
-| 4. class_diff (summer elevation)       | −0.005 to −0.016 (negative) | LAW            | class-jump tax muted at summer venues    | n/a                                            | same                                      |
+| Angle                                  | Effect size (pr_mkt)        | Era verdict    | Odds verdict                             | Serve-feasibility                                 | DO-NOT-RETEST overlap                                   |
+| -------------------------------------- | --------------------------- | -------------- | ---------------------------------------- | ------------------------------------------------- | ------------------------------------------------------- |
+| 1. Rest interval (own effect)          | 0.05-0.08                   | LAW            | PARTIALLY-PRICED                         | none (already armB)                               | `layoff_days` REJECT (upset doc)                        |
+| 1. Rest interval (summer elevation)    | −0.02 to −0.03 (negative)   | LAW            | refutes "summer reward"                  | n/a                                               | same                                                    |
+| 2. Summer-campaign Nth start           | −0.04 to −0.05              | LAW            | PARTIALLY→ODDS-FREE                      | **WF-tested (task #33) → REJECT**, see WF section | `summer_campaign_start_number` bundle now DO-NOT-RETEST |
+| 3. is_meet_repeat (滞在, inversion)    | −0.01 to −0.03 (Hokkaido↑)  | LAW            | PARTIALLY-PRICED (underpriced, not over) | none new                                          | `jra-meet-repeat` REJECT (feature bundle)               |
+| 3. summer_to_summer_diff (circuit-hop) | 0.0005-0.011                | PARTIAL/NOISE  | too weak to call                         | none                                              | none                                                    |
+| 3b. NAR→JRA transfer                   | ~0.01                       | insufficient n | FULLY-PRICED                             | none                                              | none                                                    |
+| 4. class_diff (own effect)             | 0.017-0.033                 | LAW            | PARTIALLY-PRICED                         | class-ordinal swap already REJECTED as feature    | `jra-class-ordinal-fix` REJECT                          |
+| 4. class_diff (summer elevation)       | −0.005 to −0.016 (negative) | LAW            | class-jump tax muted at summer venues    | n/a                                               | same                                                    |
 
 ## 日本語まとめ
 
@@ -359,8 +551,15 @@ NOISE判定を行った。
    同一年内の夏場開催でのN戦目が進むほど着順が上昇する明確な右肩上がりが
    見られ、市場はこれをほとんど織り込んでいない(3era安定LAW、3歳・古馬
    問わず同方向)。既存armBにはこの「夏場限定・年内累積出走数」という特徴量
-   がなく、新規WF候補として提案する(本ドキュメントでは学習検証まで行わず、
-   記述統計のみ)。
+   がなく、モデル特徴量として実際にWF検証した(task #33、CatBoost
+   YetiRank・armB 250特徴+候補4列・3fold×3seed)結果は**REJECT**——
+   pooled/夏場限定/人気薄キャンペーン馬subpop/夏場×人気薄クロスセルの
+   いずれもgate不通過(0/3、LB95>0なし)、特に想定メカニズムの中心セル
+   (夏場×人気薄キャンペーン馬、n=1,500)でも`place2 -0.24pp`と逆方向。
+   市場レベルの実効果(記述統計)は本物だが、既存250特徴量(直近フォーム・
+   体重推移・同競馬場勝率等)が同種の情報を既に間接的に捕捉しており、
+   追加特徴量としては抽出できなかった——`is_meet_repeat`やclass-ordinal
+   修正と同じ「記述的LAWがGBDT特徴量に変換されない」パターン。
 3. **転戦/滞在**: REJECT済みの `is_meet_repeat` 特徴量が悪化した理由を検証
    したところ、「市場が滞在馬を過大評価している」という仮説は**否定**され、
    実際は逆(市場はやや過小評価=滞在馬はわずかに市場想定より好走、3era安定
@@ -373,9 +572,9 @@ NOISE判定を行った。
    壁は夏場開催のほうが中央場より一貫して薄い(3era安定)——ローカル
    開催のレース層の薄さを反映している可能性。
 
-いずれも「モデル特徴量として追加すべき」という結論には直結しないが(角度2の
-夏季キャンペーンN戦目のみ未検証の新規候補)、記述的な市場効率性の理解として
-はすべて有意義な結果。
+4角度・5候補すべて最終的に「モデル特徴量として追加」には至らなかった
+(角度2のみ新規候補としてWF検証まで実施したが結果はREJECT)、記述的な
+市場効率性の理解としてはすべて有意義な結果。
 
 ## Artifacts
 
@@ -391,6 +590,10 @@ NOISE判定を行った。
 - Related: `jra-summer-upset-divergence-2026-07-04.md` (layoff/prior-finish
   no-summer-elevation precedent, same partial-Spearman methodology),
   `jra-meet-repeat-2026-07-04.md` (REJECTED feature this doc's angle-3
-  inversion check follows up on), `jra-class-ordinal-fix-2026-07-04.md`
+  inversion check follows up on, and whose control-model seed convention
+  the task #33 WF reuses), `jra-class-ordinal-fix-2026-07-04.md`
   (corrected ordinal + REJECTED model-feature swap this doc's angle-4 uses
   the same corrected ordinal for, descriptively only)
+- Task #33 WF follow-up (see dedicated section above): build/harness in
+  `tmp/candidate-summer-campaign/`, report `reports/campaign.json`, verdict
+  REJECT
