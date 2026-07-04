@@ -19,11 +19,11 @@ Three fundamentally different kinds of "prediction" get mixed together if you
 query `race_finish_position_model_predictions` naively, and keeping them apart
 changed the shape of this report:
 
-| Label used below          | What it actually is                                                                                                                                                                                                                                                                                          | Years      |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
-| **Reconstruction (armB)** | Predict-only reload of the leak-clean armB fold models (`tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/fold-2024`, `fold-2025`), scored on the offline feature store. No live serving ever existed for these dates — this is the best available serve-realistic proxy.                              | 2024, 2025 |
-| **Backfill (iter14)**     | `model_version='iter14-jra-cb-pacestyle-course-v8'` rows, ALL generated in a **single batch on 2026-06-04**, covering Kokura's already-completed winter meet (0124-0301) and Fukushima's already-completed spring meet (0411-0426). **Likely leak-inflated — see §4.**                                       | 2026       |
-| **Genuine live serve**    | Rows generated the evening before race day, incrementally, matching the real cadence a user would have seen. Only ONE such day exists at these 3 venues: race day **0704** (2026-07-04), predicted 2026-07-03, split `jra-cb-v9-sim-2013` (leaky, pre-cutover) vs `jra-cb-v9-sim-2013-clean` (post-cutover). | 2026       |
+| Label used below          | What it actually is                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Years      |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| **Reconstruction (armB)** | Predict-only reload of the leak-clean armB fold models (`tmp/candidate-leak-clean-retrain/models_jra_v9sim/armB/fold-2024`, `fold-2025`), scored on the offline feature store. No live serving ever existed for these dates — this is the best available serve-realistic proxy.                                                                                                                                                                                                        | 2024, 2025 |
+| **Backfill (iter14)**     | `model_version='iter14-jra-cb-pacestyle-course-v8'` rows, ALL generated in a **single batch on 2026-06-04**, covering Kokura's already-completed winter meet (0124-0301) and Fukushima's already-completed spring meet (0411-0426). **Likely leak-inflated — see §4.**                                                                                                                                                                                                                 | 2026       |
+| **Genuine live serve**    | Rows generated early morning JST of race day itself (confirmed via task #28: 01:40-06:56 JST on 0704, ahead of ~10am post times — raw `prediction_generated_at` is UTC, so 06:56 JST 0704 stores as "2026-07-03 21:56 UTC", which is why earlier drafts of this doc mis-described this as "evening before"). Only ONE such day exists at these 3 venues: race day **0704** (2026-07-04), split `jra-cb-v9-sim-2013` (leaky, pre-cutover) vs `jra-cb-v9-sim-2013-clean` (post-cutover). | 2026       |
 
 Everything else in the table for these venues/years (`jra-rs-lgbm-v1.0`,
 `lambdarank-jra-v1*`, `jra-trans-lgbm-ensemble-*`, `jra-cb-v5-single`,
@@ -186,16 +186,71 @@ Cross-referencing the real 2026 race calendar (local PG `jvd_ra`) against
 `race_finish_position_model_predictions` (any model_version) shows **84 of 372
 already-run races (22.6%) at these 3 venues got zero finish-position
 prediction rows of any kind**, between the iter14 backfill (2026-06-04, itself
-only covering already-completed meets) and the clean-model cutover
-(2026-07-03 evening). Concretely: Hakodate's entire early summer meet
+only covering already-completed meets) and the clean-model cutover (early
+morning JST 2026-07-04, see §4a-2). Concretely: Hakodate's entire early summer meet
 (0613/0614/0620/0621, 48 races) plus 0628 (12 races) — 5 of its first 6 race
 days, 60 of 72 races — has no logged finish-position prediction at all.
 Fukushima and Kokura each lost one summer-meet day (0628, 12 races each) the
 same way. Only race day 0627 has a row at all in that window, and it's the
 WIN5 overlay product, not finish-position. This is an **operational gap**,
-independent of model quality — worth an infra follow-up (is the
-Queues→Container trigger actually firing for these 3 venues' summer meets?),
-not a modeling lever.
+independent of model quality, not a modeling lever — see the verdict below
+(task #28 follow-up closes this as a known, already-fixed bug).
+
+### 4a-2. Verdict (task #28): blackout is fully explained by the item-17 starvation/work-dir bug, now fixed — CLOSED
+
+`docs/finish-position-prediction-system.md` §5.9 documents a same-category
+slot-starvation bug (process-scoped single-slot guard: a 2nd concurrent race
+in the same category got stuck "accepted" and DLQ'd after a 30-min retry
+budget with zero rows written) plus a follow-on work-dir-cleanup bug (a
+long-lived container processing a 2nd+ race in the same category sequentially
+failed silently after all layers reported done, due to a category-keyed,
+not race-keyed, work directory). Both were root-caused and fixed the same day
+via a 4-commit chain, all deployed 2026-07-02 JST: `2d3535be` (08:17,
+instrumentation) → `af1ca40e` (09:15, queue-consumer hold-time fix) →
+`f4b3ea7a` (14:46, starvation fix) → `c3a48694` (17:06, per-race work-dir
+reset, the point at which the full fix chain was live).
+
+**(a) Do all 84 blackout races predate the fix?** Yes, trivially and cleanly:
+Hakodate/Fukushima/Kokura have **zero real race days between 0629 and 0703**
+(confirmed against `jvd_ra` — these venues don't run weekday cards), so every
+one of the 84 past-due blackout races (race days ≤0628) predates the entire
+07-02 fix chain by construction, and there was no scheduled race at these 3
+venues _during_ 07-02 itself for the fix to have missed.
+
+**(b) Coverage for races run 07-02/07-03 at these venues:** not testable —
+these venues have no races on those dates (confirmed via `jvd_ra`), so this
+check is vacuous here rather than a positive 100% result. (The doc's own
+smoke-test validation for the fix used historical replay races instead,
+including one at this venue: `jra:2026:0627:02:01`.)
+
+**(c) The real test — 07-04, the first live race day after the fix landed:**
+100% coverage, organically (not a smoke test). All 36 real races nationwide
+in JRA that day (12 Hakodate + 12 Fukushima + 12 Kokura — confirmed via
+`jvd_ra` these are the _only_ 3 JRA venues racing 07-04) have finish-position
+rows: the leaky model logged 5 races before the mid-run cutover (Hakodate
+01:40 JST, Fukushima 02:16-04:17 JST, Kokura 03:30 JST), then the clean model
+logged all 36 races in a single ~8-second batch at 06:56 JST (466 rows total,
+matching the raw `prediction_generated_at` timestamps exactly). Last pre-fix
+live day (0628) fully blacked out, first post-fix live day (0704) fully
+covered — a clean before/after boundary with no ambiguous middle case, because
+there was no racing at these venues in between.
+
+**One side-finding, reported for completeness, not blocking the verdict**: I
+could not independently verify, in the production Neon table this analysis
+queries (`NEON_DIRECT_DATABASE_URL` per `apps/local-postgresql/.env.replica`),
+the specific 07-02 smoke-test confirmation rows §5.9 cites as its own
+end-to-end evidence (JRA `jra:2026:0627:02:01` @ 10:35:56Z; NAR `54:03` /
+`55:05` / `55:06`; Ban-ei `83:03` / `83:04`, all in the 2026-07-02 08:00-19:00
+UTC window). Querying those exact race keys and that time window returns
+nothing — the same race keys only show their original May/June batch rows,
+unchanged. This doesn't affect the verdict below (the 07-04 organic evidence
+is independent and conclusive on its own), but it means §5.9's own smoke-test
+writes are either in a different Neon branch/environment than the production
+one mirrored here, or didn't land as documented — worth a quick check by
+whoever owns that environment, separate from this task.
+
+**VERDICT: explained by known, already-fixed bug. No gaps persist post-fix at
+these 3 venues. Closing task #28 — no escalation needed.**
 
 ### 4b. The iter14 backfill numbers are very likely leak-inflated — don't use them as "before"
 
@@ -287,8 +342,17 @@ hokkaido-turf-first-timer, layoff/prior-finish summer slots).
   見つかった。(1) 6/4のiter14一括バックフィル後から7/3のclean切替まで、
   この3場の実レース372走中84走 (22.6%) が着順予測を一切生成されていない
   「空白期間」だった — 函館は夏開催の最初の6日中5日 (60/72レース) が対象。
-  これはモデル精度の問題ではなくサーブ経路自体の欠落であり、別途インフラ調査が
-  必要。(2) 6/4のiter14バックフィル数値 (福島top1 38.89%・小倉44.76%、市場人気
+  これはモデル精度の問題ではなくサーブ経路自体の欠落だった。**(task #28で追跡確認済み・解決)**:
+  この空白は既知のバグで説明がつく。同カテゴリレースの slot starvation
+  (`f4b3ea7a`) と、それに続く work-dir cleanup 不備 (`c3a48694`) が
+  2026-07-02 に4段階のcommitで修正・deployされたが、この3場は7/2・7/3に
+  レースが無いため fix の適用機会自体が7/4まで無かった。7/4 (fix後最初の
+  開催日) は3場36レース全て (leaky 5走→clean 36走、466行) が生成されており、
+  空白は完全に解消していた。7/3以前の空白は fix 前の既知不具合として説明がつき、
+  追加のエスカレーションは不要と判断した。ただしドキュメント (§5.9) が引用する
+  7/2 smoke test の確認行 (`jra:2026:0627:02:01` 等) は本番Neonテーブル上で
+  独立に確認できなかった — 検証環境の相違の可能性があり、担当者への確認を推奨する
+  (今回の結論には影響しない)。(2) 6/4のiter14バックフィル数値 (福島top1 38.89%・小倉44.76%、市場人気
   比+15~19pp) はarmB再構築 (leak-free) と比べて異常に高く、target_corner/
   running_style leak (7/4修正済) が「レース終了後に一括生成」という条件下で
   逆に本物の結果を特徴量に混入させた可能性が高い。したがってこのbackfill数値を
