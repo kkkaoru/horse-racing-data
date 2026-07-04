@@ -11,11 +11,32 @@
 #   bash scripts/launchd/finish-position-predict-daily.sh
 #   DRY_RUN=1 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 bash scripts/launchd/finish-position-predict-daily.sh
 #   DRY_RUN=1 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=11 bash scripts/launchd/finish-position-predict-daily.sh
+#   DRY_RUN=1 FORCE_D1_FAIL_ATTEMPTS=3 bash ...                                                        # D1 expected-count retry exhaustion -> SKIP
+#   DRY_RUN=1 FORCE_D1_FAIL_ATTEMPTS=1 FORCE_RS_ACTUAL=12 bash ...                                      # D1 expected-count retry succeeds on attempt 2
+#   DRY_RUN=1 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=5 \
+#     FORCE_RS_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_RS_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 \
+#     bash ...                                                                                          # RS retries exhaust -> per-category fallback (jra,ban-ei run, nar skipped)
+#   DRY_RUN=1 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=5 \
+#     FORCE_RS_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_RS_CATEGORY_ACTUAL=jra:2,nar:2,ban-ei:1 \
+#     bash ...                                                                                          # per-category fallback where every category is still incomplete -> SKIP
 #
 # RUN_DATE override:
 #   The caller may set RUN_DATE=YYYYMMDD for local/manual diagnostics. When
 #   unset, defaults to today JST. The container always interprets RUN_DATE as
 #   JST YYYYMMDD.
+#
+# Resilience (2026-07-04):
+#   * D1 expected-count query retries transiently-failing wrangler/D1 calls up
+#     to D1_RETRY_MAX_ATTEMPTS times, D1_RETRY_INTERVAL_SECONDS apart, before
+#     treating the date as SKIPPED. A transient D1 blip degrades to a skip
+#     (self-heals next tick) rather than a hard error/page.
+#   * running-style completeness retries up to RS_RETRY_MAX_ATTEMPTS times,
+#     RS_RETRY_INTERVAL_SECONDS apart (a slow-materializing prewarm usually
+#     finishes within ~30 min). If still incomplete after all retries, per-
+#     category (jra / nar / ban-ei) coverage is checked independently and
+#     PREDICT_CATEGORIES is narrowed to whichever categories ARE complete, so
+#     one stuck category no longer blocks the others. Only SKIPs entirely when
+#     every category is still incomplete (never runs blind).
 #
 # Lock coordination:
 #   Holds /tmp/finish-position-predict.lock for the duration of the docker run
@@ -45,6 +66,13 @@ RS_TABLE="race_running_style_model_predictions"
 LOG_DIR="/Users/kkk4oru/Library/Logs/finish-position-predict"
 FAILURE_LOG="$LOG_DIR/failures.log"
 LOCK_DIR="/tmp/finish-position-predict.lock"
+
+# Retry tuning for the D1 expected-count query (transient wrangler/D1 errors)
+# and the running-style completeness check (prewarm still materializing).
+D1_RETRY_MAX_ATTEMPTS=3
+D1_RETRY_INTERVAL_SECONDS=20
+RS_RETRY_MAX_ATTEMPTS=6
+RS_RETRY_INTERVAL_SECONDS=300
 
 mkdir -p "$LOG_DIR"
 
@@ -120,8 +148,137 @@ with psycopg.connect(dsn) as conn, conn.cursor() as cur:
 PY
 }
 
+# Query D1 for expected race counts broken down by category (jra / nar /
+# ban-ei), using the SAME keibajo_code partition as the prediction container
+# itself (apps/finish-position-predict-container/src/pipeline_runner.py):
+# jra = keibajo_code 01-10, ban-ei = keibajo_code 83, nar = everything else.
+# Emits one "<category> <count>" line per row to stdout; log lines go to
+# stderr so they don't interleave with the data the caller captures via
+# command substitution. When DRY_RUN=1 and FORCE_RS_CATEGORY_EXPECTED is set,
+# the override is parsed instead of touching D1.
+d1_expected_by_category() {
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_RS_CATEGORY_EXPECTED:-}" ]; then
+    log "DRY_RUN: FORCE_RS_CATEGORY_EXPECTED=$FORCE_RS_CATEGORY_EXPECTED override (skipping D1 query)" >&2
+    printf '%s' "$FORCE_RS_CATEGORY_EXPECTED" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
+    return 0
+  fi
+  local d1_query="SELECT CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra' WHEN keibajo_code = '83' THEN 'ban-ei' ELSE 'nar' END AS category, COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${RUN_DATE_ISO}' GROUP BY category;"
+  local d1_result
+  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.category) \(.c)"' 2>/dev/null || true
+}
+
+# Query Neon for running-style actual race counts broken down by category,
+# using the identical keibajo_code partition as d1_expected_by_category.
+# Emits one "<category> <count>" line per row.
+neon_count_by_category() {
+  local table="$1"
+  local nen="$2"
+  local tsukihi="$3"
+  uv run --quiet --with 'psycopg[binary]' python - "$table" "$nen" "$tsukihi" <<'PY'
+import os
+import sys
+
+import psycopg
+
+table, nen, tsukihi = sys.argv[1], sys.argv[2], sys.argv[3]
+dsn = os.environ["NEON_DATABASE_URL"]
+sql = (
+    "SELECT category, COUNT(*) FROM ("
+    "  SELECT DISTINCT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
+    "    CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra'"
+    "         WHEN keibajo_code = '83' THEN 'ban-ei'"
+    "         ELSE 'nar' END AS category"
+    f"  FROM {table}"
+    "  WHERE kaisai_nen = %s AND kaisai_tsukihi = %s"
+    ") AS races"
+    " GROUP BY category"
+)
+with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+    cur.execute(sql, (nen, tsukihi))
+    for row in cur.fetchall():
+        print(f"{row[0]} {row[1]}")
+PY
+}
+
 RUNNING_STYLE_PREFLIGHT_RESULT=""
 RUNNING_STYLE_PREFLIGHT_REASON=""
+# Set to "1" by running_style_percategory_fallback when it narrows
+# PREDICT_CATEGORIES to a complete subset, so pre-flight 9 can log the reason
+# accurately instead of mislabeling it a caller override.
+RUNNING_STYLE_PARTIAL_CATEGORIES="0"
+
+# Per-category running-style coverage fallback, used only after
+# RS_RETRY_MAX_ATTEMPTS full-date retries are still incomplete. Compares each
+# category's D1 expected count against its Neon actual count and narrows
+# PREDICT_CATEGORIES to just the categories that ARE complete, so one stuck
+# category (e.g. NAR) does not block others (e.g. JRA) that are ready.
+#
+# Sets RUNNING_STYLE_PREFLIGHT_RESULT/_REASON:
+#   "ok"   — at least one category is complete; PREDICT_CATEGORIES narrowed
+#            to that subset (RUNNING_STYLE_PARTIAL_CATEGORIES=1).
+#   "skip" — every category is still incomplete (or D1 returned nothing) —
+#            do not run blind.
+# Args: $1 target_nen  $2 target_tsukihi
+running_style_percategory_fallback() {
+  local target_nen="$1"
+  local target_tsukihi="$2"
+
+  local expected_rows
+  expected_rows="$(d1_expected_by_category)"
+  if [ -z "$expected_rows" ]; then
+    RUNNING_STYLE_PREFLIGHT_RESULT="skip"
+    RUNNING_STYLE_PREFLIGHT_REASON="per-category fallback: D1 returned no per-category expected counts for RUN_DATE=$RUN_DATE"
+    log "finish-position SKIPPED — $RUNNING_STYLE_PREFLIGHT_REASON"
+    return 1
+  fi
+
+  local actual_rows
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_RS_CATEGORY_ACTUAL:-}" ]; then
+    log "DRY_RUN: FORCE_RS_CATEGORY_ACTUAL=$FORCE_RS_CATEGORY_ACTUAL override (skipping Neon per-category query)"
+    actual_rows="$(printf '%s' "$FORCE_RS_CATEGORY_ACTUAL" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}')"
+  else
+    actual_rows="$(neon_count_by_category "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+  fi
+
+  local complete_categories=""
+  local incomplete_categories=""
+  local category expected_c actual_c
+  while read -r category expected_c; do
+    if [ -z "$category" ]; then
+      continue
+    fi
+    if ! printf '%s' "$expected_c" | grep -Eq '^[0-9]+$'; then
+      log "WARN: running-style per-category[$category]: non-numeric expected count ($expected_c) — treating as incomplete"
+      incomplete_categories="${incomplete_categories:+$incomplete_categories,}$category"
+      continue
+    fi
+    actual_c="$(printf '%s\n' "$actual_rows" | awk -v c="$category" '$1==c {print $2}')"
+    if ! printf '%s' "$actual_c" | grep -Eq '^[0-9]+$'; then
+      actual_c=0
+    fi
+    log "running-style per-category[$category]: actual=$actual_c expected=$expected_c"
+    if [ "$actual_c" -ge "$expected_c" ]; then
+      complete_categories="${complete_categories:+$complete_categories,}$category"
+    else
+      incomplete_categories="${incomplete_categories:+$incomplete_categories,}$category"
+    fi
+  done <<< "$expected_rows"
+
+  if [ -z "$complete_categories" ]; then
+    RUNNING_STYLE_PREFLIGHT_RESULT="skip"
+    RUNNING_STYLE_PREFLIGHT_REASON="per-category fallback: all categories still incomplete for RUN_DATE=$RUN_DATE (incomplete=$incomplete_categories)"
+    log "finish-position SKIPPED — $RUNNING_STYLE_PREFLIGHT_REASON"
+    return 1
+  fi
+
+  PREDICT_CATEGORIES="$complete_categories"
+  RUNNING_STYLE_PARTIAL_CATEGORIES="1"
+  RUNNING_STYLE_PREFLIGHT_RESULT="ok"
+  RUNNING_STYLE_PREFLIGHT_REASON="per-category fallback: running complete subset=$complete_categories (skipping incomplete=${incomplete_categories:-none}) for RUN_DATE=$RUN_DATE"
+  log "running-style preflight PARTIAL-OK — $RUNNING_STYLE_PREFLIGHT_REASON"
+  return 0
+}
 
 running_style_preflight() {
   local target_nen="${RUN_DATE:0:4}"
@@ -134,13 +291,44 @@ running_style_preflight() {
     log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (skipping D1 query)"
   else
     local d1_query="SELECT COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${RUN_DATE_ISO}';"
-    local d1_result
-    d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
-    expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+    local d1_result=""
+    local d1_attempt
+    # Transient wrangler/D1 failures (fetch failed / token refresh) should not
+    # abort the whole run outright — retry a few times before giving up.
+    for d1_attempt in $(seq 1 "$D1_RETRY_MAX_ATTEMPTS"); do
+      if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_D1_FAIL_ATTEMPTS:-}" ]; then
+        if [ "$d1_attempt" -le "$FORCE_D1_FAIL_ATTEMPTS" ]; then
+          d1_result="In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN environment variable for wrangler to work"
+          log "DRY_RUN: FORCE_D1_FAIL_ATTEMPTS=$FORCE_D1_FAIL_ATTEMPTS — injecting fake D1 failure on attempt $d1_attempt/$D1_RETRY_MAX_ATTEMPTS"
+        else
+          d1_result='[{"results":[{"c":1}]}]'
+          log "DRY_RUN: FORCE_D1_FAIL_ATTEMPTS=$FORCE_D1_FAIL_ATTEMPTS — injecting fake D1 success on attempt $d1_attempt/$D1_RETRY_MAX_ATTEMPTS"
+        fi
+      else
+        d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+      fi
+      expected_count="$(printf '%s' "$d1_result" | jq -r '.[0].results[0].c // empty' 2>/dev/null || true)"
+      if [ -n "$expected_count" ] && [ "$expected_count" != "null" ]; then
+        break
+      fi
+      log "WARN: running-style preflight: D1 expected-count attempt $d1_attempt/$D1_RETRY_MAX_ATTEMPTS failed (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
+      if [ "$d1_attempt" -lt "$D1_RETRY_MAX_ATTEMPTS" ]; then
+        if [ "${DRY_RUN:-0}" = "1" ]; then
+          log "DRY_RUN: would sleep ${D1_RETRY_INTERVAL_SECONDS}s before retry"
+        else
+          sleep "$D1_RETRY_INTERVAL_SECONDS"
+        fi
+      fi
+    done
+
     if [ -z "$expected_count" ] || [ "$expected_count" = "null" ]; then
-      RUNNING_STYLE_PREFLIGHT_RESULT="error"
-      RUNNING_STYLE_PREFLIGHT_REASON="failed to parse D1 expected race count (result tail: $(printf '%s' "$d1_result" | tail -c 400))"
-      log "ERROR: running-style preflight: $RUNNING_STYLE_PREFLIGHT_REASON"
+      # All attempts failed. This script has no per-venue D1 fallback (that
+      # lives in race-prediction-guard.sh's query_d1_venue_counts /
+      # check_venue_coverage) — do not run blind; SKIP rather than hard-fail
+      # so a transient D1 outage self-heals next tick instead of paging.
+      RUNNING_STYLE_PREFLIGHT_RESULT="skip"
+      RUNNING_STYLE_PREFLIGHT_REASON="D1 expected race count unavailable after $D1_RETRY_MAX_ATTEMPTS attempts (last result tail: $(printf '%s' "$d1_result" | tail -c 400))"
+      log "finish-position SKIPPED — $RUNNING_STYLE_PREFLIGHT_REASON"
       return 1
     fi
   fi
@@ -160,33 +348,47 @@ running_style_preflight() {
   fi
 
   local rs_actual=""
-  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_RS_ACTUAL:-}" ]; then
-    rs_actual="$FORCE_RS_ACTUAL"
-    log "DRY_RUN: FORCE_RS_ACTUAL=$FORCE_RS_ACTUAL override (skipping Neon query)"
-  else
-    log "running-style preflight: checking Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi"
-    rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
-  fi
+  local rs_attempt
+  for rs_attempt in $(seq 1 "$RS_RETRY_MAX_ATTEMPTS"); do
+    if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_RS_ACTUAL:-}" ]; then
+      rs_actual="$FORCE_RS_ACTUAL"
+      log "DRY_RUN: FORCE_RS_ACTUAL=$FORCE_RS_ACTUAL override (attempt $rs_attempt/$RS_RETRY_MAX_ATTEMPTS, skipping Neon query)"
+    else
+      log "running-style preflight: checking Neon ($RS_TABLE) for nen=$target_nen tsukihi=$target_tsukihi (attempt $rs_attempt/$RS_RETRY_MAX_ATTEMPTS)"
+      rs_actual="$(neon_count "$RS_TABLE" "$target_nen" "$target_tsukihi" || true)"
+    fi
 
-  if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
-    RUNNING_STYLE_PREFLIGHT_RESULT="error"
-    RUNNING_STYLE_PREFLIGHT_REASON="failed to parse running-style count from Neon (got: $rs_actual)"
-    log "ERROR: running-style preflight: $RUNNING_STYLE_PREFLIGHT_REASON"
-    return 1
-  fi
+    if ! printf '%s' "$rs_actual" | grep -Eq '^[0-9]+$'; then
+      RUNNING_STYLE_PREFLIGHT_RESULT="error"
+      RUNNING_STYLE_PREFLIGHT_REASON="failed to parse running-style count from Neon (got: $rs_actual)"
+      log "ERROR: running-style preflight: $RUNNING_STYLE_PREFLIGHT_REASON"
+      return 1
+    fi
 
-  log "running-style preflight: actual=$rs_actual expected=$expected_count"
-  if [ "$rs_actual" -lt "$expected_count" ]; then
-    RUNNING_STYLE_PREFLIGHT_RESULT="skip"
-    RUNNING_STYLE_PREFLIGHT_REASON="running-style incomplete for RUN_DATE=$RUN_DATE (actual=$rs_actual expected=$expected_count)"
-    log "finish-position SKIPPED — $RUNNING_STYLE_PREFLIGHT_REASON"
-    return 1
-  fi
+    log "running-style preflight: actual=$rs_actual expected=$expected_count (attempt $rs_attempt/$RS_RETRY_MAX_ATTEMPTS)"
+    if [ "$rs_actual" -ge "$expected_count" ]; then
+      RUNNING_STYLE_PREFLIGHT_RESULT="ok"
+      RUNNING_STYLE_PREFLIGHT_REASON="running-style complete for RUN_DATE=$RUN_DATE (actual=$rs_actual expected=$expected_count, attempt $rs_attempt/$RS_RETRY_MAX_ATTEMPTS)"
+      log "running-style preflight OK — $RUNNING_STYLE_PREFLIGHT_REASON"
+      return 0
+    fi
 
-  RUNNING_STYLE_PREFLIGHT_RESULT="ok"
-  RUNNING_STYLE_PREFLIGHT_REASON="running-style complete for RUN_DATE=$RUN_DATE (actual=$rs_actual expected=$expected_count)"
-  log "running-style preflight OK — $RUNNING_STYLE_PREFLIGHT_REASON"
-  return 0
+    if [ "$rs_attempt" -lt "$RS_RETRY_MAX_ATTEMPTS" ]; then
+      log "running-style preflight: incomplete (actual=$rs_actual expected=$expected_count) — retry $rs_attempt/$RS_RETRY_MAX_ATTEMPTS, waiting ${RS_RETRY_INTERVAL_SECONDS}s for prewarm to materialize"
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        log "DRY_RUN: would sleep ${RS_RETRY_INTERVAL_SECONDS}s before retry"
+      else
+        sleep "$RS_RETRY_INTERVAL_SECONDS"
+      fi
+    fi
+  done
+
+  # All RS_RETRY_MAX_ATTEMPTS attempts still incomplete for the full date.
+  # Fall back to per-category coverage so a category that IS complete does
+  # not keep waiting on a category that is stuck.
+  log "running-style preflight: still incomplete after $RS_RETRY_MAX_ATTEMPTS attempts (actual=$rs_actual expected=$expected_count) — checking per-category coverage"
+  running_style_percategory_fallback "$target_nen" "$target_tsukihi"
+  return $?
 }
 
 log "RUN_DATE=$RUN_DATE RUN_DATE_ISO=$RUN_DATE_ISO REPO_ROOT=$REPO_ROOT"
@@ -299,8 +501,13 @@ log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
 DAYS_AHEAD="${PREDICT_DAYS_AHEAD:-0}"
 
 # Pre-flight 9: PREDICT_CATEGORIES — scope which categories the container
-# runs.  Three-way resolution (highest priority wins):
+# runs.  Resolution order (highest priority wins):
 #
+#   0. running-style per-category fallback (running_style_percategory_fallback,
+#      pre-flight 2): when running-style is still incomplete for the full
+#      expected count after RS_RETRY_MAX_ATTEMPTS retries, only the categories
+#      whose running-style coverage IS complete are run.
+#      RUNNING_STYLE_PARTIAL_CATEGORIES=1 marks this case for logging below.
 #   1. Explicit caller env override from a manual/local invocation: honoured as-is.
 #   2. Time-based auto-scope for local early-morning runs:
 #      jvd_se (JRA mirror) is not available until ~09:03 JST, so running JRA
@@ -313,8 +520,11 @@ DAYS_AHEAD="${PREDICT_DAYS_AHEAD:-0}"
 # This local-only auto-scope avoids wasteful JRA races=0 runs before the mirror
 # is ready. It is not production scheduling logic.
 if [ -n "${PREDICT_CATEGORIES:-}" ]; then
-  # Explicit override from caller — use it unchanged.
-  log "PREDICT_CATEGORIES=$PREDICT_CATEGORIES (caller override)"
+  if [ "$RUNNING_STYLE_PARTIAL_CATEGORIES" = "1" ]; then
+    log "PREDICT_CATEGORIES=$PREDICT_CATEGORIES (running-style per-category fallback subset)"
+  else
+    log "PREDICT_CATEGORIES=$PREDICT_CATEGORIES (caller override)"
+  fi
 else
   JST_HOUR_NOW="$(date -u -v+9H +%H)"
   if [ "$JST_HOUR_NOW" -le 8 ]; then

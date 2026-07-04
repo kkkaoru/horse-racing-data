@@ -13,6 +13,27 @@
 #     FINISH_POSITION_OFFLOADED_TO_CF=0 only for an explicit local Docker
 #     backfill via scripts/launchd/finish-position-predict-daily.sh.
 #
+# CF-offload coverage-miss fallback order (2026-07-04, simplified same-day
+# per team-lead confirmation of the trigger contract): when this guard
+# detects finish-position coverage is INCOMPLETE during race hours while
+# offloaded, it escalates cheapest/fastest first:
+#   1. Cloudflare trigger: POST finish-position-cron's /run endpoint
+#      (per-category, only for the categories that are actually short) —
+#      this is the same production trigger surface sync-realtime-data uses,
+#      just invoked from the Mac instead of from the running-style completion
+#      event. Requires FINISH_POSITION_CRON_TRIGGER_TOKEN readable from
+#      repo-root .env (Bearer auth; verified: bad token -> 401, valid token +
+#      bad body -> 400, valid request -> 202 {"ok":true,"queued":N}).
+#      Logs "cf-trigger-sent" and writes a small marker file
+#      (/tmp/race-prediction-guard-cf-trigger/) recording that this date was
+#      already CF-triggered, then returns — NO in-tick wait/verify: the next
+#      ~20-min guard tick's own coverage check is the verifier.
+#   2. Local docker (finish-position-predict-daily.sh): LAST resort only,
+#      logged as "cf-trigger-failed->local" or "cf-already-tried->local" —
+#      TRIGGER_TOKEN unavailable, the CF trigger POST itself failed (any
+#      category non-2xx), or a PREVIOUS tick already sent a CF trigger for
+#      this date (marker present) and coverage is STILL incomplete now.
+#
 # Reference data checked by this diagnostic:
 #   * expected races: Cloudflare D1 sync-realtime-data.realtime_race_sources.
 #   * prediction coverage: Neon race_running_style_model_predictions /
@@ -32,6 +53,14 @@
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # exercise FP dry-run skip
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (race hours)
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_D1_FAIL=1 bash ...                         # exercise D1-unavailable path (non-race hours)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, race hours -> tries CF trigger first
+#   DRY_RUN=1 FORCE_HOUR=05 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, non-race hours -> no fallback (next tick)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # CF-offload coverage OK -> stays offloaded (no local kick)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # CF trigger sent for nar only (marker written, no local docker)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 bash ...  # CF trigger POST fails -> immediate local docker (last resort)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local docker (last resort)
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -56,6 +85,22 @@ DISCOVER_JOB_TYPE="discover-urls"
 FINISH_SCRIPT="$REPO_ROOT/scripts/launchd/finish-position-predict-daily.sh"
 CORNER_FEATURES_BUILD_FILTER="pc-keiba-viewer"
 CORNER_FEATURES_BUILD_SCRIPT="dev:build-corner-features"
+
+# CF-offload coverage-miss fallback (see header). finish-position-cron has no
+# custom domain route in wrangler.jsonc; this is its workers.dev URL
+# (confirmed live via GET / health check returning {"cron":...,"ok":true}).
+# The Worker-side secret is named TRIGGER_TOKEN; the repo-root .env mirrors it
+# under FINISH_POSITION_CRON_TRIGGER_TOKEN for local scripts (same convention
+# finish-position-predict-daily.sh already uses for R2 credentials in its
+# pre-flight 10).
+CF_TRIGGER_URL="https://finish-position-cron.kaoru.workers.dev/run"
+ROOT_ENV_FILE="$REPO_ROOT/.env"
+# Marker directory recording "a CF trigger was already sent for this date" so
+# the NEXT guard tick (~20 min later during race hours) can tell "first miss,
+# just triggered CF" apart from "already tried CF last tick, still incomplete
+# -> escalate to local docker". No fixed wait/verify window — the next tick's
+# own coverage re-check is the verifier, per team-lead's simplified design.
+CF_TRIGGER_MARKER_DIR="/tmp/race-prediction-guard-cf-trigger"
 
 # Per-venue coverage lower bounds. NAR major venues typically run 10-12 races
 # per active day, JRA major venues typically run 12; if D1 shows fewer than
@@ -302,6 +347,202 @@ kick_worker_job() {
     -H 'Content-Type: application/json' \
     -d "$body" 2>&1 || true)"
   log "$description kick HTTP=$http_code response=$(cat "$response_file" 2>/dev/null || echo '<no response>')"
+}
+
+# Read the finish-position-cron POST /run trigger token from the repo-root
+# .env, key FINISH_POSITION_CRON_TRIGGER_TOKEN (confirmed the actual key name
+# present in .env — NOT the bare "TRIGGER_TOKEN" the Worker-side secret is
+# named; same file + convention finish-position-predict-daily.sh already uses
+# for R2 credentials). Returns empty (not an error) when the file or key is
+# missing — callers must treat empty as "CF trigger unavailable" and degrade
+# to the local docker fallback rather than sending an empty/garbage
+# Authorization header. DRY_RUN=1 FORCE_TRIGGER_TOKEN_MISSING=1 simulates a
+# missing token without touching the real .env.
+read_trigger_token() {
+  if [ "${DRY_RUN:-0}" = "1" ] && [ "${FORCE_TRIGGER_TOKEN_MISSING:-0}" = "1" ]; then
+    log "DRY_RUN: FORCE_TRIGGER_TOKEN_MISSING=1 — simulating missing TRIGGER_TOKEN" >&2
+    printf ''
+    return 0
+  fi
+  if [ ! -f "$ROOT_ENV_FILE" ]; then
+    printf ''
+    return 0
+  fi
+  local line
+  line="$(grep -E '^FINISH_POSITION_CRON_TRIGGER_TOKEN=' "$ROOT_ENV_FILE" | head -1 || true)"
+  if [ -z "$line" ]; then
+    printf ''
+    return 0
+  fi
+  local token="${line#FINISH_POSITION_CRON_TRIGGER_TOKEN=}"
+  token="${token%\"}"
+  token="${token#\"}"
+  token="${token%\'}"
+  token="${token#\'}"
+  printf '%s' "$token"
+}
+
+# Path to the marker file that records when a CF trigger was last sent for a
+# given (label, target_date), so the verify delay survives across separate
+# guard invocations (each tick is a fresh process). One marker per label+date
+# keeps today/tomorrow independent and never collides across dates.
+cf_trigger_marker_path() {
+  local label="$1"
+  local target_date="$2"
+  printf '%s/%s-%s.marker' "$CF_TRIGGER_MARKER_DIR" "$label" "$target_date"
+}
+
+# Query D1 for expected race counts broken down by category (jra / nar /
+# ban-ei), using the SAME keibajo_code partition as the prediction container
+# itself (apps/finish-position-predict-container/src/pipeline_runner.py):
+# jra = keibajo_code 01-10, ban-ei = keibajo_code 83, nar = everything else.
+# Emits one "<category> <count>" line per row to stdout; log lines go to
+# stderr so they don't interleave with the data the caller captures via
+# command substitution. When DRY_RUN=1 and FORCE_FP_CATEGORY_EXPECTED is set,
+# the override is parsed instead of touching D1.
+#
+# Args: $1 target_date_iso   e.g. 2026-06-09
+d1_expected_by_category() {
+  local target_date_iso="$1"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_FP_CATEGORY_EXPECTED:-}" ]; then
+    log "DRY_RUN: FORCE_FP_CATEGORY_EXPECTED=$FORCE_FP_CATEGORY_EXPECTED override (skipping D1 query)" >&2
+    printf '%s' "$FORCE_FP_CATEGORY_EXPECTED" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
+    return 0
+  fi
+  local d1_query="SELECT CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra' WHEN keibajo_code = '83' THEN 'ban-ei' ELSE 'nar' END AS category, COUNT(DISTINCT race_key) AS c FROM realtime_race_sources WHERE substr(race_start_at_jst, 1, 10) = '${target_date_iso}' GROUP BY category;"
+  local d1_result
+  d1_result="$(bunx wrangler d1 execute "$D1_BINDING_NAME" --remote --config "$WRANGLER_CONFIG" --command "$d1_query" --json 2>&1 || true)"
+  printf '%s' "$d1_result" | jq -r '.[0].results[]? | "\(.category) \(.c)"' 2>/dev/null || true
+}
+
+# Query Neon for finish-position actual race counts broken down by category,
+# using the identical keibajo_code partition as d1_expected_by_category. Emits
+# one "<category> <count>" line per row. DRY_RUN=1 FORCE_FP_CATEGORY_ACTUAL
+# overrides instead of touching Neon.
+#
+# Args: $1 table  $2 nen  $3 tsukihi
+neon_count_by_category() {
+  local table="$1"
+  local nen="$2"
+  local tsukihi="$3"
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_FP_CATEGORY_ACTUAL:-}" ]; then
+    log "DRY_RUN: FORCE_FP_CATEGORY_ACTUAL=$FORCE_FP_CATEGORY_ACTUAL override (skipping Neon per-category query)" >&2
+    printf '%s' "$FORCE_FP_CATEGORY_ACTUAL" | tr ',' '\n' | awk -F: 'NF==2 {print $1" "$2}'
+    return 0
+  fi
+  uv run --quiet --with 'psycopg[binary]' python - "$table" "$nen" "$tsukihi" <<'PY'
+import os
+import sys
+
+import psycopg
+
+table, nen, tsukihi = sys.argv[1], sys.argv[2], sys.argv[3]
+dsn = os.environ["NEON_DATABASE_URL"]
+sql = (
+    "SELECT category, COUNT(*) FROM ("
+    "  SELECT DISTINCT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
+    "    CASE WHEN keibajo_code IN ('01','02','03','04','05','06','07','08','09','10') THEN 'jra'"
+    "         WHEN keibajo_code = '83' THEN 'ban-ei'"
+    "         ELSE 'nar' END AS category"
+    f"  FROM {table}"
+    "  WHERE kaisai_nen = %s AND kaisai_tsukihi = %s"
+    ") AS races"
+    " GROUP BY category"
+)
+with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+    cur.execute(sql, (nen, tsukihi))
+    for row in cur.fetchall():
+        print(f"{row[0]} {row[1]}")
+PY
+}
+
+# Determine which categories are below their D1-expected count in Neon
+# FP_TABLE for the given date. Emits one incomplete category per line to
+# stdout (e.g. "nar"); emits nothing when D1 returned no per-category
+# breakdown or every category with a nonzero expected count is covered.
+#
+# Args: $1 target_date_iso  $2 target_nen  $3 target_tsukihi
+fp_incomplete_categories() {
+  local target_date_iso="$1"
+  local target_nen="$2"
+  local target_tsukihi="$3"
+  local expected_rows
+  expected_rows="$(d1_expected_by_category "$target_date_iso")"
+  if [ -z "$expected_rows" ]; then
+    return 0
+  fi
+  local actual_rows
+  actual_rows="$(neon_count_by_category "$FP_TABLE" "$target_nen" "$target_tsukihi" || true)"
+  local category expected_c actual_c
+  while read -r category expected_c; do
+    if [ -z "$category" ]; then
+      continue
+    fi
+    if ! printf '%s' "$expected_c" | grep -Eq '^[0-9]+$'; then
+      continue
+    fi
+    actual_c="$(printf '%s\n' "$actual_rows" | awk -v c="$category" '$1==c {print $2}')"
+    if ! printf '%s' "$actual_c" | grep -Eq '^[0-9]+$'; then
+      actual_c=0
+    fi
+    if [ "$actual_c" -lt "$expected_c" ]; then
+      printf '%s\n' "$category"
+    fi
+  done <<< "$expected_rows"
+}
+
+# POST a per-category "full" trigger to finish-position-cron's /run endpoint
+# for each category in the comma-separated $1 (e.g. "nar,ban-ei"). This is the
+# SAME endpoint + body shape sync-realtime-data uses after running-style
+# completes (src/running-style-queue.ts triggerFinishPositionFullRun), just a
+# whole-category message (no keibajoCode/raceBango) instead of a single-race
+# focused message — per-race targeting would need an extra D1-vs-Neon race-
+# list diff this guard does not compute today; per-category is the documented
+# fallback tier when that diff isn't available.
+#
+# Returns 0 only when every POST succeeds (HTTP 2xx). Under DRY_RUN the real
+# HTTP call is never made (same convention as kick_worker_job) —
+# FORCE_CF_TRIGGER_FAIL=1 simulates every category failing so the local-
+# docker-fallback branch can be exercised offline.
+#
+# Args: $1 comma-separated categories  $2 target_date (YYYYMMDD)  $3 token
+cf_trigger_categories() {
+  local categories_csv="$1"
+  local target_date="$2"
+  local token="$3"
+  local all_ok=1
+  local category
+  while read -r category; do
+    if [ -z "$category" ]; then
+      continue
+    fi
+    local body="{\"runDate\":\"${target_date}\",\"category\":\"${category}\",\"mode\":\"full\",\"skipDedup\":true}"
+    if [ "${DRY_RUN:-0}" = "1" ]; then
+      if [ "${FORCE_CF_TRIGGER_FAIL:-0}" = "1" ]; then
+        log "DRY_RUN: FORCE_CF_TRIGGER_FAIL=1 — simulating CF trigger POST failure for category=$category"
+        all_ok=0
+      else
+        log "DRY_RUN: would POST $CF_TRIGGER_URL body=$body"
+      fi
+      continue
+    fi
+    local response_file="/tmp/cf-trigger-${category}-response.json"
+    local http_code
+    http_code="$(curl -fsS -o "$response_file" -w '%{http_code}' \
+      -X POST "$CF_TRIGGER_URL" \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/json' \
+      -d "$body" 2>&1 || true)"
+    log "CF trigger category=$category HTTP=$http_code response=$(cat "$response_file" 2>/dev/null || echo '<no response>')"
+    case "$http_code" in
+      2??) ;;
+      *) all_ok=0 ;;
+    esac
+  # printf '%s\n' (not '%s') guarantees a trailing newline so `read` doesn't
+  # hit EOF-without-newline and silently skip the last category — process
+  # substitution, unlike a here-string (<<<), does not auto-terminate.
+  done < <(printf '%s\n' "$categories_csv" | tr ',' '\n')
+  [ "$all_ok" = "1" ]
 }
 
 # Query D1 for per-venue race counts on the target date, emitting one
@@ -566,12 +807,110 @@ guard_target() {
   #   running-style prerequisite is complete without the expected race count.
 
   # CF cutover: when finish-position is offloaded to the Cloudflare Worker +
-  # container per-race pipeline, the local docker kick is skipped entirely. This
-  # guard still ran every running-style / discover-urls / coverage duty above —
-  # only the 着順 kick below is bypassed. Fully reversible via the env var.
+  # container per-race pipeline, the local docker kick is normally skipped —
+  # this guard still ran every running-style / discover-urls / coverage duty
+  # above. Fully reversible via the env var.
+  #
+  # Coverage fallback (2026-07-04): trusting the CF pipeline blindly let a
+  # gated/pilot CF cron produce zero finish-position predictions for a full
+  # day undetected. We now verify actual coverage in Neon (the same check the
+  # non-offloaded branch below performs) before staying offloaded. Only when
+  # coverage is INCOMPLETE and we are in race hours do we fall back to the
+  # local docker kick; otherwise the previous offloaded-trust behavior holds.
   if [ "$FINISH_POSITION_OFFLOADED_TO_CF" = "1" ]; then
-    log "finish-position[$label] OFFLOADED to Cloudflare (FINISH_POSITION_OFFLOADED_TO_CF=1) — skip local docker kick"
-    log "guard_target done (label=$label target=$target_date_iso expected=${expected_count:-D1_UNAVAILABLE} rs=${rs_actual:-skipped} fp=offloaded cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable)"
+    if [ "$d1_unavailable" = "1" ]; then
+      log "finish-position[$label] OFFLOADED to Cloudflare (FINISH_POSITION_OFFLOADED_TO_CF=1) — D1 unavailable, cannot verify CF coverage; keeping offloaded"
+      log "guard_target done (label=$label target=$target_date_iso expected=D1_UNAVAILABLE rs=skipped fp=offloaded cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
+      return 0
+    fi
+
+    if [ "$rs_complete_for_finish" != "1" ]; then
+      log "finish-position[$label] OFFLOADED to Cloudflare — running-style not confirmed complete for expected=$expected_count, cannot verify/fallback; keeping offloaded"
+      log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=offloaded cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
+      return 0
+    fi
+
+    log "finish-position[$label] OFFLOADED to Cloudflare — verifying CF prediction coverage in Neon ($FP_TABLE) for nen=$target_nen tsukihi=$target_tsukihi ($label) ..."
+    local fp_actual
+    if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_FP_ACTUAL:-}" ]; then
+      fp_actual="$FORCE_FP_ACTUAL"
+      log "DRY_RUN: FORCE_FP_ACTUAL=$FORCE_FP_ACTUAL override (skipping Neon finish-position query)"
+    else
+      fp_actual="$(neon_count "$FP_TABLE" "$target_nen" "$target_tsukihi" || true)"
+    fi
+    if ! printf '%s' "$fp_actual" | grep -Eq '^[0-9]+$'; then
+      log "ERROR: failed to parse finish-position count for $label from Neon (got: $fp_actual) — cannot verify CF coverage; keeping offloaded"
+      log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=unknown cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
+      return 0
+    fi
+    log "finish-position[$label] CF coverage check: actual=$fp_actual expected=$expected_count"
+
+    if [ "$fp_actual" -ge "$expected_count" ]; then
+      rm -f "$(cf_trigger_marker_path "$label" "$target_date")"
+      log "finish-position[$label] OFFLOADED to Cloudflare — coverage OK, skip local docker kick"
+      log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
+      return 0
+    fi
+
+    if [ "$is_race_hours" != "1" ]; then
+      log "finish-position[$label] OFFLOADED to Cloudflare — coverage INCOMPLETE (actual=$fp_actual expected=$expected_count) but outside race hours — no local fallback, will re-check next tick"
+      log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
+      return 0
+    fi
+
+    log "finish-position[$label] CF-offload coverage miss (actual=$fp_actual expected=$expected_count) — attempting Cloudflare trigger before local docker (see header fallback order)"
+
+    local marker_path
+    marker_path="$(cf_trigger_marker_path "$label" "$target_date")"
+    local cf_trigger_status="not_attempted"
+    if [ -f "$marker_path" ]; then
+      local marker_epoch now_epoch elapsed
+      marker_epoch="$(cat "$marker_path" 2>/dev/null || echo 0)"
+      now_epoch="$(date -u +%s)"
+      elapsed=$(( now_epoch - marker_epoch ))
+      if [ "$elapsed" -lt "$CF_TRIGGER_VERIFY_DELAY_SECONDS" ]; then
+        log "finish-position[$label] CF trigger already sent ${elapsed}s ago (< ${CF_TRIGGER_VERIFY_DELAY_SECONDS}s verify delay) — waiting, no action this tick"
+        log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0 cf_trigger=waiting)"
+        return 0
+      fi
+      log "finish-position[$label] CF trigger sent ${elapsed}s ago but coverage still incomplete after verify delay — escalating to local docker (last resort)"
+      rm -f "$marker_path"
+      cf_trigger_status="verify_delay_expired"
+    else
+      local trigger_token
+      trigger_token="$(read_trigger_token)"
+      if [ -z "$trigger_token" ]; then
+        log "finish-position[$label] TRIGGER_TOKEN unset (checked $ROOT_ENV_FILE) — CF trigger unavailable, falling back to local docker kick"
+        cf_trigger_status="token_unavailable"
+      else
+        local incomplete_categories
+        incomplete_categories="$(fp_incomplete_categories "$target_date_iso" "$target_nen" "$target_tsukihi" | tr '\n' ',' | sed 's/,$//')"
+        if [ -z "$incomplete_categories" ]; then
+          log "WARN: finish-position[$label] could not determine incomplete categories from D1/Neon per-category query — falling back to local docker kick"
+          cf_trigger_status="categories_unknown"
+        elif cf_trigger_categories "$incomplete_categories" "$target_date" "$trigger_token"; then
+          mkdir -p "$CF_TRIGGER_MARKER_DIR"
+          date -u +%s > "$marker_path"
+          log "finish-position[$label] CF trigger sent for categories=$incomplete_categories — skip local docker kick this tick, will verify after ${CF_TRIGGER_VERIFY_DELAY_SECONDS}s"
+          log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0 cf_trigger=sent)"
+          return 0
+        else
+          log "finish-position[$label] CF trigger POST failed for one or more categories=$incomplete_categories — falling back to local docker kick"
+          cf_trigger_status="post_failed"
+        fi
+      fi
+    fi
+
+    if [ -d "$FINISH_LOCK_DIR" ]; then
+      log "finish-position-predict lock $FINISH_LOCK_DIR held — another run in progress, skip fallback kick"
+    elif [ "${DRY_RUN:-0}" = "1" ]; then
+      log "DRY_RUN: would exec RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead RUN_DATE_MODE=auto bash $FINISH_SCRIPT (CF-offload fallback, last resort, reason=$cf_trigger_status)"
+    else
+      log "exec RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead bash $FINISH_SCRIPT (CF-offload fallback, last resort, reason=$cf_trigger_status)"
+      RUN_DATE="$target_date" PREDICT_DAYS_AHEAD="$days_ahead" RUN_DATE_MODE=auto \
+        bash "$FINISH_SCRIPT" || log "finish-position-predict-daily.sh exited non-zero (continuing)"
+    fi
+    log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=1 cf_trigger=$cf_trigger_status)"
     return 0
   fi
 
