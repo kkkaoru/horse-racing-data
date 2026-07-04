@@ -1804,17 +1804,13 @@ export const getPremiumRacePayload = async (
 // top-level `or not exists (...)` clauses — that bypassed every existing
 // suppression rule (backoff, near-start freshness, post-start cutoff) and
 // re-queued races whose data-top fetch already succeeded, even seconds
-// before or long after race start. They are nested inside the existing
-// near-start/post-start freshness branch as an alternative reason the
-// branch is "true", and gated to `rs.source = 'jra'` because NAR races
-// never receive training reviews or stable comments by design — without
-// the source gate, NAR rows (once re-enabled for data-top fetches) would
-// perpetually re-qualify since they can never satisfy that exists check.
-// A practical side effect: once the race is more than 15 minutes past
-// its start, the freshness branch's outer time gate is false and short
-// circuits, so missing training/comments stops forcing a re-queue too
-// (training reviews are pre-race content; if absent by then, retrying is
-// pointless and only wastes queue capacity).
+// before or long after race start. They are their own `and`-scoped disjunct
+// (see below), gated to `rs.source = 'jra'` because NAR races never receive
+// training reviews or stable comments by design — without the source gate,
+// NAR rows (once re-enabled for data-top fetches) would perpetually
+// re-qualify since they can never satisfy that exists check. (The original
+// 15-minutes-post-start cutoff assumption below this comment turned out to
+// be wrong in practice — see the 2026-07-04 (later) note further down.)
 //
 // 2026-07-04: source filter relaxed back to `'jra' or (nar and non-Ban-ei)`,
 // restoring `isPremiumRaceDataTarget`'s pre-2026-06-28 semantics now that the
@@ -1828,6 +1824,29 @@ export const getPremiumRacePayload = async (
 // pre-existing `keibajo_code != '83'` AND (now doing double duty: it is also
 // folded into the nar disjunct so a Ban-ei nar row cannot slip through even
 // if the outer AND were ever removed).
+//
+// 2026-07-04 (later): netkeiba publishes 調教コメント (training reviews) and
+// 厩舎コメント (stable comments) progressively — sometimes hours after a race
+// starts — instead of always finishing before post time. The JRA
+// training/comments incompleteness reason above used to share the near-start
+// branch's 15-minutes-post-start outer gate, so once a race passed that
+// cutoff the race stopped re-qualifying even though the comments genuinely
+// never arrived (observed live: jra:2026:0704:02:09 and :02:10 stayed
+// comment-less until a human ran a manual fetch). That JRA sub-check has been
+// pulled out of the near-start branch into its own disjunct below with an
+// independent 4-hour-post-start gate — replacing the 15-minute cutoff for
+// this reason only, while leaving the near-start branch's own data-top
+// staleness timing untouched. A second gap: a race whose
+// `premium_training_reviews` rows exist but all have a null/empty
+// `comment_text` (partial scrape, or rider comment not yet published) used to
+// read as fully complete forever. The new disjunct adds a third arm checking
+// for at least one row with a non-empty `comment_text`. Both arms stay gated
+// to `rs.source = 'jra'` for the same reason as before: NAR races never
+// receive these tables, so without the gate they would perpetually re-qualify
+// once NAR is a data-top target. Still bounded by the existing retry_after
+// backoff and >=5-minute last_fetch spacing on the shared `state.status in
+// ('ok', 'empty', 'auth_required')` branch, so worst case is one extra fetch
+// attempt every 5 minutes for up to 4 hours past post time.
 export const listPremiumRaceDataFetchCandidatesByDate = async (
   db: D1Database,
   targetDate: string,
@@ -1866,24 +1885,31 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
                   rs.race_start_at_jst is not null
                   and datetime(rs.race_start_at_jst) > datetime(?, '-15 minutes')
                   and (
-                    (
-                      state.last_fetch_at is null
-                      or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
+                    state.last_fetch_at is null
+                    or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
+                  )
+                )
+                or (
+                  rs.source = 'jra'
+                  and rs.race_start_at_jst is not null
+                  and datetime(rs.race_start_at_jst) > datetime(?, '-4 hours')
+                  and (
+                    not exists (
+                      select 1
+                      from premium_training_reviews training_reviews
+                      where training_reviews.race_key = rs.race_key
                     )
-                    or (
-                      rs.source = 'jra'
-                      and (
-                        not exists (
-                          select 1
-                          from premium_training_reviews training_reviews
-                          where training_reviews.race_key = rs.race_key
-                        )
-                        or not exists (
-                          select 1
-                          from premium_stable_comments stable_comments
-                          where stable_comments.race_key = rs.race_key
-                        )
-                      )
+                    or not exists (
+                      select 1
+                      from premium_stable_comments stable_comments
+                      where stable_comments.race_key = rs.race_key
+                    )
+                    or not exists (
+                      select 1
+                      from premium_training_reviews training_reviews_comment
+                      where training_reviews_comment.race_key = rs.race_key
+                        and training_reviews_comment.comment_text is not null
+                        and training_reviews_comment.comment_text != ''
                     )
                   )
                 )
@@ -1903,7 +1929,7 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
           rs.race_bango
       `,
     )
-    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now, now, now, now)
+    .bind(targetDate.slice(0, 4), targetDate.slice(4, 8), now, now, now, now, now, now, now, now)
     .all<{ race_key: string }>();
   return rows.results.map((row) => ({ raceKey: row.race_key }));
 };

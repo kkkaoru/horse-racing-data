@@ -945,6 +945,7 @@ it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placehol
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
   );
 });
 
@@ -1023,18 +1024,17 @@ it("listPremiumRaceDataFetchCandidatesByDate SQL retries when stable_comments is
   expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_STABLE_COMMENTS_NOT_EXISTS_REGEX);
 });
 
-// 2026-07-04: the training/comments completeness checks must be nested
-// inside the near-start/post-start freshness branch and gated to
-// `rs.source = 'jra'` there, not sit as bare top-level `or not exists (...)`
-// clauses. A bare top-level clause would bypass every existing suppression
-// rule (backoff, near-start freshness, post-start cutoff) and would also
-// force NAR races (once re-enabled for data-top fetches) to re-qualify
-// forever, since NAR never receives training reviews or stable comments.
-// This regex requires the source gate and the training/comments not-exists
-// checks to appear together inside one `and (...)` group, distinguishing
-// it from the outer `where rs.source = 'jra'` base filter tested above.
+// 2026-07-04: the training/comments completeness checks must sit in their
+// own `and (...)` group gated to `rs.source = 'jra'`, not as bare top-level
+// `or not exists (...)` clauses. A bare top-level clause would bypass every
+// existing suppression rule (backoff, near-start freshness, post-start
+// cutoff) and would also force NAR races (once re-enabled for data-top
+// fetches) to re-qualify forever, since NAR never receives training reviews
+// or stable comments. This regex requires the source gate, the race's own
+// 4-hour-post-start time gate, and the training/comments not-exists checks
+// to appear together inside one `and (...)` group.
 const PREMIUM_RACE_DATA_CANDIDATE_JRA_GATED_TRAINING_REGEX =
-  /rs\.source\s*=\s*'jra'\s*and\s*\(\s*not exists\s*\(\s*select 1\s*from premium_training_reviews training_reviews/u;
+  /rs\.source\s*=\s*'jra'\s*and\s*rs\.race_start_at_jst is not null\s*and\s*datetime\(rs\.race_start_at_jst\) > datetime\(\?, '-4 hours'\)\s*and\s*\(\s*not exists\s*\(\s*select 1\s*from premium_training_reviews training_reviews/u;
 
 it("listPremiumRaceDataFetchCandidatesByDate SQL gates the training/comments completeness reasons to JRA only, nested (not top-level)", async () => {
   const all = vi.fn(async () => ({ results: [] }));
@@ -1046,6 +1046,22 @@ it("listPremiumRaceDataFetchCandidatesByDate SQL gates the training/comments com
   expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_JRA_GATED_TRAINING_REGEX);
 });
 
+// 2026-07-04 (later): a JRA-only third arm treats `premium_training_reviews`
+// rows that exist but all have a null/empty `comment_text` as incomplete —
+// netkeiba can create the row before the rider's comment text is published.
+const PREMIUM_RACE_DATA_CANDIDATE_TRAINING_COMMENT_TEXT_NOT_EXISTS_REGEX =
+  /not exists\s*\(\s*select 1\s*from premium_training_reviews training_reviews_comment\s*where training_reviews_comment\.race_key = rs\.race_key\s*and\s*training_reviews_comment\.comment_text is not null\s*and\s*training_reviews_comment\.comment_text != ''\s*\)/u;
+
+it("listPremiumRaceDataFetchCandidatesByDate SQL retries when training_reviews rows exist but none have a non-empty comment_text", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20260704", "2026-07-04T21:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(PREMIUM_RACE_DATA_CANDIDATE_TRAINING_COMMENT_TEXT_NOT_EXISTS_REGEX);
+});
+
 it("listPremiumRaceDataFetchCandidatesByDate keeps the same bind placeholder count after adding per-table completeness checks", async () => {
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn((..._args: unknown[]) => ({ all }));
@@ -1055,6 +1071,7 @@ it("listPremiumRaceDataFetchCandidatesByDate keeps the same bind placeholder cou
   expect(bind).toHaveBeenCalledWith(
     "2026",
     "0704",
+    "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",

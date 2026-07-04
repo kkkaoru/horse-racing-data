@@ -692,9 +692,9 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           insert into premium_training_reviews (
-            race_key, source_race_id, fetched_at, horse_number, created_at
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
           )
-          values (?, '202605120801', '2026-05-12T11:55:00+09:00', '1', '2026-05-12T11:55:00+09:00')
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', '1', 'sample training comment', '2026-05-12T11:55:00+09:00')
         `,
       )
       .bind("jra:2026:0512:08:01")
@@ -780,9 +780,9 @@ describe("worker scheduling with Miniflare", () => {
       .prepare(
         `
           insert into premium_training_reviews (
-            race_key, source_race_id, fetched_at, horse_number, created_at
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
           )
-          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', '2026-05-11T08:56:21+09:00')
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', 'sample training comment', '2026-05-11T08:56:21+09:00')
         `,
       )
       .bind("jra:2026:0512:08:01")
@@ -944,13 +944,16 @@ describe("worker scheduling with Miniflare", () => {
     expect(candidates).toEqual([]);
   });
 
-  // 2026-07-04: training reviews / stable comments are pre-race content —
-  // once a race is more than 15 minutes past its start, netkeiba will never
-  // publish them, so a missing row must not keep forcing a requeue forever.
-  // The near-start/post-start freshness branch's own time gate must win
-  // over the missing-training/comments reason, exactly like it already
-  // wins over the "data exists but might be stale" reason.
-  it("does not requeue a JRA race for missing training_reviews / stable_comments once the race start has clearly passed", async () => {
+  // 2026-07-04 (later): training reviews / stable comments are pre-race
+  // content, but netkeiba was observed publishing them progressively —
+  // sometimes hours after the race starts (jra:2026:0704:02:09 / :02:10
+  // stayed comment-less until a human ran a manual fetch). A missing row
+  // must therefore keep forcing a requeue for a 4-hour post-start grace
+  // window, not just the original 15-minute cutoff — this test moves `now`
+  // to just past that grace window's edge to prove the JRA training/comments
+  // reason's own time gate still eventually stops re-queueing (it does not
+  // force requeues forever).
+  it("does not requeue a JRA race for missing training_reviews / stable_comments once the 4-hour post-start grace window has elapsed", async () => {
     await seedRace("jra:2026:0512:08:01", "2026-05-12T11:00:00+09:00", { source: "jra" });
     await db
       .prepare(
@@ -986,10 +989,181 @@ describe("worker scheduling with Miniflare", () => {
       .bind("jra:2026:0512:08:01")
       .run();
     // Intentionally no premium_training_reviews / premium_stable_comments rows.
+    // race_start_at_jst is 11:00; 15:30 is 4.5 hours past post time, clearly
+    // beyond the 4-hour grace window.
     const candidates = await listPremiumRaceDataFetchCandidatesByDate(
       db,
       TEST_DATE,
-      "2026-05-12T12:00:00+09:00",
+      "2026-05-12T15:30:00+09:00",
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  // 2026-07-04 (later): the counterpart to the test above — the same missing
+  // training_reviews / stable_comments reason must still qualify the race for
+  // re-fetch while within the new 4-hour post-start grace window, proving the
+  // old 15-minute cutoff no longer silently drops the race.
+  it("requeues a JRA race for missing training_reviews / stable_comments while within the 4-hour post-start grace window", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+    // race_start_at_jst is 11:00; 13:00 is 2 hours past post time — within the
+    // 4-hour grace window, and well past the old 15-minute cutoff.
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T13:00:00+09:00",
+    );
+    expect(candidates).toEqual([{ raceKey: "jra:2026:0512:08:01" }]);
+  });
+
+  // 2026-07-04 (later): a race whose premium_training_reviews rows exist but
+  // all have a null/empty comment_text (netkeiba created the row before the
+  // rider's comment text was published) must also keep qualifying for
+  // re-fetch within the grace window — this isolates that third arm by giving
+  // the race complete premium_stable_comments rows, so only the training
+  // reviews' missing comment_text can explain the requeue.
+  it("requeues a JRA race whose training_reviews rows exist but none have a non-empty comment_text, within the grace window", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:00:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_training_reviews (
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', null, '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_stable_comments (
+            race_key, source_race_id, fetched_at, horse_number, comment_text, created_at
+          )
+          values (?, '202605120801', '2026-05-11T08:56:21+09:00', '1', 'sample', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T13:00:00+09:00",
+    );
+    expect(candidates).toEqual([{ raceKey: "jra:2026:0512:08:01" }]);
+  });
+
+  // 2026-07-04 (later): NAR races must never re-qualify via the missing
+  // training_reviews / stable_comments / comment_text reason, even within the
+  // new 4-hour post-start grace window — the source gate on that reason must
+  // hold for the wider window exactly as it did for the old 15-minute one.
+  it("does not requeue a NAR race for missing training_reviews / stable_comments within the 4-hour post-start grace window", async () => {
+    await seedRace("nar:2026:0512:55:01", "2026-05-12T11:00:00+09:00", { source: "nar" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605125501', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("nar:2026:0512:55:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605125501', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T13:00:00+09:00",
     );
     expect(candidates).toEqual([]);
   });
