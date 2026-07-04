@@ -255,6 +255,7 @@ test("acks focused full skipDedup messages without container when Neon already h
   );
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(claimRunMock).not.toHaveBeenCalled();
+  expect(sendMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
     day: "01",
@@ -991,7 +992,7 @@ test("retries focused skipDedup full messages with a fixed delay when result sta
   consoleSpy.mockRestore();
 });
 
-test("re-enqueues a fresh message with a short delay when result status is busy", async () => {
+test("re-enqueues a fresh message at the base delay on the first busy encounter", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockResolvedValue({
     type: "result",
@@ -1021,14 +1022,14 @@ test("re-enqueues a fresh message with a short delay when result status is busy"
       raceBango: "01",
       runYmd: "20260629",
     }),
-    { delaySeconds: 60 },
+    { delaySeconds: 30 },
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   consoleSpy.mockRestore();
 });
 
-test("increments an existing busyRequeueCount when result status is busy again", async () => {
+test("increments an existing busyRequeueCount and grows the re-enqueue delay when result status is busy again", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockResolvedValue({
     type: "result",
@@ -1051,8 +1052,67 @@ test("increments an existing busyRequeueCount when result status is busy again",
     makeEnv(),
   );
   expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ busyRequeueCount: 6 }), {
-    delaySeconds: 60,
+    delaySeconds: 130,
   });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("caps the re-enqueue delay at the maximum once busyRequeueCount is high", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        busyRequeueCount: 20,
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ busyRequeueCount: 21 }), {
+    delaySeconds: 300,
+  });
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  consoleSpy.mockRestore();
+});
+
+test("still re-enqueues one busyRequeueCount below the exhaustion threshold", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockResolvedValue({
+    type: "result",
+    racesPredicted: 0,
+    category: "nar",
+    status: "busy",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        busyRequeueCount: 44,
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({ busyRequeueCount: 45 }), {
+    delaySeconds: 300,
+  });
+  expect(retryMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);
   consoleSpy.mockRestore();
 });
@@ -1068,7 +1128,7 @@ test("retries toward the DLQ instead of re-enqueueing once the busy requeue budg
   await handleQueue(
     makeBatch([
       makeMessage({
-        busyRequeueCount: 80,
+        busyRequeueCount: 45,
         category: "nar",
         keibajoCode: "35",
         mode: "full",

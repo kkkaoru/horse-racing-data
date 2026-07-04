@@ -37,20 +37,24 @@ const FOCUSED_FULL_BUSY_STATUS = "busy";
 const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
 // The container returns "busy" when another race in the same category holds its
 // single per-process pipeline slot. Re-enqueue a fresh copy (which resets the
-// message's retry attempt count) with a short delay so the starved race keeps
-// waiting for the slot WITHOUT burning the DLQ retry budget, bounded by
-// MAX_BUSY_REQUEUES so a permanently-stuck slot still surfaces via the DLQ.
-// BUSY_REQUEUE_DELAY_SECONDS stays at 60: each busy redelivery re-runs the Neon
-// focused-full completion guard, so 60s balances slot-pickup latency against
-// Neon query cost -- do NOT lower it.
-const BUSY_REQUEUE_DELAY_SECONDS = 60;
-// 60s x 80 = ~80-minute busy budget, sized to cover ~2-3 slow/retrying
-// predecessor pipelines ahead in the same category. The 2026-07-02 production
-// smoke showed a single predecessor occupying the slot ~38 min across
-// cold-start retries, which alone nearly exhausted the previous 40-min (60s x
-// 40) budget; the only added cost of the higher cap is queue ops (one send per
-// busy re-enqueue) plus one Neon completion-check query per redelivery.
-const MAX_BUSY_REQUEUES = 80;
+// message's retry attempt count) so the starved race keeps waiting for the
+// slot WITHOUT burning the DLQ retry budget, bounded by MAX_BUSY_REQUEUES so a
+// permanently-stuck slot still surfaces via the DLQ. The re-enqueue delay
+// grows with busyRequeueCount (see computeBusyRequeueDelaySeconds below)
+// rather than staying fixed: each redelivery re-runs the Neon focused-full
+// completion guard, so a short delay while the slot is likely to free up soon
+// and a longer delay once many races are already queued ahead keeps
+// slot-pickup latency low without scaling Neon query volume linearly with
+// how deep in a same-day burst this message sits.
+const BUSY_REQUEUE_DELAY_BASE_SECONDS = 30;
+const BUSY_REQUEUE_DELAY_STEP_SECONDS = 20;
+const BUSY_REQUEUE_DELAY_MAX_SECONDS = 300;
+// A single per-category container slot serializes every race queued for that
+// category on a given day. Sized so the delay schedule above (30s, 50s, ...,
+// capped at 300s) sums to roughly 3 hours of patience for the last message in
+// the queue, comfortably outlasting a worst-case same-day single-category
+// burst of up to ~80 races plus one slow cold-start predecessor.
+const MAX_BUSY_REQUEUES = 45;
 const BUSY_REQUEUE_COUNT_ZERO = 0;
 const BUSY_REQUEUE_COUNT_INCREMENT = 1;
 // Retry budget reasoning: the Python container's focused-full fire-and-forget
@@ -221,6 +225,14 @@ const raceScopeSuffix = (keibajoCode?: string, raceBango?: string): string => {
   return suffix;
 };
 
+// Grows the busy re-enqueue delay with how many times this message has already
+// been requeued busy, capped at BUSY_REQUEUE_DELAY_MAX_SECONDS.
+const computeBusyRequeueDelaySeconds = (busyRequeueCount: number): number =>
+  Math.min(
+    BUSY_REQUEUE_DELAY_BASE_SECONDS + BUSY_REQUEUE_DELAY_STEP_SECONDS * busyRequeueCount,
+    BUSY_REQUEUE_DELAY_MAX_SECONDS,
+  );
+
 // This focused-full message's race never started: the container's single
 // per-process pipeline slot for this category was busy with a DIFFERENT race.
 const requeueBusyFocusedFull = async (
@@ -240,7 +252,7 @@ const requeueBusyFocusedFull = async (
   const nextCount = currentCount + BUSY_REQUEUE_COUNT_INCREMENT;
   await env.PREDICT_QUEUE.send(
     { ...message.body, busyRequeueCount: nextCount },
-    { delaySeconds: BUSY_REQUEUE_DELAY_SECONDS },
+    { delaySeconds: computeBusyRequeueDelaySeconds(currentCount) },
   );
   console.log(
     `Focused full slot busy, re-enqueued category=${category} runYmd=${runYmd}${suffix} busyRequeueCount=${nextCount}`,
