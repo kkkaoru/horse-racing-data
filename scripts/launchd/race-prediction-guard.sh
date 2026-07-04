@@ -57,10 +57,12 @@
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, non-race hours -> no fallback (next tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # CF-offload coverage OK -> stays offloaded (no local kick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
-#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # CF trigger sent for nar only (marker written, no local docker)
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # cf-trigger-sent for nar only (marker written, no local docker this tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
-#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 bash ...  # CF trigger POST fails -> immediate local docker (last resort)
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 bash ...  # cf-trigger-failed->local (CF POST fails -> immediate local docker)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local docker (last resort)
+#   # second-tick example: run the "cf-trigger-sent" command above once (leaves a marker), then run the SAME command again ->
+#   # cf-already-tried->local (previous tick's CF trigger didn't clear coverage -> local docker last resort)
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -382,10 +384,12 @@ read_trigger_token() {
   printf '%s' "$token"
 }
 
-# Path to the marker file that records when a CF trigger was last sent for a
-# given (label, target_date), so the verify delay survives across separate
-# guard invocations (each tick is a fresh process). One marker per label+date
-# keeps today/tomorrow independent and never collides across dates.
+# Path to the marker file that records "a CF trigger was already sent" for a
+# given (label, target_date), so that fact survives across separate guard
+# invocations (each tick is a fresh process) — the next tick can tell "first
+# miss, just triggered CF" apart from "already tried CF, still incomplete ->
+# escalate". One marker per label+date keeps today/tomorrow independent and
+# never collides across dates.
 cf_trigger_marker_path() {
   local label="$1"
   local target_date="$2"
@@ -864,18 +868,14 @@ guard_target() {
     marker_path="$(cf_trigger_marker_path "$label" "$target_date")"
     local cf_trigger_status="not_attempted"
     if [ -f "$marker_path" ]; then
-      local marker_epoch now_epoch elapsed
-      marker_epoch="$(cat "$marker_path" 2>/dev/null || echo 0)"
-      now_epoch="$(date -u +%s)"
-      elapsed=$(( now_epoch - marker_epoch ))
-      if [ "$elapsed" -lt "$CF_TRIGGER_VERIFY_DELAY_SECONDS" ]; then
-        log "finish-position[$label] CF trigger already sent ${elapsed}s ago (< ${CF_TRIGGER_VERIFY_DELAY_SECONDS}s verify delay) — waiting, no action this tick"
-        log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0 cf_trigger=waiting)"
-        return 0
-      fi
-      log "finish-position[$label] CF trigger sent ${elapsed}s ago but coverage still incomplete after verify delay — escalating to local docker (last resort)"
+      # A previous tick already sent a CF trigger for this date and coverage
+      # is STILL incomplete now — no fixed wait/verify window. The next
+      # ~20-min guard tick's own coverage re-check is the verifier (per
+      # team-lead), so seeing the marker again here means that check already
+      # happened at least once and came back short.
+      log "finish-position[$label] cf-already-tried->local — a previous tick already sent a CF trigger for $target_date and coverage is still incomplete"
       rm -f "$marker_path"
-      cf_trigger_status="verify_delay_expired"
+      cf_trigger_status="already_tried"
     else
       local trigger_token
       trigger_token="$(read_trigger_token)"
@@ -891,11 +891,11 @@ guard_target() {
         elif cf_trigger_categories "$incomplete_categories" "$target_date" "$trigger_token"; then
           mkdir -p "$CF_TRIGGER_MARKER_DIR"
           date -u +%s > "$marker_path"
-          log "finish-position[$label] CF trigger sent for categories=$incomplete_categories — skip local docker kick this tick, will verify after ${CF_TRIGGER_VERIFY_DELAY_SECONDS}s"
+          log "finish-position[$label] cf-trigger-sent for categories=$incomplete_categories — skip local docker kick this tick, next tick's coverage check is the verifier"
           log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0 cf_trigger=sent)"
           return 0
         else
-          log "finish-position[$label] CF trigger POST failed for one or more categories=$incomplete_categories — falling back to local docker kick"
+          log "finish-position[$label] cf-trigger-failed->local — CF trigger POST failed for one or more categories=$incomplete_categories"
           cf_trigger_status="post_failed"
         fi
       fi
