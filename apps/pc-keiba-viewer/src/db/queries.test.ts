@@ -785,15 +785,15 @@ it("getFinishPositionLambdarankPredictions ignores stale subclass active rows", 
   expect(queryText).not.toMatch(/order by \(subclass is null\) asc/u);
 });
 
-it("getFinishPositionLambdarankPredictions prioritizes the NAR per-cell model", async () => {
+it("getFinishPositionLambdarankPredictions does not prioritize reverted NAR a957 cell rows", async () => {
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
-  expect(queryText).toMatch(/select\s+p_cell\.model_version,\s+0 as priority/u);
-  expect(queryText).toMatch(/p_cell\.model_version = 'nar-xgb-cell-a957d8b4-v1'/u);
   expect(queryText).toMatch(/allowed_model_versions\(model_version\) as/u);
-  expect(queryText).toMatch(/'nar-xgb-cell-a957d8b4-v1'/u);
+  expect(queryText).not.toMatch(/p_cell/u);
+  expect(queryText).not.toMatch(/0 as priority/u);
+  expect(queryText).not.toMatch(/nar-xgb-cell-a957d8b4-v1/u);
   expect(queryText).toMatch(/'nar'/u);
 });
 

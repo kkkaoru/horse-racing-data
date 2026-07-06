@@ -2892,42 +2892,12 @@ const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
   return "nar";
 };
 
-const NAR_MILE_E_VENUE54_CELL_MODEL_VERSION = "nar-xgb-cell-a957d8b4-v1";
 const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = [
   "jra-cb-v9-sim-2013-clean",
   "iter12-nar-xgb-hpo-v8-clean188",
   "banei-cb-v9-sim-2011",
   "banei-cb-v8-window2011-wf-15y",
-  NAR_MILE_E_VENUE54_CELL_MODEL_VERSION,
 ] as const;
-
-const toInteger = (value: string | null): number | null => {
-  if (value === null) return null;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-
-const resolveFinishPositionCellModelVersion = (
-  category: string,
-  race: RaceDetail,
-): string | null => {
-  const distance = toInteger(race.kyori);
-  const month = toInteger(race.kaisaiTsukihi.slice(0, 2));
-  if (
-    category === "nar" &&
-    race.gradeCode === "E" &&
-    race.keibajoCode === "54" &&
-    distance !== null &&
-    distance >= 1200 &&
-    distance < 1600 &&
-    month !== null &&
-    month >= 6 &&
-    month <= 8
-  ) {
-    return NAR_MILE_E_VENUE54_CELL_MODEL_VERSION;
-  }
-  return null;
-};
 
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
@@ -2944,7 +2914,6 @@ export const getFinishPositionLambdarankPredictions = cache(
       async () => {
         if (runners.length <= 1) return [];
         const category = CATEGORY_FROM_RACE(race);
-        const cellModelVersion = resolveFinishPositionCellModelVersion(category, race);
         try {
           const result = await getDb().execute<{
             model_version: string;
@@ -2977,22 +2946,6 @@ export const getFinishPositionLambdarankPredictions = cache(
             selected_model as (
               select model_version
               from (
-                select
-                  p_cell.model_version,
-                  0 as priority,
-                  max(p_cell.prediction_generated_at) as recency
-                from race_finish_position_model_predictions p_cell
-                where ${cellModelVersion === null ? sql`false` : sql`p_cell.model_version = ${cellModelVersion}`}
-                  and p_cell.model_version in (
-                    select model_version from allowed_prediction_model_versions
-                  )
-                  and p_cell.source = ${race.source}
-                  and p_cell.kaisai_nen = ${race.kaisaiNen}
-                  and p_cell.kaisai_tsukihi = ${race.kaisaiTsukihi}
-                  and p_cell.keibajo_code = ${race.keibajoCode}
-                  and p_cell.race_bango = ${race.raceBango}
-                group by p_cell.model_version
-                union all
                 select p.model_version, 1 as priority, max(p.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p
                 join active on p.model_version =
