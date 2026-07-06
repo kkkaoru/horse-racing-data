@@ -174,6 +174,24 @@ def test_build_race_batches_emits_padded_shapes_and_mask():
     assert int(arrays["mask"].sum()) == len(df)
 
 
+def test_build_race_batches_replaces_numeric_nan_with_zero():
+    df = (
+        _make_synthetic_frame()
+        .with_row_index("_row_idx")
+        .with_columns(
+            pl.when(pl.col("_row_idx") == 0)
+            .then(float("nan"))
+            .otherwise(pl.col("speed_index_avg_5"))
+            .alias("speed_index_avg_5"),
+        )
+        .drop("_row_idx")
+    )
+    cols = resolve_transformer_feature_columns(list(df.columns))
+    stats = fit_normalization_stats(df, cols)
+    arrays = build_race_batches(df, stats)
+    assert np.isfinite(arrays["numeric_features"]).all()
+
+
 def test_iter_race_batches_emits_full_set_without_shuffle():
     df = _make_synthetic_frame()
     cols = resolve_transformer_feature_columns(list(df.columns))

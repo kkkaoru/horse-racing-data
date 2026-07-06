@@ -171,7 +171,11 @@ def _normalize_numeric(stats: NormalizationStats, df: pl.DataFrame) -> FloatArra
         mean = stats["numeric_mean"][col_idx]
         std = stats["numeric_std"][col_idx]
         normalized = (
-            ((series - mean) / std).fill_null(0.0).to_numpy().astype(np.float32)
+            ((series - mean) / std)
+            .fill_nan(0.0)
+            .fill_null(0.0)
+            .to_numpy()
+            .astype(np.float32)
         )
         out[:, col_idx] = normalized
     return out
