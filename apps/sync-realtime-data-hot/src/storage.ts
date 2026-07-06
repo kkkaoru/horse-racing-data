@@ -385,6 +385,11 @@ export const listClosingBackfillCandidates = async (
            last_odds_fetch_at is null
            or datetime(last_odds_fetch_at) < datetime(race_start_at_jst, '-5 minutes')
          )
+         and not exists (
+           select 1 from odds_snapshots
+           where odds_snapshots.race_key = odds_fetch_state.race_key
+           limit 1
+         )
        order by race_start_at_jst asc`,
     )
     .bind(kaisaiNen, kaisaiTsukihi)
@@ -541,6 +546,23 @@ export const bulkInsertOddsSnapshotRows = async (
       ),
   );
   await runD1Batches(db, statements);
+  const latestByRaceKey = new Map<string, string>();
+  for (const row of rows) {
+    const existing = latestByRaceKey.get(row.race_key);
+    if (!existing || row.fetched_at > existing) {
+      latestByRaceKey.set(row.race_key, row.fetched_at);
+    }
+  }
+  await runD1Batches(
+    db,
+    Array.from(latestByRaceKey).map(([raceKey, fetchedAt]) =>
+      db
+        .prepare(
+          `update odds_fetch_state set last_odds_fetch_at = ?, last_odds_queued_at = null, odds_fetch_lock_until = null, updated_at = ? where race_key = ?`,
+        )
+        .bind(fetchedAt, toJstIsoString(), raceKey),
+    ),
+  );
   return rows.length;
 };
 

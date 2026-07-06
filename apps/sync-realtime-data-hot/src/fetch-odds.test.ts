@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("./keiba-go", () => ({
+  buildNarOddsLinksFromRaceUrl: vi.fn(() => ({ tansho: "https://nar/tansho-direct" })),
   extractOddsLinks: vi.fn(() => ({ tansho: "https://nar/tansho" })),
   fetchOdds: vi.fn(async () => ({ tansho: [{ combination: "01", odds: 2.5 }] })),
   fetchRacePage: vi.fn(async () => "<html></html>"),
@@ -15,7 +16,12 @@ vi.mock("./jra", () => ({
   })),
 }));
 
-import { extractOddsLinks, fetchOdds, fetchRacePage } from "./keiba-go";
+import {
+  buildNarOddsLinksFromRaceUrl,
+  extractOddsLinks,
+  fetchOdds,
+  fetchRacePage,
+} from "./keiba-go";
 import { fetchJraOddsWithPlaywright } from "./jra";
 import {
   fetchAndStoreOdds,
@@ -35,7 +41,8 @@ afterEach(() => {
 });
 
 const sampleNarState = (overrides: Partial<OddsFetchStateRow> = {}): OddsFetchStateRow => ({
-  debaUrl: "https://nar/race",
+  debaUrl:
+    "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F28&k_raceNo=1&k_babaCode=18",
   kaisaiNen: "2026",
   kaisaiTsukihi: "0528",
   keibajoCode: "42",
@@ -225,7 +232,8 @@ it("fetchAndStoreOdds scrapes NAR and inserts when slot is due", async () => {
     new Date("2026-05-28T05:55:00Z"),
   );
   expect(result?.inserted).toBe(1);
-  expect(vi.mocked(fetchRacePage)).toHaveBeenCalled();
+  expect(vi.mocked(fetchRacePage)).not.toHaveBeenCalled();
+  expect(vi.mocked(buildNarOddsLinksFromRaceUrl)).toHaveBeenCalled();
   expect(vi.mocked(fetchOdds)).toHaveBeenCalled();
 });
 
@@ -242,7 +250,7 @@ it("fetchAndStoreOdds reuses cached odds links when present", async () => {
   expect(vi.mocked(extractOddsLinks)).not.toHaveBeenCalled();
 });
 
-it("fetchAndStoreOdds falls back to empty links when state json is malformed", async () => {
+it("fetchAndStoreOdds uses direct NAR links when state json is malformed", async () => {
   const env = buildEnv(
     {},
     {
@@ -250,17 +258,20 @@ it("fetchAndStoreOdds falls back to empty links when state json is malformed", a
     },
   );
   await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z"));
-  expect(vi.mocked(extractOddsLinks)).toHaveBeenCalled();
+  expect(vi.mocked(buildNarOddsLinksFromRaceUrl)).toHaveBeenCalled();
+  expect(vi.mocked(extractOddsLinks)).not.toHaveBeenCalled();
 });
 
-it("fetchAndStoreOdds treats odds_links_json non-object as empty", async () => {
+it("fetchAndStoreOdds falls back to DebaTable links only when direct NAR links cannot be built", async () => {
+  vi.mocked(buildNarOddsLinksFromRaceUrl).mockReturnValueOnce({});
   const env = buildEnv(
     {},
     {
-      state: sampleNarState({ oddsLinksJson: "42" }),
+      state: sampleNarState({ debaUrl: "https://example.com/bad", oddsLinksJson: "42" }),
     },
   );
   await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z"));
+  expect(vi.mocked(fetchRacePage)).toHaveBeenCalled();
   expect(vi.mocked(extractOddsLinks)).toHaveBeenCalled();
 });
 

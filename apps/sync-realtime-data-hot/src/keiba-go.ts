@@ -6,6 +6,16 @@ const TOP_PAGE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo/TodayRaceInfoTop
 const KEIBA_GO_BASE_URL = `${KEIBA_GO_ORIGIN}/KeibaWeb/TodayRaceInfo`;
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 sync-realtime-data/1.0";
+const NAR_ODDS_PATHS: Record<OddsType, string> = {
+  "3renpuku": "Odds3LenFuku",
+  "3rentan": "Odds3LenTan",
+  fukusho: "OddsTanFuku",
+  tansho: "OddsTanFuku",
+  umaren: "OddsUmLenFuku",
+  umatan: "OddsUmLenTan",
+  wakuren: "OddsWakuLenFukuTan",
+  wide: "OddsWide",
+};
 
 export const BABA_CODE_TO_LOCAL_KEIBAJO = NAR_BABA_CODE_TO_LOCAL_KEIBAJO;
 
@@ -72,6 +82,16 @@ export interface KeibaGoRaceMetadata {
   startTime: string | null;
 }
 
+export class FetchStatusError extends Error {
+  readonly status: number;
+
+  constructor(url: string, status: number) {
+    super(`Failed to fetch ${url}: ${status}`);
+    this.name = "FetchStatusError";
+    this.status = status;
+  }
+}
+
 export const buildRaceKey = (
   year: string,
   monthDay: string,
@@ -95,7 +115,7 @@ const fetchHtml = async (url: string): Promise<string> => {
     },
   });
   if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status}`);
+    throw new FetchStatusError(url, response.status);
   }
   return response.text();
 };
@@ -152,7 +172,15 @@ export const fetchRaceLinksFromRaceList = async (
     return [];
   }
 
-  const html = await fetchHtml(raceListUrl);
+  let html: string;
+  try {
+    html = await fetchHtml(raceListUrl);
+  } catch (error) {
+    if (error instanceof FetchStatusError && error.status === 404) {
+      return [];
+    }
+    throw error;
+  }
   const seen = new Set<string>();
   const links: KeibaGoRaceLink[] = [];
 
@@ -315,6 +343,32 @@ export const fetchRacePage = fetchHtml;
 
 export const buildRaceResultUrl = (debaUrl: string): string =>
   debaUrl.replace("/DebaTable?", "/RaceMarkTable?");
+
+export const buildNarOddsLinksFromRaceUrl = (
+  debaUrl: string,
+): Partial<Record<OddsType, string>> => {
+  let url: URL;
+  try {
+    url = new URL(debaUrl);
+  } catch {
+    return {};
+  }
+  const raceDate = url.searchParams.get("k_raceDate");
+  const raceNo = url.searchParams.get("k_raceNo");
+  const babaCode = url.searchParams.get("k_babaCode");
+  if (!raceDate || !raceNo || !babaCode) {
+    return {};
+  }
+  if (!/^\d{4}\/\d{2}\/\d{2}$/u.test(raceDate) || !/^\d{1,2}$/u.test(raceNo)) {
+    return {};
+  }
+  const params = `k_raceDate=${encodeURIComponent(raceDate)}&k_raceNo=${Number(
+    raceNo,
+  )}&k_babaCode=${babaCode.padStart(2, "0")}`;
+  return Object.fromEntries(
+    ODDS_TYPES.map((type) => [type, `${KEIBA_GO_BASE_URL}/${NAR_ODDS_PATHS[type]}?${params}`]),
+  ) as Partial<Record<OddsType, string>>;
+};
 
 export const convertToAbsoluteKeibaGoUrl = (oddsPath: string, baseUrl: string): string => {
   if (oddsPath.startsWith("http")) {

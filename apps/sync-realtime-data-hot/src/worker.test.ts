@@ -131,6 +131,13 @@ interface BuildDbOptions {
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
   const prepareMock = vi.fn((sql: string) => {
     const lowered = sql.toLowerCase();
+    if (
+      lowered.includes("from odds_fetch_state") &&
+      lowered.includes("last_odds_fetch_at is null")
+    ) {
+      const all = vi.fn(async () => options.closingBackfillCandidates ?? { results: [] });
+      return { bind: vi.fn(() => ({ all })) };
+    }
     if (lowered.includes("from odds_snapshots") && lowered.includes("max(fetched_at)")) {
       const all = vi.fn(async () => options.latest ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
@@ -154,13 +161,6 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
       const first = vi.fn(async () => ({ count: options.stateCount ?? 0 }));
       return { bind: vi.fn(() => ({ first })) };
-    }
-    if (
-      lowered.includes("from odds_fetch_state") &&
-      lowered.includes("last_odds_fetch_at is null")
-    ) {
-      const all = vi.fn(async () => options.closingBackfillCandidates ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("from odds_fetch_state")) {
       const all = vi.fn(async () => ({ results: [] }));

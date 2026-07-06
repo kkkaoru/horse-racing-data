@@ -6,14 +6,20 @@ vi.mock("./postgres-pool", () => ({
 }));
 
 vi.mock("./keiba-go", () => ({
-  buildRaceListUrl: vi.fn((targetDate: string, babaCode: string) => ({
-    babaCode,
-    url: `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=${targetDate}&k_babaCode=${babaCode}`,
-  })),
   fetchRaceLinksFromRaceList: vi.fn(async () => []),
+  fetchTodayRaceListUrls: vi.fn(async (targetDate: string) => [
+    {
+      babaCode: "23",
+      url: `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=${targetDate}&k_babaCode=23`,
+    },
+    {
+      babaCode: "36",
+      url: `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=${targetDate}&k_babaCode=36`,
+    },
+  ]),
 }));
 
-import { buildRaceListUrl, fetchRaceLinksFromRaceList } from "./keiba-go";
+import { fetchRaceLinksFromRaceList, fetchTodayRaceListUrls } from "./keiba-go";
 import { getHotPool } from "./postgres-pool";
 import {
   listTodayRacesFromHyperdrive,
@@ -47,7 +53,17 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.mocked(fetchRaceLinksFromRaceList).mockReset();
   vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValue([]);
-  vi.mocked(buildRaceListUrl).mockClear();
+  vi.mocked(fetchTodayRaceListUrls).mockReset();
+  vi.mocked(fetchTodayRaceListUrls).mockImplementation(async (targetDate: string) => [
+    {
+      babaCode: "23",
+      url: `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=${targetDate}&k_babaCode=23`,
+    },
+    {
+      babaCode: "36",
+      url: `https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=${targetDate}&k_babaCode=36`,
+    },
+  ]);
 });
 
 it("listTodayRacesFromHyperdrive resolves NAR per-race deba URL via fetchRaceLinksFromRaceList and builds JRA entry URL via netkeiba checksum", async () => {
@@ -75,6 +91,12 @@ it("listTodayRacesFromHyperdrive resolves NAR per-race deba URL via fetchRaceLin
       },
     ],
   });
+  vi.mocked(fetchTodayRaceListUrls).mockResolvedValue([
+    {
+      babaCode: "36",
+      url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F29&k_babaCode=36",
+    },
+  ]);
   vi.mocked(fetchRaceLinksFromRaceList).mockResolvedValue([
     {
       babaCode: "36",
@@ -111,9 +133,8 @@ it("listTodayRacesFromHyperdrive resolves NAR per-race deba URL via fetchRaceLin
       source: "nar",
     },
   ]);
-  expect(vi.mocked(buildRaceListUrl)).toHaveBeenCalledWith("20260529", "36");
   expect(vi.mocked(fetchRaceLinksFromRaceList)).toHaveBeenCalledWith(
-    "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=20260529&k_babaCode=36",
+    "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F29&k_babaCode=36",
   );
 });
 
@@ -207,7 +228,6 @@ it("listTodayRacesFromHyperdrive fetches NAR venue race list once per venue usin
     pool: { query } as never,
   });
   expect(vi.mocked(fetchRaceLinksFromRaceList)).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(buildRaceListUrl)).toHaveBeenCalledWith("20260529", "36");
   expect(vi.mocked(fetchRaceLinksFromRaceList)).toHaveBeenCalledWith(
     "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=20260529&k_babaCode=36",
   );
@@ -275,6 +295,9 @@ it("listTodayRacesFromHyperdrive falls back to Hyperdrive-synthesized deba URL f
       source: "nar",
     },
   ]);
+  expect(vi.mocked(fetchRaceLinksFromRaceList)).toHaveBeenCalledWith(
+    "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=20260529&k_babaCode=36",
+  );
 });
 
 it("listTodayRacesFromHyperdrive falls back to Hyperdrive deba URL for all NAR rows when venue HTML fetch throws", async () => {
@@ -297,6 +320,43 @@ it("listTodayRacesFromHyperdrive falls back to Hyperdrive deba URL for all NAR r
   const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
     pool: { query } as never,
   });
+  expect(rows).toStrictEqual([
+    {
+      debaUrl:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=36",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0529",
+      keibajoCode: "30",
+      oddsLinksJson: "{}",
+      raceBango: "08",
+      raceKey: "nar:2026:0529:30:08",
+      raceStartAtJst: "2026-05-29T14:30:00+09:00",
+      source: "nar",
+    },
+  ]);
+});
+
+it("listTodayRacesFromHyperdrive does not fetch RaceList when the venue is absent from TodayRaceInfoTop", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+    ],
+  });
+  vi.mocked(fetchTodayRaceListUrls).mockResolvedValue([]);
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
+    pool: { query } as never,
+  });
+  expect(vi.mocked(fetchRaceLinksFromRaceList)).not.toHaveBeenCalled();
   expect(rows).toStrictEqual([
     {
       debaUrl:
@@ -604,7 +664,6 @@ it("listTodayRacesFromHyperdrive resolves correctly when keibajoCode is 47 (NAR 
   const rows = await listTodayRacesFromHyperdrive(env, "20260529", {
     pool: { query } as never,
   });
-  expect(vi.mocked(buildRaceListUrl)).toHaveBeenCalledWith("20260529", "23");
   expect(vi.mocked(fetchRaceLinksFromRaceList)).toHaveBeenCalledWith(
     "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=20260529&k_babaCode=23",
   );
@@ -646,7 +705,6 @@ it("listTodayRacesFromHyperdrive skips NAR rows when keibajoCode is unknown (not
   });
   expect(rows).toStrictEqual([]);
   expect(vi.mocked(fetchRaceLinksFromRaceList)).not.toHaveBeenCalled();
-  expect(vi.mocked(buildRaceListUrl)).not.toHaveBeenCalled();
   expect(warnSpy).toHaveBeenCalled();
 });
 

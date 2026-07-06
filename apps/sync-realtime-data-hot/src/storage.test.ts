@@ -59,7 +59,7 @@ it("insertOddsSnapshot returns 0 when odds is empty", async () => {
 it("insertOddsSnapshot binds all rows including null fallbacks", async () => {
   const batch = vi.fn(async () => []);
   const bind = vi.fn(() => ({ bind }));
-  const prepare = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
   const db = { batch, prepare } as unknown as D1Database;
   const count = await insertOddsSnapshot(db, "nar:20260528:42:01", "2026-05-28T10:00:00+09:00", {
     tansho: [
@@ -119,7 +119,8 @@ it("insertOddsSnapshot uses ON CONFLICT DO UPDATE so re-fetch does not duplicate
   await insertOddsSnapshot(db, "nar:20260528:42:01", "2026-05-28T10:00:00+09:00", {
     tansho: [{ combination: "01", odds: 2.8 }],
   });
-  const sql = String(prepare.mock.calls[0]?.[0] ?? "");
+  const prepareCalls = prepare.mock.calls as [string][];
+  const sql = String(prepareCalls[0]?.[0] ?? "");
   expect(/on conflict\(race_key, fetched_at, odds_type, combination\)/u.test(sql)).toBe(true);
   expect(/do update set odds = excluded\.odds/u.test(sql)).toBe(true);
 });
@@ -143,8 +144,13 @@ it("bulkInsertOddsSnapshotRows uses ON CONFLICT DO UPDATE for idempotent backfil
       rank: 1,
     },
   ]);
-  const sql = String(prepare.mock.calls[0]?.[0] ?? "");
+  const prepareCalls = prepare.mock.calls as [string][];
+  const sql = String(prepareCalls[0]?.[0] ?? "");
   expect(/on conflict\(race_key, fetched_at, odds_type, combination\)/u.test(sql)).toBe(true);
+  const updateSql = String(prepare.mock.calls[1]?.[0] ?? "");
+  expect(updateSql).toBe(
+    "update odds_fetch_state set last_odds_fetch_at = ?, last_odds_queued_at = null, odds_fetch_lock_until = null, updated_at = ? where race_key = ?",
+  );
 });
 
 it("bulkInsertOddsSnapshotRows returns 0 when rows array is empty", async () => {
@@ -730,9 +736,11 @@ it("listClosingBackfillCandidates returns race keys with last_odds_fetch_at null
     results: [{ race_key: "nar:20260622:42:01" }],
   }));
   const bind = vi.fn(() => ({ all }));
-  const prepare = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
   const db = { prepare } as unknown as D1Database;
   const result = await listClosingBackfillCandidates(db, "2026", "0622");
+  const sql = String(prepare.mock.calls[0]?.[0] ?? "");
+  expect(/not exists \(\s*select 1 from odds_snapshots/u.test(sql)).toBe(true);
   expect(result).toStrictEqual(["nar:20260622:42:01"]);
 });
 

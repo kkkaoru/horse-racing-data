@@ -1,5 +1,10 @@
 import { releaseEnqueueLock } from "./gates/enqueue-lock-kv";
-import { extractOddsLinks, fetchOdds, fetchRacePage } from "./keiba-go";
+import {
+  buildNarOddsLinksFromRaceUrl,
+  extractOddsLinks,
+  fetchOdds,
+  fetchRacePage,
+} from "./keiba-go";
 import { fetchJraOddsWithPlaywright } from "./jra";
 import { getCachedNarVenueLastRaceStartAtJst } from "./nar-venue-cache";
 import {
@@ -111,14 +116,20 @@ const scrapeOddsForState = async (env: Env, state: OddsFetchStateRow): Promise<S
     const result = await fetchJraOddsWithPlaywright(env.JRA_BROWSER, state.debaUrl);
     return { latest: result.latest, missingTypes: result.missingTypes };
   }
-  const entryHtml = await fetchRacePage(state.debaUrl);
   const cachedLinks = parseOddsLinks(state.oddsLinksJson);
   const oddsLinks =
-    Object.keys(cachedLinks).length > 0 ? cachedLinks : extractOddsLinks(entryHtml, state.debaUrl);
+    Object.keys(cachedLinks).length > 0 ? cachedLinks : buildNarOddsLinksFromRaceUrl(state.debaUrl);
   if (Object.keys(cachedLinks).length === 0) {
     await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, oddsLinks);
   }
-  const latest = await fetchOdds(state.debaUrl, oddsLinks);
+  if (Object.keys(oddsLinks).length > 0) {
+    const latest = await fetchOdds(state.debaUrl, oddsLinks);
+    return { latest, missingTypes: [] };
+  }
+  const entryHtml = await fetchRacePage(state.debaUrl);
+  const fallbackLinks = extractOddsLinks(entryHtml, state.debaUrl);
+  await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, fallbackLinks);
+  const latest = await fetchOdds(state.debaUrl, fallbackLinks);
   return { latest, missingTypes: [] };
 };
 

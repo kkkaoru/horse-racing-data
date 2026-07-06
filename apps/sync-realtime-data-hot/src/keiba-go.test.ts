@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildRaceListUrl,
+  buildNarOddsLinksFromRaceUrl,
   buildRaceKey,
   buildRaceResultUrl,
   convertToAbsoluteKeibaGoUrl,
@@ -50,6 +51,40 @@ describe("keiba.go realtime helpers", () => {
       babaCode: "22",
       url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F10&k_babaCode=22",
     });
+  });
+
+  it("buildNarOddsLinksFromRaceUrl builds current NAR odds pages without fetching DebaTable", () => {
+    expect(
+      buildNarOddsLinksFromRaceUrl(
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      ),
+    ).toStrictEqual({
+      "3renpuku":
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/Odds3LenFuku?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      "3rentan":
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/Odds3LenTan?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      fukusho:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      tansho:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      umaren:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsUmLenFuku?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      umatan:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsUmLenTan?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      wakuren:
+        "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsWakuLenFukuTan?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+      wide: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/OddsWide?k_raceDate=2026%2F07%2F06&k_raceNo=1&k_babaCode=10",
+    });
+  });
+
+  it("buildNarOddsLinksFromRaceUrl returns empty links for non-race URLs", () => {
+    expect(
+      buildNarOddsLinksFromRaceUrl("https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable"),
+    ).toStrictEqual({});
+  });
+
+  it("buildNarOddsLinksFromRaceUrl returns empty links for malformed URLs", () => {
+    expect(buildNarOddsLinksFromRaceUrl("not a url")).toStrictEqual({});
   });
 
   it("converts relative odds URLs for normal and IPAT pages", () => {
@@ -253,6 +288,15 @@ describe("keiba.go realtime helpers", () => {
       "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_babaCode=22",
     );
     expect(result).toStrictEqual([]);
+  });
+
+  it("fetchRaceLinksFromRaceList returns [] when a published RaceList 404s", async () => {
+    const raceListUrl =
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/RaceList?k_raceDate=2026%2F05%2F10&k_babaCode=22";
+    mockFetchHtml({
+      [raceListUrl]: new Response("not found", { status: 404 }),
+    });
+    await expect(fetchRaceLinksFromRaceList(raceListUrl)).resolves.toStrictEqual([]);
   });
 
   it("fetchRaceLinksFromRaceList returns [] when raceListUrl lacks k_babaCode", async () => {

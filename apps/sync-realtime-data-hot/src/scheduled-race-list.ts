@@ -22,7 +22,7 @@ import type { Pool } from "pg";
 import { formatError } from "./format-error";
 import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
 import { buildJraEntryUrlFromRace } from "./jra";
-import { buildRaceListUrl, fetchRaceLinksFromRaceList } from "./keiba-go";
+import { fetchRaceLinksFromRaceList, fetchTodayRaceListUrls } from "./keiba-go";
 import { getHotPool } from "./postgres-pool";
 import { logFetch, upsertOddsFetchState } from "./storage";
 import { formatRaceStartJst, getTodayJst } from "./time";
@@ -98,11 +98,6 @@ interface LogPopulateNarVenueInput {
   jobType?: string;
 }
 
-interface FetchNarVenueLinksInput {
-  db: D1Database;
-  venue: NarVenue;
-}
-
 interface PrepareNarResolverInput {
   db: D1Database;
   rows: IntermediateRow[];
@@ -118,6 +113,12 @@ interface NarDebaUrlSynthInput {
   yyyymmdd: string;
   babaCode: string;
   raceBango: string;
+}
+
+interface FetchNarVenueLinksWithOfficialUrlsInput {
+  db: D1Database;
+  officialUrls: Map<string, string>;
+  venue: NarVenue;
 }
 
 const KEIBAJO_CODE_PAD_WIDTH = 2;
@@ -238,8 +239,19 @@ const logPopulateNarVenue = async (input: LogPopulateNarVenueInput): Promise<voi
   });
 };
 
-const fetchNarVenueLinks = async (input: FetchNarVenueLinksInput): Promise<Map<string, string>> => {
-  const venueUrl = buildRaceListUrl(input.venue.yyyymmdd, input.venue.babaCode).url;
+const fetchNarVenueLinksWithOfficialUrls = async (
+  input: FetchNarVenueLinksWithOfficialUrlsInput,
+): Promise<Map<string, string>> => {
+  const venueUrl = input.officialUrls.get(input.venue.babaCode);
+  if (!venueUrl) {
+    await logPopulateNarVenue({
+      db: input.db,
+      message: "RaceList URL is not listed on TodayRaceInfoTop",
+      status: POPULATE_EMPTY_STATUS,
+      venue: input.venue,
+    });
+    return new Map();
+  }
   try {
     const links = await fetchRaceLinksFromRaceList(venueUrl);
     if (links.length === 0) {
@@ -259,6 +271,27 @@ const fetchNarVenueLinks = async (input: FetchNarVenueLinksInput): Promise<Map<s
       message: `failed to fetch ${venueUrl}: ${formatError(error)}`,
       status: POPULATE_ERROR_STATUS,
       venue: input.venue,
+    });
+    return new Map();
+  }
+};
+
+const fetchOfficialRaceListUrlMap = async (
+  db: D1Database,
+  yyyymmdd: string,
+): Promise<Map<string, string>> => {
+  try {
+    const urls = await fetchTodayRaceListUrls(yyyymmdd);
+    return new Map(urls.map((item) => [item.babaCode, item.url]));
+  } catch (error) {
+    await logFetch(
+      db,
+      POPULATE_NAR_VENUE_JOB_TYPE,
+      POPULATE_ERROR_STATUS,
+      `nar:${yyyymmdd}`,
+      `failed to fetch TodayRaceInfoTop: ${formatError(error)}`,
+    ).catch((logError) => {
+      console.warn(`[scheduled-race-list] top page log failed`, logError);
     });
     return new Map();
   }
@@ -318,9 +351,22 @@ const prepareNarResolver = async (input: PrepareNarResolverInput): Promise<NarDe
     return input.override;
   }
   const venues = collectNarVenues(input.rows);
+  const officialUrlsByDate = new Map<string, Map<string, string>>();
+  for (const venue of venues) {
+    if (!officialUrlsByDate.has(venue.yyyymmdd)) {
+      officialUrlsByDate.set(
+        venue.yyyymmdd,
+        await fetchOfficialRaceListUrlMap(input.db, venue.yyyymmdd),
+      );
+    }
+  }
   const entries = await Promise.all(
     venues.map(async (venue): Promise<[string, Map<string, string>]> => {
-      const links = await fetchNarVenueLinks({ db: input.db, venue });
+      const links = await fetchNarVenueLinksWithOfficialUrls({
+        db: input.db,
+        officialUrls: officialUrlsByDate.get(venue.yyyymmdd)!,
+        venue,
+      });
       return [buildVenueKey(venue.yyyymmdd, venue.keibajoCode), links];
     }),
   );
