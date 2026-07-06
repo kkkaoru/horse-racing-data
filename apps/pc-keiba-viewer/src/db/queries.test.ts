@@ -792,6 +792,8 @@ it("getFinishPositionLambdarankPredictions prioritizes the NAR per-cell model", 
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(/select\s+p_cell\.model_version,\s+0 as priority/u);
   expect(queryText).toMatch(/p_cell\.model_version = 'nar-xgb-cell-a957d8b4-v1'/u);
+  expect(queryText).toMatch(/allowed_model_versions\(model_version\) as/u);
+  expect(queryText).toMatch(/'nar-xgb-cell-a957d8b4-v1'/u);
   expect(queryText).toMatch(/'nar'/u);
 });
 
@@ -806,18 +808,36 @@ it("getFinishPositionLambdarankPredictions emits priority 2 active fallback guar
   );
 });
 
-it("getFinishPositionLambdarankPredictions emits priority 3 fallback over any race prediction", async () => {
+it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-free versions", async () => {
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/allowed_prediction_model_versions as/u);
   expect(queryText).toMatch(/select p3\.model_version, 3 as priority/u);
   expect(queryText).toMatch(/from race_finish_position_model_predictions p3/u);
+  expect(queryText).toMatch(
+    /p3\.model_version in \(\s*select model_version from allowed_prediction_model_versions\s*\)/u,
+  );
   expect(queryText).toMatch(/from finish_position_active_models stale/u);
   expect(queryText).toMatch(/stale\.subclass is not null/u);
   expect(queryText).toMatch(/stale\.model_version = p3\.model_version/u);
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean'/u);
+  expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188'/u);
+  expect(queryText).toMatch(/'banei-cb-v9-sim-2011'/u);
+  expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
+});
+
+it("getFinishPositionLambdarankPredictions applies leak-free guard to final selected rows", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /where p\.source = 'jra'\s+and p\.model_version in \(\s*select model_version from allowed_prediction_model_versions\s*\)/u,
+  );
 });
 
 it("getFinishPositionLambdarankPredictions references prediction_generated_at on race_finish_position_model_predictions", async () => {

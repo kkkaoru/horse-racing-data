@@ -18,7 +18,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import final, override
+from typing import cast, final, override
 from unittest.mock import patch
 
 import pytest
@@ -54,6 +54,17 @@ from predict_upcoming import (
     make_handler_class,
     score_one_race_nar_etop2,
     score_races,
+)
+
+_LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
+_LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
+_load_model_metadata = cast(
+    Callable[[Path, Category], Sequence[str]],
+    getattr(predict_upcoming, _LOAD_MODEL_METADATA_ATTR),
+)
+_load_nar_transformer = cast(
+    Callable[[Path, Sequence[str]], object | None],
+    getattr(predict_upcoming, _LOAD_NAR_TRANSFORMER_ATTR),
 )
 
 # ---------------------------------------------------------------------------
@@ -711,6 +722,31 @@ def _write_variant_metadata(
     meta_path.write_text(json.dumps({"feature_names": feature_names}), encoding="utf-8")
 
 
+def _write_category_metadata(
+    models_dir: Path, category: Category, feature_names: list[str]
+) -> None:
+    key = predict_upcoming.build_r2_object_key(category, METADATA_FILE_NAME)
+    meta_path = models_dir / key
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps({"feature_names": feature_names}), encoding="utf-8")
+
+
+def test_load_model_metadata_rejects_within_race_leak_columns(tmp_path: Path) -> None:
+    _write_category_metadata(
+        tmp_path,
+        "nar",
+        ["feat"] * 187 + ["target_corner_1_norm"],
+    )
+    with pytest.raises(ValueError, match="within-race leak columns"):
+        _load_model_metadata(tmp_path, "nar")
+
+
+def test_load_model_metadata_accepts_clean_category_default(tmp_path: Path) -> None:
+    feature_names = [f"feat_{index}" for index in range(188)]
+    _write_category_metadata(tmp_path, "nar", feature_names)
+    assert list(_load_model_metadata(tmp_path, "nar")) == feature_names
+
+
 def test_variant_model_holds_booster_and_feature_contract() -> None:
     """VariantModel is a frozen carrier for the booster + feature order + arch."""
     booster = _ScoreByUmaban([0.1])
@@ -733,11 +769,11 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     skipped (served by the fallback). The race routes to ``base`` so the variant
     booster — not the fallback — drives the ranking.
     """
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 1, "catboost"),
         },
         default_variant="sim",
     )
@@ -760,26 +796,30 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
 
     assert len(loaded) == 1, "only the non-default variant should be loaded"
-    assert "banei-base-v8" in loaded[0], "the loaded variant must be the base model"
-    assert "banei-sim-v9" not in loaded[0], "the default variant must be served by the fallback"
+    assert "banei-cb-v8-window2011-wf-15y" in loaded[0], (
+        "the loaded variant must be the base model"
+    )
+    assert "banei-cb-v9-sim-2011" not in loaded[0], (
+        "the default variant must be served by the fallback"
+    )
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
-    assert all(row[0] == "banei-base-v8" for row in rows)
+    assert all(row[0] == "banei-cb-v8-window2011-wf-15y" for row in rows)
 
 
 def test_score_races_rejects_cell_variant_feature_contract_mismatch(
     tmp_path: Path,
 ) -> None:
     """Config feature_names must match the baked metadata contract exactly."""
-    _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
             "cell": _FakeVariantSpec(
-                "nar-cell-v1",
+                "banei-cb-v8-window2011-wf-15y",
                 1,
-                "xgboost",
+                "catboost",
                 feature_names=("other_feat",),
             ),
         },
@@ -793,19 +833,19 @@ def test_score_races_rejects_cell_variant_feature_contract_mismatch(
         patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
         pytest.raises(ValueError, match=r"feature_names do not match metadata\.json"),
     ):
-        score_races({"nar:20260620:54:01:01": _nar_entries()}, "nar", tmp_path, ["feat"])
+        score_races({"ban-ei:20260620:65:01:01": _banei_entries()}, "ban-ei", tmp_path, ["feat"])
 
 
 def test_score_races_rejects_cell_variant_feature_hash_mismatch(tmp_path: Path) -> None:
     """Config feature_set_hash must match the baked metadata feature names."""
-    _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
             "cell": _FakeVariantSpec(
-                "nar-cell-v1",
+                "banei-cb-v8-window2011-wf-15y",
                 1,
-                "xgboost",
+                "catboost",
                 feature_names=("feat",),
                 feature_set_hash="not-the-metadata-hash",
             ),
@@ -820,48 +860,63 @@ def test_score_races_rejects_cell_variant_feature_hash_mismatch(tmp_path: Path) 
         patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
         pytest.raises(ValueError, match="feature_set_hash mismatch"),
     ):
-        score_races({"nar:20260620:54:01:01": _nar_entries()}, "nar", tmp_path, ["feat"])
+        score_races({"ban-ei:20260620:65:01:01": _banei_entries()}, "ban-ei", tmp_path, ["feat"])
 
 
-def test_score_races_cell_variant_bypasses_nar_per_class_ensemble(tmp_path: Path) -> None:
-    """A routed cell variant is the selected model, not an ensemble fallback input."""
+def test_score_races_rejects_cell_variant_within_race_leak_metadata(
+    tmp_path: Path,
+) -> None:
+    _write_variant_metadata(
+        tmp_path,
+        "ban-ei",
+        "banei-cb-v8-window2011-wf-15y",
+        ["target_corner_4_norm"],
+    )
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 1, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([0.9])),
+        patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
+        pytest.raises(ValueError, match="within-race leak columns"),
+    ):
+        score_races({"ban-ei:20260620:65:01:01": _banei_entries()}, "ban-ei", tmp_path, ["feat"])
+
+
+def test_score_races_rejects_unallowed_nar_cell_variant(tmp_path: Path) -> None:
+    """A routed cell variant must be explicitly approved before production serving."""
     _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("nar-sim-v1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188", 1, "xgboost"),
             "cell": _FakeVariantSpec("nar-cell-v1", 1, "xgboost"),
         },
         default_variant="sim",
     )
     router = _FakeRouter(routing, resolved="cell")
-    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
-    variant_booster = _ScoreByUmaban([0.1, 0.9, 0.3])
-
-    def _fake_load_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
-        del model_path, architecture
-        return variant_booster
-
-    races = {"nar:20260620:54:01:01": _banei_entries()}
     with (
         patch("predict_upcoming.load_cell_router", return_value=router),
-        patch("predict_upcoming._load_booster", return_value=fallback),
-        patch("predict_upcoming._load_booster_by_arch", side_effect=_fake_load_by_arch),
+        patch("predict_upcoming._load_booster", return_value=_ScoreByUmaban([0.9])),
+        patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])),
+        pytest.raises(ValueError, match="not allowed"),
     ):
-        scored = score_races(races, "nar", tmp_path, ["feat"])
-
-    rows = scored[0]
-    by_rank = {row[9]: row[7] for row in rows}
-    assert by_rank[1] == 2
-    assert all(row[0] == "nar-cell-v1" for row in rows)
+        score_races({"nar:20260620:54:01:01": _nar_entries()}, "nar", tmp_path, ["feat"])
 
 
 def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path) -> None:
     """When the resolved variant is the default (not pooled), the fallback scores."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 1, "catboost"),
         },
         default_variant="sim",
     )
@@ -909,16 +964,38 @@ def test_score_races_nar_default_uses_category_model_without_per_class() -> None
     assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188" for row in rows)
 
 
+def test_load_nar_transformer_returns_none_when_feature_order_has_leak(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    transformer = SimpleNamespace(
+        feature_order=("feat", "target_running_style_class"),
+        seeds=(object(),),
+    )
+    with patch("predict_upcoming.load_transformer", return_value=transformer):
+        loaded = _load_nar_transformer(tmp_path, ["feat"])
+    captured = capsys.readouterr()
+    assert loaded is None
+    assert "leak guard failed" in captured.err
+
+
+def test_load_nar_transformer_accepts_clean_feature_order(tmp_path: Path) -> None:
+    transformer = SimpleNamespace(feature_order=("feat",), seeds=(object(),))
+    with patch("predict_upcoming.load_transformer", return_value=transformer):
+        loaded = _load_nar_transformer(tmp_path, ["feat"])
+    assert loaded is transformer
+
+
 def test_score_races_warns_when_resolved_non_default_variant_missing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A rule pointing at an undeclared/unloaded variant falls back but is visible."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-base-v8", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-sim-v9", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-base-v8", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 1, "catboost"),
         },
         default_variant="sim",
     )

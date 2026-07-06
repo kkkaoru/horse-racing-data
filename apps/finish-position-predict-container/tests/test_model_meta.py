@@ -23,7 +23,11 @@ from predict_lib.model_meta import (
     NAR_ETOP2_ADOPT_CLASSES,
     NAR_TRANSFORMER_BLEND_WEIGHT,
     NAR_TRANSFORMER_MODEL_VERSION,
+    PRODUCTION_MODEL_VERSION_ALLOWLIST,
+    WITHIN_RACE_LEAK_COLUMNS,
     architecture_for,
+    assert_no_within_race_leak_columns,
+    assert_production_model_version_allowed,
     build_r2_nar_etop2_key,
     build_r2_nar_transformer_key,
     build_r2_object_key,
@@ -32,6 +36,8 @@ from predict_lib.model_meta import (
     get_train_start_year,
     is_category,
     is_lightgbm_model_version,
+    is_production_model_version_allowed,
+    leak_columns_in,
     load_model_meta,
     member_model_file_name,
     model_version_for,
@@ -85,6 +91,43 @@ def test_feature_count_nar() -> None:
 
 def test_feature_count_banei() -> None:
     assert feature_count_for("ban-ei") == 130
+
+
+def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base() -> None:
+    assert frozenset({
+        "jra-cb-v9-sim-2013-clean",
+        "iter12-nar-xgb-hpo-v8-clean188",
+        "banei-cb-v9-sim-2011",
+        "banei-cb-v8-window2011-wf-15y",
+    }) == PRODUCTION_MODEL_VERSION_ALLOWLIST
+
+
+def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
+    assert is_production_model_version_allowed("jra-cb-v9-sim-2013") is False
+    assert is_production_model_version_allowed("iter12-nar-xgb-hpo-v8") is False
+    with pytest.raises(ValueError, match="not allowed"):
+        assert_production_model_version_allowed(
+            "iter12-nar-xgb-hpo-v8",
+            context="test",
+        )
+
+
+def test_within_race_leak_columns_are_explicitly_denied() -> None:
+    assert frozenset({
+        "target_corner_1_norm",
+        "target_corner_3_norm",
+        "target_corner_4_norm",
+        "target_running_style_class",
+    }) == WITHIN_RACE_LEAK_COLUMNS
+    assert leak_columns_in(["feature_a", "target_corner_1_norm"]) == frozenset({
+        "target_corner_1_norm",
+    })
+    assert_no_within_race_leak_columns(["feature_a"], context="clean")
+    with pytest.raises(ValueError, match="within-race leak columns"):
+        assert_no_within_race_leak_columns(
+            ["feature_a", "target_corner_3_norm"],
+            context="leaky",
+        )
 
 
 def test_build_r2_object_key_model() -> None:
@@ -286,6 +329,21 @@ def test_load_model_meta_raises_value_error_when_feature_count_is_negative(
     }
     p.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="jra"):
+        load_model_meta(p)
+
+
+def test_load_model_meta_rejects_historical_leaky_model_version(tmp_path: Path) -> None:
+    p = tmp_path / "model_meta.json"
+    data = {
+        "model_versions": {
+            "jra": "jra-cb-v9-sim-2013",
+            "nar": "iter12-nar-xgb-hpo-v8-clean188",
+            "ban-ei": "banei-cb-v9-sim-2011",
+        },
+        "feature_counts": {"jra": 250, "nar": 188, "ban-ei": 130},
+    }
+    p.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="not allowed"):
         load_model_meta(p)
 
 

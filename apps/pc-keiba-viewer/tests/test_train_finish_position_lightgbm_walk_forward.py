@@ -259,6 +259,18 @@ def test_resolve_feature_columns_excludes_meta_and_labels():
     assert cols == ["feature_a", "feature_b"]
 
 
+def test_resolve_feature_columns_excludes_within_race_leak_labels():
+    df = pl.DataFrame({
+        "feature_a": [0.1],
+        "target_corner_1_norm": [0.2],
+        "target_corner_3_norm": [0.3],
+        "target_corner_4_norm": [0.4],
+        "target_running_style_class": [1],
+    })
+    cols = subject.resolve_feature_columns(df)
+    assert cols == ["feature_a"]
+
+
 def test_resolve_feature_columns_drops_non_numeric():
     df = pl.DataFrame({
         "race_id": ["r1"],
@@ -507,6 +519,20 @@ def test_resolve_projection_columns_keeps_features_and_runtime():
         "ketto_toroku_bango",
         "finish_position",
     ]
+
+
+def test_resolve_projection_columns_excludes_within_race_leak_labels():
+    schema_names = [
+        "race_id",
+        "finish_position",
+        "target_corner_1_norm",
+        "target_corner_3_norm",
+        "target_corner_4_norm",
+        "target_running_style_class",
+        "feat_a",
+    ]
+    projection = subject.resolve_projection_columns(schema_names)
+    assert projection == ["feat_a", "race_id", "finish_position"]
 
 
 def test_resolve_projection_columns_omits_runtime_absent_from_schema():

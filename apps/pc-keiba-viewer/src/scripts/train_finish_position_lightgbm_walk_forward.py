@@ -23,6 +23,7 @@ import numpy as np
 import polars as pl
 import pyarrow.parquet as pq
 
+from learning.feature_selection_policy import SHARED_LABEL_COLUMNS
 import walk_forward_common as wfc_common
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ META_COLUMNS: Final[tuple[str, ...]] = (
     "race_bango", "ketto_toroku_bango", "bamei",
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
-LABEL_COLUMNS: Final[tuple[str, ...]] = ("finish_position", "finish_norm")
+LABEL_COLUMNS: Final[frozenset[str]] = SHARED_LABEL_COLUMNS
 REQUIRED_RUNTIME_COLUMNS: Final[tuple[str, ...]] = (
     "race_id", "race_date", "race_year", "umaban", "ketto_toroku_bango",
     "finish_position", "sample_weight",

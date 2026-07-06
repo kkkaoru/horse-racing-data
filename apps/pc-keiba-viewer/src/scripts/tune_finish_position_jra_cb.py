@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 import numpy as np
 import polars as pl
 
+from learning.feature_selection_policy import SHARED_LABEL_COLUMNS
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
@@ -60,8 +62,8 @@ META_COLUMNS: Final[tuple[str, ...]] = (
     "race_bango", "ketto_toroku_bango", "bamei",
     "kishumei_ryakusho", "chokyoshimei_ryakusho", "category",
 )
-LABEL_COLUMNS: Final[tuple[str, ...]] = ("finish_position", "finish_norm")
-EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | frozenset(LABEL_COLUMNS)
+LABEL_COLUMNS: Final[frozenset[str]] = SHARED_LABEL_COLUMNS
+EXCLUDED_COLS: Final[frozenset[str]] = frozenset(META_COLUMNS) | LABEL_COLUMNS
 EXTRA_NON_FEATURE_COLS: Final[frozenset[str]] = frozenset({
     "target_race_id",
     "kyori_band",

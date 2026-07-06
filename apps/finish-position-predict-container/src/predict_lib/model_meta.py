@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Final, Literal, get_args
 
@@ -65,6 +65,48 @@ Architecture = Literal["catboost", "xgboost", "lightgbm"]
 CATEGORIES: Final[tuple[Category, ...]] = get_args(Category)
 
 MODEL_META_JSON_PATH: Final[Path] = Path(__file__).parent / "model_meta.json"
+
+WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset({
+    "target_corner_1_norm",
+    "target_corner_3_norm",
+    "target_corner_4_norm",
+    "target_running_style_class",
+})
+
+PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
+    "jra-cb-v9-sim-2013-clean",
+    "iter12-nar-xgb-hpo-v8-clean188",
+    "banei-cb-v9-sim-2011",
+    "banei-cb-v8-window2011-wf-15y",
+})
+
+
+def leak_columns_in(feature_names: Iterable[str]) -> frozenset[str]:
+    """Return in-race outcome columns that must never reach pre-race serving."""
+    return WITHIN_RACE_LEAK_COLUMNS.intersection(feature_names)
+
+
+def assert_no_within_race_leak_columns(
+    feature_names: Iterable[str], *, context: str
+) -> None:
+    """Fail closed when a model artifact still carries within-race leak columns."""
+    leaks = leak_columns_in(feature_names)
+    if leaks:
+        joined = ", ".join(sorted(leaks))
+        raise ValueError(f"{context} contains within-race leak columns: {joined}")
+
+
+def is_production_model_version_allowed(model_version: str) -> bool:
+    """Return True when ``model_version`` is approved for production serving."""
+    return model_version in PRODUCTION_MODEL_VERSION_ALLOWLIST
+
+
+def assert_production_model_version_allowed(model_version: str, *, context: str) -> None:
+    """Fail closed when a historical/leaky artifact is selected for production."""
+    if not is_production_model_version_allowed(model_version):
+        raise ValueError(
+            f"{context} model_version is not allowed for production serving: {model_version}"
+        )
 
 
 def load_model_meta(
@@ -95,6 +137,11 @@ def load_model_meta(
                 f"model_meta.json missing or invalid feature_count for '{cat}': {path}"
             )
         counts[cat] = cnt
+    for cat, version in versions.items():
+        assert_production_model_version_allowed(
+            version,
+            context=f"model_meta.json category={cat}",
+        )
     return versions, counts
 
 

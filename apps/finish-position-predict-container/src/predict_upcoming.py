@@ -72,6 +72,7 @@ from predict_lib.model_meta import (
     CATEGORIES,
     JRA_ETOP2_ENABLED,
     JRA_ETOP2_MODEL_VERSION,
+    JRA_ETOP2_XGB_MODEL_VERSION,
     METADATA_FILE_NAME,
     MODEL_FILE_NAME,
     NAR_ETOP2_MODEL_VERSION,
@@ -81,6 +82,8 @@ from predict_lib.model_meta import (
     Architecture,
     Category,
     architecture_for,
+    assert_no_within_race_leak_columns,
+    assert_production_model_version_allowed,
     build_r2_nar_transformer_key,
     build_r2_object_key,
     build_r2_xgb_etop2_key,
@@ -272,6 +275,14 @@ def _load_model_metadata(models_dir: Path, category: Category) -> Sequence[str]:
     key = build_r2_object_key(category, METADATA_FILE_NAME)
     metadata = json.loads((models_dir / key).read_text(encoding="utf-8"))
     feature_names = list(metadata["feature_names"])
+    assert_production_model_version_allowed(
+        model_version_for(category),
+        context=f"category default metadata category={category}",
+    )
+    assert_no_within_race_leak_columns(
+        feature_names,
+        context=f"category default metadata category={category}",
+    )
     assert_feature_count(feature_names, feature_count_for(category))
     return feature_names
 
@@ -569,6 +580,14 @@ def score_races(
             )
             metadata = json.loads(meta_path.read_text(encoding="utf-8"))
             fnames = list(metadata["feature_names"])
+            assert_production_model_version_allowed(
+                vspec.model_version,
+                context=f"cell-routing variant={vname} category={category}",
+            )
+            assert_no_within_race_leak_columns(
+                fnames,
+                context=f"cell-routing variant={vname} category={category}",
+            )
             assert_feature_count(fnames, vspec.feature_count)
             _validate_variant_feature_contract(
                 vname,
@@ -696,6 +715,17 @@ def _load_nar_transformer(
         )
         return None
     known = set(feature_names)
+    try:
+        assert_no_within_race_leak_columns(
+            transformer.feature_order,
+            context=f"NAR transformer model_version={NAR_TRANSFORMER_MODEL_VERSION}",
+        )
+    except ValueError as leak_error:
+        print(
+            f"[nar-transformer] leak guard failed -> ensemble-only: {leak_error}",
+            file=sys.stderr,
+        )
+        return None
     missing = [name for name in transformer.feature_order if name not in known]
     if missing:
         print(
@@ -847,6 +877,10 @@ def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
     model.json`` (same path as baked into the image alongside CB iter20).
     Called once at category startup when JRA_ETOP2_ENABLED is True.
     """
+    assert_production_model_version_allowed(
+        JRA_ETOP2_XGB_MODEL_VERSION,
+        context="JRA E-top2 companion",
+    )
     model_path = models_dir / build_r2_xgb_etop2_key(MODEL_FILE_NAME)
     from xgboost_adapter import load_xgboost_booster  # bundled in image
 

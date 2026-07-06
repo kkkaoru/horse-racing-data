@@ -56,6 +56,19 @@ def test_resolve_feature_columns_drops_meta_and_label() -> None:
     assert mod.resolve_feature_columns(df) == ["feature_a", "feature_b"]
 
 
+def test_resolve_feature_columns_drops_within_race_leak_labels() -> None:
+    df = pl.DataFrame(
+        {
+            "feature_a": [0.5],
+            "target_corner_1_norm": [0.1],
+            "target_corner_3_norm": [0.2],
+            "target_corner_4_norm": [0.3],
+            "target_running_style_class": [1],
+        },
+    )
+    assert mod.resolve_feature_columns(df) == ["feature_a"]
+
+
 def test_resolve_feature_columns_drops_bool_and_object() -> None:
     df = pl.DataFrame(
         {

@@ -2893,6 +2893,13 @@ const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
 };
 
 const NAR_MILE_E_VENUE54_CELL_MODEL_VERSION = "nar-xgb-cell-a957d8b4-v1";
+const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = [
+  "jra-cb-v9-sim-2013-clean",
+  "iter12-nar-xgb-hpo-v8-clean188",
+  "banei-cb-v9-sim-2011",
+  "banei-cb-v8-window2011-wf-15y",
+  NAR_MILE_E_VENUE54_CELL_MODEL_VERSION,
+] as const;
 
 const toInteger = (value: string | null): number | null => {
   if (value === null) return null;
@@ -2946,12 +2953,26 @@ export const getFinishPositionLambdarankPredictions = cache(
             shusso_tosu: number | null;
             umaban: number;
           }>(sql`
-            with active as (
+            with allowed_model_versions(model_version) as (
+              values ${sql.join(
+                FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS.map((version) => sql`(${version})`),
+                sql`, `,
+              )}
+            ),
+            active as (
               select model_version
               from finish_position_active_models
+              join allowed_model_versions using (model_version)
               where category = ${category}
                 and subclass is null
               limit 1
+            ),
+            allowed_prediction_model_versions as (
+              select model_version
+              from allowed_model_versions
+              union all
+              select active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
+              from active
             ),
             selected_model as (
               select model_version
@@ -2962,6 +2983,9 @@ export const getFinishPositionLambdarankPredictions = cache(
                   max(p_cell.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p_cell
                 where ${cellModelVersion === null ? sql`false` : sql`p_cell.model_version = ${cellModelVersion}`}
+                  and p_cell.model_version in (
+                    select model_version from allowed_prediction_model_versions
+                  )
                   and p_cell.source = ${race.source}
                   and p_cell.kaisai_nen = ${race.kaisaiNen}
                   and p_cell.kaisai_tsukihi = ${race.kaisaiTsukihi}
@@ -2974,6 +2998,9 @@ export const getFinishPositionLambdarankPredictions = cache(
                 join active on p.model_version =
                   active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
                 where p.source = ${race.source}
+                  and p.model_version in (
+                    select model_version from allowed_prediction_model_versions
+                  )
                   and p.kaisai_nen = ${race.kaisaiNen}
                   and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p.keibajo_code = ${race.keibajoCode}
@@ -2992,6 +3019,9 @@ export const getFinishPositionLambdarankPredictions = cache(
                     and p2.keibajo_code = ${race.keibajoCode}
                     and p2.race_bango = ${race.raceBango}
                 )
+                  and active.model_version in (
+                    select model_version from allowed_prediction_model_versions
+                  )
                 union all
                 select p3.model_version, 3 as priority, max(p3.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p3
@@ -3000,6 +3030,9 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p3.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p3.keibajo_code = ${race.keibajoCode}
                   and p3.race_bango = ${race.raceBango}
+                  and p3.model_version in (
+                    select model_version from allowed_prediction_model_versions
+                  )
                   and not exists (
                     select 1
                     from finish_position_active_models stale
@@ -3029,6 +3062,9 @@ export const getFinishPositionLambdarankPredictions = cache(
             from race_finish_position_model_predictions p
             join selected_model on selected_model.model_version = p.model_version
             where p.source = ${race.source}
+              and p.model_version in (
+                select model_version from allowed_prediction_model_versions
+              )
               and p.kaisai_nen = ${race.kaisaiNen}
               and p.kaisai_tsukihi = ${race.kaisaiTsukihi}
               and p.keibajo_code = ${race.keibajoCode}
