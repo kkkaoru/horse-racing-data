@@ -294,6 +294,62 @@ it("getLatestOddsFromD1 groups rows by odds_type and applies null fallbacks", as
   });
 });
 
+it("getLatestOddsFromD1 reconstructs latest odds from per-combination delta snapshots", async () => {
+  const all = vi.fn(async () => ({
+    results: [
+      {
+        average_odds: null,
+        combination: "02",
+        fetched_at: "2026-07-07T16:30:44+09:00",
+        latest_fetched_at: "2026-07-07T16:30:44+09:00",
+        max_odds: null,
+        min_odds: null,
+        odds: 2.2,
+        odds_type: "tansho",
+        rank: 1,
+      },
+      {
+        average_odds: null,
+        combination: "07",
+        fetched_at: "2026-07-07T16:23:01+09:00",
+        latest_fetched_at: "2026-07-07T16:30:44+09:00",
+        max_odds: null,
+        min_odds: null,
+        odds: 3.7,
+        odds_type: "tansho",
+        rank: 2,
+      },
+    ],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const result = await getLatestOddsFromD1(db, "nar:2026:0707:35:09");
+  expect(result).toStrictEqual({
+    fetchedAt: "2026-07-07T16:30:44+09:00",
+    latest: {
+      tansho: [
+        {
+          averageOdds: undefined,
+          combination: "02",
+          maxOdds: undefined,
+          minOdds: undefined,
+          odds: 2.2,
+          rank: 1,
+        },
+        {
+          averageOdds: undefined,
+          combination: "07",
+          maxOdds: undefined,
+          minOdds: undefined,
+          odds: 3.7,
+          rank: 2,
+        },
+      ],
+    },
+  });
+});
+
 it("getLatestOddsFromD1 skips rows with missing odds_type", async () => {
   const all = vi.fn(async () => ({
     results: [

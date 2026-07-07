@@ -52,6 +52,7 @@ interface OddsSnapshotRow {
   average_odds: number | null;
   combination: string;
   fetched_at: string;
+  latest_fetched_at?: string;
   max_odds: number | null;
   min_odds: number | null;
   odds: number | null;
@@ -186,12 +187,22 @@ export const getLatestOddsFromD1 = async (
 ): Promise<{ fetchedAt: string; latest: Partial<Record<OddsType, OddsData[]>> } | null> => {
   const result = await db
     .prepare(
-      `select odds_type, fetched_at, combination, odds, min_odds, max_odds, average_odds, rank from odds_snapshots where race_key = ? and fetched_at = (select max(fetched_at) from odds_snapshots where race_key = ?) order by odds_type asc, coalesce(rank, 999999) asc`,
+      `with ranked as (
+        select odds_type, fetched_at, combination, odds, min_odds, max_odds, average_odds, rank,
+          max(fetched_at) over () as latest_fetched_at,
+          row_number() over (partition by odds_type, combination order by fetched_at desc) as row_number
+        from odds_snapshots
+        where race_key = ?
+      )
+      select odds_type, fetched_at, latest_fetched_at, combination, odds, min_odds, max_odds, average_odds, rank
+      from ranked
+      where row_number = 1
+      order by odds_type asc, coalesce(rank, 999999) asc`,
     )
-    .bind(raceKey, raceKey)
+    .bind(raceKey)
     .all<OddsSnapshotRow>();
-  const firstFetchedAt = result.results[0]?.fetched_at;
-  if (!firstFetchedAt) {
+  const latestFetchedAt = result.results[0]?.latest_fetched_at ?? result.results[0]?.fetched_at;
+  if (!latestFetchedAt) {
     return null;
   }
   const grouped: Partial<Record<OddsType, OddsData[]>> = {};
@@ -212,7 +223,7 @@ export const getLatestOddsFromD1 = async (
       },
     ];
   }
-  return { fetchedAt: firstFetchedAt, latest: grouped };
+  return { fetchedAt: latestFetchedAt, latest: grouped };
 };
 
 export const listTanshoHistory = async (
