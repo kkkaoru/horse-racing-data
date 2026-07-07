@@ -334,6 +334,22 @@ it("buildTodayRacesPopulatedCheck returns ok=false when expected KV is missing",
   expect(result.expected).toBeNull();
 });
 
+it("buildTodayRacesPopulatedCheck falls back to the last-known-good expected count", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-23T22:00:00Z"));
+  const { kv } = buildKv({
+    get: vi.fn(async (key: string) => {
+      if (key === "expected-race-count:last-known-good") return "48";
+      return null;
+    }),
+  });
+  const db = buildDb({ fetchStateCount: 48 });
+  const result = await buildTodayRacesPopulatedCheck(buildEnv({ db, kv }), new Date());
+  expect(result.ok).toBe(true);
+  expect(result.expected).toBe(48);
+  expect(result.actual).toBe(48);
+});
+
 it("buildTodayRacesPopulatedCheck returns ok=false when D1 throws (actual=null)", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-23T22:00:00Z"));
