@@ -111,6 +111,7 @@ it("fetchOddsFromHot fetches and parses ok payload", async () => {
           history: [],
           historyByType: {},
           latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+          raceKey: "jra:2026:0529:05:01",
         }),
         { status: 200 },
       ),
@@ -122,7 +123,30 @@ it("fetchOddsFromHot fetches and parses ok payload", async () => {
     history: [],
     historyByType: {},
     latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+    raceKey: "jra:2026:0529:05:01",
   });
+  expect(fetchMock).toHaveBeenCalledWith(
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra%3A2026%3A0529%3A05%3A01",
+  );
+});
+
+it("fetchOddsFromHot returns null when hot payload raceKey does not match the request", async () => {
+  const fetchMock = vi.fn<HotFetch>(async () =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          fetchedAt: "2026-05-29T07:30:00.000Z",
+          history: [],
+          historyByType: {},
+          latest: { tansho: [{ combination: "1", odds: 1.5 }] },
+          raceKey: "jra:2026:0529:05:02",
+        }),
+        { status: 200 },
+      ),
+    ),
+  );
+  const result = await fetchOddsFromHot({ fetch: fetchMock }, "jra:2026:0529:05:01");
+  expect(result).toBeNull();
 });
 
 it("fetchOddsFromHot returns null when hot worker is non-2xx", async () => {

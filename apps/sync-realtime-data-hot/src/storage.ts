@@ -366,6 +366,54 @@ export const countOddsFetchStateForDate = async (
   return row?.count ?? 0;
 };
 
+export const listRaceKeysForDate = async (
+  db: D1Database,
+  kaisaiNen: string,
+  kaisaiTsukihi: string,
+): Promise<string[]> => {
+  const result = await db
+    .prepare(
+      `select race_key from odds_fetch_state where kaisai_nen = ? and kaisai_tsukihi = ? order by race_key asc`,
+    )
+    .bind(kaisaiNen, kaisaiTsukihi)
+    .all<{ race_key: string }>();
+  return result.results.map((row) => row.race_key);
+};
+
+export const deleteOddsSnapshotsForRaceKeys = async (
+  db: D1Database,
+  raceKeys: string[],
+): Promise<number> => {
+  if (raceKeys.length === 0) {
+    return 0;
+  }
+  const statements = raceKeys.map((raceKey) =>
+    db.prepare(`delete from odds_snapshots where race_key = ?`).bind(raceKey),
+  );
+  const results = await db.batch(statements);
+  return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
+};
+
+export const markOddsFetchStateDiscardedForRaceKeys = async (
+  db: D1Database,
+  raceKeys: string[],
+  discardedAt: string,
+): Promise<void> => {
+  if (raceKeys.length === 0) {
+    return;
+  }
+  await runD1Batches(
+    db,
+    raceKeys.map((raceKey) =>
+      db
+        .prepare(
+          `update odds_fetch_state set last_odds_fetch_at = ?, last_odds_queued_at = null, odds_fetch_lock_until = null, updated_at = ? where race_key = ?`,
+        )
+        .bind(discardedAt, toJstIsoString(), raceKey),
+    ),
+  );
+};
+
 // Closing-odds safety net: select races whose last successful poll was more
 // than 5 minutes before race start. The 5-minute threshold mirrors the
 // betting-close gate — any race poll older than that missed the final

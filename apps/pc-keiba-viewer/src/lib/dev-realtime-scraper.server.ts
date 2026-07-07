@@ -114,14 +114,17 @@ const fetchOddsFromHotProd = async (raceKey: string): Promise<HotOddsPayload | n
   }
   try {
     const response = await fetch(
-      `${HOT_WORKER_ORIGIN}/api/odds/${raceKey}${HOT_WORKER_FRESH_QUERY}`,
+      `${HOT_WORKER_ORIGIN}/api/odds/${encodeURIComponent(raceKey)}${HOT_WORKER_FRESH_QUERY}`,
       { headers },
     );
     if (!response.ok) {
       return null;
     }
     const json: unknown = await response.json();
-    return isHotOddsPayload(json) ? json : null;
+    if (!isHotOddsPayload(json)) {
+      return null;
+    }
+    return json.raceKey === undefined || json.raceKey === raceKey ? json : null;
   } catch {
     return null;
   }

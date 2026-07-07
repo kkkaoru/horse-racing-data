@@ -112,12 +112,17 @@ export const fetchOddsFromHot = async (
     return null;
   }
   try {
-    const response = await hot.fetch(`${HOT_WORKER_ORIGIN}/api/odds/${raceKey}`);
+    const response = await hot.fetch(
+      `${HOT_WORKER_ORIGIN}/api/odds/${encodeURIComponent(raceKey)}`,
+    );
     if (!response.ok) {
       return null;
     }
     const json: unknown = await response.json();
-    return isHotOddsPayload(json) ? json : null;
+    if (!isHotOddsPayload(json)) {
+      return null;
+    }
+    return json.raceKey === undefined || json.raceKey === raceKey ? json : null;
   } catch {
     return null;
   }

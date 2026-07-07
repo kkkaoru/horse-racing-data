@@ -39,18 +39,21 @@ import { planOddsFetches } from "./plan";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
   bulkInsertOddsSnapshotRows,
+  deleteOddsSnapshotsForRaceKeys,
   getLatestOddsFromD1,
+  listRaceKeysForDate,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
   listOddsHistoryByType,
   listTanshoHistory,
   logFetch,
+  markOddsFetchStateDiscardedForRaceKeys,
   toHorseTrends,
   toOddsTrendsByType,
   upsertOddsFetchState,
   type ImportOddsSnapshotRow,
 } from "./storage";
-import { addDaysToYyyymmdd, getTodayJst } from "./time";
+import { addDaysToYyyymmdd, getTodayJst, toJstIsoString } from "./time";
 import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
 
 const PLAN_ODDS_FETCHES_CRON = "*/2 * * * *";
@@ -128,7 +131,10 @@ interface OddsPayload {
   history: ReturnType<typeof toHorseTrends>;
   historyByType: ReturnType<typeof toOddsTrendsByType>;
   latest: Partial<Record<OddsType, OddsData[]>>;
+  raceKey: string;
 }
+
+type OddsPayloadBody = Omit<OddsPayload, "raceKey">;
 
 interface CronHealthBody {
   ok: boolean;
@@ -159,13 +165,34 @@ export const buildOddsPayloadFromD1 = async (env: Env, raceKey: string): Promise
     history: toHorseTrends(tansho),
     historyByType: toOddsTrendsByType(byType),
     latest: latest?.latest ?? {},
+    raceKey,
   };
+};
+
+const isRaceScopedOddsPayload = (value: unknown, raceKey: string): value is OddsPayload => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  return Reflect.get(value, "raceKey") === raceKey;
+};
+
+const readRaceScopedEdgeCache = async (raceKey: string): Promise<Response | null> => {
+  const cached = await readFromEdgeCache(raceKey);
+  if (!cached) {
+    return null;
+  }
+  try {
+    const json: unknown = await cached.clone().json();
+    return isRaceScopedOddsPayload(json, raceKey) ? cached : null;
+  } catch {
+    return null;
+  }
 };
 
 // Counts distinct `fetchedAt` values across all tansho trend points in the
 // cached payload. `history` lists one entry per horse, so its raw length is
 // not a reliable proxy for how many snapshots the viewer can draw.
-const countTanshoSnapshots = (cached: OddsPayload): number => {
+const countTanshoSnapshots = (cached: OddsPayloadBody): number => {
   const trends = cached.history;
   if (trends.length === 0) {
     return 0;
@@ -179,7 +206,7 @@ const countTanshoSnapshots = (cached: OddsPayload): number => {
   return fetchedAts.size;
 };
 
-const readDoCacheSafe = async (env: Env, raceKey: string): Promise<OddsPayload | null> => {
+const readDoCacheSafe = async (env: Env, raceKey: string): Promise<OddsPayloadBody | null> => {
   try {
     const cached = await readCachedOdds(env, raceKey);
     if (!cached) {
@@ -206,14 +233,15 @@ export const handleGetOdds = async (
     await writeD1ResultCache(raceKey, "payload", payload, env);
     return jsonResponse(payload);
   }
-  const cached = await readFromEdgeCache(raceKey);
+  const cached = await readRaceScopedEdgeCache(raceKey);
   if (cached) {
     return cached;
   }
   const doCached = await readDoCacheSafe(env, raceKey);
   if (doCached && countTanshoSnapshots(doCached) >= MIN_DO_TRUSTED_SNAPSHOTS) {
-    await writeToEdgeCache(raceKey, doCached, env);
-    return jsonResponse(doCached);
+    const payload = { ...doCached, raceKey };
+    await writeToEdgeCache(raceKey, payload, env);
+    return jsonResponse(payload);
   }
   const mirrored = await readLatestOddsFromKv(env, raceKey, {
     allowStale: false,
@@ -225,11 +253,12 @@ export const handleGetOdds = async (
       history: [],
       historyByType: {},
       latest: mirrored.latest,
+      raceKey,
     };
     return jsonResponse(payload);
   }
   const d1Cached = await readD1ResultCache<OddsPayload>(raceKey, "payload");
-  if (d1Cached) {
+  if (d1Cached && isRaceScopedOddsPayload(d1Cached, raceKey)) {
     await writeToEdgeCache(raceKey, d1Cached, env);
     return jsonResponse(d1Cached);
   }
@@ -280,6 +309,50 @@ export const handleImportOddsChunk = async (env: Env, request: Request): Promise
     ),
   );
   return jsonResponse({ inserted });
+};
+
+interface DeleteOddsByDateRequest {
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+}
+
+const isYyyy = (value: string): boolean => /^\d{4}$/u.test(value);
+
+export const handleDeleteOddsByDate = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json()) as DeleteOddsByDateRequest;
+  if (!isYyyy(body.kaisaiNen) || !isYyyy(body.kaisaiTsukihi)) {
+    return jsonResponse(
+      { error: "kaisaiNen and kaisaiTsukihi must be YYYY and MMDD" },
+      {
+        status: 400,
+      },
+    );
+  }
+  const raceKeys = await listRaceKeysForDate(
+    env.REALTIME_HOT_DB,
+    body.kaisaiNen,
+    body.kaisaiTsukihi,
+  );
+  const deleted = await deleteOddsSnapshotsForRaceKeys(env.REALTIME_HOT_DB, raceKeys);
+  await markOddsFetchStateDiscardedForRaceKeys(env.REALTIME_HOT_DB, raceKeys, toJstIsoString());
+  await Promise.all([
+    invalidateRaceListInKv(env, "jra", `${body.kaisaiNen}${body.kaisaiTsukihi}`),
+    invalidateRaceListInKv(env, "nar", `${body.kaisaiNen}${body.kaisaiTsukihi}`),
+  ]);
+  await Promise.all(
+    raceKeys.map((raceKey) =>
+      Promise.all([
+        purgeEdgeCache(raceKey),
+        purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES),
+        invalidateLatestOddsInKv(env, raceKey),
+        purgeCachedOdds(env, raceKey),
+      ]),
+    ),
+  );
+  return jsonResponse({ deleted, raceKeys });
 };
 
 interface R2ArchiveOddsRow {
@@ -451,6 +524,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/import-odds-chunk") {
     return handleImportOddsChunk(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/delete-odds-by-date") {
+    return handleDeleteOddsByDate(env, request);
   }
   if (request.method === "POST" && url.pathname === "/api/internal/r2-archive-rows") {
     return handleR2ArchiveRows(env, request);

@@ -30,6 +30,7 @@ import worker, {
   collectPlanDates,
   groupRowsForFinalBackup,
   handleCronHealth,
+  handleDeleteOddsByDate,
   handleFetchRequest,
   handleHealth,
   handleGetMigrationState,
@@ -125,7 +126,9 @@ interface BuildDbOptions {
   archiveCandidates?: { results: unknown[] };
   archiveDistinctFetchedAt?: { results: unknown[] };
   stateCount?: number;
+  raceKeysForDate?: { results: unknown[] };
   closingBackfillCandidates?: { results: unknown[] };
+  batchResults?: { meta: { changes: number } }[];
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -163,7 +166,7 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
       return { bind: vi.fn(() => ({ first })) };
     }
     if (lowered.includes("from odds_fetch_state")) {
-      const all = vi.fn(async () => ({ results: [] }));
+      const all = vi.fn(async () => options.raceKeysForDate ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("insert into fetch_logs")) {
@@ -177,7 +180,7 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     const run = vi.fn(async () => ({ meta: { changes: 1 } }));
     return { bind: vi.fn(() => ({ run })) };
   });
-  const batch = vi.fn(async () => []);
+  const batch = vi.fn(async () => options.batchResults ?? []);
   return { batch, prepare: prepareMock } as unknown as D1Database;
 };
 
@@ -236,6 +239,7 @@ it("buildOddsPayloadFromD1 returns empty payload when D1 has no rows", async () 
     history: [],
     historyByType: {},
     latest: {},
+    raceKey: "nar:20260528:42:01",
   });
 });
 
@@ -284,7 +288,7 @@ it("handleGetOdds returns force-fresh payload directly from D1", async () => {
 });
 
 it("handleGetOdds returns the edge-cached response when present", async () => {
-  const cached = new Response(JSON.stringify({ cached: true }), { status: 200 });
+  const cached = new Response(JSON.stringify({ raceKey: "nar:20260528:42:01" }), { status: 200 });
   cacheMock.match.mockResolvedValueOnce(cached);
   const response = await handleGetOdds(
     buildEnv(),
@@ -292,6 +296,33 @@ it("handleGetOdds returns the edge-cached response when present", async () => {
     "nar:20260528:42:01",
   );
   expect(response).toBe(cached);
+});
+
+it("handleGetOdds ignores an edge-cached response for a different raceKey", async () => {
+  const cached = new Response(
+    JSON.stringify({
+      fetchedAt: "2026-05-28T10:00:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: {},
+      raceKey: "nar:20260528:42:02",
+    }),
+    { status: 200 },
+  );
+  cacheMock.match.mockResolvedValueOnce(cached);
+  const response = await handleGetOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar:20260528:42:01"),
+    "nar:20260528:42:01",
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    fetchedAt: null,
+    history: [],
+    historyByType: {},
+    latest: {},
+    raceKey: "nar:20260528:42:01",
+  });
 });
 
 it("handleGetOdds returns the KV mirror payload but does not write it to the edge cache", async () => {
@@ -495,6 +526,7 @@ it("handleGetOdds falls through to D1 result cache when DO tansho is shallow and
         history: [],
         historyByType: {},
         latest: {},
+        raceKey: "nar:20260528:42:01",
       }),
     ),
   );
@@ -557,6 +589,7 @@ it("handleGetOdds returns the D1 result cache payload when present", async () =>
         history: [],
         historyByType: {},
         latest: {},
+        raceKey: "nar:20260528:42:01",
       }),
     ),
   );
@@ -711,6 +744,55 @@ it("handleImportOddsChunk treats missing rows array as empty", async () => {
   expect(cacheMock.delete).not.toHaveBeenCalled();
   expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
   expect(vi.mocked(purgeCachedOdds)).not.toHaveBeenCalled();
+});
+
+it("handleDeleteOddsByDate returns 401 when unauthorized", async () => {
+  const response = await handleDeleteOddsByDate(
+    buildEnv(),
+    new Request("https://x/api/internal/delete-odds-by-date", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleDeleteOddsByDate rejects invalid date parts", async () => {
+  const response = await handleDeleteOddsByDate(
+    buildEnv(),
+    new Request("https://x/api/internal/delete-odds-by-date", {
+      body: JSON.stringify({ kaisaiNen: "2026", kaisaiTsukihi: "7" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(400);
+});
+
+it("handleDeleteOddsByDate deletes snapshots and invalidates odds caches for the date", async () => {
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({
+      batchResults: [{ meta: { changes: 1 } }, { meta: { changes: 1 } }],
+      raceKeysForDate: {
+        results: [{ race_key: "nar:2026:0707:30:01" }, { race_key: "nar:2026:0707:35:01" }],
+      },
+    }),
+  });
+  const response = await handleDeleteOddsByDate(
+    env,
+    new Request("https://x/api/internal/delete-odds-by-date", {
+      body: JSON.stringify({ kaisaiNen: "2026", kaisaiTsukihi: "0707" }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(await response.json()).toStrictEqual({
+    deleted: 2,
+    raceKeys: ["nar:2026:0707:30:01", "nar:2026:0707:35:01"],
+  });
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:2026:0707:30:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:2026:0707:35:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:race-list:v1:jra:20260707");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:race-list:v1:nar:20260707");
+  expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(2);
+  expect(cacheMock.delete).toHaveBeenCalledTimes(10);
 });
 
 it("groupRowsForFinalBackup groups rows by race_key, odds_type, and date", () => {

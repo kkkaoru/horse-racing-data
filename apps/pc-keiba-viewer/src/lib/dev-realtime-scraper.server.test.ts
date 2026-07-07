@@ -10,9 +10,9 @@ const DEBA_URL =
   "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=1&k_babaCode=23";
 const TANSHO_FUKUSHO_URL = "https://www.keiba.go.jp/KeibaWeb/Odds/OddsTanFuku?k=1";
 const HOT_NAR_URL =
-  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar:2026:0529:47:01?fresh=1";
+  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0529%3A47%3A01?fresh=1";
 const HOT_JRA_URL =
-  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra:2026:0529:05:07?fresh=1";
+  "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra%3A2026%3A0529%3A05%3A07?fresh=1";
 
 const RACE_LIST_HTML = `
   <a href="DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=1&k_babaCode=23">1</a>
@@ -630,7 +630,7 @@ it("buildDevRealtimePayload sends CF Access headers and queries the hot worker U
     year: "2026",
   });
   expect(fetchMock).toHaveBeenCalledWith(
-    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar:2026:0529:47:01?fresh=1",
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0529%3A47%3A01?fresh=1",
     {
       headers: {
         "CF-Access-Client-Id": "client-id-stub",

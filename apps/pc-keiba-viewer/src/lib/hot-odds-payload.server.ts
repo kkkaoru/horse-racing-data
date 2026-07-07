@@ -23,6 +23,7 @@ export interface HotOddsPayload {
   history: RealtimeHorseOddsTrend[];
   historyByType: Partial<Record<RealtimeOddsType, RealtimeOddsTrend[]>>;
   latest: Partial<Record<RealtimeOddsType, RealtimeOddsData[]>>;
+  raceKey?: string;
 }
 
 export const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
@@ -54,7 +55,11 @@ export const isHotOddsPayload = (value: unknown): value is HotOddsPayload => {
   const latest: unknown = Reflect.get(value, "latest");
   const history: unknown = Reflect.get(value, "history");
   const historyByType: unknown = Reflect.get(value, "historyByType");
+  const raceKey: unknown = Reflect.get(value, "raceKey");
   if (fetchedAt !== null && typeof fetchedAt !== "string") {
+    return false;
+  }
+  if (raceKey !== undefined && typeof raceKey !== "string") {
     return false;
   }
   if (!Array.isArray(history)) {

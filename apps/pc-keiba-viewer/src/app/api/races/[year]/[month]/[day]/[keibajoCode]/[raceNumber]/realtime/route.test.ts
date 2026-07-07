@@ -102,7 +102,7 @@ it("fetchOddsFromHot calls binding fetch with hot worker URL and returns parsed 
     latest: { tansho: [{ combination: "1", odds: 1.5 }] },
   });
   expect(fetchMock).toHaveBeenCalledWith(
-    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra:2026:0529:05:01",
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra%3A2026%3A0529%3A05%3A01",
   );
 });
 
@@ -635,7 +635,7 @@ it("GET production branch calls REALTIME_HOT binding and wraps odds", async () =
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(hotFetch).toHaveBeenCalledWith(
-    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra:2026:0529:05:01",
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/jra%3A2026%3A0529%3A05%3A01",
   );
   const body: unknown = await response.json();
   expect(body).toStrictEqual({

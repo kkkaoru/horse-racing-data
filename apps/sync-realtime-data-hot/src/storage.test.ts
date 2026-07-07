@@ -7,6 +7,7 @@ import {
   completeOddsFetch,
   countOddsFetchStateForDate,
   countOddsRows,
+  deleteOddsSnapshotsForRaceKeys,
   failOddsFetch,
   filterChangedOdds,
   getLatestOddsFromD1,
@@ -19,8 +20,10 @@ import {
   listOddsFetchStateForDate,
   listOddsHistoryByType,
   listOddsSnapshotsBeforeCutoff,
+  listRaceKeysForDate,
   listTanshoHistory,
   logFetch,
+  markOddsFetchStateDiscardedForRaceKeys,
   markOddsFetchQueued,
   runD1Batches,
   toHorseTrends,
@@ -47,6 +50,70 @@ it("runD1Batches splits over batch boundary", async () => {
   const statements = Array.from({ length: 250 }, () => stmt);
   await runD1Batches(db, statements);
   expect(batch).toHaveBeenCalledTimes(3);
+});
+
+it("listRaceKeysForDate returns ordered race keys for the target date", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:2026:0707:30:01" }, { race_key: "nar:2026:0707:35:01" }],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const raceKeys = await listRaceKeysForDate(db, "2026", "0707");
+  expect(raceKeys).toStrictEqual(["nar:2026:0707:30:01", "nar:2026:0707:35:01"]);
+  expect(bind).toHaveBeenCalledWith("2026", "0707");
+});
+
+it("deleteOddsSnapshotsForRaceKeys returns 0 without touching D1 when raceKeys is empty", async () => {
+  const db = { batch: vi.fn(async () => []), prepare: vi.fn() } as unknown as D1Database;
+  const deleted = await deleteOddsSnapshotsForRaceKeys(db, []);
+  expect(deleted).toBe(0);
+  expect(db.prepare).not.toHaveBeenCalled();
+});
+
+it("deleteOddsSnapshotsForRaceKeys deletes one statement per race and sums changes", async () => {
+  const batch = vi.fn(async () => [{ meta: { changes: 2 } }, { meta: { changes: 3 } }]);
+  const bind = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  const deleted = await deleteOddsSnapshotsForRaceKeys(db, [
+    "nar:2026:0707:30:01",
+    "nar:2026:0707:35:01",
+  ]);
+  expect(deleted).toBe(5);
+  expect(bind).toHaveBeenNthCalledWith(1, "nar:2026:0707:30:01");
+  expect(bind).toHaveBeenNthCalledWith(2, "nar:2026:0707:35:01");
+});
+
+it("markOddsFetchStateDiscardedForRaceKeys returns early when raceKeys is empty", async () => {
+  const db = { batch: vi.fn(async () => []), prepare: vi.fn() } as unknown as D1Database;
+  await markOddsFetchStateDiscardedForRaceKeys(db, [], "2026-07-07T15:58:00+09:00");
+  expect(db.prepare).not.toHaveBeenCalled();
+});
+
+it("markOddsFetchStateDiscardedForRaceKeys records the discard time for each race", async () => {
+  const batch = vi.fn(async () => []);
+  const bind = vi.fn(() => ({ bind }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { batch, prepare } as unknown as D1Database;
+  await markOddsFetchStateDiscardedForRaceKeys(
+    db,
+    ["nar:2026:0707:30:01", "nar:2026:0707:35:01"],
+    "2026-07-07T15:58:00+09:00",
+  );
+  expect(prepare).toHaveBeenCalledTimes(2);
+  expect(bind).toHaveBeenNthCalledWith(
+    1,
+    "2026-07-07T15:58:00+09:00",
+    expect.any(String),
+    "nar:2026:0707:30:01",
+  );
+  expect(bind).toHaveBeenNthCalledWith(
+    2,
+    "2026-07-07T15:58:00+09:00",
+    expect.any(String),
+    "nar:2026:0707:35:01",
+  );
 });
 
 it("insertOddsSnapshot returns 0 when odds is empty", async () => {
