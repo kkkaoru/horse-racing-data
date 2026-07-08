@@ -138,3 +138,19 @@ pre-commit:
         - "apps/finish-position-predict-container/src/**/*.{py,pyi}"
         - "apps/finish-position-predict-container/tests/*.{py,pyi}"
       run: cd apps/finish-position-predict-container && bun run python:check
+    # apps/mlflow/ 配下 Python (MLflow tracking client library + CLI)。
+    # python:check が ruff + basedpyright + pytest --cov-fail-under=95 を一括実行する。
+    python-mlflow:
+      glob:
+        - "apps/mlflow/src/*.{py,pyi}"
+        - "apps/mlflow/src/**/*.{py,pyi}"
+        - "apps/mlflow/tests/*.{py,pyi}"
+      run: cd apps/mlflow && bun run python:check
+    # apps/mlflow-ui/ 配下 Python (mlflow server launcher CLI)。
+    # python:check が ruff + basedpyright + pytest --cov-fail-under=95 を一括実行する。
+    python-mlflow-ui:
+      glob:
+        - "apps/mlflow-ui/src/*.{py,pyi}"
+        - "apps/mlflow-ui/src/**/*.{py,pyi}"
+        - "apps/mlflow-ui/tests/*.{py,pyi}"
+      run: cd apps/mlflow-ui && bun run python:check

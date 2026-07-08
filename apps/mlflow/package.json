@@ -1,0 +1,18 @@
+{
+  "name": "mlflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "oxfmt --write package.json pyproject.toml README.md",
+    "format:check": "oxfmt --check package.json pyproject.toml README.md",
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "python:check": "bun run python:lint && bun run python:typecheck && bun run python:test",
+    "python:lint": "uv run ruff check",
+    "python:test": "uv run pytest",
+    "python:typecheck": "uv run basedpyright --project pyrightconfig.json"
+  },
+  "devDependencies": {
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:"
+  }
+}

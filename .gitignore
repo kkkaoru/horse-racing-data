@@ -180,6 +180,13 @@ catboost_info/
 # (gitignored scratch; pulled from apps/pc-keiba-viewer/tmp/models before deploy)
 apps/finish-position-predict-container/models/
 
+# MLflow local tracking/artifact stores (apps/mlflow, apps/mlflow-ui)
+apps/mlflow/data/
+# mlflow auto-creates its own "Default" experiment's artifact root as
+# "<cwd>/mlruns" outside data/ whenever a fresh store's first touch happens
+# with a different cwd than apps/mlflow/data (see cli.py's cmd_init).
+apps/mlflow/mlruns/
+
 # Claude Code internal artifacts (worktrees, memory caches, etc.)
 # skills/ だけはリポジトリで共有するため、ディレクトリ指定ではなくワイルドカードで除外する
 .claude/*

@@ -1,0 +1,78 @@
+[project]
+name = "horse-racing-mlflow"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+# Pinned below 3.14 to avoid the MLflow-on-Python-3.14 `Traversable` server bug;
+# the repo's other Python apps standardize on 3.12 and uv has cpython-3.12
+# installed already.
+dependencies = [
+  # mlflow-skinny[db] only pulls DB *driver* packages (PyMySQL / psycopg2-binary
+  # / pymssql); the SQLAlchemy-backed tracking/registry store code ships inside
+  # mlflow-skinny itself but its own dependency (SQLAlchemy + Alembic for the
+  # migrations) is NOT declared by that extra, so it is pinned here to match
+  # the full `mlflow` package's own constraints for the same mlflow-skinny
+  # version (verified against the mlflow 3.14.0 PyPI metadata).
+  "alembic!=1.10.0,<2",
+  "boto3>=1.35.0",
+  "duckdb>=1.1.0",
+  "mlflow-skinny[db]>=3.14.0",
+  "pandas>=2.2.0",
+  "pyarrow>=17.0.0",
+  "sqlalchemy>=1.4.0,<3",
+]
+
+[dependency-groups]
+dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.8.0", "ty>=0.0.35"]
+
+# Needed so `uv run python -m mlflow_tracking.cli ...` can import the package
+# regardless of invocation cwd -- without this, uv treats the project as
+# dependency-only and never installs `src/mlflow_tracking` into its own venv
+# (same fix as apps/mlflow-ui, empirically necessary there too).
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlflow_tracking"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "PGH"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = ["tmp", "node_modules", ".venv"]
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportAny = "none"
+reportExplicitAny = "error"
+reportImplicitOverride = "error"
+reportImportCycles = "error"
+reportMissingTypeStubs = "none"
+reportUnannotatedClassAttribute = "error"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+
+[tool.ty.environment]
+extra-paths = ["src"]
+
+# Coverage measures mlflow_tracking (the library + CLI) only; this is a new
+# package so the measured surface does not shrink anything pre-existing.
+[tool.pytest.ini_options]
+addopts = "--cov=mlflow_tracking --cov-report=term-missing --cov-fail-under=95"
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+# "\\.\\.\\." excludes Protocol method stubs ("..."), which are definitionally
+# unexecutable — not a code-hiding pragma.
+exclude_lines = ["if __name__ == .__main__.:", "raise SystemExit", "\\.\\.\\."]
+show_missing = true

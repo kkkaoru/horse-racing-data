@@ -67,6 +67,20 @@
         "vitest": "catalog:",
       },
     },
+    "apps/mlflow": {
+      "name": "mlflow",
+      "devDependencies": {
+        "oxfmt": "catalog:",
+        "oxlint": "catalog:",
+      },
+    },
+    "apps/mlflow-ui": {
+      "name": "mlflow-ui",
+      "devDependencies": {
+        "oxfmt": "catalog:",
+        "oxlint": "catalog:",
+      },
+    },
     "apps/pc-keiba-viewer": {
       "name": "pc-keiba-viewer",
       "dependencies": {
@@ -1385,6 +1399,10 @@
     "minipass": ["minipass@7.1.2", "", {}, "sha512-qOOzS1cBTWYF4BH8fVePDBOO9iptMnGUEZwNc/cMWnTV2nVLZ7VoNWEPHkYczZA0pdoA7dl6e7FL659nX9S2aw=="],
 
     "mkdirp": ["mkdirp@1.0.4", "", { "bin": { "mkdirp": "bin/cmd.js" } }, "sha512-vVqVZQyf3WLx2Shd0qJ9xuvqgAyKPLAiqITEtqW0oIUjzo3PePDd6fW9iFz30ef7Ysp/oiWqbhszeGWW2T6Gzw=="],
+
+    "mlflow": ["mlflow@workspace:apps/mlflow"],
+
+    "mlflow-ui": ["mlflow-ui@workspace:apps/mlflow-ui"],
 
     "mnemonist": ["mnemonist@0.38.3", "", { "dependencies": { "obliterator": "^1.6.1" } }, "sha512-2K9QYubXx/NAjv4VLq1d1Ly8pWNC5L3BrixtdkyTegXWJIqY+zLNDhhX/A+ZwWt70tB1S8H4BE8FLYEFyNoOBw=="],
 
