@@ -31,13 +31,17 @@ import argparse
 import fnmatch
 import json
 from pathlib import Path
-from typing import Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
 import polars as pl
 
 import finish_position_catboost as cb_walk
 import finish_position_xgboost as xgb_walk
+import mlflow_hook
 import walk_forward_common as wfc_common
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 CATEGORY_JRA: str = "jra"
 CATEGORY_NAR: str = "nar"
@@ -691,9 +695,30 @@ def xgboost_numeric_resolver(df: pl.DataFrame, *, use_cat_features: bool) -> lis
     return xgb_walk.resolve_feature_columns(df)
 
 
+def emit_mlflow_run(args: WalkForwardArguments, result: Mapping[str, object]) -> None:
+    """Best-effort MLflow logging of this walk-forward scoring run (never affects CLI output)."""
+    mlflow_hook.safe_emit_training_run(
+        task="finish-position",
+        category=args["category"],
+        model_version=args["walk_forward_namespace"],
+        eval_regime="wf",
+        params={
+            "iteration_id": args["iteration_id"],
+            "learning_rate": args["learning_rate"],
+            "iterations": args["iterations"],
+            "num_rounds": args["num_rounds"],
+        },
+        tags={
+            "output_parquet_root": str(args["output_parquet_root"]),
+            "fold_count": result.get("fold_count"),
+        },
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = normalize_arguments(parse_args(argv))
     result = run(args, build_default_deps())
+    emit_mlflow_run(args, result)
     print(json.dumps(result, ensure_ascii=False))
 
 

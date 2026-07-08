@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 import aggregate_bucket_eval_duckdb as subject
+import mlflow_hook
 
 
 def test_sql_quote_literal_doubles_single_quotes():
@@ -567,6 +570,140 @@ def test_run_aggregation_collects_upserts_and_closes_connections():
     )
     assert duck.close.call_count == 1
     assert pg.close.call_count == 1
+
+
+def _sample_bucket_row() -> tuple[object, ...]:
+    """One 37-field row matching BUCKET_INSERT_COLUMNS order (6 prepended dims + 31)."""
+    return subject.build_bucket_upsert_row(
+        aggregate_row=tuple(
+            [0] * 9
+            + [3, 30, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 12, 2.0, 3]
+            + ["sprint", None, None, "010"]
+        ),
+        model_version="jra-cb-v7-lineage-wf-21y",
+        running_style_feature_version="v3",
+        finish_position_version="v1",
+        category=subject.CATEGORY_JRA,
+        window_from="20240101",
+        window_to="20241231",
+    )
+
+
+def test_write_cell_report_json_writes_records_matching_bucket_insert_columns(tmp_path: Path):
+    row = _sample_bucket_row()
+    output_path = subject.write_cell_report_json(
+        subject.CATEGORY_JRA, "jra-cb-v7-lineage-wf-21y", [row], root=tmp_path,
+    )
+    assert output_path == tmp_path / "jra" / "jra-cb-v7-lineage-wf-21y-bucket-cells.json"
+    records = json.loads(output_path.read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["model_version"] == "jra-cb-v7-lineage-wf-21y"
+    assert records[0]["race_count"] == 3
+    assert records[0]["distance_band"] == "sprint"
+
+
+def test_write_cell_report_json_serializes_decimal_values(tmp_path: Path):
+    row = list(_sample_bucket_row())
+    race_count_index = subject.BUCKET_INSERT_COLUMNS.index("race_count")
+    row[race_count_index] = Decimal("3")
+    output_path = subject.write_cell_report_json(
+        subject.CATEGORY_JRA, "jra-cb-v7-lineage-wf-21y", [tuple(row)], root=tmp_path,
+    )
+    records = json.loads(output_path.read_text(encoding="utf-8"))
+    assert records[0]["race_count"] == 3.0
+
+
+def test_write_cell_report_json_uses_module_default_root_when_omitted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setattr(subject, "CELL_REPORT_ROOT", tmp_path)
+    output_path = subject.write_cell_report_json(
+        subject.CATEGORY_JRA, "jra-cb-v7-lineage-wf-21y", [_sample_bucket_row()],
+    )
+    assert output_path == tmp_path / "jra" / "jra-cb-v7-lineage-wf-21y-bucket-cells.json"
+    assert output_path.exists()
+
+
+def test_json_decimal_default_raises_for_unsupported_type():
+    with pytest.raises(TypeError):
+        subject._json_decimal_default(object())
+
+
+def _sample_collection() -> subject.CategoryCollection:
+    return {
+        "bucket_rows": [_sample_bucket_row()],
+        "subgroup_rows": [],
+        "global_row": (
+            "jra-cb-v7-lineage-wf-21y", subject.CATEGORY_JRA, "20070101", "20261231",
+            100, 1000, 0.42, 0.71, 0.05, 0.20, 0.35, 0.50, 0.60, 0.75, 0.30, 0.10, 0.90,
+        ),
+    }
+
+
+def test_emit_mlflow_cell_report_skips_entirely_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "0")
+    write_spy = MagicMock()
+    monkeypatch.setattr(subject, "write_cell_report_json", write_spy)
+    emit_spy = MagicMock()
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", emit_spy)
+    namespace = subject.parse_args([
+        "--predictions-glob", "g", "--local-pg-url", "l", "--neon-url", "n",
+        "--running-style-feature-version", "v3", "--finish-position-version", "v1",
+    ])
+    subject.emit_mlflow_cell_report(namespace, subject.CATEGORY_JRA, _sample_collection())
+    write_spy.assert_not_called()
+    emit_spy.assert_not_called()
+
+
+def test_emit_mlflow_cell_report_calls_safe_emit_training_run_with_expected_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    fake_report_path = tmp_path / "jra-bucket-cells.json"
+    monkeypatch.setattr(subject, "write_cell_report_json", MagicMock(return_value=fake_report_path))
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    namespace = subject.parse_args([
+        "--predictions-glob", "g", "--local-pg-url", "l", "--neon-url", "n",
+        "--running-style-feature-version", "v3", "--finish-position-version", "v1",
+    ])
+    subject.emit_mlflow_cell_report(namespace, subject.CATEGORY_JRA, _sample_collection())
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == subject.CATEGORY_JRA
+    assert kwargs["model_version"] == subject.DEFAULT_MODEL_VERSIONS[subject.CATEGORY_JRA]
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["cell_report"] == fake_report_path
+    assert kwargs["aggregate_metrics"]["race_count"] == 100.0
+    assert kwargs["tags"]["evaluation_window_from"] == "20070101"
+    assert kwargs["tags"]["evaluation_window_to"] == "20261231"
+
+
+def test_run_aggregation_invokes_emit_mlflow_cell_report_per_category(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    namespace = subject.parse_args([
+        "--predictions-glob", "g", "--local-pg-url", "l", "--neon-url", "n",
+        "--running-style-feature-version", "v3", "--finish-position-version", "v1",
+    ])
+    duck = MagicMock()
+    duck.execute.side_effect = lambda sql: _bucket_or_subgroup_fetchall(sql)
+    pg = MagicMock()
+    pg_cursor = MagicMock()
+    pg.cursor.return_value.__enter__.return_value = pg_cursor
+    emit_spy = MagicMock()
+    monkeypatch.setattr(subject, "emit_mlflow_cell_report", emit_spy)
+    subject.run_aggregation(
+        namespace,
+        connect_duckdb=lambda _url, _threads: duck,
+        connect_pg=lambda _url: pg,
+    )
+    assert emit_spy.call_count == 3
+    called_categories = {call.args[1] for call in emit_spy.call_args_list}
+    assert called_categories == {subject.CATEGORY_JRA, subject.CATEGORY_NAR, subject.CATEGORY_BAN_EI}
 
 
 def test_coerce_int_coerces_decimal_to_int():

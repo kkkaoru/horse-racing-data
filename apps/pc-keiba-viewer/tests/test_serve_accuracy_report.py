@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pytest import CaptureFixture
 
+import mlflow_hook
 import serve_accuracy_report as subject
 
 
@@ -1233,3 +1235,139 @@ def test_run_no_data_json_output(capsys: CaptureFixture[str]) -> None:
     captured = capsys.readouterr()
     parsed = json.loads(captured.out)
     assert parsed["error"] == "no_data"
+
+
+# ── MLflow serve-accuracy logging (mocked) ──────────────────────────────────────
+
+
+def test_resolve_majority_model_version_picks_highest_count() -> None:
+    counts = {"jra-cb-v9-sim-2013": 5, "jra-cb-v7-lineage-wf-21y": 12}
+    assert subject.resolve_majority_model_version(counts) == "jra-cb-v7-lineage-wf-21y"
+
+
+def test_resolve_majority_model_version_returns_unknown_for_empty() -> None:
+    assert subject.resolve_majority_model_version({}) == "unknown"
+
+
+def test_write_serve_cell_report_writes_json(tmp_path: Path) -> None:
+    output_path = subject.write_serve_cell_report(
+        "20260614", "jra", "finish-position", [{"band": "sprint", "top1_pct": 42.0}],
+        root=tmp_path,
+    )
+    assert output_path == tmp_path / "jra" / "finish-position" / "20260614.json"
+    records = json.loads(output_path.read_text(encoding="utf-8"))
+    assert records == [{"band": "sprint", "top1_pct": 42.0}]
+
+
+def _sample_fp_metrics() -> subject.FinishPositionMetrics:
+    return subject.FinishPositionMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        races=24, horses=200,
+        top1_hits=10, place2_hits=13, place3_hits=15,
+        fukusho_2p_hits=17, top3_box_hits=15,
+        prediction_generated_at_jst="2026-06-14 09:30:00 JST",
+        model_version_counts={"jra-cb-v7-lineage-wf-21y": 200},
+    )
+
+
+def _sample_rs_metrics() -> subject.RunningStyleMetrics:
+    per_class = [
+        subject.RunningStyleClassMetrics(label="nige", cls_idx=0,
+                                          pred_count=4, actual_count=4, tp=3),
+    ]
+    return subject.RunningStyleMetrics(
+        date_str="20260614", category="jra", era="POST_FIX",
+        total_horses=16, overall_accuracy=0.5, per_class=per_class,
+        macro_f1=0.6, model_version="jra-running-style-lgbm-prod-v3",
+    )
+
+
+def test_emit_mlflow_serve_accuracy_skips_entirely_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "0")
+    fp = _sample_fp_metrics()
+    metrics_dict = subject.metrics_to_dict(fp, None)
+    write_spy = MagicMock()
+    monkeypatch.setattr(subject, "write_serve_cell_report", write_spy)
+    emit_spy = MagicMock()
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", emit_spy)
+    subject.emit_mlflow_serve_accuracy("20260614", "jra", fp, None, metrics_dict)
+    write_spy.assert_not_called()
+    emit_spy.assert_not_called()
+
+
+def test_emit_mlflow_serve_accuracy_emits_finish_position_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    fp = _sample_fp_metrics()
+    metrics_dict = subject.metrics_to_dict(fp, None)
+    fake_report_path = tmp_path / "fp-cells.json"
+    monkeypatch.setattr(subject, "write_serve_cell_report", MagicMock(return_value=fake_report_path))
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    subject.emit_mlflow_serve_accuracy("20260614", "jra", fp, None, metrics_dict)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["model_version"] == "jra-cb-v7-lineage-wf-21y"
+    assert kwargs["eval_regime"] == "serve"
+    assert kwargs["cell_report"] == fake_report_path
+    assert kwargs["aggregate_metrics"]["races"] == 24.0
+    assert kwargs["tags"] == {"date": "20260614", "category": "jra", "era": "POST_FIX"}
+
+
+def test_emit_mlflow_serve_accuracy_emits_running_style_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    rs = _sample_rs_metrics()
+    metrics_dict = subject.metrics_to_dict(None, rs)
+    fake_report_path = tmp_path / "rs-cells.json"
+    monkeypatch.setattr(subject, "write_serve_cell_report", MagicMock(return_value=fake_report_path))
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    subject.emit_mlflow_serve_accuracy("20260614", "jra", None, rs, metrics_dict)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "running-style"
+    assert kwargs["model_version"] == "jra-running-style-lgbm-prod-v3"
+    assert kwargs["eval_regime"] == "serve"
+    assert kwargs["cell_report"] == fake_report_path
+    assert kwargs["aggregate_metrics"]["total_horses"] == 16.0
+
+
+def test_emit_mlflow_serve_accuracy_falls_back_to_unknown_model_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    rs = _sample_rs_metrics()
+    rs.model_version = ""
+    metrics_dict = subject.metrics_to_dict(None, rs)
+    monkeypatch.setattr(
+        subject, "write_serve_cell_report", MagicMock(return_value=tmp_path / "rs.json"),
+    )
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    subject.emit_mlflow_serve_accuracy("20260614", "jra", None, rs, metrics_dict)
+    assert spy.call_args.kwargs["model_version"] == "unknown"
+
+
+def test_run_succeeds_when_mlflow_hook_reports_failure(capsys: CaptureFixture[str]) -> None:
+    """emit_mlflow_serve_accuracy failing must never affect run()'s own return
+    code or stdout — the CLI still reports the finish-position accuracy."""
+    fp = _sample_fp_metrics()
+    with (
+        patch("serve_accuracy_report.query_finish_position_metrics", return_value=fp),
+        patch("serve_accuracy_report.query_running_style_metrics", return_value=None),
+        patch("serve_accuracy_report.psycopg") as mock_psycopg,
+        patch.object(mlflow_hook, "safe_emit_training_run", return_value=False),
+    ):
+        mock_conn = MagicMock()
+        mock_psycopg.connect.return_value = mock_conn
+        code = subject.run("20260614", "jra", "postgresql://test", no_rs=True)
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "POST_FIX" in captured.out

@@ -24,10 +24,11 @@ from typing import TYPE_CHECKING, Final, Protocol, TypedDict, cast
 
 import polars as pl
 
+import mlflow_hook
 import walk_forward_common as wfc_common
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 DEFAULT_ITERATION_ID: Final[int] = 0
 DEFAULT_ALPHA_BUCKET_WEIGHT: Final[float] = 0.0
@@ -348,6 +349,7 @@ def train_fold(
             "status": METADATA_STATUS_COMPLETED,
             "resumed": True,
             "rows": 0,
+            "metrics": {},
         }
     train_df, valid_df = split_train_valid(df, args["train_start_date"], fold_year)
     if len(train_df) == 0 or len(valid_df) == 0:
@@ -364,11 +366,13 @@ def train_fold(
             "status": METADATA_STATUS_SKIPPED,
             "resumed": False,
             "rows": 0,
+            "metrics": {},
         }
     train_with_buckets = merge_bucket_weights_into_train(train_df, bucket_df)
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
     fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    metrics = cast(dict[str, object], fold_result.get("metrics", {}))
     saved_model = fold_result.get("model")
     if saved_model is not None:
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -395,6 +399,7 @@ def train_fold(
         "status": METADATA_STATUS_COMPLETED,
         "resumed": False,
         "rows": int(len(valid_predictions)),
+        "metrics": metrics,
     }
 
 
@@ -490,9 +495,56 @@ def build_default_deps() -> TrainDeps:
     }
 
 
+def emit_mlflow_run(args: TrainCatBoostArgs, result: Mapping[str, object]) -> None:
+    """Best-effort MLflow logging of this walk-forward run (never affects CLI output).
+
+    Production ``continuous_learner`` runs always call this trainer with
+    ``--year-from == --year-to``, i.e. a single fold; ad-hoc/backtest runs may
+    train many folds in one process. Both cases are handled by the same rule:
+    always point the manifest at the LAST fold's artifact directory and
+    metrics. For a single-fold run "last" is simply "the only" fold, so no
+    special-casing is needed. ``fold_dirs`` still records how many folds this
+    iteration actually trained, even though only the last fold's
+    artifact/metrics get ingested per MLflow run — this keeps the design
+    "one iteration = one MLflow run" instead of fanning out per-fold
+    ingestion calls.
+    """
+    folds = cast(list[dict[str, object]], result.get("folds", []))
+    last_fold = folds[-1] if folds else None
+    if last_fold is not None:
+        artifact_dir = build_per_fold_model_dir(args, cast(int, last_fold["fold_year"]))
+        aggregate_metrics = mlflow_hook.flatten_numeric_metrics(
+            cast("Mapping[str, object]", last_fold.get("metrics", {})),
+        )
+    else:
+        artifact_dir = args["model_root"] / args["category"] / f"iter{args['iteration_id']}"
+        aggregate_metrics = {}
+    mlflow_hook.safe_emit_training_run(
+        task="finish-position",
+        category=args["category"],
+        model_version=args["walk_forward_namespace"],
+        eval_regime="wf",
+        artifact_dir=artifact_dir,
+        aggregate_metrics=aggregate_metrics,
+        params={
+            "iteration_id": args["iteration_id"],
+            "alpha_bucket_weight": args["alpha_bucket_weight"],
+            "iterations": args["iterations"],
+            "depth": args["depth"],
+            "learning_rate": args["learning_rate"],
+        },
+        tags={
+            "fold_count": result.get("fold_count"),
+            "feature_count": result.get("feature_count"),
+            "fold_dirs": len(folds),
+        },
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = normalize_args(parse_args(argv))
     result = run(args, build_default_deps())
+    emit_mlflow_run(args, result)
     print(json.dumps(result, ensure_ascii=False))
 
 

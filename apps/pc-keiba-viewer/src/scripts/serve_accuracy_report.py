@@ -33,9 +33,12 @@ import json
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Final, NotRequired, Protocol, TypedDict, cast
 
 import psycopg
+
+import mlflow_hook
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -870,6 +873,78 @@ def metrics_to_dict(
     return result
 
 
+# ── MLflow logging (best-effort; see mlflow_hook.py) ────────────────────────────
+
+# Gitignored scratch dir (see .gitignore `tmp/`) for the MLflow cell-report JSON export.
+SERVE_CELL_REPORT_ROOT: Final[Path] = Path("tmp/mlflow-cell-reports/serve-accuracy")
+
+
+def write_serve_cell_report(
+    date_str: str,
+    category: str,
+    task: str,
+    records: object,
+    *,
+    root: Path | None = None,
+) -> Path:
+    """Write a serve-accuracy subgroup/per-class breakdown as a JSON cell table."""
+    output_dir = (root if root is not None else SERVE_CELL_REPORT_ROOT) / category / task
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{date_str}.json"
+    output_path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+    return output_path
+
+
+def resolve_majority_model_version(model_version_counts: dict[str, int]) -> str:
+    if not model_version_counts:
+        return "unknown"
+    return max(model_version_counts, key=lambda mv: model_version_counts[mv])
+
+
+def emit_mlflow_serve_accuracy(
+    date_str: str,
+    category: str,
+    fp: FinishPositionMetrics | None,
+    rs: RunningStyleMetrics | None,
+    metrics_dict: MetricsDict,
+) -> None:
+    """Best-effort MLflow logging of this serve-accuracy check (never affects CLI output).
+
+    Skips the cell-report file write entirely when disabled, so tests / re-runs
+    with the feature off never touch disk for this.
+    """
+    if not mlflow_hook.mlflow_enabled():
+        return
+    if fp is not None and "finish_position" in metrics_dict:
+        fp_dict = metrics_dict["finish_position"]
+        cell_report_path = write_serve_cell_report(
+            date_str, category, "finish-position", fp_dict["subgroups"],
+        )
+        mlflow_hook.safe_emit_training_run(
+            task="finish-position",
+            category=category,
+            model_version=resolve_majority_model_version(fp.model_version_counts),
+            eval_regime="serve",
+            cell_report=cell_report_path,
+            aggregate_metrics=mlflow_hook.flatten_numeric_metrics(fp_dict),
+            tags={"date": date_str, "category": category, "era": fp.era},
+        )
+    if rs is not None and "running_style" in metrics_dict:
+        rs_dict = metrics_dict["running_style"]
+        cell_report_path = write_serve_cell_report(
+            date_str, category, "running-style", rs_dict["per_class"],
+        )
+        mlflow_hook.safe_emit_training_run(
+            task="running-style",
+            category=category,
+            model_version=rs.model_version or "unknown",
+            eval_regime="serve",
+            cell_report=cell_report_path,
+            aggregate_metrics=mlflow_hook.flatten_numeric_metrics(rs_dict),
+            tags={"date": date_str, "category": category, "era": rs.era},
+        )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -945,8 +1020,11 @@ def run(
             print("Check that the cron ran and upserted to race_finish_position_model_predictions.")
         return 1
 
+    metrics_dict = metrics_to_dict(fp, rs)
+    emit_mlflow_serve_accuracy(date_str, category, fp, rs, metrics_dict)
+
     if json_output:
-        print(json.dumps(metrics_to_dict(fp, rs), indent=2))
+        print(json.dumps(metrics_dict, indent=2))
     else:
         if fp is not None:
             print(format_fp_report(fp))

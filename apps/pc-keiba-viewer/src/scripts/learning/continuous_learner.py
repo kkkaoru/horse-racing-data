@@ -52,6 +52,7 @@ from finish_position_lightgbm import (
     resolve_feature_columns,
     split_walk_forward,
 )
+import mlflow_hook
 from walk_forward_common import atomic_write_metadata
 
 _psutil: ModuleType | None
@@ -705,6 +706,58 @@ def _cell_evaluation_key(metric: Mapping[str, object]) -> str:
     )
 
 
+def _aggregate_cell_metrics(metrics: list[SubgroupMetrics]) -> dict[str, float]:
+    """Race-count-weighted rollup of one round's per-cell metrics.
+
+    Mirrors ContinuousLearner._log_surface_summary's weighted-mean pattern
+    but across the full cell set (not grouped by surface) — this is the
+    headline number set the deploy-readiness gate already looks at
+    (ndcg/top1/place2-6/top3_box), just rolled up rather than per-cell.
+    No new evaluation work: every value here is already computed by
+    compute_subgroup_diagnostics.
+    """
+    total_races = sum(m["race_count"] for m in metrics)
+    if total_races == 0:
+        return {}
+    ndcg_weighted = [m["ndcg_at_3"] * m["race_count"] for m in metrics]
+    top1_weighted = [m["top1_accuracy"] * m["race_count"] for m in metrics]
+    place2_weighted = [m["place2_accuracy"] * m["race_count"] for m in metrics]
+    place3_weighted = [m["place3_accuracy"] * m["race_count"] for m in metrics]
+    place4_weighted = [m["place4_accuracy"] * m["race_count"] for m in metrics]
+    place5_weighted = [m["place5_accuracy"] * m["race_count"] for m in metrics]
+    place6_weighted = [m["place6_accuracy"] * m["race_count"] for m in metrics]
+    top3_box_weighted = [m["top3_box_accuracy"] * m["race_count"] for m in metrics]
+    return {
+        "ndcg_at_3": sum(ndcg_weighted) / total_races,
+        "top1_accuracy": sum(top1_weighted) / total_races,
+        "place2_accuracy": sum(place2_weighted) / total_races,
+        "place3_accuracy": sum(place3_weighted) / total_races,
+        "place4_accuracy": sum(place4_weighted) / total_races,
+        "place5_accuracy": sum(place5_weighted) / total_races,
+        "place6_accuracy": sum(place6_weighted) / total_races,
+        "top3_box_accuracy": sum(top3_box_weighted) / total_races,
+    }
+
+
+def _write_cell_report_json(metrics: list[SubgroupMetrics]) -> Path:
+    """Persist one round's per-cell metrics as JSON for mlflow_tracking's
+    cell_report ingestion path (a plain list-of-dicts file — SubgroupMetrics
+    are TypedDicts, so `list(metrics)` is already JSON-serializable).
+    Mirrors mlflow_hook.emit_training_run's own NamedTemporaryFile(delete=False)
+    staging convention for the manifest file, since this file must outlive
+    this function call (the mlflow_tracking CLI subprocess reads it next).
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".json",
+        prefix="hr-cell-report-",
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        json.dump(list(metrics), handle, ensure_ascii=False)
+        return Path(handle.name)
+
+
 class CellAccuracyStore:
     def __init__(self, pg_url: str = _LOCAL_PG_URL) -> None:
         self._pg_url: str = pg_url
@@ -1292,7 +1345,7 @@ class ContinuousLearner:
                 )
             self._saturated = self._saturated or saturated
             if self._log_subgroup and (self._cell_filter is not None or round_num % 5 == 0):
-                self._log_subgroup_diagnostics()
+                self._log_subgroup_diagnostics(round_num)
             if self._saturated:
                 _logger.info(
                     "saturated — skipping inverse and enrichment phases this round"
@@ -1653,7 +1706,40 @@ class ContinuousLearner:
             self._backends,
         )
 
-    def _log_subgroup_diagnostics(self) -> None:
+    def _emit_cell_diagnostics_to_mlflow(
+        self, round_num: int, feature_set_hash: str, metrics: list[SubgroupMetrics],
+    ) -> None:
+        """Best-effort MLflow logging of this round's cell-level diagnostics.
+
+        Mirrors the WF trainers' emit_mlflow_run: env-gated via
+        HORSE_RACING_MLFLOW_ENABLED (checked here too, before doing any file I/O,
+        so a disabled run leaves no stray temp file), and any failure —
+        including the local cell-report JSON write — is caught and logged, never
+        raised. This sits right after the accuracy-store write it mirrors; a
+        failure here must never take down the exploration loop.
+        """
+        if not mlflow_hook.mlflow_enabled():
+            return
+        try:
+            cell_report = _write_cell_report_json(metrics)
+            mlflow_hook.safe_emit_training_run(
+                task="finish-position",
+                category=self._category,
+                model_version=f"{self._category}-cellwf-round{round_num}-{feature_set_hash[:12]}",
+                eval_regime="wf",
+                cell_report=cell_report,
+                aggregate_metrics=_aggregate_cell_metrics(metrics),
+                tags={
+                    "iteration": round_num,
+                    "exploration_method": self._exploration_method,
+                    "cells_evaluated": len(metrics),
+                    "saturated": self._saturated,
+                },
+            )
+        except Exception as exc:
+            _logger.warning("mlflow cell diagnostics emit failed (non-fatal): %s", exc)
+
+    def _log_subgroup_diagnostics(self, round_num: int = 0) -> None:
         active = self._registry.get_active_entry()
         if active is None:
             _logger.info("subgroup diagnostics: no active entry — skipping")
@@ -1724,6 +1810,7 @@ class ContinuousLearner:
                 method=self._exploration_method,
             )
             _logger.info("cell accuracy store: saved %d cell evaluations", saved)
+            self._emit_cell_diagnostics_to_mlflow(round_num, feature_set_hash, new_metrics)
 
         self._log_surface_summary(metrics)
 

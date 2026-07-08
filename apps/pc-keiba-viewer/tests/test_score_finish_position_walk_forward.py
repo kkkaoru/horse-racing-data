@@ -12,6 +12,7 @@ import pytest
 
 import finish_position_catboost as cb_walk
 import finish_position_xgboost as xgb_walk
+import mlflow_hook
 import score_finish_position_walk_forward as subject
 
 
@@ -713,6 +714,57 @@ def test_main_runs_and_prints_json(
     assert payload["category"] == "jra"
     assert payload["model_version"] == "jra-cb-v7-lineage-wf-21y"
     assert payload["feature_count"] == 138
+
+
+def test_emit_mlflow_run_calls_safe_emit_training_run_with_expected_manifest_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    args = _base_args(tmp_path, "jra")
+    result = {"category": "jra", "model_version": "jra-v7-lineage-wf-21y", "fold_count": 2}
+    subject.emit_mlflow_run(args, result)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["model_version"] == "jra-v7-lineage-wf-21y"
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["tags"]["output_parquet_root"] == str(tmp_path / "parquet")
+    assert kwargs["tags"]["fold_count"] == 2
+
+
+def test_main_succeeds_when_mlflow_hook_reports_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    """emit_mlflow_run failing (safe_emit_training_run returns False) must never
+    affect main()'s own exit code or stdout — the CLI still prints its JSON."""
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", MagicMock(return_value=False))
+    fake_run = MagicMock(
+        return_value={
+            "category": "jra",
+            "model_version": "jra-cb-v7-lineage-wf-21y",
+            "fold_count": 0,
+            "folds": [],
+            "feature_count": 138,
+        },
+    )
+    monkeypatch.setattr(subject, "run", fake_run)
+    monkeypatch.setattr(subject, "build_default_deps", MagicMock(return_value={}))
+    subject.main([
+        "--features-parquet", "tmp/feat-jra-v7-final",
+        "--category", "jra",
+        "--walk-forward-namespace", "jra-cb-v7-lineage-wf-21y",
+        "--year-from", "2007",
+        "--year-to", "2026",
+        "--train-start-date", "20060101",
+        "--output-parquet-root", "tmp/parquet",
+        "--output-jsonl-dir", "tmp/jsonl",
+    ])
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["category"] == "jra"
 
 
 def test_build_fold_train_valid_filters_by_prior_year_end(monkeypatch: pytest.MonkeyPatch):

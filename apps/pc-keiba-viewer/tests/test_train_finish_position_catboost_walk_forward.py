@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import polars as pl
 import pytest
 
+import mlflow_hook
 import train_finish_position_catboost_walk_forward as subject
 
 
@@ -489,6 +490,7 @@ def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     out = subject.train_fold(_feature_df(), ["feature_a"], args, 2024, [2024], deps, None)
     assert out["status"] == "completed"
     assert out["resumed"] is True
+    assert out["metrics"] == {}
     cast(MagicMock, deps["fold_trainer"]).assert_not_called()
 
 
@@ -505,6 +507,7 @@ def test_train_fold_skips_empty_and_writes_skip_metadata(
     out = subject.train_fold(_feature_df(), ["feature_a"], args, 2024, [2024], deps, None)
     assert out["status"] == "skipped"
     assert out["rows"] == 0
+    assert out["metrics"] == {}
     metadata_path = subject.build_per_fold_model_dir(args, 2024) / "metadata.json"
     parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert parsed["status"] == "skipped"
@@ -523,6 +526,7 @@ def test_train_fold_trains_and_writes_completed_metadata(
     assert out["status"] == "completed"
     assert out["resumed"] is False
     assert out["rows"] == 4
+    assert out["metrics"] == {}
     metadata_path = subject.build_per_fold_model_dir(args, 2024) / "metadata.json"
     parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert parsed["status"] == "completed"
@@ -597,6 +601,25 @@ def test_train_fold_saves_model_json_when_fold_trainer_returns_model(
     model_dir = subject.build_per_fold_model_dir(args, 2024)
     expected_path = str(model_dir / "model.json")
     mock_model.save_model.assert_called_once_with(expected_path, format="json")
+
+
+def test_train_fold_propagates_real_metrics_from_fold_trainer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """train_fold must plumb fold_result['metrics'] through to its own
+    returned dict unchanged, so emit_mlflow_run can log real accuracy
+    numbers instead of always seeing the {} default."""
+    args = _base_args(tmp_path)
+    df = _feature_df()
+    deps = _make_fake_deps(df)
+    cast(MagicMock, deps["fold_trainer"]).return_value = {
+        "valid_predictions": df,
+        "metrics": {"top1_accuracy": 0.6, "race_count": 20},
+        "best_iteration": 10,
+    }
+    monkeypatch.setattr(subject, "split_train_valid", lambda *_a, **_k: (df, df))
+    out = subject.train_fold(df, ["feature_a"], args, 2024, [2024], deps, None)
+    assert out["metrics"] == {"top1_accuracy": 0.6, "race_count": 20}
 
 
 def test_train_fold_creates_model_dir_before_save_model(
@@ -848,6 +871,94 @@ def test_main_prints_json(
         "2024",
         "--model-root",
         str(tmp_path / "models"),
+    ])
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["category"] == "jra"
+
+
+def test_emit_mlflow_run_calls_safe_emit_training_run_with_expected_manifest_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    args = _base_args(tmp_path)
+    folds = [
+        {"fold_year": 2024, "status": "completed", "metrics": {"top1_accuracy": 0.5, "race_count": 10}},
+        {"fold_year": 2025, "status": "completed", "metrics": {"top1_accuracy": 0.6, "race_count": 12}},
+    ]
+    result = {"category": "jra", "fold_count": 2, "feature_count": 1, "folds": folds}
+    subject.emit_mlflow_run(args, result)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["model_version"] == "jra-cb-v8-iter1-wf-21y"
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["artifact_dir"] == tmp_path / "models" / "jra" / "iter1" / "fold-2025"
+    assert kwargs["aggregate_metrics"] == mlflow_hook.flatten_numeric_metrics(
+        {"top1_accuracy": 0.6, "race_count": 12},
+    )
+    assert kwargs["params"]["iteration_id"] == 1
+    assert kwargs["tags"]["fold_count"] == 2
+    assert kwargs["tags"]["fold_dirs"] == 2
+
+
+def test_emit_mlflow_run_falls_back_to_iter_dir_when_no_folds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    args = _base_args(tmp_path)
+    result = {"category": "jra", "fold_count": 0, "feature_count": 1, "folds": []}
+    subject.emit_mlflow_run(args, result)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["artifact_dir"] == tmp_path / "models" / "jra" / "iter1"
+    assert kwargs["aggregate_metrics"] == {}
+    assert kwargs["tags"]["fold_dirs"] == 0
+
+
+def test_main_invokes_emit_mlflow_run_with_run_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    fake_result = {"category": "jra", "fold_count": 0, "folds": [], "iteration_id": 1}
+    monkeypatch.setattr(subject, "run", MagicMock(return_value=fake_result))
+    monkeypatch.setattr(subject, "build_default_deps", MagicMock(return_value={}))
+    emit_spy = MagicMock()
+    monkeypatch.setattr(subject, "emit_mlflow_run", emit_spy)
+    subject.main([
+        "--features-parquet", str(tmp_path / "feat"),
+        "--category", "jra",
+        "--walk-forward-namespace", "ns",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--model-root", str(tmp_path / "models"),
+    ])
+    emit_spy.assert_called_once()
+    called_args, called_result = emit_spy.call_args.args
+    assert called_args["category"] == "jra"
+    assert called_result is fake_result
+
+
+def test_main_succeeds_when_mlflow_hook_reports_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+):
+    """emit_mlflow_run failing (safe_emit_training_run returns False) must never
+    affect main()'s own exit code or stdout — the CLI still prints its JSON."""
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", MagicMock(return_value=False))
+    fake_result = {"category": "jra", "fold_count": 0, "folds": [], "iteration_id": 1}
+    monkeypatch.setattr(subject, "run", MagicMock(return_value=fake_result))
+    monkeypatch.setattr(subject, "build_default_deps", MagicMock(return_value={}))
+    subject.main([
+        "--features-parquet", str(tmp_path / "feat"),
+        "--category", "jra",
+        "--walk-forward-namespace", "ns",
+        "--year-from", "2024",
+        "--year-to", "2024",
+        "--model-root", str(tmp_path / "models"),
     ])
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["category"] == "jra"

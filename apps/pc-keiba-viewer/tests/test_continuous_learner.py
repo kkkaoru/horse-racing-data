@@ -14,6 +14,7 @@ import pytest
 import polars as pl
 
 import learning.continuous_learner as subject
+import mlflow_hook
 from learning.continuous_learner import CellAccuracyStore, CellFilter, compute_feature_set_hash, compute_sire_venue_bias_features, filter_dataframe_by_cell
 from learning.feature_explorer import DEFAULT_PARAMS, select_round_validation_years
 from learning.feature_registry import FeatureEntry, FeatureRegistry
@@ -3995,7 +3996,7 @@ def test_run_calls_log_subgroup_when_enabled() -> None:
             patch.object(learner, "_log_subgroup_diagnostics") as mock_log,
         ):
             learner.run(max_rounds=1)
-        mock_log.assert_called_once_with()
+        mock_log.assert_called_once_with(0)
 
 
 def test_run_skips_log_subgroup_on_non_fifth_round() -> None:
@@ -4285,6 +4286,315 @@ def test_log_surface_summary_skips_zero_race_surface(
     messages = [r.getMessage() for r in caplog.records]
     assert any("surface summary" in m for m in messages)
     assert not any("surface=" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_cell_metrics / _write_cell_report_json / _emit_cell_diagnostics_to_mlflow
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_cell_metrics_computes_race_count_weighted_means() -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer_10",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "venue": "10",
+                "race_count": 10,
+                "ndcg_at_3": 0.9,
+                "top1_accuracy": 0.8,
+                "place2_accuracy": 0.7,
+                "place3_accuracy": 0.6,
+                "place4_accuracy": 0.5,
+                "place5_accuracy": 0.4,
+                "place6_accuracy": 0.3,
+                "top3_box_accuracy": 0.2,
+            },
+            {
+                "subgroup": "nar_dirt_sprint_A_winter_40",
+                "category": "nar",
+                "surface": "dirt",
+                "distance_band": "sprint",
+                "class_label": "A",
+                "season": "winter",
+                "venue": "40",
+                "race_count": 30,
+                "ndcg_at_3": 0.5,
+                "top1_accuracy": 0.6,
+                "place2_accuracy": 0.4,
+                "place3_accuracy": 0.3,
+                "place4_accuracy": 0.2,
+                "place5_accuracy": 0.1,
+                "place6_accuracy": 0.05,
+                "top3_box_accuracy": 0.0,
+            },
+        ],
+    )
+    result = subject._aggregate_cell_metrics(metrics)
+    assert result["ndcg_at_3"] == pytest.approx(0.6)
+    assert result["top1_accuracy"] == pytest.approx(0.65)
+    assert result["place2_accuracy"] == pytest.approx(0.475)
+    assert result["place3_accuracy"] == pytest.approx(0.375)
+    assert result["place4_accuracy"] == pytest.approx(0.275)
+    assert result["place5_accuracy"] == pytest.approx(0.175)
+    assert result["place6_accuracy"] == pytest.approx(0.1125)
+    assert result["top3_box_accuracy"] == pytest.approx(0.05)
+
+
+def test_aggregate_cell_metrics_returns_empty_dict_when_total_races_zero() -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer_10",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "venue": "10",
+                "race_count": 0,
+                "ndcg_at_3": 0.0,
+                "top1_accuracy": 0.0,
+                "place2_accuracy": 0.0,
+                "place3_accuracy": 0.0,
+                "place4_accuracy": 0.0,
+                "place5_accuracy": 0.0,
+                "place6_accuracy": 0.0,
+                "top3_box_accuracy": 0.0,
+            }
+        ],
+    )
+    assert subject._aggregate_cell_metrics(metrics) == {}
+
+
+def test_write_cell_report_json_round_trips_metrics_list() -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer_10",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "venue": "10",
+                "race_count": 12,
+                "ndcg_at_3": 0.61,
+                "top1_accuracy": 0.5,
+                "place2_accuracy": 0.4,
+                "place3_accuracy": 0.35,
+                "place4_accuracy": 0.3,
+                "place5_accuracy": 0.25,
+                "place6_accuracy": 0.2,
+                "top3_box_accuracy": 0.25,
+            }
+        ],
+    )
+    path = subject._write_cell_report_json(metrics)
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written == list(metrics)
+
+
+def test_emit_cell_diagnostics_to_mlflow_disabled_by_default_does_not_call_safe_emit() -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    learner = _make_learner(category="jra")
+    spy = MagicMock(return_value=True)
+    with patch.object(mlflow_hook, "safe_emit_training_run", spy):
+        learner._emit_cell_diagnostics_to_mlflow(
+            round_num=1,
+            feature_set_hash="abc123def456789xyz0",
+            metrics=cast("list[SubgroupMetrics]", []),
+        )
+    spy.assert_not_called()
+
+
+def test_emit_cell_diagnostics_to_mlflow_calls_safe_emit_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    learner = _make_learner(category="jra")
+    metrics = cast(
+        "list[SubgroupMetrics]",
+        [
+            {
+                "subgroup": "jra_turf_mile_G2_summer_10",
+                "category": "jra",
+                "surface": "turf",
+                "distance_band": "mile",
+                "class_label": "G2",
+                "season": "summer",
+                "venue": "10",
+                "race_count": 12,
+                "ndcg_at_3": 0.61,
+                "top1_accuracy": 0.5,
+                "place2_accuracy": 0.4,
+                "place3_accuracy": 0.35,
+                "place4_accuracy": 0.3,
+                "place5_accuracy": 0.25,
+                "place6_accuracy": 0.2,
+                "top3_box_accuracy": 0.25,
+            }
+        ],
+    )
+    spy = MagicMock(return_value=True)
+    with patch.object(mlflow_hook, "safe_emit_training_run", spy):
+        learner._emit_cell_diagnostics_to_mlflow(
+            round_num=3,
+            feature_set_hash="abc123def456789xyz0",
+            metrics=metrics,
+        )
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["model_version"] == "jra-cellwf-round3-abc123def456"
+    cell_report_path = cast(Path, kwargs["cell_report"])
+    assert cell_report_path.exists()
+    assert kwargs["aggregate_metrics"] != {}
+    assert kwargs["tags"]["iteration"] == 3
+    assert kwargs["tags"]["exploration_method"] == learner._exploration_method
+    assert kwargs["tags"]["cells_evaluated"] == 1
+    assert kwargs["tags"]["saturated"] is False
+
+
+def test_emit_cell_diagnostics_to_mlflow_swallows_exception_and_logs_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from learning.subgroup_diagnostics import SubgroupMetrics
+
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    learner = _make_learner(category="jra")
+    with (
+        patch.object(
+            subject, "_write_cell_report_json", side_effect=RuntimeError("boom")
+        ),
+        caplog.at_level(logging.WARNING, logger="learning.continuous_learner"),
+    ):
+        learner._emit_cell_diagnostics_to_mlflow(
+            round_num=1,
+            feature_set_hash="abc123def456789xyz0",
+            metrics=cast("list[SubgroupMetrics]", []),
+        )
+    assert any(
+        "mlflow cell diagnostics emit failed" in r.message for r in caplog.records
+    )
+
+
+def test_log_subgroup_diagnostics_emits_to_mlflow_when_cell_store_set() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    learner._cell_accuracy_store = MagicMock(spec=CellAccuracyStore)
+    learner._cell_accuracy_store.evaluated_cells.return_value = set()
+    learner._cell_accuracy_store.save_cell_metrics.return_value = 1
+    preds = pl.DataFrame(
+        {
+            "race_id": ["r1"],
+            "ketto_toroku_bango": ["horse_000"],
+            "predicted_rank": [1],
+        }
+    )
+    metrics = [
+        {
+            "subgroup": "jra_turf_mile_G2_summer_10",
+            "category": "jra",
+            "surface": "turf",
+            "distance_band": "mile",
+            "class_label": "G2",
+            "season": "summer",
+            "venue": "10",
+            "race_count": 12,
+            "ndcg_at_3": 0.61,
+            "top1_accuracy": 0.5,
+            "place2_accuracy": 0.4,
+            "place3_accuracy": 0.35,
+            "place4_accuracy": 0.3,
+            "place5_accuracy": 0.25,
+            "place6_accuracy": 0.2,
+            "top3_box_accuracy": 0.25,
+        }
+    ]
+    feature_set_hash = compute_feature_set_hash(["feat_speed"])
+    with (
+        patch.object(learner, "_collect_active_predictions", return_value=preds),
+        patch(
+            "learning.continuous_learner.compute_subgroup_diagnostics",
+            return_value=metrics,
+        ),
+        patch.object(learner, "_emit_cell_diagnostics_to_mlflow") as mock_emit,
+    ):
+        learner._log_subgroup_diagnostics(round_num=3)
+    mock_emit.assert_called_once_with(3, feature_set_hash, metrics)
+
+
+def test_log_subgroup_diagnostics_emits_to_mlflow_with_default_round_zero() -> None:
+    mock_registry = MagicMock(spec=FeatureRegistry)
+    mock_registry.get_active_entry.return_value = _make_entry(
+        feature_names=["feat_speed"]
+    )
+    learner = _make_learner(registry=mock_registry)
+    learner._cell_accuracy_store = MagicMock(spec=CellAccuracyStore)
+    learner._cell_accuracy_store.evaluated_cells.return_value = set()
+    learner._cell_accuracy_store.save_cell_metrics.return_value = 1
+    preds = pl.DataFrame(
+        {
+            "race_id": ["r1"],
+            "ketto_toroku_bango": ["horse_000"],
+            "predicted_rank": [1],
+        }
+    )
+    metrics = [
+        {
+            "subgroup": "jra_turf_mile_G2_summer_10",
+            "category": "jra",
+            "surface": "turf",
+            "distance_band": "mile",
+            "class_label": "G2",
+            "season": "summer",
+            "venue": "10",
+            "race_count": 12,
+            "ndcg_at_3": 0.61,
+            "top1_accuracy": 0.5,
+            "place2_accuracy": 0.4,
+            "place3_accuracy": 0.35,
+            "place4_accuracy": 0.3,
+            "place5_accuracy": 0.25,
+            "place6_accuracy": 0.2,
+            "top3_box_accuracy": 0.25,
+        }
+    ]
+    feature_set_hash = compute_feature_set_hash(["feat_speed"])
+    with (
+        patch.object(learner, "_collect_active_predictions", return_value=preds),
+        patch(
+            "learning.continuous_learner.compute_subgroup_diagnostics",
+            return_value=metrics,
+        ),
+        patch.object(learner, "_emit_cell_diagnostics_to_mlflow") as mock_emit,
+    ):
+        learner._log_subgroup_diagnostics()
+    mock_emit.assert_called_once_with(0, feature_set_hash, metrics)
 
 
 def _make_df_3years() -> pl.DataFrame:

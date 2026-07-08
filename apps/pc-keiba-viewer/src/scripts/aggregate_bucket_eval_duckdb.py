@@ -26,7 +26,10 @@ import argparse
 import importlib
 import json
 from decimal import Decimal
-from typing import Callable, Protocol, TypedDict
+from pathlib import Path
+from typing import Callable, Final, Protocol, TypedDict
+
+import mlflow_hook
 
 BUCKET_TABLE = "model_prediction_bucket_evaluations"
 EVALUATIONS_TABLE = "model_prediction_evaluations"
@@ -1423,6 +1426,68 @@ def collect_category(
     }
 
 
+# Gitignored scratch dir (see .gitignore `tmp/`) for the MLflow cell-report JSON export.
+# Read fresh inside write_cell_report_json (not bound as a default arg) so tests can
+# monkeypatch this module attribute and have it take effect.
+CELL_REPORT_ROOT: Final[Path] = Path("tmp/mlflow-cell-reports")
+
+
+def _json_decimal_default(value: object) -> float:
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value)!r} is not JSON serializable")
+
+
+def write_cell_report_json(
+    category: str,
+    model_version: str,
+    bucket_rows: list[tuple[object, ...]],
+    *,
+    root: Path | None = None,
+) -> Path:
+    """Write this category's bucket-eval rows as a JSON cell-metrics table.
+
+    ``bucket_rows`` entries are exactly the BUCKET_INSERT_COLUMNS-ordered tuples
+    already built for the Neon upsert, so this is a pure re-serialization (no
+    extra DB or DuckDB round-trip) that can run independently of that upsert.
+    """
+    output_dir = (root if root is not None else CELL_REPORT_ROOT) / category
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{model_version}-bucket-cells.json"
+    records = [dict(zip(BUCKET_INSERT_COLUMNS, row, strict=True)) for row in bucket_rows]
+    output_path.write_text(
+        json.dumps(records, ensure_ascii=False, default=_json_decimal_default),
+        encoding="utf-8",
+    )
+    return output_path
+
+
+def emit_mlflow_cell_report(args: argparse.Namespace, category: str, collection: CategoryCollection) -> None:
+    """Best-effort: export this category's cell metrics and forward a rollup to MLflow.
+
+    Independent of the Neon upsert (uses only the already-computed ``collection``),
+    so an MLflow logging failure here can never affect the Neon write path below.
+    Skips the cell-report file write entirely when disabled, so tests / re-runs
+    with the feature off never touch disk for this.
+    """
+    if not mlflow_hook.mlflow_enabled():
+        return
+    model_version = resolve_model_version(args, category)
+    meta = resolve_category_meta(category)
+    window_from, window_to = build_plan_window(meta["years"])
+    cell_report_path = write_cell_report_json(category, model_version, collection["bucket_rows"])
+    rollup_metrics = dict(zip(GLOBAL_INSERT_COLUMNS[4:], collection["global_row"][4:], strict=True))
+    mlflow_hook.safe_emit_training_run(
+        task="finish-position",
+        category=category,
+        model_version=model_version,
+        eval_regime="wf",
+        cell_report=cell_report_path,
+        aggregate_metrics=mlflow_hook.flatten_numeric_metrics(rollup_metrics),
+        tags={"evaluation_window_from": window_from, "evaluation_window_to": window_to},
+    )
+
+
 def run_aggregation(
     args: argparse.Namespace,
     *,
@@ -1443,6 +1508,7 @@ def run_aggregation(
             bucket_rows.extend(collection["bucket_rows"])
             subgroup_rows.extend(collection["subgroup_rows"])
             global_rows.append(collection["global_row"])
+            emit_mlflow_cell_report(args, category, collection)
     finally:
         duck.close()
     pg = connect_pg(str(args.neon_url))
