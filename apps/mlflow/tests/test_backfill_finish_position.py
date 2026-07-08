@@ -196,6 +196,102 @@ def test_backfill_one_manifest_uses_directory_name_when_manifest_model_version_m
     assert version.tags["metadata_model_version_raw"] == "TEST-ENSEMBLE-C-V1"
 
 
+def test_backfill_one_metadata_file_is_idempotent_on_unchanged_artifact(
+    client: MlflowClient,
+    tmp_path: Path,
+    write_json: WriteJsonFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Re-running against the identical metadata_path (no change to
+    metadata.json) must not mint a second version -- the same bug shape as
+    the verified jra-running-style v1/v2 duplicate, but for the base
+    category-tree registration path.
+    """
+    metadata_path = tmp_path / "jra" / "test-cb-v1" / "metadata.json"
+    write_json(metadata_path, BASE_METADATA)
+
+    first = bfp.backfill_one_metadata_file(client, metadata_path, tmp_path)
+    with caplog.at_level("INFO"):
+        second = bfp.backfill_one_metadata_file(client, metadata_path, tmp_path)
+
+    assert second.version == first.version
+    assert "skipping duplicate registration" in caplog.text
+    versions = client.search_model_versions("name='jra-finish-position'")
+    matching = [v for v in versions if v.tags.get("model_version") == "test-cb-v1"]
+    assert len(matching) == 1
+
+
+def test_backfill_one_metadata_file_registers_new_version_when_source_changes(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Same model_version label reused under a genuinely different source
+    (different parent directory -> different resolved file:// URI) must
+    still register as a new version -- proves the duplicate guard is not
+    overly broad (label-only matching would have wrongly no-op'd this).
+    """
+    first_path = tmp_path / "run-1" / "jra" / "test-cb-v1" / "metadata.json"
+    write_json(first_path, BASE_METADATA)
+    first = bfp.backfill_one_metadata_file(client, first_path, tmp_path / "run-1")
+
+    second_path = tmp_path / "run-2" / "jra" / "test-cb-v1" / "metadata.json"
+    write_json(second_path, BASE_METADATA)
+    second = bfp.backfill_one_metadata_file(client, second_path, tmp_path / "run-2")
+
+    assert second.version != first.version
+    assert second.source != first.source
+    versions = client.search_model_versions("name='jra-finish-position'")
+    assert len(versions) == 2
+
+
+def test_backfill_one_manifest_is_idempotent_on_unchanged_artifact(
+    client: MlflowClient,
+    tmp_path: Path,
+    write_json: WriteJsonFixture,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Re-running against the identical manifest_path (no change to
+    manifest.json) must not mint a second version -- same bug shape as the
+    base metadata path, but for the per-class ensemble registration path.
+    """
+    manifest_path = tmp_path / "nar" / "per-class" / "C" / "test-ensemble-C-v1" / "manifest.json"
+    write_json(manifest_path, MANIFEST)
+
+    first = bfp.backfill_one_manifest(client, manifest_path, tmp_path)
+    with caplog.at_level("INFO"):
+        second = bfp.backfill_one_manifest(client, manifest_path, tmp_path)
+
+    assert second.version == first.version
+    assert "skipping duplicate registration" in caplog.text
+    versions = client.search_model_versions("name='nar-finish-position'")
+    matching = [v for v in versions if v.tags.get("model_version") == "test-ensemble-C-v1"]
+    assert len(matching) == 1
+
+
+def test_backfill_one_manifest_registers_new_version_when_source_changes(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Same model_version label reused under a genuinely different source
+    must still register as a new version -- proves the duplicate guard is
+    not overly broad.
+    """
+    first_manifest_path = (
+        tmp_path / "run-1" / "nar" / "per-class" / "C" / "test-ensemble-C-v1" / "manifest.json"
+    )
+    write_json(first_manifest_path, MANIFEST)
+    first = bfp.backfill_one_manifest(client, first_manifest_path, tmp_path / "run-1")
+
+    second_manifest_path = (
+        tmp_path / "run-2" / "nar" / "per-class" / "C" / "test-ensemble-C-v1" / "manifest.json"
+    )
+    write_json(second_manifest_path, MANIFEST)
+    second = bfp.backfill_one_manifest(client, second_manifest_path, tmp_path / "run-2")
+
+    assert second.version != first.version
+    assert second.source != first.source
+    versions = client.search_model_versions("name='nar-finish-position'")
+    assert len(versions) == 2
+
+
 def test_sync_champions_resolves_metadata_model_version_directory_mismatch(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:
@@ -447,6 +543,35 @@ def test_backfill_finish_position_full_happy_path(
     assert summary["errors"] == []
     assert summary["champion_sync"] == {"jra": "ok"}
     assert summary["cell_routing_run_id"] is not None
+
+
+def test_backfill_finish_position_is_idempotent_across_repeated_calls(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Re-running the full outer backfill over an unchanged models_root must
+    not grow the registered-version counts on the second call -- the outer
+    function's own regression check for the duplicate-registration bug, on
+    top of the per-file checks above (mirrors
+    test_backfill_running_style_is_idempotent_across_repeated_calls).
+    """
+    models_root = tmp_path / "models" / "finish-position"
+    write_json(models_root / "jra" / "test-cb-v1" / "metadata.json", BASE_METADATA)
+    write_json(
+        models_root / "nar" / "per-class" / "C" / "test-ensemble-C-v1" / "manifest.json", MANIFEST
+    )
+    predict_lib_root = tmp_path / "predict_lib"
+
+    first_summary = bfp.backfill_finish_position(client, models_root, predict_lib_root)
+    assert first_summary["base_versions_registered"] == 1
+    assert first_summary["per_class_versions_registered"] == 1
+
+    second_summary = bfp.backfill_finish_position(client, models_root, predict_lib_root)
+    assert second_summary["base_versions_registered"] == 0
+    assert second_summary["per_class_versions_registered"] == 0
+    assert second_summary["errors"] == []
+
+    assert len(client.search_model_versions("name='jra-finish-position'")) == 1
+    assert len(client.search_model_versions("name='nar-finish-position'")) == 1
 
 
 def test_discover_flat_metadata_files_finds_one_level_metadata(

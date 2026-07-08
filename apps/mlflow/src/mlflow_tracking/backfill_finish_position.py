@@ -153,6 +153,15 @@ def backfill_one_metadata_file(
     category directory to infer it from (see discover_flat_metadata_files /
     backfill_finish_position_flat, which derive it from metadata.json's own
     "category" field instead).
+
+    Checks `registry.find_duplicate_version` FIRST, before any run-creation
+    or logging work below, so re-running this function against an unchanged
+    metadata.json (same directory, untouched) is a cheap, mostly no-op early
+    return of the EXISTING `ModelVersion` rather than a freshly minted
+    duplicate -- the same latent bug (and fix) as
+    `backfill_running_style.backfill_one_running_style_metadata`, which this
+    path did not previously share despite registering through the identical
+    `registry.register_version` call every invocation.
     """
     resolved_category = (
         category
@@ -163,6 +172,21 @@ def backfill_one_metadata_file(
     model_version_label, metadata_model_version_raw = _resolve_model_version_label(
         metadata.get("model_version"), metadata_path.parent.name
     )
+    registered_name = registry.registered_model_name(resolved_category, TASK)
+    source_uri = f"file://{metadata_path.parent.resolve()}"
+    duplicate_version = registry.find_duplicate_version(
+        client, registered_name, model_version_label, source_uri
+    )
+    if duplicate_version is not None:
+        logger.info(
+            "skipping duplicate registration for %s: version %s already has "
+            "model_version=%s and identical source",
+            registered_name,
+            duplicate_version,
+            model_version_label,
+        )
+        return client.get_model_version(registered_name, duplicate_version)
+
     params, tags, artifact_payloads = route_json_fields(
         metadata,
         identity_tag_keys=METADATA_IDENTITY_TAG_KEYS,
@@ -183,7 +207,6 @@ def backfill_one_metadata_file(
         log_json_artifact(client, run_id, f"{artifact_key}.json", payload)
     client.set_terminated(run_id, status="FINISHED")
 
-    registered_name = registry.registered_model_name(resolved_category, TASK)
     train_date_range = metadata.get("train_date_range")
     train_window = "-".join(train_date_range) if isinstance(train_date_range, list) else None
     new_version_tags = registry.version_tags(
@@ -198,7 +221,6 @@ def backfill_one_metadata_file(
     new_version_tags["model_version"] = model_version_label
     if metadata_model_version_raw is not None:
         new_version_tags["metadata_model_version_raw"] = metadata_model_version_raw
-    source_uri = f"file://{metadata_path.parent.resolve()}"
     return registry.register_version(
         client, registered_name, source_uri, run_id=run_id, tags=new_version_tags
     )
@@ -209,7 +231,15 @@ def backfill_one_manifest(
     manifest_path: Path,
     models_root: Path = DEFAULT_MODELS_ROOT,
 ) -> ModelVersion:
-    """Register one per-class ensemble version from its manifest.json."""
+    """Register one per-class ensemble version from its manifest.json.
+
+    Checks `registry.find_duplicate_version` FIRST, before any run-creation
+    or logging work below, so re-running this function against an unchanged
+    manifest.json (same directory, untouched) is a cheap, mostly no-op early
+    return of the EXISTING `ModelVersion` rather than a freshly minted
+    duplicate -- see `backfill_one_metadata_file`'s docstring for the shared
+    motivating bug.
+    """
     relative_parts = manifest_path.relative_to(models_root).parts
     # {category}/per-class/{class_code}/{version}/manifest.json
     raw_category, class_code = relative_parts[0], relative_parts[2]
@@ -218,6 +248,21 @@ def backfill_one_manifest(
     model_version_label, metadata_model_version_raw = _resolve_model_version_label(
         manifest.get("model_version"), manifest_path.parent.name
     )
+    registered_name = registry.registered_model_name(category, TASK)
+    source_uri = f"file://{manifest_path.parent.resolve()}"
+    duplicate_version = registry.find_duplicate_version(
+        client, registered_name, model_version_label, source_uri
+    )
+    if duplicate_version is not None:
+        logger.info(
+            "skipping duplicate registration for %s: version %s already has "
+            "model_version=%s and identical source",
+            registered_name,
+            duplicate_version,
+            model_version_label,
+        )
+        return client.get_model_version(registered_name, duplicate_version)
+
     params, tags, artifact_payloads = route_json_fields(
         manifest,
         identity_tag_keys=MANIFEST_IDENTITY_TAG_KEYS,
@@ -246,7 +291,6 @@ def backfill_one_manifest(
     log_json_artifact(client, run_id, "manifest.json", manifest)
     client.set_terminated(run_id, status="FINISHED")
 
-    registered_name = registry.registered_model_name(category, TASK)
     new_version_tags = registry.version_tags(
         category=category, task=TASK, routing_scope=f"class:{class_code}"
     )
@@ -256,7 +300,6 @@ def backfill_one_manifest(
     new_version_tags["class_code"] = class_code
     if isinstance(manifest.get("ensemble_type"), str):
         new_version_tags["ensemble_type"] = manifest["ensemble_type"]
-    source_uri = f"file://{manifest_path.parent.resolve()}"
     return registry.register_version(
         client, registered_name, source_uri, run_id=run_id, tags=new_version_tags
     )
@@ -387,21 +430,46 @@ def backfill_finish_position(
     Never raises for an individual artifact — a malformed or half-written
     metadata.json/manifest.json is recorded in `errors` and skipped so one bad
     artifact cannot block the rest of the backfill.
+
+    `base_versions_registered` / `per_class_versions_registered` count only
+    genuinely NEW mlflow versions minted during this call.
+    `backfill_one_metadata_file` / `backfill_one_manifest` may instead return
+    a pre-existing version via their `registry.find_duplicate_version` guard
+    when re-run against an unchanged artifact; such no-op returns are
+    deliberately NOT counted here, mirroring
+    `backfill_running_style.backfill_running_style`'s identical snapshot
+    approach: each registered model's existing version numbers are
+    snapshotted up front so a duplicate-guarded return (same version number
+    as something already in the snapshot) can be told apart from a genuine
+    new registration and excluded from the count.
     """
     errors: list[str] = []
+    known_versions: dict[str, set[str]] = {}
+    for category in registry.CATEGORIES:
+        registered_name = registry.registered_model_name(category, TASK)
+        known_versions[registered_name] = {
+            mv.version for mv in client.search_model_versions(f"name='{registered_name}'")
+        }
+
     base_count = 0
     for metadata_path in discover_base_metadata_files(models_root):
         try:
-            backfill_one_metadata_file(client, metadata_path, models_root)
-            base_count += 1
+            version = backfill_one_metadata_file(client, metadata_path, models_root)
+            registered_versions = known_versions.setdefault(version.name, set())
+            if version.version not in registered_versions:
+                registered_versions.add(version.version)
+                base_count += 1
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             errors.append(f"{metadata_path}: {exc}")
 
     per_class_count = 0
     for manifest_path in discover_per_class_manifests(models_root):
         try:
-            backfill_one_manifest(client, manifest_path, models_root)
-            per_class_count += 1
+            version = backfill_one_manifest(client, manifest_path, models_root)
+            registered_versions = known_versions.setdefault(version.name, set())
+            if version.version not in registered_versions:
+                registered_versions.add(version.version)
+                per_class_count += 1
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             errors.append(f"{manifest_path}: {exc}")
 
