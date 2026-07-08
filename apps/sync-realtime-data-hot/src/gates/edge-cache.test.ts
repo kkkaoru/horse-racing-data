@@ -3,11 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import {
   isForceFreshRequest,
-  purgeD1ResultCacheForRace,
   purgeEdgeCache,
-  readD1ResultCache,
   readFromEdgeCache,
-  writeD1ResultCache,
   writeToEdgeCache,
 } from "./edge-cache";
 import type { Env } from "../types";
@@ -108,67 +105,4 @@ it("writeToEdgeCache falls back to default when env value is zero", async () => 
 it("purgeEdgeCache calls cache.delete with key", async () => {
   await purgeEdgeCache("nar:20260528:42:01");
   expect(cacheMock.delete).toHaveBeenCalledTimes(1);
-});
-
-it("readD1ResultCache returns parsed json on hit", async () => {
-  cacheMock.match.mockResolvedValueOnce(new Response(JSON.stringify({ x: 1 })));
-  const result = await readD1ResultCache<{ x: number }>("nar:20260528:42:01", "latest");
-  expect(result).toStrictEqual({ x: 1 });
-});
-
-it("readD1ResultCache returns null on miss", async () => {
-  const result = await readD1ResultCache("nar:20260528:42:01", "latest");
-  expect(result).toBeNull();
-});
-
-it("writeD1ResultCache uses default TTL of 30s", async () => {
-  await writeD1ResultCache("nar:20260528:42:01", "latest", { x: 1 }, buildEnv());
-  const [, response] = cacheMock.put.mock.calls[0]!;
-  expect((response as Response).headers.get("Cache-Control")).toBe(
-    "public, max-age=30, s-maxage=30",
-  );
-});
-
-it("writeD1ResultCache honors env override TTL", async () => {
-  await writeD1ResultCache(
-    "nar:20260528:42:01",
-    "latest",
-    { x: 1 },
-    buildEnv({ ODDS_D1_RESULT_CACHE_TTL_SECONDS: "60" }),
-  );
-  const [, response] = cacheMock.put.mock.calls[0]!;
-  expect((response as Response).headers.get("Cache-Control")).toBe(
-    "public, max-age=60, s-maxage=60",
-  );
-});
-
-it("writeD1ResultCache falls back to default on invalid env", async () => {
-  await writeD1ResultCache(
-    "nar:20260528:42:01",
-    "latest",
-    { x: 1 },
-    buildEnv({ ODDS_D1_RESULT_CACHE_TTL_SECONDS: "x" }),
-  );
-  const [, response] = cacheMock.put.mock.calls[0]!;
-  expect((response as Response).headers.get("Cache-Control")).toBe(
-    "public, max-age=30, s-maxage=30",
-  );
-});
-
-it("writeD1ResultCache falls back to default when env value is zero", async () => {
-  await writeD1ResultCache(
-    "nar:20260528:42:01",
-    "latest",
-    { x: 1 },
-    buildEnv({ ODDS_D1_RESULT_CACHE_TTL_SECONDS: "0" }),
-  );
-  const [, response] = cacheMock.put.mock.calls[0]!;
-  expect((response as Response).headers.get("Cache-Control")).toBe(
-    "public, max-age=30, s-maxage=30",
-  );
-});
-
-it("purgeD1ResultCacheForRace deletes all query keys in parallel", async () => {
-  await purgeD1ResultCacheForRace("nar:20260528:42:01", ["latest", "history", "trends"]);
-  expect(cacheMock.delete).toHaveBeenCalledTimes(3);
 });

@@ -62,8 +62,8 @@ const PHASE1_ODDS_TYPES: OddsType[] = ["tansho", "fukusho"];
 const NAR_SOURCE = "nar";
 const JRA_SOURCE = "jra";
 // localhost dev は single user 想定なので、 hot worker の cache chain
-// (Edge → DO → KV mirror → D1 result cache) を毎リクエスト bypass して
-// D1 直行で full history を取る。 production の trends route は cache 経由のまま。
+// (Edge → DO → R2 latest → KV mirror) を毎リクエスト bypass して
+// R2 latest 直行で現在の odds payload を取る。 production の trends route は cache 経由のまま。
 const HOT_WORKER_FRESH_QUERY = "?fresh=1";
 
 const NAR_BABA_CODE_LOOKUP: Record<string, string> = LOCAL_KEIBAJO_TO_NAR_BABA_CODE;

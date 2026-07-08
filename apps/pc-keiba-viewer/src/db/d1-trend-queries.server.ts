@@ -374,7 +374,7 @@ const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
 };
 
 // Phase E removed the LEFT JOIN to daily_race_entries — the snapshot-derived
-// result keeps `tansho*` as null and lets the HOT D1 odds overlay and the
+// result keeps `tansho*` as null and lets the hot Worker/R2 odds overlay and the
 // features-worker past-14 payload supply the missing fields. Legacy
 // daily_race_entries is NEVER read from this worker (Phase 0 rule 3).
 //

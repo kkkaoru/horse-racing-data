@@ -113,8 +113,8 @@ const CRON_RECOVERY_LOCK_VALUE = "1";
 // as a trend source. The viewer's オッズ推移 line chart becomes visually
 // meaningful around 5-10 timepoints. Below this floor the DO is treated as
 // shallow (e.g. fresh races, or races whose DO state was built under an
-// older per-type history cap) and we fall through to the D1 path which
-// returns full uncapped history.
+// older per-type history cap) and the request falls through to the canonical
+// R2 latest payload plus KV mirror fallback.
 const MIN_DO_TRUSTED_SNAPSHOTS = 10;
 // Once a planner tick observes stateCount == expectedCount (and both are >0),
 // today's `odds_fetch_state` for this JST day is fully seeded and the self-
