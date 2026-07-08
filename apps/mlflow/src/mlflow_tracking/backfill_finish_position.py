@@ -73,6 +73,12 @@ class BackfillSummary(TypedDict):
     cell_routing_run_id: str | None
 
 
+class FlatBackfillSummary(TypedDict):
+    versions_registered: int
+    skipped_existing: list[str]
+    errors: list[str]
+
+
 def discover_base_metadata_files(models_root: Path) -> list[Path]:
     """Return metadata.json paths for category-level (non-per-class) model dirs."""
     if not models_root.is_dir():
@@ -85,6 +91,22 @@ def discover_per_class_manifests(models_root: Path) -> list[Path]:
     if not models_root.is_dir():
         return []
     return sorted(models_root.glob("*/per-class/*/*/manifest.json"))
+
+
+def discover_flat_metadata_files(models_root: Path) -> list[Path]:
+    """Return metadata.json paths for a FLAT {models_root}/{version}/metadata.json
+    layout (one level, no category subdirectory).
+
+    Used for shared staging directories such as
+    apps/pc-keiba-viewer/tmp/models/ that hold historical finish-position
+    trial artifacts outside the production models/ tree, laid out without the
+    category directory discover_base_metadata_files expects. Category for
+    these is read from each metadata.json's own "category" field instead
+    (see backfill_finish_position_flat).
+    """
+    if not models_root.is_dir():
+        return []
+    return sorted(models_root.glob("*/metadata.json"))
 
 
 def _resolve_model_version_label(raw_value: object, directory_name: str) -> tuple[str, str | None]:
@@ -120,10 +142,23 @@ def backfill_one_metadata_file(
     client: MlflowClient,
     metadata_path: Path,
     models_root: Path = DEFAULT_MODELS_ROOT,
+    *,
+    category: registry.Category | None = None,
 ) -> ModelVersion:
-    """Register one base model version from its metadata.json."""
-    raw_category = metadata_path.relative_to(models_root).parts[0]
-    category = registry.normalize_category(raw_category)
+    """Register one base model version from its metadata.json.
+
+    `category` is inferred from the on-disk {models_root}/{category}/{version}/
+    layout by default; pass it explicitly for a FLAT staging layout (e.g.
+    apps/pc-keiba-viewer/tmp/models/{version}/metadata.json) where there is no
+    category directory to infer it from (see discover_flat_metadata_files /
+    backfill_finish_position_flat, which derive it from metadata.json's own
+    "category" field instead).
+    """
+    resolved_category = (
+        category
+        if category is not None
+        else registry.normalize_category(metadata_path.relative_to(models_root).parts[0])
+    )
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     model_version_label, metadata_model_version_raw = _resolve_model_version_label(
         metadata.get("model_version"), metadata_path.parent.name
@@ -133,7 +168,7 @@ def backfill_one_metadata_file(
         identity_tag_keys=METADATA_IDENTITY_TAG_KEYS,
         flatten_param_keys=METADATA_FLATTEN_PARAM_KEYS,
     )
-    tags.setdefault("category", category)
+    tags.setdefault("category", resolved_category)
 
     experiment_id = get_or_create_experiment(client, EXPERIMENT_REGISTRY_BACKFILL)
     run = client.create_run(experiment_id, run_name=model_version_label)
@@ -148,7 +183,7 @@ def backfill_one_metadata_file(
         log_json_artifact(client, run_id, f"{artifact_key}.json", payload)
     client.set_terminated(run_id, status="FINISHED")
 
-    registered_name = registry.registered_model_name(category, TASK)
+    registered_name = registry.registered_model_name(resolved_category, TASK)
     train_date_range = metadata.get("train_date_range")
     train_window = "-".join(train_date_range) if isinstance(train_date_range, list) else None
     new_version_tags = registry.version_tags(
@@ -157,7 +192,7 @@ def backfill_one_metadata_file(
         if isinstance(metadata.get("feature_count"), int)
         else None,
         train_window=train_window,
-        category=category,
+        category=resolved_category,
         task=TASK,
     )
     new_version_tags["model_version"] = model_version_label
@@ -380,3 +415,51 @@ def backfill_finish_position(
         champion_sync=champion_sync,
         cell_routing_run_id=cell_routing_run_id,
     )
+
+
+def backfill_finish_position_flat(client: MlflowClient, models_root: Path) -> FlatBackfillSummary:
+    """Register finish-position model versions from a FLAT staging directory
+    ({models_root}/{version}/metadata.json — see discover_flat_metadata_files)
+    as additional HISTORICAL registry versions.
+
+    This never touches champion aliases or cell_routing.json ingestion: it is
+    a pure version-registration pass over a directory that is explicitly NOT
+    the production models/ tree (e.g. apps/pc-keiba-viewer/tmp/models/), so it
+    can never move a champion pointer. A model_version label that already has
+    a registered version under its resolved registered-model name is skipped
+    (recorded in `skipped_existing`) rather than re-registered, since this
+    shared staging tree commonly holds the exact same artifact that was
+    already promoted into the production models/ tree and backfilled from
+    there — a duplicate version would only create model_version-label
+    ambiguity for registry.find_version_by_label's champion-sync lookups.
+
+    Never raises for an individual artifact — a malformed metadata.json, or
+    one missing the "category" field the flat layout relies on in place of a
+    category directory, is recorded in `errors` and skipped.
+    """
+    errors: list[str] = []
+    skipped: list[str] = []
+    count = 0
+    for metadata_path in discover_flat_metadata_files(models_root):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw_category = metadata.get("category")
+            if not isinstance(raw_category, str) or not raw_category:
+                raise ValueError(
+                    f"metadata.json missing a string 'category' field: {metadata_path}"
+                )
+            category = registry.normalize_category(raw_category)
+            model_version_label = str(metadata.get("model_version", metadata_path.parent.name))
+            registered_name = registry.registered_model_name(category, TASK)
+            existing_version = registry.find_version_by_label(
+                client, registered_name, model_version_label
+            )
+            if existing_version is not None:
+                skipped.append(model_version_label)
+                continue
+            backfill_one_metadata_file(client, metadata_path, models_root, category=category)
+            count += 1
+        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            errors.append(f"{metadata_path}: {exc}")
+
+    return FlatBackfillSummary(versions_registered=count, skipped_existing=skipped, errors=errors)

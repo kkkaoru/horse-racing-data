@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import duckdb
+import pandas as pd
 import pytest
 from mlflow import MlflowClient
 
@@ -172,6 +173,34 @@ def test_cmd_backfill_finish_position_allow_missing_champion_flag_succeeds(
     assert "warning: champion sync incomplete for 'jra'" in captured.err
 
 
+def test_cmd_backfill_finish_position_models_root_flag_uses_flat_backfill(
+    tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flat_root = tmp_path / "flat-models"
+    write_json(
+        flat_root / "jra-cb-flat-v1" / "metadata.json",
+        {"model_version": "jra-cb-flat-v1", "category": "jra", "architecture": "catboost"},
+    )
+    exit_code = cli.main(["backfill-finish-position", "--models-root", str(flat_root)])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "versions registered: 1" in captured.out
+    assert "skipped (already registered): 0" in captured.out
+
+
+def test_cmd_backfill_finish_position_models_root_flag_reports_errors(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    flat_root = tmp_path / "flat-models"
+    bad_path = flat_root / "bad-version" / "metadata.json"
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text("{not valid json", encoding="utf-8")
+    exit_code = cli.main(["backfill-finish-position", "--models-root", str(flat_root)])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
+
+
 def test_cmd_backfill_running_style_reports_success(
     tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -264,6 +293,51 @@ def test_cmd_log_eval(
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "logged run:" in captured.out
+
+
+def test_cmd_ingest_local_pg_model_evaluations(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "model_prediction_evaluations.parquet"
+    pd.DataFrame(
+        [
+            {
+                "model_version": "jra-cb-v7-lineage",
+                "category": "jra",
+                "evaluation_window_from": "20240101",
+                "evaluation_window_to": "20251231",
+                "top1_accuracy": 0.3,
+            }
+        ]
+    ).to_parquet(path)
+    exit_code = cli.main(["ingest-local-pg-model-evaluations", str(path)])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "logged 1 run(s):" in captured.out
+
+
+def test_cmd_ingest_local_pg_running_style_buckets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "running_style_model_bucket_evaluations.parquet"
+    pd.DataFrame(
+        [
+            {
+                "model_version": "jra-running-style-lgbm-prod-v3",
+                "category": "jra",
+                "running_style_feature_version": "v1",
+                "keibajo_code": "05",
+                "race_count": 10,
+                "cm_actual_nige_pred_nige_count": 10,
+            }
+        ]
+    ).to_parquet(path)
+    exit_code = cli.main(
+        ["ingest-local-pg-running-style-buckets", str(path), "--eval-regime", "wf"]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "logged 1 run(s):" in captured.out
 
 
 def test_cmd_log_training_run(

@@ -59,6 +59,14 @@ pre-commit:
     test-pipeline-health-monitor:
       glob: "apps/pipeline-health-monitor/**/*.ts"
       run: bun run --filter pipeline-health-monitor test:coverage
+    tsc-mlflow-ui-proxy:
+      glob: "apps/mlflow-ui-proxy/**/*.ts"
+      run: bun run --filter mlflow-ui-proxy tsc
+    # test:coverage enforces the vitest thresholds (all >= 95) so coverage
+    # cannot regress without an explicit threshold change.
+    test-mlflow-ui-proxy:
+      glob: "apps/mlflow-ui-proxy/**/*.ts"
+      run: bun run --filter mlflow-ui-proxy test:coverage
     tsc-finish-position-cron:
       glob: "apps/finish-position-cron/**/*.ts"
       run: bun run --filter finish-position-cron tsc

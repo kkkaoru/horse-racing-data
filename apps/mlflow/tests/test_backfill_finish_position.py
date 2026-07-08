@@ -449,6 +449,82 @@ def test_backfill_finish_position_full_happy_path(
     assert summary["cell_routing_run_id"] is not None
 
 
+def test_discover_flat_metadata_files_finds_one_level_metadata(
+    tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    write_json(tmp_path / "jra-cb-flat-v1" / "metadata.json", BASE_METADATA)
+    found = bfp.discover_flat_metadata_files(tmp_path)
+    assert found == [tmp_path / "jra-cb-flat-v1" / "metadata.json"]
+
+
+def test_discover_flat_metadata_files_returns_empty_for_missing_root(tmp_path: Path) -> None:
+    assert bfp.discover_flat_metadata_files(tmp_path / "missing") == []
+
+
+def test_backfill_one_metadata_file_accepts_category_override_for_flat_layout(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    metadata_path = tmp_path / "test-cb-v1" / "metadata.json"
+    write_json(metadata_path, BASE_METADATA)
+    version = bfp.backfill_one_metadata_file(client, metadata_path, tmp_path, category="jra")
+    assert version.name == "jra-finish-position"
+    assert version.tags["category"] == "jra"
+    assert version.tags["model_version"] == "test-cb-v1"
+
+
+def test_backfill_finish_position_flat_registers_new_version(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    write_json(tmp_path / "test-cb-v1" / "metadata.json", BASE_METADATA)
+    summary = bfp.backfill_finish_position_flat(client, tmp_path)
+    assert summary["versions_registered"] == 1
+    assert summary["skipped_existing"] == []
+    assert summary["errors"] == []
+    versions = client.search_model_versions("name='jra-finish-position'")
+    assert len(versions) == 1
+    assert versions[0].tags["model_version"] == "test-cb-v1"
+
+
+def test_backfill_finish_position_flat_skips_already_registered_label(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    nested_path = tmp_path / "nested" / "jra" / "test-cb-v1" / "metadata.json"
+    write_json(nested_path, BASE_METADATA)
+    bfp.backfill_one_metadata_file(client, nested_path, tmp_path / "nested")
+
+    flat_root = tmp_path / "flat"
+    write_json(flat_root / "test-cb-v1" / "metadata.json", BASE_METADATA)
+    summary = bfp.backfill_finish_position_flat(client, flat_root)
+    assert summary["versions_registered"] == 0
+    assert summary["skipped_existing"] == ["test-cb-v1"]
+    assert summary["errors"] == []
+    versions = client.search_model_versions("name='jra-finish-position'")
+    assert len(versions) == 1
+
+
+def test_backfill_finish_position_flat_records_error_for_missing_category_field(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    metadata_without_category = {k: v for k, v in BASE_METADATA.items() if k != "category"}
+    write_json(tmp_path / "no-category-v1" / "metadata.json", metadata_without_category)
+    summary = bfp.backfill_finish_position_flat(client, tmp_path)
+    assert summary["versions_registered"] == 0
+    assert summary["skipped_existing"] == []
+    assert len(summary["errors"]) == 1
+    assert "missing a string 'category' field" in summary["errors"][0]
+
+
+def test_backfill_finish_position_flat_records_error_for_malformed_json(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    bad_path = tmp_path / "bad-version" / "metadata.json"
+    bad_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_path.write_text("{not valid json", encoding="utf-8")
+    summary = bfp.backfill_finish_position_flat(client, tmp_path)
+    assert summary["versions_registered"] == 0
+    assert len(summary["errors"]) == 1
+
+
 def test_backfill_finish_position_records_errors_without_stopping(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:

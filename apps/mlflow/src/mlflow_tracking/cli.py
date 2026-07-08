@@ -20,6 +20,7 @@ from mlflow_tracking import (
     config,
     export_production,
     ingest_eval,
+    ingest_local_pg_history,
     registry,
     training_run,
 )
@@ -65,7 +66,26 @@ def cmd_init(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_finish_position_flat(args: argparse.Namespace) -> int:
+    """Register HISTORICAL finish-position versions from a FLAT staging
+    directory (--models-root), never touching champion aliases."""
+    client = build_client()
+    summary = backfill_finish_position.backfill_finish_position_flat(
+        client, Path(args.models_root)
+    )
+    print(
+        f"versions registered: {summary['versions_registered']}\n"
+        f"skipped (already registered): {len(summary['skipped_existing'])}"
+    )
+    for error in summary["errors"]:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary["errors"] else 0
+
+
 def cmd_backfill_finish_position(args: argparse.Namespace) -> int:
+    if args.models_root is not None:
+        return cmd_backfill_finish_position_flat(args)
+
     client = build_client()
     summary = backfill_finish_position.backfill_finish_position(client)
     print(
@@ -144,6 +164,24 @@ def cmd_log_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_local_pg_model_evaluations(args: argparse.Namespace) -> int:
+    client = build_client()
+    run_ids = ingest_local_pg_history.ingest_model_prediction_evaluations(
+        client, Path(args.path), eval_regime=args.eval_regime
+    )
+    print(f"logged {len(run_ids)} run(s): {', '.join(run_ids)}")
+    return 0
+
+
+def cmd_ingest_local_pg_running_style_buckets(args: argparse.Namespace) -> int:
+    client = build_client()
+    run_ids = ingest_local_pg_history.ingest_running_style_bucket_evaluations(
+        client, Path(args.path), eval_regime=args.eval_regime
+    )
+    print(f"logged {len(run_ids)} run(s): {', '.join(run_ids)}")
+    return 0
+
+
 def cmd_log_training_run(args: argparse.Namespace) -> int:
     client = build_client()
     try:
@@ -214,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit 0 even if one or more categories' champion alias failed to sync",
     )
+    backfill_fp_parser.add_argument(
+        "--models-root",
+        default=None,
+        help="Register HISTORICAL versions from a FLAT {version}/metadata.json staging "
+        "directory (e.g. apps/pc-keiba-viewer/tmp/models/) instead of running the full "
+        "production-tree backfill. Never touches champion aliases or cell_routing.json.",
+    )
     backfill_fp_parser.set_defaults(func=cmd_backfill_finish_position)
 
     rs_parser = subparsers.add_parser(
@@ -264,6 +309,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     log_parser.add_argument("--run-name", default=None, help="Optional run name override")
     log_parser.set_defaults(func=cmd_log_eval)
+
+    pg_model_evals_parser = subparsers.add_parser(
+        "ingest-local-pg-model-evaluations",
+        help="Ingest a model_prediction_evaluations local-PG-replica export (parquet/JSON)",
+    )
+    pg_model_evals_parser.add_argument("path", help="Path to the exported parquet/JSON file")
+    pg_model_evals_parser.add_argument(
+        "--eval-regime",
+        default="wf",
+        help="Evaluation regime (default: 'wf' -- this table is written by the offline "
+        "walk-forward bucket-eval harness, never a live-serve path)",
+    )
+    pg_model_evals_parser.set_defaults(func=cmd_ingest_local_pg_model_evaluations)
+
+    pg_rs_buckets_parser = subparsers.add_parser(
+        "ingest-local-pg-running-style-buckets",
+        help="Ingest a running_style_model_bucket_evaluations local-PG-replica export "
+        "(parquet/JSON)",
+    )
+    pg_rs_buckets_parser.add_argument("path", help="Path to the exported parquet/JSON file")
+    pg_rs_buckets_parser.add_argument(
+        "--eval-regime",
+        default="wf",
+        help="Evaluation regime (default: 'wf' -- this table is written by the offline "
+        "walk-forward bucket-eval harness, never a live-serve path)",
+    )
+    pg_rs_buckets_parser.set_defaults(func=cmd_ingest_local_pg_running_style_buckets)
 
     training_run_parser = subparsers.add_parser(
         "log-training-run",
