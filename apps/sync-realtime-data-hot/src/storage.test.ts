@@ -16,6 +16,7 @@ import {
   insertOddsSnapshot,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
+  listCompletedRaceKeysWithSnapshotsBefore,
   listDistinctArchiveFetchedAtBeforeCutoff,
   listOddsFetchStateForDate,
   listOddsHistoryByType,
@@ -83,6 +84,22 @@ it("deleteOddsSnapshotsForRaceKeys deletes one statement per race and sums chang
   expect(deleted).toBe(5);
   expect(bind).toHaveBeenNthCalledWith(1, "nar:2026:0707:30:01");
   expect(bind).toHaveBeenNthCalledWith(2, "nar:2026:0707:35:01");
+});
+
+it("listCompletedRaceKeysWithSnapshotsBefore returns bounded started races with snapshots", async () => {
+  const all = vi.fn(async () => ({
+    results: [{ race_key: "nar:2026:0708:30:08" }, { race_key: "nar:2026:0708:45:08" }],
+  }));
+  const bind = vi.fn(() => ({ all }));
+  const prepare = vi.fn((_sql: string) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  const raceKeys = await listCompletedRaceKeysWithSnapshotsBefore(
+    db,
+    "2026-07-08T18:00:00+09:00",
+    64,
+  );
+  expect(raceKeys).toStrictEqual(["nar:2026:0708:30:08", "nar:2026:0708:45:08"]);
+  expect(bind).toHaveBeenCalledWith("2026-07-08T18:00:00+09:00", 64);
 });
 
 it("markOddsFetchStateDiscardedForRaceKeys returns early when raceKeys is empty", async () => {

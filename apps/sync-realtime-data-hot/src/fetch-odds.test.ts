@@ -70,11 +70,13 @@ interface StoredOddsSnapshotRow {
 }
 
 interface BuildDbOptions {
+  batchOutcomes?: Array<Error | { meta: { changes: number } }[]>;
   claimChanges?: number;
-  state?: OddsFetchStateRow | null;
-  narVenueLast?: string | null;
+  completedRaceKeys?: string[];
   insertedCount?: number;
   latestStored?: StoredOddsSnapshotRow[] | null;
+  narVenueLast?: string | null;
+  state?: OddsFetchStateRow | null;
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -123,6 +125,16 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
       const all = vi.fn(async () => ({ results: options.latestStored ?? [] }));
       return { bind: vi.fn(() => ({ all })) };
     }
+    if (
+      lowered.includes("from odds_fetch_state state") &&
+      lowered.includes("exists") &&
+      lowered.includes("odds_snapshots")
+    ) {
+      const all = vi.fn(async () => ({
+        results: (options.completedRaceKeys ?? []).map((race_key) => ({ race_key })),
+      }));
+      return { bind: vi.fn(() => ({ all })) };
+    }
     if (lowered.includes("insert into odds_snapshots")) {
       const run = vi.fn(async () => ({ meta: { changes: options.insertedCount ?? 1 } }));
       return { bind: vi.fn(() => ({ run })) };
@@ -134,7 +146,15 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     const run = vi.fn(async () => ({ meta: { changes: 1 } }));
     return { bind: vi.fn(() => ({ run })) };
   });
-  const batch = vi.fn(async () => []);
+  let batchCallIndex = 0;
+  const batch = vi.fn(async () => {
+    const outcome = options.batchOutcomes?.[batchCallIndex];
+    batchCallIndex += 1;
+    if (outcome instanceof Error) {
+      throw outcome;
+    }
+    return outcome ?? [];
+  });
   return { batch, prepare: prepareMock } as unknown as D1Database;
 };
 
@@ -586,4 +606,34 @@ it("fetchAndStoreOdds writes only the changed row when the stored odds differ (O
     new Date("2026-05-28T05:55:00Z"),
   );
   expect(result?.inserted).toBe(1);
+});
+
+it("fetchAndStoreOdds prunes completed race snapshots and retries when D1 is full", async () => {
+  const env = buildEnv(
+    {},
+    {
+      batchOutcomes: [
+        new Error("D1_ERROR: Exceeded maximum DB size"),
+        [{ meta: { changes: 40 } }, { meta: { changes: 20 } }],
+        [],
+      ],
+      completedRaceKeys: ["nar:20260528:42:01", "nar:20260528:42:02"],
+    },
+  );
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:03",
+    new Date("2026-05-28T05:55:00Z"),
+  );
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  const deleteCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("delete from odds_snapshots"),
+  );
+  const logCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("insert into fetch_logs"),
+  );
+  expect(result?.inserted).toBe(1);
+  expect(env.REALTIME_HOT_DB.batch).toHaveBeenCalledTimes(3);
+  expect(deleteCalls).toHaveLength(2);
+  expect(logCalls).toHaveLength(1);
 });

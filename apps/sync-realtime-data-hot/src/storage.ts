@@ -405,6 +405,29 @@ export const deleteOddsSnapshotsForRaceKeys = async (
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 };
 
+export const listCompletedRaceKeysWithSnapshotsBefore = async (
+  db: D1Database,
+  beforeIso: string,
+  limit: number,
+): Promise<string[]> => {
+  const result = await db
+    .prepare(
+      `select state.race_key
+       from odds_fetch_state state
+       where state.race_start_at_jst < ?
+         and exists (
+           select 1 from odds_snapshots snapshots
+           where snapshots.race_key = state.race_key
+           limit 1
+         )
+       order by state.race_start_at_jst asc
+       limit ?`,
+    )
+    .bind(beforeIso, limit)
+    .all<{ race_key: string }>();
+  return result.results.map((row) => row.race_key);
+};
+
 export const markOddsFetchStateDiscardedForRaceKeys = async (
   db: D1Database,
   raceKeys: string[],
