@@ -1414,7 +1414,16 @@ const TIMEOUT_WARNING_RATIO = 0.8;
 const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
 const PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_";
 const PER_TABLE_SKIP_ENV = "REPLICA_SYNC_SKIP_TABLES";
-const DEFAULT_NEON_WRITER_SKIP_TABLES = ["race_running_style_model_predictions"];
+// Both tables are written directly to Neon by production (the finish-position
+// predict container / rescore-consumer Worker and the running-style Cloudflare
+// pipeline respectively). Local Postgres never receives those rows, so any
+// replica-push mode (full-replace TRUNCATE, or incremental delete-missing /
+// re-incremental rollback-window delete) would erase Neon-only production
+// predictions. Keep these skipped entirely — never synced in either direction.
+const DEFAULT_NEON_WRITER_SKIP_TABLES = [
+  "race_running_style_model_predictions",
+  "race_finish_position_model_predictions",
+];
 
 export function resolveSkipTables(env: Record<string, string | undefined>): ReadonlySet<string> {
   const skipTables = new Set(DEFAULT_NEON_WRITER_SKIP_TABLES);
