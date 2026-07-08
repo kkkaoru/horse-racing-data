@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from mlflow import MlflowClient
 
-from mlflow_tracking import config, logging_api, registry, training_run
+from mlflow_tracking import config, logging_api, registry, timeline, training_run
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -323,6 +323,97 @@ def test_log_training_run_artifact_dir_routes_long_field_to_artifact(
     run_id = training_run.log_training_run(client, manifest_path)
     artifact_paths = {a.path for a in client.list_artifacts(run_id)}
     assert "feature_names.json" in artifact_paths
+
+
+def test_log_training_run_serve_regime_with_date_tag_upserts_finish_position_timeline(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["eval_regime"] = "serve"
+    manifest["tags"] = {"date": "20260601"}
+    manifest["aggregate_metrics"] = {"top1_pct": 44.5, "place2_pct": 24.0}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    timeline_run_id = run.data.tags["timeline_run_id:finish-position"]
+    timeline_run = client.get_run(timeline_run_id)
+    assert timeline_run.info.run_name == "timeline-finish-position-jra"
+    assert timeline_run.data.metrics["fp_top1_pct"] == 44.5
+    assert timeline_run.data.metrics["fp_place2_pct"] == 24.0
+    fp_dates = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
+    assert fp_dates == {20260601}
+
+
+def test_log_training_run_serve_regime_with_date_tag_upserts_running_style_timeline(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    manifest = {
+        "schema": "hr-mlflow-training-run/v1",
+        "task": "running-style",
+        "category": "nar",
+        "model_version": "nar-running-style-lgbm-test-v1",
+        "eval_regime": "serve",
+        "tags": {"date": "20260602"},
+        "aggregate_metrics": {"overall_accuracy_pct": 55.0, "macro_f1_pct": 50.0},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    timeline_run_id = run.data.tags["timeline_run_id:running-style"]
+    timeline_run = client.get_run(timeline_run_id)
+    assert timeline_run.info.run_name == "timeline-running-style-nar"
+    assert timeline_run.data.metrics["rs_overall_accuracy_pct"] == 55.0
+    assert timeline_run.data.metrics["rs_macro_f1_pct"] == 50.0
+
+
+def test_log_training_run_non_serve_regime_does_not_upsert_timeline_even_with_date_tag(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["eval_regime"] = "wf"
+    manifest["tags"] = {"date": "20260601"}
+    manifest["aggregate_metrics"] = {"top1_pct": 44.5}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    assert "timeline_run_id:finish-position" not in run.data.tags
+    fp_dates = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
+    assert fp_dates == set()
+
+
+def test_log_training_run_serve_regime_without_date_tag_does_not_upsert_timeline(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["eval_regime"] = "serve"
+    manifest["aggregate_metrics"] = {"top1_pct": 44.5}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    assert "timeline_run_id:finish-position" not in run.data.tags
+
+
+def test_log_training_run_serve_regime_with_empty_timeline_extraction_does_not_upsert(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["eval_regime"] = "serve"
+    manifest["tags"] = {"date": "20260601"}
+    manifest["aggregate_metrics"] = {"unrelated_metric": 1.0}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    assert "timeline_run_id:finish-position" not in run.data.tags
 
 
 def test_log_training_run_cell_report_with_no_headline_metrics_still_logs_table(

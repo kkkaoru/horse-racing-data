@@ -63,12 +63,18 @@ EXPERIMENT_FP_WF_EVAL: Final[str] = "finish-position/wf-eval"
 EXPERIMENT_FP_SERVE_ACCURACY: Final[str] = "finish-position/serve-accuracy"
 EXPERIMENT_RS_REGISTRY_BACKFILL: Final[str] = "running-style/registry-backfill"
 EXPERIMENT_RS_EVAL: Final[str] = "running-style/eval"
+# One persistent metric-timeline run per (task, category) pair lives here --
+# see timeline.py's module docstring for why this is a separate experiment
+# rather than reusing finish-position/serve-accuracy or running-style/eval
+# (those hold one-point-per-day runs; this holds one growing-series run).
+EXPERIMENT_TIMELINES: Final[str] = "timelines"
 ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_FP_REGISTRY_BACKFILL,
     EXPERIMENT_FP_WF_EVAL,
     EXPERIMENT_FP_SERVE_ACCURACY,
     EXPERIMENT_RS_REGISTRY_BACKFILL,
     EXPERIMENT_RS_EVAL,
+    EXPERIMENT_TIMELINES,
 )
 
 

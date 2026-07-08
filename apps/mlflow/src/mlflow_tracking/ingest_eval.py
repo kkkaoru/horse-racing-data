@@ -17,7 +17,7 @@ import pandas as pd
 from mlflow import MlflowClient
 from mlflow.entities import Metric, RunTag
 
-from mlflow_tracking import cells, config
+from mlflow_tracking import cells, config, timeline
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -223,6 +223,17 @@ def ingest_serve_accuracy(
     finish_position section is present (even alongside running_style, since
     that combined shape is still fundamentally a serve-health check), else to
     running-style/eval.
+
+    Also upserts a point onto the `timelines` experiment's per-(task,
+    category) persistent run for whichever of finish-position/running-style
+    sections are present (see timeline.py's module docstring for why this
+    exists as a separate layer). This is a MANUAL/CLI-only ingestion path
+    (see this CLI subcommand's own `ingest-serve-accuracy` docs) -- the
+    empirically-real, automatic live-serve path is
+    `training_run.py::log_training_run`'s own serve-eval-regime timeline
+    hook, which this function's own JSON-payload shape does not go through.
+    Both are wired so a manual backfill (this function) and the live cron
+    path (training_run.py) converge on the same timeline runs.
     """
     validate_eval_regime(eval_regime)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -254,6 +265,26 @@ def ingest_serve_accuracy(
         rs_model_version = rs.get("model_version")
         if isinstance(rs_model_version, str) and rs_model_version:
             tags["rs_model_version"] = rs_model_version
+
+    # Timeline upsert rides along in the same log_batch_chunked call below by
+    # writing the returned timeline run_id into `tags` before `tag_items` is
+    # built from it -- see timeline.py's module docstring for why a
+    # persistent per-(task, category) run is needed for the UI's line charts
+    # to show a real trend instead of one dot per day.
+    if isinstance(fp, dict):
+        fp_timeline_metrics = timeline.fp_metrics_for_timeline(fp)
+        if fp_timeline_metrics:
+            timeline_run_id = timeline.upsert_timeline_point(
+                client, "finish-position", category, date_str, fp_timeline_metrics
+            )
+            tags["timeline_run_id:finish-position"] = timeline_run_id
+    if isinstance(rs, dict):
+        rs_timeline_metrics = timeline.rs_metrics_for_timeline(rs)
+        if rs_timeline_metrics:
+            timeline_run_id = timeline.upsert_timeline_point(
+                client, "running-style", category, date_str, rs_timeline_metrics
+            )
+            tags["timeline_run_id:running-style"] = timeline_run_id
 
     tag_items = [RunTag(k, v) for k, v in tags.items() if v]
     log_batch_chunked(client, run_id, metrics=metric_items, tags=tag_items)

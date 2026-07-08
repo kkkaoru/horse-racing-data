@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 from mlflow import MlflowClient
 
-from mlflow_tracking import ingest_eval, logging_api
+from mlflow_tracking import ingest_eval, logging_api, timeline
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -214,6 +214,16 @@ def test_ingest_serve_accuracy_logs_finish_position_and_running_style(
     experiment = client.get_experiment(run.info.experiment_id)
     assert experiment.name == "finish-position/serve-accuracy"
 
+    fp_timeline_run_id = run.data.tags["timeline_run_id:finish-position"]
+    rs_timeline_run_id = run.data.tags["timeline_run_id:running-style"]
+    assert fp_timeline_run_id != rs_timeline_run_id
+    fp_timeline_run = client.get_run(fp_timeline_run_id)
+    assert fp_timeline_run.info.run_name == "timeline-finish-position-jra"
+    assert fp_timeline_run.data.metrics["fp_top1_pct"] == 44.5
+    rs_timeline_run = client.get_run(rs_timeline_run_id)
+    assert rs_timeline_run.info.run_name == "timeline-running-style-jra"
+    assert rs_timeline_run.data.metrics["rs_overall_accuracy_pct"] == 55.0
+
 
 def test_ingest_serve_accuracy_handles_finish_position_only(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
@@ -233,6 +243,12 @@ def test_ingest_serve_accuracy_handles_finish_position_only(
     run = client.get_run(run_id)
     assert "model_version_counts" not in run.data.tags
     assert "rs_model_version" not in run.data.tags
+    assert "timeline_run_id:running-style" not in run.data.tags
+    fp_timeline_run_id = run.data.tags["timeline_run_id:finish-position"]
+    fp_dates = timeline.timeline_dates_present(client, "finish-position", "nar", "fp_top1_pct")
+    assert fp_dates == {20260601}
+    fp_timeline_run = client.get_run(fp_timeline_run_id)
+    assert fp_timeline_run.data.metrics["fp_top1_pct"] == 30.0
 
 
 def test_ingest_serve_accuracy_handles_running_style_only(
@@ -253,6 +269,27 @@ def test_ingest_serve_accuracy_handles_running_style_only(
     assert run.data.tags["date"] == "20260602"
     experiment = client.get_experiment(run.info.experiment_id)
     assert experiment.name == "running-style/eval"
+    assert "timeline_run_id:finish-position" not in run.data.tags
+    rs_timeline_run_id = run.data.tags["timeline_run_id:running-style"]
+    rs_dates = timeline.timeline_dates_present(
+        client, "running-style", "jra", "rs_overall_accuracy_pct"
+    )
+    assert rs_dates == {20260602}
+    rs_timeline_run = client.get_run(rs_timeline_run_id)
+    assert rs_timeline_run.data.metrics["rs_overall_accuracy_pct"] == 60.0
+
+
+def test_ingest_serve_accuracy_skips_timeline_upsert_when_fp_extraction_is_empty(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    payload = {
+        "finish_position": {"date_str": "20260604", "category": "jra", "era": "POST_FIX"},
+    }
+    json_path = tmp_path / "serve_accuracy_fp_no_metrics.json"
+    write_json(json_path, payload)
+    run_id = ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
+    run = client.get_run(run_id)
+    assert "timeline_run_id:finish-position" not in run.data.tags
 
 
 def test_ingest_serve_accuracy_explicit_experiment_overrides_auto_detection(

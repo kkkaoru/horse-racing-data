@@ -603,6 +603,10 @@ def test_clear_ambient_backend_uri_overrides_preset_env_var(
     assert config.get_tracking_uri() != fake_production_uri
 
 
+def test_experiment_timelines_is_included_in_all_experiment_names() -> None:
+    assert config.EXPERIMENT_TIMELINES in config.ALL_EXPERIMENT_NAMES
+
+
 def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

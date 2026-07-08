@@ -28,6 +28,28 @@ Manifest shape (``?`` = optional, defaults noted)::
 everything else is pure logging. The caller (hook) treats a non-zero CLI exit
 as a non-fatal warning, so this module never leaves a run half-open on error
 paths that occur after run creation — it always terminates what it started.
+
+★ Why this generic training-run ingester also has serve-accuracy-specific
+timeline logic (see `_maybe_log_serve_timeline_point` below): `ingest_eval.py`
+exposes its own `ingest_serve_accuracy` (and CLI subcommand
+`ingest-serve-accuracy`) as what looks like THE ingestion path for
+`serve_accuracy_report.py --json` output, and it does also upsert a timeline
+point. But empirically (grepped across this repo), that function is never
+invoked automatically anywhere — it is a manual/CLI-only path. The ACTUAL
+live path, every time `serve_accuracy_report.py` runs for real, is:
+`serve_accuracy_report.py::run()` -> `emit_mlflow_serve_accuracy()` ->
+`mlflow_hook.safe_emit_training_run()` -> a subprocess call to THIS module's
+CLI entry point (`log-training-run`) -> `log_training_run()` (this
+function). Confirmed against the real Neon-backed tracking store: the live
+`finish-position/serve-accuracy` experiment's existing runs carry
+UNPREFIXED metric keys (`top1_pct`, `place2_pct`, ...) matching this
+module's own `aggregate_metrics` handling (built from
+`mlflow_hook.flatten_numeric_metrics(fp_dict)`), not `ingest_eval.py`'s
+`fp_`-prefixed keys. `serve_accuracy_report.py` itself is also not
+cron/launchd-scheduled anywhere in this repo (it is run manually today), but
+if/when it is automated, THIS is the code path that will actually fire — so
+the timeline hook belongs here, not only in `ingest_eval.py`, or the
+`timelines` experiment would silently never receive live-serve points.
 """
 
 from __future__ import annotations
@@ -39,7 +61,7 @@ from typing import Final, cast
 from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
 
-from mlflow_tracking import config, ingest_eval, logging_api, registry
+from mlflow_tracking import config, ingest_eval, logging_api, registry, timeline
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -168,6 +190,44 @@ def _register_and_promote(
         registry.set_champion(client, registered_name, version.version)
 
 
+def _maybe_log_serve_timeline_point(
+    client: MlflowClient,
+    task: registry.Task,
+    category: registry.Category,
+    eval_regime: str,
+    manifest_tags: dict[str, object],
+    aggregate_metrics: dict[str, object],
+) -> str | None:
+    """Upsert a `timelines` point for a live-serve manifest, or no-op.
+
+    Fires only when BOTH: `eval_regime == "serve"` (this manifest represents
+    a real serve-accuracy check, not a wf/oos/self-consistency/unspecified
+    eval) AND the manifest carries a non-empty string `date` tag (without a
+    date, there is no calendar position to plot a point at). See this
+    module's own docstring for why this hook lives here rather than only in
+    ingest_eval.py.
+
+    Returns the timeline run_id when a point was actually logged (so the
+    caller can tag the per-day run with it), or None when the hook did not
+    fire (wrong regime, no date tag, or the extracted metric subset was
+    empty — e.g. an `aggregate_metrics` that happens to carry no
+    timeline-relevant keys).
+    """
+    if eval_regime != "serve":
+        return None
+    date_tag = manifest_tags.get("date")
+    if not isinstance(date_tag, str) or not date_tag:
+        return None
+    timeline_metrics = (
+        timeline.fp_metrics_for_timeline(aggregate_metrics)
+        if task == "finish-position"
+        else timeline.rs_metrics_for_timeline(aggregate_metrics)
+    )
+    if not timeline_metrics:
+        return None
+    return timeline.upsert_timeline_point(client, task, category, date_tag, timeline_metrics)
+
+
 def log_training_run(client: MlflowClient, manifest_path: Path) -> str:
     """Ingest one training-run manifest, returning the created run_id.
 
@@ -218,6 +278,18 @@ def log_training_run(client: MlflowClient, manifest_path: Path) -> str:
         "model_version": model_version_label,
     }
     tags.update({str(k): str(v) for k, v in manifest_tags.items()})
+
+    # See this module's docstring for why a generic training-run ingester
+    # also upserts a `timelines` point: this is the empirically-real,
+    # automatic live-serve path (ingest_eval.py's own timeline wiring is
+    # manual/CLI-only). No-ops for every non-serve eval_regime and every
+    # manifest without a `date` tag.
+    timeline_run_id = _maybe_log_serve_timeline_point(
+        client, task, category, eval_regime, manifest_tags, aggregate_metrics
+    )
+    if timeline_run_id is not None:
+        tags[f"timeline_run_id:{task}"] = timeline_run_id
+
     params: dict[str, str] = {str(k): str(v) for k, v in manifest_params.items()}
     metric_items = [
         Metric(str(k), float(v), 0, 0)

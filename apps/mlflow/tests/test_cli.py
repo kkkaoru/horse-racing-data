@@ -26,6 +26,7 @@ from mlflow import MlflowClient
 from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
+    backfill_serve_timeline,
     cli,
     config,
     export_production,
@@ -298,6 +299,141 @@ def test_cmd_backfill_running_style_reports_errors(
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "error: bad file" in captured.err
+
+
+def test_cmd_backfill_serve_timeline_reports_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = backfill_serve_timeline.BackfillTimelineSummary(
+        dates_total=3,
+        dates_ingested=2,
+        dates_skipped_existing=1,
+        dates_skipped_no_data=0,
+        errors=[],
+    )
+
+    def _fake_backfill(
+        client: MlflowClient,
+        category: str,
+        date_from: str,
+        date_to: str,
+        *,
+        skip_existing: bool = False,
+    ) -> backfill_serve_timeline.BackfillTimelineSummary:
+        return summary
+
+    monkeypatch.setattr(backfill_serve_timeline, "backfill_serve_timeline", _fake_backfill)
+    exit_code = cli.main(
+        [
+            "backfill-serve-timeline",
+            "--category",
+            "jra",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260603",
+        ]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "dates total: 3" in captured.out
+    assert "dates ingested: 2" in captured.out
+    assert "dates skipped (existing): 1" in captured.out
+    assert "dates skipped (no data): 0" in captured.out
+
+
+def test_cmd_backfill_serve_timeline_reports_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = backfill_serve_timeline.BackfillTimelineSummary(
+        dates_total=1,
+        dates_ingested=0,
+        dates_skipped_existing=0,
+        dates_skipped_no_data=0,
+        errors=["20260601: boom"],
+    )
+
+    def _fake_backfill(
+        client: MlflowClient,
+        category: str,
+        date_from: str,
+        date_to: str,
+        *,
+        skip_existing: bool = False,
+    ) -> backfill_serve_timeline.BackfillTimelineSummary:
+        return summary
+
+    monkeypatch.setattr(backfill_serve_timeline, "backfill_serve_timeline", _fake_backfill)
+    exit_code = cli.main(
+        [
+            "backfill-serve-timeline",
+            "--category",
+            "nar",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+        ]
+    )
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: 20260601: boom" in captured.err
+
+
+def test_cmd_backfill_serve_timeline_passes_skip_existing_flag_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_skip_existing: list[bool] = []
+
+    def _fake_backfill(
+        client: MlflowClient,
+        category: str,
+        date_from: str,
+        date_to: str,
+        *,
+        skip_existing: bool = False,
+    ) -> backfill_serve_timeline.BackfillTimelineSummary:
+        seen_skip_existing.append(skip_existing)
+        return backfill_serve_timeline.BackfillTimelineSummary(
+            dates_total=0,
+            dates_ingested=0,
+            dates_skipped_existing=0,
+            dates_skipped_no_data=0,
+            errors=[],
+        )
+
+    monkeypatch.setattr(backfill_serve_timeline, "backfill_serve_timeline", _fake_backfill)
+    exit_code = cli.main(
+        [
+            "backfill-serve-timeline",
+            "--category",
+            "jra",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+            "--skip-existing",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_skip_existing == [True]
+
+
+def test_cmd_backfill_serve_timeline_rejects_unsupported_category(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "backfill-serve-timeline",
+                "--category",
+                "banei",
+                "--date-from",
+                "20260601",
+                "--date-to",
+                "20260601",
+            ]
+        )
 
 
 def test_cmd_ingest_trial_registry(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

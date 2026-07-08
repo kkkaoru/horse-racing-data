@@ -1,0 +1,262 @@
+"""Tests for mlflow_tracking.timeline."""
+
+from __future__ import annotations
+
+import datetime as dt
+
+import pytest
+from mlflow import MlflowClient
+
+from mlflow_tracking import config, timeline
+
+
+def test_upsert_timeline_point_creates_run_on_first_call(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    run = client.get_run(run_id)
+    assert run.info.run_name == "timeline-finish-position-jra"
+    assert run.data.tags["timeline_key"] == "finish-position:jra"
+    assert run.data.tags["task"] == "finish-position"
+    assert run.data.tags["category"] == "jra"
+    experiment = client.get_experiment(run.info.experiment_id)
+    assert experiment.name == config.EXPERIMENT_TIMELINES
+
+
+def test_upsert_timeline_point_reuses_same_run_across_dates(client: MlflowClient) -> None:
+    run_id_1 = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    run_id_2 = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260602", {"fp_top1_pct": 45.0}
+    )
+    assert run_id_1 == run_id_2
+    history = client.get_metric_history(run_id_1, "fp_top1_pct")
+    steps = {point.step: point.value for point in history}
+    assert steps == {20260601: 44.5, 20260602: 45.0}
+
+
+def test_upsert_timeline_point_metric_timestamp_is_noon_jst_as_utc(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    history = client.get_metric_history(run_id, "fp_top1_pct")
+    assert len(history) == 1
+    expected_ms = int(dt.datetime(2026, 6, 1, 3, 0, 0, tzinfo=dt.UTC).timestamp() * 1000)
+    assert history[0].timestamp == expected_ms
+
+
+def test_upsert_timeline_point_does_not_duplicate_same_step(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 99.9}
+    )
+    history = client.get_metric_history(run_id, "fp_top1_pct")
+    assert len(history) == 1
+    assert history[0].value == 44.5
+
+
+def test_upsert_timeline_point_new_metric_key_on_existing_step_still_logs(
+    client: MlflowClient,
+) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_place2_pct": 24.0}
+    )
+    place2_history = client.get_metric_history(run_id, "fp_place2_pct")
+    assert len(place2_history) == 1
+    assert place2_history[0].step == 20260601
+    top1_history = client.get_metric_history(run_id, "fp_top1_pct")
+    assert len(top1_history) == 1
+
+
+def test_upsert_timeline_point_applies_tags(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client,
+        "finish-position",
+        "jra",
+        "20260601",
+        {"fp_top1_pct": 44.5},
+        tags={"note": "backfilled"},
+    )
+    run = client.get_run(run_id)
+    assert run.data.tags["note"] == "backfilled"
+
+
+def test_upsert_timeline_point_updates_tags_on_existing_run(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client,
+        "finish-position",
+        "jra",
+        "20260601",
+        {"fp_top1_pct": 44.5},
+        tags={"note": "first"},
+    )
+    timeline.upsert_timeline_point(
+        client,
+        "finish-position",
+        "jra",
+        "20260602",
+        {"fp_top1_pct": 45.0},
+        tags={"note": "second"},
+    )
+    run = client.get_run(run_id)
+    assert run.data.tags["note"] == "second"
+
+
+def test_upsert_timeline_point_run_finished_after_each_call(client: MlflowClient) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    assert client.get_run(run_id).info.status == "FINISHED"
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260602", {"fp_top1_pct": 45.0}
+    )
+    assert client.get_run(run_id).info.status == "FINISHED"
+
+
+def test_upsert_timeline_point_different_categories_get_different_runs(
+    client: MlflowClient,
+) -> None:
+    jra_run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    nar_run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "nar", "20260601", {"fp_top1_pct": 30.0}
+    )
+    assert jra_run_id != nar_run_id
+
+
+def test_upsert_timeline_point_rejects_invalid_date(client: MlflowClient) -> None:
+    with pytest.raises(ValueError, match="8-digit"):
+        timeline.upsert_timeline_point(client, "finish-position", "jra", "not-a-date", {})
+
+
+def test_validate_yyyymmdd_accepts_valid_date() -> None:
+    timeline.validate_yyyymmdd("20260614")
+
+
+def test_validate_yyyymmdd_rejects_wrong_length() -> None:
+    with pytest.raises(ValueError, match="8-digit"):
+        timeline.validate_yyyymmdd("2026061")
+
+
+def test_validate_yyyymmdd_rejects_non_numeric() -> None:
+    with pytest.raises(ValueError, match="8-digit"):
+        timeline.validate_yyyymmdd("2026abcd")
+
+
+def test_validate_yyyymmdd_rejects_invalid_calendar_date() -> None:
+    with pytest.raises(ValueError, match="not a real calendar date"):
+        timeline.validate_yyyymmdd("20260231")
+
+
+def test_fp_metrics_for_timeline_extracts_known_keys() -> None:
+    result = timeline.fp_metrics_for_timeline(
+        {
+            "top1_pct": 44.5,
+            "place2_pct": 24.0,
+            "place3_pct": 15.0,
+            "fukusho_2p_pct": 74.0,
+            "top3_box_pct": 30.0,
+            "races": 12,
+            "horses": 144,
+        }
+    )
+    assert result == {
+        "fp_top1_pct": 44.5,
+        "fp_place2_pct": 24.0,
+        "fp_place3_pct": 15.0,
+        "fp_fukusho_2p_pct": 74.0,
+        "fp_top3_box_pct": 30.0,
+        "fp_races": 12.0,
+    }
+
+
+def test_fp_metrics_for_timeline_skips_non_numeric_values() -> None:
+    result = timeline.fp_metrics_for_timeline({"top1_pct": "not-a-number"})
+    assert result == {}
+
+
+def test_fp_metrics_for_timeline_empty_dict_yields_empty_result() -> None:
+    assert timeline.fp_metrics_for_timeline({}) == {}
+
+
+def test_rs_metrics_for_timeline_extracts_overall_and_macro_f1() -> None:
+    result = timeline.rs_metrics_for_timeline({"overall_accuracy_pct": 55.0, "macro_f1_pct": 50.0})
+    assert result == {"rs_overall_accuracy_pct": 55.0, "rs_macro_f1_pct": 50.0}
+
+
+def test_rs_metrics_for_timeline_skips_none_macro_f1() -> None:
+    result = timeline.rs_metrics_for_timeline({"overall_accuracy_pct": 55.0, "macro_f1_pct": None})
+    assert result == {"rs_overall_accuracy_pct": 55.0}
+
+
+def test_rs_metrics_for_timeline_skips_non_numeric_overall_accuracy() -> None:
+    result = timeline.rs_metrics_for_timeline({"overall_accuracy_pct": "not-a-number"})
+    assert result == {}
+
+
+def test_rs_metrics_for_timeline_extracts_per_class_f1() -> None:
+    result = timeline.rs_metrics_for_timeline(
+        {
+            "per_class": [
+                {"label": "nige", "f1_pct": 40.0},
+                {"label": "oikomi", "f1_pct": None},
+                {"label": "senkou"},
+                "not-a-dict",
+                {"f1_pct": 30.0},
+            ]
+        }
+    )
+    assert result == {"rs_f1_nige_pct": 40.0}
+
+
+def test_rs_metrics_for_timeline_ignores_non_list_per_class() -> None:
+    result = timeline.rs_metrics_for_timeline({"per_class": "not-a-list"})
+    assert result == {}
+
+
+def test_rs_metrics_for_timeline_empty_dict_yields_empty_result() -> None:
+    assert timeline.rs_metrics_for_timeline({}) == {}
+
+
+def test_timeline_dates_present_empty_when_experiment_does_not_exist(
+    client: MlflowClient,
+) -> None:
+    assert timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct") == set()
+
+
+def test_timeline_dates_present_empty_when_run_does_not_exist_but_experiment_does(
+    client: MlflowClient,
+) -> None:
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    result = timeline.timeline_dates_present(
+        client, "running-style", "jra", "rs_overall_accuracy_pct"
+    )
+    assert result == set()
+
+
+def test_timeline_dates_present_returns_logged_steps(client: MlflowClient) -> None:
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260602", {"fp_top1_pct": 45.0}
+    )
+    result = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
+    assert result == {20260601, 20260602}
+
+
+def test_timeline_dates_present_empty_for_unknown_metric_key(client: MlflowClient) -> None:
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    result = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_unknown_key")
+    assert result == set()

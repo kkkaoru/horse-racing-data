@@ -17,6 +17,7 @@ from mlflow import MlflowClient
 from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
+    backfill_serve_timeline,
     config,
     export_production,
     ingest_eval,
@@ -221,6 +222,26 @@ def cmd_export_active_models(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_serve_timeline(args: argparse.Namespace) -> int:
+    client = build_client()
+    summary = backfill_serve_timeline.backfill_serve_timeline(
+        client,
+        args.category,
+        args.date_from,
+        args.date_to,
+        skip_existing=args.skip_existing,
+    )
+    print(
+        f"dates total: {summary.dates_total}\n"
+        f"dates ingested: {summary.dates_ingested}\n"
+        f"dates skipped (existing): {summary.dates_skipped_existing}\n"
+        f"dates skipped (no data): {summary.dates_skipped_no_data}"
+    )
+    for error in summary.errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary.errors else 0
+
+
 def cmd_set_champion(args: argparse.Namespace) -> int:
     client = build_client()
     registry.set_champion(client, args.model, args.version)
@@ -375,6 +396,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write a partial export even if one or more categories have no champion alias",
     )
     export_active_parser.set_defaults(func=cmd_export_active_models)
+
+    backfill_timeline_parser = subparsers.add_parser(
+        "backfill-serve-timeline",
+        help="Backfill timelines/{finish-position,running-style} points from "
+        "serve_accuracy_report.py over a historical date range (jra/nar only)",
+    )
+    backfill_timeline_parser.add_argument(
+        "--category", choices=["jra", "nar"], required=True, help="jra or nar (no Ban-ei support)"
+    )
+    backfill_timeline_parser.add_argument(
+        "--date-from", required=True, help="Start date (YYYYMMDD), inclusive"
+    )
+    backfill_timeline_parser.add_argument(
+        "--date-to", required=True, help="End date (YYYYMMDD), inclusive"
+    )
+    backfill_timeline_parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip a date when both timelines already have a point there",
+    )
+    backfill_timeline_parser.set_defaults(func=cmd_backfill_serve_timeline)
 
     champion_parser = subparsers.add_parser(
         "set-champion", help="Set the champion alias on a registered model"
