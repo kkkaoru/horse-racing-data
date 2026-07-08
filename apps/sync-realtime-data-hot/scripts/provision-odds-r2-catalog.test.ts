@@ -64,6 +64,7 @@ it("buildDefaultProvisionConfig falls back to WRANGLER_R2_SQL_AUTH_TOKEN then de
   expect(config.catalogToken).toBe("sql-token");
   expect(config.bucket).toBe("pc-keiba-odds-archive");
   expect(config.namespace).toBe("odds");
+  expect(config.pipelineSqlFile.endsWith("/pipelines/odds-catalog-pipeline.sql")).toBe(true);
 });
 
 it("buildDefaultProvisionConfig falls back to R2_API_TOKEN when catalog token is absent", () => {

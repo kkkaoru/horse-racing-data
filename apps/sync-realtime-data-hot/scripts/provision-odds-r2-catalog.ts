@@ -3,7 +3,8 @@ import { type CheckResult, type CommandRunner } from "./verify-odds-r2-cutover";
 const DEFAULT_BUCKET = "pc-keiba-odds-archive";
 const DEFAULT_NAMESPACE = "odds";
 const DEFAULT_PIPELINE_NAME = "odds_snapshots_hot_pipeline";
-const DEFAULT_PIPELINE_SQL_FILE = "apps/sync-realtime-data-hot/pipelines/odds-catalog-pipeline.sql";
+const DEFAULT_PIPELINE_SQL_FILE = new URL("../pipelines/odds-catalog-pipeline.sql", import.meta.url)
+  .pathname;
 const DEFAULT_ROLL_INTERVAL_SECONDS = "60";
 const DEFAULT_SINK_NAME = "odds_snapshots_hot_sink";
 const DEFAULT_STREAM_NAME = "odds_snapshots_hot_stream";
