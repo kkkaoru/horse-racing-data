@@ -76,6 +76,23 @@ bun run --filter mlflow-ui-proxy check
 This runs `tsc --noEmit`, `oxlint`, `oxfmt --check`, and `vitest run
 --coverage` (thresholds: lines/branches/functions/statements all >= 95%).
 
+## Troubleshooting
+
+- **`GET`/`POST /ajax-api/2.0/mlflow/users/current` returns 404.** This is
+  MLflow's basic-auth app endpoint, which only exists when MLflow itself is
+  started with `--app-name basic-auth`. This deployment runs a plain MLflow
+  server (this Worker is the only auth gate — see above), so the endpoint
+  genuinely doesn't exist upstream. The UI console calls it anyway and logs
+  the 404; it's expected noise with no functional effect. The proxy forwards
+  it faithfully rather than stubbing a response, since it isn't a proxy bug.
+- **`403 Cross-origin request blocked` on write requests
+  (`traces/search`, `runs/search`, etc.).** MLflow 3.x's server rejects
+  mutating requests whose `Origin`/`Referer` header doesn't match its own
+  host. This Worker strips both headers before forwarding upstream (see
+  `BROWSER_CONTEXT_HEADERS` in `src/proxy.ts`) so MLflow always sees a
+  same-origin, non-browser request. If this reappears, check that the
+  stripping logic wasn't reverted.
+
 ## Residual risk: tunnel hostname has no auth of its own
 
 Cloudflare Tunnel's DNS hostname is not itself authenticated at the

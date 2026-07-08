@@ -25,6 +25,13 @@ const HOP_BY_HOP_HEADERS = new Set([
   "authorization",
 ]);
 
+// MLflow 3.x's server rejects mutating requests whose `Origin` (and, by the
+// same check, `Referer`) header doesn't match its own host with a 403
+// "Cross-origin request blocked" response. The browser always sends this
+// Worker's own origin, which never matches the MLflow origin, so these
+// headers must be stripped for every proxied request to reach MLflow at all.
+const BROWSER_CONTEXT_HEADERS = new Set(["origin", "referer"]);
+
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
 
 const BAD_GATEWAY_STATUS = 502;
@@ -32,7 +39,10 @@ const BAD_GATEWAY_BODY = "Bad Gateway: unable to reach MLflow origin";
 const PROXIED_BY_HEADER_NAME = "X-Proxied-By";
 const PROXIED_BY_HEADER_VALUE = "mlflow-ui-proxy";
 
-const shouldForwardHeader = (name: string): boolean => !HOP_BY_HOP_HEADERS.has(name.toLowerCase());
+const shouldForwardHeader = (name: string): boolean => {
+  const lowerName = name.toLowerCase();
+  return !HOP_BY_HOP_HEADERS.has(lowerName) && !BROWSER_CONTEXT_HEADERS.has(lowerName);
+};
 
 const copyForwardableHeaders = (source: Headers): Headers => {
   const entries = Array.from(source.entries()).filter(([name]) => shouldForwardHeader(name));

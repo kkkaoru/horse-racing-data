@@ -21,6 +21,8 @@ const HOP_BY_HOP_TEST_HEADERS = {
   upgrade: "websocket",
   host: "client.test",
   authorization: "Basic client-creds",
+  origin: "https://mlflow-ui-proxy.kaoru.workers.dev",
+  referer: "https://mlflow-ui-proxy.kaoru.workers.dev/",
   accept: "application/json",
 };
 
@@ -48,7 +50,23 @@ it("buildUpstreamRequest strips hop-by-hop, host, and authorization headers whil
   expect(upstream.headers.get("upgrade")).toBe(null);
   expect(upstream.headers.get("host")).toBe(null);
   expect(upstream.headers.get("authorization")).toBe(null);
+  expect(upstream.headers.get("origin")).toBe(null);
+  expect(upstream.headers.get("referer")).toBe(null);
   expect(upstream.headers.get("accept")).toBe("application/json");
+});
+
+it("buildUpstreamRequest strips Origin and Referer even when no other headers are present", () => {
+  const request = new Request("https://worker.test/ajax-api/3.0/mlflow/traces/search", {
+    method: "POST",
+    headers: {
+      origin: "https://mlflow-ui-proxy.kaoru.workers.dev",
+      referer: "https://mlflow-ui-proxy.kaoru.workers.dev/experiments/1",
+    },
+    body: "{}",
+  });
+  const upstream = buildUpstreamRequest(request, "https://mlflow-origin.test");
+  expect(upstream.headers.get("origin")).toBe(null);
+  expect(upstream.headers.get("referer")).toBe(null);
 });
 
 it("buildUpstreamRequest sends no body for a GET request", () => {
