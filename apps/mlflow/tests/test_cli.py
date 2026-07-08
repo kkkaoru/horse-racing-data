@@ -15,7 +15,8 @@ sites: see its docstring for the incident that motivates it.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -27,12 +28,15 @@ from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
     backfill_serve_timeline,
+    champion_cell_eval,
     cli,
     config,
     export_production,
     registry,
+    sync_production,
 )
 from mlflow_tracking.backfill_running_style import RunningStyleBackfillSummary
+from mlflow_tracking.champion_cell_eval import ChampionCellEvalResult
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -434,6 +438,243 @@ def test_cmd_backfill_serve_timeline_rejects_unsupported_category(
                 "20260601",
             ]
         )
+
+
+def _empty_sync_summary(errors: list[str] | None = None) -> sync_production.SyncProductionSummary:
+    return sync_production.SyncProductionSummary(
+        dates_processed=0,
+        fp_runs_created=0,
+        fp_runs_reused=0,
+        fp_eval_logged=0,
+        fp_eval_skipped_no_results=0,
+        rs_runs_created=0,
+        rs_runs_reused=0,
+        rs_eval_logged=0,
+        rs_eval_skipped_no_results=0,
+        errors=errors if errors is not None else [],
+    )
+
+
+def test_cmd_sync_production_reports_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = sync_production.SyncProductionSummary(
+        dates_processed=2,
+        fp_runs_created=3,
+        fp_runs_reused=1,
+        fp_eval_logged=2,
+        fp_eval_skipped_no_results=1,
+        rs_runs_created=2,
+        rs_runs_reused=0,
+        rs_eval_logged=1,
+        rs_eval_skipped_no_results=1,
+        errors=[],
+    )
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+    ) -> sync_production.SyncProductionSummary:
+        return summary
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(["sync-production", "--date-from", "20260601", "--date-to", "20260602"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "dates processed: 2" in captured.out
+    assert "fp runs created: 3" in captured.out
+    assert "fp runs reused: 1" in captured.out
+    assert "fp eval logged: 2" in captured.out
+    assert "fp eval skipped (no results): 1" in captured.out
+    assert "rs runs created: 2" in captured.out
+    assert "rs runs reused: 0" in captured.out
+    assert "rs eval logged: 1" in captured.out
+    assert "rs eval skipped (no results): 1" in captured.out
+    assert "MLflow traces are not emitted" in captured.err
+
+
+def test_cmd_sync_production_reports_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = _empty_sync_summary(errors=["20260601:jra:finish-position: boom"])
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+    ) -> sync_production.SyncProductionSummary:
+        return summary
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(["sync-production", "--date-from", "20260601", "--date-to", "20260601"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: 20260601:jra:finish-position: boom" in captured.err
+
+
+def test_cmd_sync_production_parses_categories(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_categories: list[Sequence[str]] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+    ) -> sync_production.SyncProductionSummary:
+        seen_categories.append(categories)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+            "--categories",
+            "jra,nar",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_categories == [("jra", "nar")]
+
+
+def test_cmd_sync_production_no_traces_flag_passes_emit_traces_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_emit_traces: list[bool] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+    ) -> sync_production.SyncProductionSummary:
+        seen_emit_traces.append(emit_traces)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        ["sync-production", "--date-from", "20260601", "--date-to", "20260601", "--no-traces"]
+    )
+    assert exit_code == 0
+    assert seen_emit_traces == [False]
+
+
+def test_cmd_eval_champion_cells_reports_results(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    results = [
+        ChampionCellEvalResult(
+            run_id="run-1",
+            category="jra",
+            task="finish-position",
+            champion_model_version="jra-cb-v9-sim-2013",
+            unit_count=120,
+            cell_count=15,
+            low_n_cell_count=3,
+            has_champion_coverage=True,
+            reused_existing_run=False,
+        ),
+        ChampionCellEvalResult(
+            run_id="run-2",
+            category="jra",
+            task="running-style",
+            champion_model_version=None,
+            unit_count=0,
+            cell_count=0,
+            low_n_cell_count=0,
+            has_champion_coverage=False,
+            reused_existing_run=True,
+        ),
+    ]
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = champion_cell_eval.FP_CATEGORIES,
+        *,
+        window_days: int = champion_cell_eval.DEFAULT_WINDOW_DAYS,
+        as_of: date | None = None,
+        min_cell_count: int = champion_cell_eval.MIN_CELL_COUNT,
+    ) -> list[ChampionCellEvalResult]:
+        return results
+
+    monkeypatch.setattr(champion_cell_eval, "eval_champion_cells", _fake_eval)
+    exit_code = cli.main(["eval-champion-cells"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "category: jra" in captured.out
+    assert "task: finish-position" in captured.out
+    assert "champion_model_version: jra-cb-v9-sim-2013" in captured.out
+    assert "unit_count: 120" in captured.out
+    assert "cell_count: 15" in captured.out
+    assert "low_n_cell_count: 3" in captured.out
+    assert "has_champion_coverage: True" in captured.out
+    assert "run_id: run-1" in captured.out
+    assert "task: running-style" in captured.out
+    assert "champion_model_version: None" in captured.out
+    assert "run_id: run-2" in captured.out
+
+
+def test_cmd_eval_champion_cells_parses_as_of(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_as_of: list[date | None] = []
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = champion_cell_eval.FP_CATEGORIES,
+        *,
+        window_days: int = champion_cell_eval.DEFAULT_WINDOW_DAYS,
+        as_of: date | None = None,
+        min_cell_count: int = champion_cell_eval.MIN_CELL_COUNT,
+    ) -> list[ChampionCellEvalResult]:
+        seen_as_of.append(as_of)
+        return []
+
+    monkeypatch.setattr(champion_cell_eval, "eval_champion_cells", _fake_eval)
+    exit_code = cli.main(["eval-champion-cells", "--as-of", "20260705"])
+    assert exit_code == 0
+    assert seen_as_of == [date(2026, 7, 5)]
+
+
+def test_cmd_eval_champion_cells_defaults_as_of_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_as_of: list[date | None] = []
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = champion_cell_eval.FP_CATEGORIES,
+        *,
+        window_days: int = champion_cell_eval.DEFAULT_WINDOW_DAYS,
+        as_of: date | None = None,
+        min_cell_count: int = champion_cell_eval.MIN_CELL_COUNT,
+    ) -> list[ChampionCellEvalResult]:
+        seen_as_of.append(as_of)
+        return []
+
+    monkeypatch.setattr(champion_cell_eval, "eval_champion_cells", _fake_eval)
+    exit_code = cli.main(["eval-champion-cells"])
+    assert exit_code == 0
+    assert seen_as_of == [None]
+
+
+def test_cmd_eval_champion_cells_rejects_invalid_as_of(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = cli.main(["eval-champion-cells", "--as-of", "not-a-date"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error:" in captured.err
 
 
 def test_cmd_ingest_trial_registry(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

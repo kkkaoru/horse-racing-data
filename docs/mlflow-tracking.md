@@ -229,3 +229,49 @@ flowchart LR
 ```
 
 この図の要点は、**export から先（champion/challenger 判断・デプロイ）は自動化しない**という境界線である。MLflow 基盤は「学習結果の記録」と「本番投入候補の生成」までを担い、実際に本番へ反映するかどうかの判断と実行は人間 / 既存の orchestrated 手順に残す。ループの最後（`serve_accuracy_report.py --json` → hook → `eval_regime=serve` の run）で本番の実測精度が MLflow に還流し、次の学習・判断サイクルの入力になる。
+
+---
+
+## 11. 本番利用 sync + trace 相当機構(production-usage sync)
+
+§10 までの ingestion は「既存パイプラインが出力したファイルを読む」経路のみだったが、`sync-production` CLI サブコマンド(`src/mlflow_tracking/sync_production.py`)はこのパッケージで唯一、racing Neon データベースと local PostgreSQL replica に直接クエリを投げる(`db.py` 経由、read-only)。理由は単純で、「本番で実際に何が予測として出されたか」の唯一の記録が Neon の `race_finish_position_model_predictions` / `race_running_style_model_predictions` テーブルであり、このリポジトリにそのファイルエクスポートが存在しないため。
+
+- **やること**: `--date-from`/`--date-to` の範囲・`--categories`(既定 `jra,nar,banei`)ごとに、上記 2 テーブルから該当日の予測行を取得し、`(date, category, model_version)` 単位で 1 run を `finish-position/production-usage` / `running-style/production-usage` experiment に記録する。running-style は jra/nar のみ(Ban-ei は対象外)。local replica 側に該当レースの確定結果が既にあれば、同じ run に評価メトリクス(`fp_top1_pct` 等)と `timelines` へのポイント追加も行う。
+- **genuine-serving gen-lag discipline**: `serve_eval.GEN_LAG_TOLERANCE_DAYS = 3`。予測行の `prediction_generated_at` がレース日から前後 3 日以内でなければ「本番で実際に配信された予測」とは扱わない(`serve_eval.is_genuine`)。これは、同じテーブルに何十年も前/後に生成された offline walk-forward の再予測行が混在し得るため — レース日から大きく外れた `prediction_generated_at` を持つ行を「本番配信」として誤集計しないためのガードであり、`backfill_serve_timeline.py` が日付範囲全体で行っている era 分離を、行単位で再現したもの。
+- **idempotency タグ**: 各 run には `sync_key`(値は `"{date}:{category}:{model_version}"`)に加え、`sync_base_logged` / `sync_eval_logged` の 2 つの boolean 文字列タグが付く。`sync_base_logged=true` になった run の基本トラッキング部分(`fp_races`/`fp_horses` 等のメトリクス + `predictions.json`/`.parquet`)は二度と再ログされない(`log_table` が append 方式のため、再ログは行の重複を招く)。`sync_eval_logged` が未設定の間は毎回結果 join を再試行する — レース当日より前に公開された予測は、結果が確定した後の呼び出しで評価が埋まる設計。この 2 段タグにより、「昨日+今日」のような重複範囲を毎日呼び出す cron 運用が安全かつ安価になる。
+- **trace 相当機構としての限界**: `sync-production` は当初 MLflow trace API(`start_trace`/`end_trace`)でレース単位/馬単位の予測 audit trail を作ることを検討したが、採用しなかった。理由は README.md の「⚠️ MLflow traces are not used」セクションに詳しい(要約: mlflow-skinny 3.14 の trace API はグローバルな `mlflow.get_tracking_uri()` 状態経由でしか動作せず、この基盤の「明示的 client 注入」設計と本質的に相容れない上、実際に本番 champion alias を壊した過去のグローバル状態リーク事故と同じ失敗クラスになるため)。代わりに、`sync-production` が毎 run に記録する `predictions.json`/`eval.json`(running-style は同等のファイル名)テーブル artifact が、MLflow UI の Artifacts / Evaluation タブで閲覧可能な audit trail として機能する。`--no-traces` フラグは interface 完全性のためだけに存在し、指定してもしなくても trace は出力されない。
+
+---
+
+## 12. Champion cell 単位評価
+
+`eval-champion-cells` CLI サブコマンド(`src/mlflow_tracking/champion_cell_eval.py`)は、各カテゴリの「現在の champion」registered model version を、§11 の `sync-production` と同じ Neon + local replica 経路から読み込んだ genuinely-served 予測データを使い、CELL 単位(cell の定義は finish-position と running-style で異なる、下記)で評価する。`sync-production` が「日次の積み上げ記録」であるのに対し、こちらは「今の champion は今どれくらい効いているか」を都度のスナップショットとして測る。
+
+- **cell 次元**: finish-position は `FP_CELL_DIMENSIONS = (venue, class_code, distance_band, season_band, surface, field_size_band)` の 6 次元。running-style は `RS_CELL_DIMENSIONS = (venue, class_code, distance_band, surface)` の 4 次元(season_band / field_size_band は含まない)。集計メトリクスは finish-position が `race_count`/`top1_pct`/`place2_pct`/`place3_pct`/`fukusho_2p_pct`/`top3_box_pct`、running-style が `horse_count`/`accuracy_pct`。
+- **`min_cell_count`/`low_n` ガード**: 既定 `MIN_CELL_COUNT = 20`。1 cell の件数がこの値未満だと `low_n=true` フラグが立つ(cell 自体は除外されず、テーブルには残る)。母数の小さい cell の数値を、母数の大きい cell と同列に見て過信しないための可視化。
+- **idempotency**: 1 run は `(category, task, window_days, as_of_date)` の組ごとに 1 つだけ。`cell_eval_key` タグでの検索が DB クエリより先に走るため、同じ日にもう一度呼んでも Neon/local replica へのクエリは一切発生せず、既存 run のサマリをそのまま返す(`cell_metrics.*` テーブルの append 重複を防ぐため)。
+- **`latest_cell_eval_run_id` タグ**: 評価対象の champion version(registered model の特定 version)に、その評価を行った run の id を `latest_cell_eval_run_id` version tag として書き込む。これにより、Model Registry の champion version から「その champion が最後に cell 単位でどう評価されたか」の run へ直接たどれる(逆方向のクロスナビゲーション)。
+- **既定の trailing window**: `DEFAULT_WINDOW_DAYS = 90`(`--as-of` 省略時は当日から遡って 90 日)。`--as-of` は再現可能な過去日基準の再実行のためのオーバーライド。
+
+---
+
+## 13. serve-vs-WF regime discipline for production-usage/champion-eval
+
+`sync-production` / `eval-champion-cells` が記録するメトリクス(`fp_top1_pct` 等、および champion cell 単位の `top1_pct`/`accuracy_pct` 等)は、いずれも「本番で実際に配信された予測」を「実際に確定した結果」に突き合わせた数値であり、性質としては本書 §0 / README.md の「⚠️ Timelines and serve-accuracy are 0–100% scale」警告がいう **serve 系(0–100% スケール)** の一員である。`finish-position/wf-eval` の offline walk-forward 数値(0–1 fraction スケール、異なる評価母集団)とは**絶対に同一チャートで比較しない** — 詳細な理由・スケールの対応表は README.md の当該セクションを参照し、本節では重複して記載しない。
+
+**重要な留意点**: 2026-07-08 時点で、登録済み champion model version の大半(5 種中 3 種: jra/nar/banei の finish-position)は、直近の trailing window 内で genuinely-served な予測との重なりがほとんど、または全く無い(`has_champion_coverage=false` になる)。これは `eval-champion-cells` の不具合ではなく、現在の本番配信の実態をそのまま正しく報告した結果である — running-style(jra/nar)のみ現状 real な champion coverage を持つ。本番配信の cadence が変わればこの状態も変わるため、この数字自体を「ツールが壊れている兆候」と解釈しないこと。
+
+---
+
+## 14. 日次 LaunchAgent 自動化
+
+§11 の `sync-production` と §12 の `eval-champion-cells` は、これまで手動 CLI 実行を前提としていたが、Mac launchd LaunchAgent `com.horse-racing.mlflow-production-sync` により**毎日 22:30 JST** に自動実行される。同日のレース(JRA/NAR/Ban-ei)がその時刻までに終了しており、結果が local PostgreSQL replica に一通りミラーされている見込みの時間帯を選んでいる — ただし結果がまだ最終化していなくても実行自体は無駄にならない: `sync-production` はその日の production-usage 行をそのまま記録し、評価(`sync_eval_logged`)は翌日以降の呼び出し(前日+当日のオーバーラップ範囲を毎日カバーする設計、§11 参照)が結果確定後に埋める。
+
+このジョブが実行する内容は §11 / §12 で説明したコマンドそのものであり、本節ではそれらの意味を繰り返さない。実行順は次のとおり:
+
+1. `sync-production --date-from <前日 JST> --date-to <当日 JST> --categories jra,nar,banei`
+2. `eval-champion-cells --category jra,nar,banei`(既定 90 日 trailing window)
+
+- **ソースファイルの場所**: `apps/mlflow/scripts/launchd/`(`mlflow-production-sync-daily.sh` と `com.horse-racing.mlflow-production-sync.plist` の 2 ファイル、いずれも git 管理下)。
+- **インストールは手動操作**: このパッケージが自動でインストールすることはない。`launchctl bootstrap` によるインストール手順は `apps/mlflow/README.md` の「Daily automation (LaunchAgent)」節に記載している。
+- 両コマンドとも idempotent なため、launchd の「Mac がスリープ中に予定時刻を逃した場合は次回起床時に発火する」catch-up 挙動により遅延・重複して発火しても安全に再実行できる。

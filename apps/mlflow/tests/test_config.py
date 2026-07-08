@@ -27,6 +27,8 @@ _ENV_KEYS = (
     config.ENV_AWS_ACCESS_KEY_ID,
     config.ENV_AWS_SECRET_ACCESS_KEY,
     config.ENV_AWS_DEFAULT_REGION,
+    config.ENV_NEON_RACING_URL,
+    config.ENV_LOCAL_REPLICA_URL,
 )
 
 
@@ -160,15 +162,25 @@ def test_load_repo_root_env_fallback_sets_exact_cloudflare_account_id(tmp_path: 
     assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "account-id-value"
 
 
+def test_load_repo_root_env_fallback_sets_exact_neon_primary_url(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "NEON_PRIMARY_URL=postgresql://user:pass@ep-example.neon.tech/racing\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["NEON_PRIMARY_URL"] == "postgresql://user:pass@ep-example.neon.tech/racing"
+
+
 def test_load_repo_root_env_fallback_ignores_unrelated_keys(tmp_path: Path) -> None:
     env_file = tmp_path / ".env"
     env_file.write_text(
-        "NEON_PRIMARY_URL=postgres://should-not-be-imported\n"
+        "DATABASE_URL=postgres://should-not-be-imported\n"
         "PC_KEIBA_INTERNAL_TOKEN=super-secret-should-not-be-imported\n",
         encoding="utf-8",
     )
     config.load_repo_root_env_fallback(env_file)
-    assert "NEON_PRIMARY_URL" not in os.environ
+    assert "DATABASE_URL" not in os.environ
     assert "PC_KEIBA_INTERNAL_TOKEN" not in os.environ
 
 
@@ -190,12 +202,12 @@ def test_load_repo_root_env_fallback_handles_export_prefix(tmp_path: Path) -> No
     env_file = tmp_path / ".env"
     env_file.write_text(
         "export MLFLOW_TEST_ROOT_FALLBACK_EXPORT=value-exported\n"
-        "export NEON_PRIMARY_URL=should-not-be-imported\n",
+        "export DATABASE_URL=should-not-be-imported\n",
         encoding="utf-8",
     )
     config.load_repo_root_env_fallback(env_file)
     assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_EXPORT"] == "value-exported"
-    assert "NEON_PRIMARY_URL" not in os.environ
+    assert "DATABASE_URL" not in os.environ
 
 
 def test_load_repo_root_env_fallback_skips_blank_and_comment_lines(tmp_path: Path) -> None:
@@ -340,6 +352,40 @@ def test_get_tracking_uri_backend_uri_wins_over_generic_env(
     monkeypatch.setenv(config.ENV_BACKEND_URI, "sqlite:///repo-scoped.db")
     result = config.get_tracking_uri(tmp_path)
     assert result == "sqlite:///repo-scoped.db"
+
+
+def test_get_racing_neon_dsn_raises_when_unset() -> None:
+    with pytest.raises(ValueError, match=config.ENV_NEON_RACING_URL):
+        config.get_racing_neon_dsn()
+
+
+def test_get_racing_neon_dsn_returns_env_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(config.ENV_NEON_RACING_URL, "postgresql://user:pass@neon.example/racing")
+    assert config.get_racing_neon_dsn() == "postgresql://user:pass@neon.example/racing"
+
+
+def test_get_racing_neon_dsn_raises_when_env_is_blank_after_strip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.ENV_NEON_RACING_URL, "   ")
+    with pytest.raises(ValueError, match=config.ENV_NEON_RACING_URL):
+        config.get_racing_neon_dsn()
+
+
+def test_get_local_replica_dsn_uses_default_when_env_unset() -> None:
+    assert config.get_local_replica_dsn() == config.DEFAULT_LOCAL_REPLICA_URL
+
+
+def test_get_local_replica_dsn_honors_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(config.ENV_LOCAL_REPLICA_URL, "postgresql://custom:custom@127.0.0.1:5432/db")
+    assert config.get_local_replica_dsn() == "postgresql://custom:custom@127.0.0.1:5432/db"
+
+
+def test_get_local_replica_dsn_falls_back_when_env_is_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(config.ENV_LOCAL_REPLICA_URL, "   ")
+    assert config.get_local_replica_dsn() == config.DEFAULT_LOCAL_REPLICA_URL
 
 
 def test_default_artifact_root_is_file_uri(tmp_path: Path) -> None:
@@ -605,6 +651,13 @@ def test_clear_ambient_backend_uri_overrides_preset_env_var(
 
 def test_experiment_timelines_is_included_in_all_experiment_names() -> None:
     assert config.EXPERIMENT_TIMELINES in config.ALL_EXPERIMENT_NAMES
+
+
+def test_new_production_experiment_names_are_included_in_all_experiment_names() -> None:
+    assert config.EXPERIMENT_FP_PRODUCTION_USAGE in config.ALL_EXPERIMENT_NAMES
+    assert config.EXPERIMENT_RS_PRODUCTION_USAGE in config.ALL_EXPERIMENT_NAMES
+    assert config.EXPERIMENT_FP_CHAMPION_EVAL in config.ALL_EXPERIMENT_NAMES
+    assert config.EXPERIMENT_RS_CHAMPION_EVAL in config.ALL_EXPERIMENT_NAMES
 
 
 def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(

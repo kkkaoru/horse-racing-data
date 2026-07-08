@@ -64,6 +64,29 @@ replicates (by hand, not by import) the boundary rules defined in
   (`cell_routing.json` fragments, `model_meta.json`-adjacent active-model
   pointers), with optional R2 upload. These are drop-in candidates for manual
   review — the actual bake/deploy step stays outside this package.
+- `src/mlflow_tracking/sync_production.py` — syncs genuinely-served
+  production predictions (from the racing Neon database's
+  `race_finish_position_model_predictions` / `race_running_style_model_predictions`
+  tables) into MLflow, and evaluates them against finalized results (from the
+  local PostgreSQL replica) once those results exist. Along with
+  `champion_cell_eval.py` below, this is the one deliberate, narrow exception
+  to this package's otherwise file-based-only ingestion design (see
+  `ingest_eval.py`'s docstring) — both read live Neon + local-replica
+  Postgres directly via `db.py`'s injected-connection helpers, read-only.
+  Idempotency: at most one run per (date, category, model_version), gated by
+  the `sync_base_logged`/`sync_eval_logged` tags, so re-running the same
+  range every day (the realistic cron shape) never re-logs already-logged
+  base tracking or evaluation, but does retry an unfilled evaluation on a
+  later call once results become final.
+- `src/mlflow_tracking/champion_cell_eval.py` — evaluates each category's
+  CURRENT champion model version at CELL granularity (venue × class ×
+  distance/season/surface/field-size bands) over a trailing window of
+  genuinely-served predictions, reusing the same Neon + local-replica
+  Postgres read path as `sync_production.py` above (see that entry for the
+  file-based-design exception this represents). Idempotency: at most one run
+  per (category, task, window_days, as_of date) — re-running for the same day
+  is a cheap no-op that reuses the existing run's summary rather than
+  re-querying or re-logging the cell table.
 - `src/mlflow_tracking/cli.py` — the `mlflow_tracking` CLI (see below).
 
 ## Usage
@@ -119,6 +142,26 @@ uv run python -m mlflow_tracking.cli backfill-serve-timeline \
 uv run python -m mlflow_tracking.cli export-cell-routing --category jra --output cell_routing_jra.json
 uv run python -m mlflow_tracking.cli export-active-models --output active_models.json [--allow-missing]
 
+# Sync genuinely-served production predictions (finish-position always;
+# running-style too, for jra/nar) into MLflow over a date range, evaluating
+# against finalized results where they already exist. Requires NEON_PRIMARY_URL
+# and (usually already-default) HORSE_RACING_LOCAL_PG_URL -- see Configuration
+# below. Meant to be re-run daily over a small overlapping window (e.g.
+# "yesterday+today"); already-logged base tracking/eval is never re-logged.
+# --no-traces is accepted for interface completeness only -- MLflow traces are
+# never emitted regardless (see the ⚠️ callout below for why).
+uv run python -m mlflow_tracking.cli sync-production \
+  --date-from 20260701 --date-to 20260708 --categories jra,nar,banei
+
+# Evaluate each category's CURRENT champion model at CELL granularity over a
+# trailing window of genuinely-served predictions (default: 90 days ending
+# today). Requires the same two env vars as sync-production above. Champion
+# coverage is often sparse or empty for a given category -- an empty cell
+# table with has_champion_coverage=false is a normal, valid outcome, not a
+# bug. --as-of overrides "today" for a reproducible re-run of a past window.
+uv run python -m mlflow_tracking.cli eval-champion-cells \
+  --category jra,nar --window-days 90 --as-of 20260708
+
 # Registry management.
 uv run python -m mlflow_tracking.cli set-champion jra-finish-position 7
 uv run python -m mlflow_tracking.cli list-models
@@ -129,16 +172,18 @@ Both `python -m mlflow_tracking ...` (via `__main__.py`) and
 
 ## Configuration
 
-| Env var                                     | Default                           | Purpose                                               |
-| ------------------------------------------- | --------------------------------- | ----------------------------------------------------- |
-| `HORSE_RACING_MLFLOW_DATA_DIR`              | `apps/mlflow/data`                | Local tracking-store data directory                   |
-| `HORSE_RACING_MLFLOW_BACKEND_URI`           | —                                 | Tracking/registry store URI override (wins over both) |
-| `MLFLOW_TRACKING_URI`                       | `sqlite:////<data dir>/mlflow.db` | Generic mlflow tracking URI (fallback)                |
-| `HORSE_RACING_MLFLOW_ARTIFACTS_MODE`        | `local`                           | `local` or `r2`                                       |
-| `HORSE_RACING_MLFLOW_R2_BUCKET`             | —                                 | Required when `ARTIFACTS_MODE=r2`                     |
-| `HORSE_RACING_MLFLOW_R2_PREFIX`             | `mlflow`                          | R2 key prefix for artifacts                           |
-| `R2_ACCOUNT_ID` / `CLOUDFLARE_ACCOUNT_ID`   | —                                 | Cloudflare account id (first one set wins)            |
-| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | —                                 | R2 S3-compatible credentials                          |
+| Env var                                     | Default                                                               | Purpose                                                                                                   |
+| ------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `HORSE_RACING_MLFLOW_DATA_DIR`              | `apps/mlflow/data`                                                    | Local tracking-store data directory                                                                       |
+| `HORSE_RACING_MLFLOW_BACKEND_URI`           | —                                                                     | Tracking/registry store URI override (wins over both)                                                     |
+| `MLFLOW_TRACKING_URI`                       | `sqlite:////<data dir>/mlflow.db`                                     | Generic mlflow tracking URI (fallback)                                                                    |
+| `HORSE_RACING_MLFLOW_ARTIFACTS_MODE`        | `local`                                                               | `local` or `r2`                                                                                           |
+| `HORSE_RACING_MLFLOW_R2_BUCKET`             | —                                                                     | Required when `ARTIFACTS_MODE=r2`                                                                         |
+| `HORSE_RACING_MLFLOW_R2_PREFIX`             | `mlflow`                                                              | R2 key prefix for artifacts                                                                               |
+| `R2_ACCOUNT_ID` / `CLOUDFLARE_ACCOUNT_ID`   | —                                                                     | Cloudflare account id (first one set wins)                                                                |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | —                                                                     | R2 S3-compatible credentials                                                                              |
+| `NEON_PRIMARY_URL`                          | —                                                                     | Racing Neon Postgres DSN (read-only); required by `sync-production` / `eval-champion-cells`               |
+| `HORSE_RACING_LOCAL_PG_URL`                 | `postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing` | Local PostgreSQL replica DSN (read-only, finalized results) for `sync-production` / `eval-champion-cells` |
 
 Resolution order for the tracking URI: `HORSE_RACING_MLFLOW_BACKEND_URI` (this
 repo's own env, always wins) > `MLFLOW_TRACKING_URI` (generic mlflow env, for
@@ -202,6 +247,31 @@ onto the `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` variables mlflow's boto3-backed
 S3 artifact store reads, without overwriting anything already set.
 
+### ⚠️ MLflow traces are not used — here's why and what replaces them
+
+`sync-production` deliberately never emits an MLflow trace, even though a
+per-race/per-horse "here's exactly what was predicted" audit trail sounds
+like precisely what `MlflowClient.start_trace`/`end_trace` are for. This was
+evaluated and rejected, not overlooked: in the installed `mlflow-skinny`
+3.14, those calls persist through a process-wide OpenTelemetry singleton that
+resolves its destination via the GLOBAL `mlflow.get_tracking_uri()` state at
+first use — **not** the calling `MlflowClient`'s own `tracking_uri`. This was
+reproduced empirically: writing a trace via an explicit, isolated-store
+`MlflowClient` silently failed until `mlflow.set_tracking_uri()` was ALSO
+called globally. Adopting traces here would mean introducing global mutable
+tracking-URI state into a package built entirely around explicit-client,
+hermetically-testable design — exactly the failure class already responsible
+for a real recorded incident (see `tests/conftest.py`'s
+`clear_ambient_backend_uri` docstring): a leaked global tracking URI once
+caused a test run to silently overwrite two production champion aliases with
+fake test data.
+
+Decision: this package does not use MLflow traces. The `predictions.json` /
+`eval.json` (finish-position) table artifacts — and their running-style
+analogs — logged by `sync-production` on every run serve as the per-race/
+per-horse audit trail instead, viewable in the MLflow UI's Artifacts /
+Evaluation views.
+
 ## Development
 
 ```sh
@@ -211,4 +281,48 @@ uv run basedpyright --project pyrightconfig.json  # type check (strict)
 uv run ty check                                   # type check (ty)
 bunx oxlint . --no-error-on-unmatched-pattern      # oxlint
 bunx oxfmt --check package.json pyproject.toml README.md
+```
+
+## Daily automation (LaunchAgent)
+
+A Mac launchd LaunchAgent (`com.horse-racing.mlflow-production-sync`) runs
+`sync-production` then `eval-champion-cells` once daily at **22:30 JST**
+(same-day racing has finished and results have typically already mirrored
+into the local PostgreSQL replica by then). Both commands are idempotent, so
+a delayed launchd catch-up fire (e.g. after the Mac was asleep at 22:30) is
+harmless to re-run.
+
+Source files live in this repo at `apps/mlflow/scripts/launchd/`:
+
+- `mlflow-production-sync-daily.sh` — the wrapper script that runs both CLI
+  subcommands.
+- `com.horse-racing.mlflow-production-sync.plist` — the LaunchAgent
+  definition (a version-controlled copy; the installed copy lives under
+  `~/Library/LaunchAgents/`, outside git).
+
+No secrets live in either file — the CLI's own `main()` loads
+`apps/mlflow/.env.local` then a repo-root `.env` allow-listed fallback before
+parsing arguments (see the "SECRETS" note in the plist header comment).
+
+```sh
+# Install (copies nothing -- launchctl reads directly from wherever you point it,
+# but the convention in this repo is to also keep a copy under ~/Library/LaunchAgents/
+# so `launchctl list` and Finder both show a consistent, discoverable location):
+cp apps/mlflow/scripts/launchd/com.horse-racing.mlflow-production-sync.plist \
+   ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
+launchctl bootstrap gui/$(id -u) \
+  ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
+
+# Verify loaded:
+launchctl print gui/$(id -u)/com.horse-racing.mlflow-production-sync
+
+# Trigger a manual run right now (does not wait for 22:30 JST):
+launchctl kickstart -k gui/$(id -u)/com.horse-racing.mlflow-production-sync
+
+# Logs:
+tail -f ~/Library/Logs/mlflow-production-sync.log
+
+# Stop / uninstall:
+launchctl bootout gui/$(id -u)/com.horse-racing.mlflow-production-sync
+rm ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
 ```

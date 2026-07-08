@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for the daily MLflow production-usage sync + champion cell-eval.
+
+  WHAT THIS RUNS:
+    apps/mlflow/scripts/launchd/mlflow-production-sync-daily.sh, which in turn
+    runs two already-idempotent apps/mlflow CLI subcommands
+    (uv run python -m mlflow_tracking.cli ...):
+      1. sync-production --date-from <yesterday JST> --date-to <today JST>
+         --categories jra,nar,banei -- logs genuinely-served
+         finish-position/running-style production predictions (and their
+         evaluation once results are final) into MLflow.
+      2. eval-champion-cells --category jra,nar,banei -- re-scores each
+         category's CURRENT champion model version at cell granularity over
+         its default trailing 90-day window.
+    See docs/mlflow-tracking.md SS11-SS13 for what these two commands record
+    and why (production-usage sync / champion cell eval / serve-vs-WF regime
+    discipline).
+
+  WHY 22:30 JST:
+    Same-day JRA/NAR/Ban-ei racing has finished by then, and results have
+    typically already mirrored into the local PostgreSQL replica that both
+    commands read for finalized-result joins. A run before results land is
+    not wasted -- it still logs the day's production-usage rows; the
+    evaluation half is simply retried by the NEXT day's run once results are
+    final (sync-production's sync_eval_logged tag stays unset until then).
+
+  CATCH-UP BEHAVIOUR:
+    StartCalendarInterval will fire on next wake if 22:30 JST was missed
+    while the Mac was asleep (launchd's documented "catch up on missed runs"
+    behaviour). Both underlying CLI commands are idempotent (per-
+    (date, category, model_version) / per-(category, task, window_days,
+    as_of_date) tags -- see their own docstrings), so a delayed or repeated
+    fire is always safe to re-run.
+
+  SECRETS:
+    No secrets live in this plist or in the wrapper script it points at.
+    mlflow_tracking.cli's own main() loads apps/mlflow/.env.local
+    (config.load_dotenv_local()) and then a narrow allow-listed subset of the
+    repo-root .env (config.load_repo_root_env_fallback()) before parsing any
+    arguments -- this is exactly so the CLI resolves its backend URI / R2
+    settings correctly when invoked by launchd, which never sources an
+    interactive shell's direnv hook.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.horse-racing.mlflow-production-sync</string>
+
+  <key>Program</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/apps/mlflow/scripts/launchd/mlflow-production-sync-daily.sh</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>22</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/kkk4oru/Library/Logs/mlflow-production-sync.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/kkk4oru/Library/Logs/mlflow-production-sync.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

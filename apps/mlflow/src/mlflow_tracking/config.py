@@ -31,6 +31,18 @@ ENV_R2_BUCKET: Final[str] = "HORSE_RACING_MLFLOW_R2_BUCKET"
 ENV_R2_PREFIX: Final[str] = "HORSE_RACING_MLFLOW_R2_PREFIX"
 DEFAULT_R2_PREFIX: Final[str] = "mlflow"
 
+# Deliberate, narrow exception to this package's file-based-only ingestion
+# design (see ingest_eval.py's module docstring): production-usage sync and
+# champion cell evaluation need READ-ONLY access to two live Postgres
+# databases this repo has no file export of. See db.py's module docstring and
+# get_racing_neon_dsn()/get_local_replica_dsn() below for the full rationale
+# and the read-only enforcement.
+ENV_NEON_RACING_URL: Final[str] = "NEON_PRIMARY_URL"
+ENV_LOCAL_REPLICA_URL: Final[str] = "HORSE_RACING_LOCAL_PG_URL"
+DEFAULT_LOCAL_REPLICA_URL: Final[str] = (
+    "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
+)
+
 # Override the default env-file path each loader reads when its own
 # `env_file` argument is omitted. Primarily so test suites can point these at
 # a guaranteed-nonexistent path and make the loader a no-op deterministically,
@@ -68,6 +80,21 @@ EXPERIMENT_RS_EVAL: Final[str] = "running-style/eval"
 # rather than reusing finish-position/serve-accuracy or running-style/eval
 # (those hold one-point-per-day runs; this holds one growing-series run).
 EXPERIMENT_TIMELINES: Final[str] = "timelines"
+# Production-usage sync polls race_finish_position_model_predictions /
+# race_running_style_model_predictions from the racing Neon database (see
+# get_racing_neon_dsn() below) and logs one run per sync here -- kept separate
+# from finish-position/serve-accuracy and running-style/eval so a
+# production-usage sync run is never confused with one of those file-based
+# pipelines' own runs.
+EXPERIMENT_FP_PRODUCTION_USAGE: Final[str] = "finish-position/production-usage"
+EXPERIMENT_RS_PRODUCTION_USAGE: Final[str] = "running-style/production-usage"
+# Champion cell eval joins the synced production-usage predictions above
+# against finalized results from jvd_se/jvd_ra/nvd_se/nvd_ra (the local
+# PostgreSQL replica, see get_local_replica_dsn() below) to score the
+# currently-deployed champion model per cell -- distinct from both the
+# production-usage sync itself and from wf-eval's offline walk-forward runs.
+EXPERIMENT_FP_CHAMPION_EVAL: Final[str] = "finish-position/champion-eval"
+EXPERIMENT_RS_CHAMPION_EVAL: Final[str] = "running-style/champion-eval"
 ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_FP_REGISTRY_BACKFILL,
     EXPERIMENT_FP_WF_EVAL,
@@ -75,6 +102,10 @@ ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_RS_REGISTRY_BACKFILL,
     EXPERIMENT_RS_EVAL,
     EXPERIMENT_TIMELINES,
+    EXPERIMENT_FP_PRODUCTION_USAGE,
+    EXPERIMENT_RS_PRODUCTION_USAGE,
+    EXPERIMENT_FP_CHAMPION_EVAL,
+    EXPERIMENT_RS_CHAMPION_EVAL,
 )
 
 
@@ -130,11 +161,28 @@ def load_dotenv_local(env_file: Path | None = None) -> None:
 
 
 _ROOT_ENV_ALLOWED_PREFIXES: Final[tuple[str, ...]] = ("HORSE_RACING_MLFLOW_", "MLFLOW_", "R2_")
-_ROOT_ENV_ALLOWED_EXACT: Final[frozenset[str]] = frozenset({"CLOUDFLARE_ACCOUNT_ID"})
+# NEON_PRIMARY_URL was added alongside CLOUDFLARE_ACCOUNT_ID (both exact-
+# matched, never prefix-matched) so get_racing_neon_dsn() below can resolve
+# from the repo-root .env the same narrow way get_r2_bucket()'s R2_*-prefixed
+# vars already do. This is safe to allow because: (1) it is an exact key
+# match, not a prefix, so it cannot accidentally sweep in unrelated
+# NEON_*-prefixed secrets; (2) the value is never printed or logged anywhere
+# in this package (see get_racing_neon_dsn()'s docstring); and (3) every
+# consumer of the resolved DSN opens the connection read-only via
+# db.py's connect_racing_neon(), which calls
+# conn.set_session(readonly=True, autocommit=True) before returning it.
+_ROOT_ENV_ALLOWED_EXACT: Final[frozenset[str]] = frozenset(
+    {"CLOUDFLARE_ACCOUNT_ID", "NEON_PRIMARY_URL"}
+)
 
 
 def _is_allowed_root_env_key(key: str) -> bool:
-    """Return True if `key` may be imported from the repo-root .env fallback."""
+    """Return True if `key` may be imported from the repo-root .env fallback.
+
+    See _ROOT_ENV_ALLOWED_EXACT's comment for why NEON_PRIMARY_URL is safe to
+    allow here despite the file-based-only ingestion design this package
+    otherwise follows.
+    """
     return key in _ROOT_ENV_ALLOWED_EXACT or key.startswith(_ROOT_ENV_ALLOWED_PREFIXES)
 
 
@@ -144,11 +192,15 @@ def load_repo_root_env_fallback(env_file: Path | None = None) -> None:
     Neon/R2 config even when apps/mlflow/.env.local is missing or
     incomplete. Root .env holds many unrelated repo secrets, so only keys
     matching HORSE_RACING_MLFLOW_*/MLFLOW_*/R2_* or exactly
-    CLOUDFLARE_ACCOUNT_ID are ever imported -- everything else in that file
-    is ignored. Uses os.environ.setdefault, so any var already set (by the
-    process environment OR by an earlier load_dotenv_local() call) always
-    wins. Tolerates an optional leading 'export ' on a line. Never raises
-    on a missing file or a malformed line.
+    CLOUDFLARE_ACCOUNT_ID/NEON_PRIMARY_URL are ever imported -- everything
+    else in that file is ignored. NEON_PRIMARY_URL is exact-matched (not
+    prefix-matched) for the same reason CLOUDFLARE_ACCOUNT_ID already is: see
+    _ROOT_ENV_ALLOWED_EXACT's comment for why this narrow addition is safe
+    (the value itself is never printed/logged, and every consumer opens the
+    connection read-only via db.py). Uses os.environ.setdefault, so any var
+    already set (by the process environment OR by an earlier
+    load_dotenv_local() call) always wins. Tolerates an optional leading
+    'export ' on a line. Never raises on a missing file or a malformed line.
 
     The explicit `env_file` argument always wins. When omitted, the
     HORSE_RACING_MLFLOW_ROOT_ENV_FILE env var (if set) names the file to load
@@ -222,6 +274,35 @@ def get_tracking_uri(data_dir: Path | None = None) -> str:
         return generic_override
     resolved_dir = data_dir if data_dir is not None else get_data_dir()
     return default_tracking_uri(resolved_dir)
+
+
+def get_racing_neon_dsn() -> str:
+    """Return the racing Neon Postgres DSN (NEON_PRIMARY_URL), raising ValueError if unset.
+
+    This is a deliberate, narrow exception to this package's file-based-only
+    ingestion design (see ingest_eval.py's module docstring) -- production-usage
+    sync and champion cell evaluation (sync_production.py / champion_cell_eval.py)
+    need READ-ONLY access to race_finish_position_model_predictions /
+    race_running_style_model_predictions, which exist only in this live database,
+    not in any file this repo already produces. Every query issued against this
+    DSN by this package is a SELECT -- see db.py's module docstring for the
+    connection-level readonly enforcement. Never log or print the returned value.
+    """
+    dsn = os.environ.get(ENV_NEON_RACING_URL, "").strip()
+    if not dsn:
+        raise ValueError(f"{ENV_NEON_RACING_URL} must be set")
+    return dsn
+
+
+def get_local_replica_dsn() -> str:
+    """Return the local PostgreSQL replica DSN for actual race results/metadata.
+
+    Defaults to the standard local-replica endpoint (matches
+    apps/pc-keiba-viewer/src/scripts/serve_accuracy_report.py's own
+    DEFAULT_PG_URL) when HORSE_RACING_LOCAL_PG_URL is unset.
+    """
+    override = os.environ.get(ENV_LOCAL_REPLICA_URL, "").strip()
+    return override or DEFAULT_LOCAL_REPLICA_URL
 
 
 def default_artifact_root(data_dir: Path) -> str:

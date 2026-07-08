@@ -10,6 +10,7 @@ import json
 import sys
 from collections.abc import Sequence
 from contextlib import chdir
+from datetime import date
 from pathlib import Path
 
 from mlflow import MlflowClient
@@ -18,11 +19,14 @@ from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
     backfill_serve_timeline,
+    champion_cell_eval,
     config,
     export_production,
     ingest_eval,
     ingest_local_pg_history,
     registry,
+    sync_production,
+    timeline,
     training_run,
 )
 from mlflow_tracking.logging_api import get_or_create_experiment
@@ -31,6 +35,11 @@ from mlflow_tracking.logging_api import get_or_create_experiment
 def build_client() -> MlflowClient:
     """Construct the MlflowClient for the configured tracking URI."""
     return MlflowClient(tracking_uri=config.get_tracking_uri())
+
+
+def _parse_categories(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated --categories/--category value into a tuple, stripping whitespace."""
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
 def cmd_init(_args: argparse.Namespace) -> int:
@@ -242,6 +251,74 @@ def cmd_backfill_serve_timeline(args: argparse.Namespace) -> int:
     return 1 if summary.errors else 0
 
 
+def cmd_sync_production(args: argparse.Namespace) -> int:
+    client = build_client()
+    categories = _parse_categories(args.categories)
+    summary = sync_production.sync_production_range(
+        client,
+        args.date_from,
+        args.date_to,
+        categories=categories,
+        emit_traces=not args.no_traces,
+    )
+    print(
+        f"dates processed: {summary.dates_processed}\n"
+        f"fp runs created: {summary.fp_runs_created}\n"
+        f"fp runs reused: {summary.fp_runs_reused}\n"
+        f"fp eval logged: {summary.fp_eval_logged}\n"
+        f"fp eval skipped (no results): {summary.fp_eval_skipped_no_results}\n"
+        f"rs runs created: {summary.rs_runs_created}\n"
+        f"rs runs reused: {summary.rs_runs_reused}\n"
+        f"rs eval logged: {summary.rs_eval_logged}\n"
+        f"rs eval skipped (no results): {summary.rs_eval_skipped_no_results}"
+    )
+    # Printed unconditionally (regardless of --no-traces): MLflow traces are
+    # never emitted by sync_production_range at all (see its own docstring
+    # for the empirical finding), so this is not a status report on the flag
+    # -- it is a standing note pointing at the real audit-trail mechanism
+    # (the predictions.json/eval.json table artifacts logged on every run).
+    print(
+        "note: MLflow traces are not emitted (see docs/mlflow-tracking.md for why); "
+        "per-race/per-horse table artifacts on each run serve as the trace/audit "
+        "record instead.",
+        file=sys.stderr,
+    )
+    for error in summary.errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary.errors else 0
+
+
+def cmd_eval_champion_cells(args: argparse.Namespace) -> int:
+    client = build_client()
+    categories = _parse_categories(args.category)
+    as_of_date: date | None = None
+    if args.as_of:
+        try:
+            timeline.validate_yyyymmdd(args.as_of)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        as_of_date = date(int(args.as_of[:4]), int(args.as_of[4:6]), int(args.as_of[6:8]))
+
+    results = champion_cell_eval.eval_champion_cells(
+        client, categories=categories, window_days=args.window_days, as_of=as_of_date
+    )
+    for result in results:
+        print(
+            f"category: {result.category}  task: {result.task}  "
+            f"champion_model_version: {result.champion_model_version}  "
+            f"unit_count: {result.unit_count}  cell_count: {result.cell_count}  "
+            f"low_n_cell_count: {result.low_n_cell_count}  "
+            f"has_champion_coverage: {result.has_champion_coverage}  "
+            f"run_id: {result.run_id}"
+        )
+    # Per-(category, task) failures are isolated and warned about inside
+    # eval_champion_cells itself (via warnings.warn), not surfaced as
+    # returned errors -- there is no summary-object error list to check here,
+    # unlike cmd_sync_production above, so this command always exits 0.
+    return 0
+
+
 def cmd_set_champion(args: argparse.Namespace) -> int:
     client = build_client()
     registry.set_champion(client, args.model, args.version)
@@ -417,6 +494,54 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip a date when both timelines already have a point there",
     )
     backfill_timeline_parser.set_defaults(func=cmd_backfill_serve_timeline)
+
+    sync_production_parser = subparsers.add_parser(
+        "sync-production",
+        help="Sync genuinely-served production predictions into MLflow (production-usage "
+        "tracking, prediction-vs-result evaluation, and timelines dense points)",
+    )
+    sync_production_parser.add_argument(
+        "--date-from", required=True, help="Start date (YYYYMMDD), inclusive"
+    )
+    sync_production_parser.add_argument(
+        "--date-to", required=True, help="End date (YYYYMMDD), inclusive"
+    )
+    sync_production_parser.add_argument(
+        "--categories",
+        default="jra,nar,banei",
+        help="Comma-separated categories to sync (default: jra,nar,banei)",
+    )
+    sync_production_parser.add_argument(
+        "--no-traces",
+        action="store_true",
+        help="Accepted for interface completeness; MLflow traces are never emitted regardless "
+        "of this flag -- see docs/mlflow-tracking.md for why",
+    )
+    sync_production_parser.set_defaults(func=cmd_sync_production)
+
+    champion_cells_parser = subparsers.add_parser(
+        "eval-champion-cells",
+        help="Evaluate each category's current champion model at CELL granularity over a "
+        "trailing window of genuinely-served, finalized-result predictions",
+    )
+    champion_cells_parser.add_argument(
+        "--window-days",
+        type=int,
+        default=champion_cell_eval.DEFAULT_WINDOW_DAYS,
+        help=f"Trailing window size in days (default: {champion_cell_eval.DEFAULT_WINDOW_DAYS})",
+    )
+    champion_cells_parser.add_argument(
+        "--category",
+        default="jra,nar,banei",
+        help="Comma-separated categories to evaluate (default: jra,nar,banei)",
+    )
+    champion_cells_parser.add_argument(
+        "--as-of",
+        default=None,
+        help="Override the as-of date (YYYYMMDD, default: today) -- mainly for reproducible "
+        "re-runs",
+    )
+    champion_cells_parser.set_defaults(func=cmd_eval_champion_cells)
 
     champion_parser = subparsers.add_parser(
         "set-champion", help="Set the champion alias on a registered model"
