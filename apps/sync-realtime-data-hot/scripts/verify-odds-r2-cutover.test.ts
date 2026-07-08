@@ -24,6 +24,7 @@ const buildCommandResult = (overrides: Partial<CommandResult> = {}): CommandResu
 
 const buildConfig = (overrides: Partial<OddsR2CutoverConfig> = {}): OddsR2CutoverConfig => ({
   commandImpl: vi.fn(async () => buildCommandResult()),
+  d1DatabaseName: "sync-realtime-data-hot-v2",
   fetchImpl: vi.fn(),
   hotApiBaseUrl: "https://hot.example.com",
   raceKeys: ["nar:2026:0708:30:11"],
@@ -57,12 +58,14 @@ const buildFullOddsPayload = () => ({
 it("buildDefaultConfig reads env overrides and comma separated race keys", () => {
   const config = buildDefaultConfig(vi.fn(), vi.fn(), {
     ODDS_HOT_API_BASE_URL: "https://override.example.com",
+    ODDS_D1_DATABASE_NAME: "custom-d1",
     ODDS_R2_SQL_WAREHOUSE: "warehouse2",
     ODDS_R2_VERIFY_D1_CUTOFF: "2026-07-08T19:00:00+09:00",
     ODDS_R2_VERIFY_RACE_KEYS: " a , b ,, ",
     WRANGLER_R2_SQL_AUTH_TOKEN: "sql-token",
   });
   expect(config.hotApiBaseUrl).toBe("https://override.example.com");
+  expect(config.d1DatabaseName).toBe("custom-d1");
   expect(config.raceKeys).toStrictEqual(["a", "b"]);
   expect(config.r2SqlAuthToken).toBe("sql-token");
   expect(config.sinceFetchedAt).toBe("2026-07-08T19:00:00+09:00");
@@ -72,6 +75,7 @@ it("buildDefaultConfig reads env overrides and comma separated race keys", () =>
 it("buildDefaultConfig falls back to R2_API_TOKEN and defaults", () => {
   const config = buildDefaultConfig(vi.fn(), vi.fn(), { R2_API_TOKEN: "r2-token" });
   expect(config.hotApiBaseUrl).toBe("https://sync-realtime-data-hot.kkk4oru.com");
+  expect(config.d1DatabaseName).toBe("sync-realtime-data-hot-v2");
   expect(config.r2SqlAuthToken).toBe("r2-token");
   expect(config.raceKeys).toStrictEqual([]);
 });
@@ -125,37 +129,70 @@ it("verifyHotApiRace returns failed check for non-ok response", async () => {
 });
 
 it("verifyD1OddsWritesStopped passes when D1 count is zero", async () => {
-  const commandImpl = vi.fn(async () =>
-    buildCommandResult({ stdout: JSON.stringify([{ results: [{ rows: 0 }] }]) }),
-  );
+  const commandImpl = vi
+    .fn()
+    .mockResolvedValueOnce(
+      buildCommandResult({ stdout: JSON.stringify([{ results: [{ name: "odds_snapshots" }] }]) }),
+    )
+    .mockResolvedValueOnce(
+      buildCommandResult({ stdout: JSON.stringify([{ results: [{ rows: 0 }] }]) }),
+    );
   const check = await verifyD1OddsWritesStopped(buildConfig({ commandImpl }));
   expect(check.ok).toBe(true);
-  expect(commandImpl).toHaveBeenCalledWith([
+  expect(commandImpl).toHaveBeenNthCalledWith(1, [
     "bunx",
     "wrangler",
     "d1",
     "execute",
-    "sync-realtime-data-hot",
+    "sync-realtime-data-hot-v2",
+    "--remote",
+    "--command",
+    "select name from sqlite_master where type = 'table' and name = 'odds_snapshots'",
+  ]);
+  expect(commandImpl).toHaveBeenNthCalledWith(2, [
+    "bunx",
+    "wrangler",
+    "d1",
+    "execute",
+    "sync-realtime-data-hot-v2",
     "--remote",
     "--command",
     "select count(*) as rows from odds_snapshots where fetched_at >= '2026-07-08T18:52:00+09:00'",
   ]);
 });
 
-it("verifyD1OddsWritesStopped escapes single quotes in cutoff", async () => {
+it("verifyD1OddsWritesStopped passes when the legacy table has been dropped", async () => {
   const commandImpl = vi.fn(async () =>
-    buildCommandResult({ stdout: JSON.stringify([{ results: [{ rows: 1 }] }]) }),
+    buildCommandResult({ stdout: JSON.stringify([{ results: [] }]) }),
   );
+  const check = await verifyD1OddsWritesStopped(buildConfig({ commandImpl }));
+  expect(check).toStrictEqual({
+    detail: "table dropped",
+    name: "d1 odds_snapshots stopped",
+    ok: true,
+  });
+  expect(commandImpl).toHaveBeenCalledTimes(1);
+});
+
+it("verifyD1OddsWritesStopped escapes single quotes in cutoff", async () => {
+  const commandImpl = vi
+    .fn()
+    .mockResolvedValueOnce(
+      buildCommandResult({ stdout: JSON.stringify([{ results: [{ name: "odds_snapshots" }] }]) }),
+    )
+    .mockResolvedValueOnce(
+      buildCommandResult({ stdout: JSON.stringify([{ results: [{ rows: 1 }] }]) }),
+    );
   const check = await verifyD1OddsWritesStopped(
     buildConfig({ commandImpl, sinceFetchedAt: "x'y" }),
   );
   expect(check.ok).toBe(false);
-  expect(commandImpl).toHaveBeenCalledWith([
+  expect(commandImpl).toHaveBeenNthCalledWith(2, [
     "bunx",
     "wrangler",
     "d1",
     "execute",
-    "sync-realtime-data-hot",
+    "sync-realtime-data-hot-v2",
     "--remote",
     "--command",
     "select count(*) as rows from odds_snapshots where fetched_at >= 'x''y'",

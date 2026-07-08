@@ -58,7 +58,7 @@ const sampleNarState = (overrides: Partial<OddsFetchStateRow> = {}): OddsFetchSt
   ...overrides,
 });
 
-interface StoredOddsSnapshotRow {
+interface StoredOddsRow {
   average_odds: number | null;
   combination: string;
   fetched_at: string;
@@ -72,9 +72,7 @@ interface StoredOddsSnapshotRow {
 interface BuildDbOptions {
   batchOutcomes?: Array<Error | { meta: { changes: number } }[]>;
   claimChanges?: number;
-  completedRaceKeys?: string[];
-  insertedCount?: number;
-  latestStored?: StoredOddsSnapshotRow[] | null;
+  latestStored?: StoredOddsRow[] | null;
   narVenueLast?: string | null;
   state?: OddsFetchStateRow | null;
 }
@@ -121,24 +119,6 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
       }));
       return { bind: vi.fn(() => ({ first })) };
     }
-    if (lowered.includes("select odds_type, fetched_at, combination")) {
-      const all = vi.fn(async () => ({ results: options.latestStored ?? [] }));
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (
-      lowered.includes("from odds_fetch_state state") &&
-      lowered.includes("exists") &&
-      lowered.includes("odds_snapshots")
-    ) {
-      const all = vi.fn(async () => ({
-        results: (options.completedRaceKeys ?? []).map((race_key) => ({ race_key })),
-      }));
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("insert into odds_snapshots")) {
-      const run = vi.fn(async () => ({ meta: { changes: options.insertedCount ?? 1 } }));
-      return { bind: vi.fn(() => ({ run })) };
-    }
     if (lowered.includes("insert into fetch_logs")) {
       const run = vi.fn(async () => ({ meta: { changes: 1 } }));
       return { bind: vi.fn(() => ({ run })) };
@@ -165,7 +145,7 @@ const buildKv = (): KVNamespace =>
     put: vi.fn(async () => undefined),
   }) as unknown as KVNamespace;
 
-const buildStoredR2Payload = (rows: StoredOddsSnapshotRow[]) => ({
+const buildStoredR2Payload = (rows: StoredOddsRow[]) => ({
   fetchedAt: rows.at(-1)?.fetched_at ?? null,
   historyByType: Object.fromEntries(
     rows.map((row) => [
@@ -373,7 +353,7 @@ it("fetchAndStoreOdds throws when JRA_BROWSER binding missing", async () => {
 
 it("fetchAndStoreOdds throws when scrape returns zero rows", async () => {
   vi.mocked(fetchOdds).mockResolvedValueOnce({});
-  const env = buildEnv({}, { insertedCount: 0 });
+  const env = buildEnv();
   await expect(
     fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z")),
   ).rejects.toThrow();
@@ -552,7 +532,7 @@ it("fetchAndStoreOdds writes every scraped row on the first fetch when no snapsh
   expect(result?.inserted).toBe(1);
 });
 
-it("fetchAndStoreOdds skips the insert and does not throw when every scraped row is unchanged (OPT1)", async () => {
+it("fetchAndStoreOdds reports zero changed rows and does not throw when every scraped row is unchanged (OPT1)", async () => {
   const env = buildEnv(
     {},
     {
@@ -570,17 +550,12 @@ it("fetchAndStoreOdds skips the insert and does not throw when every scraped row
       ],
     },
   );
-  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
   const result = await fetchAndStoreOdds(
     env,
     "nar:20260528:42:01",
     new Date("2026-05-28T05:55:00Z"),
   );
   expect(result?.inserted).toBe(0);
-  const insertCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
-    String(call[0]).toLowerCase().includes("insert into odds_snapshots"),
-  );
-  expect(insertCalls).toHaveLength(0);
 });
 
 it("fetchAndStoreOdds still calls completeOddsFetch when every scraped row is unchanged (OPT1)", async () => {

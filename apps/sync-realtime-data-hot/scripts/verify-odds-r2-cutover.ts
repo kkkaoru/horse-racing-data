@@ -1,5 +1,6 @@
 const DEFAULT_HOT_API_BASE_URL = "https://sync-realtime-data-hot.kkk4oru.com";
 const DEFAULT_D1_CUTOFF = "2026-07-08T18:52:00+09:00";
+const DEFAULT_D1_DATABASE_NAME = "sync-realtime-data-hot-v2";
 const DEFAULT_WAREHOUSE = "78109ec18c7c85b194b19fb32e3bb149_pc-keiba-odds-archive";
 
 export const REQUIRED_ODDS_TYPES = [
@@ -26,6 +27,7 @@ export type CommandRunner = (
 
 export interface OddsR2CutoverConfig {
   commandImpl: CommandRunner;
+  d1DatabaseName: string;
   fetchImpl: typeof fetch;
   hotApiBaseUrl: string;
   raceKeys: string[];
@@ -66,6 +68,7 @@ export const buildDefaultConfig = (
   env: Record<string, string | undefined>,
 ): OddsR2CutoverConfig => ({
   commandImpl,
+  d1DatabaseName: env.ODDS_D1_DATABASE_NAME ?? DEFAULT_D1_DATABASE_NAME,
   fetchImpl,
   hotApiBaseUrl: env.ODDS_HOT_API_BASE_URL ?? DEFAULT_HOT_API_BASE_URL,
   raceKeys: (env.ODDS_R2_VERIFY_RACE_KEYS ?? "")
@@ -159,20 +162,51 @@ const extractD1Count = (output: string): number | null => {
   return isRecord(result) && typeof result.rows === "number" ? result.rows : null;
 };
 
+const D1_ODDS_SNAPSHOTS_TABLE_SQL =
+  "select name from sqlite_master where type = 'table' and name = 'odds_snapshots'";
+
+const d1ExecuteArgs = (databaseName: string, sql: string): string[] => [
+  "bunx",
+  "wrangler",
+  "d1",
+  "execute",
+  databaseName,
+  "--remote",
+  "--command",
+  sql,
+];
+
+const hasD1OddsSnapshotsTable = (output: string): boolean | null => {
+  const parsed = parseJsonArrayFromWranglerOutput(output);
+  const first = parsed?.[0];
+  if (!isRecord(first) || !Array.isArray(first.results)) {
+    return null;
+  }
+  return first.results.some((row) => isRecord(row) && row.name === "odds_snapshots");
+};
+
 export const verifyD1OddsWritesStopped = async (
   config: OddsR2CutoverConfig,
 ): Promise<CheckResult> => {
+  const tableResult = await config.commandImpl(
+    d1ExecuteArgs(config.d1DatabaseName, D1_ODDS_SNAPSHOTS_TABLE_SQL),
+  );
+  if (tableResult.code !== 0) {
+    return buildCheck(
+      "d1 odds_snapshots stopped",
+      false,
+      tableResult.stderr.trim() || "table check failed",
+    );
+  }
+  const tableExists = hasD1OddsSnapshotsTable(tableResult.stdout);
+  if (tableExists === false) {
+    return buildCheck("d1 odds_snapshots stopped", true, "table dropped");
+  }
+  if (tableExists === null) {
+    return buildCheck("d1 odds_snapshots stopped", false, "table check unavailable");
+  }
   const sql = `select count(*) as rows from odds_snapshots where fetched_at >= '${config.sinceFetchedAt.replaceAll("'", "''")}'`;
-  const result = await config.commandImpl([
-    "bunx",
-    "wrangler",
-    "d1",
-    "execute",
-    "sync-realtime-data-hot",
-    "--remote",
-    "--command",
-    sql,
-  ]);
+  const result = await config.commandImpl(d1ExecuteArgs(config.d1DatabaseName, sql));
   const rows = result.code === 0 ? extractD1Count(result.stdout) : null;
   return buildCheck(
     "d1 odds_snapshots stopped",

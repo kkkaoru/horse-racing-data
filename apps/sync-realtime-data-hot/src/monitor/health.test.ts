@@ -3,9 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import type { Env } from "../types";
 import {
-  ARCHIVE_LAST_SUCCESS_KV_KEY,
   CLOSING_BACKFILL_LAST_RUN_KV_KEY,
-  buildArchiveCronCheck,
   buildClosingBackfillCheck,
   buildCronHeartbeatCheck,
   buildHealthReport,
@@ -41,7 +39,6 @@ interface BuildDbOptions {
   fetchStateCount?: number;
   pollingRows?: { results: unknown[] };
   fetchLogRows?: { results: unknown[] };
-  archiveFailureRow?: { created_at: string } | null;
 }
 
 const buildDb = (options: BuildDbOptions = {}): D1Database => {
@@ -58,14 +55,6 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
     ) {
       const all = vi.fn(async () => options.pollingRows ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
-    }
-    if (
-      lowered.includes("from fetch_logs") &&
-      lowered.includes("scheduled-archive-to-r2") &&
-      lowered.includes("status = 'warn'")
-    ) {
-      const first = vi.fn(async () => options.archiveFailureRow ?? null);
-      return { first };
     }
     if (lowered.includes("from fetch_logs") && lowered.includes("status = 'error'")) {
       const all = vi.fn(async () => options.fetchLogRows ?? { results: [] });
@@ -146,59 +135,6 @@ it("buildCronHeartbeatCheck treats a KV throw as missing key", async () => {
   const result = await buildCronHeartbeatCheck(buildEnv({ kv }), new Date());
   expect(result.ok).toBe(false);
   expect(result.lastTickAt).toBeNull();
-});
-
-it("buildArchiveCronCheck returns ok=true when the success key is fresh and queries failure timestamp on cache miss", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-06-24T00:00:00Z"));
-  const kvGet = vi.fn(async (key: string) => {
-    if (key === "cron:archive:last-success") return "2026-06-23T18:00:00.000Z";
-    return null;
-  });
-  const { kv, tracker } = buildKv({ get: kvGet });
-  const db = buildDb({ archiveFailureRow: { created_at: "2026-06-22T03:00:00+09:00" } });
-  const result = await buildArchiveCronCheck(buildEnv({ db, kv }), new Date());
-  expect(result.ok).toBe(true);
-  expect(result.lastSuccessAt).toBe("2026-06-23T18:00:00.000Z");
-  expect(result.lastFailureAt).toBe("2026-06-22T03:00:00+09:00");
-  expect(result.thresholdSeconds).toBe(86400);
-  expect(
-    tracker.put.mock.calls.some(([key]) => key === "monitor:archive:last-failure-snapshot"),
-  ).toBe(true);
-});
-
-it("buildArchiveCronCheck returns ok=false when the success key is missing", async () => {
-  const result = await buildArchiveCronCheck(buildEnv(), new Date());
-  expect(result.ok).toBe(false);
-  expect(result.lastSuccessAt).toBeNull();
-  expect(result.ageSinceSuccessSeconds).toBeNull();
-});
-
-it("buildArchiveCronCheck returns ok=false when the success key is older than 24h", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-06-24T00:00:00Z"));
-  const { kv } = buildKv({
-    get: vi.fn(async (key: string) =>
-      key === "cron:archive:last-success" ? "2026-06-22T18:00:00.000Z" : null,
-    ),
-  });
-  const result = await buildArchiveCronCheck(buildEnv({ kv }), new Date());
-  expect(result.ok).toBe(false);
-  expect(result.ageSinceSuccessSeconds).toBe(108000);
-});
-
-it("buildArchiveCronCheck reuses the cached failure snapshot without querying D1", async () => {
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-06-24T00:00:00Z"));
-  const kvGet = vi.fn(async (key: string) => {
-    if (key === "cron:archive:last-success") return "2026-06-23T20:00:00.000Z";
-    if (key === "monitor:archive:last-failure-snapshot") return "2026-06-23T03:00:00+09:00";
-    return null;
-  });
-  const { kv } = buildKv({ get: kvGet });
-  const db = buildDb({ archiveFailureRow: { created_at: "should-not-be-used" } });
-  const result = await buildArchiveCronCheck(buildEnv({ db, kv }), new Date());
-  expect(result.lastFailureAt).toBe("2026-06-23T03:00:00+09:00");
 });
 
 it("buildClosingBackfillCheck returns ok=true when last-run KV has ok status, 0 failures, within threshold", async () => {
@@ -633,7 +569,6 @@ it("buildHealthReport returns ok=true when every check is ok", async () => {
   const { kv } = buildKv({
     get: vi.fn(async (key: string) => {
       if (key === "cron:heartbeat:scheduled") return "2026-06-23T22:29:30.000Z";
-      if (key === "cron:archive:last-success") return "2026-06-23T20:00:00.000Z";
       if (key === "cron:closing-backfill:last-run") {
         return JSON.stringify({
           at: "2026-06-23T13:30:00.000Z",
@@ -650,7 +585,6 @@ it("buildHealthReport returns ok=true when every check is ok", async () => {
   const report = await buildHealthReport(buildEnv({ db, kv }), new Date());
   expect(report.ok).toBe(true);
   expect(report.checks.cron_heartbeat.ok).toBe(true);
-  expect(report.checks.archive_cron.ok).toBe(true);
   expect(report.checks.closing_backfill_cron.ok).toBe(true);
   expect(report.checks.today_races_populated.ok).toBe(true);
   expect(report.checks.today_polling_progress.ok).toBe(true);
@@ -660,10 +594,6 @@ it("buildHealthReport returns ok=true when every check is ok", async () => {
 it("buildHealthReport returns ok=false when any check fails", async () => {
   const report = await buildHealthReport(buildEnv(), new Date());
   expect(report.ok).toBe(false);
-});
-
-it("ARCHIVE_LAST_SUCCESS_KV_KEY is exported as cron:archive:last-success", () => {
-  expect(ARCHIVE_LAST_SUCCESS_KV_KEY).toBe("cron:archive:last-success");
 });
 
 it("CLOSING_BACKFILL_LAST_RUN_KV_KEY is exported as cron:closing-backfill:last-run", () => {

@@ -18,19 +18,14 @@
     "ODDS_RACE_LIST_KV_TTL_SECONDS": "21600",
     "ODDS_EDGE_CACHE_TTL_SECONDS": "30",
     "ODDS_R2_POINTER_KV_TTL_SECONDS": "172800",
-    "ODDS_R2_ARCHIVE_RETENTION_DAYS": "7",
     "ODDS_STALE_MIRROR_SECONDS": "90",
   },
-  // High-frequency cron for odds polling (* * * * *), R2 archive every 6h
-  // (0 */6 * * * = 00/06/12/18 UTC, 4x/day), and self-discovery populate of
+  // High-frequency cron for odds polling (* * * * *) and self-discovery populate of
   // today's odds_fetch_state from Hyperdrive at 20:55 UTC = 05:55 JST so the
   // 06:00 polling window has the day's race list ready even if the legacy
-  // worker is down. Re-enabled at cutover (PR3). Archive cron was raised
-  // from 0 4 * * * (1x/day, ~300 R2 puts/day) to 0 */6 * * * + per-tick batch
-  // 150 fetched_at (~900 puts/tick) for ~12x throughput to drain the
-  // odds_snapshots backlog.
+  // worker is down. Re-enabled at cutover (PR3).
   "triggers": {
-    "crons": ["*/2 * * * *", "0 */6 * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
+    "crons": ["*/2 * * * *", "55 20 * * *", "0 23 * * *", "30 13 * * *"],
   },
   "queues": {
     "producers": [
@@ -66,8 +61,8 @@
   "d1_databases": [
     {
       "binding": "REALTIME_HOT_DB",
-      "database_name": "sync-realtime-data-hot",
-      "database_id": "946a0bb1-84c4-471b-9cb5-f984c4d83328",
+      "database_name": "sync-realtime-data-hot-v2",
+      "database_id": "a90709cc-6dd3-4a10-9403-334888cb76f6",
     },
   ],
   "kv_namespaces": [

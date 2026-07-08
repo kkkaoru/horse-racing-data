@@ -88,17 +88,17 @@ WRANGLER_R2_SQL_AUTH_TOKEN="$TOKEN" \
 bun run --filter sync-realtime-data-hot verify:odds-r2-cutover
 ```
 
-This checks the hot Worker `fresh=1` read path, the post-cutover D1 `odds_snapshots`
-write count, R2 Data Catalog status, stream/sink/pipeline presence, and R2 SQL
-namespace visibility.
+This checks the hot Worker `fresh=1` read path, the legacy D1 odds table absence
+(or zero post-cutover writes if the table still exists), R2 Data Catalog status,
+stream/sink/pipeline presence, and R2 SQL namespace visibility.
 
 ## Cutover Checks
 
 ```sh
 bunx wrangler r2 object get pc-keiba-odds-archive/odds-live/v1/nar/20260708/nar:2026:0708:30:10/payload.json --remote -
 
-bunx wrangler d1 execute sync-realtime-data-hot --remote --command \
-  "SELECT count(*) AS rows FROM odds_snapshots WHERE fetched_at >= '2026-07-08T18:52:00+09:00'"
+bunx wrangler d1 execute sync-realtime-data-hot-v2 --remote --command \
+  "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'odds_snapshots'"
 ```
 
-The D1 count should remain `0` after the R2 cutover.
+The D1 query should return no rows after migration `0006_drop_odds_snapshots.sql`.

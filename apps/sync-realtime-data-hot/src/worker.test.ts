@@ -47,11 +47,9 @@ import worker, {
   isAuthorizedInternalRequest,
   maybeFirePiggybackRecovery,
   parseRaceKeyFromPath,
-  processArchiveJob,
   processFetchOddsJob,
   reportScheduledOuterThrow,
   runRecoveryWork,
-  runScheduledArchive,
   runScheduledClosingBackfill,
   runScheduledPlan,
   runScheduledPopulateMultiDay,
@@ -142,13 +140,8 @@ const buildQueue = (): Queue<Job> =>
   }) as unknown as Queue<Job>;
 
 interface BuildDbOptions {
-  latest?: { results: unknown[] };
-  tansho?: { results: unknown[] };
-  byType?: { results: unknown[] };
   upsertRun?: ReturnType<typeof vi.fn>;
   logRun?: ReturnType<typeof vi.fn>;
-  archiveCandidates?: { results: unknown[] };
-  archiveDistinctFetchedAt?: { results: unknown[] };
   stateCount?: number;
   raceKeysForDate?: { results: unknown[] };
   closingBackfillCandidates?: { results: unknown[] };
@@ -163,26 +156,6 @@ const buildDb = (options: BuildDbOptions = {}): D1Database => {
       lowered.includes("last_odds_fetch_at is null")
     ) {
       const all = vi.fn(async () => options.closingBackfillCandidates ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("from odds_snapshots") && lowered.includes("max(fetched_at)")) {
-      const all = vi.fn(async () => options.latest ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("odds_type = 'tansho'")) {
-      const all = vi.fn(async () => options.tansho ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("select distinct fetched_at")) {
-      const all = vi.fn(async () => options.archiveDistinctFetchedAt ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("from odds_snapshots") && lowered.includes("group by")) {
-      const all = vi.fn(async () => options.archiveCandidates ?? { results: [] });
-      return { bind: vi.fn(() => ({ all })) };
-    }
-    if (lowered.includes("from odds_snapshots")) {
-      const all = vi.fn(async () => options.byType ?? { results: [] });
       return { bind: vi.fn(() => ({ all })) };
     }
     if (lowered.includes("count(*)") && lowered.includes("from odds_fetch_state")) {
@@ -1424,187 +1397,7 @@ it("runScheduledPopulateMultiDay delegates to populateMultiDayOddsFetchState", a
   expect(vi.mocked(populateMultiDayOddsFetchState)).toHaveBeenCalledTimes(1);
 });
 
-it("runScheduledArchive lists candidates and pushes to R2", async () => {
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: {
-        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
-      },
-    }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalledTimes(1);
-  expect(summary).toStrictEqual({
-    candidates: 1,
-    failed: 0,
-    sampleFailures: [],
-    uploaded: 1,
-  });
-});
-
-it("runScheduledArchive logs scheduled-archive-no-candidates and skips R2 when phase 1 returns empty", async () => {
-  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({ logRun }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(env.ODDS_ARCHIVE.put)).not.toHaveBeenCalled();
-  expect(summary).toStrictEqual({
-    candidates: 0,
-    failed: 0,
-    sampleFailures: [],
-    uploaded: 0,
-  });
-  expect(logRun).toHaveBeenCalled();
-});
-
-it("runScheduledArchive captures per-row R2 failures and still completes siblings", async () => {
-  const failingR2 = {
-    delete: vi.fn(async () => undefined),
-    get: vi.fn(async () => null),
-    head: vi.fn(async () => null),
-    list: vi.fn(async () => ({ objects: [] })),
-    put: vi
-      .fn()
-      .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error("R2 put exploded"))
-      .mockResolvedValueOnce({}),
-  } as unknown as R2Bucket;
-  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const env = buildEnv({
-    ODDS_ARCHIVE: failingR2,
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-          {
-            fetched_at: "2026-05-20T10:01:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:02",
-            snapshot_json: "[]",
-          },
-          {
-            fetched_at: "2026-05-20T10:02:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:03",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: {
-        results: [
-          { fetched_at: "2026-05-20T10:00:00+09:00" },
-          { fetched_at: "2026-05-20T10:01:00+09:00" },
-          { fetched_at: "2026-05-20T10:02:00+09:00" },
-        ],
-      },
-      logRun,
-    }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(failingR2.put)).toHaveBeenCalledTimes(3);
-  expect(summary.candidates).toBe(3);
-  expect(summary.uploaded).toBe(2);
-  expect(summary.failed).toBe(1);
-  expect(summary.sampleFailures.length).toBe(1);
-  expect(logRun).toHaveBeenCalled();
-});
-
-it("runScheduledArchive swallows logFetch failure when no-candidates summary throws", async () => {
-  const logRun = vi.fn(async () => {
-    throw new Error("fetch_logs unavailable");
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({ logRun }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(summary.candidates).toBe(0);
-});
-
-it("runScheduledArchive swallows logFetch failure when post-upload summary throws", async () => {
-  const logRun = vi.fn(async () => {
-    throw new Error("fetch_logs unavailable");
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: {
-        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
-      },
-      logRun,
-    }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(summary.uploaded).toBe(1);
-  expect(vi.mocked(env.ODDS_ARCHIVE.put)).toHaveBeenCalledTimes(1);
-});
-
-it("runScheduledArchive passes the per-tick batch limit (150) to the distinct fetched_at query", async () => {
-  const distinctBind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
-  const prepareMock = vi.fn((sql: string) => {
-    const lowered = sql.toLowerCase();
-    if (lowered.includes("select distinct fetched_at")) {
-      return { bind: distinctBind };
-    }
-    if (lowered.includes("insert into fetch_logs")) {
-      return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
-    }
-    return { bind: vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) })) };
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: {
-      batch: vi.fn(async () => []),
-      prepare: prepareMock,
-    } as unknown as D1Database,
-  });
-  await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(distinctBind).toHaveBeenCalledWith(expect.any(String), 150);
-});
-
-it("runScheduledArchive stops gracefully (no R2 puts, logs no-candidates) when phase 1 returns zero rows even at batch limit", async () => {
-  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      archiveDistinctFetchedAt: { results: [] },
-      logRun,
-    }),
-  });
-  const summary = await runScheduledArchive(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(env.ODDS_ARCHIVE.put)).not.toHaveBeenCalled();
-  expect(summary).toStrictEqual({
-    candidates: 0,
-    failed: 0,
-    sampleFailures: [],
-    uploaded: 0,
-  });
-  expect(logRun).toHaveBeenCalled();
-});
-
-it("dispatchScheduledByCron routes the new 0 */6 cron to runScheduledArchive (not closing-backfill or populate)", async () => {
+it("dispatchScheduledByCron ignores the retired 0 */6 archive cron", async () => {
   const env = buildEnv();
   await handleScheduled(
     {
@@ -1615,12 +1408,12 @@ it("dispatchScheduledByCron routes the new 0 */6 cron to runScheduledArchive (no
     env,
     buildCtx(),
   );
-  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
   expect(vi.mocked(populateMultiDayOddsFetchState)).not.toHaveBeenCalled();
   expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
 });
 
-it("dispatchScheduledByCron no longer dispatches the retired 0 4 cron to runScheduledArchive", async () => {
+it("dispatchScheduledByCron no longer dispatches the retired 0 4 archive cron", async () => {
   const env = buildEnv();
   await handleScheduled(
     {
@@ -1631,54 +1424,18 @@ it("dispatchScheduledByCron no longer dispatches the retired 0 4 cron to runSche
     env,
     buildCtx(),
   );
-  // The archive code path uses `prepare("select distinct fetched_at ...")`.
-  // With the old cron retired, only the cron heartbeat (KV write — no D1)
+  // With the old cron retired, only the cron heartbeat (KV write, no D1)
   // remains. No prepare call ever reaches D1.
   expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
 });
 
-it("handleRunArchiveOnce rejects unauthorized callers", async () => {
+it("handleRunArchiveOnce is removed", async () => {
   const env = buildEnv();
   const response = await handleFetchRequest(
     env,
     new Request("https://x/api/internal/run-archive-once", { method: "POST" }),
   );
-  expect(response.status).toBe(401);
-});
-
-it("handleRunArchiveOnce returns the summary when token matches", async () => {
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: {
-        results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }],
-      },
-    }),
-  });
-  const response = await handleFetchRequest(
-    env,
-    new Request("https://x/api/internal/run-archive-once", {
-      headers: { "x-pc-keiba-internal-token": "secret" },
-      method: "POST",
-    }),
-  );
-  expect(response.status).toBe(200);
-  const body = await response.json();
-  expect(body).toStrictEqual({
-    candidates: 1,
-    failed: 0,
-    sampleFailures: [],
-    uploaded: 1,
-  });
+  expect(response.status).toBe(404);
 });
 
 it("handleScheduled dispatches plan cron to runScheduledPlan", async () => {
@@ -1714,20 +1471,6 @@ it("handleScheduled skips runScheduledPlan when the polling-window gate cache re
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
 });
 
-it("handleScheduled dispatches archive cron to runScheduledArchive", async () => {
-  const env = buildEnv();
-  await handleScheduled(
-    {
-      cron: "0 */6 * * *",
-      noRetry: () => undefined,
-      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-    } as unknown as ScheduledController,
-    env,
-    buildCtx(),
-  );
-  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
-});
-
 it("handleScheduled dispatches populate-multi-day cron to runScheduledPopulateMultiDay", async () => {
   const env = buildEnv();
   await handleScheduled(
@@ -1756,85 +1499,6 @@ it("handleScheduled dispatches morning populate-multi-day cron (JST 08:00) to ru
   );
   expect(vi.mocked(populateMultiDayOddsFetchState)).toHaveBeenCalledTimes(1);
   expect(vi.mocked(populateTodayOddsFetchState)).not.toHaveBeenCalled();
-});
-
-it("handleScheduled catches runScheduledArchive rejection and logs via logFetch", async () => {
-  const logRun = vi.fn(async () => ({ meta: { changes: 1 } }));
-  const prepareMock = vi.fn((sql: string) => {
-    const lowered = sql.toLowerCase();
-    if (lowered.includes("insert into fetch_logs")) {
-      return { bind: vi.fn(() => ({ run: logRun })) };
-    }
-    if (lowered.includes("select distinct fetched_at")) {
-      return {
-        bind: vi.fn(() => ({
-          all: vi.fn(async () => {
-            throw new Error("archive list failed");
-          }),
-        })),
-      };
-    }
-    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: {
-      batch: vi.fn(async () => []),
-      prepare: prepareMock,
-    } as unknown as D1Database,
-  });
-  await handleScheduled(
-    {
-      cron: "0 */6 * * *",
-      noRetry: () => undefined,
-      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-    } as unknown as ScheduledController,
-    env,
-    buildCtx(),
-  );
-  // handleScheduled completed without rethrowing; logFetch recorded the error.
-  expect(logRun).toHaveBeenCalled();
-});
-
-it("handleScheduled falls back to console.error when both inner work and logFetch throw", async () => {
-  const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const prepareMock = vi.fn((sql: string) => {
-    const lowered = sql.toLowerCase();
-    if (lowered.includes("insert into fetch_logs")) {
-      return {
-        bind: vi.fn(() => ({
-          run: vi.fn(async () => {
-            throw new Error("fetch_logs also down");
-          }),
-        })),
-      };
-    }
-    if (lowered.includes("select distinct fetched_at")) {
-      return {
-        bind: vi.fn(() => ({
-          all: vi.fn(async () => {
-            throw new Error("archive list failed");
-          }),
-        })),
-      };
-    }
-    return { bind: vi.fn(() => ({ run: vi.fn(async () => ({ meta: { changes: 1 } })) })) };
-  });
-  const env = buildEnv({
-    REALTIME_HOT_DB: {
-      batch: vi.fn(async () => []),
-      prepare: prepareMock,
-    } as unknown as D1Database,
-  });
-  await handleScheduled(
-    {
-      cron: "0 */6 * * *",
-      noRetry: () => undefined,
-      scheduledTime: new Date("2026-05-28T04:00:00Z").getTime(),
-    } as unknown as ScheduledController,
-    env,
-    buildCtx(),
-  );
-  expect(consoleSpy).toHaveBeenCalled();
 });
 
 it("handleScheduled does nothing for unknown cron", async () => {
@@ -1943,12 +1607,6 @@ it("processFetchOddsJob swallows logFetch failure when raceKey format is invalid
   await processFetchOddsJob(env, "nar:20260528:42:01");
   expect(cacheMock.delete).not.toHaveBeenCalled();
   expect(vi.mocked(env.ODDS_HOT_KV.put)).not.toHaveBeenCalled();
-});
-
-it("processArchiveJob delegates to runScheduledArchive", async () => {
-  const env = buildEnv();
-  await processArchiveJob(env, new Date("2026-05-28T13:00:00Z"));
-  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).toHaveBeenCalled();
 });
 
 it("handleScheduled dispatches closing-backfill cron (JST 22:30) to runScheduledClosingBackfill", async () => {
@@ -2122,17 +1780,6 @@ it("handleQueue acks fetch-odds messages", async () => {
   const retry = vi.fn();
   const batch = {
     messages: [{ ack, body: { raceKey: "nar:20260528:42:01", type: "fetch-odds" }, retry }],
-  } as unknown as MessageBatch<Job>;
-  await handleQueue(batch, env);
-  expect(ack).toHaveBeenCalledTimes(1);
-});
-
-it("handleQueue acks archive-odds-to-r2 messages", async () => {
-  const env = buildEnv();
-  const ack = vi.fn();
-  const retry = vi.fn();
-  const batch = {
-    messages: [{ ack, body: { date: "20260528", type: "archive-odds-to-r2" }, retry }],
   } as unknown as MessageBatch<Job>;
   await handleQueue(batch, env);
   expect(ack).toHaveBeenCalledTimes(1);
@@ -2954,74 +2601,6 @@ it("default worker fetch does not block the HTTP response on the piggyback work"
   pendingResolverRef.resolver?.(null);
 });
 
-it("runScheduledArchive writes cron:archive:last-success to KV when summary.failed is 0", async () => {
-  const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: { results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }] },
-    }),
-  });
-  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
-  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
-  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(true);
-});
-
-it("runScheduledArchive does NOT write cron:archive:last-success when summary.failed > 0", async () => {
-  const failingR2 = {
-    delete: vi.fn(async () => undefined),
-    get: vi.fn(async () => null),
-    head: vi.fn(async () => null),
-    list: vi.fn(async () => ({ objects: [] })),
-    put: vi.fn().mockRejectedValue(new Error("r2 exploded")),
-  } as unknown as R2Bucket;
-  const env = buildEnv({
-    ODDS_ARCHIVE: failingR2,
-    REALTIME_HOT_DB: buildDb({
-      archiveCandidates: {
-        results: [
-          {
-            fetched_at: "2026-05-20T10:00:00+09:00",
-            odds_type: "tansho",
-            race_key: "nar:20260520:42:01",
-            snapshot_json: "[]",
-          },
-        ],
-      },
-      archiveDistinctFetchedAt: { results: [{ fetched_at: "2026-05-20T10:00:00+09:00" }] },
-    }),
-  });
-  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
-  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
-  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(false);
-});
-
-it("runScheduledArchive writes cron:archive:last-success on the no-candidates path", async () => {
-  const env = buildEnv();
-  await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
-  const kvPut = env.ODDS_HOT_KV.put as unknown as ReturnType<typeof vi.fn>;
-  expect(kvPut.mock.calls.some(([key]) => key === "cron:archive:last-success")).toBe(true);
-});
-
-it("runScheduledArchive tolerates a KV put failure on the success write", async () => {
-  const failingKv = {
-    delete: vi.fn(async () => undefined),
-    get: vi.fn(async () => null),
-    put: vi.fn().mockRejectedValue(new Error("kv exploded")),
-  } as unknown as KVNamespace;
-  const env = buildEnv({ ODDS_HOT_KV: failingKv });
-  const summary = await runScheduledArchive(env, new Date("2026-06-24T03:00:00Z"));
-  expect(summary.candidates).toBe(0);
-});
-
 it("runScheduledClosingBackfill writes cron:closing-backfill:last-run JSON with ok status", async () => {
   const prepareMock = vi.fn((sql: string) => {
     const lowered = sql.toLowerCase();
@@ -3114,7 +2693,7 @@ it("handleHealth returns 503 when any check fails (default env has no heartbeat 
   expect(body.ok).toBe(false);
 });
 
-it("handleHealth returns 200 when all six checks are ok", async () => {
+it("handleHealth returns 200 when all checks are ok", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-23T22:30:00Z"));
   const env = buildEnv({
@@ -3123,7 +2702,6 @@ it("handleHealth returns 200 when all six checks are ok", async () => {
   const kvGet = env.ODDS_HOT_KV.get as unknown as ReturnType<typeof vi.fn>;
   kvGet.mockImplementation(async (key: string) => {
     if (key === "cron:heartbeat:scheduled") return "2026-06-23T22:29:30.000Z";
-    if (key === "cron:archive:last-success") return "2026-06-23T20:00:00.000Z";
     if (key === "cron:closing-backfill:last-run") {
       return JSON.stringify({
         at: "2026-06-23T13:30:00.000Z",

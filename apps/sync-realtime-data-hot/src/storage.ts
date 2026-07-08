@@ -13,52 +13,6 @@ import type {
 } from "./types";
 
 const D1_BATCH_SIZE = 100;
-const MAX_SAFE_RANK = Number.MAX_SAFE_INTEGER;
-// Phase-1 fan-out controls how many distinct `fetched_at` values we pull per
-// archive cron tick. The aggregator (Phase 2) scans ~200 rows per fetched_at
-// (one row per horse-combination per odds_type), so 50 keeps the total work
-// at ~10K rows — well inside D1's per-query CPU budget — while still moving
-// the archive backlog meaningfully every cron tick (every fetched_at becomes
-// one or more R2 objects).
-// Per-tick cap on the Phase-1 `DISTINCT fetched_at` walk. Each distinct value
-// fans out to roughly 6 (race_key, odds_type) aggregate groups in Phase 2,
-// each of which becomes a single R2 put in `runScheduledArchive`. The cap is
-// chosen so the total subrequest count per cron tick (~150 * 6 + 2 D1 reads +
-// 1 fetch_logs write = ~903) stays under Cloudflare's 1000 paid subrequest
-// budget. Raising this further requires either batching the puts or
-// trimming D1 reads.
-const DISTINCT_FETCHED_AT_LIMIT = 150;
-
-// D1 caps bound variables per prepared statement well below the standard
-// SQLite 999 (~100 — exceeding it raises `D1_ERROR: too many SQL variables`).
-// The Phase-2 IN clause is chunked into sub-queries of this size and the
-// chunked aggregates are concatenated in worker code. 90 leaves headroom
-// while still letting the full DISTINCT_FETCHED_AT_LIMIT fan-out finish in
-// just two parallel sub-queries.
-const FETCHED_AT_IN_CHUNK_SIZE = 90;
-
-const ODDS_TREND_LIMITS: Record<OddsType, number> = {
-  "3renpuku": 30,
-  "3rentan": 30,
-  fukusho: 32,
-  tansho: 32,
-  umaren: 30,
-  umatan: 30,
-  wakuren: 18,
-  wide: 30,
-};
-
-interface OddsSnapshotRow {
-  average_odds: number | null;
-  combination: string;
-  fetched_at: string;
-  latest_fetched_at?: string;
-  max_odds: number | null;
-  min_odds: number | null;
-  odds: number | null;
-  odds_type?: string;
-  rank: number | null;
-}
 
 interface OddsFetchStateD1Row {
   deba_url: string;
@@ -122,7 +76,8 @@ export const hasOddsRowChanged = (next: OddsData, prev: OddsData | undefined): b
 
 // Returns only the rows that differ from the stored snapshot, keyed by
 // combination. Odds types whose rows are all unchanged are omitted entirely so
-// `insertOddsSnapshot` skips the D1 write for them.
+// the R2 writer can skip "no-change" rows while still recording the latest
+// full payload.
 export const filterChangedOdds = (
   next: Partial<Record<OddsType, OddsData[]>>,
   stored: Partial<Record<OddsType, OddsData[]>>,
@@ -148,156 +103,6 @@ export const filterChangedOdds = (
 // already stored).
 export const countOddsRows = (odds: Partial<Record<OddsType, OddsData[]>>): number =>
   Object.values(odds).reduce((total, rows) => total + (rows?.length ?? 0), 0);
-
-// ON CONFLICT DO UPDATE keeps retries (catch-up sweep, backfill scripts) idempotent
-// after the (race_key, fetched_at, odds_type, combination) UNIQUE index lands in
-// migration 0003.
-export const insertOddsSnapshot = async (
-  db: D1Database,
-  raceKey: string,
-  fetchedAt: string,
-  odds: Partial<Record<OddsType, OddsData[]>>,
-): Promise<number> => {
-  const statements = Object.entries(odds).flatMap(([type, rows]) =>
-    (rows ?? []).map((row) =>
-      db
-        .prepare(
-          `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key, fetched_at, odds_type, combination) do update set odds = excluded.odds, min_odds = excluded.min_odds, max_odds = excluded.max_odds, average_odds = excluded.average_odds, rank = excluded.rank`,
-        )
-        .bind(
-          raceKey,
-          fetchedAt,
-          type,
-          row.combination,
-          row.odds ?? null,
-          row.minOdds ?? null,
-          row.maxOdds ?? null,
-          row.averageOdds ?? null,
-          row.rank ?? null,
-        ),
-    ),
-  );
-  await runD1Batches(db, statements);
-  return statements.length;
-};
-
-export const getLatestOddsFromD1 = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<{ fetchedAt: string; latest: Partial<Record<OddsType, OddsData[]>> } | null> => {
-  const result = await db
-    .prepare(
-      `with ranked as (
-        select odds_type, fetched_at, combination, odds, min_odds, max_odds, average_odds, rank,
-          max(fetched_at) over () as latest_fetched_at,
-          row_number() over (partition by odds_type, combination order by fetched_at desc) as row_number
-        from odds_snapshots
-        where race_key = ?
-      )
-      select odds_type, fetched_at, latest_fetched_at, combination, odds, min_odds, max_odds, average_odds, rank
-      from ranked
-      where row_number = 1
-      order by odds_type asc, coalesce(rank, 999999) asc`,
-    )
-    .bind(raceKey)
-    .all<OddsSnapshotRow>();
-  const latestFetchedAt = result.results[0]?.latest_fetched_at ?? result.results[0]?.fetched_at;
-  if (!latestFetchedAt) {
-    return null;
-  }
-  const grouped: Partial<Record<OddsType, OddsData[]>> = {};
-  for (const row of result.results) {
-    const oddsType = row.odds_type as OddsType | undefined;
-    if (!oddsType) {
-      continue;
-    }
-    grouped[oddsType] = [
-      ...(grouped[oddsType] ?? []),
-      {
-        averageOdds: row.average_odds ?? undefined,
-        combination: row.combination,
-        maxOdds: row.max_odds ?? undefined,
-        minOdds: row.min_odds ?? undefined,
-        odds: row.odds ?? undefined,
-        rank: row.rank ?? undefined,
-      },
-    ];
-  }
-  return { fetchedAt: latestFetchedAt, latest: grouped };
-};
-
-export const listTanshoHistory = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<OddsHistoryPoint[]> => {
-  const result = await db
-    .prepare(
-      `select fetched_at, combination, odds, rank from odds_snapshots where race_key = ? and odds_type = 'tansho' order by fetched_at asc, cast(combination as integer) asc`,
-    )
-    .bind(raceKey)
-    .all<OddsSnapshotRow>();
-  return result.results.map((row) => ({
-    fetchedAt: row.fetched_at,
-    horseNumber: row.combination,
-    odds: row.odds,
-    popularity: row.rank,
-  }));
-};
-
-const sortOddsRowsForTrend = (left: OddsSnapshotRow, right: OddsSnapshotRow): number => {
-  const rankDiff = (left.rank ?? MAX_SAFE_RANK) - (right.rank ?? MAX_SAFE_RANK);
-  if (rankDiff !== 0) {
-    return rankDiff;
-  }
-  const oddsDiff = (left.odds ?? MAX_SAFE_RANK) - (right.odds ?? MAX_SAFE_RANK);
-  if (oddsDiff !== 0) {
-    return oddsDiff;
-  }
-  return left.combination.localeCompare(right.combination, "ja-JP", { numeric: true });
-};
-
-export const listOddsHistoryByType = async (
-  db: D1Database,
-  raceKey: string,
-): Promise<Partial<Record<OddsType, OddsTrendPoint[]>>> => {
-  const result = await db
-    .prepare(
-      `select odds_type, fetched_at, combination, odds, rank from odds_snapshots where race_key = ? order by odds_type asc, fetched_at asc, coalesce(rank, 999999) asc, combination asc`,
-    )
-    .bind(raceKey)
-    .all<OddsSnapshotRow>();
-  const rowsByType = new Map<OddsType, OddsSnapshotRow[]>();
-  for (const row of result.results) {
-    const oddsType = row.odds_type as OddsType | undefined;
-    if (!oddsType) {
-      continue;
-    }
-    rowsByType.set(oddsType, [...(rowsByType.get(oddsType) ?? []), row]);
-  }
-  const historyByType: Partial<Record<OddsType, OddsTrendPoint[]>> = {};
-  for (const [oddsType, rows] of rowsByType) {
-    const latestFetchedAt = rows.at(-1)?.fetched_at;
-    if (!latestFetchedAt) {
-      continue;
-    }
-    const selectedCombinations = new Set(
-      rows
-        .filter((row) => row.fetched_at === latestFetchedAt)
-        .toSorted(sortOddsRowsForTrend)
-        .slice(0, ODDS_TREND_LIMITS[oddsType])
-        .map((row) => row.combination),
-    );
-    historyByType[oddsType] = rows
-      .filter((row) => selectedCombinations.has(row.combination))
-      .map((row) => ({
-        combination: row.combination,
-        fetchedAt: row.fetched_at,
-        odds: row.odds,
-        rank: row.rank,
-      }));
-  }
-  return historyByType;
-};
 
 export const toHorseTrends = (history: OddsHistoryPoint[]): HorseOddsTrend[] => {
   const byHorse = new Map<string, OddsHistoryPoint[]>();
@@ -391,43 +196,6 @@ export const listRaceKeysForDate = async (
   return result.results.map((row) => row.race_key);
 };
 
-export const deleteOddsSnapshotsForRaceKeys = async (
-  db: D1Database,
-  raceKeys: string[],
-): Promise<number> => {
-  if (raceKeys.length === 0) {
-    return 0;
-  }
-  const statements = raceKeys.map((raceKey) =>
-    db.prepare(`delete from odds_snapshots where race_key = ?`).bind(raceKey),
-  );
-  const results = await db.batch(statements);
-  return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
-};
-
-export const listCompletedRaceKeysWithSnapshotsBefore = async (
-  db: D1Database,
-  beforeIso: string,
-  limit: number,
-): Promise<string[]> => {
-  const result = await db
-    .prepare(
-      `select state.race_key
-       from odds_fetch_state state
-       where state.race_start_at_jst < ?
-         and exists (
-           select 1 from odds_snapshots snapshots
-           where snapshots.race_key = state.race_key
-           limit 1
-         )
-       order by state.race_start_at_jst asc
-       limit ?`,
-    )
-    .bind(beforeIso, limit)
-    .all<{ race_key: string }>();
-  return result.results.map((row) => row.race_key);
-};
-
 export const markOddsFetchStateDiscardedForRaceKeys = async (
   db: D1Database,
   raceKeys: string[],
@@ -466,11 +234,6 @@ export const listClosingBackfillCandidates = async (
          and (
            last_odds_fetch_at is null
            or datetime(last_odds_fetch_at) < datetime(race_start_at_jst, '-5 minutes')
-         )
-         and not exists (
-           select 1 from odds_snapshots
-           where odds_snapshots.race_key = odds_fetch_state.race_key
-           limit 1
          )
        order by race_start_at_jst asc`,
     )
@@ -584,11 +347,6 @@ export const logFetch = async (
     .run();
 };
 
-interface ListOddsSnapshotsCutoffOptions {
-  cutoffIso: string;
-  limit: number;
-}
-
 export interface ImportOddsSnapshotRow {
   race_key: string;
   fetched_at: string;
@@ -600,53 +358,6 @@ export interface ImportOddsSnapshotRow {
   average_odds: number | null;
   rank: number | null;
 }
-
-// ON CONFLICT DO UPDATE keeps F1 backfill retries idempotent against the
-// (race_key, fetched_at, odds_type, combination) UNIQUE index (migration 0003).
-export const bulkInsertOddsSnapshotRows = async (
-  db: D1Database,
-  rows: ImportOddsSnapshotRow[],
-): Promise<number> => {
-  if (rows.length === 0) {
-    return 0;
-  }
-  const statements = rows.map((row) =>
-    db
-      .prepare(
-        `insert into odds_snapshots (race_key, fetched_at, odds_type, combination, odds, min_odds, max_odds, average_odds, rank) values (?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key, fetched_at, odds_type, combination) do update set odds = excluded.odds, min_odds = excluded.min_odds, max_odds = excluded.max_odds, average_odds = excluded.average_odds, rank = excluded.rank`,
-      )
-      .bind(
-        row.race_key,
-        row.fetched_at,
-        row.odds_type,
-        row.combination,
-        row.odds,
-        row.min_odds,
-        row.max_odds,
-        row.average_odds,
-        row.rank,
-      ),
-  );
-  await runD1Batches(db, statements);
-  const latestByRaceKey = new Map<string, string>();
-  for (const row of rows) {
-    const existing = latestByRaceKey.get(row.race_key);
-    if (!existing || row.fetched_at > existing) {
-      latestByRaceKey.set(row.race_key, row.fetched_at);
-    }
-  }
-  await runD1Batches(
-    db,
-    Array.from(latestByRaceKey).map(([raceKey, fetchedAt]) =>
-      db
-        .prepare(
-          `update odds_fetch_state set last_odds_fetch_at = ?, last_odds_queued_at = null, odds_fetch_lock_until = null, updated_at = ? where race_key = ?`,
-        )
-        .bind(fetchedAt, toJstIsoString(), raceKey),
-    ),
-  );
-  return rows.length;
-};
 
 export const getNarVenueLastRaceStartAtJst = async (
   db: D1Database,
@@ -661,114 +372,4 @@ export const getNarVenueLastRaceStartAtJst = async (
     .bind(kaisaiNen, kaisaiTsukihi, keibajoCode)
     .first<{ last_race_start_at_jst: string | null }>();
   return row?.last_race_start_at_jst ?? null;
-};
-
-export const listOddsSnapshotsBeforeCutoff = async (
-  db: D1Database,
-  options: ListOddsSnapshotsCutoffOptions,
-): Promise<OddsSnapshotRow[]> => {
-  const result = await db
-    .prepare(
-      `select average_odds, combination, fetched_at, max_odds, min_odds, odds, odds_type, rank from odds_snapshots where fetched_at < ? order by fetched_at asc limit ?`,
-    )
-    .bind(options.cutoffIso, options.limit)
-    .all<OddsSnapshotRow>();
-  return result.results;
-};
-
-interface AggregateArchiveRow {
-  fetched_at: string;
-  odds_type: string;
-  race_key: string;
-  snapshot_json: string;
-}
-
-interface DistinctFetchedAtRow {
-  fetched_at: string;
-}
-
-// Builds the `?, ?, ?, ...` placeholder string for the Phase-2 `IN (...)`
-// clause. Required because D1's prepared-statement binding does not accept
-// an array directly for IN expressions.
-const buildInPlaceholders = (count: number): string =>
-  Array.from({ length: count }, () => "?").join(", ");
-
-// Splits an immutable list into fixed-size chunks (last chunk may be
-// smaller). Used to keep the Phase-2 IN clause under D1's bind-variable
-// cap (see FETCHED_AT_IN_CHUNK_SIZE).
-const chunkArray = <T>(items: readonly T[], size: number): T[][] =>
-  Array.from({ length: Math.ceil(items.length / size) }, (_, index) =>
-    items.slice(index * size, index * size + size),
-  );
-
-const aggregateArchiveRowsForFetchedAtChunk = async (
-  db: D1Database,
-  fetchedAtChunk: readonly string[],
-): Promise<AggregateArchiveRow[]> => {
-  const placeholders = buildInPlaceholders(fetchedAtChunk.length);
-  const result = await db
-    .prepare(
-      `select race_key, odds_type, fetched_at, json_group_array(json_object('combination', combination, 'odds', odds, 'min_odds', min_odds, 'max_odds', max_odds, 'average_odds', average_odds, 'rank', rank)) as snapshot_json from odds_snapshots where fetched_at in (${placeholders}) group by race_key, odds_type, fetched_at order by fetched_at asc`,
-    )
-    .bind(...fetchedAtChunk)
-    .all<AggregateArchiveRow>();
-  return result.results;
-};
-
-// Phase 1: pick the oldest `DISTINCT fetched_at` values that fall before the
-// cutoff. This walks `idx_odds_snapshots_fetched_at` as a covering index
-// (`SEARCH ... USING COVERING INDEX (fetched_at<?)`), so even with 16M+
-// qualifying rows the read is bounded to a few thousand entries before the
-// LIMIT kicks in.
-export const listDistinctArchiveFetchedAtBeforeCutoff = async (
-  db: D1Database,
-  options: ListOddsSnapshotsCutoffOptions,
-): Promise<string[]> => {
-  const result = await db
-    .prepare(
-      `select distinct fetched_at from odds_snapshots where fetched_at < ? order by fetched_at asc limit ?`,
-    )
-    .bind(options.cutoffIso, options.limit)
-    .all<DistinctFetchedAtRow>();
-  return result.results.map((row) => row.fetched_at);
-};
-
-// Phase 2: aggregate `odds_snapshots` rows whose `fetched_at` is in the
-// bounded list produced by Phase 1. SQLite uses
-// `idx_odds_snapshots_fetched_at (fetched_at=?)` per IN value, so the scan
-// touches only the ~200 rows per timestamp and the GROUP BY operates on a
-// tiny working set. D1 caps bind variables per prepared statement
-// (~100, well below SQLite's 999), so the IN clause is chunked into
-// FETCHED_AT_IN_CHUNK_SIZE sub-queries dispatched in parallel.
-export const aggregateArchiveRowsForFetchedAtList = async (
-  db: D1Database,
-  fetchedAtList: string[],
-): Promise<AggregateArchiveRow[]> => {
-  if (fetchedAtList.length === 0) {
-    return [];
-  }
-  const chunks = chunkArray(fetchedAtList, FETCHED_AT_IN_CHUNK_SIZE);
-  const groupedResults = await Promise.all(
-    chunks.map((chunk) => aggregateArchiveRowsForFetchedAtChunk(db, chunk)),
-  );
-  return groupedResults.flat();
-};
-
-// Two-phase archive lookup. The legacy single-query version
-// (`where fetched_at < ? group by ... order by fetched_at asc limit ?`) ran
-// `SCAN odds_snapshots USING INDEX (race_key, fetched_at, odds_type, combination)`
-// followed by `USE TEMP B-TREE FOR ORDER BY`, which forced SQLite to scan
-// every qualifying row (~16M+) and materialize all groups before applying
-// the LIMIT — every cron tick tripped D1's per-query CPU/timeout limit and
-// the bucket stayed empty for 25+ days. The split avoids that path entirely:
-// Phase 1 is a covering-index walk, Phase 2 is a small IN-bounded aggregate.
-export const listArchiveCandidatesBeforeCutoff = async (
-  db: D1Database,
-  options: ListOddsSnapshotsCutoffOptions,
-): Promise<AggregateArchiveRow[]> => {
-  const fetchedAtList = await listDistinctArchiveFetchedAtBeforeCutoff(db, {
-    cutoffIso: options.cutoffIso,
-    limit: Math.min(options.limit, DISTINCT_FETCHED_AT_LIMIT),
-  });
-  return aggregateArchiveRowsForFetchedAtList(db, fetchedAtList);
 };

@@ -13,19 +13,10 @@ import {
   writeLatestOddsToKv,
 } from "./gates/latest-odds-kv-mirror";
 import { shouldRunOddsCron } from "./gates/polling-window-gate";
-import {
-  computeArchiveCutoffIso,
-  putArchiveRowToR2,
-  putFinalBackupRowToR2,
-  type FinalBackupGroupRow,
-} from "./gates/r2-archive";
+import { putFinalBackupRowToR2, type FinalBackupGroupRow } from "./gates/r2-archive";
 import { invalidateRaceListInKv, patchLastFetchInKv } from "./gates/race-list-kv-cache";
 import { jsonResponse } from "./http";
-import {
-  ARCHIVE_LAST_SUCCESS_KV_KEY,
-  CLOSING_BACKFILL_LAST_RUN_KV_KEY,
-  buildHealthReport,
-} from "./monitor/health";
+import { CLOSING_BACKFILL_LAST_RUN_KV_KEY, buildHealthReport } from "./monitor/health";
 import { extractYyyymmddFromRaceKey } from "./race-key";
 import { purgeCachedOdds, readCachedOdds, writeCachedOdds } from "./odds-cache";
 import {
@@ -40,9 +31,7 @@ import {
 } from "./r2-odds-store";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
-  deleteOddsSnapshotsForRaceKeys,
   listRaceKeysForDate,
-  listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
   logFetch,
   markOddsFetchStateDiscardedForRaceKeys,
@@ -61,13 +50,6 @@ import type {
 } from "./types";
 
 const PLAN_ODDS_FETCHES_CRON = "*/2 * * * *";
-// Quadrupling the daily 04:00 UTC tick to every 6h (00/06/12/18 UTC) yields
-// 4 archive runs/day. Combined with `DISTINCT_FETCHED_AT_LIMIT = 150` in
-// storage.ts this targets ~3600 R2 archive writes/day, sufficient to drain
-// the 24M-row `odds_snapshots` backlog in roughly 5–7 weeks. Held at every
-// 6h (not hourly) so the first deploy can be observed for stability before
-// pushing further.
-const ARCHIVE_ODDS_CRON = "0 */6 * * *";
 const POPULATE_MULTI_DAY_CRON = "55 20 * * *";
 // re-populate today's odds_fetch_state after morning NAR Neon sync completes
 const MORNING_POPULATE_MULTI_DAY_CRON = "0 23 * * *";
@@ -78,11 +60,6 @@ const POPULATE_MULTI_DAY_CRONS: ReadonlySet<string> = new Set([
 // JST 22:30 = UTC 13:30. Synchronous closing-odds re-fetch for races whose
 // last poll happened before raceStart - 5min (final betting window missed).
 const CLOSING_BACKFILL_CRON = "30 13 * * *";
-// Storage-side Phase-1 distinct walk re-clamps via
-// `Math.min(options.limit, DISTINCT_FETCHED_AT_LIMIT)`. Keeping this at the
-// storage cap (150) keeps worker-side intent explicit and avoids a silent
-// clamp when the storage limit changes.
-const ARCHIVE_QUERY_LIMIT = 150;
 const PLAN_DAYS_AHEAD = 2;
 // Silent-death detector for the per-minute scheduled cron. `dispatchScheduledByCron`
 // writes this key at the very top of every tick so a missing value == cron is dead.
@@ -127,7 +104,6 @@ const MIN_DO_TRUSTED_SNAPSHOTS = 10;
 const PLAN_STABLE_FLAG_KV_PREFIX = "expected-race-count:stable:";
 const PLAN_STABLE_FLAG_TTL_SECONDS = 600;
 const PLAN_STABLE_FLAG_VALUE = "1";
-const ARCHIVE_FAILURE_SAMPLE_LIMIT = 3;
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -143,13 +119,6 @@ interface CronHealthBody {
   ok: boolean;
   lastTickAt: string | null;
   ageSeconds: number | null;
-}
-
-interface ArchiveRunSummary {
-  candidates: number;
-  uploaded: number;
-  failed: number;
-  sampleFailures: string[];
 }
 
 export const parseRaceKeyFromPath = (pathname: string): string | null => {
@@ -376,13 +345,12 @@ export const handleDeleteOddsByDate = async (env: Env, request: Request): Promis
     body.kaisaiNen,
     body.kaisaiTsukihi,
   );
-  const deleted = await deleteOddsSnapshotsForRaceKeys(env.REALTIME_HOT_DB, raceKeys);
   await markOddsFetchStateDiscardedForRaceKeys(env.REALTIME_HOT_DB, raceKeys, toJstIsoString());
   await Promise.all([
     invalidateRaceListInKv(env, "jra", `${body.kaisaiNen}${body.kaisaiTsukihi}`),
     invalidateRaceListInKv(env, "nar", `${body.kaisaiNen}${body.kaisaiTsukihi}`),
   ]);
-  await Promise.all(
+  const r2Results = await Promise.all(
     raceKeys.map((raceKey) =>
       Promise.all([
         purgeEdgeCache(raceKey),
@@ -392,6 +360,7 @@ export const handleDeleteOddsByDate = async (env: Env, request: Request): Promis
       ]),
     ),
   );
+  const deleted = r2Results.flatMap(([, , , result]) => result.deletedKeys).length;
   return jsonResponse({ deleted, raceKeys });
 };
 
@@ -610,9 +579,6 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-multi-day") {
     return handleRunPopulateMultiDay(env, request);
   }
-  if (request.method === "POST" && url.pathname === "/api/internal/run-archive-once") {
-    return handleRunArchiveOnce(env, request);
-  }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
     return handleGetOdds(env, request, raceKey);
@@ -770,11 +736,6 @@ const BACKFILL_FAILURE_SAMPLE_LIMIT = 3;
 // KV lookup miss right around the daily cron boundary does not erase the
 // last-run record before the next tick writes it back.
 const CLOSING_BACKFILL_LAST_RUN_TTL_SECONDS = 26 * 60 * 60;
-// 48h TTL on the archive last-success key keeps the health endpoint able to
-// distinguish "ageing past threshold" (still has a value) from "never wrote"
-// (key missing entirely). The 24h threshold + 24h grace is comfortable.
-const ARCHIVE_LAST_SUCCESS_TTL_SECONDS = 48 * 60 * 60;
-
 const writeClosingBackfillLastRun = async (
   env: Env,
   payload: { at: string; status: string; candidates: number; failures: number },
@@ -813,89 +774,6 @@ export const runScheduledClosingBackfill = async (env: Env, now: Date): Promise<
     failures: failures.length,
     status,
   });
-};
-
-const formatArchiveFailure = (outcome: PromiseRejectedResult): string => String(outcome.reason);
-
-const summarizeArchiveOutcomes = (
-  candidates: number,
-  outcomes: PromiseSettledResult<unknown>[],
-): ArchiveRunSummary => {
-  const failures = outcomes.filter(isRejected).map(formatArchiveFailure);
-  return {
-    candidates,
-    failed: failures.length,
-    sampleFailures: failures.slice(0, ARCHIVE_FAILURE_SAMPLE_LIMIT),
-    uploaded: outcomes.length - failures.length,
-  };
-};
-
-const logArchiveSummary = async (env: Env, summary: ArchiveRunSummary): Promise<void> => {
-  await logFetch(
-    env.REALTIME_HOT_DB,
-    "scheduled-archive-to-r2",
-    summary.failed === 0 ? "ok" : "warn",
-    null,
-    JSON.stringify(summary),
-  ).catch(() => undefined);
-};
-
-const logArchiveNoCandidates = async (env: Env): Promise<void> => {
-  await logFetch(env.REALTIME_HOT_DB, "scheduled-archive-no-candidates", "ok", null, null).catch(
-    () => undefined,
-  );
-};
-
-const writeArchiveLastSuccess = async (env: Env, now: Date): Promise<void> => {
-  await env.ODDS_HOT_KV.put(ARCHIVE_LAST_SUCCESS_KV_KEY, now.toISOString(), {
-    expirationTtl: ARCHIVE_LAST_SUCCESS_TTL_SECONDS,
-  }).catch(() => undefined);
-};
-
-export const runScheduledArchive = async (env: Env, now: Date): Promise<ArchiveRunSummary> => {
-  const cutoff = computeArchiveCutoffIso(env, now);
-  const candidates = await listArchiveCandidatesBeforeCutoff(env.REALTIME_HOT_DB, {
-    cutoffIso: cutoff,
-    limit: ARCHIVE_QUERY_LIMIT,
-  });
-  if (candidates.length === 0) {
-    await logArchiveNoCandidates(env);
-    // A "no candidates" tick is the happy path for a drained backlog — refresh
-    // the last-success timestamp so the health endpoint does not start firing
-    // 503 simply because there has been nothing to archive for >24h.
-    await writeArchiveLastSuccess(env, now);
-    return { candidates: 0, failed: 0, sampleFailures: [], uploaded: 0 };
-  }
-  // `Promise.allSettled` so a single R2 reject does not block sibling writes
-  // and does not bubble out as a `scheduled-cron-error`. Failures are
-  // surfaced via the explicit `scheduled-archive-to-r2` log row instead.
-  const outcomes = await Promise.allSettled(
-    candidates.map((row) =>
-      putArchiveRowToR2(env, {
-        fetchedAt: row.fetched_at,
-        oddsType: row.odds_type,
-        raceKey: row.race_key,
-        snapshotJson: row.snapshot_json,
-      }),
-    ),
-  );
-  const summary = summarizeArchiveOutcomes(candidates.length, outcomes);
-  await logArchiveSummary(env, summary);
-  if (summary.failed === 0) {
-    await writeArchiveLastSuccess(env, now);
-  }
-  return summary;
-};
-
-// Internal trigger so operators can manually drain the archive backlog or
-// smoke-test the cron path without waiting for the next `0 4 * * *` tick.
-// Token-gated identical to `handleRunPopulateToday`.
-export const handleRunArchiveOnce = async (env: Env, request: Request): Promise<Response> => {
-  if (!isAuthorizedInternalRequest(request, env)) {
-    return jsonResponse({ error: "unauthorized" }, { status: 401 });
-  }
-  const summary = await runScheduledArchive(env, new Date());
-  return jsonResponse(summary);
 };
 
 interface DispatchScheduledArgs {
@@ -1039,16 +917,12 @@ const dispatchScheduledByCron = async (args: DispatchScheduledArgs): Promise<voi
   void args.ctx;
   if (args.cron === PLAN_ODDS_FETCHES_CRON) {
     // Race-window gate: planner cron only runs when at least one race is
-    // within [now - 30min, now + 3h]. The other crons (`0 4`, `55 20`) bypass
-    // the gate because populate / archive must run outside the race window.
+    // within [now - 30min, now + 3h]. The populate crons bypass the gate
+    // because they must run before race-window polling starts.
     if (!(await shouldRunOddsCron(args.env, args.now))) {
       return;
     }
     await runScheduledPlan(args.env, args.now);
-    return;
-  }
-  if (args.cron === ARCHIVE_ODDS_CRON) {
-    await runScheduledArchive(args.env, args.now);
     return;
   }
   if (POPULATE_MULTI_DAY_CRONS.has(args.cron)) {
@@ -1116,21 +990,12 @@ export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<vo
   });
 };
 
-export const processArchiveJob = async (env: Env, now: Date): Promise<void> => {
-  await runScheduledArchive(env, now);
-};
-
 export const handleQueue = async (batch: MessageBatch<Job>, env: Env): Promise<void> => {
   for (const message of batch.messages) {
     try {
       const job = message.body;
       if (job.type === "fetch-odds") {
         await processFetchOddsJob(env, job.raceKey);
-        message.ack();
-        continue;
-      }
-      if (job.type === "archive-odds-to-r2") {
-        await processArchiveJob(env, new Date());
         message.ack();
         continue;
       }

@@ -1,7 +1,7 @@
 // Run with bun. Aggregates multi-dimensional system state into a single
 // /api/internal/health JSON response so external uptime monitors can detect
-// silent-failure modes (R2 archive cron stuck, scheduled-plan-odds-error
-// spikes, closing-backfill warnings) in real time instead of via manual
+// silent-failure modes (scheduled-plan-odds-error spikes, closing-backfill
+// warnings) in real time instead of via manual
 // fetch_logs scans.
 //
 // All KV/D1 reads are wrapped in try/catch so a transient binding outage
@@ -15,10 +15,6 @@ import type { Env } from "../types";
 
 const HEARTBEAT_KV_KEY = "cron:heartbeat:scheduled";
 const HEARTBEAT_THRESHOLD_SECONDS = 300;
-export const ARCHIVE_LAST_SUCCESS_KV_KEY = "cron:archive:last-success";
-const ARCHIVE_THRESHOLD_SECONDS = 86_400;
-const ARCHIVE_FAILURE_SNAPSHOT_KV_KEY = "monitor:archive:last-failure-snapshot";
-const ARCHIVE_FAILURE_SNAPSHOT_TTL_SECONDS = 60;
 export const CLOSING_BACKFILL_LAST_RUN_KV_KEY = "cron:closing-backfill:last-run";
 const CLOSING_BACKFILL_THRESHOLD_SECONDS = 90_000;
 const TODAY_RACES_SNAPSHOT_KV_PREFIX = "monitor:today-races:snapshot:";
@@ -45,14 +41,6 @@ export interface CronHeartbeatCheck {
   ok: boolean;
   lastTickAt: string | null;
   ageSeconds: number | null;
-  thresholdSeconds: number;
-}
-
-export interface ArchiveCronCheck {
-  ok: boolean;
-  lastSuccessAt: string | null;
-  lastFailureAt: string | null;
-  ageSinceSuccessSeconds: number | null;
   thresholdSeconds: number;
 }
 
@@ -91,7 +79,6 @@ export interface RecentErrorsCheck {
 
 export interface HealthChecks {
   cron_heartbeat: CronHeartbeatCheck;
-  archive_cron: ArchiveCronCheck;
   closing_backfill_cron: ClosingBackfillCronCheck;
   today_races_populated: TodayRacesPopulatedCheck;
   today_polling_progress: TodayPollingProgressCheck;
@@ -140,10 +127,6 @@ interface FetchLogRow {
   created_at: string;
 }
 
-interface ArchiveFailureRow {
-  created_at: string;
-}
-
 const computeAgeSeconds = (lastIso: string, now: Date): number =>
   Math.floor((now.getTime() - new Date(lastIso).getTime()) / MILLISECONDS_PER_SECOND);
 
@@ -189,56 +172,6 @@ export const buildCronHeartbeatCheck = async (env: Env, now: Date): Promise<Cron
     lastTickAt,
     ok: ageSeconds <= HEARTBEAT_THRESHOLD_SECONDS,
     thresholdSeconds: HEARTBEAT_THRESHOLD_SECONDS,
-  };
-};
-
-const queryLatestArchiveFailureTimestamp = async (env: Env): Promise<string | null> => {
-  try {
-    const row = await env.REALTIME_HOT_DB.prepare(
-      `select created_at from fetch_logs where job_type = 'scheduled-archive-to-r2' and status = 'warn' order by created_at desc limit 1`,
-    ).first<ArchiveFailureRow>();
-    return row?.created_at ?? null;
-  } catch {
-    return null;
-  }
-};
-
-const resolveArchiveFailureTimestamp = async (env: Env): Promise<string | null> => {
-  const cached = await safeKvGet(env, ARCHIVE_FAILURE_SNAPSHOT_KV_KEY);
-  if (cached !== null) {
-    return cached;
-  }
-  const fresh = await queryLatestArchiveFailureTimestamp(env);
-  if (fresh !== null) {
-    await safeKvPut(
-      env,
-      ARCHIVE_FAILURE_SNAPSHOT_KV_KEY,
-      fresh,
-      ARCHIVE_FAILURE_SNAPSHOT_TTL_SECONDS,
-    );
-  }
-  return fresh;
-};
-
-export const buildArchiveCronCheck = async (env: Env, now: Date): Promise<ArchiveCronCheck> => {
-  const lastSuccessAt = await safeKvGet(env, ARCHIVE_LAST_SUCCESS_KV_KEY);
-  const lastFailureAt = await resolveArchiveFailureTimestamp(env);
-  if (lastSuccessAt === null) {
-    return {
-      ageSinceSuccessSeconds: null,
-      lastFailureAt,
-      lastSuccessAt: null,
-      ok: false,
-      thresholdSeconds: ARCHIVE_THRESHOLD_SECONDS,
-    };
-  }
-  const ageSinceSuccessSeconds = computeAgeSeconds(lastSuccessAt, now);
-  return {
-    ageSinceSuccessSeconds,
-    lastFailureAt,
-    lastSuccessAt,
-    ok: ageSinceSuccessSeconds <= ARCHIVE_THRESHOLD_SECONDS,
-    thresholdSeconds: ARCHIVE_THRESHOLD_SECONDS,
   };
 };
 
@@ -583,7 +516,6 @@ export const buildRecentErrorsCheck = async (env: Env, now: Date): Promise<Recen
 
 const allChecksOk = (checks: HealthChecks): boolean =>
   checks.cron_heartbeat.ok &&
-  checks.archive_cron.ok &&
   checks.closing_backfill_cron.ok &&
   checks.today_races_populated.ok &&
   checks.today_polling_progress.ok &&
@@ -595,21 +527,18 @@ export const buildHealthReport = async (env: Env, now: Date): Promise<HealthRepo
   // never throws — they capture failures internally as ok=false.
   const [
     cron_heartbeat,
-    archive_cron,
     closing_backfill_cron,
     today_races_populated,
     today_polling_progress,
     recent_errors,
   ] = await Promise.all([
     buildCronHeartbeatCheck(env, now),
-    buildArchiveCronCheck(env, now),
     buildClosingBackfillCheck(env, now),
     buildTodayRacesPopulatedCheck(env, now),
     buildTodayPollingProgressCheck(env, now),
     buildRecentErrorsCheck(env, now),
   ]);
   const checks: HealthChecks = {
-    archive_cron,
     closing_backfill_cron,
     cron_heartbeat,
     recent_errors,

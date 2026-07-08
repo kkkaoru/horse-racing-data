@@ -28,10 +28,6 @@ export type Job =
   | {
       type: "fetch-odds";
       raceKey: string;
-    }
-  | {
-      type: "archive-odds-to-r2";
-      date: string;
     };
 
 export type HorseOddsTrend = RealtimeHorseOddsTrend;
@@ -115,7 +111,6 @@ export interface Env {
   ODDS_RACE_LIST_KV_TTL_SECONDS?: string;
   ODDS_EDGE_CACHE_TTL_SECONDS?: string;
   ODDS_R2_POINTER_KV_TTL_SECONDS?: string;
-  ODDS_R2_ARCHIVE_RETENTION_DAYS?: string;
   ODDS_STALE_MIRROR_SECONDS?: string;
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
   REALTIME_HOT_TEST_NOW?: string;
