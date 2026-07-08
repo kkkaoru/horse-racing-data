@@ -41,6 +41,17 @@ Do not treat that token as a valid catalog or R2 SQL token.
 
 ## Create Sink And Pipeline
 
+Use the idempotent provisioning command first:
+
+```sh
+ODDS_R2_CATALOG_TOKEN="$TOKEN" \
+bun run --filter sync-realtime-data-hot provision:odds-r2-catalog
+```
+
+It skips existing resources and creates only the missing sink or pipeline.
+
+Manual equivalent:
+
 ```sh
 set -a
 source .env
