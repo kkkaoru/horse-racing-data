@@ -723,14 +723,13 @@ it("handleImportOddsChunk invalidates all odds cache layers once per raceKey aft
     }),
   );
   expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({ inserted: 2 });
   expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
     "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A20260528%3A42%3A01",
   ]);
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:20260528:42:01");
-  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:20260528:42:01");
-  expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledWith(
-    "odds-live/v1/nar/20260528/nar:20260528:42:01/payload.json",
-  );
+  expect(env.ODDS_ARCHIVE.put).toHaveBeenCalledTimes(3);
+  expect(env.ODDS_ARCHIVE.delete).not.toHaveBeenCalled();
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledWith(env, "nar:20260528:42:01");
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(1);
 });

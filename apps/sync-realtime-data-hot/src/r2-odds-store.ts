@@ -133,6 +133,14 @@ const mergeHistory = (
   return next;
 };
 
+const mergeLatest = (
+  current: Partial<Record<OddsType, OddsData[]>>,
+  incoming: Partial<Record<OddsType, OddsData[]>>,
+): Partial<Record<OddsType, OddsData[]>> => ({
+  ...current,
+  ...incoming,
+});
+
 const tanshoPointsToHorseTrends = (points: OddsTrendPoint[]): HorseOddsTrend[] =>
   toHorseTrends(
     points.map((point) => ({
@@ -217,7 +225,7 @@ const buildNextStoredPayload = (
 ): StoredR2OddsPayload => ({
   fetchedAt,
   historyByType: mergeHistory(existing?.historyByType ?? {}, fetchedAt, latest),
-  latest,
+  latest: mergeLatest(existing?.latest ?? {}, latest),
   raceKey,
   schemaVersion: 1,
 });

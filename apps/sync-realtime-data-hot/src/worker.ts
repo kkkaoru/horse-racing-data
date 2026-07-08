@@ -33,10 +33,13 @@ import {
   invalidateOddsFetchStateCount,
 } from "./odds-fetch-state-count-cache";
 import { planOddsFetches } from "./plan";
-import { purgeOddsPayloadFromR2, readOddsPayloadFromR2 } from "./r2-odds-store";
+import {
+  purgeOddsPayloadFromR2,
+  readOddsPayloadFromR2,
+  writeOddsPayloadToR2,
+} from "./r2-odds-store";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
-  bulkInsertOddsSnapshotRows,
   deleteOddsSnapshotsForRaceKeys,
   listRaceKeysForDate,
   listArchiveCandidatesBeforeCutoff,
@@ -287,13 +290,54 @@ interface ImportOddsChunkRequest {
   rows: ImportOddsSnapshotRow[];
 }
 
+const importRowToOddsData = (row: ImportOddsSnapshotRow): OddsData => ({
+  averageOdds: row.average_odds ?? undefined,
+  combination: row.combination,
+  maxOdds: row.max_odds ?? undefined,
+  minOdds: row.min_odds ?? undefined,
+  odds: row.odds ?? undefined,
+  rank: row.rank ?? undefined,
+});
+
+const groupImportRowsByRaceAndFetchedAt = (
+  rows: ImportOddsSnapshotRow[],
+): {
+  fetchedAt: string;
+  latest: Partial<Record<OddsType, OddsData[]>>;
+  raceKey: string;
+}[] => {
+  const groups = new Map<
+    string,
+    {
+      fetchedAt: string;
+      latest: Partial<Record<OddsType, OddsData[]>>;
+      raceKey: string;
+    }
+  >();
+  rows.forEach((row) => {
+    const key = `${row.race_key}\n${row.fetched_at}`;
+    const existing = groups.get(key) ?? {
+      fetchedAt: row.fetched_at,
+      latest: {},
+      raceKey: row.race_key,
+    };
+    const oddsType = row.odds_type as OddsType;
+    existing.latest[oddsType] = [...(existing.latest[oddsType] ?? []), importRowToOddsData(row)];
+    groups.set(key, existing);
+  });
+  return Array.from(groups.values());
+};
+
 export const handleImportOddsChunk = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
   const body = (await request.json()) as ImportOddsChunkRequest;
   const rows = body.rows ?? [];
-  const inserted = await bulkInsertOddsSnapshotRows(env.REALTIME_HOT_DB, rows);
+  const groups = groupImportRowsByRaceAndFetchedAt(rows);
+  await Promise.all(
+    groups.map((group) => writeOddsPayloadToR2(env, group.raceKey, group.fetchedAt, group.latest)),
+  );
   const raceKeys = Array.from(new Set(rows.map((row) => row.race_key)));
   await Promise.all(
     raceKeys.map((raceKey) =>
@@ -301,11 +345,10 @@ export const handleImportOddsChunk = async (env: Env, request: Request): Promise
         purgeEdgeCache(raceKey),
         invalidateLatestOddsInKv(env, raceKey),
         purgeCachedOdds(env, raceKey),
-        purgeOddsPayloadFromR2(env, raceKey),
       ]),
     ),
   );
-  return jsonResponse({ inserted });
+  return jsonResponse({ inserted: rows.length });
 };
 
 interface DeleteOddsByDateRequest {
