@@ -30,6 +30,7 @@ import worker, {
   collectPlanDates,
   groupRowsForFinalBackup,
   handleCronHealth,
+  handleDeleteOdds,
   handleDeleteOddsByDate,
   handleFetchRequest,
   handleHealth,
@@ -805,6 +806,65 @@ it("handleDeleteOddsByDate deletes snapshots and invalidates odds caches for the
   );
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(2);
   expect(cacheMock.delete).toHaveBeenCalledTimes(2);
+});
+
+it("handleDeleteOdds returns 401 when unauthorized", async () => {
+  const response = await handleDeleteOdds(
+    buildEnv(),
+    new Request("https://x/api/odds/nar%3A2026%3A0708%3A45%3A12", { method: "DELETE" }),
+    "nar:2026:0708:45:12",
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleDeleteOdds deletes R2 odds data and purges KV, Cache API, and DO cache", async () => {
+  const r2 = buildR2();
+  const listMock = r2.list as unknown as ReturnType<typeof vi.fn>;
+  listMock.mockImplementation(async ({ prefix = "" }: R2ListOptions) => ({
+    objects: prefix.startsWith("odds-snapshots")
+      ? [{ key: `${prefix}2026-07-08T18:01:28_09:00.json` }]
+      : [{ key: `${prefix}2026-07-08T18:01:28_09:00.ndjson` }],
+    truncated: false,
+  }));
+  const env = buildEnv({ ODDS_ARCHIVE: r2 });
+  const response = await handleDeleteOdds(
+    env,
+    new Request("https://x/api/odds/nar%3A2026%3A0708%3A45%3A12", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "DELETE",
+    }),
+    "nar:2026:0708:45:12",
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    deleted: 3,
+    r2DeletedKeys: [
+      "odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json",
+      "odds-snapshots/v1/nar/20260708/nar:2026:0708:45:12/2026-07-08T18:01:28_09:00.json",
+      "odds-catalog-staging/v1/kaisai_yyyymmdd=20260708/nar:2026:0708:45:12/2026-07-08T18:01:28_09:00.ndjson",
+    ],
+    raceKey: "nar:2026:0708:45:12",
+  });
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:2026:0708:45:12");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:2026:0708:45:12");
+  expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0708%3A45%3A12",
+  ]);
+  expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledWith(env, "nar:2026:0708:45:12");
+});
+
+it("handleFetchRequest routes DELETE /api/odds/:raceKey to handleDeleteOdds", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/odds/nar%3A2026%3A0708%3A45%3A12", {
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "DELETE",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    raceKey: "nar:2026:0708:45:12",
+  });
 });
 
 it("groupRowsForFinalBackup groups rows by race_key, odds_type, and date", () => {

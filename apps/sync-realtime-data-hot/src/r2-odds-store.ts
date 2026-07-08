@@ -87,6 +87,16 @@ export const buildCatalogStagingR2Key = (raceKey: string, fetchedAt: string): st
 
 const buildPointerKvKey = (raceKey: string): string => `${R2_POINTER_KV_PREFIX}:${raceKey}`;
 
+const buildSnapshotOddsR2Prefix = (raceKey: string): string =>
+  `${R2_SNAPSHOT_PREFIX}/${buildRaceStoragePrefix(raceKey)}/`;
+
+const buildCatalogStagingR2Prefix = (raceKey: string): string | null => {
+  const yyyymmdd = getYyyymmddFromRaceKey(raceKey);
+  return yyyymmdd
+    ? `${R2_CATALOG_STAGING_PREFIX}/kaisai_yyyymmdd=${yyyymmdd}/${sanitizePathSegment(raceKey)}/`
+    : null;
+};
+
 const resolvePointerKvTtl = (env: Env): number => {
   const raw = env.ODDS_R2_POINTER_KV_TTL_SECONDS;
   if (!raw) {
@@ -299,9 +309,36 @@ export const writeOddsPayloadToR2 = async (
   return toPublicPayload(stored);
 };
 
-export const purgeOddsPayloadFromR2 = async (env: Env, raceKey: string): Promise<void> => {
+export interface PurgeOddsPayloadFromR2Result {
+  deletedKeys: string[];
+}
+
+const listR2KeysByPrefix = async (env: Env, prefix: string): Promise<string[]> => {
+  const keys: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await env.ODDS_ARCHIVE.list({ cursor, prefix });
+    keys.push(...result.objects.map((object) => object.key));
+    cursor = result.truncated ? result.cursor : undefined;
+  } while (cursor);
+  return keys;
+};
+
+export const purgeOddsPayloadFromR2 = async (
+  env: Env,
+  raceKey: string,
+): Promise<PurgeOddsPayloadFromR2Result> => {
+  const prefixes = [
+    buildSnapshotOddsR2Prefix(raceKey),
+    buildCatalogStagingR2Prefix(raceKey),
+  ].filter((prefix): prefix is string => prefix !== null);
+  const listedKeys = (
+    await Promise.all(prefixes.map((prefix) => listR2KeysByPrefix(env, prefix)))
+  ).flat();
+  const deletedKeys = Array.from(new Set([buildLiveOddsR2Key(raceKey), ...listedKeys]));
   await Promise.all([
-    env.ODDS_ARCHIVE.delete(buildLiveOddsR2Key(raceKey)),
+    ...deletedKeys.map((key) => env.ODDS_ARCHIVE.delete(key)),
     env.ODDS_HOT_KV.delete(buildPointerKvKey(raceKey)),
   ]);
+  return { deletedKeys };
 };

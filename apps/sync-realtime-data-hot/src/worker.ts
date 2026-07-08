@@ -395,6 +395,27 @@ export const handleDeleteOddsByDate = async (env: Env, request: Request): Promis
   return jsonResponse({ deleted, raceKeys });
 };
 
+export const handleDeleteOdds = async (
+  env: Env,
+  request: Request,
+  raceKey: string,
+): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const r2Result = await purgeOddsPayloadFromR2(env, raceKey);
+  await Promise.all([
+    purgeEdgeCache(raceKey),
+    invalidateLatestOddsInKv(env, raceKey),
+    purgeCachedOdds(env, raceKey),
+  ]);
+  return jsonResponse({
+    deleted: r2Result.deletedKeys.length,
+    r2DeletedKeys: r2Result.deletedKeys,
+    raceKey,
+  });
+};
+
 interface R2ArchiveOddsRow {
   id: number;
   race_key: string;
@@ -595,6 +616,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {
     return handleGetOdds(env, request, raceKey);
+  }
+  if (request.method === "DELETE" && raceKey) {
+    return handleDeleteOdds(env, request, raceKey);
   }
   return jsonResponse({ error: "not found" }, { status: 404 });
 };

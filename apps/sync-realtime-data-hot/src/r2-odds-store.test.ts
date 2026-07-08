@@ -3,6 +3,7 @@ import {
   buildCatalogStagingR2Key,
   buildLiveOddsR2Key,
   buildSnapshotOddsR2Key,
+  purgeOddsPayloadFromR2,
   readOddsPayloadFromR2,
   writeOddsPayloadToR2,
 } from "./r2-odds-store";
@@ -19,6 +20,7 @@ const buildR2 = (stored: unknown = null): R2Bucket =>
   ({
     delete: vi.fn(async () => undefined),
     get: vi.fn(async () => (stored ? { json: vi.fn(async () => stored) } : null)),
+    list: vi.fn(async () => ({ objects: [], truncated: false })),
     put: vi.fn(async () => ({})),
   }) as unknown as R2Bucket;
 
@@ -165,4 +167,41 @@ it("writeOddsPayloadToR2 merges existing history and honors pointer TTL override
     "odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json",
     { expirationTtl: 3600 },
   );
+});
+
+it("purgeOddsPayloadFromR2 deletes live payload, snapshot objects, catalog staging objects, and the KV pointer", async () => {
+  const r2 = buildR2();
+  const listMock = r2.list as unknown as ReturnType<typeof vi.fn>;
+  listMock.mockImplementation(async ({ cursor, prefix = "" }: R2ListOptions) => {
+    if (prefix.startsWith("odds-snapshots") && cursor === undefined) {
+      return {
+        cursor: "next",
+        objects: [{ key: `${prefix}a.json` }],
+        truncated: true,
+      };
+    }
+    if (prefix.startsWith("odds-snapshots") && cursor === "next") {
+      return {
+        objects: [{ key: `${prefix}b.json` }],
+        truncated: false,
+      };
+    }
+    if (prefix.startsWith("odds-catalog-staging")) {
+      return {
+        objects: [{ key: `${prefix}a.ndjson` }],
+        truncated: false,
+      };
+    }
+    return { objects: [], truncated: false };
+  });
+  const env = buildEnv({ ODDS_ARCHIVE: r2 });
+  const result = await purgeOddsPayloadFromR2(env, "nar:2026:0708:45:12");
+  expect(result.deletedKeys).toStrictEqual([
+    "odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json",
+    "odds-snapshots/v1/nar/20260708/nar:2026:0708:45:12/a.json",
+    "odds-snapshots/v1/nar/20260708/nar:2026:0708:45:12/b.json",
+    "odds-catalog-staging/v1/kaisai_yyyymmdd=20260708/nar:2026:0708:45:12/a.ndjson",
+  ]);
+  expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledTimes(4);
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:2026:0708:45:12");
 });
