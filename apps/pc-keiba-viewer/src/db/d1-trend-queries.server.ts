@@ -26,6 +26,7 @@ import { deriveWakubanString } from "horse-racing-realtime/wakuban";
 
 import { safeGetCloudflareEnv } from "../lib/cloudflare-context.server";
 import type { RaceSource } from "../lib/codes";
+import { HOT_WORKER_ORIGIN, isHotOddsPayload } from "../lib/hot-odds-payload.server";
 import {
   RACE_TREND_PAST14_LOOKBACK_DAYS,
   buildRaceTrendPast14CacheKey,
@@ -315,13 +316,6 @@ interface RawD1Row {
   zogenSaInt: number | null;
 }
 
-interface RawTanshoOddsRow {
-  race_key: string;
-  combination: string;
-  odds: number | null;
-  rank: number | null;
-}
-
 interface TanshoOddsEntry {
   odds: number | null;
   rank: number | null;
@@ -365,20 +359,14 @@ const isRawD1Row = (value: unknown): value is RawD1Row => {
   );
 };
 
-const isNumberOrNull = (value: unknown): value is number | null =>
-  value === null || typeof value === "number";
+interface HotTanshoOddsData {
+  combination: string;
+  odds?: number | null;
+  rank?: number | null;
+}
 
-const isRawTanshoOddsRow = (value: unknown): value is RawTanshoOddsRow =>
-  typeof value === "object" &&
-  value !== null &&
-  "race_key" in value &&
-  typeof value.race_key === "string" &&
-  "combination" in value &&
-  typeof value.combination === "string" &&
-  "odds" in value &&
-  isNumberOrNull(value.odds) &&
-  "rank" in value &&
-  isNumberOrNull(value.rank);
+const isHotTanshoOddsData = (value: unknown): value is HotTanshoOddsData =>
+  isRecord(value) && typeof value.combination === "string";
 
 const formatHassoJikoku = (raceStartAtJst: string | null): string | null => {
   if (typeof raceStartAtJst !== "string" || raceStartAtJst.length < 16) return null;
@@ -492,13 +480,10 @@ const queryD1 = async (params: SnapshotQueryParams): Promise<RawD1Row[]> => {
   return result.results.filter(isRawD1Row);
 };
 
-// Latest tansho odds live in the hot D1 (`sync-realtime-data-hot`). The
-// query selects all combinations at the most recent fetched_at per race,
-// matching the legacy `latest_tansho_odds` CTE behavior from REALTIME_DB.
-const buildHotTanshoSelectSql = (placeholders: string): string =>
-  `select race_key, combination, odds, rank from odds_snapshots where race_key in (${placeholders}) and odds_type = 'tansho' and fetched_at = (select max(fetched_at) from odds_snapshots o2 where o2.race_key = odds_snapshots.race_key and o2.odds_type = 'tansho')`;
-
-interface GetLatestTanshoOddsFromHotD1Params {
+// Latest tansho odds are read from the hot Worker service binding. The hot
+// Worker owns the canonical R2 payload, so the viewer must not depend on D1
+// `odds_snapshots` being populated.
+interface GetLatestTanshoOddsFromHotParams {
   env: CloudflareEnv | null;
   raceKeys: ReadonlyArray<string>;
 }
@@ -513,36 +498,60 @@ const normalizeHorseCombination = (combination: string): string | null => {
   return Number.isNaN(parsed) ? null : String(parsed);
 };
 
-const accumulateTanshoOddsRow = (acc: TanshoOddsMap, row: RawTanshoOddsRow): TanshoOddsMap => {
+const toNullableNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+const accumulateHotTanshoOddsData = (
+  acc: TanshoOddsMap,
+  raceKey: string,
+  row: HotTanshoOddsData,
+): TanshoOddsMap => {
   const normalizedCombination = normalizeHorseCombination(row.combination);
   if (normalizedCombination === null) return acc;
-  const existing = acc.get(row.race_key) ?? new Map<string, TanshoOddsEntry>();
-  existing.set(normalizedCombination, { odds: row.odds, rank: row.rank });
-  acc.set(row.race_key, existing);
+  const existing = acc.get(raceKey) ?? new Map<string, TanshoOddsEntry>();
+  existing.set(normalizedCombination, {
+    odds: toNullableNumber(row.odds),
+    rank: toNullableNumber(row.rank),
+  });
+  acc.set(raceKey, existing);
   return acc;
 };
 
-export const getLatestTanshoOddsFromHotD1 = async ({
+const fetchLatestTanshoOddsForRace = async (
+  hot: CloudflareEnv["REALTIME_HOT"],
+  raceKey: string,
+): Promise<ReadonlyArray<HotTanshoOddsData>> => {
+  if (!hot) return [];
+  const response = await hot.fetch(`${HOT_WORKER_ORIGIN}/api/odds/${encodeURIComponent(raceKey)}`);
+  if (!response.ok) return [];
+  const payload: unknown = await response.json();
+  if (!isHotOddsPayload(payload)) return [];
+  if (payload.raceKey !== undefined && payload.raceKey !== raceKey) return [];
+  const tansho = payload.latest.tansho;
+  return Array.isArray(tansho) ? tansho.filter(isHotTanshoOddsData) : [];
+};
+
+export const getLatestTanshoOddsFromHot = async ({
   env,
   raceKeys,
-}: GetLatestTanshoOddsFromHotD1Params): Promise<TanshoOddsMap> => {
+}: GetLatestTanshoOddsFromHotParams): Promise<TanshoOddsMap> => {
   const uniqueKeys = Array.from(new Set(raceKeys.filter((key) => key.length > 0)));
   if (uniqueKeys.length === 0) return new Map();
-  const db = env?.REALTIME_HOT_DB;
-  if (!db) return new Map();
+  const hot = env?.REALTIME_HOT;
+  if (!hot) return new Map();
   try {
-    const placeholders = uniqueKeys.map(() => "?").join(",");
-    const result = await db
-      .prepare(buildHotTanshoSelectSql(placeholders))
-      .bind(...uniqueKeys)
-      .all();
-    const validRows = result.results.filter(isRawTanshoOddsRow);
-    return validRows.reduce(
-      accumulateTanshoOddsRow,
-      new Map<string, Map<string, TanshoOddsEntry>>(),
+    const entries = await Promise.all(
+      uniqueKeys.map(async (raceKey) => ({
+        raceKey,
+        rows: await fetchLatestTanshoOddsForRace(hot, raceKey),
+      })),
     );
+    return entries.reduce<TanshoOddsMap>((acc, entry) => {
+      entry.rows.forEach((row) => accumulateHotTanshoOddsData(acc, entry.raceKey, row));
+      return acc;
+    }, new Map<string, Map<string, TanshoOddsEntry>>());
   } catch (error) {
-    console.error("D1 hot tansho odds query failed", error);
+    console.error("Hot Worker tansho odds query failed", error);
     return new Map();
   }
 };
@@ -698,10 +707,10 @@ export const getRaceTrendTodayStarterRows = async (
     if (raw.length === 0) return [];
     const uniqueRaceKeys = Array.from(new Set(raw.map((row) => row.raceKey)));
     const env = await safeGetCloudflareEnv();
-    // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT_DB
+    // Preview / pre-binding deploys degrade gracefully: when REALTIME_HOT
     // is missing the helper short-circuits to an empty map and we fall back
     // to nulls for tansho fields.
-    const oddsMap = await getLatestTanshoOddsFromHotD1({
+    const oddsMap = await getLatestTanshoOddsFromHot({
       env: env ?? null,
       raceKeys: uniqueRaceKeys,
     });

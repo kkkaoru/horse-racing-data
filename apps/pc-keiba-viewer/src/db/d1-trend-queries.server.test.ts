@@ -12,7 +12,7 @@ vi.mock("@opennextjs/cloudflare", () => ({
 
 import {
   buildPast14WindowForTarget,
-  getLatestTanshoOddsFromHotD1,
+  getLatestTanshoOddsFromHot,
   getRaceTrendPast14StarterRows,
   getRaceTrendRunningStylesFromD1,
   getRaceTrendTodayRunningStylesFromD1,
@@ -46,12 +46,18 @@ interface FeaturesStub {
   fetch: ReturnType<typeof vi.fn<AnyMockFn>>;
 }
 
+type HotFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+interface HotStub {
+  fetch: ReturnType<typeof vi.fn<HotFetch>>;
+}
+
 interface BuildContextArgs {
   cache?: CacheStub | null;
   db?: D1Stub;
   features?: FeaturesStub;
   featuresDb?: D1Stub;
-  hotDb?: D1Stub;
+  hot?: HotStub;
   kv?: KvStub;
 }
 
@@ -133,37 +139,32 @@ const buildFeaturesJsonResponse = (payload: unknown): Response =>
     headers: { "Content-Type": "application/json" },
   });
 
-interface BuildHotEnvArgs {
-  hotDb: D1Stub | undefined;
-}
+const buildHotOddsResponse = (payload: unknown, init?: ResponseInit): Response =>
+  new Response(JSON.stringify(payload), {
+    headers: { "Content-Type": "application/json" },
+    ...init,
+  });
 
-const isPreparedStatement = (value: unknown): value is PcKeibaD1PreparedStatement =>
-  typeof value === "object" &&
-  value !== null &&
-  "bind" in value &&
-  typeof value.bind === "function";
+const buildHotStub = (payloads: Record<string, unknown>): HotStub => ({
+  fetch: vi.fn<HotFetch>().mockImplementation((input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const raceKey = decodeURIComponent(url.split("/api/odds/")[1] ?? "");
+    const payload = payloads[raceKey] ?? {
+      fetchedAt: null,
+      history: [],
+      historyByType: {},
+      latest: {},
+      raceKey,
+    };
+    return Promise.resolve(buildHotOddsResponse(payload));
+  }),
+});
 
-const emptyBatch = <T = unknown>(): Promise<PcKeibaD1Result<T>[]> => Promise.resolve([]);
-const noopExec = (): Promise<PcKeibaD1RunResult> => Promise.resolve({ success: true });
+const buildHotEnv = (hot: HotStub | undefined): CloudflareEnv =>
+  hot === undefined ? {} : { REALTIME_HOT: hot };
 
-const buildHotEnv = ({ hotDb }: BuildHotEnvArgs): CloudflareEnv => {
-  if (hotDb === undefined) return {};
-  const typedPrepare = (query: string): PcKeibaD1PreparedStatement => {
-    const result = Reflect.apply(hotDb.prepare, hotDb, [query]);
-    if (!isPreparedStatement(result)) {
-      throw new Error("Stub returned an invalid prepared statement");
-    }
-    return result;
-  };
-  const typed: PcKeibaD1Database = {
-    prepare: typedPrepare,
-    batch: emptyBatch,
-    exec: noopExec,
-  };
-  return { REALTIME_HOT_DB: typed };
-};
-
-const installContext = ({ cache, db, features, featuresDb, hotDb, kv }: BuildContextArgs): void => {
+const installContext = ({ cache, db, features, featuresDb, hot, kv }: BuildContextArgs): void => {
   if (cache === null) {
     Reflect.deleteProperty(globalThis, "caches");
   } else if (cache !== undefined) {
@@ -177,7 +178,7 @@ const installContext = ({ cache, db, features, featuresDb, hotDb, kv }: BuildCon
       REALTIME_DB: db,
       REALTIME_FEATURES: features,
       REALTIME_FEATURES_DB: featuresDb,
-      REALTIME_HOT_DB: hotDb,
+      REALTIME_HOT: hot,
       DETAIL_SECTION_CACHE_KV: kv,
     },
   });
@@ -444,26 +445,32 @@ it("getRaceTrendTodayStarterRows returns [] without caching when global caches i
   expect(rows.length).toBe(1);
 });
 
-it("getRaceTrendTodayStarterRows skips REALTIME_HOT_DB lookup when starter rows are empty", async () => {
+it("getRaceTrendTodayStarterRows skips REALTIME_HOT lookup when starter rows are empty", async () => {
   const { db } = buildD1Stub([]);
-  const { db: hotDb } = buildD1Stub([]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({});
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
     targetYmd: "20260528",
   });
   expect(rows).toStrictEqual([]);
-  expect(hotDb.prepare).not.toHaveBeenCalled();
+  expect(hot.fetch).not.toHaveBeenCalled();
 });
 
-it("getRaceTrendTodayStarterRows overrides tansho odds when REALTIME_HOT_DB returns a match", async () => {
+it("getRaceTrendTodayStarterRows overrides tansho odds when REALTIME_HOT returns a match", async () => {
   const sparseFallback = { ...SAMPLE_RAW_ROW, tanshoOddsTenth: null, tanshoPopularity: null };
   const { db } = buildD1Stub([sparseFallback]);
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 8.4, rank: 3 },
-  ]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "5", odds: 8.4, rank: 3 }] },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -473,10 +480,10 @@ it("getRaceTrendTodayStarterRows overrides tansho odds when REALTIME_HOT_DB retu
   expect(rows[0]?.tanshoPopularity).toBe("03");
 });
 
-it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB has no entry", async () => {
+it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT has no entry", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
-  const { db: hotDb } = buildD1Stub([]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({});
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -486,9 +493,9 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB 
   expect(rows[0]?.tanshoPopularity).toBe(null);
 });
 
-it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB binding is missing", async () => {
+it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT binding is missing", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
-  installContext({ cache: buildCacheStub(), db, hotDb: undefined, kv: buildKvStub() });
+  installContext({ cache: buildCacheStub(), db, hot: undefined, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -500,10 +507,16 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when REALTIME_HOT_DB 
 
 it("getRaceTrendTodayStarterRows uses HOT odds and null rank when HOT rank is null", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 9.9, rank: null },
-  ]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "5", odds: 9.9, rank: null }] },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -515,10 +528,16 @@ it("getRaceTrendTodayStarterRows uses HOT odds and null rank when HOT rank is nu
 
 it("getRaceTrendTodayStarterRows uses HOT rank and null odds when HOT odds is null", async () => {
   const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "5", odds: null, rank: 2 },
-  ]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "5", odds: null, rank: 2 }] },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -536,10 +555,16 @@ it("getRaceTrendTodayStarterRows leaves tansho fields null when umaban is null a
     tanshoPopularity: null,
   };
   const { db } = buildD1Stub([noUmaban]);
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "5", odds: 8.4, rank: 3 },
-  ]);
-  installContext({ cache: buildCacheStub(), db, hotDb, kv: buildKvStub() });
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "5", odds: 8.4, rank: 3 }] },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  installContext({ cache: buildCacheStub(), db, hot, kv: buildKvStub() });
   const rows = await getRaceTrendTodayStarterRows({
     keibajoCode: "50",
     source: "nar",
@@ -1082,49 +1107,69 @@ it("getRaceTrendTodayRunningStylesFromD1 swallows D1 errors and returns empty ar
   consoleSpy.mockRestore();
 });
 
-it("getLatestTanshoOddsFromHotD1 returns empty map when raceKeys is empty", async () => {
-  const { db: hotDb } = buildD1Stub([]);
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb }),
+it("getLatestTanshoOddsFromHot returns empty map when raceKeys is empty", async () => {
+  const hot = buildHotStub({});
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
     raceKeys: [],
   });
   expect(result.size).toBe(0);
-  expect(hotDb.prepare).not.toHaveBeenCalled();
+  expect(hot.fetch).not.toHaveBeenCalled();
 });
 
-it("getLatestTanshoOddsFromHotD1 returns empty map when REALTIME_HOT_DB binding is missing", async () => {
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb: undefined }),
+it("getLatestTanshoOddsFromHot returns empty map when REALTIME_HOT binding is missing", async () => {
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(undefined),
     raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
 });
 
-it("getLatestTanshoOddsFromHotD1 returns empty map when env is null", async () => {
-  const result = await getLatestTanshoOddsFromHotD1({
+it("getLatestTanshoOddsFromHot returns empty map when env is null", async () => {
+  const result = await getLatestTanshoOddsFromHot({
     env: null,
     raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
 });
 
-it("getLatestTanshoOddsFromHotD1 deduplicates and filters blank race keys before binding", async () => {
-  const { db: hotDb, prepared } = buildD1Stub([]);
-  await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb }),
+it("getLatestTanshoOddsFromHot deduplicates and filters blank race keys before fetch", async () => {
+  const hot = buildHotStub({});
+  await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
     raceKeys: ["nar:2026:0528:50:04", "nar:2026:0528:50:04", "", "nar:2026:0528:50:05"],
   });
-  expect(prepared.bind).toHaveBeenCalledWith("nar:2026:0528:50:04", "nar:2026:0528:50:05");
+  expect(hot.fetch).toHaveBeenCalledTimes(2);
+  expect(hot.fetch.mock.calls.map(([url]) => url)).toStrictEqual([
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0528%3A50%3A04",
+    "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0528%3A50%3A05",
+  ]);
 });
 
-it("getLatestTanshoOddsFromHotD1 groups rows by race_key and normalizes combination", async () => {
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "05", odds: 12.3, rank: 4 },
-    { race_key: "nar:2026:0528:50:04", combination: "7", odds: 8.1, rank: 2 },
-    { race_key: "nar:2026:0528:50:05", combination: "1", odds: 2.5, rank: 1 },
-  ]);
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb }),
+it("getLatestTanshoOddsFromHot groups rows by race_key and normalizes combination", async () => {
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: {
+        tansho: [
+          { combination: "05", odds: 12.3, rank: 4 },
+          { combination: "7", odds: 8.1, rank: 2 },
+        ],
+      },
+      raceKey: "nar:2026:0528:50:04",
+    },
+    "nar:2026:0528:50:05": {
+      fetchedAt: "2026-05-28T16:25:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "1", odds: 2.5, rank: 1 }] },
+      raceKey: "nar:2026:0528:50:05",
+    },
+  });
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
     raceKeys: ["nar:2026:0528:50:04", "nar:2026:0528:50:05"],
   });
   expect(result.get("nar:2026:0528:50:04")?.get("5")).toStrictEqual({ odds: 12.3, rank: 4 });
@@ -1132,35 +1177,39 @@ it("getLatestTanshoOddsFromHotD1 groups rows by race_key and normalizes combinat
   expect(result.get("nar:2026:0528:50:05")?.get("1")).toStrictEqual({ odds: 2.5, rank: 1 });
 });
 
-it("getLatestTanshoOddsFromHotD1 returns empty map when D1 throws", async () => {
-  const failing: D1Stub = {
-    batch: vi.fn<AnyMockFn>().mockResolvedValue([]),
-    exec: vi.fn<AnyMockFn>().mockResolvedValue({ success: true }),
-    prepare: vi.fn<AnyMockFn>().mockReturnValue({
-      bind: vi.fn<AnyMockFn>().mockReturnValue({
-        all: vi.fn<AnyMockFn>().mockRejectedValue(new Error("hot boom")),
-      }),
-    }),
+it("getLatestTanshoOddsFromHot returns empty map when hot Worker throws", async () => {
+  const failing: HotStub = {
+    fetch: vi.fn<HotFetch>().mockRejectedValue(new Error("hot boom")),
   };
   const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb: failing }),
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(failing),
     raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(0);
-  expect(consoleSpy).toHaveBeenCalledWith("D1 hot tansho odds query failed", expect.any(Error));
+  expect(consoleSpy).toHaveBeenCalledWith("Hot Worker tansho odds query failed", expect.any(Error));
   consoleSpy.mockRestore();
 });
 
-it("getLatestTanshoOddsFromHotD1 skips rows that fail validation", async () => {
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "1", odds: 3.4, rank: 1 },
-    { race_key: 123, combination: "2", odds: 5.5, rank: 2 },
-    { race_key: "nar:2026:0528:50:04", combination: "", odds: 9.9, rank: 9 },
-    { race_key: "nar:2026:0528:50:04", combination: "abc", odds: 9.9, rank: 9 },
-  ]);
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb }),
+it("getLatestTanshoOddsFromHot skips rows that fail validation", async () => {
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: {
+        tansho: [
+          { combination: "1", odds: 3.4, rank: 1 },
+          { combination: 2, odds: 5.5, rank: 2 },
+          { combination: "", odds: 9.9, rank: 9 },
+          { combination: "abc", odds: 9.9, rank: 9 },
+        ],
+      },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
     raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.size).toBe(1);
@@ -1168,15 +1217,38 @@ it("getLatestTanshoOddsFromHotD1 skips rows that fail validation", async () => {
   expect(result.get("nar:2026:0528:50:04")?.get("1")).toStrictEqual({ odds: 3.4, rank: 1 });
 });
 
-it("getLatestTanshoOddsFromHotD1 accepts null odds and rank", async () => {
-  const { db: hotDb } = buildD1Stub([
-    { race_key: "nar:2026:0528:50:04", combination: "1", odds: null, rank: null },
-  ]);
-  const result = await getLatestTanshoOddsFromHotD1({
-    env: buildHotEnv({ hotDb }),
+it("getLatestTanshoOddsFromHot accepts null odds and rank", async () => {
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "1", odds: null, rank: null }] },
+      raceKey: "nar:2026:0528:50:04",
+    },
+  });
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
     raceKeys: ["nar:2026:0528:50:04"],
   });
   expect(result.get("nar:2026:0528:50:04")?.get("1")).toStrictEqual({ odds: null, rank: null });
+});
+
+it("getLatestTanshoOddsFromHot drops payloads for a different raceKey", async () => {
+  const hot = buildHotStub({
+    "nar:2026:0528:50:04": {
+      fetchedAt: "2026-05-28T15:55:00+09:00",
+      history: [],
+      historyByType: {},
+      latest: { tansho: [{ combination: "1", odds: 1.8, rank: 1 }] },
+      raceKey: "nar:2026:0528:50:05",
+    },
+  });
+  const result = await getLatestTanshoOddsFromHot({
+    env: buildHotEnv(hot),
+    raceKeys: ["nar:2026:0528:50:04"],
+  });
+  expect(result.size).toBe(0);
 });
 
 it("getRaceTrendRunningStylesFromD1 does not throw with 300 race keys (regression: KV key length limit)", async () => {

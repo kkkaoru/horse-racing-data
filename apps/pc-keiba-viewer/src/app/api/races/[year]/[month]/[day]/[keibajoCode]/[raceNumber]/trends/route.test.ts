@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   fetchRaceTrendDailyTrackMock: vi.fn<(...args: never[]) => unknown>(),
   getCachedRaceTrendResponseMock: vi.fn<(...args: never[]) => unknown>(),
   getCloudflareContextMock: vi.fn<() => Promise<unknown>>(),
-  getLatestTanshoOddsFromHotD1Mock: vi.fn<(...args: never[]) => unknown>(),
+  getLatestTanshoOddsFromHotMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceDetailMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceRunnersMock: vi.fn<(...args: never[]) => unknown>(),
   getRaceRunningStylesWithCacheMock: vi.fn<(...args: never[]) => unknown>(),
@@ -37,7 +37,7 @@ vi.mock("@opennextjs/cloudflare", () => ({
 
 vi.mock("../../../../../../../../../db/d1-trend-queries.server", () => ({
   buildPast14WindowForTarget: mocks.buildPast14WindowForTargetMock,
-  getLatestTanshoOddsFromHotD1: mocks.getLatestTanshoOddsFromHotD1Mock,
+  getLatestTanshoOddsFromHot: mocks.getLatestTanshoOddsFromHotMock,
   getRaceTrendPast14StarterRows: mocks.getRaceTrendPast14StarterRowsMock,
   getRaceTrendRunningStylesFromD1: mocks.getRaceTrendRunningStylesFromD1Mock,
   getRaceTrendTodayRunningStylesFromD1: mocks.getRaceTrendTodayRunningStylesFromD1Mock,
@@ -83,7 +83,7 @@ const {
   fetchRaceTrendDailyTrackMock,
   getCachedRaceTrendResponseMock,
   getCloudflareContextMock,
-  getLatestTanshoOddsFromHotD1Mock,
+  getLatestTanshoOddsFromHotMock,
   getRaceDetailMock,
   getRaceRunnersMock,
   getRaceRunningStylesWithCacheMock,
@@ -261,7 +261,7 @@ beforeEach(() => {
   fetchRaceTrendDailyTrackMock.mockReset();
   getCachedRaceTrendResponseMock.mockReset();
   getCloudflareContextMock.mockReset();
-  getLatestTanshoOddsFromHotD1Mock.mockReset();
+  getLatestTanshoOddsFromHotMock.mockReset();
   getRaceDetailMock.mockReset();
   getRaceRunnersMock.mockReset();
   getRaceRunningStylesWithCacheMock.mockReset();
@@ -276,7 +276,7 @@ beforeEach(() => {
   useProductionApiProxyMock.mockReset();
   useProductionApiProxyMock.mockReturnValue(false);
   buildPast14WindowForTargetMock.mockReturnValue({ endYmd: "20260528", startYmd: "20260515" });
-  getLatestTanshoOddsFromHotD1Mock.mockResolvedValue(new Map());
+  getLatestTanshoOddsFromHotMock.mockResolvedValue(new Map());
   getRaceRunningStylesWithCacheMock.mockResolvedValue([]);
   getRaceTrendRunningStylesFromD1Mock.mockResolvedValue([]);
   getRaceTrendTodayRunningStylesFromD1Mock.mockResolvedValue([]);

@@ -11,7 +11,7 @@ import type { RaceTrendStarterRow } from "horse-racing-realtime/race-trend-daily
 
 import {
   buildPast14WindowForTarget,
-  getLatestTanshoOddsFromHotD1,
+  getLatestTanshoOddsFromHot,
   getRaceTrendPast14StarterRows,
   getRaceTrendRunningStylesFromD1,
   getRaceTrendTodayRunningStylesFromD1,
@@ -125,12 +125,12 @@ const safeSiblingRunnerEntriesPromise = (
   promise: Promise<TodaySiblingRunnerEntry[]>,
 ): Promise<TodaySiblingRunnerEntry[]> => promise.catch(() => []);
 
-// Tansho odds live in REALTIME_HOT_DB (separate D1 binding) — the
-// race-trend DO cannot join across databases so the do-hit starter rows
-// arrive with tanshoOdds / tanshoPopularity null. Fetch the same map the
-// legacy do-miss path uses and translate it into the merge format. A
-// missing binding (preview deploy) or a query failure surfaces as an
-// empty array so the trend section degrades to "-" rather than 500.
+// Tansho odds live behind the REALTIME_HOT service binding. The race-trend DO
+// cannot enrich its snapshot rows with live odds, so do-hit starter rows arrive
+// with tanshoOdds / tanshoPopularity null. Fetch the same map the do-miss path
+// uses and translate it into the merge format. A missing binding (preview
+// deploy) or a query failure surfaces as an empty array so the trend section
+// degrades to "-" rather than 500.
 const ODDS_TENTH_MULTIPLIER = 10;
 
 const buildTanshoEnrichmentEntries = (
@@ -292,7 +292,7 @@ export const buildRaceTrendRawPayloadForRace = async ({
   const tanshoEnrichmentEntries =
     sourceHeader === "do-hit" && todaySiblingRowsWithRunner.length > 0
       ? await safeTanshoEnrichmentPromise(
-          getLatestTanshoOddsFromHotD1({
+          getLatestTanshoOddsFromHot({
             env: env ?? null,
             raceKeys: Array.from(new Set(todaySiblingRowsWithRunner.map(starterRaceKey))),
           }).then((map) => buildTanshoEnrichmentEntries(map)),
