@@ -3,11 +3,8 @@ import { fetchAndStoreOdds } from "./fetch-odds";
 import { formatError } from "./format-error";
 import {
   isForceFreshRequest,
-  purgeD1ResultCacheForRace,
   purgeEdgeCache,
-  readD1ResultCache,
   readFromEdgeCache,
-  writeD1ResultCache,
   writeToEdgeCache,
 } from "./gates/edge-cache";
 import {
@@ -36,25 +33,29 @@ import {
   invalidateOddsFetchStateCount,
 } from "./odds-fetch-state-count-cache";
 import { planOddsFetches } from "./plan";
+import { purgeOddsPayloadFromR2, readOddsPayloadFromR2 } from "./r2-odds-store";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import {
   bulkInsertOddsSnapshotRows,
   deleteOddsSnapshotsForRaceKeys,
-  getLatestOddsFromD1,
   listRaceKeysForDate,
   listArchiveCandidatesBeforeCutoff,
   listClosingBackfillCandidates,
-  listOddsHistoryByType,
-  listTanshoHistory,
   logFetch,
   markOddsFetchStateDiscardedForRaceKeys,
-  toHorseTrends,
-  toOddsTrendsByType,
   upsertOddsFetchState,
   type ImportOddsSnapshotRow,
 } from "./storage";
 import { addDaysToYyyymmdd, getTodayJst, toJstIsoString } from "./time";
-import type { Env, Job, OddsData, OddsType, OddsFetchStateUpsertInput } from "./types";
+import type {
+  Env,
+  HorseOddsTrend,
+  Job,
+  OddsData,
+  OddsTrend,
+  OddsType,
+  OddsFetchStateUpsertInput,
+} from "./types";
 
 const PLAN_ODDS_FETCHES_CRON = "*/2 * * * *";
 // Quadrupling the daily 04:00 UTC tick to every 6h (00/06/12/18 UTC) yields
@@ -79,7 +80,6 @@ const CLOSING_BACKFILL_CRON = "30 13 * * *";
 // storage cap (150) keeps worker-side intent explicit and avoids a silent
 // clamp when the storage limit changes.
 const ARCHIVE_QUERY_LIMIT = 150;
-const D1_RESULT_CACHE_QUERIES = ["latest", "tanshoHistory", "oddsHistoryByType", "payload"];
 const PLAN_DAYS_AHEAD = 2;
 // Silent-death detector for the per-minute scheduled cron. `dispatchScheduledByCron`
 // writes this key at the very top of every tick so a missing value == cron is dead.
@@ -128,8 +128,8 @@ const ARCHIVE_FAILURE_SAMPLE_LIMIT = 3;
 
 interface OddsPayload {
   fetchedAt: string | null;
-  history: ReturnType<typeof toHorseTrends>;
-  historyByType: ReturnType<typeof toOddsTrendsByType>;
+  history: HorseOddsTrend[];
+  historyByType: Partial<Record<OddsType, OddsTrend[]>>;
   latest: Partial<Record<OddsType, OddsData[]>>;
   raceKey: string;
 }
@@ -154,20 +154,14 @@ export const parseRaceKeyFromPath = (pathname: string): string | null => {
   return match ? decodeURIComponent(match[1]!) : null;
 };
 
-export const buildOddsPayloadFromD1 = async (env: Env, raceKey: string): Promise<OddsPayload> => {
-  const [latest, tansho, byType] = await Promise.all([
-    getLatestOddsFromD1(env.REALTIME_HOT_DB, raceKey),
-    listTanshoHistory(env.REALTIME_HOT_DB, raceKey),
-    listOddsHistoryByType(env.REALTIME_HOT_DB, raceKey),
-  ]);
-  return {
-    fetchedAt: latest?.fetchedAt ?? null,
-    history: toHorseTrends(tansho),
-    historyByType: toOddsTrendsByType(byType),
-    latest: latest?.latest ?? {},
+export const buildOddsPayloadFromR2 = async (env: Env, raceKey: string): Promise<OddsPayload> =>
+  (await readOddsPayloadFromR2(env, raceKey)) ?? {
+    fetchedAt: null,
+    history: [],
+    historyByType: {},
+    latest: {},
     raceKey,
   };
-};
 
 const isRaceScopedOddsPayload = (value: unknown, raceKey: string): value is OddsPayload => {
   if (typeof value !== "object" || value === null) {
@@ -229,13 +223,21 @@ export const handleGetOdds = async (
   raceKey: string,
 ): Promise<Response> => {
   if (isForceFreshRequest(request)) {
-    const payload = await buildOddsPayloadFromD1(env, raceKey);
-    await writeD1ResultCache(raceKey, "payload", payload, env);
-    return jsonResponse(payload);
+    const payload = await readOddsPayloadFromR2(env, raceKey);
+    if (payload) {
+      await writeToEdgeCache(raceKey, payload, env);
+      return jsonResponse(payload);
+    }
+    return jsonResponse(await buildLatestOnlyPayloadFromKv(env, raceKey));
   }
   const cached = await readRaceScopedEdgeCache(raceKey);
   if (cached) {
     return cached;
+  }
+  const r2Payload = await readOddsPayloadFromR2(env, raceKey);
+  if (r2Payload) {
+    await writeToEdgeCache(raceKey, r2Payload, env);
+    return jsonResponse(r2Payload);
   }
   const doCached = await readDoCacheSafe(env, raceKey);
   if (doCached && countTanshoSnapshots(doCached) >= MIN_DO_TRUSTED_SNAPSHOTS) {
@@ -243,29 +245,24 @@ export const handleGetOdds = async (
     await writeToEdgeCache(raceKey, payload, env);
     return jsonResponse(payload);
   }
+  return jsonResponse(await buildLatestOnlyPayloadFromKv(env, raceKey));
+};
+
+const buildLatestOnlyPayloadFromKv = async (env: Env, raceKey: string): Promise<OddsPayload> => {
   const mirrored = await readLatestOddsFromKv(env, raceKey, {
     allowStale: false,
     now: new Date(),
   });
   if (mirrored) {
-    const payload: OddsPayload = {
+    return {
       fetchedAt: mirrored.fetchedAt,
       history: [],
       historyByType: {},
       latest: mirrored.latest,
       raceKey,
     };
-    return jsonResponse(payload);
   }
-  const d1Cached = await readD1ResultCache<OddsPayload>(raceKey, "payload");
-  if (d1Cached && isRaceScopedOddsPayload(d1Cached, raceKey)) {
-    await writeToEdgeCache(raceKey, d1Cached, env);
-    return jsonResponse(d1Cached);
-  }
-  const payload = await buildOddsPayloadFromD1(env, raceKey);
-  await writeD1ResultCache(raceKey, "payload", payload, env);
-  await writeToEdgeCache(raceKey, payload, env);
-  return jsonResponse(payload);
+  return { fetchedAt: null, history: [], historyByType: {}, latest: {}, raceKey };
 };
 
 export const isAuthorizedInternalRequest = (request: Request, env: Env): boolean => {
@@ -302,9 +299,9 @@ export const handleImportOddsChunk = async (env: Env, request: Request): Promise
     raceKeys.map((raceKey) =>
       Promise.all([
         purgeEdgeCache(raceKey),
-        purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES),
         invalidateLatestOddsInKv(env, raceKey),
         purgeCachedOdds(env, raceKey),
+        purgeOddsPayloadFromR2(env, raceKey),
       ]),
     ),
   );
@@ -346,9 +343,9 @@ export const handleDeleteOddsByDate = async (env: Env, request: Request): Promis
     raceKeys.map((raceKey) =>
       Promise.all([
         purgeEdgeCache(raceKey),
-        purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES),
         invalidateLatestOddsInKv(env, raceKey),
         purgeCachedOdds(env, raceKey),
+        purgeOddsPayloadFromR2(env, raceKey),
       ]),
     ),
   );
@@ -1041,7 +1038,6 @@ export const processFetchOddsJob = async (env: Env, raceKey: string): Promise<vo
   }
   const source = raceKey.startsWith("jra:") ? "jra" : "nar";
   await purgeEdgeCache(raceKey);
-  await purgeD1ResultCacheForRace(raceKey, D1_RESULT_CACHE_QUERIES);
   await writeLatestOddsToKv(env, raceKey, {
     fetchedAt: result.fetchedAt,
     latest: result.latest,

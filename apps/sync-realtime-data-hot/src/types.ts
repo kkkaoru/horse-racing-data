@@ -51,6 +51,10 @@ export interface HyperdriveBinding {
   connectionString: string;
 }
 
+export interface PipelineBinding {
+  send(records: unknown[]): Promise<void>;
+}
+
 export interface LocalRaceRow {
   hasso_jikoku: string | null;
   kaisai_kai?: string | null;
@@ -102,6 +106,7 @@ export interface Env {
   REALTIME_HOT_JOBS: Queue<Job>;
   ODDS_HOT_KV: KVNamespace;
   ODDS_ARCHIVE: R2Bucket;
+  ODDS_CATALOG_STREAM?: PipelineBinding;
   ODDS_CACHE: DurableObjectNamespace;
   JRA_BROWSER?: BrowserWorker;
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
@@ -110,6 +115,7 @@ export interface Env {
   ODDS_RACE_LIST_KV_TTL_SECONDS?: string;
   ODDS_EDGE_CACHE_TTL_SECONDS?: string;
   ODDS_D1_RESULT_CACHE_TTL_SECONDS?: string;
+  ODDS_R2_POINTER_KV_TTL_SECONDS?: string;
   ODDS_R2_ARCHIVE_RETENTION_DAYS?: string;
   ODDS_STALE_MIRROR_SECONDS?: string;
   PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;

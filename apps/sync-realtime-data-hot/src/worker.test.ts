@@ -26,7 +26,7 @@ import { fetchAndStoreOdds } from "./fetch-odds";
 import { purgeCachedOdds, readCachedOdds, writeCachedOdds } from "./odds-cache";
 import { populateMultiDayOddsFetchState, populateTodayOddsFetchState } from "./scheduled-race-list";
 import worker, {
-  buildOddsPayloadFromD1,
+  buildOddsPayloadFromR2,
   collectPlanDates,
   groupRowsForFinalBackup,
   handleCronHealth,
@@ -109,6 +109,29 @@ const buildR2 = (): R2Bucket =>
     head: vi.fn(async () => null),
     list: vi.fn(async () => ({ objects: [] })),
     put: vi.fn(async () => ({})),
+  }) as unknown as R2Bucket;
+
+const buildR2WithPayload = (raceKey: string): R2Bucket =>
+  ({
+    ...buildR2(),
+    get: vi.fn(async () => ({
+      json: vi.fn(async () => ({
+        fetchedAt: "2026-05-28T10:00:00+09:00",
+        historyByType: {
+          tansho: [
+            {
+              combination: "01",
+              fetchedAt: "2026-05-28T10:00:00+09:00",
+              odds: 2.5,
+              rank: 1,
+            },
+          ],
+        },
+        latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
+        raceKey,
+        schemaVersion: 1,
+      })),
+    })),
   }) as unknown as R2Bucket;
 
 const buildQueue = (): Queue<Job> =>
@@ -232,8 +255,8 @@ it("isAuthorizedInternalRequest returns false when header missing", () => {
   expect(isAuthorizedInternalRequest(new Request("https://x/"), buildEnv())).toBe(false);
 });
 
-it("buildOddsPayloadFromD1 returns empty payload when D1 has no rows", async () => {
-  const payload = await buildOddsPayloadFromD1(buildEnv(), "nar:20260528:42:01");
+it("buildOddsPayloadFromR2 returns empty payload when R2 has no object", async () => {
+  const payload = await buildOddsPayloadFromR2(buildEnv(), "nar:20260528:42:01");
   expect(payload).toStrictEqual({
     fetchedAt: null,
     history: [],
@@ -243,41 +266,38 @@ it("buildOddsPayloadFromD1 returns empty payload when D1 has no rows", async () 
   });
 });
 
-it("buildOddsPayloadFromD1 returns payload with fetched data", async () => {
+it("buildOddsPayloadFromR2 returns payload with fetched data", async () => {
   const env = buildEnv({
-    REALTIME_HOT_DB: buildDb({
-      latest: {
-        results: [
-          {
-            average_odds: null,
-            combination: "01",
-            fetched_at: "2026-05-28T10:00:00+09:00",
-            max_odds: null,
-            min_odds: null,
-            odds: 2.5,
-            odds_type: "tansho",
-            rank: 1,
+    ODDS_ARCHIVE: {
+      ...buildR2(),
+      get: vi.fn(async () => ({
+        json: vi.fn(async () => ({
+          fetchedAt: "2026-05-28T10:00:00+09:00",
+          historyByType: {
+            tansho: [
+              {
+                combination: "01",
+                fetchedAt: "2026-05-28T10:00:00+09:00",
+                odds: 2.5,
+                rank: 1,
+              },
+            ],
           },
-        ],
-      },
-      tansho: {
-        results: [
-          {
-            combination: "01",
-            fetched_at: "2026-05-28T10:00:00+09:00",
-            odds: 2.5,
-            rank: 1,
+          latest: {
+            tansho: [{ combination: "01", odds: 2.5, rank: 1 }],
           },
-        ],
-      },
-    }),
+          raceKey: "nar:20260528:42:01",
+          schemaVersion: 1,
+        })),
+      })),
+    } as unknown as R2Bucket,
   });
-  const payload = await buildOddsPayloadFromD1(env, "nar:20260528:42:01");
+  const payload = await buildOddsPayloadFromR2(env, "nar:20260528:42:01");
   expect(payload.fetchedAt).toBe("2026-05-28T10:00:00+09:00");
 });
 
-it("handleGetOdds returns force-fresh payload directly from D1", async () => {
-  const env = buildEnv();
+it("handleGetOdds returns force-fresh payload directly from R2", async () => {
+  const env = buildEnv({ ODDS_ARCHIVE: buildR2WithPayload("nar:20260528:42:01") });
   const response = await handleGetOdds(
     env,
     new Request("https://x/api/odds/nar:20260528:42:01?fresh=1"),
@@ -502,7 +522,7 @@ it("handleGetOdds serves from DO when tansho has 50 distinct snapshots across mu
   expect(cacheMock.put).toHaveBeenCalledTimes(1);
 });
 
-it("handleGetOdds falls through to D1 result cache when DO tansho is shallow and KV mirror is missing", async () => {
+it("handleGetOdds falls through to R2 when DO tansho is shallow and KV mirror is missing", async () => {
   vi.mocked(readCachedOdds).mockResolvedValueOnce({
     fetchedAt: "2026-05-28T10:02:00+09:00",
     history: [
@@ -518,27 +538,16 @@ it("handleGetOdds falls through to D1 result cache when DO tansho is shallow and
     historyByType: {},
     latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
   });
-  cacheMock.match.mockResolvedValueOnce(undefined);
-  cacheMock.match.mockResolvedValueOnce(
-    new Response(
-      JSON.stringify({
-        fetchedAt: "2026-05-28T11:00:00+09:00",
-        history: [],
-        historyByType: {},
-        latest: {},
-        raceKey: "nar:20260528:42:01",
-      }),
-    ),
-  );
   const response = await handleGetOdds(
-    buildEnv(),
+    buildEnv({ ODDS_ARCHIVE: buildR2WithPayload("nar:20260528:42:01") }),
     new Request("https://x/api/odds/nar:20260528:42:01"),
     "nar:20260528:42:01",
   );
   expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalledTimes(1);
 });
 
-it("handleGetOdds falls through to D1 query when DO tansho is shallow and no other cache layer hits", async () => {
+it("handleGetOdds falls through to R2 when DO tansho is shallow and no other cache layer hits", async () => {
   vi.mocked(readCachedOdds).mockResolvedValueOnce({
     fetchedAt: "2026-05-28T10:00:00+09:00",
     history: [
@@ -553,7 +562,7 @@ it("handleGetOdds falls through to D1 query when DO tansho is shallow and no oth
     latest: { tansho: [{ combination: "01", odds: 2.5, rank: 1 }] },
   });
   const response = await handleGetOdds(
-    buildEnv(),
+    buildEnv({ ODDS_ARCHIVE: buildR2WithPayload("nar:20260528:42:01") }),
     new Request("https://x/api/odds/nar:20260528:42:01"),
     "nar:20260528:42:01",
   );
@@ -580,35 +589,31 @@ it("handleGetOdds is fail-soft when DO read throws", async () => {
   expect(cacheMock.put).not.toHaveBeenCalled();
 });
 
-it("handleGetOdds returns the D1 result cache payload when present", async () => {
-  cacheMock.match.mockResolvedValueOnce(undefined);
-  cacheMock.match.mockResolvedValueOnce(
-    new Response(
-      JSON.stringify({
-        fetchedAt: "2026-05-28T10:00:00+09:00",
-        history: [],
-        historyByType: {},
-        latest: {},
-        raceKey: "nar:20260528:42:01",
-      }),
-    ),
-  );
+it("handleGetOdds returns the R2 payload when present", async () => {
   const response = await handleGetOdds(
-    buildEnv(),
+    buildEnv({ ODDS_ARCHIVE: buildR2WithPayload("nar:20260528:42:01") }),
     new Request("https://x/api/odds/nar:20260528:42:01"),
     "nar:20260528:42:01",
   );
   expect(response.status).toBe(200);
+  expect(cacheMock.put).toHaveBeenCalledTimes(1);
 });
 
-it("handleGetOdds falls back to D1 query when no cache layer hits", async () => {
+it("handleGetOdds falls back to an empty payload when no cache layer hits", async () => {
   const response = await handleGetOdds(
     buildEnv(),
     new Request("https://x/api/odds/nar:20260528:42:01"),
     "nar:20260528:42:01",
   );
   expect(response.status).toBe(200);
-  expect(cacheMock.put).toHaveBeenCalled();
+  expect(await response.json()).toStrictEqual({
+    fetchedAt: null,
+    history: [],
+    historyByType: {},
+    latest: {},
+    raceKey: "nar:20260528:42:01",
+  });
+  expect(cacheMock.put).not.toHaveBeenCalled();
 });
 
 it("handleUpsertOddsFetchState returns 401 when unauthorized", async () => {
@@ -720,12 +725,12 @@ it("handleImportOddsChunk invalidates all odds cache layers once per raceKey aft
   expect(response.status).toBe(200);
   expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
     "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A20260528%3A42%3A01",
-    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/latest",
-    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/tanshoHistory",
-    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/oddsHistoryByType",
-    "https://internal/odds-cache/v1/nar%3A20260528%3A42%3A01/payload",
   ]);
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:20260528:42:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:20260528:42:01");
+  expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledWith(
+    "odds-live/v1/nar/20260528/nar:20260528:42:01/payload.json",
+  );
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledWith(env, "nar:20260528:42:01");
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(1);
 });
@@ -789,10 +794,18 @@ it("handleDeleteOddsByDate deletes snapshots and invalidates odds caches for the
   });
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:2026:0707:30:01");
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:latest:nar:2026:0707:35:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:2026:0707:30:01");
+  expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:2026:0707:35:01");
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:race-list:v1:jra:20260707");
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:race-list:v1:nar:20260707");
+  expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledWith(
+    "odds-live/v1/nar/20260707/nar:2026:0707:30:01/payload.json",
+  );
+  expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledWith(
+    "odds-live/v1/nar/20260707/nar:2026:0707:35:01/payload.json",
+  );
   expect(vi.mocked(purgeCachedOdds)).toHaveBeenCalledTimes(2);
-  expect(cacheMock.delete).toHaveBeenCalledTimes(10);
+  expect(cacheMock.delete).toHaveBeenCalledTimes(2);
 });
 
 it("groupRowsForFinalBackup groups rows by race_key, odds_type, and date", () => {
@@ -1799,10 +1812,6 @@ it("processFetchOddsJob fans out cache writes on success (NAR)", async () => {
   await processFetchOddsJob(env, "nar:2026:0528:42:01");
   expect(cacheMock.delete.mock.calls.map(([request]) => (request as Request).url)).toStrictEqual([
     "https://sync-realtime-data-hot.kkk4oru.com/api/odds/nar%3A2026%3A0528%3A42%3A01",
-    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/latest",
-    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/tanshoHistory",
-    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/oddsHistoryByType",
-    "https://internal/odds-cache/v1/nar%3A2026%3A0528%3A42%3A01/payload",
   ]);
   expect(vi.mocked(env.ODDS_HOT_KV.put)).toHaveBeenCalled();
   expect(vi.mocked(writeCachedOdds)).toHaveBeenCalledWith(env, "nar:2026:0528:42:01", {

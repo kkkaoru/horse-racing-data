@@ -165,9 +165,57 @@ const buildKv = (): KVNamespace =>
     put: vi.fn(async () => undefined),
   }) as unknown as KVNamespace;
 
+const buildStoredR2Payload = (rows: StoredOddsSnapshotRow[]) => ({
+  fetchedAt: rows.at(-1)?.fetched_at ?? null,
+  historyByType: Object.fromEntries(
+    rows.map((row) => [
+      row.odds_type,
+      [
+        {
+          combination: row.combination,
+          fetchedAt: row.fetched_at,
+          odds: row.odds,
+          rank: row.rank,
+        },
+      ],
+    ]),
+  ),
+  latest: Object.fromEntries(
+    rows.map((row) => [
+      row.odds_type,
+      [
+        {
+          averageOdds: row.average_odds ?? undefined,
+          combination: row.combination,
+          maxOdds: row.max_odds ?? undefined,
+          minOdds: row.min_odds ?? undefined,
+          odds: row.odds ?? undefined,
+          rank: row.rank ?? undefined,
+        },
+      ],
+    ]),
+  ),
+  raceKey: "nar:20260528:42:01",
+  schemaVersion: 1,
+});
+
+const buildR2 = (options: BuildDbOptions = {}): R2Bucket =>
+  ({
+    delete: vi.fn(async () => undefined),
+    get: vi.fn(async () =>
+      options.latestStored
+        ? {
+            json: vi.fn(async () => buildStoredR2Payload(options.latestStored ?? [])),
+          }
+        : null,
+    ),
+    put: vi.fn(async () => ({})),
+  }) as unknown as R2Bucket;
+
 const buildEnv = (overrides: Partial<Env> = {}, dbOptions: BuildDbOptions = {}): Env =>
   ({
     JRA_BROWSER: {} as Env["JRA_BROWSER"],
+    ODDS_ARCHIVE: buildR2(dbOptions),
     ODDS_HOT_KV: buildKv(),
     REALTIME_HOT_DB: buildDb(dbOptions),
     ...overrides,
@@ -464,7 +512,12 @@ it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to cla
     return { bind: vi.fn(() => ({ run })) };
   });
   const db = { batch: vi.fn(async () => []), prepare: prepareSpy } as unknown as D1Database;
-  const env = { JRA_BROWSER: {}, ODDS_HOT_KV: buildKv(), REALTIME_HOT_DB: db } as unknown as Env;
+  const env = {
+    JRA_BROWSER: {},
+    ODDS_ARCHIVE: buildR2(),
+    ODDS_HOT_KV: buildKv(),
+    REALTIME_HOT_DB: db,
+  } as unknown as Env;
   await fetchAndStoreOdds(env, "nar:20260528:42:01", new Date("2026-05-28T05:55:00Z"));
   const firstCall = bindSpy.mock.calls[0];
   const lockUntilArg = firstCall ? firstCall[0] : null;
@@ -608,32 +661,18 @@ it("fetchAndStoreOdds writes only the changed row when the stored odds differ (O
   expect(result?.inserted).toBe(1);
 });
 
-it("fetchAndStoreOdds prunes completed race snapshots and retries when D1 is full", async () => {
-  const env = buildEnv(
-    {},
-    {
-      batchOutcomes: [
-        new Error("D1_ERROR: Exceeded maximum DB size"),
-        [{ meta: { changes: 40 } }, { meta: { changes: 20 } }],
-        [],
-      ],
-      completedRaceKeys: ["nar:20260528:42:01", "nar:20260528:42:02"],
-    },
-  );
+it("fetchAndStoreOdds writes live payload, snapshot, and catalog staging rows to R2", async () => {
+  const env = buildEnv();
   const result = await fetchAndStoreOdds(
     env,
     "nar:20260528:42:03",
     new Date("2026-05-28T05:55:00Z"),
   );
-  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
-  const deleteCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
-    String(call[0]).toLowerCase().includes("delete from odds_snapshots"),
-  );
-  const logCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
-    String(call[0]).toLowerCase().includes("insert into fetch_logs"),
-  );
+  const putMock = env.ODDS_ARCHIVE.put as unknown as ReturnType<typeof vi.fn>;
   expect(result?.inserted).toBe(1);
-  expect(env.REALTIME_HOT_DB.batch).toHaveBeenCalledTimes(3);
-  expect(deleteCalls).toHaveLength(2);
-  expect(logCalls).toHaveLength(1);
+  expect(putMock.mock.calls.map(([key]) => String(key))).toStrictEqual([
+    "odds-live/v1/nar/20260528/nar:20260528:42:03/payload.json",
+    "odds-snapshots/v1/nar/20260528/nar:20260528:42:03/2026-05-28T14:55:00_09:00.json",
+    "odds-catalog-staging/v1/kaisai_yyyymmdd=20260528/nar:20260528:42:03/2026-05-28T14:55:00_09:00.ndjson",
+  ]);
 });

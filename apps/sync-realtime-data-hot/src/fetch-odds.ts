@@ -7,17 +7,14 @@ import {
 } from "./keiba-go";
 import { fetchJraOddsWithPlaywright } from "./jra";
 import { getCachedNarVenueLastRaceStartAtJst } from "./nar-venue-cache";
+import { readOddsPayloadFromR2, writeOddsPayloadToR2 } from "./r2-odds-store";
 import {
   claimOddsFetch,
   completeOddsFetch,
   countOddsRows,
-  deleteOddsSnapshotsForRaceKeys,
   failOddsFetch,
   filterChangedOdds,
-  getLatestOddsFromD1,
   getOddsFetchState,
-  insertOddsSnapshot,
-  listCompletedRaceKeysWithSnapshotsBefore,
   logFetch,
   updateOddsLinks,
 } from "./storage";
@@ -46,10 +43,6 @@ const NON_RETRYABLE_ERROR_FRAGMENTS = [
 // as a hard error.
 const JRA_PARTIAL_FETCH_JOB_TYPE = "jra-odds-partial-fetch";
 const JRA_PARTIAL_FETCH_STATUS = "warn";
-const D1_MAX_SIZE_ERROR_FRAGMENT = "Exceeded maximum DB size";
-const CAPACITY_PRUNE_RACE_LIMIT = 64;
-const CAPACITY_PRUNE_JOB_TYPE = "odds-capacity-prune";
-const CAPACITY_PRUNE_STATUS = "warn";
 
 export interface FetchAndStoreOddsResult {
   fetchedAt: string;
@@ -158,52 +151,6 @@ const logJraPartialFetch = async (
   );
 };
 
-const isD1MaxSizeError = (error: unknown): boolean => {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes(D1_MAX_SIZE_ERROR_FRAGMENT);
-};
-
-const pruneCompletedOddsSnapshotsForCapacity = async (
-  env: Env,
-  nowIso: string,
-): Promise<number> => {
-  const raceKeys = await listCompletedRaceKeysWithSnapshotsBefore(
-    env.REALTIME_HOT_DB,
-    nowIso,
-    CAPACITY_PRUNE_RACE_LIMIT,
-  );
-  const deleted = await deleteOddsSnapshotsForRaceKeys(env.REALTIME_HOT_DB, raceKeys);
-  await logFetch(
-    env.REALTIME_HOT_DB,
-    CAPACITY_PRUNE_JOB_TYPE,
-    CAPACITY_PRUNE_STATUS,
-    null,
-    JSON.stringify({ deleted, raceKeys: raceKeys.length }),
-  ).catch(() => undefined);
-  return deleted;
-};
-
-const insertOddsSnapshotWithCapacityRecovery = async (
-  env: Env,
-  raceKey: string,
-  fetchedAt: string,
-  changed: Partial<Record<OddsType, OddsData[]>>,
-  nowIso: string,
-): Promise<number> => {
-  try {
-    return await insertOddsSnapshot(env.REALTIME_HOT_DB, raceKey, fetchedAt, changed);
-  } catch (error) {
-    if (!isD1MaxSizeError(error)) {
-      throw error;
-    }
-    const deleted = await pruneCompletedOddsSnapshotsForCapacity(env, nowIso);
-    if (deleted === 0) {
-      throw error;
-    }
-    return insertOddsSnapshot(env.REALTIME_HOT_DB, raceKey, fetchedAt, changed);
-  }
-};
-
 export const fetchAndStoreOdds = async (
   env: Env,
   raceKey: string,
@@ -255,15 +202,10 @@ export const fetchAndStoreOdds = async (
     if (countOddsRows(scrape.latest) === 0) {
       throw new Error(`odds rows are empty: ${raceKey}`);
     }
-    const stored = await getLatestOddsFromD1(env.REALTIME_HOT_DB, raceKey);
+    const stored = await readOddsPayloadFromR2(env, raceKey);
     const changed = stored ? filterChangedOdds(scrape.latest, stored.latest) : scrape.latest;
-    const inserted = await insertOddsSnapshotWithCapacityRecovery(
-      env,
-      raceKey,
-      fetchedAt,
-      changed,
-      nowIso,
-    );
+    const inserted = countOddsRows(changed);
+    await writeOddsPayloadToR2(env, raceKey, fetchedAt, scrape.latest);
     await completeOddsFetch(env.REALTIME_HOT_DB, raceKey, fetchedAt);
     if (scrape.missingTypes.length > 0) {
       await logJraPartialFetch(env, raceKey, {

@@ -1,0 +1,15 @@
+{
+  "fields": [
+    { "name": "race_key", "type": "string", "required": true },
+    { "name": "source", "type": "string", "required": false },
+    { "name": "kaisai_yyyymmdd", "type": "string", "required": false },
+    { "name": "fetched_at", "type": "string", "required": true },
+    { "name": "odds_type", "type": "string", "required": true },
+    { "name": "combination", "type": "string", "required": true },
+    { "name": "odds", "type": "float64", "required": false },
+    { "name": "min_odds", "type": "float64", "required": false },
+    { "name": "max_odds", "type": "float64", "required": false },
+    { "name": "average_odds", "type": "float64", "required": false },
+    { "name": "rank", "type": "int64", "required": false }
+  ]
+}
