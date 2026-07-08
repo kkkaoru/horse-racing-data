@@ -5,7 +5,10 @@ requires-python = ">=3.12,<3.13"
 # mlflow's `mlflow server` breaks on Python 3.14 (importlib.abc Traversable
 # bug); pin to 3.12 to match repo standard and avoid it. Full mlflow (not
 # mlflow-skinny) because this package runs the actual UI/tracking server.
-dependencies = ["mlflow>=3.14", "boto3"]
+# psycopg2-binary is the postgresql:// driver -- the full `mlflow` package
+# does not declare it (unlike mlflow-skinny[db] in apps/mlflow), but the
+# server process opens the same Neon-backed store, so it is required here too.
+dependencies = ["mlflow>=3.14", "boto3", "psycopg2-binary>=2.9.0"]
 
 [dependency-groups]
 dev = ["basedpyright>=1.34.0", "pytest>=8.4.0", "pytest-cov>=7.0.0", "ruff>=0.8.0", "ty>=0.0.35"]

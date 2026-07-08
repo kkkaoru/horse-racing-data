@@ -391,6 +391,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Best-effort load of apps/mlflow/.env.local before anything else reads
+    # os.environ, so every subcommand (not just tests that call cmd_*
+    # directly) sees the same backend URI / R2 settings even when invoked
+    # without direnv (cron, launchd, subprocess). load_repo_root_env_fallback()
+    # runs immediately after as a defense-in-depth fallback: it only ever
+    # imports a narrow allow-list of keys from the repo-root .env, and its
+    # setdefault semantics mean any key already loaded from .env.local above
+    # (or already present in the process env) wins.
+    config.load_dotenv_local()
+    config.load_repo_root_env_fallback()
     parser = build_parser()
     args = parser.parse_args(argv)
     func = args.func

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 from mlflow_ui import server
-from mlflow_ui.config import load_config
+from mlflow_ui.config import load_config, load_dotenv_local, load_repo_root_env_fallback
 from mlflow_ui.launchd import generate_plist
 
 EXIT_OK: int = 0
@@ -80,6 +80,8 @@ def _run_plist(output: Path | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv_local()
+    load_repo_root_env_fallback()
     parser = _build_parser()
     args = parser.parse_args(argv)
 

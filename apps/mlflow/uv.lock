@@ -364,6 +364,7 @@ dependencies = [
     { name = "duckdb" },
     { name = "mlflow-skinny", extra = ["db"] },
     { name = "pandas" },
+    { name = "psycopg2-binary" },
     { name = "pyarrow" },
     { name = "sqlalchemy" },
 ]
@@ -384,6 +385,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=1.1.0" },
     { name = "mlflow-skinny", extras = ["db"], specifier = ">=3.14.0" },
     { name = "pandas", specifier = ">=2.2.0" },
+    { name = "psycopg2-binary", specifier = ">=2.9.0" },
     { name = "pyarrow", specifier = ">=17.0.0" },
     { name = "sqlalchemy", specifier = ">=1.4.0,<3" },
 ]

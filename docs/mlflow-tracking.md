@@ -11,9 +11,10 @@
 ## 0. 30 秒サマリ
 
 - **目的**: 着順予測・脚質予測モデルの学習 run / cell 単位の評価結果 / model artifact 参照を、cell 粒度（`category × class × venue × distance_band × season_band × surface × field_size_band`）で一元管理する。
-- **`apps/mlflow`**: `mlflow-skinny[db]` を使った tracking client library + CLI（`uv run python -m mlflow_tracking.cli ...`）。sqlite backend store（`apps/mlflow/data/mlflow.db`、WAL）に直書きし、`mlflow server` プロセスは不要。
+- **`apps/mlflow`**: `mlflow-skinny[db]` を使った tracking client library + CLI（`uv run python -m mlflow_tracking.cli ...`）。`mlflow server` プロセスは不要。
+- **Backend store**: 2026-07-08 に Neon Postgres（既存 `NEON_PRIMARY_URL` と同一プロジェクト/branch の専用 `mlflow` database）へ移行済み。sqlite（`apps/mlflow/data/mlflow.db`、WAL）は未設定時のフォールバック/開発用として残す。詳細は §2.1 / §9。
 - **`apps/mlflow-ui`**: `mlflow server` launcher CLI（`uv run python -m mlflow_ui.cli start|stop|status|plist`）。既定バインドは `127.0.0.1:5252`（macOS の AirPlay Receiver が既定ポート 5000 を占有するため回避）。launchd plist 生成にも対応する。
-- **Artifact store**: 既定は local（`apps/mlflow/data/mlartifacts/`）。Cloudflare R2 は opt-in（S3 互換 API 経由）。
+- **Artifact store**: 現状は local（`apps/mlflow/data/mlartifacts/`）が稼働中の唯一の artifact store。2026-07-08 に Cloudflare R2（バケット `mlflow-artifacts`、prefix `mlflow`、S3 互換 API 経由）への移行を試みたが、既存 R2 credential のバケットスコープ外で `PERMISSION_DENIED` となり同日中に local へロールバック済み（STAGED-BUT-BLOCKED、53 ファイル 28MB は R2 上に up 済みのまま）。詳細は §3。
 - **Model Registry**: `{jra,nar,banei}-finish-position` / `{jra,nar,banei}-running-style` の 6 registered model。alias は `champion`（現行 serving） / `challenger`（staged）の 2 種のみ、legacy stage は使わない。
 - **非侵襲設計**: ingestion は既存パイプラインの出力ファイル（metadata.json / manifest / duckdb / json）を読むだけで、Neon への直接接続や既存の学習・推論コードへの変更は不要。
 
@@ -35,29 +36,36 @@ MLflow を導入し、以下を一元化する。
 
 ### 2.1 `apps/mlflow`（tracking client library + CLI）
 
-- 依存: `mlflow-skinny[db]`（フル `mlflow` ではなく skinny + db extra、server 機能は不要なため）。
-- Backend store: sqlite、`apps/mlflow/data/mlflow.db`。WAL モードで開き、単一プロセスからの直書きを前提とする（§8 の注意を参照）。
+- 依存: `mlflow-skinny[db]`（フル `mlflow` ではなく skinny + db extra、server 機能は不要なため）。加えて `psycopg2-binary` を明示依存として追加済み（postgresql:// URI がデフォルト経路になったため、`[db]` extra 経由の間接依存に留めない）。
+- Backend store: **Neon Postgres**（`mlflow` database、host はプールされていない direct endpoint。既存の `NEON_PRIMARY_URL` と同一 Neon project/branch だが database は分離済みのため alembic 管理テーブルが競馬データの schema と混ざらない）。接続先は環境変数 `HORSE_RACING_MLFLOW_BACKEND_URI` で切り替える（`mlflow_tracking.config.get_tracking_uri()`）。未設定時は sqlite（`apps/mlflow/data/mlflow.db`、WAL）にフォールバックする — テストと、ネットワーク不要のローカル動作はこの経路を使う。
+- ローカルの秘密情報は 3 経路で環境変数に反映される。(1) リポジトリルートの `.env`（gitignore 済み）に `HORSE_RACING_MLFLOW_BACKEND_URI` と R2 資格情報を追加し、`direnv` の `dotenv` で自動ロードする既存経路（interactive shell 前提）。(2) `apps/mlflow/.env.local`（gitignore 済み、`apps/mlflow` と `apps/mlflow-ui` の両方から見える共有ファイル）を `mlflow_tracking.config.load_dotenv_local()`（および `mlflow_ui.config` 側の同等関数）が CLI / server 起動時に直接読み込む経路。direnv の interactive shell hook を経由しないため、cron / launchd / subprocess のような非対話呼び出しでも確実に設定を反映できる。(3) 上記 2 経路より下位の第三のフォールバックとして、`load_repo_root_env_fallback()`（`mlflow_tracking.config` / `mlflow_ui.config` の両方に実装済み、各パッケージの `cli.py` の `main()` から `load_dotenv_local()` の直後に呼ばれる）がリポジトリルートの `.env` を direnv を介さず直接パースする。direnv は `.envrc` 編集後に `direnv allow` を再実行しないとサイレントに動かなくなることがある既知の弱点があり（本移行セッション中に実際に発生した）、これに依存しない安全網として追加した。対象は `HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix のキーと `CLOUDFLARE_ACCOUNT_ID` のみに限定した許可リスト方式で、Neon の競馬 DB DSN や `PC_KEIBA_*` トークンなど同ファイル内の他の秘密情報には一切触れない。`export KEY=VALUE` 形式の bash 風プレフィックスも許容する。3 経路とも `os.environ.setdefault` 相当のセマンティクスで、既に設定済みの環境変数の方がファイルの値より常に優先される（呼び出し順は `load_dotenv_local()` → `load_repo_root_env_fallback()` のため、優先順位は 明示的な環境変数 > `apps/mlflow/.env.local` > root `.env` の許可リストキー > ハードコードされたデフォルト値 の順になる）。`env -i PATH=... HOME=... uv run python -m mlflow_tracking.cli log-training-run <manifest>`（launchd ジョブが受け取る環境に近い、完全にスクラッチな環境）でも direnv・事前設定済み環境変数のどちらにも依存せず Neon backend を解決し run を記録できることを検証済み。
 - 呼び出し: `uv run python -m mlflow_tracking.cli <subcommand> ...`。サブコマンド一覧は §7 を参照。
-- server は起動しない。CLI は `MlflowClient` / tracking API を直接 sqlite に対して呼ぶ。
+- server は起動しない。CLI は `MlflowClient` / tracking API を直接 backend store に対して呼ぶ。
 
 ### 2.2 `apps/mlflow-ui`（mlflow server launcher）
 
-- `mlflow server --backend-store-uri sqlite:///.../mlflow.db --default-artifact-root ...` を起動する薄いラッパー。
+- `mlflow server --backend-store-uri <sqlite:///... または postgresql://...> --default-artifact-root ...` を起動する薄いラッパー。`--backend-store-uri` は `mlflow_ui.config.load_config()` が同じ `HORSE_RACING_MLFLOW_BACKEND_URI` を読んで解決する（§2.1 と同一の切り替え）。`psycopg2-binary` を明示依存として追加済み（フル `mlflow` パッケージは postgresql ドライバを同梱しないため）。
 - 呼び出し: `uv run python -m mlflow_ui.cli start|stop|status|plist`。
 - 既定バインド: `127.0.0.1:5252`。macOS では AirPlay Receiver が既定ポート 5000 を占有するため、MLflow のデフォルトポートではなくこのポートを使う。
-- `plist` サブコマンドは launchd の plist ファイルを生成する（`--output` でファイル出力）。常駐 UI が必要な場合にこれを `launchctl load` する運用を想定するが、本書では手順の提示のみに留め、自動登録は行わない（§8）。
+- `plist` サブコマンドは launchd の plist ファイルを生成する（`--output` でファイル出力）。常駐 UI が必要な場合にこれを `launchctl load` する運用を想定するが、本書では手順の提示のみに留め、自動登録は行わない（§8）。生成される plist の `EnvironmentVariables` は `HORSE_RACING_MLFLOW_BACKEND_URI` を含む（`mlflow_ui.launchd._CARRIED_ENV_VARS`）。
 
 ---
 
 ## 3. Artifact store
 
-### 3.1 既定（local）
+### 3.1 ローカル（現行の稼働中 artifact store）
 
-`apps/mlflow/data/mlartifacts/` にモデル・cell メトリクス parquet などの artifact を保存する。`apps/mlflow/data/` は gitignore 済み（tmp 系ディレクトリを git 管理しない既存ルールに従う、[[feedback_no_tmp_git_tracking]]）。
+`apps/mlflow/data/mlartifacts/` は現在稼働中の artifact store で、モデル・cell メトリクス parquet などの artifact をここに保存する。`apps/mlflow/.env.local` の `HORSE_RACING_MLFLOW_ARTIFACTS_MODE` は現在 `local`（既定値）に設定されており、`resolve_artifact_location()` はこのディレクトリ配下の `file://` URI を返す。2026-07-08 に一度 Cloudflare R2 へ切り替えたが、credential 起因の問題により同日中に local へロールバックしている（経緯は §3.2）。`apps/mlflow/data/` は gitignore 済み（tmp 系ディレクトリを git 管理しない既存ルールに従う、[[feedback_no_tmp_git_tracking]]）。
 
-### 3.2 Cloudflare R2 対応（opt-in）
+### 3.2 Cloudflare R2（STAGED-BUT-BLOCKED、2026-07-08 に試行 → 同日ロールバック）
 
-R2 は S3 互換 API を持つため、以下の環境変数を設定することで artifact store を R2 に切り替えられる。
+2026-07-08 に artifact store を Cloudflare R2（バケット `mlflow-artifacts`、prefix `mlflow`）へ切り替えを試みた。`apps/mlflow/data/mlartifacts/` 配下の全 53 ファイル（28MB）は `wrangler r2 object put --remote` で新バケットにアップロード済み（全 53 ファイルをローカルとバイト単位で突合済み）で、これは現在も R2 上に残っている（この部分はロールバックしておらず、やり直し不要）。続けて Neon 側の `experiments.artifact_location`（5 行）/ `runs.artifact_uri`（99 行）を `s3://mlflow-artifacts/mlflow/...` に書き換えて `mlflow-ui` を R2 モードで再起動したところ、`mlflow server` の boto3 S3 client が既存の `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`（本リポジトリの `pc-keiba-features-archive` バケット用に発行済みの資格情報）で新バケット `mlflow-artifacts` への読み書きともに `PERMISSION_DENIED` になることが判明した。この資格情報は Cloudflare R2 API token レベルで `pc-keiba-features-archive` のみにスコープされており account-wide ではない。これはアップロードに使った `wrangler` CLI の account-level 認証とは別系統の credential であり、wrangler が成功したことは boto3 側の成功を意味しない。
+
+このため Neon 側の URI は同日中に元の local パス（`file:///Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/apps/mlflow/data/mlartifacts`）へロールバック済み（experiments 5 件・runs 99 件、query で `s3://mlflow-artifacts` を参照する行が 0 件であることを確認済み）で、`apps/mlflow/.env.local` の `HORSE_RACING_MLFLOW_ARTIFACTS_MODE` も `r2` から `local` に戻し、`mlflow-ui` を local モードで再起動している（この状態が §3.1 の現行稼働状態）。
+
+**現状は STAGED-BUT-BLOCKED**: R2 上のオブジェクトはそのまま使える状態で待機しており、再開に必要なのは (a) 既存 R2 API token のバケットスコープを `mlflow-artifacts` にも広げる、またはこのバケット専用の新規 R2 API token を発行する（Cloudflare ダッシュボード側の作業、本セッションのスコープ外）、(b) `apps/mlflow/.env.local` の `HORSE_RACING_MLFLOW_ARTIFACTS_MODE` を `r2` に戻す、(c) 上記と同じ Neon `experiments.artifact_location` / `runs.artifact_uri` の書き換えを再実行する、の 3 手順のみで、データの再アップロードは不要。
+
+有効化する場合、R2 は S3 互換 API を持つため以下の環境変数（`HORSE_RACING_MLFLOW_ARTIFACTS_MODE=r2` を含む）を設定する。
 
 | 変数                                          | 用途                                                                                         |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -127,7 +135,18 @@ Ingestion は既存パイプラインが出力するファイルを読むだけ�
 ## 9. 注意点
 
 - `apps/mlflow/data/` は gitignore 済み（sqlite backend store・artifact store・ログ・pid ファイルを含む）。tmp 系ディレクトリを git 管理しない既存ルール（[[feedback_no_tmp_git_tracking]]）に従う。
-- sqlite backend store は単一 writer を前提とする。複数プロセスから並列に大量ログを書く場合は、書き込みを 1 プロセスに集約すること（同時書き込みによる sqlite ロック競合を避けるため）。
+- sqlite フォールバック時は単一 writer を前提とする。複数プロセスから並列に大量ログを書く場合は、書き込みを 1 プロセスに集約すること（同時書き込みによる sqlite ロック競合を避けるため）。Neon Postgres backend では通常の RDBMS の同時実行制御に従うため、この制約はない。
+- **`mlflow server` のバックグラウンドジョブは無効化済み**: インストール済み `mlflow` パッケージのソースを確認したところ、`mlflow server` は既定で huey ベースのバックグラウンドワーカーを起動し、`online_scoring_scheduler` / `trace_archival_scheduler` の 2 タスクを毎分（60 秒間隔）backend store に対してクエリしながら実行する。本リポジトリは GenAI 系の online scoring / trace archival 機能を一切使わないが、この毎分クエリが Neon serverless compute の auto-suspend を妨げ続け、意図しない compute-hour 課金の原因になる。そのため `mlflow_ui.config.server_env()` は、operator が既に明示的に設定していない限り `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false` を spawn 先の `mlflow server` subprocess の環境へ常に含める（local / r2 いずれの artifact mode でも同様。backend store 側の設定であり artifact mode とは無関係）。再起動後、huey consumer および `_job_runner` / `_periodic_tasks_consumer` プロセスが uvicorn worker と並んで起動しなくなったことを確認済み。
+- **Artifact store は現状 local が稼働中**（§3.1、`apps/mlflow/data/mlartifacts/`）。2026-07-08 に Cloudflare R2（バケット `mlflow-artifacts`、prefix `mlflow`）への移行を試みたが、`mlflow server` の boto3 client が既存 R2 credential のバケットスコープ外で `PERMISSION_DENIED` になったため、Neon 側の URI 書き換え・env 設定ともに同日中に local へロールバックした（§3.2）。アップロード済みの 53 ファイルは R2 上に残っており、STAGED-BUT-BLOCKED の状態でバケットスコープ付き credential の発行待ちとなっている。
+
+### 9.1 Neon Postgres backend への移行（2026-07-08）
+
+- **移行元**: `apps/mlflow/data/mlflow.db`（sqlite、WAL）。移行後もこのファイルは削除せず、スナップショットとしてディスク上に残してある。
+- **移行先**: 既存 Neon project（`NEON_PRIMARY_URL` と同一 project/branch、`ep-frosty-cloud-ao28v17l`）内に新規作成した `mlflow` database。`CREATE DATABASE mlflow` は `neondb_owner` ロールで実行し成功（racing 用の `neondb` database とは完全に分離）。
+- **スキーマ初期化**: `uv run mlflow db upgrade <postgres_uri>`（alembic）。sqlite 側と同じ `mlflow-skinny==3.14.0` から生成したため、テーブル一覧・`alembic_version`（`b7e4c1a90f23`）・既定 `workspaces` 行まで完全一致した。
+- **データ移行**: 一回限りの migration script（リポジトリには含まれない、scratchpad 上のみ）で FK 安全な順序（`workspaces → experiments → experiment_tags → runs → metrics/latest_metrics/params/tags → registered_models → model_versions → model_version_tags/registered_model_tags/registered_model_aliases → datasets/inputs/input_tags`）で `INSERT ... ON CONFLICT DO NOTHING` によりコピーした。`experiments.experiment_id` の identity sequence は移行後に `MAX(experiment_id)` へ再設定済み。
+- **検証**: `MlflowClient` を sqlite 側・Neon 側の両方に向けて experiment 別 run 件数・registered model 別 version 件数・5 個の champion alias（`jra/nar/banei-finish-position`, `jra/nar-running-style`）を突合し、全項目一致を確認した。書き込み経路も `log-training-run`（synthetic smoke manifest）で確認し、Neon への書き込みが即座にローカル UI（`127.0.0.1:5252`）に反映されることを確認済み。
+- **Hyperdrive**: Cloudflare Worker から同じ `mlflow` database を読む用途で Hyperdrive config `mlflow-store` を作成済み（direct/非 pooler endpoint を指す — `pc-keiba-viewer-neon` と同じパターン）。Worker への配線は別タスクのスコープ。
 
 ---
 
@@ -185,7 +204,7 @@ flowchart LR
     CLI["mlflow_tracking.cli<br/>log-training-run / ingest-serve-accuracy"]
     HOOK -->|"uv run --project apps/mlflow<br/>（subprocess、非致命）"| CLI
 
-    subgraph MLFLOW["apps/mlflow（sqlite backend store）"]
+    subgraph MLFLOW["apps/mlflow（Neon Postgres backend store、sqlite はフォールバック）"]
         RUNS[("Runs / Params / Metrics /<br/>cell_metrics table")]
         REG[("Model Registry<br/>champion / challenger alias")]
         CLI --> RUNS

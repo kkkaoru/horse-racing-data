@@ -29,6 +29,23 @@ def isolate_data_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv(config.ENV_DATA_DIR, str(tmp_path / "data"))
 
 
+@pytest.fixture(autouse=True)
+def isolate_env_file_loaders(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Point HORSE_RACING_MLFLOW_ENV_FILE / _ROOT_ENV_FILE at guaranteed-
+    nonexistent paths for every test.
+
+    config.load_dotenv_local() / load_repo_root_env_fallback() otherwise
+    default to the real apps/mlflow/.env.local and repo-root .env on disk --
+    real, gitignored, secret-bearing files. Any test that calls cli.main()
+    (or either loader directly) without its own override would read those
+    real files, making outcomes depend on machine state instead of being
+    hermetic. Individual loader tests override this by passing an explicit
+    env_file argument, which always wins over this env var.
+    """
+    monkeypatch.setenv(config.ENV_ENV_FILE, str(tmp_path / "nonexistent-env-local"))
+    monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(tmp_path / "nonexistent-root-env"))
+
+
 @pytest.fixture
 def client(tmp_path: Path) -> MlflowClient:
     """A fresh MlflowClient backed by an isolated sqlite tracking store."""

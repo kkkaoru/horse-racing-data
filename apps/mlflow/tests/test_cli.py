@@ -31,10 +31,25 @@ WriteJsonFixture = Callable[[Path, object], None]
 
 @pytest.fixture(autouse=True)
 def clear_cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear ambient tracking/artifact env vars so each CLI test starts clean."""
+    """Clear ambient tracking/artifact env vars so each CLI test starts clean.
+
+    Also stubs config.load_dotenv_local and config.load_repo_root_env_fallback
+    to no-ops: cli.main() now calls both unconditionally on every invocation,
+    and their real default env_file paths resolve to the actual
+    apps/mlflow/.env.local and repo-root .env on disk (real, gitignored,
+    secret-bearing files). Leaving them un-stubbed here would let the first
+    test in this file that calls cli.main() load those real secrets into
+    this process's os.environ, where they would persist (setdefault never
+    unsets them) and leak into every later test.
+    test_main_calls_load_dotenv_local_before_dispatch and
+    test_main_calls_load_repo_root_env_fallback_after_dotenv_local below
+    override these stubs to verify the wiring itself.
+    """
     monkeypatch.delenv(config.ENV_TRACKING_URI, raising=False)
     monkeypatch.delenv(config.ENV_ARTIFACTS_MODE, raising=False)
     monkeypatch.delenv(config.ENV_R2_BUCKET, raising=False)
+    monkeypatch.setattr(config, "load_dotenv_local", lambda: None)
+    monkeypatch.setattr(config, "load_repo_root_env_fallback", lambda: None)
 
 
 def test_init_creates_data_dir_and_all_experiments(tmp_path: Path) -> None:
@@ -463,6 +478,27 @@ def test_cmd_list_models_with_aliases(capsys: pytest.CaptureFixture[str]) -> Non
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "champion=" in captured.out
+
+
+def test_main_calls_load_dotenv_local_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(config, "load_dotenv_local", lambda: calls.append("loaded"))
+    exit_code = cli.main(["list-models"])
+    assert exit_code == 0
+    assert calls == ["loaded"]
+
+
+def test_main_calls_load_repo_root_env_fallback_after_dotenv_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(config, "load_dotenv_local", lambda: calls.append("dotenv_local"))
+    monkeypatch.setattr(
+        config, "load_repo_root_env_fallback", lambda: calls.append("root_env_fallback")
+    )
+    exit_code = cli.main(["list-models"])
+    assert exit_code == 0
+    assert calls == ["dotenv_local", "root_env_fallback"]
 
 
 def test_main_requires_a_subcommand() -> None:

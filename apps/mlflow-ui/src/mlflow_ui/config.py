@@ -9,6 +9,7 @@ server.py when the server is actually started.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import Literal
 REPO_ROOT: Path = Path(__file__).resolve().parents[4]
 
 DEFAULT_DATA_DIR: Path = REPO_ROOT / "apps" / "mlflow" / "data"
+DEFAULT_ENV_LOCAL_FILE: Path = REPO_ROOT / "apps" / "mlflow" / ".env.local"
+DEFAULT_ROOT_ENV_FILE: Path = REPO_ROOT / ".env"
 DEFAULT_HOST: str = "127.0.0.1"
 DEFAULT_PORT: int = 5252
 DEFAULT_R2_PREFIX: str = "mlflow"
@@ -31,6 +34,9 @@ _PORT_ENV: str = "HORSE_RACING_MLFLOW_UI_PORT"
 _R2_BUCKET_ENV: str = "HORSE_RACING_MLFLOW_R2_BUCKET"
 _R2_PREFIX_ENV: str = "HORSE_RACING_MLFLOW_R2_PREFIX"
 
+_ENV_FILE_ENV: str = "HORSE_RACING_MLFLOW_ENV_FILE"
+_ROOT_ENV_FILE_ENV: str = "HORSE_RACING_MLFLOW_ROOT_ENV_FILE"
+
 _R2_ACCOUNT_ID_ENV: str = "R2_ACCOUNT_ID"
 _CLOUDFLARE_ACCOUNT_ID_ENV: str = "CLOUDFLARE_ACCOUNT_ID"
 _R2_ACCESS_KEY_ID_ENV: str = "R2_ACCESS_KEY_ID"
@@ -40,6 +46,107 @@ _AWS_ACCESS_KEY_ID_ENV: str = "AWS_ACCESS_KEY_ID"
 _AWS_SECRET_ACCESS_KEY_ENV: str = "AWS_SECRET_ACCESS_KEY"
 _AWS_DEFAULT_REGION_ENV: str = "AWS_DEFAULT_REGION"
 _MLFLOW_S3_ENDPOINT_URL_ENV: str = "MLFLOW_S3_ENDPOINT_URL"
+
+_MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV: str = "MLFLOW_SERVER_ENABLE_JOB_EXECUTION"
+
+# Prefixes/exact names allow-listed for load_repo_root_env_fallback(): the
+# repo-root .env holds many unrelated secrets for other apps, so only these
+# are ever imported from it.
+_ROOT_ENV_ALLOWED_PREFIXES: tuple[str, ...] = (
+    "HORSE_RACING_MLFLOW_",
+    "MLFLOW_",
+    "R2_",
+)
+_ROOT_ENV_ALLOWED_EXACT: tuple[str, ...] = (_CLOUDFLARE_ACCOUNT_ID_ENV,)
+
+_EXPORT_PREFIX_RE = re.compile(r"^export\s+")
+
+
+def _strip_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _is_allowed_root_env_key(key: str) -> bool:
+    if key in _ROOT_ENV_ALLOWED_EXACT:
+        return True
+    return any(key.startswith(prefix) for prefix in _ROOT_ENV_ALLOWED_PREFIXES)
+
+
+def load_dotenv_local(env_file: Path | None = None) -> None:
+    """Load KEY=VALUE pairs from a .env-style file into os.environ, without
+    overriding any variable that is already set (explicit process env always
+    wins). No-op if the file doesn't exist. Silently skips blank lines,
+    lines starting with '#', and lines without an '=' sign. Strips one
+    layer of matching single or double quotes from the value.
+
+    This is a robustness fallback for non-interactive callers (launchd,
+    cron, subprocess) that never source direnv's interactive-shell hook.
+    ``env_file`` defaults to the file shared with the sibling ``mlflow``
+    package at ``apps/mlflow/.env.local``.
+
+    The explicit ``env_file`` argument always wins. When omitted, the
+    HORSE_RACING_MLFLOW_ENV_FILE env var (if set) names the file to load
+    instead of the default -- primarily so test suites can point this at a
+    guaranteed-nonexistent path and make every call a no-op deterministically,
+    without depending on whether the real .env.local exists on the machine
+    running the tests.
+    """
+    if env_file is not None:
+        path = env_file
+    else:
+        override = os.environ.get(_ENV_FILE_ENV, "").strip()
+        path = Path(override) if override else DEFAULT_ENV_LOCAL_FILE
+    if not path.is_file():
+        return
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw_value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        value = _strip_quotes(raw_value.strip())
+        os.environ.setdefault(key, value)
+
+
+def load_repo_root_env_fallback(env_file: Path | None = None) -> None:
+    """Fallback layer below load_dotenv_local(): parse specific keys directly
+    out of the repo-root .env (NOT via direnv) so mlflow_ui resolves
+    Neon/R2 config even when apps/mlflow/.env.local is missing or
+    incomplete. Root .env holds many unrelated repo secrets, so only keys
+    matching HORSE_RACING_MLFLOW_*/MLFLOW_*/R2_* or exactly
+    CLOUDFLARE_ACCOUNT_ID are ever imported. Uses os.environ.setdefault, so
+    any var already set (by the process env OR an earlier
+    load_dotenv_local() call) always wins. Tolerates a leading 'export '
+    prefix on a line. Never raises on a missing file or malformed line.
+
+    The explicit ``env_file`` argument always wins. When omitted, the
+    HORSE_RACING_MLFLOW_ROOT_ENV_FILE env var (if set) names the file to load
+    instead of the default -- same rationale as load_dotenv_local()'s
+    HORSE_RACING_MLFLOW_ENV_FILE override.
+    """
+    if env_file is not None:
+        path = env_file
+    else:
+        override = os.environ.get(_ROOT_ENV_FILE_ENV, "").strip()
+        path = Path(override) if override else DEFAULT_ROOT_ENV_FILE
+    if not path.is_file():
+        return
+
+    for raw_line in path.read_text().splitlines():
+        line = _EXPORT_PREFIX_RE.sub("", raw_line.strip())
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, raw_value = line.partition("=")
+        key = key.strip()
+        if not key or not _is_allowed_root_env_key(key):
+            continue
+        value = _strip_quotes(raw_value.strip())
+        os.environ.setdefault(key, value)
 
 
 @dataclass(frozen=True)
@@ -159,18 +266,30 @@ def load_config() -> Config:
 def server_env(cfg: Config) -> dict[str, str]:
     """Build the extra env vars to merge in for the ``mlflow server`` subprocess.
 
-    In local mode no extra env is needed. In r2 mode this points mlflow's
-    boto3 client at the R2 S3-compatible endpoint, without clobbering AWS_*
-    vars an operator may have deliberately set already.
+    Unconditionally disables mlflow's huey-based background job schedulers
+    (``online_scoring_scheduler`` / ``trace_archival_scheduler``), which
+    otherwise poll the backend database every minute and prevent Neon's
+    serverless compute from ever auto-suspending. This repo uses none of
+    mlflow's GenAI online-scoring or trace-archival features, so the
+    subsystem has zero functional cost to disable, in either local or r2
+    artifacts mode -- it is a backend-store/Postgres concern, unrelated to
+    artifacts. An operator who deliberately sets
+    MLFLOW_SERVER_ENABLE_JOB_EXECUTION themselves is never overridden.
+
+    In local mode no other extra env is needed. In r2 mode this additionally
+    points mlflow's boto3 client at the R2 S3-compatible endpoint, without
+    clobbering AWS_* vars an operator may have deliberately set already.
     """
+    env: dict[str, str] = {}
+    if _MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV not in os.environ:
+        env[_MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV] = "false"
+
     if cfg.artifacts_mode != "r2":
-        return {}
+        return env
 
     account_id = cfg.r2_account_id or ""
-    env: dict[str, str] = {
-        _MLFLOW_S3_ENDPOINT_URL_ENV: f"https://{account_id}.r2.cloudflarestorage.com",
-        _AWS_DEFAULT_REGION_ENV: "auto",
-    }
+    env[_MLFLOW_S3_ENDPOINT_URL_ENV] = f"https://{account_id}.r2.cloudflarestorage.com"
+    env[_AWS_DEFAULT_REGION_ENV] = "auto"
     if _AWS_ACCESS_KEY_ID_ENV not in os.environ:
         env[_AWS_ACCESS_KEY_ID_ENV] = cfg.r2_access_key_id or ""
     if _AWS_SECRET_ACCESS_KEY_ENV not in os.environ:

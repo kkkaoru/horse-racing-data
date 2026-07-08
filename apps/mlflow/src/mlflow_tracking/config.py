@@ -31,6 +31,14 @@ ENV_R2_BUCKET: Final[str] = "HORSE_RACING_MLFLOW_R2_BUCKET"
 ENV_R2_PREFIX: Final[str] = "HORSE_RACING_MLFLOW_R2_PREFIX"
 DEFAULT_R2_PREFIX: Final[str] = "mlflow"
 
+# Override the default env-file path each loader reads when its own
+# `env_file` argument is omitted. Primarily so test suites can point these at
+# a guaranteed-nonexistent path and make the loader a no-op deterministically,
+# without depending on whether the real, gitignored files happen to exist on
+# the machine running the tests, or on their contents.
+ENV_ENV_FILE: Final[str] = "HORSE_RACING_MLFLOW_ENV_FILE"
+ENV_ROOT_ENV_FILE: Final[str] = "HORSE_RACING_MLFLOW_ROOT_ENV_FILE"
+
 # Repo-standard R2 env names, adopted from apps/horse-racing-data-lake/.env.example
 # and .dev.vars.example: CLOUDFLARE_ACCOUNT_ID, R2_ACCESS_KEY_ID,
 # R2_SECRET_ACCESS_KEY. R2_ACCOUNT_ID is accepted first for parity with the
@@ -62,6 +70,106 @@ ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_RS_REGISTRY_BACKFILL,
     EXPERIMENT_RS_EVAL,
 )
+
+
+def _strip_matching_quotes(value: str) -> str:
+    """Strip one layer of matching single or double quotes from `value`."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def load_dotenv_local(env_file: Path | None = None) -> None:
+    """Load KEY=VALUE pairs from a .env-style file into os.environ.
+
+    Never overrides a variable already present in os.environ -- an explicit
+    process env value always wins over the file. This is a soft/best-effort
+    loader, never a hard gate: it no-ops when the file does not exist, and
+    silently skips blank lines, '#'-comment lines, and malformed lines
+    (missing '='). One layer of matching single or double quotes is
+    stripped from each value.
+
+    Defaults to apps/mlflow/.env.local -- do not change this default path.
+    It is the canonical, gitignored file that mlflow_ui.config's equivalent
+    loader also targets, since both packages need to resolve the same
+    backend URI / R2 settings. Unlike the repo-root .env (loaded via
+    direnv's interactive-shell hook), this file is read directly by the
+    process itself, so it also works for non-interactive callers (cron,
+    launchd, subprocess) that never source an interactive shell.
+
+    The explicit `env_file` argument always wins. When omitted, the
+    HORSE_RACING_MLFLOW_ENV_FILE env var (if set) names the file to load
+    instead of the default -- primarily so test suites can point this at a
+    guaranteed-nonexistent path and make every call a no-op, rather than
+    depending on whether the real .env.local exists on the machine running
+    the tests.
+    """
+    if env_file is not None:
+        path = env_file
+    else:
+        override = os.environ.get(ENV_ENV_FILE, "").strip()
+        path = Path(override) if override else REPO_ROOT / "apps" / "mlflow" / ".env.local"
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        value = _strip_matching_quotes(value.strip())
+        os.environ.setdefault(key, value)
+
+
+_ROOT_ENV_ALLOWED_PREFIXES: Final[tuple[str, ...]] = ("HORSE_RACING_MLFLOW_", "MLFLOW_", "R2_")
+_ROOT_ENV_ALLOWED_EXACT: Final[frozenset[str]] = frozenset({"CLOUDFLARE_ACCOUNT_ID"})
+
+
+def _is_allowed_root_env_key(key: str) -> bool:
+    """Return True if `key` may be imported from the repo-root .env fallback."""
+    return key in _ROOT_ENV_ALLOWED_EXACT or key.startswith(_ROOT_ENV_ALLOWED_PREFIXES)
+
+
+def load_repo_root_env_fallback(env_file: Path | None = None) -> None:
+    """Fallback layer below load_dotenv_local(): parse specific keys directly
+    out of the repo-root .env (NOT via direnv) so mlflow_tracking resolves
+    Neon/R2 config even when apps/mlflow/.env.local is missing or
+    incomplete. Root .env holds many unrelated repo secrets, so only keys
+    matching HORSE_RACING_MLFLOW_*/MLFLOW_*/R2_* or exactly
+    CLOUDFLARE_ACCOUNT_ID are ever imported -- everything else in that file
+    is ignored. Uses os.environ.setdefault, so any var already set (by the
+    process environment OR by an earlier load_dotenv_local() call) always
+    wins. Tolerates an optional leading 'export ' on a line. Never raises
+    on a missing file or a malformed line.
+
+    The explicit `env_file` argument always wins. When omitted, the
+    HORSE_RACING_MLFLOW_ROOT_ENV_FILE env var (if set) names the file to load
+    instead of the default -- same rationale as load_dotenv_local()'s
+    HORSE_RACING_MLFLOW_ENV_FILE override.
+    """
+    if env_file is not None:
+        path = env_file
+    else:
+        override = os.environ.get(ENV_ROOT_ENV_FILE, "").strip()
+        path = Path(override) if override else REPO_ROOT / ".env"
+    if not path.is_file():
+        return
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip(" ")
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        key = key.strip()
+        if not _is_allowed_root_env_key(key):
+            continue
+        value = _strip_matching_quotes(value.strip())
+        os.environ.setdefault(key, value)
 
 
 def default_data_dir(repo_root: Path = REPO_ROOT) -> Path:

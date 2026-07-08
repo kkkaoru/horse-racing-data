@@ -17,6 +17,11 @@ dependencies = [
   "duckdb>=1.1.0",
   "mlflow-skinny[db]>=3.14.0",
   "pandas>=2.2.0",
+  # Pinned directly (not just via mlflow-skinny[db]) since the tracking store
+  # now points at postgresql:// URIs (Neon) by default in most environments --
+  # the driver is load-bearing for this package, not merely incidental to the
+  # [db] extra.
+  "psycopg2-binary>=2.9.0",
   "pyarrow>=17.0.0",
   "sqlalchemy>=1.4.0,<3",
 ]

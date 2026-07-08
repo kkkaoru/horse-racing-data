@@ -35,6 +35,254 @@ def clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def test_load_dotenv_local_sets_unset_vars_from_simple_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text("MLFLOW_TEST_ENV_LOAD_SIMPLE=value-one\n", encoding="utf-8")
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_SIMPLE"] == "value-one"
+
+
+def test_load_dotenv_local_does_not_override_existing_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MLFLOW_TEST_ENV_LOAD_PRECEDENCE", "already-set")
+    env_file = tmp_path / ".env.local"
+    env_file.write_text("MLFLOW_TEST_ENV_LOAD_PRECEDENCE=from-file\n", encoding="utf-8")
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_PRECEDENCE"] == "already-set"
+
+
+def test_load_dotenv_local_missing_file_is_a_noop(tmp_path: Path) -> None:
+    config.load_dotenv_local(tmp_path / "does-not-exist.env.local")
+
+
+def test_load_dotenv_local_skips_blank_and_comment_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "\n# a comment line\nMLFLOW_TEST_ENV_LOAD_AFTER_COMMENT=value-two\n", encoding="utf-8"
+    )
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_AFTER_COMMENT"] == "value-two"
+
+
+def test_load_dotenv_local_skips_malformed_line_without_equals(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text(
+        "NOT_A_VALID_LINE_NO_EQUALS\nMLFLOW_TEST_ENV_LOAD_AFTER_MALFORMED=value-three\n",
+        encoding="utf-8",
+    )
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_AFTER_MALFORMED"] == "value-three"
+    assert "NOT_A_VALID_LINE_NO_EQUALS" not in os.environ
+
+
+def test_load_dotenv_local_strips_double_quotes(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text('MLFLOW_TEST_ENV_LOAD_DQUOTE="quoted-value"\n', encoding="utf-8")
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_DQUOTE"] == "quoted-value"
+
+
+def test_load_dotenv_local_strips_single_quotes(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env.local"
+    env_file.write_text("MLFLOW_TEST_ENV_LOAD_SQUOTE='quoted-value'\n", encoding="utf-8")
+    config.load_dotenv_local(env_file)
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_SQUOTE"] == "quoted-value"
+
+
+def test_load_dotenv_local_default_path_resolves_under_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    default_dir = tmp_path / "apps" / "mlflow"
+    default_dir.mkdir(parents=True)
+    (default_dir / ".env.local").write_text(
+        "MLFLOW_TEST_ENV_LOAD_DEFAULT_PATH=from-default-path\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    # The conftest.py isolate_env_file_loaders autouse fixture forces this env
+    # var to a nonexistent path for every test; clear it here so this test can
+    # exercise the actual REPO_ROOT-based default it's named after.
+    monkeypatch.delenv(config.ENV_ENV_FILE, raising=False)
+    config.load_dotenv_local()
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_DEFAULT_PATH"] == "from-default-path"
+
+
+def test_load_dotenv_local_honors_env_file_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override_file = tmp_path / "custom-location.env"
+    override_file.write_text("MLFLOW_TEST_ENV_LOAD_OVERRIDE=from-override\n", encoding="utf-8")
+    monkeypatch.setenv(config.ENV_ENV_FILE, str(override_file))
+    config.load_dotenv_local()
+    assert os.environ["MLFLOW_TEST_ENV_LOAD_OVERRIDE"] == "from-override"
+
+
+def test_load_dotenv_local_explicit_arg_wins_over_env_file_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override_file = tmp_path / "should-not-be-used.env"
+    override_file.write_text("MLFLOW_TEST_SHOULD_NOT_LOAD=bad\n", encoding="utf-8")
+    monkeypatch.setenv(config.ENV_ENV_FILE, str(override_file))
+    explicit_file = tmp_path / "explicit.env"
+    explicit_file.write_text("MLFLOW_TEST_EXPLICIT_WINS=good\n", encoding="utf-8")
+    config.load_dotenv_local(explicit_file)
+    assert os.environ["MLFLOW_TEST_EXPLICIT_WINS"] == "good"
+    assert "MLFLOW_TEST_SHOULD_NOT_LOAD" not in os.environ
+
+
+def test_load_dotenv_local_env_file_override_pointing_at_missing_file_is_noop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(config.ENV_ENV_FILE, str(tmp_path / "does-not-exist.env"))
+    config.load_dotenv_local()  # must not raise
+    assert "MLFLOW_TEST_ENV_LOAD_MISSING_OVERRIDE_VAR" not in os.environ
+
+
+def test_load_repo_root_env_fallback_sets_allowed_prefix_keys(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "HORSE_RACING_MLFLOW_TEST_ROOT_FALLBACK_A=value-a\n"
+        "MLFLOW_TEST_ROOT_FALLBACK_B=value-b\n"
+        "R2_TEST_ROOT_FALLBACK_C=value-c\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["HORSE_RACING_MLFLOW_TEST_ROOT_FALLBACK_A"] == "value-a"
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_B"] == "value-b"
+    assert os.environ["R2_TEST_ROOT_FALLBACK_C"] == "value-c"
+
+
+def test_load_repo_root_env_fallback_sets_exact_cloudflare_account_id(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("CLOUDFLARE_ACCOUNT_ID=account-id-value\n", encoding="utf-8")
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["CLOUDFLARE_ACCOUNT_ID"] == "account-id-value"
+
+
+def test_load_repo_root_env_fallback_ignores_unrelated_keys(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "NEON_PRIMARY_URL=postgres://should-not-be-imported\n"
+        "PC_KEIBA_INTERNAL_TOKEN=super-secret-should-not-be-imported\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert "NEON_PRIMARY_URL" not in os.environ
+    assert "PC_KEIBA_INTERNAL_TOKEN" not in os.environ
+
+
+def test_load_repo_root_env_fallback_does_not_override_existing_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MLFLOW_TEST_ROOT_FALLBACK_PRECEDENCE", "already-set")
+    env_file = tmp_path / ".env"
+    env_file.write_text("MLFLOW_TEST_ROOT_FALLBACK_PRECEDENCE=from-root-env\n", encoding="utf-8")
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_PRECEDENCE"] == "already-set"
+
+
+def test_load_repo_root_env_fallback_missing_file_is_a_noop(tmp_path: Path) -> None:
+    config.load_repo_root_env_fallback(tmp_path / "does-not-exist.env")
+
+
+def test_load_repo_root_env_fallback_handles_export_prefix(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "export MLFLOW_TEST_ROOT_FALLBACK_EXPORT=value-exported\n"
+        "export NEON_PRIMARY_URL=should-not-be-imported\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_EXPORT"] == "value-exported"
+    assert "NEON_PRIMARY_URL" not in os.environ
+
+
+def test_load_repo_root_env_fallback_skips_blank_and_comment_lines(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n# a comment line\nMLFLOW_TEST_ROOT_FALLBACK_AFTER_COMMENT=value-after-comment\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_AFTER_COMMENT"] == "value-after-comment"
+
+
+def test_load_repo_root_env_fallback_skips_malformed_line_without_equals(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "NOT_A_VALID_LINE_NO_EQUALS\n"
+        "MLFLOW_TEST_ROOT_FALLBACK_AFTER_MALFORMED=value-after-malformed\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_AFTER_MALFORMED"] == "value-after-malformed"
+    assert "NOT_A_VALID_LINE_NO_EQUALS" not in os.environ
+
+
+def test_load_repo_root_env_fallback_strips_quotes(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        'MLFLOW_TEST_ROOT_FALLBACK_DQUOTE="quoted-value"\n'
+        "MLFLOW_TEST_ROOT_FALLBACK_SQUOTE='quoted-value'\n",
+        encoding="utf-8",
+    )
+    config.load_repo_root_env_fallback(env_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_DQUOTE"] == "quoted-value"
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_SQUOTE"] == "quoted-value"
+
+
+def test_load_repo_root_env_fallback_default_path_resolves_under_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".env").write_text(
+        "MLFLOW_TEST_ROOT_FALLBACK_DEFAULT_PATH=from-default-path\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(config, "REPO_ROOT", tmp_path)
+    # See the analogous delenv in test_load_dotenv_local_default_path_resolves_
+    # under_repo_root above: conftest.py's isolate_env_file_loaders fixture
+    # forces this env var to a nonexistent path for every test.
+    monkeypatch.delenv(config.ENV_ROOT_ENV_FILE, raising=False)
+    config.load_repo_root_env_fallback()
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_DEFAULT_PATH"] == "from-default-path"
+
+
+def test_load_repo_root_env_fallback_honors_env_file_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override_file = tmp_path / "custom-root.env"
+    override_file.write_text(
+        "MLFLOW_TEST_ROOT_FALLBACK_OVERRIDE=from-override\n", encoding="utf-8"
+    )
+    monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(override_file))
+    config.load_repo_root_env_fallback()
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_OVERRIDE"] == "from-override"
+
+
+def test_load_repo_root_env_fallback_explicit_arg_wins_over_env_file_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    override_file = tmp_path / "should-not-be-used.env"
+    override_file.write_text(
+        "MLFLOW_TEST_ROOT_FALLBACK_SHOULD_NOT_LOAD=bad\n", encoding="utf-8"
+    )
+    monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(override_file))
+    explicit_file = tmp_path / "explicit-root.env"
+    explicit_file.write_text(
+        "MLFLOW_TEST_ROOT_FALLBACK_EXPLICIT_WINS=good\n", encoding="utf-8"
+    )
+    config.load_repo_root_env_fallback(explicit_file)
+    assert os.environ["MLFLOW_TEST_ROOT_FALLBACK_EXPLICIT_WINS"] == "good"
+    assert "MLFLOW_TEST_ROOT_FALLBACK_SHOULD_NOT_LOAD" not in os.environ
+
+
+def test_load_repo_root_env_fallback_env_file_override_pointing_at_missing_file_is_noop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(config.ENV_ROOT_ENV_FILE, str(tmp_path / "does-not-exist.env"))
+    config.load_repo_root_env_fallback()  # must not raise
+    assert "MLFLOW_TEST_ROOT_FALLBACK_MISSING_OVERRIDE_VAR" not in os.environ
+
+
 def test_default_data_dir_is_under_repo_root_apps_mlflow(tmp_path: Path) -> None:
     result = config.default_data_dir(tmp_path)
     assert result == tmp_path / "apps" / "mlflow" / "data"
