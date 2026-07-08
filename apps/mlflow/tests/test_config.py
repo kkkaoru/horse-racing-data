@@ -6,6 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+import conftest
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -536,3 +537,86 @@ def test_check_r2_bucket_reachable_builds_boto3_client_when_none_provided(
     monkeypatch.setattr(config.boto3, "client", _fake_client)
     assert config.check_r2_bucket_reachable("bucket") is True
     assert calls == ["s3"]
+
+
+# --- Regression coverage for the 2026-07-08 production-write incident -----
+#
+# apps/mlflow/tests/conftest.py's autouse `isolate_data_dir` fixture used to
+# clear only HORSE_RACING_MLFLOW_DATA_DIR. Because config.get_tracking_uri()
+# checks HORSE_RACING_MLFLOW_BACKEND_URI first, a stray copy of that var in
+# the ambient process environment (e.g. exported for interactive use of the
+# real Neon-backed CLI) made every test in this package that builds an
+# MlflowClient via get_tracking_uri()/build_client() -- including ones that
+# go through cli.main() -- silently target the real production tracking
+# store. Two registered-model champion aliases were overwritten with fake
+# test data before this was caught. conftest.isolate_data_dir now also calls
+# conftest.clear_ambient_backend_uri(); the tests below prove that fix.
+#
+# The generic MLFLOW_TRACKING_URI is a second, independent leak vector for
+# the same underlying incident class: it is the standard mlflow env var that
+# mlflow.tracking.MlflowClient()/mlflow.set_tracking_uri() consult directly
+# whenever code constructs a client without an explicit tracking_uri
+# argument, and get_tracking_uri() itself falls back to it (see config.py's
+# docstring) before computing the isolated sqlite default. It was originally
+# cleared only by test_cli.py's own local fixture, not package-wide;
+# clear_ambient_backend_uri now clears it here too.
+
+
+def test_backend_uri_env_var_is_absent_during_every_test() -> None:
+    """isolate_data_dir (autouse, every test in this package) must have
+    already cleared HORSE_RACING_MLFLOW_BACKEND_URI by the time any test body
+    runs, so get_tracking_uri() can never resolve to a stray ambient value.
+    """
+    assert config.ENV_BACKEND_URI not in os.environ
+
+
+def test_tracking_uri_env_var_is_absent_during_every_test() -> None:
+    """isolate_data_dir (autouse, every test in this package) must have
+    already cleared the generic MLFLOW_TRACKING_URI by the time any test body
+    runs, so get_tracking_uri() -- and any code that builds an MlflowClient
+    or calls mlflow.set_tracking_uri() without an explicit URI -- can never
+    resolve to a stray ambient value.
+    """
+    assert config.ENV_TRACKING_URI not in os.environ
+
+
+def test_clear_ambient_backend_uri_overrides_preset_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulates the exact incident precondition: HORSE_RACING_MLFLOW_BACKEND_URI
+    already set to a realistic Neon-style postgres URI, as if exported in the
+    ambient shell environment before pytest ever started (i.e. before any
+    fixture, including isolate_data_dir itself, has had a chance to run).
+    Invokes conftest.clear_ambient_backend_uri -- the exact function
+    isolate_data_dir calls -- directly against that preset value, and proves
+    it unconditionally wins: the var is gone afterward and get_tracking_uri()
+    can no longer resolve to the fake production URI, regardless of fixture
+    ordering.
+    """
+    fake_production_uri = "postgresql://mlflow_app:s3cr3t@ep-fake-prod.neon.tech/mlflow"
+    monkeypatch.setenv(config.ENV_BACKEND_URI, fake_production_uri)
+    assert os.environ[config.ENV_BACKEND_URI] == fake_production_uri
+
+    conftest.clear_ambient_backend_uri(monkeypatch)
+
+    assert config.ENV_BACKEND_URI not in os.environ
+    assert config.get_tracking_uri() != fake_production_uri
+
+
+def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same precondition as the test above, but for the generic
+    MLFLOW_TRACKING_URI rather than the repo-scoped HORSE_RACING_MLFLOW_
+    BACKEND_URI: preset to a realistic Neon-style postgres URI as if exported
+    ambiently before pytest started. Proves clear_ambient_backend_uri clears
+    this var too, so get_tracking_uri() cannot fall back to it either.
+    """
+    fake_production_uri = "postgresql://mlflow_app:s3cr3t@ep-fake-prod.neon.tech/mlflow"
+    monkeypatch.setenv(config.ENV_TRACKING_URI, fake_production_uri)
+    assert os.environ[config.ENV_TRACKING_URI] == fake_production_uri
+
+    conftest.clear_ambient_backend_uri(monkeypatch)
+
+    assert config.ENV_TRACKING_URI not in os.environ
+    assert config.get_tracking_uri() != fake_production_uri

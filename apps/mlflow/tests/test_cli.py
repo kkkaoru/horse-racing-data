@@ -1,9 +1,16 @@
 """Tests for mlflow_tracking.cli.
 
 The conftest.py `isolate_data_dir` autouse fixture already points
-HORSE_RACING_MLFLOW_DATA_DIR at tmp_path for every test in this suite. cli.py's
-own `build_client()` (which has no override parameter) relies on that so it
-never touches the real repo's apps/mlflow/data directory.
+HORSE_RACING_MLFLOW_DATA_DIR at tmp_path for every test in this suite, and
+unconditionally clears HORSE_RACING_MLFLOW_BACKEND_URI. cli.py's own
+`build_client()` (which has no override parameter) relies on both so it
+never touches the real repo's apps/mlflow/data directory or a real backend.
+
+A handful of tests below build their own MlflowClient directly via
+config.get_tracking_uri() (rather than through cli.main()) to pre-seed
+registry state ahead of a CLI invocation that must see the same store.
+`_isolated_tracking_uri()` is a belt-and-suspenders guard for those call
+sites: see its docstring for the incident that motivates it.
 """
 
 from __future__ import annotations
@@ -52,13 +59,36 @@ def clear_cli_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "load_repo_root_env_fallback", lambda: None)
 
 
+def _isolated_tracking_uri(tmp_path: Path) -> str:
+    """Resolve config.get_tracking_uri() and hard-fail if it escapes tmp_path.
+
+    Belt-and-suspenders for the 2026-07-08 incident (see
+    conftest.clear_ambient_backend_uri's docstring): several tests in this
+    file build a raw MlflowClient directly from config.get_tracking_uri() to
+    pre-seed registry state ahead of a cli.main() call that must read the
+    same store, rather than going through the isolated `client` fixture (a
+    different, unrelated sqlite file that cli.main()'s own build_client()
+    would never see). If the autouse env-clearing were ever bypassed,
+    removed, or reordered, this raises loudly inside the test that would
+    otherwise silently write to whatever real backend the URI resolves to.
+    """
+    uri = config.get_tracking_uri()
+    prefix = "sqlite:///"
+    assert uri.startswith(prefix), f"expected an isolated sqlite tracking URI, got: {uri!r}"
+    db_path = Path(uri.removeprefix(prefix))
+    assert db_path.is_relative_to(tmp_path.resolve()), (
+        f"refusing to build an MlflowClient against a non-isolated tracking URI: {uri!r}"
+    )
+    return uri
+
+
 def test_init_creates_data_dir_and_all_experiments(tmp_path: Path) -> None:
     exit_code = cli.main(["init"])
     assert exit_code == 0
     data_dir = tmp_path / "data"
     assert data_dir.is_dir()
     assert config.db_path_for(data_dir).is_file()
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     for experiment_name in config.ALL_EXPERIMENT_NAMES:
         assert client.get_experiment_by_name(experiment_name) is not None
 
@@ -105,7 +135,7 @@ def test_init_confines_default_experiment_artifact_root_to_data_dir(
 
     assert exit_code == 0
     assert Path.cwd() == elsewhere
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     default_experiment = client.get_experiment("0")
     location = default_experiment.artifact_location.removeprefix("file://")
     assert Path(location).is_relative_to(tmp_path / "data")
@@ -425,8 +455,8 @@ def test_cmd_export_active_models_reports_error(
     assert "error: boom" in captured.err
 
 
-def test_cmd_export_cell_routing(capsys: pytest.CaptureFixture[str]) -> None:
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+def test_cmd_export_cell_routing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     version = registry.register_version(
         client, "jra-finish-position", f"file://{config.get_data_dir()}"
     )
@@ -446,8 +476,8 @@ def test_cmd_export_cell_routing_reports_error_when_no_champion(
     assert "error:" in captured.err
 
 
-def test_cmd_set_champion(capsys: pytest.CaptureFixture[str]) -> None:
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+def test_cmd_set_champion(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     version = registry.register_version(
         client, "jra-finish-position", f"file://{config.get_data_dir()}"
     )
@@ -459,8 +489,10 @@ def test_cmd_set_champion(capsys: pytest.CaptureFixture[str]) -> None:
     assert registry.CHAMPION_ALIAS in registered.aliases
 
 
-def test_cmd_list_models_with_no_aliases(capsys: pytest.CaptureFixture[str]) -> None:
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+def test_cmd_list_models_with_no_aliases(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     registry.register_version(client, "nar-finish-position", f"file://{config.get_data_dir()}")
     exit_code = cli.main(["list-models"])
     assert exit_code == 0
@@ -468,8 +500,8 @@ def test_cmd_list_models_with_no_aliases(capsys: pytest.CaptureFixture[str]) -> 
     assert "nar-finish-position" in captured.out
 
 
-def test_cmd_list_models_with_aliases(capsys: pytest.CaptureFixture[str]) -> None:
-    client = MlflowClient(tracking_uri=config.get_tracking_uri())
+def test_cmd_list_models_with_aliases(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
     version = registry.register_version(
         client, "jra-finish-position", f"file://{config.get_data_dir()}"
     )

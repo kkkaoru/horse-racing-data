@@ -58,3 +58,15 @@ that bucket-name env vars are intentionally package-specific
 Missing R2 configuration when `HORSE_RACING_MLFLOW_ARTIFACTS_MODE=r2` is
 detected at config-load time (fails fast, before any subprocess is
 launched), naming exactly which variable(s) are missing.
+
+## Neon cost hygiene
+
+`mlflow server` always launches with `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`
+injected into its subprocess environment, regardless of artifacts mode. This
+disables mlflow's huey-based background job schedulers
+(`online_scoring_scheduler` / `trace_archival_scheduler`), which otherwise
+poll the backend database every minute and prevent a Neon serverless backend
+from ever auto-suspending. This repo does not use mlflow's GenAI
+online-scoring or trace-archival features, so disabling the subsystem has no
+functional cost. An operator who sets `MLFLOW_SERVER_ENABLE_JOB_EXECUTION`
+themselves before starting the server is never overridden.
