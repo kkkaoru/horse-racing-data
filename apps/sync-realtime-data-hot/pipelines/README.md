@@ -69,6 +69,18 @@ WRANGLER_R2_SQL_AUTH_TOKEN="$TOKEN" bunx wrangler r2 sql query \
   "SELECT race_key, odds_type, count(*) AS rows FROM odds.snapshots_hot GROUP BY race_key, odds_type ORDER BY rows DESC LIMIT 20"
 ```
 
+## Full Cutover Verification
+
+```sh
+ODDS_R2_VERIFY_RACE_KEYS=nar:2026:0708:30:11,nar:2026:0708:45:12 \
+WRANGLER_R2_SQL_AUTH_TOKEN="$TOKEN" \
+bun run --filter sync-realtime-data-hot verify:odds-r2-cutover
+```
+
+This checks the hot Worker `fresh=1` read path, the post-cutover D1 `odds_snapshots`
+write count, R2 Data Catalog status, stream/sink/pipeline presence, and R2 SQL
+namespace visibility.
+
 ## Cutover Checks
 
 ```sh
