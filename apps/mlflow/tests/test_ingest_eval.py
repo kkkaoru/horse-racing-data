@@ -156,6 +156,38 @@ def test_ingest_trial_registry_falls_back_to_trial_id_when_model_version_missing
     assert run.info.run_name == "trial:exploratory-1"
 
 
+def test_ingest_trial_registry_skips_run_for_group_with_no_populated_metrics_or_tags(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """A trial-group whose records populate none of TRIAL_METRIC_COLUMNS (nor
+    TRIAL_TAG_COLUMNS) must not create a run at all -- verified real example:
+    an empty wf-eval run named "v1" with nothing logged on it. Only the OTHER,
+    genuinely populated group in this same duckdb file should produce a run."""
+    duckdb_path = tmp_path / "trial_registry_empty_group.duckdb"
+    _build_trial_registry_duckdb(
+        duckdb_path,
+        [
+            {"trial_id": "empty-1"},
+            {
+                "trial_id": "populated-1",
+                "category": "jra",
+                "top1_accuracy": 0.4,
+                "verdict": "ADOPT",
+            },
+        ],
+    )
+    run_ids = ingest_eval.ingest_trial_registry(client, duckdb_path)
+    assert None not in run_ids
+    assert len(run_ids) == 1
+    run = client.get_run(run_ids[0])
+    assert run.info.run_name == "trial:populated-1"
+
+    experiment = client.get_experiment_by_name(ingest_eval.TRIAL_REGISTRY_EXPERIMENT)
+    assert experiment is not None
+    all_runs = client.search_runs([experiment.experiment_id])
+    assert len(all_runs) == 1
+
+
 def test_ingest_serve_accuracy_logs_finish_position_and_running_style(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:
@@ -322,6 +354,168 @@ def test_ingest_serve_accuracy_raises_when_neither_section_present(
     write_json(json_path, {})
     with pytest.raises(ValueError, match="neither finish_position nor running_style"):
         ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
+
+
+def test_ingest_serve_accuracy_is_idempotent_for_identical_payload(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """A repeated ingest of the IDENTICAL payload (the verified real
+    duplicate: two identical win5-overlay runs created 28 seconds apart by a
+    repeated call) must reuse the same run, not create a second one."""
+    payload = {
+        "finish_position": {
+            "date_str": "20260601",
+            "category": "jra",
+            "era": "POST_FIX",
+            "top1_pct": 44.5,
+            "model_version_counts": {"jra-cb-v9-sim-2013-clean": 100},
+        }
+    }
+    json_path = tmp_path / "serve_accuracy_dup.json"
+    write_json(json_path, payload)
+
+    first_run_id = ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
+    second_run_id = ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
+    assert first_run_id == second_run_id
+
+    run = client.get_run(first_run_id)
+    serve_key = run.data.tags[ingest_eval.SERVE_KEY_TAG]
+    matches = client.search_runs(
+        [run.info.experiment_id],
+        filter_string=f"tags.{ingest_eval.SERVE_KEY_TAG} = '{serve_key}'",
+    )
+    assert len(matches) == 1
+
+
+def test_ingest_serve_accuracy_reuses_run_and_updates_in_place_for_same_identity(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Two payloads sharing the same (model_version identity, date, category)
+    but differing in a metric value still reuse the same run
+    (update-in-place), and the run ends up reflecting the LATEST call's
+    data."""
+    first_payload = {
+        "finish_position": {
+            "date_str": "20260601",
+            "category": "jra",
+            "era": "POST_FIX",
+            "top1_pct": 44.5,
+            "model_version_counts": {"jra-cb-v9-sim-2013-clean": 100},
+        }
+    }
+    first_path = tmp_path / "serve_accuracy_v1.json"
+    write_json(first_path, first_payload)
+    first_run_id = ingest_eval.ingest_serve_accuracy(client, first_path, eval_regime="serve")
+
+    second_payload = {
+        "finish_position": {
+            **first_payload["finish_position"],
+            "top1_pct": 50.0,
+        }
+    }
+    second_path = tmp_path / "serve_accuracy_v2.json"
+    write_json(second_path, second_payload)
+    second_run_id = ingest_eval.ingest_serve_accuracy(client, second_path, eval_regime="serve")
+
+    assert first_run_id == second_run_id
+    run = client.get_run(second_run_id)
+    assert run.data.metrics["fp_top1_pct"] == 50.0
+    assert run.data.tags["date"] == "20260601"
+    assert run.data.tags["category"] == "jra"
+
+
+def test_ingest_serve_accuracy_serve_key_reflects_model_version_identity_precedence(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Indirect coverage of `_serve_accuracy_model_version_identity`'s
+    precedence/fallback rules through the public `ingest_serve_accuracy`
+    entry point: the resulting run's `serve_key` tag is assembled as
+    f"{model_version_identity}:{date_str}:{category}" (see
+    `ingest_serve_accuracy`'s docstring / `SERVE_KEY_TAG`), so asserting on
+    its prefix exercises the same 4 precedence/fallback cases the old
+    direct-private-call test covered, without reaching into a private
+    helper from outside its module."""
+    rs_version_payload = {
+        "running_style": {
+            "date_str": "20260601",
+            "category": "jra",
+            "era": "POST_FIX",
+            "model_version": "rs-v3",
+        }
+    }
+    rs_version_path = tmp_path / "serve_key_rs_version.json"
+    write_json(rs_version_path, rs_version_payload)
+    rs_version_run = client.get_run(
+        ingest_eval.ingest_serve_accuracy(client, rs_version_path, eval_regime="serve")
+    )
+    assert rs_version_run.data.tags[ingest_eval.SERVE_KEY_TAG].startswith("rs-v3:")
+
+    fp_counts_payload = {
+        "finish_position": {
+            "date_str": "20260602",
+            "category": "jra",
+            "era": "POST_FIX",
+            "model_version_counts": {"b-model": 1, "a-model": 2},
+        }
+    }
+    fp_counts_path = tmp_path / "serve_key_fp_counts.json"
+    write_json(fp_counts_path, fp_counts_payload)
+    fp_counts_run = client.get_run(
+        ingest_eval.ingest_serve_accuracy(client, fp_counts_path, eval_regime="serve")
+    )
+    assert fp_counts_run.data.tags[ingest_eval.SERVE_KEY_TAG].startswith("a-model+b-model:")
+
+    fp_empty_counts_payload = {
+        "finish_position": {
+            "date_str": "20260603",
+            "category": "jra",
+            "era": "POST_FIX",
+            "model_version_counts": {},
+        }
+    }
+    fp_empty_counts_path = tmp_path / "serve_key_fp_empty_counts.json"
+    write_json(fp_empty_counts_path, fp_empty_counts_payload)
+    fp_empty_counts_run = client.get_run(
+        ingest_eval.ingest_serve_accuracy(client, fp_empty_counts_path, eval_regime="serve")
+    )
+    assert fp_empty_counts_run.data.tags[ingest_eval.SERVE_KEY_TAG].startswith("unspecified:")
+
+    fp_unpopulated_payload = {"finish_position": {}}
+    fp_unpopulated_path = tmp_path / "serve_key_fp_unpopulated.json"
+    write_json(fp_unpopulated_path, fp_unpopulated_payload)
+    fp_unpopulated_run = client.get_run(
+        ingest_eval.ingest_serve_accuracy(client, fp_unpopulated_path, eval_regime="serve")
+    )
+    assert fp_unpopulated_run.data.tags[ingest_eval.SERVE_KEY_TAG].startswith("unspecified:")
+
+
+def test_ingest_serve_accuracy_does_not_collide_across_distinct_identities(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Two categories, two dates, and two model_versions must each produce a
+    DISTINCT run -- the `serve_key` must not accidentally collide across any
+    of the three identity components."""
+    base_rs = {
+        "date_str": "20260601",
+        "category": "jra",
+        "era": "POST_FIX",
+        "model_version": "rs-v3",
+        "overall_accuracy_pct": 55.0,
+    }
+    payloads = {
+        "same": base_rs,
+        "diff_category": {**base_rs, "category": "nar"},
+        "diff_date": {**base_rs, "date_str": "20260602"},
+        "diff_model_version": {**base_rs, "model_version": "rs-v4"},
+    }
+
+    run_ids = []
+    for name, rs_section in payloads.items():
+        json_path = tmp_path / f"serve_accuracy_{name}.json"
+        write_json(json_path, {"running_style": rs_section})
+        run_ids.append(ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve"))
+
+    assert len(set(run_ids)) == len(run_ids)
 
 
 def test_ingest_cell_report_reads_json_records_and_normalizes_columns(

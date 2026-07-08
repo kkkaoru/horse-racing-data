@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -13,6 +14,7 @@ except (ImportError, OSError):
 import numpy as np
 import polars as pl
 
+import mlflow_hook
 from finish_position_transformer import cli as cli_module
 from finish_position_transformer.dataset import (
     MAX_RUNNERS,
@@ -679,3 +681,160 @@ def test_train_transformer_without_valid_trains_all_epochs():
         "early-stopping may have fired incorrectly when no valid data was provided"
     )
     assert result["best_epoch"] == 5
+
+
+def test_emit_mlflow_run_calls_safe_emit_training_run_with_expected_manifest_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    import argparse
+
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    train_df = pl.DataFrame({"category": ["jra", "jra"], "race_id": ["r1", "r1"]})
+    args = argparse.Namespace(
+        output_model_dir=tmp_path / "ckpt" / "jra-transformer-v1",
+        embedding_dim=64,
+        num_layers=2,
+        num_heads=4,
+        dropout=0.1,
+        learning_rate=0.001,
+        max_epochs=10,
+        batch_size=32,
+        seed=20260517,
+    )
+    result = {
+        "best_epoch": 3,
+        "best_valid_ndcg_at_3": 0.75,
+        "elapsed_seconds": 12.5,
+        "history": [{"epoch": 1, "train_loss": 0.5, "valid_ndcg_at_3": 0.6}],
+    }
+    cli_module.emit_mlflow_run(train_df, args, result)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["model_version"] == "jra-transformer-v1"
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["artifact_dir"] == tmp_path / "ckpt" / "jra-transformer-v1"
+    assert kwargs["aggregate_metrics"] == {
+        "best_epoch": 3.0,
+        "best_valid_ndcg_at_3": 0.75,
+        "elapsed_seconds": 12.5,
+    }
+    assert kwargs["params"]["embedding_dim"] == 64
+    assert kwargs["params"]["num_layers"] == 2
+    assert kwargs["params"]["num_heads"] == 4
+    assert kwargs["params"]["dropout"] == 0.1
+    assert kwargs["params"]["learning_rate"] == 0.001
+    assert kwargs["params"]["max_epochs"] == 10
+    assert kwargs["params"]["batch_size"] == 32
+    assert kwargs["params"]["seed"] == 20260517
+    assert kwargs["tags"]["architecture"] == "set-transformer"
+
+
+def test_emit_mlflow_run_defaults_category_to_unknown_when_category_column_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    import argparse
+
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    train_df = pl.DataFrame({"race_id": ["r1", "r1"]})
+    args = argparse.Namespace(
+        output_model_dir=tmp_path / "ckpt" / "nar-transformer-v1",
+        embedding_dim=32,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        learning_rate=0.001,
+        max_epochs=1,
+        batch_size=2,
+        seed=1,
+    )
+    result = {
+        "best_epoch": 1,
+        "best_valid_ndcg_at_3": 0.5,
+        "elapsed_seconds": 1.0,
+        "history": [],
+    }
+    cli_module.emit_mlflow_run(train_df, args, result)
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["category"] == "unknown"
+
+
+def test_run_train_command_invokes_emit_mlflow_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    df = _make_synthetic_frame()
+    train_parquet = tmp_path / "train.parquet"
+    df.write_parquet(train_parquet)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    emit_spy = MagicMock()
+    monkeypatch.setattr(cli_module, "emit_mlflow_run", emit_spy)
+    args = cli_module.parse_args(
+        [
+            "train",
+            "--train-parquet",
+            str(train_parquet),
+            "--output-model-dir",
+            str(tmp_path / "ckpt"),
+            "--max-epochs",
+            "1",
+            "--warmup-steps",
+            "1",
+            "--batch-size",
+            "2",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+        ]
+    )
+    cli_module.run_train_command(args)
+    emit_spy.assert_called_once()
+    called_train_df, called_args, called_result = emit_spy.call_args.args
+    assert called_train_df.height == df.height
+    assert called_args is args
+    assert "best_valid_ndcg_at_3" in called_result
+
+
+def test_run_train_command_succeeds_when_mlflow_hook_reports_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """emit_mlflow_run failing (safe_emit_training_run returns False) must never
+    affect run_train_command's own output — the checkpoint is still written."""
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", MagicMock(return_value=False))
+    df = _make_synthetic_frame()
+    train_parquet = tmp_path / "train.parquet"
+    df.write_parquet(train_parquet)
+    captured: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda line: captured.append(line))
+    args = cli_module.parse_args(
+        [
+            "train",
+            "--train-parquet",
+            str(train_parquet),
+            "--output-model-dir",
+            str(tmp_path / "ckpt"),
+            "--max-epochs",
+            "1",
+            "--warmup-steps",
+            "1",
+            "--batch-size",
+            "2",
+            "--embedding-dim",
+            "32",
+            "--num-layers",
+            "1",
+            "--num-heads",
+            "2",
+        ]
+    )
+    cli_module.run_train_command(args)
+    assert (tmp_path / "ckpt" / "model.safetensors").exists()

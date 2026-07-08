@@ -45,15 +45,27 @@ def test_build_command(tmp_path: Path) -> None:
     assert server.build_command(cfg) == [
         "mlflow",
         "server",
-        "--backend-store-uri",
-        cfg.backend_store_uri,
-        "--artifacts-destination",
-        cfg.artifacts_destination,
         "--host",
         "127.0.0.1",
         "--port",
         "6000",
     ]
+
+
+def test_build_command_never_puts_backend_uri_or_artifacts_destination_in_argv(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for the ps-argv DSN leak: build_command() must never
+    surface --backend-store-uri/--artifacts-destination or their values --
+    both reach mlflow server exclusively via config.server_env()."""
+    cfg = _make_local_cfg(tmp_path)
+
+    command = server.build_command(cfg)
+
+    assert "--backend-store-uri" not in command
+    assert "--artifacts-destination" not in command
+    assert cfg.backend_store_uri not in command
+    assert cfg.artifacts_destination not in command
 
 
 def test_server_url(tmp_path: Path) -> None:
@@ -113,6 +125,32 @@ def test_start_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert pid_path.read_text() == "9876"
     assert server.log_file_path(cfg).exists()
     assert (cfg.data_dir / "mlartifacts").is_dir()
+
+
+def test_start_passes_backend_uri_and_artifacts_destination_via_env_not_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_local_cfg(tmp_path)
+    recorded_calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def fake_popen(
+        args: list[str], *, env: dict[str, str], **kwargs: object
+    ) -> _FakePopen:
+        recorded_calls.append((args, env))
+        return _FakePopen(args, env=env, **kwargs)
+
+    monkeypatch.setattr(server.subprocess, "Popen", fake_popen)
+
+    server.start(cfg)
+
+    assert len(recorded_calls) == 1
+    args, env = recorded_calls[0]
+    assert "--backend-store-uri" not in args
+    assert "--artifacts-destination" not in args
+    assert cfg.backend_store_uri not in args
+    assert cfg.artifacts_destination not in args
+    assert env["MLFLOW_BACKEND_STORE_URI"] == cfg.backend_store_uri
+    assert env["MLFLOW_ARTIFACTS_DESTINATION"] == cfg.artifacts_destination
 
 
 def test_start_refuses_when_already_running(
@@ -300,7 +338,11 @@ def test_run_foreground_execs_with_merged_env(
     file, args, env = recorded_calls[0]
     assert file == "mlflow"
     assert args == server.build_command(cfg)
+    assert "--backend-store-uri" not in args
+    assert "--artifacts-destination" not in args
     assert env["MLFLOW_S3_ENDPOINT_URL"] == "https://acct123.r2.cloudflarestorage.com"
+    assert env["MLFLOW_BACKEND_STORE_URI"] == cfg.backend_store_uri
+    assert env["MLFLOW_ARTIFACTS_DESTINATION"] == cfg.artifacts_destination
     assert cfg.data_dir.is_dir()
     assert not (cfg.data_dir / "mlartifacts").exists()
     db_path = cfg.data_dir / "mlflow.db"

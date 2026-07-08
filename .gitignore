@@ -186,6 +186,11 @@ apps/mlflow/data/
 # "<cwd>/mlruns" outside data/ whenever a fresh store's first touch happens
 # with a different cwd than apps/mlflow/data (see cli.py's cmd_init).
 apps/mlflow/mlruns/
+# A stray sqlite db has ended up committed at the package root (instead of
+# apps/mlflow/data/) more than once; ignore it (and its WAL sidecar files)
+# outright so it can never be staged again.
+apps/mlflow/mlflow.db*
+apps/mlflow-ui/mlflow.db*
 
 # Claude Code internal artifacts (worktrees, memory caches, etc.)
 # skills/ だけはリポジトリで共有するため、ディレクトリ指定ではなくワイルドカードで除外する

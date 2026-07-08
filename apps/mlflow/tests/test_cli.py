@@ -451,6 +451,7 @@ def _empty_sync_summary(errors: list[str] | None = None) -> sync_production.Sync
         rs_runs_reused=0,
         rs_eval_logged=0,
         rs_eval_skipped_no_results=0,
+        serving_gaps_detected=0,
         errors=errors if errors is not None else [],
     )
 
@@ -468,6 +469,7 @@ def test_cmd_sync_production_reports_success(
         rs_runs_reused=0,
         rs_eval_logged=1,
         rs_eval_skipped_no_results=1,
+        serving_gaps_detected=0,
         errors=[],
     )
 
@@ -680,8 +682,10 @@ def test_cmd_eval_champion_cells_rejects_invalid_as_of(
 def test_cmd_ingest_trial_registry(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     duckdb_path = tmp_path / "trial_registry_jra.duckdb"
     con = duckdb.connect(str(duckdb_path))
-    con.execute("CREATE TABLE trials (trial_id VARCHAR, model_version VARCHAR)")
-    con.execute("INSERT INTO trials VALUES ('t1', 'v1')")
+    con.execute(
+        "CREATE TABLE trials (trial_id VARCHAR, model_version VARCHAR, top1_accuracy DOUBLE)"
+    )
+    con.execute("INSERT INTO trials VALUES ('t1', 'v1', 0.42)")
     con.close()
 
     exit_code = cli.main(["ingest-trial-registry", str(duckdb_path)])
@@ -864,6 +868,19 @@ def test_cmd_set_champion(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     assert "champion alias set" in captured.out
     registered = client.get_registered_model("jra-finish-position")
     assert registry.CHAMPION_ALIAS in registered.aliases
+
+
+def test_cmd_set_challenger(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    client = MlflowClient(tracking_uri=_isolated_tracking_uri(tmp_path))
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{config.get_data_dir()}"
+    )
+    exit_code = cli.main(["set-challenger", "jra-finish-position", str(version.version)])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "challenger alias set" in captured.out
+    registered = client.get_registered_model("jra-finish-position")
+    assert registry.CHALLENGER_ALIAS in registered.aliases
 
 
 def test_cmd_list_models_with_no_aliases(

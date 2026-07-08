@@ -98,6 +98,15 @@ CALIBRATOR_TAG: Final[str] = "isotonic-ovr"
 
 
 class RunningStyleBackfillSummary(TypedDict):
+    """`versions_registered` counts only genuinely NEW mlflow versions minted
+    during this call. `backfill_one_running_style_metadata` may instead
+    return a pre-existing version via its `registry.find_duplicate_version`
+    guard (see that function's docstring) when re-run against an unchanged
+    artifact; such no-op returns are deliberately NOT counted here, so this
+    field stays a meaningful "how much did this call actually add" number
+    rather than "how many metadata files did we look at".
+    """
+
     versions_registered: int
     errors: list[str]
     champion_sync: dict[str, str]
@@ -225,7 +234,24 @@ def backfill_one_running_style_metadata(
     metadata_path: Path,
     calibrator_dir: Path = DEFAULT_CALIBRATOR_DIR,
 ) -> ModelVersion:
-    """Register one running-style model version from its metadata.json (+ model.txt if present)."""
+    """Register one running-style model version from its metadata.json (+ model.txt if present).
+
+    Checks `registry.find_duplicate_version` FIRST, before any run-creation
+    or logging work below, so re-running this function against an unchanged
+    metadata.json/model.txt pair (same directory, untouched) is a cheap,
+    mostly no-op early return of the EXISTING `ModelVersion` rather than a
+    freshly minted duplicate. This is the fix for a verified duplicate
+    registration: `jra-running-style` v1/v2 were both created by re-running
+    the backfill-running-style CLI against the same unchanged artifact
+    directory -- identical model_version label AND identical source -- because
+    this function used to call `registry.register_version` unconditionally on
+    every invocation, with no guard at all (unlike
+    `register_production_pointer_if_missing` below, which already guarded
+    itself via `find_version_by_label`). See `registry.find_duplicate_version`
+    for why label-only matching is not used: a label match with a *different*
+    source is a genuinely new artifact reusing an old label and must still
+    register normally.
+    """
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     model_version_label = str(metadata.get("model_version", metadata_path.parent.name))
     category = _infer_category(model_version_label) or _infer_category(metadata_path.parent.name)
@@ -233,6 +259,19 @@ def backfill_one_running_style_metadata(
         raise ValueError(
             f"cannot infer jra/nar category from model_version: {model_version_label!r}"
         )
+
+    registered_name = registry.registered_model_name(category, TASK)
+    model_file = metadata_path.parent / MODEL_FILE_NAME
+    source_uri = (
+        f"file://{metadata_path.parent.resolve()}"
+        if model_file.is_file()
+        else build_r2_serving_uri(category)
+    )
+    duplicate_version = registry.find_duplicate_version(
+        client, registered_name, model_version_label, source_uri
+    )
+    if duplicate_version is not None:
+        return client.get_model_version(registered_name, duplicate_version)
 
     routable_metadata = {k: v for k, v in metadata.items() if k != WF_RESULTS_KEY}
     params, tags, artifact_payloads = route_json_fields(
@@ -275,13 +314,6 @@ def backfill_one_running_style_metadata(
     calibrator_fit_year = _attach_calibrator(client, run_id, category, calibrator_dir)
     client.set_terminated(run_id, status="FINISHED")
 
-    registered_name = registry.registered_model_name(category, TASK)
-    model_file = metadata_path.parent / MODEL_FILE_NAME
-    source_uri = (
-        f"file://{metadata_path.parent.resolve()}"
-        if model_file.is_file()
-        else build_r2_serving_uri(category)
-    )
     new_version_tags = _base_version_tags(category, calibrator_fit_year)
     # `tags` (from route_json_fields) already carries the RS_IDENTITY_TAG_KEYS
     # values (model_version/feature_schema_version/class_weight_scheme) as
@@ -356,13 +388,30 @@ def backfill_running_style(
 
     Never raises for an individual artifact — a malformed metadata.json is
     recorded in `errors` and skipped so one bad artifact cannot block the rest.
+
+    `backfill_one_running_style_metadata` may return either a freshly minted
+    version or a pre-existing one via its `registry.find_duplicate_version`
+    guard (unchanged artifact re-run). To keep `versions_registered`
+    meaningful, each category's already-registered version numbers are
+    snapshotted up front so a duplicate-guarded return (same version number
+    as something already in the snapshot) can be told apart from a genuine
+    new registration and excluded from the count.
     """
     errors: list[str] = []
     count = 0
+    known_versions: dict[str, set[str]] = {}
+    for category in RS_CATEGORIES:
+        registered_name = registry.registered_model_name(category, TASK)
+        known_versions[registered_name] = {
+            mv.version for mv in client.search_model_versions(f"name='{registered_name}'")
+        }
     for metadata_path in discover_metadata_files(artifact_root):
         try:
-            backfill_one_running_style_metadata(client, metadata_path, calibrator_dir)
-            count += 1
+            version = backfill_one_running_style_metadata(client, metadata_path, calibrator_dir)
+            registered_versions = known_versions.setdefault(version.name, set())
+            if version.version not in registered_versions:
+                registered_versions.add(version.version)
+                count += 1
         except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
             errors.append(f"{metadata_path}: {exc}")
 

@@ -49,6 +49,16 @@ _MLFLOW_S3_ENDPOINT_URL_ENV: str = "MLFLOW_S3_ENDPOINT_URL"
 
 _MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV: str = "MLFLOW_SERVER_ENABLE_JOB_EXECUTION"
 
+# mlflow's CLI declares both of these as click envvar= aliases of
+# --backend-store-uri/--artifacts-destination (see mlflow/cli/__init__.py and
+# mlflow/cli/cli_args.py). server.build_command() deliberately never passes
+# either as an argv flag: the backend URI can embed a plaintext database
+# password, and argv is world-readable via `ps` to every local user, while a
+# subprocess's environment is not. server_env() injects both unconditionally
+# instead.
+_MLFLOW_BACKEND_STORE_URI_ENV: str = "MLFLOW_BACKEND_STORE_URI"
+_MLFLOW_ARTIFACTS_DESTINATION_ENV: str = "MLFLOW_ARTIFACTS_DESTINATION"
+
 # Prefixes/exact names allow-listed for load_repo_root_env_fallback(): the
 # repo-root .env holds many unrelated secrets for other apps, so only these
 # are ever imported from it.
@@ -266,21 +276,31 @@ def load_config() -> Config:
 def server_env(cfg: Config) -> dict[str, str]:
     """Build the extra env vars to merge in for the ``mlflow server`` subprocess.
 
-    Unconditionally disables mlflow's huey-based background job schedulers
-    (``online_scoring_scheduler`` / ``trace_archival_scheduler``), which
-    otherwise poll the backend database every minute and prevent Neon's
-    serverless compute from ever auto-suspending. This repo uses none of
-    mlflow's GenAI online-scoring or trace-archival features, so the
+    Always carries ``cfg.backend_store_uri``/``cfg.artifacts_destination`` in
+    via ``MLFLOW_BACKEND_STORE_URI``/``MLFLOW_ARTIFACTS_DESTINATION`` --
+    build_command() never puts either on the argv line, so this is the only
+    path by which mlflow server learns them. See the module-level comment by
+    those two constants for why (argv is visible to any local user via
+    ``ps``; env vars of a subprocess are not).
+
+    Also unconditionally disables mlflow's huey-based background job
+    schedulers (``online_scoring_scheduler`` / ``trace_archival_scheduler``),
+    which otherwise poll the backend database every minute and prevent
+    Neon's serverless compute from ever auto-suspending. This repo uses none
+    of mlflow's GenAI online-scoring or trace-archival features, so the
     subsystem has zero functional cost to disable, in either local or r2
     artifacts mode -- it is a backend-store/Postgres concern, unrelated to
     artifacts. An operator who deliberately sets
     MLFLOW_SERVER_ENABLE_JOB_EXECUTION themselves is never overridden.
 
-    In local mode no other extra env is needed. In r2 mode this additionally
-    points mlflow's boto3 client at the R2 S3-compatible endpoint, without
-    clobbering AWS_* vars an operator may have deliberately set already.
+    In r2 mode this additionally points mlflow's boto3 client at the R2
+    S3-compatible endpoint, without clobbering AWS_* vars an operator may
+    have deliberately set already.
     """
-    env: dict[str, str] = {}
+    env: dict[str, str] = {
+        _MLFLOW_BACKEND_STORE_URI_ENV: cfg.backend_store_uri,
+        _MLFLOW_ARTIFACTS_DESTINATION_ENV: cfg.artifacts_destination,
+    }
     if _MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV not in os.environ:
         env[_MLFLOW_SERVER_ENABLE_JOB_EXECUTION_ENV] = "false"
 

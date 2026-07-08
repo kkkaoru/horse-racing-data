@@ -63,14 +63,19 @@ def server_url(cfg: Config) -> str:
 
 
 def build_command(cfg: Config) -> list[str]:
-    """Build the ``mlflow server`` argv for this config."""
+    """Build the ``mlflow server`` argv for this config.
+
+    Deliberately omits ``--backend-store-uri``/``--artifacts-destination``:
+    both take the value as a bare argv token, and ``cfg.backend_store_uri``
+    may embed a plaintext database password (e.g. a Neon Postgres DSN) that
+    every local user could otherwise read via ``ps``. Both are passed
+    through the subprocess environment instead -- see
+    ``config.server_env()``, which every caller of this command (start(),
+    run_foreground()) always merges in.
+    """
     return [
         "mlflow",
         "server",
-        "--backend-store-uri",
-        cfg.backend_store_uri,
-        "--artifacts-destination",
-        cfg.artifacts_destination,
         "--host",
         cfg.host,
         "--port",

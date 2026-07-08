@@ -541,6 +541,13 @@ def eval_champion_cells_for_category(
         "window_days": str(window_days),
         "as_of_date": as_of_str,
         "has_champion_coverage": "true" if has_coverage else "false",
+        # Every run this module logs evaluates genuinely-served production
+        # predictions against finalized results (see the module docstring)
+        # -- never a walk-forward/offline backtest -- so this is always
+        # "serve", unconditionally, even on a zero-coverage run: finding no
+        # genuinely-served rows is still an answer about the serve regime,
+        # not a different regime.
+        "eval_regime": "serve",
     }
     metrics: dict[str, float] = dict(headline)
     metrics["unit_count"] = float(unit_count)

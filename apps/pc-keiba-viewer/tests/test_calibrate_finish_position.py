@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 import calibrate_finish_position as subject
+import mlflow_hook
 
 
 FIXED_NOW: datetime = datetime(2026, 6, 4, 12, 0, 0, tzinfo=timezone.utc)
@@ -1350,6 +1351,109 @@ def test_main_dispatches_to_apply(monkeypatch: pytest.MonkeyPatch, capsys: pytes
     captured = capsys.readouterr()
     assert "rows_written" in captured.out
     fake_apply_run.assert_called_once()
+
+
+def test_emit_mlflow_run_calls_safe_emit_training_run_with_expected_manifest_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "finish-position" / "jra" / "v8-iter1-calibration",
+        "min_bucket_samples": 500,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = {"cat": "jra", "buckets_written": 3, "fallback_used": False, "race_count": 1000}
+    subject.emit_mlflow_run(args, result)
+    spy.assert_called_once()
+    kwargs = spy.call_args.kwargs
+    assert kwargs["task"] == "finish-position"
+    assert kwargs["category"] == "jra"
+    assert kwargs["model_version"] == "v8-iter1-calibration"
+    assert kwargs["eval_regime"] == "wf"
+    assert kwargs["artifact_dir"] == tmp_path / "finish-position" / "jra" / "v8-iter1-calibration"
+    assert kwargs["aggregate_metrics"] == mlflow_hook.flatten_numeric_metrics(result)
+    assert kwargs["params"]["bucket_dim"] == "kyoso_joken"
+    assert kwargs["params"]["min_bucket_samples"] == 500
+    assert kwargs["tags"]["calibrator"] is True
+
+
+def test_main_invokes_emit_mlflow_run_for_fit_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    fake_fit_run = MagicMock(return_value={"cat": "jra", "buckets_written": 1})
+    fake_apply_run = MagicMock()
+    emit_spy = MagicMock()
+    monkeypatch.setattr(subject, "fit_run", fake_fit_run)
+    monkeypatch.setattr(subject, "apply_run", fake_apply_run)
+    monkeypatch.setattr(subject, "emit_mlflow_run", emit_spy)
+    subject.main([
+        "--mode",
+        "fit",
+        "--cat",
+        "jra",
+        "--predictions-root",
+        "tmp/preds",
+        "--output-dir",
+        "tmp/out",
+    ])
+    capsys.readouterr()
+    emit_spy.assert_called_once()
+    called_args, called_result = emit_spy.call_args.args
+    assert called_args["cat"] == "jra"
+    assert called_result == {"cat": "jra", "buckets_written": 1}
+
+
+def test_main_does_not_invoke_emit_mlflow_run_for_apply_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    fake_fit_run = MagicMock()
+    fake_apply_run = MagicMock(return_value={"cat": "nar", "rows_written": 42})
+    emit_spy = MagicMock()
+    monkeypatch.setattr(subject, "fit_run", fake_fit_run)
+    monkeypatch.setattr(subject, "apply_run", fake_apply_run)
+    monkeypatch.setattr(subject, "emit_mlflow_run", emit_spy)
+    subject.main([
+        "--mode",
+        "apply",
+        "--cat",
+        "nar",
+        "--input-predictions-root",
+        "tmp/in",
+        "--calibration-dir",
+        "tmp/cal",
+        "--output-predictions-root",
+        "tmp/out",
+    ])
+    capsys.readouterr()
+    emit_spy.assert_not_called()
+
+
+def test_main_succeeds_when_mlflow_hook_reports_failure_for_fit_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+):
+    """emit_mlflow_run failing (safe_emit_training_run returns False) must never
+    affect main()'s own exit code or stdout — the CLI still prints its JSON."""
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", MagicMock(return_value=False))
+    fake_fit_run = MagicMock(return_value={"cat": "jra", "buckets_written": 1})
+    monkeypatch.setattr(subject, "fit_run", fake_fit_run)
+    subject.main([
+        "--mode",
+        "fit",
+        "--cat",
+        "jra",
+        "--predictions-root",
+        "tmp/preds",
+        "--output-dir",
+        "tmp/out",
+    ])
+    captured = capsys.readouterr()
+    assert "buckets_written" in captured.out
 
 
 def test_isotonic_transform_raises_on_wrong_schema_version():

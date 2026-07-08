@@ -37,6 +37,8 @@ import numpy as np
 import polars as pl
 from sklearn.isotonic import IsotonicRegression
 
+import mlflow_hook
+
 MODE_FIT: str = "fit"
 MODE_APPLY: str = "apply"
 SUPPORTED_MODES: tuple[str, str] = (MODE_FIT, MODE_APPLY)
@@ -648,6 +650,23 @@ def apply_run(args: ApplyArguments, deps: ApplyDeps) -> dict[str, object]:
     return {"cat": args["cat"], "rows_written": int(out.height)}
 
 
+def emit_mlflow_run(args: FitArguments, result: Mapping[str, object]) -> None:
+    """Best-effort MLflow logging of this isotonic calibration fit (never affects CLI output)."""
+    mlflow_hook.safe_emit_training_run(
+        task="finish-position",
+        category=args["cat"],
+        model_version=Path(args["output_dir"]).name,
+        eval_regime="wf",
+        artifact_dir=args["output_dir"],
+        aggregate_metrics=mlflow_hook.flatten_numeric_metrics(result),
+        params={
+            "bucket_dim": args["bucket_dim"],
+            "min_bucket_samples": args["min_bucket_samples"],
+        },
+        tags={"calibrator": True},
+    )
+
+
 def build_default_fit_deps() -> FitDeps:
     return {
         "parquet_reader": default_read_parquet_dir,
@@ -668,7 +687,9 @@ def build_default_apply_deps() -> ApplyDeps:
 def main(argv: list[str] | None = None) -> None:
     raw_args = parse_args(argv)
     if raw_args.mode == MODE_FIT:
-        result = fit_run(normalize_fit_arguments(raw_args), build_default_fit_deps())
+        fit_args = normalize_fit_arguments(raw_args)
+        result = fit_run(fit_args, build_default_fit_deps())
+        emit_mlflow_run(fit_args, result)
     else:
         result = apply_run(normalize_apply_arguments(raw_args), build_default_apply_deps())
     print(json.dumps(result, ensure_ascii=False))

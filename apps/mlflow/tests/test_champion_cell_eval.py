@@ -145,6 +145,9 @@ def test_zero_champion_coverage_produces_valid_empty_run(
     run = client.get_run(result.run_id)
     assert run.data.tags["has_champion_coverage"] == "false"
     assert run.data.tags["champion_model_version"] == "iter14"
+    # Zero champion coverage is still a serve-regime answer (no genuinely-
+    # served rows found), never a different eval_regime.
+    assert run.data.tags["eval_regime"] == "serve"
     assert "best_cell_top1_pct" not in run.data.metrics
     assert "worst_cell_top1_pct" not in run.data.metrics
     assert run.data.metrics["unit_count"] == 0.0
@@ -415,7 +418,10 @@ def test_real_coverage_finish_position_hand_verified_math(
     assert result.cell_count == 2
     assert result.low_n_cell_count == 1
 
-    metrics = client.get_run(result.run_id).data.metrics
+    run = client.get_run(result.run_id)
+    assert run.data.tags["eval_regime"] == "serve"
+
+    metrics = run.data.metrics
     assert metrics["overall_top1_pct"] == pytest.approx(50.0)
     assert metrics["overall_place2_pct"] == pytest.approx(75.0)
     assert metrics["overall_place3_pct"] == pytest.approx(100.0)

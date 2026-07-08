@@ -20,6 +20,7 @@ import psycopg2
 import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Run
+from mlflow.exceptions import MlflowException
 
 from mlflow_tracking import config, db, registry, serve_eval, sync_production, timeline
 
@@ -342,6 +343,92 @@ def test_champion_at_sync_false_when_no_registered_model_exists(client: MlflowCl
     assert run.data.tags["champion_at_sync"] == "false"
 
 
+# ── Run status: every touched run ends FINISHED, never RUNNING ─────────────
+#
+# Regression coverage for a real production incident: this module never
+# called `client.set_terminated` at all, so every run it ever created was
+# observed stuck in RUNNING status for days. Mirrors
+# test_timeline.py::test_upsert_timeline_point_run_finished_after_each_call's
+# exact assertion style, applied to this module's own FP/RS sync runs.
+
+
+def test_fp_run_is_finished_after_first_sync_call(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.info.status == "FINISHED"
+
+
+def test_fp_reused_run_is_still_finished_after_second_sync_call(client: MlflowClient) -> None:
+    """A run reused on a LATER call (not just-created) must also end that
+    call FINISHED -- proving the fix re-terminates on every visit, not only
+    at creation time."""
+
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(
+            fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]}
+        )
+
+    def _fresh_local() -> FakeLocalConnection:
+        return FakeLocalConnection(
+            result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+        )
+
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=_fresh_neon,
+        local_connect=_fresh_local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    run_id = run.info.run_id
+
+    # Force the run back to RUNNING so the second call's FINISHED status can
+    # only be explained by that call re-terminating it, not by residual
+    # status left over from the first call.
+    client.update_run(run_id, status="RUNNING")
+    assert client.get_run(run_id).info.status == "RUNNING"
+
+    second = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=_fresh_neon,
+        local_connect=_fresh_local,
+    )
+    assert second.fp_runs_reused == 1
+    assert client.get_run(run_id).info.status == "FINISHED"
+
+
+# ── eval_regime tag: every logged run represents genuinely-served usage ────
+
+
+def test_fp_run_created_with_eval_regime_serve_tag(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.tags["eval_regime"] == "serve"
+
+
 # ── Idempotency: second call reuses run, never re-logs base ────────────────
 
 
@@ -642,6 +729,195 @@ def test_rs_never_attempted_for_banei(client: MlflowClient) -> None:
     assert summary.rs_runs_reused == 0
     assert summary.rs_eval_logged == 0
     assert summary.rs_eval_skipped_no_results == 0
+    assert client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE) is None
+
+
+# ── Serving-gap detection: RS served, FP not, for the same (date, category) ─
+#
+# Regression coverage for a real incident: on 2026-07-04, JRA had 12 races
+# with running-style predictions logged and ZERO finish-position rows the
+# same day -- a genuine one-sided outage that otherwise goes unnoticed, since
+# either side alone being empty is normal (production serving is sparse).
+
+
+def test_serving_gap_detected_and_marker_run_logged(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection()
+
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'",
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["serving_gap"] == "true"
+    assert gap_run.data.tags["gap_date"] == DATE_STR
+    assert gap_run.data.tags["category"] == "jra"
+    assert gap_run.data.metrics["fp_races_observed"] == 0.0
+    assert gap_run.data.metrics["rs_races_observed"] == 1.0
+    assert gap_run.info.status == "FINISHED"
+
+
+def test_no_serving_gap_when_both_fp_and_rs_empty(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string="tags.serving_gap = 'true'"
+    )
+    assert matches == []
+
+
+def test_no_serving_gap_when_both_fp_and_rs_nonempty(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    rs_row = _rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]},
+        rs_rows={("jra", DATE_STR): [rs_row]},
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string="tags.serving_gap = 'true'"
+    )
+    assert matches == []
+
+
+def test_serving_gap_marker_not_duplicated_on_repeated_calls(client: MlflowClient) -> None:
+    """A persistent gap (the realistic multi-day-outage shape) synced twice
+    over the same overlapping range must reuse the same marker run, not
+    create a second one -- mirroring this module's other idempotency tests."""
+
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(
+            rs_rows={
+                ("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]
+            }
+        )
+
+    with pytest.warns(UserWarning, match="jra"):
+        first = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=lambda: FakeLocalConnection(),
+        )
+    assert first.serving_gaps_detected == 1
+
+    with pytest.warns(UserWarning, match="jra"):
+        second = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=lambda: FakeLocalConnection(),
+        )
+    assert second.serving_gaps_detected == 1
+
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'",
+    )
+    assert len(matches) == 1
+
+
+def test_serving_gap_logging_failure_is_isolated_and_recorded(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient failure while logging the gap marker itself (e.g. a
+    tracking-store write hiccup) must be isolated exactly like an fp/rs sync
+    failure -- recorded in `summary.errors`, never raised, never counted in
+    `serving_gaps_detected`, and must not prevent the fp/rs syncs (which
+    already completed by the time this check runs) from being reported."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("boom serving-gap log")
+
+    monkeypatch.setattr(sync_production, "_log_serving_gap", _boom)
+
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection()
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    assert summary.serving_gaps_detected == 0
+    assert summary.rs_runs_created == 1
+    assert len(summary.errors) == 1
+    assert "serving-gap" in summary.errors[0]
+    assert "boom serving-gap log" in summary.errors[0]
+
+
+def test_serving_gap_never_checked_for_banei(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """category="banei" is FP-eligible but not RS-eligible, so no RS query is
+    ever issued for it -- the gap check must never fire even with FP-empty
+    data, since there is nothing to compare against."""
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("banei",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
     assert client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE) is None
 
 

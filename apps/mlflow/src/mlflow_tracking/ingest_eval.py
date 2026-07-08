@@ -71,6 +71,14 @@ FP_SERVE_METRIC_KEYS: Final[tuple[str, ...]] = (
 FP_SUBGROUP_METRIC_KEYS: Final[tuple[str, ...]] = FP_SERVE_METRIC_KEYS
 RS_SERVE_METRIC_KEYS: Final[tuple[str, ...]] = ("overall_accuracy_pct", "macro_f1_pct")
 
+# Idempotency tag for `ingest_serve_accuracy`, mirroring sync_production.py's
+# `SYNC_KEY_TAG` / timeline.py's `TIMELINE_KEY_TAG` tag-search idiom: a
+# repeated manual/CLI ingest of the same underlying payload (verified real
+# duplicate -- two identical win5-overlay runs created 28 seconds apart by a
+# repeated call) must reuse the same run instead of creating a new one every
+# time.
+SERVE_KEY_TAG: Final[str] = "serve_key"
+
 
 def _group_trial_rows(
     columns: list[str], rows: list[tuple[object, ...]]
@@ -91,9 +99,20 @@ def _log_trial_group(
     experiment_id: str,
     run_name: str,
     records: list[dict[str, object]],
-) -> str:
-    run = client.create_run(experiment_id, run_name=run_name)
-    run_id = run.info.run_id
+) -> str | None:
+    """Log one trial-group run, or return None without creating a run when
+    `records` yields zero metrics.
+
+    `metric_items`/`tag_items` are computed FIRST, before any
+    `client.create_run` call, specifically so that check is possible: this
+    function never logs an artifact (no `log_json_artifact`/`log_table` call
+    exists here), so a group where none of `TRIAL_METRIC_COLUMNS` are
+    populated across every record would otherwise create a genuinely empty,
+    useless run with no metrics and no artifacts (verified real example: a
+    wf-eval run named "v1" with nothing logged on it). `tag_items` alone
+    being non-empty does not save a group -- tags with no metrics are still
+    not worth a run -- so only `metric_items` gates creation.
+    """
     metric_items: list[Metric] = []
     tag_values: dict[str, set[str]] = {}
     for step, record in enumerate(records):
@@ -105,6 +124,11 @@ def _log_trial_group(
             value = record.get(column)
             if value is not None:
                 tag_values.setdefault(column, set()).add(str(value))
+    if not metric_items:
+        return None
+
+    run = client.create_run(experiment_id, run_name=run_name)
+    run_id = run.info.run_id
     tag_items = [
         RunTag(column, values.pop() if len(values) == 1 else ";".join(sorted(values)))
         for column, values in tag_values.items()
@@ -124,7 +148,11 @@ def ingest_trial_registry(
     (rows without a model_version get one run per trial_id).
 
     Read-only DuckDB connection: this is a local file read, not a Neon/network
-    query.
+    query. A group whose records populate none of `TRIAL_METRIC_COLUMNS`
+    produces no run at all (see `_log_trial_group`'s own docstring) -- such a
+    group's `None` result is filtered out here so this function's own
+    `list[str]` return type stays honest (no `None` entries for callers to
+    trip over).
     """
     con = duckdb.connect(str(duckdb_path), read_only=True)
     try:
@@ -135,9 +163,10 @@ def ingest_trial_registry(
 
     groups = _group_trial_rows(columns, rows)
     experiment_id = get_or_create_experiment(client, experiment_name)
-    return [
+    run_ids = [
         _log_trial_group(client, experiment_id, key, records) for key, records in groups.items()
     ]
+    return [run_id for run_id in run_ids if run_id is not None]
 
 
 def validate_eval_regime(eval_regime: str) -> None:
@@ -175,6 +204,48 @@ def _serve_accuracy_identity(fp: object, rs: object) -> tuple[str, str, str]:
                 str(section.get("era", "")),
             )
     raise ValueError("serve-accuracy payload has neither finish_position nor running_style section")
+
+
+def _serve_accuracy_model_version_identity(fp: object, rs: object) -> str:
+    """Return a stable, deterministic model-version identity string for the
+    `serve_key` idempotency tag (see `SERVE_KEY_TAG`), so re-ingesting the
+    exact same payload always derives the exact same key.
+
+    Prefers the running-style section's singular `model_version` field when
+    `rs` is a dict and that field is a non-empty string -- an `rs` payload
+    always identifies exactly one model. Finish-position payloads have no
+    singular equivalent: they only carry `model_version_counts`, a
+    `{version: count}` dict, since a single day's FP serve-accuracy report
+    can legitimately span multiple model versions mid-rollout. For that case,
+    the sorted set of version keys is joined with "+", which is
+    order-independent (the same set of versions always produces the same
+    string regardless of dict insertion order) and ignores the counts
+    themselves (irrelevant to identity). Falls back to the literal
+    "unspecified" when neither section yields anything identifying, so this
+    helper never raises -- an unidentifiable payload still gets a stable (if
+    coarse) key rather than blocking the ingest.
+    """
+    if isinstance(rs, dict):
+        rs_model_version = rs.get("model_version")
+        if isinstance(rs_model_version, str) and rs_model_version:
+            return rs_model_version
+    if isinstance(fp, dict):
+        model_version_counts = fp.get("model_version_counts")
+        if isinstance(model_version_counts, dict) and model_version_counts:
+            return "+".join(sorted(str(version) for version in model_version_counts))
+    return "unspecified"
+
+
+def _find_serve_run(client: MlflowClient, experiment_id: str, serve_key: str) -> str | None:
+    """Find the run tagged with `serve_key`, mirroring
+    `sync_production._find_sync_run` / `timeline._find_timeline_run`'s exact
+    tag-search idiom."""
+    matches = client.search_runs(
+        [experiment_id],
+        filter_string=f"tags.{SERVE_KEY_TAG} = '{serve_key}'",
+        max_results=1,
+    )
+    return matches[0].info.run_id if matches else None
 
 
 def _fp_serve_metrics(fp: Mapping[str, object]) -> list[Metric]:
@@ -224,6 +295,22 @@ def ingest_serve_accuracy(
     that combined shape is still fundamentally a serve-health check), else to
     running-style/eval.
 
+    Idempotent by `serve_key = "{model_version_identity}:{date_str}:{category}"`
+    (see `_serve_accuracy_model_version_identity`/`SERVE_KEY_TAG`), mirroring
+    `sync_production.py`'s `sync_key` pattern: re-ingesting the identical
+    payload (a real, verified duplicate -- two identical win5-overlay runs
+    were created 28 seconds apart by a repeated call before this) reuses the
+    same run instead of creating a new one every time. Unlike
+    `sync_production.py`'s base-tracking tags (which are logged at most ONCE
+    per sync_key, since predictions are immutable once generated), every
+    field below is UNCONDITIONALLY re-logged on a reused run -- this is a
+    deliberate update-in-place, not a skip: `log_batch_chunked`'s metrics are
+    keyed by (name, step) so re-logging the same values is a no-op in effect,
+    and `log_json_artifact` simply overwrites the same artifact path, so a
+    second call with a genuinely different payload for the same identity
+    (e.g. a corrected number for the same day) also has its LATEST data win,
+    rather than being silently dropped.
+
     Also upserts a point onto the `timelines` experiment's per-(task,
     category) persistent run for whichever of finish-position/running-style
     sections are present (see timeline.py's module docstring for why this
@@ -245,8 +332,16 @@ def ingest_serve_accuracy(
     )
 
     experiment_id = get_or_create_experiment(client, resolved_experiment)
-    run = client.create_run(experiment_id, run_name=f"{category}-{date_str}")
-    run_id = run.info.run_id
+    model_version_identity = _serve_accuracy_model_version_identity(fp, rs)
+    serve_key = f"{model_version_identity}:{date_str}:{category}"
+    run_id = _find_serve_run(client, experiment_id, serve_key)
+    if run_id is None:
+        run = client.create_run(
+            experiment_id,
+            run_name=f"{category}-{date_str}",
+            tags={SERVE_KEY_TAG: serve_key},
+        )
+        run_id = run.info.run_id
 
     tags: dict[str, str] = {
         "date": date_str,

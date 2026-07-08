@@ -15,7 +15,7 @@
 - **Backend store**: 2026-07-08 に Neon Postgres（既存 `NEON_PRIMARY_URL` と同一プロジェクト/branch の専用 `mlflow` database）へ移行済み。sqlite（`apps/mlflow/data/mlflow.db`、WAL）は未設定時のフォールバック/開発用として残す。詳細は §2.1 / §9。
 - **`apps/mlflow-ui`**: `mlflow server` launcher CLI（`uv run python -m mlflow_ui.cli start|stop|status|plist`）。既定バインドは `127.0.0.1:5252`（macOS の AirPlay Receiver が既定ポート 5000 を占有するため回避）。launchd plist 生成にも対応する。
 - **Artifact store**: 現状は local（`apps/mlflow/data/mlartifacts/`）が稼働中の唯一の artifact store。2026-07-08 に Cloudflare R2（バケット `mlflow-artifacts`、prefix `mlflow`、S3 互換 API 経由）への移行を試みたが、既存 R2 credential のバケットスコープ外で `PERMISSION_DENIED` となり同日中に local へロールバック済み（STAGED-BUT-BLOCKED、53 ファイル 28MB は R2 上に up 済みのまま）。詳細は §3。
-- **Model Registry**: `{jra,nar,banei}-finish-position` / `{jra,nar,banei}-running-style` の 6 registered model。alias は `champion`（現行 serving） / `challenger`（staged）の 2 種のみ、legacy stage は使わない。
+- **Model Registry**: `{jra,nar,banei}-finish-position`（3）+ `{jra,nar}-running-style`（2）の計 5 registered model。命名規則自体は `{jra,nar,banei}-running-style` の 6 通りをサポートするが、`banei-running-style` は意図的に未登録（Ban-ei に脚質モデルが存在しないため。running-style の対象カテゴリはそもそも jra/nar のみ、`registry.py` の `RS_CATEGORIES` 参照)。alias は `champion`（現行 serving） / `challenger`（staged）の 2 種のみ、legacy stage は使わない。
 - **非侵襲設計**: ingestion は既存パイプラインの出力ファイル（metadata.json / manifest / duckdb / json）を読むだけで、Neon への直接接続や既存の学習・推論コードへの変更は不要。
 
 ---
@@ -38,7 +38,7 @@ MLflow を導入し、以下を一元化する。
 
 - 依存: `mlflow-skinny[db]`（フル `mlflow` ではなく skinny + db extra、server 機能は不要なため）。加えて `psycopg2-binary` を明示依存として追加済み（postgresql:// URI がデフォルト経路になったため、`[db]` extra 経由の間接依存に留めない）。
 - Backend store: **Neon Postgres**（`mlflow` database、host はプールされていない direct endpoint。既存の `NEON_PRIMARY_URL` と同一 Neon project/branch だが database は分離済みのため alembic 管理テーブルが競馬データの schema と混ざらない）。接続先は環境変数 `HORSE_RACING_MLFLOW_BACKEND_URI` で切り替える（`mlflow_tracking.config.get_tracking_uri()`）。未設定時は sqlite（`apps/mlflow/data/mlflow.db`、WAL）にフォールバックする — テストと、ネットワーク不要のローカル動作はこの経路を使う。
-- ローカルの秘密情報は 3 経路で環境変数に反映される。(1) リポジトリルートの `.env`（gitignore 済み）に `HORSE_RACING_MLFLOW_BACKEND_URI` と R2 資格情報を追加し、`direnv` の `dotenv` で自動ロードする既存経路（interactive shell 前提）。(2) `apps/mlflow/.env.local`（gitignore 済み、`apps/mlflow` と `apps/mlflow-ui` の両方から見える共有ファイル）を `mlflow_tracking.config.load_dotenv_local()`（および `mlflow_ui.config` 側の同等関数）が CLI / server 起動時に直接読み込む経路。direnv の interactive shell hook を経由しないため、cron / launchd / subprocess のような非対話呼び出しでも確実に設定を反映できる。(3) 上記 2 経路より下位の第三のフォールバックとして、`load_repo_root_env_fallback()`（`mlflow_tracking.config` / `mlflow_ui.config` の両方に実装済み、各パッケージの `cli.py` の `main()` から `load_dotenv_local()` の直後に呼ばれる）がリポジトリルートの `.env` を direnv を介さず直接パースする。direnv は `.envrc` 編集後に `direnv allow` を再実行しないとサイレントに動かなくなることがある既知の弱点があり（本移行セッション中に実際に発生した）、これに依存しない安全網として追加した。対象は `HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix のキーと `CLOUDFLARE_ACCOUNT_ID` のみに限定した許可リスト方式で、Neon の競馬 DB DSN や `PC_KEIBA_*` トークンなど同ファイル内の他の秘密情報には一切触れない。`export KEY=VALUE` 形式の bash 風プレフィックスも許容する。3 経路とも `os.environ.setdefault` 相当のセマンティクスで、既に設定済みの環境変数の方がファイルの値より常に優先される（呼び出し順は `load_dotenv_local()` → `load_repo_root_env_fallback()` のため、優先順位は 明示的な環境変数 > `apps/mlflow/.env.local` > root `.env` の許可リストキー > ハードコードされたデフォルト値 の順になる）。`env -i PATH=... HOME=... uv run python -m mlflow_tracking.cli log-training-run <manifest>`（launchd ジョブが受け取る環境に近い、完全にスクラッチな環境）でも direnv・事前設定済み環境変数のどちらにも依存せず Neon backend を解決し run を記録できることを検証済み。
+- ローカルの秘密情報は 3 経路で環境変数に反映される。(1) リポジトリルートの `.env`（gitignore 済み）に `HORSE_RACING_MLFLOW_BACKEND_URI` と R2 資格情報を追加し、`direnv` の `dotenv` で自動ロードする既存経路（interactive shell 前提）。(2) `apps/mlflow/.env.local`（gitignore 済み、`apps/mlflow` と `apps/mlflow-ui` の両方から見える共有ファイル）を `mlflow_tracking.config.load_dotenv_local()`（および `mlflow_ui.config` 側の同等関数）が CLI / server 起動時に直接読み込む経路。direnv の interactive shell hook を経由しないため、cron / launchd / subprocess のような非対話呼び出しでも確実に設定を反映できる。(3) 上記 2 経路より下位の第三のフォールバックとして、`load_repo_root_env_fallback()`（`mlflow_tracking.config` / `mlflow_ui.config` の両方に実装済み、各パッケージの `cli.py` の `main()` から `load_dotenv_local()` の直後に呼ばれる）がリポジトリルートの `.env` を direnv を介さず直接パースする。direnv は `.envrc` 編集後に `direnv allow` を再実行しないとサイレントに動かなくなることがある既知の弱点があり（本移行セッション中に実際に発生した）、これに依存しない安全網として追加した。対象は `HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix のキーと、完全一致のみで許可される少数の例外キーに限定した許可リスト方式で、`PC_KEIBA_*` トークンなど同ファイル内のそれ以外の秘密情報には一切触れない。`export KEY=VALUE` 形式の bash 風プレフィックスも許容する。**`apps/mlflow`（`mlflow_tracking.config`）と `apps/mlflow-ui`（`mlflow_ui.config`）の許可リストは意図的に異なる**: `mlflow_tracking.config._ROOT_ENV_ALLOWED_EXACT` は `CLOUDFLARE_ACCOUNT_ID` に加えて `NEON_PRIMARY_URL`（競馬 Neon DB の DSN）も完全一致で許可している — `sync-production` / `eval-champion-cells`（§11 / §12）が読み取り専用で競馬 Neon に接続する必要があるための、この package 限定の狭い例外である（値自体はログ・出力されず、接続は必ず `db.py` 経由で readonly セッションとして開かれる。詳細は `config.py` の `_ROOT_ENV_ALLOWED_EXACT` のコメントを参照）。一方 `mlflow_ui.config._ROOT_ENV_ALLOWED_EXACT` は `CLOUDFLARE_ACCOUNT_ID` のみで、`mlflow-ui` パッケージは競馬 DB DSN を一切 import しない。3 経路とも `os.environ.setdefault` 相当のセマンティクスで、既に設定済みの環境変数の方がファイルの値より常に優先される（呼び出し順は `load_dotenv_local()` → `load_repo_root_env_fallback()` のため、優先順位は 明示的な環境変数 > `apps/mlflow/.env.local` > root `.env` の許可リストキー > ハードコードされたデフォルト値 の順になる）。`env -i PATH=... HOME=... uv run python -m mlflow_tracking.cli log-training-run <manifest>`（launchd ジョブが受け取る環境に近い、完全にスクラッチな環境）でも direnv・事前設定済み環境変数のどちらにも依存せず Neon backend を解決し run を記録できることを検証済み。
 - 呼び出し: `uv run python -m mlflow_tracking.cli <subcommand> ...`。サブコマンド一覧は §7 を参照。
 - server は起動しない。CLI は `MlflowClient` / tracking API を直接 backend store に対して呼ぶ。
 
@@ -89,13 +89,18 @@ MLflow を導入し、以下を一元化する。
 
 ## 5. Experiments
 
-以下の experiment を既定で用意する。
+以下の experiment を既定で用意する（`mlflow_tracking.config.ALL_EXPERIMENT_NAMES` が正、`init` サブコマンドが全件を作成する）。
 
 - `finish-position/registry-backfill`
 - `finish-position/wf-eval`
 - `finish-position/serve-accuracy`
 - `running-style/registry-backfill`
 - `running-style/eval`
+- `timelines`（task × category 単位で 1 run が育ち続ける、精度トレンドのグラフ化用。§10.1 / §11 参照）
+- `finish-position/production-usage`（§11 の `sync-production` が記録する本番配信の使用実績）
+- `running-style/production-usage`（同上、running-style 版）
+- `finish-position/champion-eval`（§12 の `eval-champion-cells` が記録する champion の cell 単位評価）
+- `running-style/champion-eval`（同上、running-style 版）
 
 ---
 
@@ -106,19 +111,23 @@ cell 単位の評価は 1 レース分・1 cell 分の粒度になると数が�
 - **aggregate metrics（~20〜50 件）**: cell を横断した集計値（category 全体の top1 / place2 / place3 / top3_box など、[[feedback_eval_rank_1_to_6]] の rank 1〜6 集計を含む）を `log_batch`（1 回あたり最大 1000 件）で chunk して記録する。
 - **全 cell table**: `mlflow.log_table` で `cell_metrics.json` として記録する（MLflow UI の Evaluation タブで閲覧可能）。加えて `cell_metrics.parquet` を artifact として同時に保存し、後段の分析（DuckDB からの直接読み込みなど）に使えるようにする。
 
+**cell table 同士の直接比較には注意**: `running-style/eval`（`ingest-local-pg-running-style-buckets` 経由、§7）の per-training cell report は、`kyori` / `kyoso_shubetsu_code` / `track_code` のような pre-canonical な raw カラム名で書かれており、これは `cells.py` の `CELL_KEY_COLUMNS`（`venue` / `class_code` / `distance_band` / ...）が前提とする正規化済みスキーマとは異なる。§12 の `eval-champion-cells` が書く champion-cells 側のテーブルは正規化済みカラムで統一されているため、この 2 系統を素朴に同じキーで join することはできない。`cells.COLUMN_ALIASES`（現時点では `keibajo_code`→`venue`、`kyori_band`→`distance_band`、`current_baba_condition`/`baba_condition`→`track_condition`、`kyoso_joken_code`→`class_code`）が variant なカラム名を正規化する仕組みだが、running-style 側のような他の raw カラム名を橋渡しする対応表は今後も随時追加されていく前提であり、`cells.py` を都度 source of truth として確認すること。
+
 ---
 
 ## 7. Ingestion
 
 Ingestion は既存パイプラインが出力するファイルを読むだけの非侵襲設計であり、Neon への直接接続は行わない。
 
-| CLI サブコマンド（想定名）       | 入力                                                                                                                                                               | 用途                                                         |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
-| `backfill-finish-position`       | `apps/finish-position-predict-container/models/finish-position/**/metadata.json` + per-class manifest + `model_meta.json`（champion 同期用） + `cell_routing.json` | 既存の着順予測 model artifact 群を registry に一括登録       |
-| `ingest-trial-registry <duckdb>` | `trial_registry_{category}.duckdb`                                                                                                                                 | walk-forward trial 履歴を run として取り込み                 |
-| `ingest-serve-accuracy <json>`   | `serve_accuracy_report.py --json` の出力                                                                                                                           | 本番 serve 精度レポートを run として取り込み                 |
-| `log-eval <path>`                | `retest_wf.py` 系の汎用 cell-metrics レポート（parquet または json）                                                                                               | 任意の cell 単位評価結果を run として取り込み                |
-| `backfill-running-style`         | 脚質予測側の model artifact / cell routing                                                                                                                         | running-style 版の backfill（finish-position と同じ CLI 内） |
+| CLI サブコマンド（想定名）                     | 入力                                                                                                                                                               | 用途                                                                                           |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `backfill-finish-position`                     | `apps/finish-position-predict-container/models/finish-position/**/metadata.json` + per-class manifest + `model_meta.json`（champion 同期用） + `cell_routing.json` | 既存の着順予測 model artifact 群を registry に一括登録                                         |
+| `ingest-trial-registry <duckdb>`               | `trial_registry_{category}.duckdb`                                                                                                                                 | walk-forward trial 履歴を run として取り込み                                                   |
+| `ingest-serve-accuracy <json>`                 | `serve_accuracy_report.py --json` の出力                                                                                                                           | 本番 serve 精度レポートを run として取り込み                                                   |
+| `log-eval <path>`                              | `retest_wf.py` 系の汎用 cell-metrics レポート（parquet または json）                                                                                               | 任意の cell 単位評価結果を run として取り込み                                                  |
+| `backfill-running-style`                       | 脚質予測側の model artifact / cell routing                                                                                                                         | running-style 版の backfill（finish-position と同じ CLI 内）                                   |
+| `ingest-local-pg-model-evaluations <path>`     | local PostgreSQL replica の `model_prediction_evaluations` テーブルを事前 export した parquet/json（DB への直接接続はしない）                                      | 着順予測の offline walk-forward bucket-eval 履歴を run として取り込み（既定 `eval_regime=wf`） |
+| `ingest-local-pg-running-style-buckets <path>` | 同 replica の `running_style_model_bucket_evaluations` テーブルを事前 export した parquet/json                                                                     | 脚質予測の offline walk-forward bucket-eval 履歴を run として取り込み（既定 `eval_regime=wf`） |
 
 上記のサブコマンド名・引数は実装中の暫定名であり、§0 の注記の通り実装コードを正とする。
 
@@ -171,8 +180,9 @@ Ingestion は既存パイプラインが出力するファイルを読むだけ�
 1. 呼び出し元は `mlflow_hook.safe_emit_training_run(task=..., category=..., model_version=..., eval_regime=..., aggregate_metrics=..., ...)` を呼ぶ。これが内部で `hr-mlflow-training-run/v1` manifest（スキーマは `apps/mlflow/src/mlflow_tracking/training_run.py` のモジュール docstring が正）を一時ファイルに書き、`uv run --project apps/mlflow python -m mlflow_tracking.cli log-training-run <manifest.json>` を subprocess 実行する。
 2. **既定で有効、`HORSE_RACING_MLFLOW_ENABLED=0` で無効化**（`mlflow_hook.mlflow_enabled()`）。パッケージ側のテストスイートは `tests/conftest.py` の autouse fixture で全体を無効化しており、実際に subprocess を叩くテストだけが `monkeypatch.setenv` で個別に再有効化して `subprocess.run` をモックする。
 3. **非致命**: env 無効化・`uv` 未検出（`FileNotFoundError`）・CLI 非 0 終了・タイムアウト（180 秒）・その他の例外は全て握り潰され、stderr へ warning を出すのみで `False` を返す。呼び出し元スクリプトの exit code / stdout には一切影響しない。
-4. `eval_regime` タグ（`wf` / `oos` / `serve` / `self-consistency` / `unspecified`）は全 manifest で必須（これから記録する数値がどの regime のものかを CLI 側の `ingest_eval.validate_eval_regime` が強制する。§7 で述べた `ingest-serve-accuracy` / `log-eval` の `--eval-regime` required と同じ制約）。
+4. `eval_regime` タグは全 manifest で必須だが、実行時に強制されるのは非空文字列であることのみ（`ingest_eval.validate_eval_regime` は空文字列を拒否するだけの実装で、値そのものを列挙型として検証しない）。`wf` / `oos` / `serve` / `self-consistency` / `unspecified` の 5 値は、呼び出し側が守るべき運用上の語彙（convention）であって、コード側で強制される enum ではない。§7 で述べた `ingest-serve-accuracy` / `log-eval` の `--eval-regime` も同じ「必須だが値は自由文字列」という制約。
 5. `manifest["artifact_dir"]` を渡すと、その配下の `metadata.json` を backfill 系モジュールと同じ key routing ロジック（`route_json_fields`）で params / tags / artifact に振り分けて追加記録する。`manifest["cell_report"]` を渡すと parquet/JSON の cell table を `log_table` + headline metrics として同じ run に記録する。`register=true` を渡すと registry へバージョン登録、`champion=true` を追加すると champion alias も同時に張り替える（これらは既存の手動 backfill と同じ副作用であり、hook からの自動昇格は現状使っていない）。
+6. **run 種別タグ（`run_type`）**: 評価目的ではない run（動作確認用の smoke run、手動の one-off 実行など）は `run_type=smoke` / `run_type=manual` のようなタグを付与し、`finish-position/wf-eval` 等の評価系 experiment の集計を汚さないよう区別する運用を導入している（評価そのものを表す run には付与しない）。あわせて、§11 の `sync-production` / §12 の `eval-champion-cells` / 本節の `timelines` upsert が記録する run は、いずれも「本番で実際に配信された予測を実際の結果で評価する」経路であるため `eval_regime=serve` を一貫して持つ運用にしている。
 
 **未実装（フォローアップ予定）**: `running_style_lightgbm.py` への hook 組み込みは、同ファイルを触っている別セッションの WIP と競合するため見送っている。脚質（running-style）側は当面 `backfill-running-style` / `log-training-run` の手動実行で記録する。
 

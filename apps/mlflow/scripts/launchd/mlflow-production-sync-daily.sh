@@ -2,6 +2,11 @@
 # Daily MLflow production-usage sync + champion cell-eval runner.
 #
 # WHAT THIS RUNS:
+#   0. `backfill-finish-position --allow-missing-champion` to self-heal any
+#      champion-alias drift left over from a prior model deploy, so step 1's
+#      champion-lookup logic always sees fresh registry state. Best-effort
+#      only: a failure here WARNs and does not block steps 1/2 (see the
+#      `|| echo "WARNING: ..."` guard below).
 #   1. `sync-production` over a "yesterday -> today" JST window, so a
 #      genuinely-served prediction logged just before local midnight is not
 #      missed by a same-day-only range.
@@ -66,6 +71,10 @@ TODAY_JST="$(TZ=Asia/Tokyo date +%Y%m%d)"
 YESTERDAY_JST="$(TZ=Asia/Tokyo date -v-1d +%Y%m%d)"
 
 echo "=== mlflow-production-sync $(date -u +%Y-%m-%dT%H:%M:%SZ) (JST today=$TODAY_JST yesterday=$YESTERDAY_JST) ==="
+
+echo "--- backfill-finish-position --allow-missing-champion ---"
+"$UV_BIN" run python -m mlflow_tracking.cli backfill-finish-position --allow-missing-champion \
+  || echo "WARNING: backfill-finish-position failed (continuing to sync-production)"
 
 echo "--- sync-production --date-from $YESTERDAY_JST --date-to $TODAY_JST --categories jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli sync-production \

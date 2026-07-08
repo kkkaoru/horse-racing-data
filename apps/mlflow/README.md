@@ -272,6 +272,19 @@ analogs — logged by `sync-production` on every run serve as the per-race/
 per-horse audit trail instead, viewable in the MLflow UI's Artifacts /
 Evaluation views.
 
+### ⚠️ `win5-xgb-*-rs-overlay-*` is intentionally out of scope
+
+The `finish-position/serve-accuracy` experiment contains a
+`win5-xgb-*-rs-overlay-*` run family (e.g.
+`win5-xgb-v7-lineage-v1-rs-overlay-20260627`) representing ad-hoc,
+manually-dated batch overlay evaluations run outside this package's normal
+ingestion paths — not a registry-managed model family. There is no
+corresponding registered model/version for it, so it deliberately carries no
+`champion`/`challenger` alias, no `routing_scope` tag, and no
+`backfill-finish-position` coverage. Do not treat its presence in the MLflow
+UI as drift or an oversight, and do not "fix" it by registering a model or
+backfilling tags for it.
+
 ## Development
 
 ```sh

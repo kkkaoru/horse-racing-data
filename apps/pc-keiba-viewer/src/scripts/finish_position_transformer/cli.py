@@ -19,13 +19,14 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import mlx.core as mx
 import mlx.utils
 import numpy as np
 import polars as pl
 
+import mlflow_hook
 from finish_position_lightgbm import (
     PredictionRow,
     load_dataset,
@@ -73,6 +74,9 @@ from finish_position_transformer.training import (
     predict_rank_scores,
     train_transformer,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class CheckpointPaths(TypedDict):
@@ -303,6 +307,43 @@ def write_predictions(predictions: list[PredictionRow], path: Path) -> None:
     write_predictions_jsonl(pl.DataFrame(predictions), path)
 
 
+def emit_mlflow_run(
+    train_df: pl.DataFrame, args: argparse.Namespace, result: Mapping[str, object],
+) -> None:
+    """Best-effort MLflow logging of this transformer training run (never affects CLI output).
+
+    Unlike the CatBoost/XGBoost walk-forward trainers, this CLI has no
+    ``--category`` / ``--walk-forward-namespace`` flags of its own, so
+    ``category`` is read off the training frame's ``category`` column (a
+    required column on every finish-position features parquet) and
+    ``model_version`` is derived from the output model directory name.
+    """
+    category = (
+        str(train_df["category"][0])
+        if train_df.height > 0 and "category" in train_df.columns
+        else "unknown"
+    )
+    mlflow_hook.safe_emit_training_run(
+        task="finish-position",
+        category=category,
+        model_version=Path(args.output_model_dir).name,
+        eval_regime="wf",
+        artifact_dir=args.output_model_dir,
+        aggregate_metrics=mlflow_hook.flatten_numeric_metrics(result),
+        params={
+            "embedding_dim": int(args.embedding_dim),
+            "num_layers": int(args.num_layers),
+            "num_heads": int(args.num_heads),
+            "dropout": float(args.dropout),
+            "learning_rate": float(args.learning_rate),
+            "max_epochs": int(args.max_epochs),
+            "batch_size": int(args.batch_size),
+            "seed": int(args.seed),
+        },
+        tags={"architecture": "set-transformer"},
+    )
+
+
 def run_train_command(args: argparse.Namespace) -> None:
     train_df = load_dataset(args.train_parquet)
     valid_df = load_dataset(args.valid_parquet) if args.valid_parquet is not None else None
@@ -327,6 +368,7 @@ def run_train_command(args: argparse.Namespace) -> None:
         args.output_metadata.write_text(
             json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+    emit_mlflow_run(train_df, args, result)
     print(json.dumps(result, ensure_ascii=False))
 
 

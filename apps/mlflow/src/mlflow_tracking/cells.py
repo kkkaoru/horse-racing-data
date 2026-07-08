@@ -164,6 +164,8 @@ COLUMN_ALIASES: Final[dict[str, str]] = {
     "current_baba_condition": "track_condition",
     "baba_condition": "track_condition",
     "kyoso_joken_code": "class_code",
+    "class_label": "class_code",
+    "season": "season_band",
 }
 
 

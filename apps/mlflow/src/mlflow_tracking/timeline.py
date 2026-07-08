@@ -136,7 +136,12 @@ def upsert_timeline_point(
       tag search rather than trusting a caller-passed run_id, so calling this
       twice for the same (task, category) always appends to the same run,
       even across process restarts / separate CLI invocations. The run is
-      tagged with `timeline_key`/`task`/`category` at creation time only.
+      tagged with `timeline_key`/`task`/`category`/`eval_regime` at creation
+      time only -- `eval_regime` is always `"serve"` because, unlike the
+      per-day eval runs this timeline complements, a timeline run by design
+      only ever aggregates genuinely-served (never backtested/WF) accuracy
+      points, so the tag is a fixed fact about every timeline run rather than
+      a caller-supplied, per-call value.
     - Each metric key is deduped by STEP, not by value: before logging a
       metric, `client.get_metric_history(run_id, key)` is consulted, and a
       point at the same step is skipped entirely (even if the value
@@ -165,6 +170,15 @@ def upsert_timeline_point(
     make it show a stuck/live indicator in run-list views that never
     resolves -- there is no natural "done" moment for a persistent series,
     so FINISHED-after-every-append is the least-surprising choice.
+    `set_terminated` is deliberately called WITHOUT an explicit `end_time`,
+    so mlflow defaults it to this call's actual wall-clock time: passing
+    `timestamp_ms` (this metric point's own, potentially long-past,
+    historical date) here would make `end_time < start_time` -- and a
+    negative Duration in the UI -- for any backfill call whose
+    `date_yyyymmdd` predates the run's real creation/last-touch time. Only
+    the run-level start/end bookkeeping is wall-clock; every metric point
+    still carries its own correct historical `timestamp_ms`/`step` (see the
+    `Metric(...)` construction below), so the chart's x-axis is unaffected.
 
     `tags` (if given) are always applied via the same `log_batch_chunked`
     call used for the metrics, even when the run already existed: tags may
@@ -178,7 +192,12 @@ def upsert_timeline_point(
         run = client.create_run(
             experiment_id,
             run_name=f"timeline-{task}-{category}",
-            tags={TIMELINE_KEY_TAG: timeline_key, "task": task, "category": category},
+            tags={
+                TIMELINE_KEY_TAG: timeline_key,
+                "task": task,
+                "category": category,
+                "eval_regime": "serve",
+            },
         )
         run_id = run.info.run_id
 
@@ -193,7 +212,7 @@ def upsert_timeline_point(
 
     tag_items = [RunTag(k, v) for k, v in (tags or {}).items()]
     log_batch_chunked(client, run_id, metrics=metric_items, tags=tag_items)
-    client.set_terminated(run_id, status="FINISHED", end_time=timestamp_ms)
+    client.set_terminated(run_id, status="FINISHED")
     return run_id
 
 

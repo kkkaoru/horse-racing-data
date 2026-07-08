@@ -78,3 +78,38 @@ def test_generate_plist_empty_environment_when_nothing_set(tmp_path: Path) -> No
     parsed = plistlib.loads(text.encode())
 
     assert parsed["EnvironmentVariables"] == {}
+
+
+def test_generate_plist_carries_backend_store_uri_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_BACKEND_URI", "postgresql://user:pw@host/db")
+
+    text = launchd.generate_plist(cfg)
+    parsed = plistlib.loads(text.encode())
+
+    assert (
+        parsed["EnvironmentVariables"]["HORSE_RACING_MLFLOW_BACKEND_URI"]
+        == "postgresql://user:pw@host/db"
+    )
+
+
+def test_generate_plist_program_arguments_never_contain_backend_uri_or_artifacts_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression guard for the ps-argv DSN leak: the backend URI (which may
+    embed a plaintext database password) must only ever reach the
+    supervised process via EnvironmentVariables, never baked into
+    ProgramArguments -- a running process's argv is world-readable via `ps`,
+    but its plist-supplied environment is not."""
+    cfg = _make_cfg(tmp_path)
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_BACKEND_URI", "postgresql://user:pw@host/db")
+
+    text = launchd.generate_plist(cfg)
+    parsed = plistlib.loads(text.encode())
+
+    program_arguments = parsed["ProgramArguments"]
+    assert "postgresql://user:pw@host/db" not in program_arguments
+    assert not any("--backend-store-uri" in arg for arg in program_arguments)
+    assert not any("--artifacts-destination" in arg for arg in program_arguments)

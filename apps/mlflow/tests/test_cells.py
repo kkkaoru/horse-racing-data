@@ -163,3 +163,23 @@ def test_normalize_cell_columns_renames_multiple_aliases_at_once() -> None:
         "track_condition": "good",
         "class_code": "A",
     }
+
+
+def test_normalize_cell_columns_renames_class_label_alias() -> None:
+    result = cells.normalize_cell_columns({"class_label": "703"})
+    assert result == {"class_code": "703"}
+
+
+def test_normalize_cell_columns_renames_season_alias() -> None:
+    result = cells.normalize_cell_columns({"season": "summer"})
+    assert result == {"season_band": "summer"}
+
+
+def test_normalize_cell_columns_canonical_wins_over_class_label_collision() -> None:
+    result = cells.normalize_cell_columns({"class_label": "703", "class_code": "999"})
+    assert result == {"class_code": "999"}
+
+
+def test_normalize_cell_columns_canonical_wins_over_season_collision() -> None:
+    result = cells.normalize_cell_columns({"season": "summer", "season_band": "winter"})
+    assert result == {"season_band": "winter"}

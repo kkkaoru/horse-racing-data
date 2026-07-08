@@ -181,6 +181,63 @@ def test_backfill_one_running_style_metadata_raises_when_category_unresolvable(
         brs.backfill_one_running_style_metadata(client, metadata_path, tmp_path)
 
 
+def test_backfill_one_running_style_metadata_is_idempotent_on_unchanged_artifact(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Re-running against the identical metadata_path/calibrator_dir (no
+    change to model.txt or metadata.json) must not mint a second version --
+    this is the exact shape of the verified jra-running-style v1/v2 bug.
+    """
+    version_dir = tmp_path / "jra-running-style-lgbm-prod-v3"
+    write_json(version_dir / "metadata.json", RS_METADATA)
+    (version_dir / "model.txt").write_text("dummy booster text", encoding="utf-8")
+    calibrator_dir = tmp_path / "calibrators"
+    write_json(calibrator_dir / "jra-rs-v3-calibrators.json", CALIBRATOR_PAYLOAD)
+    metadata_path = version_dir / "metadata.json"
+
+    first = brs.backfill_one_running_style_metadata(client, metadata_path, calibrator_dir)
+    second = brs.backfill_one_running_style_metadata(client, metadata_path, calibrator_dir)
+
+    assert second.version == first.version
+    versions = client.search_model_versions("name='jra-running-style'")
+    matching = [
+        v for v in versions if v.tags.get("model_version") == "jra-running-style-lgbm-prod-v3"
+    ]
+    assert len(matching) == 1
+
+
+def test_backfill_one_running_style_metadata_registers_new_version_when_source_changes(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Same model_version label reused under a genuinely different source
+    (different parent directory -> different resolved file:// URI) must
+    still register as a new version -- proves the duplicate guard is not
+    overly broad (label-only matching would have wrongly no-op'd this).
+    """
+    first_dir = tmp_path / "run-1" / "jra-running-style-lgbm-prod-v3"
+    write_json(first_dir / "metadata.json", RS_METADATA)
+    (first_dir / "model.txt").write_text("dummy booster text v1", encoding="utf-8")
+    calibrator_dir = tmp_path / "calibrators"
+    write_json(calibrator_dir / "jra-rs-v3-calibrators.json", CALIBRATOR_PAYLOAD)
+
+    first = brs.backfill_one_running_style_metadata(
+        client, first_dir / "metadata.json", calibrator_dir
+    )
+
+    second_dir = tmp_path / "run-2" / "jra-running-style-lgbm-prod-v3"
+    write_json(second_dir / "metadata.json", RS_METADATA)
+    (second_dir / "model.txt").write_text("dummy booster text v2", encoding="utf-8")
+
+    second = brs.backfill_one_running_style_metadata(
+        client, second_dir / "metadata.json", calibrator_dir
+    )
+
+    assert second.version != first.version
+    assert second.source != first.source
+    versions = client.search_model_versions("name='jra-running-style'")
+    assert len(versions) == 2
+
+
 def test_register_production_pointer_if_missing_creates_version(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:
@@ -217,6 +274,35 @@ def test_backfill_running_style_full_happy_path_with_local_production_mirror(
     assert summary["versions_registered"] == 2
     assert summary["errors"] == []
     assert summary["champion_sync"] == {"jra": "ok", "nar": "ok"}
+
+
+def test_backfill_running_style_is_idempotent_across_repeated_calls(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Re-running the full outer backfill over an unchanged artifact_root must
+    not grow the registered-version count on the second call -- the outer
+    function's own regression check for the verified duplicate-registration
+    bug, on top of the per-metadata-file check above.
+    """
+    artifact_root = tmp_path / "models"
+    write_json(artifact_root / "jra-running-style-lgbm-prod-v3" / "metadata.json", RS_METADATA)
+    (artifact_root / "jra-running-style-lgbm-prod-v3" / "model.txt").write_text(
+        "dummy booster text", encoding="utf-8"
+    )
+    nar_metadata = dict(RS_METADATA)
+    nar_metadata["model_version"] = "nar-running-style-lgbm-prod-v3"
+    write_json(artifact_root / "nar-running-style-lgbm-prod-v3" / "metadata.json", nar_metadata)
+
+    calibrator_dir = tmp_path / "no-calibrators"
+    first_summary = brs.backfill_running_style(client, artifact_root, calibrator_dir)
+    assert first_summary["versions_registered"] == 2
+
+    second_summary = brs.backfill_running_style(client, artifact_root, calibrator_dir)
+    assert second_summary["versions_registered"] == 0
+    assert second_summary["errors"] == []
+
+    assert len(client.search_model_versions("name='jra-running-style'")) == 1
+    assert len(client.search_model_versions("name='nar-running-style'")) == 1
 
 
 def test_backfill_running_style_adds_production_pointer_when_local_mirror_is_a_different_version(

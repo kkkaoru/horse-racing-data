@@ -34,6 +34,7 @@ than being stuck with no eval forever).
 from __future__ import annotations
 
 import tempfile
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -62,6 +63,15 @@ SYNC_KEY_TAG: Final[str] = "sync_key"
 SYNC_BASE_LOGGED_TAG: Final[str] = "sync_base_logged"
 SYNC_EVAL_LOGGED_TAG: Final[str] = "sync_eval_logged"
 CHAMPION_AT_SYNC_TAG: Final[str] = "champion_at_sync"
+EVAL_REGIME_TAG: Final[str] = "eval_regime"
+SERVE_REGIME: Final[str] = "serve"
+
+# Tags the serving-gap marker run (see sync_production_range's own docstring
+# and _log_serving_gap below) is identified/searched by -- a distinct tag
+# family from SYNC_KEY_TAG's (date, category, model_version) grain, since a
+# gap is a property of (date, category) alone, with no model_version.
+SERVING_GAP_KEY_TAG: Final[str] = "serving_gap_key"
+SERVING_GAP_TAG: Final[str] = "serving_gap"
 
 TRUE_STR: Final[str] = "true"
 FALSE_STR: Final[str] = "false"
@@ -96,6 +106,14 @@ class SyncProductionSummary:
     not runs reused within this same call (a given (date, category,
     model_version) sync_key is only ever visited once per call, since dates
     and categories are each walked without repetition).
+
+    `serving_gaps_detected` counts every (date, category) pair, THIS call,
+    for which the RS-vs-FP serving-gap check (see `sync_production_range`'s
+    own docstring) found a genuine gap and logged/found its marker run --
+    whether that marker run was freshly created or already existed from a
+    previous day's call counts the same here, since this field answers "how
+    many gaps did this call observe", not "how many NEW marker runs did this
+    call create".
     """
 
     dates_processed: int
@@ -107,18 +125,31 @@ class SyncProductionSummary:
     rs_runs_reused: int
     rs_eval_logged: int
     rs_eval_skipped_no_results: int
+    serving_gaps_detected: int
     errors: list[str]
 
 
 @dataclass
 class _CategoryDateOutcome:
     """Per-(date, category) counters, summed by the caller into whichever of
-    `SyncProductionSummary`'s fp_*/rs_* fields apply."""
+    `SyncProductionSummary`'s fp_*/rs_* fields apply.
+
+    `races_observed` is the distinct race count of genuinely-served rows for
+    this exact (date, category) -- ALWAYS set correctly by both
+    `_sync_fp_category_date` and `_sync_rs_category_date`, including on their
+    early-empty-`rows` return path (explicitly set to 0 there rather than
+    left at this field's default, so a reader of that return statement sees
+    the invariant held, not an implicit default doing the work). This is what
+    lets `sync_production_range` detect an RS-vs-FP serving gap (see its own
+    docstring) without any extra Neon query -- both functions already have
+    `rows` in hand by the time they would otherwise return.
+    """
 
     runs_created: int = 0
     runs_reused: int = 0
     eval_logged: int = 0
     eval_skipped_no_results: int = 0
+    races_observed: int = 0
 
 
 def _date_range_yyyymmdd(date_from: str, date_to: str) -> list[str]:
@@ -325,6 +356,13 @@ def _get_or_create_run_and_tags(
     otherwise -- callers use this single snapshot to decide independently
     whether to (re)log the base tracking and/or the evaluation parts, per
     this module's own docstring on the idempotency state machine.
+
+    `EVAL_REGIME_TAG` is set to `SERVE_REGIME` ("serve") unconditionally at
+    creation time, never conditionally: every run this function creates
+    represents a genuinely-served production prediction, by this whole
+    module's own design (see its module docstring's opening paragraph) --
+    there is no code path in this module that logs anything else, so there
+    is nothing to branch on here.
     """
     run_id = _find_sync_run(client, experiment_id, sync_key)
     if run_id is not None:
@@ -337,6 +375,7 @@ def _get_or_create_run_and_tags(
             "category": category,
             "model_version": model_version,
             "date": date_str,
+            EVAL_REGIME_TAG: SERVE_REGIME,
         },
     )
     return run.info.run_id, True, {}
@@ -495,13 +534,29 @@ def _sync_fp_category_date(
 ) -> _CategoryDateOutcome:
     """Sync every genuinely-served FP model_version group for (category,
     date_str). A day with zero surviving rows for this category (the normal
-    case -- production serving is sparse, not daily) is a silent no-op."""
+    case -- production serving is sparse, not daily) is a silent no-op,
+    except that `races_observed` is still explicitly set to 0 on the
+    returned outcome (see `_CategoryDateOutcome`'s own docstring on why this
+    matters for the caller's serving-gap check).
+
+    Every run visited here (freshly created or reused) is left `FINISHED`
+    (via `client.set_terminated`) before this function returns, regardless
+    of whether the base-tracking pass and/or the eval pass actually logged
+    anything this call -- mirroring `timeline.upsert_timeline_point`'s own
+    "FINISHED after every call" philosophy (see that function's docstring):
+    MLflow run status is orthogonal to this module's `sync_base_logged`/
+    `sync_eval_logged` idempotency tags, and a run left permanently RUNNING
+    (the previous behavior -- this module never called `set_terminated` at
+    all) is simply wrong, not a meaningful "still in progress" signal.
+    """
     outcome = _CategoryDateOutcome()
     source = serve_eval.resolve_source(category)
     raw_rows = serve_eval.fetch_fp_prediction_rows(neon_conn, source, date_str, date_str)
     rows = _fp_category_filtered_rows(category, serve_eval.filter_genuine_rows(raw_rows))
     if not rows:
+        outcome.races_observed = 0
         return outcome
+    outcome.races_observed = _distinct_race_count(rows)
 
     for model_version, group_rows in serve_eval.group_by_model_version(rows).items():
         sync_key = f"{date_str}:{category}:{model_version}"
@@ -547,6 +602,12 @@ def _sync_fp_category_date(
             else:
                 outcome.eval_skipped_no_results += 1
 
+        # Always leave this run FINISHED before moving to the next
+        # model_version group -- see this function's own docstring. Runs
+        # both just-created above and reused from a prior call/date hit this
+        # same line; a status refresh on an already-FINISHED run is harmless.
+        client.set_terminated(run_id, status="FINISHED")
+
     return outcome
 
 
@@ -560,13 +621,21 @@ def _sync_rs_category_date(
 ) -> _CategoryDateOutcome:
     """Sync every genuinely-served RS model_version group for (category,
     date_str). Only ever called for `category in RS_CATEGORIES` by the
-    caller -- Ban-ei has no running-style rows to sync."""
+    caller -- Ban-ei has no running-style rows to sync.
+
+    Sets `races_observed` and terminates every visited run FINISHED for
+    exactly the same reasons as `_sync_fp_category_date`'s own docstring
+    (this function is its RS-side twin) -- see that docstring for the full
+    rationale, not repeated here.
+    """
     outcome = _CategoryDateOutcome()
     source = serve_eval.resolve_source(category)
     raw_rows = serve_eval.fetch_rs_prediction_rows(neon_conn, source, date_str, date_str)
     rows = serve_eval.filter_genuine_rows(raw_rows)
     if not rows:
+        outcome.races_observed = 0
         return outcome
+    outcome.races_observed = _distinct_race_count(rows)
 
     for model_version, group_rows in serve_eval.group_by_model_version(rows).items():
         sync_key = f"{date_str}:{category}:{model_version}"
@@ -612,7 +681,76 @@ def _sync_rs_category_date(
             else:
                 outcome.eval_skipped_no_results += 1
 
+        # See _sync_fp_category_date's matching comment: always FINISHED,
+        # created or reused, before moving to the next model_version group.
+        client.set_terminated(run_id, status="FINISHED")
+
     return outcome
+
+
+def _find_serving_gap_run(
+    client: MlflowClient, experiment_id: str, serving_gap_key: str
+) -> str | None:
+    """Find the run tagged with `serving_gap_key`, mirroring
+    `_find_sync_run`'s exact tag-search idiom for the serving-gap marker
+    family (keyed by (date, category) alone) rather than the base sync run
+    family (keyed by (date, category, model_version))."""
+    matches = client.search_runs(
+        [experiment_id],
+        filter_string=f"tags.{SERVING_GAP_KEY_TAG} = '{serving_gap_key}'",
+        max_results=1,
+    )
+    return matches[0].info.run_id if matches else None
+
+
+def _log_serving_gap(
+    client: MlflowClient,
+    experiment_id: str,
+    *,
+    date_str: str,
+    category: str,
+    rs_races_observed: int,
+) -> None:
+    """Find-or-create the serving-gap marker run for (date_str, category) in
+    `experiment_id` (always `config.EXPERIMENT_FP_PRODUCTION_USAGE` -- the
+    gap is about a MISSING finish-position side, so it belongs alongside the
+    FP usage runs, not the RS ones that DID get served), log its metrics, and
+    leave it FINISHED.
+
+    Idempotent via a `serving_gap_key = "{date_str}:{category}"` tag search
+    (mirroring `_find_sync_run`'s idiom exactly, with a different tag), so a
+    daily cron re-running the same overlapping range every day while a gap
+    persists across multiple days never creates a second marker run for the
+    same (date_str, category) -- see `sync_production_range`'s own docstring
+    on the serving-gap check. Metrics are (re-)logged on every call
+    regardless of whether the run was just created or found -- unlike
+    `sync_base_logged`'s artifact-append-duplication concern, a plain metric
+    value has no such hazard, and re-logging keeps `rs_races_observed`
+    current if the gap's shape changes across days (e.g. more RS rows land
+    for the same date on a later call).
+    """
+    serving_gap_key = f"{date_str}:{category}"
+    run_id = _find_serving_gap_run(client, experiment_id, serving_gap_key)
+    if run_id is None:
+        run = client.create_run(
+            experiment_id,
+            tags={
+                SERVING_GAP_KEY_TAG: serving_gap_key,
+                SERVING_GAP_TAG: TRUE_STR,
+                "gap_date": date_str,
+                "category": category,
+            },
+        )
+        run_id = run.info.run_id
+    log_batch_chunked(
+        client,
+        run_id,
+        metrics=[
+            Metric("fp_races_observed", 0.0, 0, 0),
+            Metric("rs_races_observed", float(rs_races_observed), 0, 0),
+        ],
+    )
+    client.set_terminated(run_id, status="FINISHED")
 
 
 def sync_production_range(
@@ -695,6 +833,33 @@ def sync_production_range(
     has more independent failure points, so exception isolation reads
     clearer here).
 
+    After both syncs for a given (date, category) complete (an RS-eligible
+    category only -- Ban-ei has nothing to compare against, since it has no
+    running-style data at all), this function also checks for a SERVING GAP:
+    `rs_outcome.races_observed > 0 and fp_outcome.races_observed == 0`, i.e.
+    running-style was genuinely served for that exact (date, category) but
+    finish-position was not -- a real incident observed on 2026-07-04 (JRA
+    had 12 races with RS predictions logged and ZERO FP rows the same day, a
+    genuine one-sided outage that would otherwise go unnoticed, since neither
+    side's absence is an error on its own -- production serving is sparse by
+    design, see `_sync_fp_category_date`'s own docstring). Detecting this
+    costs no extra Neon query: both `_sync_fp_category_date` and
+    `_sync_rs_category_date` already compute `races_observed` from the exact
+    `rows` list they fetch anyway. A detected gap is surfaced two ways: a
+    `warnings.warn` naming the date/category/both counts (mirroring
+    `champion_cell_eval.eval_champion_cells`'s own non-fatal-but-worth-
+    surfacing convention), and an idempotent marker run in
+    `config.EXPERIMENT_FP_PRODUCTION_USAGE` (find-or-create by a
+    `serving_gap_key = "{date}:{category}"` tag, exactly like `sync_key`'s
+    own idiom, so a daily cron re-running the same range every day while a
+    gap persists never creates a second marker for the same pair) --
+    `summary.serving_gaps_detected` counts how many such pairs this call
+    observed. This check is isolated in its own try/except, using the same
+    `_ISOLATED_EXCEPTIONS` tuple as the fp/rs syncs above: a transient
+    failure while logging the marker (e.g. a flaky tracking-store write)
+    must never abort the rest of the date range, same as everywhere else in
+    this function.
+
     Raises ValueError for an invalid `date_from`/`date_to` (see
     `timeline.validate_yyyymmdd`) or an inverted range (`date_to < date_from`).
     """
@@ -712,6 +877,7 @@ def sync_production_range(
     rs_runs_reused = 0
     rs_eval_logged = 0
     rs_eval_skipped_no_results = 0
+    serving_gaps_detected = 0
     errors: list[str] = []
 
     neon_conn = neon_connect()
@@ -729,6 +895,7 @@ def sync_production_range(
                     fp_experiment_id = get_or_create_experiment(
                         client, config.EXPERIMENT_FP_PRODUCTION_USAGE
                     )
+                fp_outcome: _CategoryDateOutcome | None = None
                 try:
                     fp_outcome = _sync_fp_category_date(
                         client, fp_experiment_id, neon_conn, local_conn, category, date_str
@@ -747,6 +914,7 @@ def sync_production_range(
                     rs_experiment_id = get_or_create_experiment(
                         client, config.EXPERIMENT_RS_PRODUCTION_USAGE
                     )
+                rs_outcome: _CategoryDateOutcome | None = None
                 try:
                     rs_outcome = _sync_rs_category_date(
                         client, rs_experiment_id, neon_conn, local_conn, category, date_str
@@ -758,6 +926,34 @@ def sync_production_range(
                     rs_runs_reused += rs_outcome.runs_reused
                     rs_eval_logged += rs_outcome.eval_logged
                     rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
+
+                # Serving-gap check (see this function's own docstring). Only
+                # reachable when BOTH syncs above completed without raising --
+                # a fp/rs failure this iteration already produced its own
+                # error entry, and its race count is simply unknown, not
+                # meaningfully "zero", so it must not be misread as a gap.
+                if fp_outcome is None or rs_outcome is None:
+                    continue
+                if not (rs_outcome.races_observed > 0 and fp_outcome.races_observed == 0):
+                    continue
+                warnings.warn(
+                    f"serving gap: category={category!r} date={date_str!r}: "
+                    f"{rs_outcome.races_observed} running-style race(s) served but "
+                    "0 finish-position races served",
+                    stacklevel=2,
+                )
+                try:
+                    _log_serving_gap(
+                        client,
+                        fp_experiment_id,
+                        date_str=date_str,
+                        category=category,
+                        rs_races_observed=rs_outcome.races_observed,
+                    )
+                except _ISOLATED_EXCEPTIONS as exc:
+                    errors.append(f"{date_str}:{category}:serving-gap: {exc}")
+                else:
+                    serving_gaps_detected += 1
     finally:
         neon_conn.close()
         local_conn.close()
@@ -772,5 +968,6 @@ def sync_production_range(
         rs_runs_reused=rs_runs_reused,
         rs_eval_logged=rs_eval_logged,
         rs_eval_skipped_no_results=rs_eval_skipped_no_results,
+        serving_gaps_detected=serving_gaps_detected,
         errors=errors,
     )

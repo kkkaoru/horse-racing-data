@@ -326,6 +326,13 @@ def cmd_set_champion(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_set_challenger(args: argparse.Namespace) -> int:
+    client = build_client()
+    registry.set_challenger(client, args.model, args.version)
+    print(f"challenger alias set: {args.model} -> version {args.version}")
+    return 0
+
+
 def cmd_list_models(_args: argparse.Namespace) -> int:
     client = build_client()
     for model in client.search_registered_models():
@@ -549,6 +556,13 @@ def build_parser() -> argparse.ArgumentParser:
     champion_parser.add_argument("model", help="Registered model name")
     champion_parser.add_argument("version", help="MLflow model version number")
     champion_parser.set_defaults(func=cmd_set_champion)
+
+    challenger_parser = subparsers.add_parser(
+        "set-challenger", help="Set the challenger alias on a registered model"
+    )
+    challenger_parser.add_argument("model", help="Registered model name")
+    challenger_parser.add_argument("version", help="MLflow model version number")
+    challenger_parser.set_defaults(func=cmd_set_challenger)
 
     subparsers.add_parser(
         "list-models", help="List registered models and their aliases"

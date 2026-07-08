@@ -125,6 +125,39 @@ def find_version_by_label(client: MlflowClient, name: str, model_version_label: 
     return casefold_match
 
 
+def find_duplicate_version(
+    client: MlflowClient, name: str, model_version_label: str, source_uri: str
+) -> str | None:
+    """Return the existing mlflow version number when a version already exists
+    with BOTH `model_version_label` (via `find_version_by_label`) AND an
+    identical `source` URI, else None.
+
+    Guards backfill callers against re-registering an identical artifact as a
+    brand-new version on every re-run (see backfill_running_style.py's
+    `backfill_one_running_style_metadata` for the concrete motivating bug: an
+    unchanged metadata.json/model.txt pair re-backfilled minted a second,
+    fully redundant version -- verified duplicate: jra-running-style v1/v2,
+    identical label and source). A version whose label matches but whose
+    source differs is intentionally NOT treated as a duplicate here -- that
+    represents a genuinely new artifact reusing an old label, which should
+    still register normally.
+
+    Returns None (not raising) when the label match itself cannot be
+    resolved to a live model version (e.g. deleted between the label lookup
+    and this fetch) -- same fail-open posture as `find_version_by_label`,
+    since a lookup failure should never block a caller's real registration
+    attempt.
+    """
+    existing = find_version_by_label(client, name, model_version_label)
+    if existing is None:
+        return None
+    try:
+        mv = client.get_model_version(name, existing)
+    except MlflowException:
+        return None
+    return existing if mv.source == source_uri else None
+
+
 def set_champion(client: MlflowClient, name: str, version: str) -> None:
     """Point the 'champion' alias at `version` (MLflow 3.x alias idiom, not legacy stages)."""
     client.set_registered_model_alias(name, CHAMPION_ALIAS, version)

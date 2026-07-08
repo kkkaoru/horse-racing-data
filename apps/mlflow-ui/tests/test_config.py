@@ -193,13 +193,35 @@ def test_r2_mode_missing_bucket_only_raises(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_server_env_local_mode_is_empty() -> None:
-    # Not actually empty any more: the job-execution scheduler kill switch is
-    # unconditional (local and r2 modes alike), since it is a backend-store
-    # concern unrelated to artifacts. Name kept for git-blame continuity;
-    # the assertion below reflects the current (non-empty) behavior.
+    # Not actually empty any more: it always carries the backend-uri/
+    # artifacts-destination pair (see test_server_env_carries_backend_uri_and_
+    # artifacts_destination_not_via_argv below) plus the job-execution
+    # scheduler kill switch, unconditional in local and r2 modes alike since
+    # neither is an artifacts-mode concern. Name kept for git-blame
+    # continuity; the assertion below reflects the current behavior.
     cfg = config.load_config()
 
-    assert config.server_env(cfg) == {"MLFLOW_SERVER_ENABLE_JOB_EXECUTION": "false"}
+    assert config.server_env(cfg) == {
+        "MLFLOW_BACKEND_STORE_URI": cfg.backend_store_uri,
+        "MLFLOW_ARTIFACTS_DESTINATION": cfg.artifacts_destination,
+        "MLFLOW_SERVER_ENABLE_JOB_EXECUTION": "false",
+    }
+
+
+def test_server_env_carries_backend_uri_and_artifacts_destination_not_via_argv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the ps-argv DSN leak: mlflow's CLI treats
+    MLFLOW_BACKEND_STORE_URI/MLFLOW_ARTIFACTS_DESTINATION as env-var aliases
+    of --backend-store-uri/--artifacts-destination, so server_env() must
+    always supply both -- server.build_command() never puts them on argv."""
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_BACKEND_URI", "postgresql://user:pw@host/db")
+    cfg = config.load_config()
+
+    env = config.server_env(cfg)
+
+    assert env["MLFLOW_BACKEND_STORE_URI"] == "postgresql://user:pw@host/db"
+    assert env["MLFLOW_ARTIFACTS_DESTINATION"] == cfg.artifacts_destination
 
 
 def test_server_env_r2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,6 +235,8 @@ def test_server_env_r2_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env["AWS_SECRET_ACCESS_KEY"] == "secret123"
     assert env["AWS_DEFAULT_REGION"] == "auto"
     assert env["MLFLOW_SERVER_ENABLE_JOB_EXECUTION"] == "false"
+    assert env["MLFLOW_BACKEND_STORE_URI"] == cfg.backend_store_uri
+    assert env["MLFLOW_ARTIFACTS_DESTINATION"] == cfg.artifacts_destination
 
 
 def test_server_env_does_not_clobber_existing_aws_credentials(

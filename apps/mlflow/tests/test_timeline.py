@@ -23,6 +23,48 @@ def test_upsert_timeline_point_creates_run_on_first_call(client: MlflowClient) -
     assert experiment.name == config.EXPERIMENT_TIMELINES
 
 
+def test_upsert_timeline_point_tags_creation_with_eval_regime_serve(
+    client: MlflowClient,
+) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    run = client.get_run(run_id)
+    assert run.data.tags["eval_regime"] == "serve"
+
+
+def test_upsert_timeline_point_eval_regime_tag_survives_second_call(
+    client: MlflowClient,
+) -> None:
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+    timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260602", {"fp_top1_pct": 45.0}
+    )
+    run = client.get_run(run_id)
+    assert run.data.tags["eval_regime"] == "serve"
+
+
+def test_upsert_timeline_point_end_time_is_not_the_historical_metric_date(
+    client: MlflowClient,
+) -> None:
+    """Regression test for a bug where `set_terminated` was passed the
+    metric's own historical `timestamp_ms` as `end_time`, making a
+    backfill for a long-past `date_yyyymmdd` produce `end_time <
+    start_time` (a negative Duration in the UI). `end_time` must instead
+    default to this call's actual wall-clock time, which can never be
+    earlier than `start_time` (also wall-clock, set by `create_run`).
+    """
+    run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20200101", {"fp_top1_pct": 44.5}
+    )
+    run = client.get_run(run_id)
+    historical_end_time = int(dt.datetime(2020, 1, 1, 3, 0, 0, tzinfo=dt.UTC).timestamp() * 1000)
+    assert run.info.end_time != historical_end_time
+    assert run.info.end_time >= run.info.start_time
+
+
 def test_upsert_timeline_point_reuses_same_run_across_dates(client: MlflowClient) -> None:
     run_id_1 = timeline.upsert_timeline_point(
         client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
 
 from mlflow_tracking import registry
 
@@ -141,6 +142,74 @@ def test_find_version_by_label_returns_none_when_nothing_matches(
         client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "other"}
     )
     assert registry.find_version_by_label(client, "jra-finish-position", "missing") is None
+
+
+def test_find_duplicate_version_returns_version_when_label_and_source_match(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    source_uri = f"file://{tmp_path}"
+    version = registry.register_version(
+        client, "jra-running-style", source_uri, tags={"model_version": "jra-rs-v1"}
+    )
+    found = registry.find_duplicate_version(client, "jra-running-style", "jra-rs-v1", source_uri)
+    assert found == version.version
+
+
+def test_find_duplicate_version_returns_none_when_source_differs(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    original_source = f"file://{tmp_path / 'v1'}"
+    registry.register_version(
+        client, "jra-running-style", original_source, tags={"model_version": "jra-rs-v1"}
+    )
+    changed_source = f"file://{tmp_path / 'v1-changed'}"
+    found = registry.find_duplicate_version(
+        client, "jra-running-style", "jra-rs-v1", changed_source
+    )
+    assert found is None
+
+
+def test_find_duplicate_version_returns_none_when_label_has_no_match(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    source_uri = f"file://{tmp_path}"
+    registry.register_version(
+        client, "jra-running-style", source_uri, tags={"model_version": "other-label"}
+    )
+    found = registry.find_duplicate_version(
+        client, "jra-running-style", "missing-label", source_uri
+    )
+    assert found is None
+
+
+def test_find_duplicate_version_returns_none_when_registered_model_does_not_exist(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    found = registry.find_duplicate_version(
+        client, "jra-running-style", "jra-rs-v1", f"file://{tmp_path}"
+    )
+    assert found is None
+
+
+def test_find_duplicate_version_returns_none_when_get_model_version_raises(
+    client: MlflowClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the fail-open branch: the label lookup succeeds but the
+    immediate follow-up fetch fails (e.g. a version deleted between the two
+    calls) -- same fail-open posture as `find_version_by_label` itself, a
+    lookup failure must never be mistaken for "definitely not a duplicate".
+    """
+    source_uri = f"file://{tmp_path}"
+    registry.register_version(
+        client, "jra-running-style", source_uri, tags={"model_version": "jra-rs-v1"}
+    )
+
+    def _raise_lookup_failure(*_args: object, **_kwargs: object) -> None:
+        raise MlflowException("simulated lookup failure")
+
+    monkeypatch.setattr(client, "get_model_version", _raise_lookup_failure)
+    found = registry.find_duplicate_version(client, "jra-running-style", "jra-rs-v1", source_uri)
+    assert found is None
 
 
 def test_version_tags_omits_unset_fields() -> None:
