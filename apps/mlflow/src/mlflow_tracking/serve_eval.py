@@ -181,6 +181,31 @@ def is_genuine(
     return abs((generated_at.date() - parsed_race_date).days) <= tolerance_days
 
 
+LIVE_LAG_TOLERANCE_DAYS: Final[int] = 1
+
+
+def classify_serving_kind(
+    race_date: str, generated_at: datetime, *, live_lag_days: int = LIVE_LAG_TOLERANCE_DAYS
+) -> str:
+    """Classify an already-genuine row (see `is_genuine`) as `"live"` or
+    `"backfill"` serving.
+
+    `"live"` covers pre-race publishing (a negative lag) through same-day/
+    next-day reporting (`lag_days <= live_lag_days`); anything generated
+    later -- still within `is_genuine`'s broader `GEN_LAG_TOLERANCE_DAYS`
+    window, so not decades-old WF-era noise, but clearly not the live serving
+    path -- is `"backfill"`: e.g. a backfill script re-predicting a handful
+    of historical races a few days after the fact. Distinct from (and
+    narrower than) `is_genuine`'s own genuine/not-genuine split: this
+    function is only ever meaningful on a row that already passed that
+    check, and assumes `generated_at` is not None (unlike `is_genuine`,
+    which must handle that case for a row it hasn't filtered yet).
+    """
+    parsed_race_date = date(int(race_date[:4]), int(race_date[4:6]), int(race_date[6:8]))
+    lag_days = (generated_at.date() - parsed_race_date).days
+    return "live" if lag_days <= live_lag_days else "backfill"
+
+
 def resolve_result_tables(category: str) -> tuple[str, str]:
     """Return (se_table, ra_table) for `category`; raises ValueError otherwise."""
     if category == cells.CATEGORY_JRA:
@@ -237,6 +262,28 @@ def filter_genuine_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, 
         if is_genuine(race_date, generated_at):
             result.append(dict(row))
     return result
+
+
+def partition_live_backfill(
+    rows: Sequence[Mapping[str, object]], *, live_lag_days: int = LIVE_LAG_TOLERANCE_DAYS
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Split already-genuine `rows` (see `filter_genuine_rows`) into
+    (live_rows, backfill_rows) via `classify_serving_kind`.
+
+    Every row must carry `kaisai_nen`, `kaisai_tsukihi`, and a non-None
+    `prediction_generated_at` -- the exact postcondition `filter_genuine_rows`
+    already guarantees for whatever it lets through, and the only shape this
+    function is ever called with in this package (always downstream of that
+    filter, never on raw unfiltered rows).
+    """
+    live_rows: list[dict[str, object]] = []
+    backfill_rows: list[dict[str, object]] = []
+    for row in rows:
+        race_date = str(row["kaisai_nen"]) + str(row["kaisai_tsukihi"])
+        generated_at = cast("datetime", row["prediction_generated_at"])
+        kind = classify_serving_kind(race_date, generated_at, live_lag_days=live_lag_days)
+        (live_rows if kind == "live" else backfill_rows).append(dict(row))
+    return live_rows, backfill_rows
 
 
 def group_by_model_version(
@@ -449,6 +496,31 @@ def fetch_race_metadata(
             "kyoso_joken_code": str(kyoso_joken_code) if kyoso_joken_code is not None else None,
         }
     return result
+
+
+_BANEI_RACE_CALENDAR_SQL: Final[str] = """
+    SELECT race_bango FROM nvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s AND keibajo_code = %s
+"""
+
+
+def fetch_banei_race_count(conn: db.ConnectionLike, date_str: str) -> int:
+    """Return the count of Ban-ei races scheduled in the local replica's own
+    nvd_ra race calendar for `date_str`, independent of whether anything was
+    ever served for them.
+
+    This is the "races expected" oracle `sync_production.py`'s serving-gap
+    check uses for category="banei" specifically: running-style has no
+    Ban-ei model at all (see `RS_CATEGORIES` in sync_production.py), so
+    there is no RS-served count to compare a Ban-ei fp_races==0 day against
+    the way jra/nar can. nvd_ra is the same table `fetch_race_metadata`
+    already reads race-level metadata from -- filtered here to just the
+    Ban-ei keibajo_code subset (`BANEI_KEIBAJO_CODE`), since nvd_ra
+    otherwise spans every NAR venue for the day, not just Ban-ei's.
+    """
+    cursor = conn.cursor()
+    cursor.execute(_BANEI_RACE_CALENDAR_SQL, (date_str[:4], date_str[4:], BANEI_KEIBAJO_CODE))
+    return len(cursor.fetchall())
 
 
 # ── Join / build functions (pure, no I/O) ───────────────────────────────────

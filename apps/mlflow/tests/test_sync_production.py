@@ -96,12 +96,17 @@ class _FakeLocalCursor:
 
     def execute(self, query: str, params: object = None) -> None:
         assert isinstance(params, tuple)
-        year, month_day = params
-        date_str = f"{year}{month_day}"
+        date_str = f"{params[0]}{params[1]}"
         if date_str in self._conn.raise_for:
             raise psycopg2.OperationalError(f"boom local {date_str}")
         if "_se" in query:
             self._pending = self._conn.result_rows.get(date_str, [])
+        elif "race_bango FROM nvd_ra" in query:
+            # serve_eval.fetch_banei_race_count's dedicated race-calendar
+            # query -- a distinct substring from fetch_race_metadata's own
+            # nvd_ra SELECT (which lists keibajo_code first), so the two
+            # never collide even though both read the same table.
+            self._pending = self._conn.banei_race_rows.get(date_str, [])
         else:
             self._pending = self._conn.meta_rows.get(date_str, [])
 
@@ -112,10 +117,15 @@ class _FakeLocalCursor:
 class FakeLocalConnection:
     """Fake local-PostgreSQL-replica connection serving finalized results/
     metadata rows keyed by date_str (jvd_se/nvd_se share the "_se" substring,
-    jvd_ra/nvd_ra share "_ra", so category need not be tracked separately)."""
+    jvd_ra/nvd_ra share "_ra", so category need not be tracked separately).
+    `banei_race_rows` backs `serve_eval.fetch_banei_race_count`'s dedicated
+    race-calendar query -- rows are never inspected, only counted, so a
+    caller may reuse `_meta_row(...)`'s tuple shape or any placeholder
+    tuple of the right length."""
 
     result_rows: dict[str, list[tuple[object, ...]]]
     meta_rows: dict[str, list[tuple[object, ...]]]
+    banei_race_rows: dict[str, list[tuple[object, ...]]]
     raise_for: frozenset[str]
     closed: bool
 
@@ -123,10 +133,12 @@ class FakeLocalConnection:
         self,
         result_rows: dict[str, list[tuple[object, ...]]] | None = None,
         meta_rows: dict[str, list[tuple[object, ...]]] | None = None,
+        banei_race_rows: dict[str, list[tuple[object, ...]]] | None = None,
         raise_for: frozenset[str] = frozenset(),
     ) -> None:
         self.result_rows = result_rows or {}
         self.meta_rows = meta_rows or {}
+        self.banei_race_rows = banei_race_rows or {}
         self.raise_for = raise_for
         self.closed = False
 
@@ -900,12 +912,14 @@ def test_serving_gap_logging_failure_is_isolated_and_recorded(
     assert "boom serving-gap log" in summary.errors[0]
 
 
-def test_serving_gap_never_checked_for_banei(
+def test_no_rs_experiment_created_for_banei_only_categories(
     client: MlflowClient, recwarn: pytest.WarningsRecorder
 ) -> None:
     """category="banei" is FP-eligible but not RS-eligible, so no RS query is
-    ever issued for it -- the gap check must never fire even with FP-empty
-    data, since there is nothing to compare against."""
+    ever issued for it -- unlike the (now-removed) original behavior, the
+    serving-gap check itself DOES still run for banei (via the local race
+    calendar, see the `test_banei_*` tests below), but it must never touch
+    the RS production-usage experiment at all."""
     neon = FakeNeonConnection()
     local = FakeLocalConnection()
     summary = sync_production.sync_production_range(
@@ -919,6 +933,505 @@ def test_serving_gap_never_checked_for_banei(
     assert summary.serving_gaps_detected == 0
     assert not any("serving gap" in str(w.message) for w in recwarn.list)
     assert client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE) is None
+
+
+# ── Serving-gap detection: Ban-ei via the local nvd_ra race calendar ────────
+#
+# Regression coverage for a real, still-open incident: Ban-ei has no
+# running-style model at all, so the original RS-vs-FP comparison could never
+# even LOOK at banei (it early-`continue`d before the gap check for any
+# non-RS-eligible category). Ban-ei has been dark (zero genuinely-served FP
+# rows) since 2026-05-24 with nothing ever surfacing it. The local replica's
+# own nvd_ra race calendar (keibajo_code == BANEI_KEIBAJO_CODE), independent
+# of whether anything was ever served, is the only "did races even happen"
+# oracle available for it.
+
+
+def test_banei_serving_gap_detected_via_race_calendar(client: MlflowClient) -> None:
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection(
+        banei_race_rows={DATE_STR: [_meta_row("83", "01", 2000, 10, "00", "A")]}
+    )
+
+    with pytest.warns(UserWarning, match="banei"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("banei",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:banei'"
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
+    assert gap_run.data.tags["gap_type"] == "no_rows"
+    assert gap_run.data.metrics["expected_races"] == 1.0
+    assert gap_run.data.metrics["fp_races_observed"] == 0.0
+    assert gap_run.data.metrics["fp_races_live"] == 0.0
+    assert "rs_races_observed" not in gap_run.data.metrics
+
+
+def test_banei_no_gap_when_race_calendar_empty(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """No races scheduled at all that day (calendar count 0) -- an ordinary
+    dark day, not a gap."""
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("banei",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
+
+
+def test_banei_no_gap_when_fp_has_live_rows(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    neon = FakeNeonConnection(fp_rows={("nar", DATE_STR): [_fp_row("83", "01", "H1", "v1", 1)]})
+    local = FakeLocalConnection(
+        banei_race_rows={DATE_STR: [_meta_row("83", "01", 2000, 10, "00", "A")]}
+    )
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("banei",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
+
+
+def test_banei_serving_gap_expected_query_failure_is_isolated(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient failure while resolving the banei race-calendar oracle
+    itself (not while logging the marker) must be isolated exactly like every
+    other failure point in this function."""
+
+    def _boom(*args: object, **kwargs: object) -> int:
+        raise psycopg2.OperationalError("boom banei calendar")
+
+    monkeypatch.setattr(serve_eval, "fetch_banei_race_count", _boom)
+
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("banei",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert len(summary.errors) == 1
+    assert "serving-gap-expected" in summary.errors[0]
+    assert "boom banei calendar" in summary.errors[0]
+
+
+def test_banei_serving_gap_marker_not_duplicated_on_repeated_calls(client: MlflowClient) -> None:
+    def _fresh_local() -> FakeLocalConnection:
+        return FakeLocalConnection(
+            banei_race_rows={DATE_STR: [_meta_row("83", "01", 2000, 10, "00", "A")]}
+        )
+
+    with pytest.warns(UserWarning, match="banei"):
+        first = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("banei",),
+            neon_connect=lambda: FakeNeonConnection(),
+            local_connect=_fresh_local,
+        )
+    assert first.serving_gaps_detected == 1
+
+    with pytest.warns(UserWarning, match="banei"):
+        second = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("banei",),
+            neon_connect=lambda: FakeNeonConnection(),
+            local_connect=_fresh_local,
+        )
+    assert second.serving_gaps_detected == 1
+
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:banei'"
+    )
+    assert len(matches) == 1
+
+
+# ── Backfill-vs-live distinction ────────────────────────────────────────────
+#
+# Regression coverage: a date whose only FP rows are delayed backfill
+# re-predictions (prediction_generated_at well after the race date, but still
+# within the broader genuine-serving tolerance) previously looked "served"
+# from the RS-vs-FP comparison's point of view even though nothing was
+# genuinely LIVE that day.
+
+_BACKFILL_GEN_AT: datetime = datetime(2026, 6, 17, 3, 0, 0, tzinfo=UTC)  # 3 days after DATE_STR
+
+
+def test_fp_races_live_and_backfilled_metrics_split(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(
+        fp_rows={
+            ("jra", DATE_STR): [
+                _fp_row("05", "01", "H1", "iter14", 1),
+                _fp_row("05", "02", "H2", "iter14", 1, _BACKFILL_GEN_AT),
+            ]
+        }
+    )
+    local = FakeLocalConnection()
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.metrics["fp_races"] == 2.0
+    assert run.data.metrics["fp_races_live"] == 1.0
+    assert run.data.metrics["fp_races_backfilled"] == 1.0
+
+
+def test_backfill_only_gap_type_when_fp_rows_all_backfill(client: MlflowClient) -> None:
+    rs_row = _rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1, _BACKFILL_GEN_AT)]},
+        rs_rows={("jra", DATE_STR): [rs_row]},
+    )
+    local = FakeLocalConnection()
+
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["gap_type"] == "backfill_only"
+    assert gap_run.data.tags["gap_source"] == "running_style"
+    assert gap_run.data.metrics["fp_races_observed"] == 1.0
+    assert gap_run.data.metrics["fp_races_live"] == 0.0
+    assert gap_run.data.metrics["fp_races_backfilled"] == 1.0
+    assert gap_run.data.metrics["rs_races_observed"] == 1.0
+
+
+# ── Champion-vs-served mismatch ─────────────────────────────────────────────
+#
+# Regression coverage for a real incident: JRA silently served only a
+# superseded challenger variant (e.g. a "-jockey-pedigree269" build) for
+# weeks after a rollback, while the registry's champion alias still pointed
+# at a different model_version -- `champion_at_sync` already records this per
+# RUN, but nothing rolled that up into a visible per-day signal.
+
+
+def test_fp_champion_gap_detected_when_live_rows_not_from_champion(client: MlflowClient) -> None:
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter20-challenger", 1)]}
+    )
+    local = FakeLocalConnection()
+
+    with pytest.warns(UserWarning, match="champion gap"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.champion_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.champion_gap_key = '{DATE_STR}:jra:finish-position'",
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["champion_gap"] == "true"
+    assert gap_run.data.tags["champion_served"] == "false"
+    assert gap_run.data.tags["champion_model_version"] == "iter14"
+    assert gap_run.data.tags["served_model_versions"] == "iter20-challenger"
+    assert gap_run.info.status == "FINISHED"
+
+
+def test_fp_champion_gap_not_detected_when_champion_served(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    assert not any("champion gap" in str(w.message) for w in recwarn.list)
+
+
+def test_champion_gap_not_detected_when_no_champion_registered(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    assert not any("champion gap" in str(w.message) for w in recwarn.list)
+
+
+def test_champion_gap_not_detected_when_no_live_rows(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """Champion registered, but every row that landed is backfill -- there is
+    nothing genuinely LIVE to compare against the champion at all, so this is
+    purely a (possible) serving gap, never a champion mismatch."""
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter20", 1, _BACKFILL_GEN_AT)]}
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    assert not any("champion gap" in str(w.message) for w in recwarn.list)
+
+
+def test_rs_champion_gap_not_detected_when_champion_served(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """RS-side twin of `test_fp_champion_gap_not_detected_when_champion_served`
+    -- exercises the RS sync's own `model_version == champion_label` match
+    branch (a distinct code path from the FP sync's identical-looking one)."""
+    _register_champion(client, "jra", "running-style", "rs-v3")
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    assert not any("champion gap" in str(w.message) for w in recwarn.list)
+
+
+def test_rs_all_backfill_rows_have_no_live_model_versions(client: MlflowClient) -> None:
+    """RS-side twin of the FP backfill-only scenario -- exercises the RS
+    sync's own `if group_live_rows:` False branch (a distinct code path from
+    the FP sync's identical-looking one)."""
+    neon = FakeNeonConnection(
+        rs_rows={
+            ("jra", DATE_STR): [
+                _rs_row(
+                    "05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI, _BACKFILL_GEN_AT
+                )
+            ]
+        }
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    run = _get_run(client, config.EXPERIMENT_RS_PRODUCTION_USAGE, f"{DATE_STR}:jra:rs-v3")
+    assert run.data.metrics["rs_races_live"] == 0.0
+    assert run.data.metrics["rs_races_backfilled"] == 1.0
+
+
+def test_rs_champion_gap_detected(client: MlflowClient) -> None:
+    _register_champion(client, "jra", "running-style", "rs-v3")
+    rs_row = _rs_row("05", "01", "H1", "rs-v4-challenger", serve_eval.RS_CLASS_NIGE)
+    neon = FakeNeonConnection(rs_rows={("jra", DATE_STR): [rs_row]})
+    local = FakeLocalConnection()
+
+    with pytest.warns(UserWarning, match="running-style"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.champion_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.champion_gap_key = '{DATE_STR}:jra:running-style'",
+    )
+    assert len(matches) == 1
+    assert matches[0].data.tags["champion_model_version"] == "rs-v3"
+    assert matches[0].data.tags["served_model_versions"] == "rs-v4-challenger"
+
+
+def test_champion_gap_marker_not_duplicated_on_repeated_calls(client: MlflowClient) -> None:
+    _register_champion(client, "jra", "finish-position", "iter14")
+
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(
+            fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter20-challenger", 1)]}
+        )
+
+    with pytest.warns(UserWarning, match="champion gap"):
+        first = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=lambda: FakeLocalConnection(),
+        )
+    assert first.champion_gaps_detected == 1
+
+    with pytest.warns(UserWarning, match="champion gap"):
+        second = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=lambda: FakeLocalConnection(),
+        )
+    assert second.champion_gaps_detected == 1
+
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.champion_gap_key = '{DATE_STR}:jra:finish-position'",
+    )
+    assert len(matches) == 1
+
+
+def test_champion_gap_logging_failure_is_isolated_and_recorded(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("boom champion-gap log")
+
+    monkeypatch.setattr(sync_production, "_log_champion_gap", _boom)
+
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter20-challenger", 1)]}
+    )
+    local = FakeLocalConnection()
+    with pytest.warns(UserWarning, match="champion gap"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    assert summary.champion_gaps_detected == 0
+    assert summary.fp_runs_created == 1
+    assert len(summary.errors) == 1
+    assert "champion-gap:finish-position" in summary.errors[0]
+    assert "boom champion-gap log" in summary.errors[0]
+
+
+def test_rs_champion_gap_logging_failure_is_isolated_and_recorded(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same isolation contract as the FP-side test above, exercised through
+    the RS-side try/except block instead (a distinct code path in the main
+    loop, even though both call the same `_log_champion_gap` helper)."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("boom rs champion-gap log")
+
+    monkeypatch.setattr(sync_production, "_log_champion_gap", _boom)
+
+    _register_champion(client, "jra", "running-style", "rs-v3")
+    neon = FakeNeonConnection(
+        rs_rows={
+            ("jra", DATE_STR): [
+                _rs_row("05", "01", "H1", "rs-v4-challenger", serve_eval.RS_CLASS_NIGE)
+            ]
+        }
+    )
+    local = FakeLocalConnection()
+    with pytest.warns(UserWarning, match="running-style"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    assert summary.champion_gaps_detected == 0
+    assert summary.rs_runs_created == 1
+    assert len(summary.errors) == 1
+    assert "champion-gap:running-style" in summary.errors[0]
+    assert "boom rs champion-gap log" in summary.errors[0]
 
 
 # ── Error isolation ──────────────────────────────────────────────────────

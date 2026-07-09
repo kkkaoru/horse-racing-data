@@ -270,7 +270,9 @@ def cmd_sync_production(args: argparse.Namespace) -> int:
         f"rs runs created: {summary.rs_runs_created}\n"
         f"rs runs reused: {summary.rs_runs_reused}\n"
         f"rs eval logged: {summary.rs_eval_logged}\n"
-        f"rs eval skipped (no results): {summary.rs_eval_skipped_no_results}"
+        f"rs eval skipped (no results): {summary.rs_eval_skipped_no_results}\n"
+        f"serving gaps detected: {summary.serving_gaps_detected}\n"
+        f"champion gaps detected: {summary.champion_gaps_detected}"
     )
     # Printed unconditionally (regardless of --no-traces): MLflow traces are
     # never emitted by sync_production_range at all (see its own docstring

@@ -123,6 +123,101 @@ def test_is_genuine_custom_tolerance_days_override() -> None:
     assert serve_eval.is_genuine("20260614", generated_at, tolerance_days=0) is False
 
 
+# ── classify_serving_kind / partition_live_backfill ─────────────────────────
+
+
+def test_classify_serving_kind_same_day_is_live() -> None:
+    generated_at = datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
+    assert serve_eval.classify_serving_kind("20260614", generated_at) == "live"
+
+
+def test_classify_serving_kind_pre_race_negative_lag_is_live() -> None:
+    generated_at = datetime(2026, 6, 12, 3, 0, 0, tzinfo=UTC)
+    assert serve_eval.classify_serving_kind("20260614", generated_at) == "live"
+
+
+def test_classify_serving_kind_exactly_at_lag_boundary_is_live() -> None:
+    generated_at = datetime(2026, 6, 15, 3, 0, 0, tzinfo=UTC)
+    assert serve_eval.classify_serving_kind("20260614", generated_at) == "live"
+
+
+def test_classify_serving_kind_one_day_beyond_boundary_is_backfill() -> None:
+    generated_at = datetime(2026, 6, 16, 3, 0, 0, tzinfo=UTC)
+    assert serve_eval.classify_serving_kind("20260614", generated_at) == "backfill"
+
+
+def test_classify_serving_kind_custom_live_lag_days_override() -> None:
+    generated_at = datetime(2026, 6, 16, 3, 0, 0, tzinfo=UTC)
+    assert serve_eval.classify_serving_kind("20260614", generated_at, live_lag_days=2) == "live"
+    assert serve_eval.classify_serving_kind("20260614", generated_at, live_lag_days=1) == "backfill"
+
+
+def _genuine_row(*, kaisai_tsukihi: str, generated_at: datetime, model_version: str = "v1") -> dict[
+    str, object
+]:
+    return {
+        "kaisai_nen": "2026",
+        "kaisai_tsukihi": kaisai_tsukihi,
+        "prediction_generated_at": generated_at,
+        "model_version": model_version,
+    }
+
+
+def test_partition_live_backfill_splits_rows() -> None:
+    live_row = _genuine_row(
+        kaisai_tsukihi="0614", generated_at=datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
+    )
+    backfill_row = _genuine_row(
+        kaisai_tsukihi="0614", generated_at=datetime(2026, 6, 17, 3, 0, 0, tzinfo=UTC)
+    )
+    live_rows, backfill_rows = serve_eval.partition_live_backfill([live_row, backfill_row])
+    assert live_rows == [live_row]
+    assert backfill_rows == [backfill_row]
+
+
+def test_partition_live_backfill_all_live() -> None:
+    row = _genuine_row(
+        kaisai_tsukihi="0614", generated_at=datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
+    )
+    live_rows, backfill_rows = serve_eval.partition_live_backfill([row])
+    assert live_rows == [row]
+    assert backfill_rows == []
+
+
+def test_partition_live_backfill_all_backfill() -> None:
+    row = _genuine_row(
+        kaisai_tsukihi="0614", generated_at=datetime(2026, 6, 17, 3, 0, 0, tzinfo=UTC)
+    )
+    live_rows, backfill_rows = serve_eval.partition_live_backfill([row])
+    assert live_rows == []
+    assert backfill_rows == [row]
+
+
+def test_partition_live_backfill_empty_input() -> None:
+    assert serve_eval.partition_live_backfill([]) == ([], [])
+
+
+# ── fetch_banei_race_count ───────────────────────────────────────────────────
+
+
+def test_fetch_banei_race_count_shape_and_query() -> None:
+    mock_conn = _make_mock_conn([("01",), ("02",)])
+    result = serve_eval.fetch_banei_race_count(mock_conn, "20260614")
+
+    assert result == 2
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, called_params = mock_cur.execute.call_args[0]
+    assert "nvd_ra" in called_sql
+    assert "keibajo_code" in called_sql
+    assert called_params == ("2026", "0614", serve_eval.BANEI_KEIBAJO_CODE)
+
+
+def test_fetch_banei_race_count_zero_rows() -> None:
+    mock_conn = _make_mock_conn([])
+    result = serve_eval.fetch_banei_race_count(mock_conn, "20260614")
+    assert result == 0
+
+
 # ── resolve_result_tables / resolve_source ──────────────────────────────────
 
 

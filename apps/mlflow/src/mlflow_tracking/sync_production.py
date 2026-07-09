@@ -72,6 +72,19 @@ SERVE_REGIME: Final[str] = "serve"
 # gap is a property of (date, category) alone, with no model_version.
 SERVING_GAP_KEY_TAG: Final[str] = "serving_gap_key"
 SERVING_GAP_TAG: Final[str] = "serving_gap"
+GAP_SOURCE_RUNNING_STYLE: Final[str] = "running_style"
+GAP_SOURCE_RACE_CALENDAR: Final[str] = "race_calendar"
+GAP_TYPE_NO_ROWS: Final[str] = "no_rows"
+GAP_TYPE_BACKFILL_ONLY: Final[str] = "backfill_only"
+
+# Tags the champion-mismatch marker run (see _log_champion_gap below) is
+# identified/searched by -- keyed by (date, category, task), a THIRD distinct
+# grain from both SYNC_KEY_TAG's and SERVING_GAP_KEY_TAG's: a champion
+# mismatch is a property of one task's serving on one day, not of a specific
+# model_version run (which already carries its own `champion_at_sync` tag,
+# see below) nor of the FP-vs-RS comparison the serving-gap family tracks.
+CHAMPION_GAP_KEY_TAG: Final[str] = "champion_gap_key"
+CHAMPION_GAP_TAG: Final[str] = "champion_gap"
 
 TRUE_STR: Final[str] = "true"
 FALSE_STR: Final[str] = "false"
@@ -108,12 +121,18 @@ class SyncProductionSummary:
     and categories are each walked without repetition).
 
     `serving_gaps_detected` counts every (date, category) pair, THIS call,
-    for which the RS-vs-FP serving-gap check (see `sync_production_range`'s
-    own docstring) found a genuine gap and logged/found its marker run --
-    whether that marker run was freshly created or already existed from a
-    previous day's call counts the same here, since this field answers "how
-    many gaps did this call observe", not "how many NEW marker runs did this
-    call create".
+    for which the serving-gap check (see `sync_production_range`'s own
+    docstring -- RS-vs-FP for jra/nar, the local race calendar for banei)
+    found a genuine gap and logged/found its marker run -- whether that
+    marker run was freshly created or already existed from a previous day's
+    call counts the same here, since this field answers "how many gaps did
+    this call observe", not "how many NEW marker runs did this call create".
+
+    `champion_gaps_detected` is the same kind of THIS-call observation count,
+    for the champion-mismatch check (see `_check_champion_gap`'s own
+    docstring): live rows were genuinely served for a (date, category, task)
+    this call, but none of them came from the currently-registered champion
+    model_version.
     """
 
     dates_processed: int
@@ -126,6 +145,7 @@ class SyncProductionSummary:
     rs_eval_logged: int
     rs_eval_skipped_no_results: int
     serving_gaps_detected: int
+    champion_gaps_detected: int
     errors: list[str]
 
 
@@ -140,9 +160,35 @@ class _CategoryDateOutcome:
     early-empty-`rows` return path (explicitly set to 0 there rather than
     left at this field's default, so a reader of that return statement sees
     the invariant held, not an implicit default doing the work). This is what
-    lets `sync_production_range` detect an RS-vs-FP serving gap (see its own
+    lets `sync_production_range` detect a serving gap (see its own
     docstring) without any extra Neon query -- both functions already have
     `rows` in hand by the time they would otherwise return.
+
+    `races_live`/`races_backfilled` split `races_observed` by
+    `serve_eval.classify_serving_kind` (via `serve_eval.partition_live_backfill`):
+    `races_live` counts races with at least one row generated within
+    `serve_eval.LIVE_LAG_TOLERANCE_DAYS` of the race date (same-day/near
+    same-day live serving, or pre-race publishing); `races_backfilled` counts
+    races whose rows only ever arrived later than that -- still within the
+    broader genuine window (`serve_eval.GEN_LAG_TOLERANCE_DAYS`), so not
+    decades-old WF-era noise, but clearly a delayed re-run rather than the
+    live serving path. `races_observed == races_live + races_backfilled` in
+    practice, since a given race's rows share one `prediction_generated_at`
+    batch. This split is what lets the serving-gap check treat a
+    backfill-only day (rows exist, but none are genuinely live) as a real gap
+    instead of a served day -- see `sync_production_range`'s own docstring.
+
+    `champion_model_version`/`champion_live_races`/`served_model_versions_live`
+    feed the champion-vs-served mismatch check (`_check_champion_gap`):
+    `champion_model_version` is the CURRENT champion label resolved fresh
+    this call (None when no champion alias is set at all);
+    `champion_live_races` counts races among the LIVE rows that came from
+    that exact model_version; `served_model_versions_live` is the set of
+    every distinct model_version that had at least one live race this call
+    (used only for the champion-gap marker run's diagnostic tag, naming what
+    WAS served instead). All three stay at their defaults (None/0/empty) on
+    the early-empty-`rows` return path -- never inspected there, since
+    `_check_champion_gap` short-circuits on `races_live == 0` first.
     """
 
     runs_created: int = 0
@@ -150,6 +196,11 @@ class _CategoryDateOutcome:
     eval_logged: int = 0
     eval_skipped_no_results: int = 0
     races_observed: int = 0
+    races_live: int = 0
+    races_backfilled: int = 0
+    champion_model_version: str | None = None
+    champion_live_races: int = 0
+    served_model_versions_live: frozenset[str] = frozenset()
 
 
 def _date_range_yyyymmdd(date_from: str, date_to: str) -> list[str]:
@@ -403,11 +454,22 @@ def _log_base_tracking(
     `model_version`/`date`/`category` are already set as tags at run
     creation time (see `_get_or_create_run_and_tags`) and never change, so
     only `champion_at_sync` needs to be (re-)written here.
+
+    `{metric_prefix}_races_live`/`{metric_prefix}_races_backfilled` split
+    `{metric_prefix}_races` by `serve_eval.partition_live_backfill` -- see
+    `_CategoryDateOutcome`'s own docstring for the full rationale (this is
+    the same split, just scoped to one model_version's own `rows` rather
+    than the whole category-date).
     """
     champion_value = _champion_at_sync_tag_value(client, category, task, model_version)
+    live_rows, backfill_rows = serve_eval.partition_live_backfill(rows)
     metrics = [
         Metric(f"{metric_prefix}_races", float(_distinct_race_count(rows)), 0, 0),
         Metric(f"{metric_prefix}_horses", float(len(rows)), 0, 0),
+        Metric(f"{metric_prefix}_races_live", float(_distinct_race_count(live_rows)), 0, 0),
+        Metric(
+            f"{metric_prefix}_races_backfilled", float(_distinct_race_count(backfill_rows)), 0, 0
+        ),
     ]
     log_batch_chunked(
         client, run_id, metrics=metrics, tags=[RunTag(CHAMPION_AT_SYNC_TAG, champion_value)]
@@ -548,6 +610,13 @@ def _sync_fp_category_date(
     `sync_eval_logged` idempotency tags, and a run left permanently RUNNING
     (the previous behavior -- this module never called `set_terminated` at
     all) is simply wrong, not a meaningful "still in progress" signal.
+
+    Also computes the `races_live`/`races_backfilled`/`champion_model_version`/
+    `champion_live_races`/`served_model_versions_live` fields documented on
+    `_CategoryDateOutcome` -- the champion label is resolved fresh, once per
+    call (never cached across calls), so a champion-alias change is reflected
+    the very next `sync_production_range` call, not just for newly-created
+    runs.
     """
     outcome = _CategoryDateOutcome()
     source = serve_eval.resolve_source(category)
@@ -557,7 +626,13 @@ def _sync_fp_category_date(
         outcome.races_observed = 0
         return outcome
     outcome.races_observed = _distinct_race_count(rows)
+    live_rows, backfill_rows = serve_eval.partition_live_backfill(rows)
+    outcome.races_live = _distinct_race_count(live_rows)
+    outcome.races_backfilled = _distinct_race_count(backfill_rows)
+    champion_label = _resolve_champion_label(client, category, "finish-position")
+    outcome.champion_model_version = champion_label
 
+    served_model_versions_live: set[str] = set()
     for model_version, group_rows in serve_eval.group_by_model_version(rows).items():
         sync_key = f"{date_str}:{category}:{model_version}"
         run_id, created, existing_tags = _get_or_create_run_and_tags(
@@ -602,12 +677,19 @@ def _sync_fp_category_date(
             else:
                 outcome.eval_skipped_no_results += 1
 
+        group_live_rows, _group_backfill_rows = serve_eval.partition_live_backfill(group_rows)
+        if group_live_rows:
+            served_model_versions_live.add(model_version)
+            if model_version == champion_label:
+                outcome.champion_live_races += _distinct_race_count(group_live_rows)
+
         # Always leave this run FINISHED before moving to the next
         # model_version group -- see this function's own docstring. Runs
         # both just-created above and reused from a prior call/date hit this
         # same line; a status refresh on an already-FINISHED run is harmless.
         client.set_terminated(run_id, status="FINISHED")
 
+    outcome.served_model_versions_live = frozenset(served_model_versions_live)
     return outcome
 
 
@@ -623,10 +705,11 @@ def _sync_rs_category_date(
     date_str). Only ever called for `category in RS_CATEGORIES` by the
     caller -- Ban-ei has no running-style rows to sync.
 
-    Sets `races_observed` and terminates every visited run FINISHED for
-    exactly the same reasons as `_sync_fp_category_date`'s own docstring
-    (this function is its RS-side twin) -- see that docstring for the full
-    rationale, not repeated here.
+    Sets `races_observed`/`races_live`/`races_backfilled`/
+    `champion_model_version`/`champion_live_races`/`served_model_versions_live`
+    and terminates every visited run FINISHED for exactly the same reasons as
+    `_sync_fp_category_date`'s own docstring (this function is its RS-side
+    twin) -- see that docstring for the full rationale, not repeated here.
     """
     outcome = _CategoryDateOutcome()
     source = serve_eval.resolve_source(category)
@@ -636,7 +719,13 @@ def _sync_rs_category_date(
         outcome.races_observed = 0
         return outcome
     outcome.races_observed = _distinct_race_count(rows)
+    live_rows, backfill_rows = serve_eval.partition_live_backfill(rows)
+    outcome.races_live = _distinct_race_count(live_rows)
+    outcome.races_backfilled = _distinct_race_count(backfill_rows)
+    champion_label = _resolve_champion_label(client, category, "running-style")
+    outcome.champion_model_version = champion_label
 
+    served_model_versions_live: set[str] = set()
     for model_version, group_rows in serve_eval.group_by_model_version(rows).items():
         sync_key = f"{date_str}:{category}:{model_version}"
         run_id, created, existing_tags = _get_or_create_run_and_tags(
@@ -681,10 +770,17 @@ def _sync_rs_category_date(
             else:
                 outcome.eval_skipped_no_results += 1
 
+        group_live_rows, _group_backfill_rows = serve_eval.partition_live_backfill(group_rows)
+        if group_live_rows:
+            served_model_versions_live.add(model_version)
+            if model_version == champion_label:
+                outcome.champion_live_races += _distinct_race_count(group_live_rows)
+
         # See _sync_fp_category_date's matching comment: always FINISHED,
         # created or reused, before moving to the next model_version group.
         client.set_terminated(run_id, status="FINISHED")
 
+    outcome.served_model_versions_live = frozenset(served_model_versions_live)
     return outcome
 
 
@@ -709,7 +805,12 @@ def _log_serving_gap(
     *,
     date_str: str,
     category: str,
-    rs_races_observed: int,
+    gap_source: str,
+    gap_type: str,
+    expected_races: int,
+    fp_races_observed: int,
+    fp_races_live: int,
+    fp_races_backfilled: int,
 ) -> None:
     """Find-or-create the serving-gap marker run for (date_str, category) in
     `experiment_id` (always `config.EXPERIMENT_FP_PRODUCTION_USAGE` -- the
@@ -722,12 +823,34 @@ def _log_serving_gap(
     daily cron re-running the same overlapping range every day while a gap
     persists across multiple days never creates a second marker run for the
     same (date_str, category) -- see `sync_production_range`'s own docstring
-    on the serving-gap check. Metrics are (re-)logged on every call
+    on the serving-gap check. Metrics/tags are (re-)logged on every call
     regardless of whether the run was just created or found -- unlike
     `sync_base_logged`'s artifact-append-duplication concern, a plain metric
-    value has no such hazard, and re-logging keeps `rs_races_observed`
-    current if the gap's shape changes across days (e.g. more RS rows land
-    for the same date on a later call).
+    value has no such hazard, and re-logging keeps `expected_races` current
+    if the gap's shape changes across days (e.g. more rows land for the same
+    date on a later call).
+
+    Widened (2026-07-09) beyond its original jra/nar-only RS-vs-FP shape:
+    `gap_source` (one of `GAP_SOURCE_RUNNING_STYLE`/`GAP_SOURCE_RACE_CALENDAR`,
+    see `_resolve_expected_races`) names WHICH "races expected" oracle
+    flagged this gap -- the original RS-vs-FP comparison for jra/nar
+    (`expected_races` == that day's RS `races_observed`), or the local
+    replica's own nvd_ra race calendar for banei (running-style has no
+    Ban-ei model at all). `gap_type` (`GAP_TYPE_NO_ROWS`/
+    `GAP_TYPE_BACKFILL_ONLY`) distinguishes a day with literally zero FP rows
+    from one where FP rows exist but NONE of them are genuinely live serving
+    (every row that landed was a delayed backfill re-prediction, see
+    `serve_eval.partition_live_backfill`) -- both are real outages from a
+    live-serving perspective, but a backfill-only day would previously make
+    `fp_races_observed` nonzero and hide the gap entirely (see this
+    function's caller in `sync_production_range`).
+
+    `rs_races_observed` is additionally logged (with the same value as
+    `expected_races`) whenever `gap_source == GAP_SOURCE_RUNNING_STYLE`,
+    purely for backward compatibility with dashboards/queries built against
+    this metric's original (pre-widening) name -- new callers should read
+    `expected_races` instead, since it is the only metric name meaningful
+    for BOTH sources.
     """
     serving_gap_key = f"{date_str}:{category}"
     run_id = _find_serving_gap_run(client, experiment_id, serving_gap_key)
@@ -742,12 +865,139 @@ def _log_serving_gap(
             },
         )
         run_id = run.info.run_id
+    metrics = [
+        Metric("fp_races_observed", float(fp_races_observed), 0, 0),
+        Metric("fp_races_live", float(fp_races_live), 0, 0),
+        Metric("fp_races_backfilled", float(fp_races_backfilled), 0, 0),
+        Metric("expected_races", float(expected_races), 0, 0),
+    ]
+    if gap_source == GAP_SOURCE_RUNNING_STYLE:
+        metrics.append(Metric("rs_races_observed", float(expected_races), 0, 0))
     log_batch_chunked(
         client,
         run_id,
-        metrics=[
-            Metric("fp_races_observed", 0.0, 0, 0),
-            Metric("rs_races_observed", float(rs_races_observed), 0, 0),
+        metrics=metrics,
+        tags=[RunTag("gap_source", gap_source), RunTag("gap_type", gap_type)],
+    )
+    client.set_terminated(run_id, status="FINISHED")
+
+
+def _resolve_expected_races(
+    category: str,
+    rs_outcome: _CategoryDateOutcome | None,
+    local_conn: db.ConnectionLike,
+    date_str: str,
+) -> tuple[int, str] | None:
+    """Return `(expected_races, gap_source)` for the serving-gap check on
+    (date_str, category) this call, or None when there is nothing to compare
+    FP against this call.
+
+    jra/nar (`category in RS_CATEGORIES`): `expected_races` is this call's
+    RS sync `races_observed` for the same (date_str, category), tagged
+    `GAP_SOURCE_RUNNING_STYLE`. `rs_outcome is None` (the RS sync itself
+    failed/raised this call, see `sync_production_range`'s isolation) returns
+    None outright -- an unknown RS race count must never be misread as "zero
+    expected", which would incorrectly suppress a real gap.
+
+    banei: running-style has no Ban-ei model at all (see `RS_CATEGORIES`), so
+    there is no RS-served count to compare against -- `expected_races`
+    instead comes from the local replica's own nvd_ra race calendar (see
+    `serve_eval.fetch_banei_race_count`), tagged `GAP_SOURCE_RACE_CALENDAR`,
+    independent of whether anything was ever served for those races.
+
+    No fallback branch for an unrecognized category: this is only ever
+    called with a non-None `fp_outcome` (see the caller), which itself is
+    only non-None when `_sync_fp_category_date` -- and therefore
+    `serve_eval.resolve_source(category)` -- already succeeded upstream this
+    same call; that function accepts exactly "jra"/"nar"/"banei" and raises
+    ValueError otherwise, so by this point `category` is guaranteed to be one
+    of the two branches below.
+    """
+    if category in RS_CATEGORIES:
+        if rs_outcome is None:
+            return None
+        return rs_outcome.races_observed, GAP_SOURCE_RUNNING_STYLE
+    return serve_eval.fetch_banei_race_count(local_conn, date_str), GAP_SOURCE_RACE_CALENDAR
+
+
+def _check_champion_gap(outcome: _CategoryDateOutcome) -> bool:
+    """True when `outcome` had genuinely-served LIVE rows this call but NONE
+    of them came from the currently-registered champion model_version.
+
+    False both when there were no live rows at all this call (nothing to
+    compare -- a plain no-service day, already covered by the serving-gap
+    check) and when there is no resolvable champion alias at all for this
+    (category, task) (comparing served rows against nothing is not a
+    mismatch, it is simply "no champion set yet").
+    """
+    if outcome.races_live == 0:
+        return False
+    if outcome.champion_model_version is None:
+        return False
+    return outcome.champion_live_races == 0
+
+
+def _find_champion_gap_run(
+    client: MlflowClient, experiment_id: str, champion_gap_key: str
+) -> str | None:
+    """Find the run tagged with `champion_gap_key`, mirroring
+    `_find_serving_gap_run`'s exact tag-search idiom for the champion-gap
+    marker family (keyed by (date, category, task))."""
+    matches = client.search_runs(
+        [experiment_id],
+        filter_string=f"tags.{CHAMPION_GAP_KEY_TAG} = '{champion_gap_key}'",
+        max_results=1,
+    )
+    return matches[0].info.run_id if matches else None
+
+
+def _log_champion_gap(
+    client: MlflowClient,
+    experiment_id: str,
+    *,
+    date_str: str,
+    category: str,
+    task: str,
+    champion_model_version: str | None,
+    served_model_versions: frozenset[str],
+) -> None:
+    """Find-or-create the champion-mismatch marker run for (date_str,
+    category, task) in `experiment_id` (the task's own production-usage
+    experiment -- FP or RS -- since, unlike the serving-gap family, a
+    champion mismatch is meaningful independently for each task).
+
+    Idempotent via a `champion_gap_key = "{date_str}:{category}:{task}"` tag
+    search, exactly mirroring `_log_serving_gap`'s idiom: a persistent
+    mismatch (a production rollback silently stuck serving a superseded
+    challenger variant for weeks, the real motivating incident -- see
+    `_check_champion_gap`'s docstring) synced every day over an overlapping
+    range never creates a second marker run for the same key. `served_model_
+    versions` (re-logged every call, since which non-champion versions
+    served can shift day to day) is the diagnostic payload naming what WAS
+    actually served instead of the champion, sorted for a deterministic tag
+    value.
+    """
+    champion_gap_key = f"{date_str}:{category}:{task}"
+    run_id = _find_champion_gap_run(client, experiment_id, champion_gap_key)
+    if run_id is None:
+        run = client.create_run(
+            experiment_id,
+            tags={
+                CHAMPION_GAP_KEY_TAG: champion_gap_key,
+                CHAMPION_GAP_TAG: TRUE_STR,
+                "champion_served": FALSE_STR,
+                "gap_date": date_str,
+                "category": category,
+                "task": task,
+            },
+        )
+        run_id = run.info.run_id
+    log_batch_chunked(
+        client,
+        run_id,
+        tags=[
+            RunTag("champion_model_version", champion_model_version or "none"),
+            RunTag("served_model_versions", ",".join(sorted(served_model_versions)) or "none"),
         ],
     )
     client.set_terminated(run_id, status="FINISHED")
@@ -833,32 +1083,54 @@ def sync_production_range(
     has more independent failure points, so exception isolation reads
     clearer here).
 
-    After both syncs for a given (date, category) complete (an RS-eligible
-    category only -- Ban-ei has nothing to compare against, since it has no
-    running-style data at all), this function also checks for a SERVING GAP:
-    `rs_outcome.races_observed > 0 and fp_outcome.races_observed == 0`, i.e.
+    After the FP sync for a given (date, category) completes, this function
+    also checks for a SERVING GAP via `_resolve_expected_races`: for jra/nar,
+    `rs_outcome.races_observed > 0 and fp_outcome.races_live == 0`, i.e.
     running-style was genuinely served for that exact (date, category) but
-    finish-position was not -- a real incident observed on 2026-07-04 (JRA
-    had 12 races with RS predictions logged and ZERO FP rows the same day, a
-    genuine one-sided outage that would otherwise go unnoticed, since neither
-    side's absence is an error on its own -- production serving is sparse by
-    design, see `_sync_fp_category_date`'s own docstring). Detecting this
-    costs no extra Neon query: both `_sync_fp_category_date` and
-    `_sync_rs_category_date` already compute `races_observed` from the exact
-    `rows` list they fetch anyway. A detected gap is surfaced two ways: a
-    `warnings.warn` naming the date/category/both counts (mirroring
-    `champion_cell_eval.eval_champion_cells`'s own non-fatal-but-worth-
-    surfacing convention), and an idempotent marker run in
-    `config.EXPERIMENT_FP_PRODUCTION_USAGE` (find-or-create by a
-    `serving_gap_key = "{date}:{category}"` tag, exactly like `sync_key`'s
-    own idiom, so a daily cron re-running the same range every day while a
-    gap persists never creates a second marker for the same pair) --
-    `summary.serving_gaps_detected` counts how many such pairs this call
-    observed. This check is isolated in its own try/except, using the same
-    `_ISOLATED_EXCEPTIONS` tuple as the fp/rs syncs above: a transient
-    failure while logging the marker (e.g. a flaky tracking-store write)
-    must never abort the rest of the date range, same as everywhere else in
-    this function.
+    finish-position was not LIVE -- a real incident observed on 2026-07-04
+    (JRA had 12 races with RS predictions logged and ZERO FP rows the same
+    day). For banei -- which has no running-style model at all, so there is
+    no RS side to compare against -- the same check instead compares against
+    the local replica's own nvd_ra race calendar (`serve_eval.
+    fetch_banei_race_count`): a real, still-open incident (Ban-ei dark since
+    2026-05-24) that the original RS-vs-FP-only check could never see, since
+    it skipped banei entirely (banei is FP-eligible but not RS-eligible).
+    Either way, neither side's absence is an error on its own -- production
+    serving is sparse by design (see `_sync_fp_category_date`'s own
+    docstring) -- only a genuine EXPECTED-but-not-LIVE mismatch is a gap.
+
+    The check reads `fp_outcome.races_live`, not `fp_outcome.races_observed`:
+    a date with FP rows that are ALL backfill (delayed re-predictions, see
+    `serve_eval.partition_live_backfill`) previously looked "served" even
+    though nothing was live that day -- `summary` distinguishes the two via
+    `gap_type` on the logged marker run (`GAP_TYPE_NO_ROWS` for literally zero
+    FP rows, `GAP_TYPE_BACKFILL_ONLY` for rows that exist but are all
+    backfill). A detected gap is surfaced two ways: a `warnings.warn` naming
+    the date/category/counts (mirroring `champion_cell_eval.
+    eval_champion_cells`'s own non-fatal-but-worth-surfacing convention), and
+    an idempotent marker run in `config.EXPERIMENT_FP_PRODUCTION_USAGE`
+    (find-or-create by a `serving_gap_key = "{date}:{category}"` tag, exactly
+    like `sync_key`'s own idiom, so a daily cron re-running the same range
+    every day while a gap persists never creates a second marker for the
+    same pair) -- `summary.serving_gaps_detected` counts how many such pairs
+    this call observed. This check (both `_resolve_expected_races`'s own
+    query and `_log_serving_gap`) is isolated in its own try/except, using
+    the same `_ISOLATED_EXCEPTIONS` tuple as the fp/rs syncs above: a
+    transient failure (e.g. the banei race-calendar query, or a flaky
+    tracking-store write while logging the marker) must never abort the rest
+    of the date range, same as everywhere else in this function.
+
+    Independently, after EACH of the FP sync and (when applicable) the RS
+    sync for a (date, category), this function checks for a CHAMPION
+    MISMATCH via `_check_champion_gap`: live rows were genuinely served that
+    day for that task, but NONE of them came from the CURRENT champion
+    model_version (e.g. JRA silently served only a superseded challenger
+    variant for weeks after a rollback). A detected mismatch is surfaced the
+    same two ways as a serving gap -- a `warnings.warn`, and an idempotent
+    marker run (`champion_gap_key = "{date}:{category}:{task}"`, in the
+    task's own FP/RS production-usage experiment) -- with
+    `summary.champion_gaps_detected` counting how many (date, category, task)
+    triples this call observed, and isolated the same way.
 
     Raises ValueError for an invalid `date_from`/`date_to` (see
     `timeline.validate_yyyymmdd`) or an inverted range (`date_to < date_from`).
@@ -878,6 +1150,7 @@ def sync_production_range(
     rs_eval_logged = 0
     rs_eval_skipped_no_results = 0
     serving_gaps_detected = 0
+    champion_gaps_detected = 0
     errors: list[str] = []
 
     neon_conn = neon_connect()
@@ -908,38 +1181,103 @@ def sync_production_range(
                     fp_eval_logged += fp_outcome.eval_logged
                     fp_eval_skipped_no_results += fp_outcome.eval_skipped_no_results
 
-                if category not in RS_CATEGORIES:
-                    continue
-                if rs_experiment_id is None:
-                    rs_experiment_id = get_or_create_experiment(
-                        client, config.EXPERIMENT_RS_PRODUCTION_USAGE
-                    )
                 rs_outcome: _CategoryDateOutcome | None = None
-                try:
-                    rs_outcome = _sync_rs_category_date(
-                        client, rs_experiment_id, neon_conn, local_conn, category, date_str
+                if category in RS_CATEGORIES:
+                    if rs_experiment_id is None:
+                        rs_experiment_id = get_or_create_experiment(
+                            client, config.EXPERIMENT_RS_PRODUCTION_USAGE
+                        )
+                    try:
+                        rs_outcome = _sync_rs_category_date(
+                            client, rs_experiment_id, neon_conn, local_conn, category, date_str
+                        )
+                    except _ISOLATED_EXCEPTIONS as exc:
+                        errors.append(f"{date_str}:{category}:running-style: {exc}")
+                    else:
+                        rs_runs_created += rs_outcome.runs_created
+                        rs_runs_reused += rs_outcome.runs_reused
+                        rs_eval_logged += rs_outcome.eval_logged
+                        rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
+
+                    # Champion-mismatch check, RS side (see this function's
+                    # own docstring). Only reachable when the RS sync above
+                    # completed without raising -- a failed sync's champion
+                    # coverage is unknown, not meaningfully "no coverage".
+                    if rs_outcome is not None and _check_champion_gap(rs_outcome):
+                        warnings.warn(
+                            f"champion gap: category={category!r} date={date_str!r} "
+                            "task='running-style': champion "
+                            f"{rs_outcome.champion_model_version!r} did not serve; "
+                            f"served {sorted(rs_outcome.served_model_versions_live)}",
+                            stacklevel=2,
+                        )
+                        try:
+                            _log_champion_gap(
+                                client,
+                                rs_experiment_id,
+                                date_str=date_str,
+                                category=category,
+                                task="running-style",
+                                champion_model_version=rs_outcome.champion_model_version,
+                                served_model_versions=rs_outcome.served_model_versions_live,
+                            )
+                        except _ISOLATED_EXCEPTIONS as exc:
+                            errors.append(
+                                f"{date_str}:{category}:champion-gap:running-style: {exc}"
+                            )
+                        else:
+                            champion_gaps_detected += 1
+
+                # Champion-mismatch check, FP side. Attempted for every
+                # category (including banei, which has no RS side at all) --
+                # only reachable when the FP sync above completed without
+                # raising, same reasoning as the RS check above.
+                if fp_outcome is not None and _check_champion_gap(fp_outcome):
+                    warnings.warn(
+                        f"champion gap: category={category!r} date={date_str!r} "
+                        "task='finish-position': champion "
+                        f"{fp_outcome.champion_model_version!r} did not serve; "
+                        f"served {sorted(fp_outcome.served_model_versions_live)}",
+                        stacklevel=2,
                     )
-                except _ISOLATED_EXCEPTIONS as exc:
-                    errors.append(f"{date_str}:{category}:running-style: {exc}")
-                else:
-                    rs_runs_created += rs_outcome.runs_created
-                    rs_runs_reused += rs_outcome.runs_reused
-                    rs_eval_logged += rs_outcome.eval_logged
-                    rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
+                    try:
+                        _log_champion_gap(
+                            client,
+                            fp_experiment_id,
+                            date_str=date_str,
+                            category=category,
+                            task="finish-position",
+                            champion_model_version=fp_outcome.champion_model_version,
+                            served_model_versions=fp_outcome.served_model_versions_live,
+                        )
+                    except _ISOLATED_EXCEPTIONS as exc:
+                        errors.append(f"{date_str}:{category}:champion-gap:finish-position: {exc}")
+                    else:
+                        champion_gaps_detected += 1
 
                 # Serving-gap check (see this function's own docstring). Only
-                # reachable when BOTH syncs above completed without raising --
-                # a fp/rs failure this iteration already produced its own
-                # error entry, and its race count is simply unknown, not
+                # reachable when the FP sync above completed without raising
+                # -- a failed FP sync's race count is simply unknown, not
                 # meaningfully "zero", so it must not be misread as a gap.
-                if fp_outcome is None or rs_outcome is None:
+                if fp_outcome is None:
                     continue
-                if not (rs_outcome.races_observed > 0 and fp_outcome.races_observed == 0):
+                try:
+                    expected = _resolve_expected_races(category, rs_outcome, local_conn, date_str)
+                except _ISOLATED_EXCEPTIONS as exc:
+                    errors.append(f"{date_str}:{category}:serving-gap-expected: {exc}")
                     continue
+                if expected is None:
+                    continue
+                expected_races, gap_source = expected
+                if not (expected_races > 0 and fp_outcome.races_live == 0):
+                    continue
+                gap_type = (
+                    GAP_TYPE_BACKFILL_ONLY if fp_outcome.races_observed > 0 else GAP_TYPE_NO_ROWS
+                )
                 warnings.warn(
                     f"serving gap: category={category!r} date={date_str!r}: "
-                    f"{rs_outcome.races_observed} running-style race(s) served but "
-                    "0 finish-position races served",
+                    f"{expected_races} expected race(s) ({gap_source}) but "
+                    f"0 live finish-position races served (gap_type={gap_type!r})",
                     stacklevel=2,
                 )
                 try:
@@ -948,7 +1286,12 @@ def sync_production_range(
                         fp_experiment_id,
                         date_str=date_str,
                         category=category,
-                        rs_races_observed=rs_outcome.races_observed,
+                        gap_source=gap_source,
+                        gap_type=gap_type,
+                        expected_races=expected_races,
+                        fp_races_observed=fp_outcome.races_observed,
+                        fp_races_live=fp_outcome.races_live,
+                        fp_races_backfilled=fp_outcome.races_backfilled,
                     )
                 except _ISOLATED_EXCEPTIONS as exc:
                     errors.append(f"{date_str}:{category}:serving-gap: {exc}")
@@ -969,5 +1312,6 @@ def sync_production_range(
         rs_eval_logged=rs_eval_logged,
         rs_eval_skipped_no_results=rs_eval_skipped_no_results,
         serving_gaps_detected=serving_gaps_detected,
+        champion_gaps_detected=champion_gaps_detected,
         errors=errors,
     )

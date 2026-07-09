@@ -452,6 +452,7 @@ def _empty_sync_summary(errors: list[str] | None = None) -> sync_production.Sync
         rs_eval_logged=0,
         rs_eval_skipped_no_results=0,
         serving_gaps_detected=0,
+        champion_gaps_detected=0,
         errors=errors if errors is not None else [],
     )
 
@@ -470,6 +471,7 @@ def test_cmd_sync_production_reports_success(
         rs_eval_logged=1,
         rs_eval_skipped_no_results=1,
         serving_gaps_detected=0,
+        champion_gaps_detected=0,
         errors=[],
     )
 
