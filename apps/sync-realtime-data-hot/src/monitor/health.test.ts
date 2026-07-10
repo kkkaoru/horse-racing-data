@@ -485,6 +485,17 @@ it("buildRecentErrorsCheck returns ok=false when error count exceeds threshold",
   expect(result.errorsLastHour).toBe(7);
 });
 
+it("buildRecentErrorsCheck binds the cutoff as JST ISO to match fetch_logs created_at values", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-06-24T05:00:00Z"));
+  const bind = vi.fn(() => ({ all: vi.fn(async () => ({ results: [] })) }));
+  const db = {
+    prepare: vi.fn(() => ({ bind })),
+  } as unknown as D1Database;
+  await buildRecentErrorsCheck(buildEnv({ db }), new Date());
+  expect(bind).toHaveBeenCalledWith("2026-06-24T13:00:00+09:00", 100);
+});
+
 it("buildRecentErrorsCheck reuses a cached snapshot without touching D1", async () => {
   const cached = JSON.stringify({
     errorsLastHour: 1,

@@ -10,7 +10,7 @@
 // ODDS_HOT_KV with short TTLs (60-300s) to avoid hammering D1 from external
 // monitor pings.
 
-import { getJstDateParts, getTodayJst } from "../time";
+import { getJstDateParts, getTodayJst, toJstIsoString } from "../time";
 import type { Env } from "../types";
 
 const HEARTBEAT_KV_KEY = "cron:heartbeat:scheduled";
@@ -453,7 +453,7 @@ const extractErrorSamples = (rows: FetchLogRow[]): string[] =>
 
 const queryRecentErrors = async (env: Env, now: Date): Promise<RecentErrorsSnapshot | null> => {
   const cutoffMs = now.getTime() - RECENT_ERRORS_WINDOW_SECONDS * MILLISECONDS_PER_SECOND;
-  const cutoffIso = new Date(cutoffMs).toISOString();
+  const cutoffIso = toJstIsoString(new Date(cutoffMs));
   try {
     const result = await env.REALTIME_HOT_DB.prepare(
       `select message, created_at from fetch_logs where status = 'error' and created_at >= ? order by created_at desc limit ?`,
