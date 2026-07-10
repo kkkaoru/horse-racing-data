@@ -735,6 +735,168 @@ def test_build_fp_race_eval_rows_no_result_entry_for_horse_skips_it() -> None:
     assert rows[0].matched_horses == 1
 
 
+# ── build_fp_race_eval_rows: place4/5/6 small-field exclusion ───────────────
+#
+# `total_starters` (the race's TRUE starter count, derived from every
+# DISTINCT ketto_toroku_bango key in `results` sharing this race's
+# (keibajo_code, race_bango) -- NOT just the horses a prediction matched)
+# gates place4_hit/place5_hit/place6_hit to None whenever it falls below
+# that rank. Only ONE horse (H1, predicted_rank=1) is ever included in
+# `pred_rows` below -- `results` alone carries the other starters, proving
+# the count comes from `results`, not from how many predictions matched.
+
+
+def _n_starter_results(
+    keibajo_code: str, race_bango: str, n: int, *, winner_ketto: str = "H1"
+) -> FpResults:
+    """Build a `results` dict for one race with exactly `n` distinct
+    starters (H1..Hn), each with a distinct actual_rank 1..n: `winner_ketto`
+    (default "H1") gets actual_rank==1, and every other horse gets the next
+    unused rank in 2..n, in H-index order."""
+    results: FpResults = {}
+    next_rank = 2
+    for i in range(1, n + 1):
+        ketto = f"H{i}"
+        if ketto == winner_ketto:
+            actual_rank = 1
+        else:
+            actual_rank = next_rank
+            next_rank += 1
+        results[(keibajo_code, race_bango, ketto)] = {
+            "actual_rank": actual_rank,
+            "corner_1": "01",
+        }
+    return results
+
+
+def test_build_fp_race_eval_rows_place456_all_none_when_total_starters_is_3() -> None:
+    """A 3-starter field: place4_hit/place5_hit/place6_hit are ALL None (no
+    3-fewer-starter race can produce a legitimate rank-4/5/6 finisher at
+    all) -- place2_hit/place3_hit are UNAFFECTED (no guard for them at all,
+    see `_compute_race_hits`'s own docstring)."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results = _n_starter_results("05", "01", 3)
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.top1_hit == 1
+    assert row.place2_hit == 1
+    assert row.place3_hit == 1
+    assert row.place4_hit is None
+    assert row.place5_hit is None
+    assert row.place6_hit is None
+
+
+def test_build_fp_race_eval_rows_place4_hit_place56_none_when_total_starters_is_4() -> None:
+    """A 4-starter field: place4_hit is a real 0/1 (4 >= 4), but
+    place5_hit/place6_hit stay None (4 < 5, 4 < 6)."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results = _n_starter_results("05", "01", 4)
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.place4_hit == 1
+    assert row.place5_hit is None
+    assert row.place6_hit is None
+
+
+def test_build_fp_race_eval_rows_place45_hit_place6_none_when_total_starters_is_5() -> None:
+    """A 5-starter field: place4_hit/place5_hit are real 0/1 (5 >= 4, 5 >= 5),
+    place6_hit stays None (5 < 6) -- this is the concrete "6th place in a
+    5-horse field cannot exist" scenario this whole design exists to guard
+    against: a naive ungated formula would have made place6_hit trivially 1
+    here (pred1_actual=1 <= 6), silently inflating place6_pct."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results = _n_starter_results("05", "01", 5)
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.place4_hit == 1
+    assert row.place5_hit == 1
+    assert row.place6_hit is None
+
+
+def test_build_fp_race_eval_rows_place456_all_hit_when_total_starters_is_6() -> None:
+    """A 6-starter field: place4_hit/place5_hit/place6_hit are ALL real 0/1
+    (6 >= 4, 6 >= 5, 6 >= 6) -- the boundary case where rank 6 first becomes
+    legitimately computable."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results = _n_starter_results("05", "01", 6)
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.place4_hit == 1
+    assert row.place5_hit == 1
+    assert row.place6_hit == 1
+
+
+def test_build_fp_race_eval_rows_place456_all_hit_when_total_starters_is_7_plus() -> None:
+    """A normal large field (7+ starters, the realistic jra/nar common case):
+    place4_hit/place5_hit/place6_hit are all real 0/1, with no exclusion at
+    all -- the "normal large-field case" this design must not disturb."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results = _n_starter_results("05", "01", 12)
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.matched_horses == 1
+    assert row.place4_hit == 1
+    assert row.place5_hit == 1
+    assert row.place6_hit == 1
+
+
+def test_build_fp_race_eval_rows_place456_miss_vs_hit_distinguished_from_none() -> None:
+    """A 6-starter field where the predicted winner (H1) actually finished
+    5th: place4_hit=0 (a real MISS, 5 > 4, distinct from None), place5_hit=1
+    (a real HIT, 5 <= 5), place6_hit=1 (5 <= 6) -- proves None/0/1 are three
+    genuinely distinct outcomes, not just None-vs-nonzero."""
+    pred_rows = [_fp_pred_row("05", "01", "H1", 1)]
+    results: FpResults = {
+        ("05", "01", "H1"): {"actual_rank": 5, "corner_1": "01"},
+        ("05", "01", "H2"): {"actual_rank": 1, "corner_1": "01"},
+        ("05", "01", "H3"): {"actual_rank": 2, "corner_1": "01"},
+        ("05", "01", "H4"): {"actual_rank": 3, "corner_1": "01"},
+        ("05", "01", "H5"): {"actual_rank": 4, "corner_1": "01"},
+        ("05", "01", "H6"): {"actual_rank": 6, "corner_1": "01"},
+    }
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.top1_hit == 0
+    assert row.place4_hit == 0
+    assert row.place5_hit == 1
+    assert row.place6_hit == 1
+
+
+def test_build_fp_race_eval_rows_starter_count_isolated_per_race() -> None:
+    """`results` spans TWO races on the same date -- the small race's
+    starter count (3) must never leak into the large race's (7), and vice
+    versa, even though both entries live in the same `results` dict passed
+    to one `build_fp_race_eval_rows` call. Both races reuse the same
+    ketto_toroku_bango values ("H1".."H7") -- the (keibajo_code, race_bango,
+    ketto_toroku_bango) key already disambiguates them, exactly like real
+    per-race horse identity."""
+    pred_rows = [
+        _fp_pred_row("05", "01", "H1", 1),
+        _fp_pred_row("10", "02", "H1", 1),
+    ]
+    small_race = _n_starter_results("05", "01", 3)
+    large_race = _n_starter_results("10", "02", 7)
+    results: FpResults = {**small_race, **large_race}
+
+    rows = serve_eval.build_fp_race_eval_rows("jra", "iter14", pred_rows, results)
+    by_race = {(r.venue, r.race_bango): r for r in rows}
+
+    assert by_race[("05", "01")].place6_hit is None
+    assert by_race[("10", "02")].place6_hit == 1
+
+
 # ── build_rs_horse_eval_rows ─────────────────────────────────────────────────
 
 
@@ -848,6 +1010,31 @@ def test_build_rs_horse_eval_rows_shusso_tosu_none_is_skipped() -> None:
     assert rows == []
 
 
+# ── compute_rank_pct ─────────────────────────────────────────────────────────
+
+
+def test_compute_rank_pct_all_hits() -> None:
+    assert serve_eval.compute_rank_pct([1, 1, 1]) == 100.0
+
+
+def test_compute_rank_pct_mix_of_hits_and_misses() -> None:
+    assert serve_eval.compute_rank_pct([1, 0, 1, 0]) == 50.0
+
+
+def test_compute_rank_pct_skips_none_from_denominator() -> None:
+    """Two eligible races (one hit, one miss) plus one None (excluded from
+    the denominator, not just the numerator) -- 1/2 == 50%, not 1/3."""
+    assert serve_eval.compute_rank_pct([1, 0, None]) == 50.0
+
+
+def test_compute_rank_pct_all_none_returns_none() -> None:
+    assert serve_eval.compute_rank_pct([None, None]) is None
+
+
+def test_compute_rank_pct_empty_list_returns_none() -> None:
+    assert serve_eval.compute_rank_pct([]) is None
+
+
 # ── aggregate_fp_day_metrics ─────────────────────────────────────────────────
 
 
@@ -858,6 +1045,9 @@ def _fp_eval_row(
     place3_hit: int,
     fukusho_2p_hit: int,
     top3_box_hit: int,
+    place4_hit: int | None = None,
+    place5_hit: int | None = None,
+    place6_hit: int | None = None,
 ) -> serve_eval.FpRaceEvalRow:
     return serve_eval.FpRaceEvalRow(
         category="jra",
@@ -876,6 +1066,9 @@ def _fp_eval_row(
         top1_hit=top1_hit,
         place2_hit=place2_hit,
         place3_hit=place3_hit,
+        place4_hit=place4_hit,
+        place5_hit=place5_hit,
+        place6_hit=place6_hit,
         fukusho_2p_hit=fukusho_2p_hit,
         top3_box_hit=top3_box_hit,
     )
@@ -883,9 +1076,36 @@ def _fp_eval_row(
 
 def test_aggregate_fp_day_metrics_computes_percentages() -> None:
     rows = [
-        _fp_eval_row(top1_hit=1, place2_hit=1, place3_hit=1, fukusho_2p_hit=1, top3_box_hit=1),
-        _fp_eval_row(top1_hit=1, place2_hit=1, place3_hit=1, fukusho_2p_hit=0, top3_box_hit=0),
-        _fp_eval_row(top1_hit=0, place2_hit=1, place3_hit=1, fukusho_2p_hit=1, top3_box_hit=0),
+        _fp_eval_row(
+            top1_hit=1,
+            place2_hit=1,
+            place3_hit=1,
+            fukusho_2p_hit=1,
+            top3_box_hit=1,
+            place4_hit=1,
+            place5_hit=1,
+            place6_hit=1,
+        ),
+        _fp_eval_row(
+            top1_hit=1,
+            place2_hit=1,
+            place3_hit=1,
+            fukusho_2p_hit=0,
+            top3_box_hit=0,
+            place4_hit=1,
+            place5_hit=0,
+            place6_hit=0,
+        ),
+        _fp_eval_row(
+            top1_hit=0,
+            place2_hit=1,
+            place3_hit=1,
+            fukusho_2p_hit=1,
+            top3_box_hit=0,
+            place4_hit=0,
+            place5_hit=0,
+            place6_hit=0,
+        ),
         _fp_eval_row(top1_hit=0, place2_hit=0, place3_hit=0, fukusho_2p_hit=0, top3_box_hit=0),
     ]
     result = serve_eval.aggregate_fp_day_metrics(rows)
@@ -894,9 +1114,30 @@ def test_aggregate_fp_day_metrics_computes_percentages() -> None:
         "top1_pct": 50.0,
         "place2_pct": 75.0,
         "place3_pct": 75.0,
+        # place4/5/6_pct are each computed over only the 3 rows above with a
+        # non-None place{N}_hit (the 4th row's default None simulates a
+        # too-small-a-field race, excluded from every rank-4/5/6 population).
+        "place4_pct": pytest.approx(200.0 / 3.0),
+        "place5_pct": pytest.approx(100.0 / 3.0),
+        "place6_pct": pytest.approx(100.0 / 3.0),
         "fukusho_2p_pct": 50.0,
         "top3_box_pct": 25.0,
     }
+
+
+def test_aggregate_fp_day_metrics_place456_all_none_yields_none_pct() -> None:
+    """Every row's place4/5/6_hit is None (e.g. every race this day had a
+    too-small field for those ranks) -- the corresponding *_pct must be None,
+    never a fabricated 0.0, while the always-present metrics are unaffected."""
+    rows = [
+        _fp_eval_row(top1_hit=1, place2_hit=1, place3_hit=1, fukusho_2p_hit=1, top3_box_hit=1),
+        _fp_eval_row(top1_hit=0, place2_hit=0, place3_hit=0, fukusho_2p_hit=0, top3_box_hit=0),
+    ]
+    result = serve_eval.aggregate_fp_day_metrics(rows)
+    assert result["place4_pct"] is None
+    assert result["place5_pct"] is None
+    assert result["place6_pct"] is None
+    assert result["top1_pct"] == 50.0
 
 
 def test_aggregate_fp_day_metrics_empty_list_returns_zero_shape() -> None:
@@ -906,6 +1147,9 @@ def test_aggregate_fp_day_metrics_empty_list_returns_zero_shape() -> None:
         "top1_pct": 0.0,
         "place2_pct": 0.0,
         "place3_pct": 0.0,
+        "place4_pct": None,
+        "place5_pct": None,
+        "place6_pct": None,
         "fukusho_2p_pct": 0.0,
         "top3_box_pct": 0.0,
     }

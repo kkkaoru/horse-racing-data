@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
 
@@ -146,6 +147,30 @@ def test_select_headline_metrics_breaks_down_by_category_when_multiple_present()
     result = logging_api.select_headline_metrics(df)
     assert result["jra_top1"] == 0.4
     assert result["nar_top1"] == 0.6
+
+
+def test_select_headline_metrics_excludes_nan_rows_from_weighted_mean() -> None:
+    """Regression test for the `_weighted_mean` NaN-dilution fix: a row
+    whose metric value is NaN (e.g. a cell where `place4_pct` is not
+    applicable, see champion_cell_eval._aggregate_fp_cells) must have BOTH
+    its value AND its own weight excluded from the mean -- not just its
+    value (pandas' `.sum()` already skips a NaN product, but the OLD
+    `weights.sum()` still summed every row's weight regardless, silently
+    diluting the result). 2 rows: (0.5, weight=10) and (NaN, weight=90) --
+    the correct weighted mean is 0.5 (the only real row), not
+    (0.5*10)/(10+90) == 0.05."""
+    df = pd.DataFrame({"top1": [0.5, float("nan")], "race_count": [10, 90]})
+    result = logging_api.select_headline_metrics(df)
+    assert result["overall_top1"] == pytest.approx(0.5)
+
+
+def test_select_headline_metrics_all_nan_column_yields_no_overall() -> None:
+    """A column that is NaN/None for every row (e.g. every cell had zero
+    eligible races for a given rank) is entirely excluded -- never a
+    fabricated 0.0 or a ZeroDivisionError."""
+    df = pd.DataFrame({"place4_pct": [None, None], "race_count": [10, 20]})
+    result = logging_api.select_headline_metrics(df)
+    assert "overall_place4_pct" not in result
 
 
 def test_select_headline_metrics_skips_category_with_zero_weight() -> None:

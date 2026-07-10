@@ -128,10 +128,30 @@ def _column(df: pd.DataFrame, name: str) -> pd.Series:
 
 
 def _weighted_mean(values: pd.Series, weights: pd.Series) -> float | None:
-    total_weight = float(weights.sum())
+    """Weighted mean of `values` by `weights`, EXCLUDING any row where
+    `values` is NA (None/NaN) from both the numerator AND the denominator.
+
+    This matters now that a per-cell metric column can legitimately carry a
+    missing value for SOME rows but not others (e.g. `place4_pct`/
+    `place5_pct`/`place6_pct` -- None for a cell whose races all had too
+    small a field for that rank, see `champion_cell_eval._aggregate_fp_cells`
+    /`serve_eval.compute_rank_pct`). Before this fix, `(values * weights).sum()`
+    already skipped a NaN product (pandas' default `skipna=True`), but
+    `weights.sum()` alone still summed EVERY row's weight, including the
+    ones whose value contributed nothing to the numerator -- silently
+    diluting the mean with phantom weight from rows that were never really
+    part of this metric's population. Every existing caller (a column with
+    no NA values at all) sees IDENTICAL behavior to before this fix: the
+    `notna()` mask keeps every row, so nothing changes for e.g. `top1_pct`/
+    `place2_pct`.
+    """
+    mask = values.notna()
+    filtered_values = values[mask]
+    filtered_weights = weights[mask]
+    total_weight = float(filtered_weights.sum())
     if total_weight <= 0:
         return None
-    return float((values * weights).sum() / total_weight)
+    return float((filtered_values * filtered_weights).sum() / total_weight)
 
 
 def select_headline_metrics(

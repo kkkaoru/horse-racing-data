@@ -14,8 +14,13 @@ Two evaluation granularities, not one:
   * Finish-position (FP) evaluation is PER-RACE: one model run produces a
     full ranking (predicted_rank 1..N) for every horse in a race, and that
     ranking is scored as a single unit against the race's actual finish
-    order (top1/place2/place3/fukusho_2p/top3_box -- see
-    `_compute_race_hits`). One race, one `FpRaceEvalRow`.
+    order (top1/place2/place3/place4/place5/place6/fukusho_2p/top3_box --
+    see `_compute_race_hits`). Ranks 4/5/6 carry a per-metric small-field
+    exclusion (None, not 0, when a race's total starter count is below that
+    rank -- see `_compute_race_hits`'s own docstring for why ranks 2/3 do
+    not need the same treatment) that every consumer of
+    `aggregate_fp_day_metrics`'s output must respect. One race, one
+    `FpRaceEvalRow`.
   * Running-style (RS) evaluation is PER-HORSE: the running-style model
     predicts one class (nige/senkou/sashi/oikomi) per horse independently --
     it is not a ranking, so there is no race-level aggregate hit/miss the
@@ -79,7 +84,17 @@ _NAR_RESULT_TABLES: Final[tuple[str, str]] = ("nvd_se", "nvd_ra")
 
 @dataclass(frozen=True)
 class FpRaceEvalRow:
-    """One race's finish-position serve-accuracy evaluation."""
+    """One race's finish-position serve-accuracy evaluation.
+
+    `place4_hit`/`place5_hit`/`place6_hit` are `int | None`, NOT the same
+    always-0-or-1 shape as `top1_hit`/`place2_hit`/`place3_hit` -- see
+    `_compute_race_hits`'s own docstring for the full rationale. In short:
+    a race with fewer than N starters cannot possibly produce a legitimate
+    rank-N finisher, so `place{N}_hit` is None (excluded from that specific
+    metric's population entirely -- not a hit, not a miss) whenever this
+    race's true total starter count (every horse that ran, not just the
+    ones a prediction matched -- see `build_fp_race_eval_rows`) is below N.
+    """
 
     category: str
     race_date: str  # YYYYMMDD
@@ -97,6 +112,9 @@ class FpRaceEvalRow:
     top1_hit: int
     place2_hit: int
     place3_hit: int
+    place4_hit: int | None
+    place5_hit: int | None
+    place6_hit: int | None
     fukusho_2p_hit: int
     top3_box_hit: int
 
@@ -297,14 +315,45 @@ def group_by_model_version(
     return result
 
 
-def _compute_race_hits(pairs: list[tuple[int, int]]) -> dict[str, int]:
-    """Compute the FP hit flags for ONE race from its (pred_rank, actual_rank) pairs.
+def _compute_race_hits(pairs: list[tuple[int, int]], total_starters: int) -> dict[str, int | None]:
+    """Compute the FP hit flags for ONE race from its (pred_rank, actual_rank)
+    pairs plus that race's TRUE total starter count (every horse that ran,
+    not just the ones `pairs` matched -- see `build_fp_race_eval_rows`'s own
+    docstring for how `total_starters` is derived).
 
     `pred1_actual` stays None when no row in `pairs` has `pred_rank == 1`
     (e.g. that horse was excluded because it had no matching result) -- in
-    that case top1_hit/place2_hit/place3_hit are all 0, but fukusho_2p_hit
-    and top3_box_hit are computed independently of `pred1_actual` and may
-    still be nonzero based on the remaining pairs.
+    that case top1_hit/place2_hit/place3_hit/place4_hit/place5_hit/place6_hit
+    are all 0 (or None, per the small-field exclusion below), but
+    fukusho_2p_hit and top3_box_hit are computed independently of
+    `pred1_actual` and may still be nonzero based on the remaining pairs.
+
+    ★ Ranks 2/3 vs. ranks 4/5/6 are DELIBERATELY asymmetric here, not an
+    oversight:
+
+    `place2_hit`/`place3_hit` use the ORIGINAL, UNGATED formula -- no
+    small-field guard at all, and a race's `total_starters` never enters
+    their computation. This has never been a correctness bug in practice:
+    real jra/nar/banei races essentially never run a field of 1 or 2 horses,
+    so `pred1_actual <= 2`/`<= 3` has never been trivially satisfied by a
+    too-small field the way rank 4/5/6 genuinely can be (see below). Changing
+    this established, already-shipped behavior is explicitly out of scope --
+    it would be a regression to existing `finish-position/production-usage`
+    metric history for zero corrective benefit.
+
+    `place4_hit`/`place5_hit`/`place6_hit` DO need the guard: NAR/Ban-ei
+    races realistically run fields as small as 5-8 starters (occasionally
+    fewer), so a race with `total_starters < N` cannot possibly produce a
+    legitimate rank-N finisher at all -- e.g. in a 5-horse field,
+    `pred1_actual` (which must be 1..5) is ALWAYS `<= 6`, so a naive
+    `place6_hit = 1 if pred1_actual is not None and pred1_actual <= 6 else 0`
+    would be trivially 1 for every such race, silently inflating
+    `place6_pct`. Each of these three is None (excluded from that metric's
+    population entirely -- not a hit, not a miss) whenever
+    `total_starters < N`, mirroring `aggregate_rs_day_metrics`'s own
+    None-for-"not applicable" precedent (see `aggregate_fp_day_metrics`'s
+    docstring for how the per-metric denominator this produces is
+    aggregated).
     """
     pred1_actual: int | None = None
     any_top2_in_top2 = False
@@ -316,10 +365,19 @@ def _compute_race_hits(pairs: list[tuple[int, int]]) -> dict[str, int]:
             any_top2_in_top2 = True
         if pred_rank <= 3 and actual_rank <= 3:
             top3_in_actual_top3 += 1
+
+    def _rank_n_hit(n: int) -> int | None:
+        if total_starters < n:
+            return None
+        return 1 if (pred1_actual is not None and pred1_actual <= n) else 0
+
     return {
         "top1_hit": 1 if pred1_actual == 1 else 0,
         "place2_hit": 1 if (pred1_actual is not None and pred1_actual <= 2) else 0,
         "place3_hit": 1 if (pred1_actual is not None and pred1_actual <= 3) else 0,
+        "place4_hit": _rank_n_hit(4),
+        "place5_hit": _rank_n_hit(5),
+        "place6_hit": _rank_n_hit(6),
         "fukusho_2p_hit": 1 if any_top2_in_top2 else 0,
         "top3_box_hit": 1 if top3_in_actual_top3 == 3 else 0,
     }
@@ -539,11 +597,26 @@ def build_fp_race_eval_rows(
     is skipped entirely. `predicted_top1_ketto` comes directly from
     `pred_rows` (the predicted_rank==1 horse) regardless of whether that
     horse itself matched a result -- it is independent of `pairs`.
+
+    `total_starters` (fed to `_compute_race_hits` for the rank-4/5/6
+    small-field exclusion, see that function's own docstring) is derived
+    from `results` alone, with ZERO new queries: `results` is built by
+    `fetch_race_results` for EVERY horse that ran in EVERY race on this
+    date, not just the ones a prediction happens to match (see that
+    function's own docstring) -- so the count of DISTINCT
+    `ketto_toroku_bango` keys sharing one race's (keibajo_code, race_bango)
+    in `results` IS that race's true total starter count, computed once
+    up front here (`_starter_counts`) rather than re-scanned per race.
     """
     groups: dict[tuple[str, str], list[dict[str, object]]] = {}
     for row in pred_rows:
         key = (str(row["keibajo_code"]), str(row["race_bango"]))
         groups.setdefault(key, []).append(row)
+
+    starter_counts: dict[tuple[str, str], int] = {}
+    for keibajo_code_key, race_bango_key, _ketto_toroku_bango in results:
+        count_key = (keibajo_code_key, race_bango_key)
+        starter_counts[count_key] = starter_counts.get(count_key, 0) + 1
 
     eval_rows: list[FpRaceEvalRow] = []
     for (keibajo_code, race_bango), group_rows in groups.items():
@@ -564,7 +637,8 @@ def build_fp_race_eval_rows(
         if not pairs:
             continue
 
-        hits = _compute_race_hits(pairs)
+        total_starters = starter_counts.get((keibajo_code, race_bango), 0)
+        hits = _compute_race_hits(pairs, total_starters)
 
         predicted_top1_ketto: str | None = None
         for row in group_rows:
@@ -595,11 +669,14 @@ def build_fp_race_eval_rows(
                 predicted_top1_ketto=predicted_top1_ketto,
                 actual_top1_ketto=actual_top1_ketto,
                 matched_horses=len(pairs),
-                top1_hit=hits["top1_hit"],
-                place2_hit=hits["place2_hit"],
-                place3_hit=hits["place3_hit"],
-                fukusho_2p_hit=hits["fukusho_2p_hit"],
-                top3_box_hit=hits["top3_box_hit"],
+                top1_hit=cast(int, hits["top1_hit"]),
+                place2_hit=cast(int, hits["place2_hit"]),
+                place3_hit=cast(int, hits["place3_hit"]),
+                place4_hit=hits["place4_hit"],
+                place5_hit=hits["place5_hit"],
+                place6_hit=hits["place6_hit"],
+                fukusho_2p_hit=cast(int, hits["fukusho_2p_hit"]),
+                top3_box_hit=cast(int, hits["top3_box_hit"]),
             )
         )
     return eval_rows
@@ -668,10 +745,46 @@ def build_rs_horse_eval_rows(
 # ── Day-level aggregation (feeds timeline.py extractors) ────────────────────
 
 
-def aggregate_fp_day_metrics(rows: Sequence[FpRaceEvalRow]) -> dict[str, float]:
+def compute_rank_pct(hits: Sequence[int | None]) -> float | None:
+    """Compute a hit-rate percentage over the SUBSET of `hits` that are not
+    None, i.e. a PER-METRIC denominator distinct from `len(hits)`.
+
+    Returns None when every value is None -- this population (e.g. every
+    race sharing a cell/day has `total_starters < 4`) has literally nothing
+    to compute a place4_pct/place5_pct/place6_pct from, mirroring
+    `aggregate_rs_day_metrics`'s own "None means not applicable, never a
+    fabricated 0.0" precedent. Shared by `aggregate_fp_day_metrics` (day
+    granularity) and `champion_cell_eval._aggregate_fp_cells` (cell
+    granularity) so this exact denominator logic lives once, per this
+    module's own docstring rationale for why the query/join/aggregate
+    library lives here instead of being re-derived per caller.
+    """
+    eligible = [hit for hit in hits if hit is not None]
+    if not eligible:
+        return None
+    return 100.0 * sum(eligible) / len(eligible)
+
+
+def aggregate_fp_day_metrics(rows: Sequence[FpRaceEvalRow]) -> dict[str, float | None]:
     """Aggregate one day's FP race-eval rows into the shape
     `timeline.fp_metrics_for_timeline` expects (unprefixed `*_pct` keys plus
-    `races`). Never raises on an empty `rows` -- returns an all-zero shape.
+    `races`). Never raises on an empty `rows` -- returns an all-zero/all-None
+    shape.
+
+    `place4_pct`/`place5_pct`/`place6_pct` are `float | None`, computed via
+    `compute_rank_pct` over each metric's OWN eligible-race subset (races
+    where that specific `place{N}_hit` is not None -- see
+    `_compute_race_hits`'s docstring for why ranks 4/5/6 need this and ranks
+    1/2/3 do not) rather than the shared `total`/`races` denominator every
+    other key here uses. This mirrors `aggregate_rs_day_metrics`'s own
+    None-handling precedent: the key is ALWAYS present in the returned dict
+    (even when every race in `rows` is too-small-a-field for that rank, or
+    `rows` itself is empty), but its VALUE may be None -- callers
+    (`sync_production._sync_fp_eval`, `timeline.fp_metrics_for_timeline`,
+    `champion_cell_eval`) must skip logging a None value as a metric rather
+    than blindly `float()`-casting it, the same discipline
+    `aggregate_rs_day_metrics`'s own consumers already apply to
+    `macro_f1_pct`.
     """
     total = len(rows)
     if total == 0:
@@ -680,6 +793,9 @@ def aggregate_fp_day_metrics(rows: Sequence[FpRaceEvalRow]) -> dict[str, float]:
             "top1_pct": 0.0,
             "place2_pct": 0.0,
             "place3_pct": 0.0,
+            "place4_pct": None,
+            "place5_pct": None,
+            "place6_pct": None,
             "fukusho_2p_pct": 0.0,
             "top3_box_pct": 0.0,
         }
@@ -688,6 +804,9 @@ def aggregate_fp_day_metrics(rows: Sequence[FpRaceEvalRow]) -> dict[str, float]:
         "top1_pct": 100.0 * sum(r.top1_hit for r in rows) / total,
         "place2_pct": 100.0 * sum(r.place2_hit for r in rows) / total,
         "place3_pct": 100.0 * sum(r.place3_hit for r in rows) / total,
+        "place4_pct": compute_rank_pct([r.place4_hit for r in rows]),
+        "place5_pct": compute_rank_pct([r.place5_hit for r in rows]),
+        "place6_pct": compute_rank_pct([r.place6_hit for r in rows]),
         "fukusho_2p_pct": 100.0 * sum(r.fukusho_2p_hit for r in rows) / total,
         "top3_box_pct": 100.0 * sum(r.top3_box_hit for r in rows) / total,
     }
