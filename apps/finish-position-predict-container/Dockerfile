@@ -34,6 +34,7 @@ RUN uv pip install --system \
     "catboost>=1.2.10" \
     "duckdb>=1.1.0" \
     "lightgbm>=4.5.0" \
+    "numpy>=2.0.0" \
     "pandas>=2.2.0" \
     "psycopg[binary]>=3.2.0" \
     "pyarrow>=17.0.0" \
