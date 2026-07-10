@@ -575,10 +575,90 @@ def fetch_banei_race_count(conn: db.ConnectionLike, date_str: str) -> int:
     already reads race-level metadata from -- filtered here to just the
     Ban-ei keibajo_code subset (`BANEI_KEIBAJO_CODE`), since nvd_ra
     otherwise spans every NAR venue for the day, not just Ban-ei's.
+
+    Kept as its own function (rather than folded away), and DELIBERATELY NOT
+    called BY `fetch_races_scheduled` below (which instead re-issues this
+    exact same query inline for category="banei") -- `sync_production.
+    _resolve_expected_races`'s existing banei arm is the ONLY caller of this
+    function, so a test that monkeypatches `fetch_banei_race_count` alone
+    (to exercise that ONE call site's own failure isolation) must never also
+    affect `fetch_races_scheduled`, which `_sync_fp_category_date` now calls
+    UNCONDITIONALLY for every category, including banei, on a much broader
+    code path. This generalization must never silently change Ban-ei's
+    existing gap-detection behavior.
     """
     cursor = conn.cursor()
     cursor.execute(_BANEI_RACE_CALENDAR_SQL, (date_str[:4], date_str[4:], BANEI_KEIBAJO_CODE))
     return len(cursor.fetchall())
+
+
+_JRA_RACE_CALENDAR_SQL: Final[str] = """
+    -- fetch_races_scheduled: jra
+    SELECT race_bango FROM jvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s
+"""
+
+_NAR_EXCL_BANEI_RACE_CALENDAR_SQL: Final[str] = """
+    -- fetch_races_scheduled: nar (excludes Ban-ei's keibajo_code)
+    SELECT race_bango FROM nvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s AND keibajo_code != %s
+"""
+
+
+def fetch_races_scheduled(conn: db.ConnectionLike, category: str, date_str: str) -> int:
+    """Return the count of races scheduled in the local replica's own race
+    calendar for (category, date_str), independent of whether anything was
+    ever served for them -- the GENERALIZED "races expected" oracle
+    (2026-07-11), usable for all three categories, that `fetch_banei_race_count`
+    above was always a special case of.
+
+    ★ Motivation: a real production blind spot found 2026-07-10. JRA's
+    champion `jra-cb-v9-sim-2013-clean` never wrote a single row since its
+    07-04 deploy; only a cell-routed variant serves, and only for a narrow
+    class-code slice -- about 3% of scheduled races (e.g. 11/485 real
+    starters on one day). Because that variant still counts as
+    champion-derived (see `sync_production._is_champion_or_variant`) and
+    `races_live > 0`, EVERY existing gap detector (`GAP_TYPE_NO_ROWS`/
+    `GAP_TYPE_BACKFILL_ONLY`, both keyed off `races_live == 0`) reads that day
+    as healthy. This function is the missing piece: an independent "how many
+    races were actually run" denominator, so a caller (see
+    `sync_production.GAP_TYPE_PARTIAL_COVERAGE`) can compute a genuine
+    coverage RATIO (`races_live / races_scheduled`) instead of a bare
+    zero/nonzero check.
+
+    - `category="jra"`: every `jvd_ra` row for `date_str`. No keibajo_code
+      filter is needed -- JRA never has a `keibajo_code == BANEI_KEIBAJO_CODE`
+      row in the first place (that code is NAR/Ban-ei-specific, see this
+      module's own docstring on `resolve_source`).
+    - `category="nar"`: every `nvd_ra` row for `date_str` EXCLUDING Ban-ei's
+      keibajo_code -- Ban-ei shares the `nvd_ra` table with the rest of NAR
+      (see this module's own docstring), so a bare unfiltered count would
+      double-count Ban-ei races into the "nar" oracle.
+    - `category="banei"`: re-issues `_BANEI_RACE_CALENDAR_SQL` -- the EXACT
+      same query text/params `fetch_banei_race_count` uses -- inline, rather
+      than calling that function (see its own docstring for why: keeping
+      the two call paths independent, not sharing a function reference,
+      means a test/monkeypatch targeting one can never accidentally affect
+      the other).
+
+    Raises ValueError for any other category string, mirroring
+    `resolve_result_tables`/`resolve_source`'s own convention.
+    """
+    if category == cells.CATEGORY_JRA:
+        cursor = conn.cursor()
+        cursor.execute(_JRA_RACE_CALENDAR_SQL, (date_str[:4], date_str[4:]))
+        return len(cursor.fetchall())
+    if category == cells.CATEGORY_NAR:
+        cursor = conn.cursor()
+        cursor.execute(
+            _NAR_EXCL_BANEI_RACE_CALENDAR_SQL, (date_str[:4], date_str[4:], BANEI_KEIBAJO_CODE)
+        )
+        return len(cursor.fetchall())
+    if category == cells.CATEGORY_BANEI:
+        cursor = conn.cursor()
+        cursor.execute(_BANEI_RACE_CALENDAR_SQL, (date_str[:4], date_str[4:], BANEI_KEIBAJO_CODE))
+        return len(cursor.fetchall())
+    raise ValueError(f"unknown category: {category!r}")
 
 
 # ── Join / build functions (pure, no I/O) ───────────────────────────────────

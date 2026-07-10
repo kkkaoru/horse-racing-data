@@ -92,6 +92,20 @@ _JST_NOON_AS_UTC_HOUR: Final[int] = 3  # 12:00 JST (UTC+9) == 03:00 UTC, same ca
 # `serve_top1_pct` style sketched before the real payload shape was known, so
 # a per-day run's chart and this timeline run's chart use identical metric
 # key names for the same underlying value.
+#
+# `races_scheduled`/`coverage_pct` (2026-07-11) are NOT part of
+# `serve_eval.aggregate_fp_day_metrics`'s own return shape -- they are a
+# DAY-level, category-wide coverage-ratio pair (`serve_eval.
+# fetch_races_scheduled` races-scheduled oracle vs. genuinely-live races
+# served, see `sync_production.GAP_TYPE_PARTIAL_COVERAGE`) that
+# `sync_production._sync_fp_eval` merges into its own `day_metrics` dict
+# before calling `fp_metrics_for_timeline`, purely so this one map is the
+# single place both the per-run metric name and the timeline metric name are
+# decided. `coverage_pct` is `float | None` (None when zero races were
+# scheduled that day, an undefined ratio -- see `sync_production._coverage_pct`),
+# and the `isinstance` guard below already skips a None value the same way it
+# already skips a None `place4_pct`/`place5_pct`/`place6_pct`, so no extra
+# handling is needed here for that case.
 _FP_TIMELINE_METRIC_MAP: Final[dict[str, str]] = {
     "top1_pct": "fp_top1_pct",
     "place2_pct": "fp_place2_pct",
@@ -102,6 +116,8 @@ _FP_TIMELINE_METRIC_MAP: Final[dict[str, str]] = {
     "fukusho_2p_pct": "fp_fukusho_2p_pct",
     "top3_box_pct": "fp_top3_box_pct",
     "races": "fp_races",
+    "races_scheduled": "fp_races_scheduled",
+    "coverage_pct": "fp_coverage_pct",
 }
 
 
@@ -331,7 +347,12 @@ def fp_metrics_for_timeline(fp: Mapping[str, object]) -> dict[str, float]:
     float)` is False, so a day/cell where one of those ranks had zero
     eligible races (see `serve_eval.aggregate_fp_day_metrics`'s own
     None-handling docstring) is silently skipped rather than logged as a
-    fabricated 0.0.
+    fabricated 0.0. `races_scheduled`/`coverage_pct` (2026-07-11, see
+    `_FP_TIMELINE_METRIC_MAP`'s own comment) are not part of
+    `aggregate_fp_day_metrics`'s own return shape, but `sync_production.
+    _sync_fp_eval` merges them into the SAME `fp` mapping before calling
+    this function, so they compose here through this exact same generic
+    isinstance-guarded path -- no special-casing needed.
     """
     result: dict[str, float] = {}
     for source_key, timeline_metric_key in _FP_TIMELINE_METRIC_MAP.items():

@@ -71,6 +71,26 @@ widely-used return contract). When zero points were appended this call
 (`JobTrace.discard()`) rather than logged empty -- see that method's own
 docstring. Deliberately UNCONDITIONAL, independent of `emit_traces`/
 `--no-traces` (see the code's own comment at `job_tracing_client` for why).
+
+★ COVERAGE-RATIO / partial-serving detection (2026-07-11, see
+`GAP_TYPE_PARTIAL_COVERAGE`'s own module-level comment for the full real
+production blind spot this closes): every prior serving-gap check here
+(`GAP_TYPE_NO_ROWS`/`GAP_TYPE_BACKFILL_ONLY`) is keyed off `races_live == 0`,
+so a day where a SMALL FRACTION of races serve live -- e.g. a champion whose
+own exact `model_version` label never writes a row, with only a cell-routed
+variant serving for one narrow class-code slice, ~3% of scheduled races --
+reads as fully healthy to all of them. This module now also computes
+`fp_races_scheduled` (`serve_eval.fetch_races_scheduled`'s direct jvd_ra/
+nvd_ra race-calendar count, for ALL THREE categories) and `fp_coverage_pct`
+(`races_live / races_scheduled * 100`) once per (date, category) in
+`_sync_fp_category_date`, attaches both to every per-model-version-group run
+that day (`_log_base_tracking`) AND to the finish-position `timelines` point
+(`_sync_fp_eval` -> `timeline.fp_metrics_for_timeline`), and -- in
+`sync_production_range` -- fires a NEW, genuinely different gap type,
+`GAP_TYPE_PARTIAL_COVERAGE`, whenever `coverage_pct` falls below a
+configurable threshold (`partial_coverage_threshold`, default
+`DEFAULT_PARTIAL_COVERAGE_THRESHOLD` = 80.0, the `sync-production` CLI's
+`--partial-coverage-threshold` flag) EVEN THOUGH `races_live > 0`.
 """
 
 from __future__ import annotations
@@ -137,6 +157,44 @@ GAP_SOURCE_RUNNING_STYLE: Final[str] = "running_style"
 GAP_SOURCE_RACE_CALENDAR: Final[str] = "race_calendar"
 GAP_TYPE_NO_ROWS: Final[str] = "no_rows"
 GAP_TYPE_BACKFILL_ONLY: Final[str] = "backfill_only"
+# ★ GAP_TYPE_PARTIAL_COVERAGE (2026-07-11) -- a THIRD, genuinely different gap
+# shape from the two above: `GAP_TYPE_NO_ROWS`/`GAP_TYPE_BACKFILL_ONLY` are
+# both keyed off `fp_outcome.races_live == 0` (see `sync_production_range`'s
+# own docstring), so a day where SOME races serve live is invisible to both,
+# no matter how small a fraction of the day that "some" actually is. The real
+# incident this closes: JRA's champion `jra-cb-v9-sim-2013-clean` has never
+# written a row since its 07-04 deploy -- only a cell-routed variant serves,
+# for one narrow class-code slice, ~3% of scheduled races (e.g. 11/485 real
+# starters on one day). Because that variant is champion-derived (see
+# `_is_champion_or_variant`) and `races_live > 0`, the day reads as fully
+# healthy to every check above. This gap type instead compares
+# `fp_outcome.races_live` against `fp_outcome.races_scheduled` -- the
+# INDEPENDENT `serve_eval.fetch_races_scheduled` race-calendar oracle for ALL
+# THREE categories (not just banei), computed unconditionally once per
+# (date, category) in `_sync_fp_category_date` regardless of whether any
+# rows were ever synced -- and fires whenever the resulting COVERAGE RATIO
+# (`fp_outcome.coverage_pct`) falls below a configurable threshold (default
+# `DEFAULT_PARTIAL_COVERAGE_THRESHOLD`, see the `--partial-coverage-threshold`
+# CLI flag), REGARDLESS of `races_live` being nonzero. Deliberately gated on
+# `races_live > 0` in `sync_production_range`'s own check (see there): a
+# totally-empty day (`races_live == 0`) is already, and continues to be,
+# fully covered by `GAP_TYPE_NO_ROWS`/`GAP_TYPE_BACKFILL_ONLY` above, so the
+# two families are mutually exclusive per (date, category) per call -- this
+# is what lets both safely share `_log_serving_gap`'s one marker-run-per-
+# (date, category) idempotency key without ever overwriting each other's
+# `gap_type` tag.
+GAP_TYPE_PARTIAL_COVERAGE: Final[str] = "partial_coverage"
+
+# Default coverage-ratio threshold (percent, 0-100 scale) for
+# GAP_TYPE_PARTIAL_COVERAGE: a (date, category) with
+# `coverage_pct < DEFAULT_PARTIAL_COVERAGE_THRESHOLD` is flagged, even though
+# `races_live > 0`. 80.0 was chosen as a conservative floor -- real healthy
+# serving days observed in this store cover effectively 100% of scheduled
+# races, so anything below 80% is unambiguously a partial-serving incident,
+# not routine day-to-day variance. Configurable via `sync-production`'s
+# `--partial-coverage-threshold` flag, threaded through
+# `sync_production_range`'s `partial_coverage_threshold` parameter.
+DEFAULT_PARTIAL_COVERAGE_THRESHOLD: Final[float] = 80.0
 
 # Tags the champion-mismatch marker run (see _log_champion_gap below) is
 # identified/searched by -- keyed by (date, category, task), a THIRD distinct
@@ -182,12 +240,20 @@ class SyncProductionSummary:
     and categories are each walked without repetition).
 
     `serving_gaps_detected` counts every (date, category) pair, THIS call,
-    for which the serving-gap check (see `sync_production_range`'s own
-    docstring -- RS-vs-FP for jra/nar, the local race calendar for banei)
-    found a genuine gap and logged/found its marker run -- whether that
-    marker run was freshly created or already existed from a previous day's
-    call counts the same here, since this field answers "how many gaps did
-    this call observe", not "how many NEW marker runs did this call create".
+    for which ANY serving-gap check (see `sync_production_range`'s own
+    docstring -- RS-vs-FP for jra/nar or the local race calendar for banei,
+    for `GAP_TYPE_NO_ROWS`/`GAP_TYPE_BACKFILL_ONLY`; OR the independent
+    coverage-ratio check, for `GAP_TYPE_PARTIAL_COVERAGE`, 2026-07-11) found
+    a genuine gap and logged/found its marker run -- whether that marker run
+    was freshly created or already existed from a previous day's call counts
+    the same here, since this field answers "how many gaps did this call
+    observe", not "how many NEW marker runs did this call create". This is
+    one shared counter across all three gap TYPES (not a per-type count) --
+    a caller that needs to distinguish which type fired for a given (date,
+    category) reads the marker run's own `gap_type` tag instead (see
+    `_log_serving_gap`); the two families are mutually exclusive per (date,
+    category) per call (see `GAP_TYPE_PARTIAL_COVERAGE`'s own comment), so
+    this field is never double-counting the SAME pair twice in one call.
 
     `champion_gaps_detected` is the same kind of THIS-call observation count,
     for the champion-mismatch check (see `_check_champion_gap`'s own
@@ -272,6 +338,21 @@ class _CategoryDateOutcome:
     own docstrings) -- all stay at their defaults (0/0/empty) whenever
     `emit_traces=False`, or on any date/category where the eval join itself
     never produced `eval_rows` (nothing to emit a trace for yet).
+
+    `races_scheduled`/`coverage_pct` (2026-07-11, FP-only -- `_sync_rs_
+    category_date` never sets either, both stay at their defaults for every
+    RS outcome) are the new coverage-ratio pair (see
+    `GAP_TYPE_PARTIAL_COVERAGE`'s own module-level comment for the full
+    incident this closes). `races_scheduled` is `serve_eval.
+    fetch_races_scheduled`'s race-calendar count for this (date, category),
+    computed UNCONDITIONALLY in `_sync_fp_category_date` -- including on its
+    early-empty-`rows` return path, mirroring `races_observed`'s own
+    "explicitly set, never left at an implicit default" discipline -- since
+    it is a pure local-replica query, independent of whether any Neon
+    prediction rows exist at all. `coverage_pct` is `_coverage_pct(races_live,
+    races_scheduled)`: `100.0 * races_live / races_scheduled`, or None when
+    `races_scheduled` is 0 (an undefined ratio -- no races were scheduled
+    that day at all, never a fabricated 0.0/100.0).
     """
 
     runs_created: int = 0
@@ -279,6 +360,8 @@ class _CategoryDateOutcome:
     eval_logged: int = 0
     eval_skipped_no_results: int = 0
     races_observed: int = 0
+    races_scheduled: int = 0
+    coverage_pct: float | None = None
     races_live: int = 0
     races_backfilled: int = 0
     champion_model_version: str | None = None
@@ -305,6 +388,18 @@ def _date_range_yyyymmdd(date_from: str, date_to: str) -> list[str]:
         dates.append(current.strftime("%Y%m%d"))
         current += timedelta(days=1)
     return dates
+
+
+def _coverage_pct(races_live: int, races_scheduled: int) -> float | None:
+    """Return `100.0 * races_live / races_scheduled`, or None when
+    `races_scheduled <= 0` -- an undefined ratio (nothing was scheduled that
+    day for this category at all), never a fabricated 0.0/100.0 and never a
+    ZeroDivisionError. Mirrors `serve_eval.compute_rank_pct`'s own
+    None-for-"not applicable" precedent.
+    """
+    if races_scheduled <= 0:
+        return None
+    return 100.0 * races_live / races_scheduled
 
 
 def _log_table_and_parquet(
@@ -624,6 +719,8 @@ def _log_base_tracking(
     model_version: str,
     rows: list[dict[str, object]],
     prediction_table: pd.DataFrame,
+    races_scheduled: int | None = None,
+    coverage_pct: float | None = None,
 ) -> None:
     """Log the base production-usage tracking for one (date, category,
     model_version) group and mark `sync_base_logged=true`.
@@ -648,6 +745,21 @@ def _log_base_tracking(
     resolved champion -- resolved at this SAME moment as `champion_at_sync`
     (never re-resolved later, matching that tag's own "AT THE MOMENT base
     tracking is logged" contract), and simply omitted otherwise.
+
+    `races_scheduled`/`coverage_pct` (2026-07-11, FP-only -- `_sync_rs_
+    category_date`'s own call site never passes them, so they stay None
+    there) are the DAY-level coverage-ratio pair (see `_CategoryDateOutcome`'s
+    own docstring / `GAP_TYPE_PARTIAL_COVERAGE`'s module-level comment) --
+    NOT scoped to this one model_version's own `rows`, unlike every other
+    metric logged above. Deliberately DUPLICATED onto every model-version-
+    group run created for this (date, category) rather than logged once
+    somewhere else: this file already duplicates date/category CONTEXT
+    (tags) onto every such run, and this is the same judgment call applied
+    to two more values. `races_scheduled` (an int, never None when the FP
+    caller passes it) is logged whenever given; `coverage_pct` is skipped
+    (never logged as a fabricated 0.0) when it is None -- which happens when
+    `races_scheduled` was 0 (see `_coverage_pct`'s own docstring), or when
+    this is an RS call that never computes it at all.
     """
     champion_value = _champion_at_sync_tag_value(client, category, task, model_version)
     variant_tag = _champion_served_variant_tag(client, category, task, model_version)
@@ -663,6 +775,10 @@ def _log_base_tracking(
             f"{metric_prefix}_races_backfilled", float(_distinct_race_count(backfill_rows)), 0, 0
         ),
     ]
+    if races_scheduled is not None:
+        metrics.append(Metric(f"{metric_prefix}_races_scheduled", float(races_scheduled), 0, 0))
+    if coverage_pct is not None:
+        metrics.append(Metric(f"{metric_prefix}_coverage_pct", float(coverage_pct), 0, 0))
     log_batch_chunked(client, run_id, metrics=metrics, tags=champion_tags)
     _log_table_and_parquet(
         client, run_id, prediction_table, _PREDICTIONS_JSON_ARTIFACT, _PREDICTIONS_PARQUET_ARTIFACT
@@ -681,6 +797,8 @@ def _sync_fp_eval(
     model_version: str,
     rows: list[dict[str, object]],
     local_conn: db.ConnectionLike,
+    races_scheduled: int,
+    coverage_pct: float | None,
 ) -> tuple[bool, trace_emit.TraceEmitSummary]:
     """Attempt the FP evaluation join for one (date, category, model_version)
     group. Returns (True, trace_summary) (and logs metrics/table/timeline
@@ -694,6 +812,22 @@ def _sync_fp_eval(
     `tracing_client` is None exactly when the caller's `emit_traces=False`
     (see `sync_production_range`) -- trace emission is skipped entirely in
     that case, not attempted-and-discarded.
+
+    `races_scheduled`/`coverage_pct` (2026-07-11) are the same DAY-level
+    coverage-ratio pair `_log_base_tracking` also (independently) receives --
+    see that function's own docstring and `_CategoryDateOutcome`'s. Both are
+    REQUIRED here (unlike `_log_base_tracking`'s own optional pair, which
+    must also serve RS callers that never compute them): this function is
+    FP-only, with exactly one caller (`_sync_fp_category_date`), which always
+    has a real `outcome.races_scheduled` (an int, computed unconditionally)
+    in hand by the time it calls this. They are merged directly into
+    `day_metrics` (not part of `serve_eval.aggregate_fp_day_metrics`'s own
+    return shape) BEFORE building `metric_items`/calling `timeline.
+    fp_metrics_for_timeline`, so both the per-run `fp_races_scheduled`/
+    `fp_coverage_pct` metrics below and the `finish-position` timeline's own
+    `fp_races_scheduled`/`fp_coverage_pct` points come from this exact one
+    merge -- see `timeline._FP_TIMELINE_METRIC_MAP`'s own comment for why
+    that map is the single place the timeline metric NAME is decided.
     """
     results = serve_eval.fetch_race_results(local_conn, category, date_str)
     eval_rows = serve_eval.build_fp_race_eval_rows(category, model_version, rows, results)
@@ -701,12 +835,16 @@ def _sync_fp_eval(
         return False, trace_emit.TraceEmitSummary()
 
     day_metrics = serve_eval.aggregate_fp_day_metrics(eval_rows)
-    # `place4_pct`/`place5_pct`/`place6_pct` may be None (every race this day
-    # had too small a field for that rank -- see
-    # `serve_eval.aggregate_fp_day_metrics`'s own docstring), so this must
-    # skip a None value rather than blindly `float()`-casting it -- mirroring
-    # `_sync_rs_eval`'s own `isinstance(macro_f1_pct, int | float)` idiom for
-    # its own possibly-None `macro_f1_pct` value.
+    day_metrics["races_scheduled"] = float(races_scheduled)
+    day_metrics["coverage_pct"] = coverage_pct
+    # `place4_pct`/`place5_pct`/`place6_pct` (and now `coverage_pct`) may be
+    # None (every race this day had too small a field for that rank -- see
+    # `serve_eval.aggregate_fp_day_metrics`'s own docstring; `coverage_pct`
+    # is None when zero races were scheduled that day, see `_coverage_pct`'s
+    # own docstring), so this must skip a None value rather than blindly
+    # `float()`-casting it -- mirroring `_sync_rs_eval`'s own
+    # `isinstance(macro_f1_pct, int | float)` idiom for its own possibly-None
+    # `macro_f1_pct` value.
     metric_items = [
         Metric(f"fp_{key}", float(value), 0, 0)
         for key, value in day_metrics.items()
@@ -844,18 +982,31 @@ def _sync_fp_category_date(
     call (never cached across calls), so a champion-alias change is reflected
     the very next `sync_production_range` call, not just for newly-created
     runs.
+
+    `races_scheduled`/`coverage_pct` (2026-07-11) are computed here EXACTLY
+    ONCE per (date, category) call -- via `serve_eval.fetch_races_scheduled`/
+    `_coverage_pct` -- BEFORE the early-empty-`rows` return, since the
+    race-calendar oracle query is independent of whether any Neon prediction
+    rows exist at all (see `_CategoryDateOutcome`'s own docstring). Both
+    values are then threaded down into EVERY model-version-group's own
+    `_log_base_tracking`/`_sync_fp_eval` calls below (duplicated per group,
+    not per-day-once -- see `_log_base_tracking`'s own docstring for why
+    that duplication is a deliberate, documented judgment call).
     """
     outcome = _CategoryDateOutcome()
+    outcome.races_scheduled = serve_eval.fetch_races_scheduled(local_conn, category, date_str)
     source = serve_eval.resolve_source(category)
     raw_rows = serve_eval.fetch_fp_prediction_rows(neon_conn, source, date_str, date_str)
     rows = _fp_category_filtered_rows(category, serve_eval.filter_genuine_rows(raw_rows))
     if not rows:
         outcome.races_observed = 0
+        outcome.coverage_pct = _coverage_pct(outcome.races_live, outcome.races_scheduled)
         return outcome
     outcome.races_observed = _distinct_race_count(rows)
     live_rows, backfill_rows = serve_eval.partition_live_backfill(rows)
     outcome.races_live = _distinct_race_count(live_rows)
     outcome.races_backfilled = _distinct_race_count(backfill_rows)
+    outcome.coverage_pct = _coverage_pct(outcome.races_live, outcome.races_scheduled)
     champion_label = _resolve_champion_label(client, category, "finish-position")
     outcome.champion_model_version = champion_label
 
@@ -887,6 +1038,8 @@ def _sync_fp_category_date(
                 model_version=model_version,
                 rows=group_rows,
                 prediction_table=_fp_prediction_table(group_rows),
+                races_scheduled=outcome.races_scheduled,
+                coverage_pct=outcome.coverage_pct,
             )
 
         if existing_tags.get(SYNC_EVAL_LOGGED_TAG) != TRUE_STR:
@@ -899,6 +1052,8 @@ def _sync_fp_category_date(
                 date_str=date_str,
                 model_version=model_version,
                 rows=group_rows,
+                races_scheduled=outcome.races_scheduled,
+                coverage_pct=outcome.coverage_pct,
                 local_conn=local_conn,
             )
             if logged:
@@ -1055,6 +1210,8 @@ def _log_serving_gap(
     fp_races_observed: int,
     fp_races_live: int,
     fp_races_backfilled: int,
+    fp_races_scheduled: int,
+    fp_coverage_pct: float | None = None,
 ) -> None:
     """Find-or-create the serving-gap marker run for (date_str, category) in
     `experiment_id` (always `config.EXPERIMENT_FP_PRODUCTION_USAGE` -- the
@@ -1100,6 +1257,21 @@ def _log_serving_gap(
     -- matching the display name already carried by every pre-existing marker
     run in the real store, same rationale as `_get_or_create_run_and_tags`'s
     own `run_name` note.
+
+    `fp_races_scheduled`/`fp_coverage_pct` (2026-07-11) are the
+    `serve_eval.fetch_races_scheduled` race-calendar oracle count and the
+    resulting coverage ratio for this (date_str, category) -- see
+    `GAP_TYPE_PARTIAL_COVERAGE`'s own module-level comment. `fp_races_
+    scheduled` is REQUIRED (never None): both callers of this function (the
+    pre-existing no_rows/backfill_only check and the new partial_coverage
+    check, see `sync_production_range`) always have a real `fp_outcome.
+    races_scheduled` int in hand (computed unconditionally in
+    `_sync_fp_category_date`) by the time they call this, so every marker run
+    this function logs -- regardless of which `gap_type` fired -- carries the
+    same enriched context. `fp_coverage_pct` stays optional/nullable, since
+    it IS genuinely None whenever `fp_races_scheduled` is 0 (an undefined
+    ratio, see `_coverage_pct`'s own docstring) -- skipped, never logged as a
+    fabricated 0.0, in that case.
     """
     serving_gap_key = f"{date_str}:{category}"
     run_id = _find_serving_gap_run(client, experiment_id, serving_gap_key)
@@ -1120,9 +1292,12 @@ def _log_serving_gap(
         Metric("fp_races_live", float(fp_races_live), 0, 0),
         Metric("fp_races_backfilled", float(fp_races_backfilled), 0, 0),
         Metric("expected_races", float(expected_races), 0, 0),
+        Metric("fp_races_scheduled", float(fp_races_scheduled), 0, 0),
     ]
     if gap_source == GAP_SOURCE_RUNNING_STYLE:
         metrics.append(Metric("rs_races_observed", float(expected_races), 0, 0))
+    if fp_coverage_pct is not None:
+        metrics.append(Metric("fp_coverage_pct", float(fp_coverage_pct), 0, 0))
     log_batch_chunked(
         client,
         run_id,
@@ -1162,6 +1337,15 @@ def _resolve_expected_races(
     same call; that function accepts exactly "jra"/"nar"/"banei" and raises
     ValueError otherwise, so by this point `category` is guaranteed to be one
     of the two branches below.
+
+    Left entirely UNCHANGED by the 2026-07-11 `GAP_TYPE_PARTIAL_COVERAGE`
+    addition (see that constant's own module-level comment): that new check
+    uses a DIFFERENT, more direct oracle (`fp_outcome.races_scheduled`, via
+    `serve_eval.fetch_races_scheduled` -- the real jvd_ra/nvd_ra race
+    calendar for ALL THREE categories, not an RS-observed proxy) computed
+    independently in `_sync_fp_category_date`, so this function's own
+    jra/nar RS-proxy oracle and banei race-calendar oracle keep exactly
+    their pre-existing behavior and callers.
     """
     if category in RS_CATEGORIES:
         if rs_outcome is None:
@@ -1280,6 +1464,7 @@ def sync_production_range(
     categories: Sequence[str] = FP_CATEGORIES,
     *,
     emit_traces: bool = True,
+    partial_coverage_threshold: float = DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
     neon_connect: Callable[[], db.ConnectionLike] = db.connect_racing_neon,
     local_connect: Callable[[], db.ConnectionLike] = db.connect_local_replica,
 ) -> SyncProductionSummary:
@@ -1382,6 +1567,32 @@ def sync_production_range(
     transient failure (e.g. the banei race-calendar query, or a flaky
     tracking-store write while logging the marker) must never abort the rest
     of the date range, same as everywhere else in this function.
+
+    ★ PARTIAL-COVERAGE check (2026-07-11, `GAP_TYPE_PARTIAL_COVERAGE`, see
+    that constant's own module-level comment for the full incident): the
+    two checks above are BOTH gated on `fp_outcome.races_live == 0` -- a day
+    where SOME races serve live, no matter how few, is invisible to either
+    one. This closes that blind spot with a genuinely INDEPENDENT oracle:
+    `fp_outcome.races_scheduled` (`serve_eval.fetch_races_scheduled`'s direct
+    jvd_ra/nvd_ra race-calendar count, computed for ALL THREE categories --
+    not just banei -- unconditionally in `_sync_fp_category_date`, so it
+    never depends on `_resolve_expected_races`/the RS sync succeeding this
+    call the way the no_rows/backfill_only check above does). Whenever
+    `fp_outcome.races_live > 0` (the territory the two checks above
+    deliberately do NOT cover) and `fp_outcome.coverage_pct` (`races_live /
+    races_scheduled * 100`) is not None and falls below
+    `partial_coverage_threshold` (default `DEFAULT_PARTIAL_COVERAGE_THRESHOLD`
+    = 80.0, configurable via the `sync-production` CLI's
+    `--partial-coverage-threshold` flag), this logs a `GAP_TYPE_PARTIAL_
+    COVERAGE` marker the same two ways as the checks above (a `warnings.warn`
+    plus an idempotent `_log_serving_gap` marker run) and increments the
+    SAME `summary.serving_gaps_detected` counter. Because this check
+    requires `races_live > 0` while the no_rows/backfill_only check above
+    requires `races_live == 0`, the two are MUTUALLY EXCLUSIVE per (date,
+    category) per call -- both safely reuse `_log_serving_gap`'s one
+    marker-run-per-(date, category) idempotency key without ever
+    overwriting each other's `gap_type` tag. Isolated in its own try/except,
+    same `_ISOLATED_EXCEPTIONS` tuple, same non-abort-the-range guarantee.
 
     Independently, after EACH of the FP sync and (when applicable) the RS
     sync for a (date, category), this function checks for a CHAMPION
@@ -1586,12 +1797,64 @@ def sync_production_range(
                         else:
                             champion_gaps_detected += 1
 
-                    # Serving-gap check (see this function's own docstring). Only
-                    # reachable when the FP sync above completed without raising
-                    # -- a failed FP sync's race count is simply unknown, not
-                    # meaningfully "zero", so it must not be misread as a gap.
+                    # Serving-gap checks (see this function's own docstring).
+                    # Only reachable when the FP sync above completed without
+                    # raising -- a failed FP sync's race count is simply
+                    # unknown, not meaningfully "zero", so it must not be
+                    # misread as a gap.
                     if fp_outcome is None:
                         continue
+
+                    # ★ Partial-coverage check FIRST (see this function's own
+                    # docstring's "PARTIAL-COVERAGE check" section) --
+                    # deliberately INDEPENDENT of `_resolve_expected_races`/
+                    # `expected` below (a different, direct oracle: `fp_
+                    # outcome.races_scheduled`, computed unconditionally in
+                    # `_sync_fp_category_date` for every category), so a
+                    # failed/skipped RS sync this call never suppresses it.
+                    # Gated on `races_live > 0` specifically so this can
+                    # never fire for the SAME (date, category) the
+                    # no_rows/backfill_only check below might ALSO flag
+                    # (that check requires `races_live == 0`) -- the two are
+                    # therefore mutually exclusive per call, so both safely
+                    # share `_log_serving_gap`'s one marker-run-per-(date,
+                    # category) idempotency key without ever overwriting
+                    # each other's `gap_type` tag.
+                    if (
+                        fp_outcome.races_live > 0
+                        and fp_outcome.coverage_pct is not None
+                        and fp_outcome.coverage_pct < partial_coverage_threshold
+                    ):
+                        warnings.warn(
+                            f"serving gap: category={category!r} date={date_str!r}: partial "
+                            f"finish-position coverage ({fp_outcome.coverage_pct:.2f}% < "
+                            f"{partial_coverage_threshold}%) -- {fp_outcome.races_live}/"
+                            f"{fp_outcome.races_scheduled} scheduled races served live "
+                            f"(gap_type={GAP_TYPE_PARTIAL_COVERAGE!r})",
+                            stacklevel=2,
+                        )
+                        try:
+                            _log_serving_gap(
+                                client,
+                                fp_experiment_id,
+                                date_str=date_str,
+                                category=category,
+                                gap_source=GAP_SOURCE_RACE_CALENDAR,
+                                gap_type=GAP_TYPE_PARTIAL_COVERAGE,
+                                expected_races=fp_outcome.races_scheduled,
+                                fp_races_observed=fp_outcome.races_observed,
+                                fp_races_live=fp_outcome.races_live,
+                                fp_races_backfilled=fp_outcome.races_backfilled,
+                                fp_races_scheduled=fp_outcome.races_scheduled,
+                                fp_coverage_pct=fp_outcome.coverage_pct,
+                            )
+                        except _ISOLATED_EXCEPTIONS as exc:
+                            errors.append(
+                                f"{date_str}:{category}:serving-gap-partial-coverage: {exc}"
+                            )
+                        else:
+                            serving_gaps_detected += 1
+
                     try:
                         expected = _resolve_expected_races(
                             category, rs_outcome, local_conn, date_str
@@ -1627,6 +1890,8 @@ def sync_production_range(
                             fp_races_observed=fp_outcome.races_observed,
                             fp_races_live=fp_outcome.races_live,
                             fp_races_backfilled=fp_outcome.races_backfilled,
+                            fp_races_scheduled=fp_outcome.races_scheduled,
+                            fp_coverage_pct=fp_outcome.coverage_pct,
                         )
                     except _ISOLATED_EXCEPTIONS as exc:
                         errors.append(f"{date_str}:{category}:serving-gap: {exc}")

@@ -294,6 +294,7 @@ def cmd_sync_production(args: argparse.Namespace) -> int:
         args.date_to,
         categories=categories,
         emit_traces=not args.no_traces,
+        partial_coverage_threshold=args.partial_coverage_threshold,
     )
     print(
         f"dates processed: {summary.dates_processed}\n"
@@ -635,6 +636,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip MLflow trace/assessment emission for this call (base tracking and eval "
         "metrics/tables are unaffected) -- see trace_emit.py's module docstring",
+    )
+    sync_production_parser.add_argument(
+        "--partial-coverage-threshold",
+        type=float,
+        default=sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        help="Coverage-ratio threshold (percent, 0-100) below which a genuinely-live-but-"
+        "partial finish-position serving day (races_live > 0) is flagged as a "
+        f"partial_coverage gap (default: {sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD})",
     )
     sync_production_parser.set_defaults(func=cmd_sync_production)
 

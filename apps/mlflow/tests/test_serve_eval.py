@@ -218,6 +218,73 @@ def test_fetch_banei_race_count_zero_rows() -> None:
     assert result == 0
 
 
+# ── fetch_races_scheduled ────────────────────────────────────────────────────
+#
+# Regression coverage for the real 2026-07-10 blind spot: JRA's champion never
+# wrote a row, only a cell-routed variant serves ~3% of scheduled races, and
+# every existing gap detector (races_live == 0-gated) reads that day as
+# healthy. fetch_races_scheduled is the independent "races expected" oracle
+# that closes it -- generalized from fetch_banei_race_count to all 3
+# categories.
+
+
+def test_fetch_races_scheduled_jra_queries_jvd_ra() -> None:
+    mock_conn = _make_mock_conn([("01",), ("02",), ("03",)])
+    result = serve_eval.fetch_races_scheduled(mock_conn, "jra", "20260614")
+
+    assert result == 3
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, called_params = mock_cur.execute.call_args[0]
+    assert "jvd_ra" in called_sql
+    assert "keibajo_code" not in called_sql
+    assert called_params == ("2026", "0614")
+
+
+def test_fetch_races_scheduled_jra_zero_rows() -> None:
+    mock_conn = _make_mock_conn([])
+    assert serve_eval.fetch_races_scheduled(mock_conn, "jra", "20260614") == 0
+
+
+def test_fetch_races_scheduled_nar_excludes_banei_keibajo_code() -> None:
+    mock_conn = _make_mock_conn([("01",), ("02",)])
+    result = serve_eval.fetch_races_scheduled(mock_conn, "nar", "20260614")
+
+    assert result == 2
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, called_params = mock_cur.execute.call_args[0]
+    assert "nvd_ra" in called_sql
+    assert "keibajo_code" in called_sql
+    assert called_params == ("2026", "0614", serve_eval.BANEI_KEIBAJO_CODE)
+
+
+def test_fetch_races_scheduled_nar_zero_rows() -> None:
+    mock_conn = _make_mock_conn([])
+    assert serve_eval.fetch_races_scheduled(mock_conn, "nar", "20260614") == 0
+
+
+def test_fetch_races_scheduled_banei_reissues_banei_calendar_query() -> None:
+    """category="banei" must use the SAME query shape fetch_banei_race_count
+    uses (same table, same keibajo_code == filter, same 3 params) -- but as an
+    independent inline call, not a delegated call to that function (see
+    fetch_banei_race_count's own docstring for why the two call paths must
+    stay decoupled)."""
+    mock_conn = _make_mock_conn([("01",)])
+    result = serve_eval.fetch_races_scheduled(mock_conn, "banei", "20260614")
+
+    assert result == 1
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, called_params = mock_cur.execute.call_args[0]
+    assert "nvd_ra" in called_sql
+    assert "keibajo_code" in called_sql
+    assert called_params == ("2026", "0614", serve_eval.BANEI_KEIBAJO_CODE)
+
+
+def test_fetch_races_scheduled_unknown_category_raises_value_error() -> None:
+    mock_conn = _make_mock_conn([])
+    with pytest.raises(ValueError, match="unknown category"):
+        serve_eval.fetch_races_scheduled(mock_conn, "bogus", "20260614")
+
+
 # ── resolve_result_tables / resolve_source ──────────────────────────────────
 
 

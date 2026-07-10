@@ -256,6 +256,30 @@ def test_fp_metrics_for_timeline_empty_dict_yields_empty_result() -> None:
     assert timeline.fp_metrics_for_timeline({}) == {}
 
 
+def test_fp_metrics_for_timeline_extracts_races_scheduled_and_coverage_pct() -> None:
+    """Regression coverage for the 2026-07-11 coverage-ratio addition:
+    sync_production._sync_fp_eval merges races_scheduled/coverage_pct into
+    the SAME day_metrics dict this function reads, so they must compose
+    through this exact map/isinstance-guarded path like every other key."""
+    result = timeline.fp_metrics_for_timeline(
+        {"top1_pct": 44.5, "races_scheduled": 485.0, "coverage_pct": 2.27}
+    )
+    assert result == {
+        "fp_top1_pct": 44.5,
+        "fp_races_scheduled": 485.0,
+        "fp_coverage_pct": 2.27,
+    }
+
+
+def test_fp_metrics_for_timeline_skips_none_coverage_pct() -> None:
+    """coverage_pct is None when zero races were scheduled that day (see
+    sync_production._coverage_pct) -- never a fabricated 0.0."""
+    result = timeline.fp_metrics_for_timeline(
+        {"top1_pct": 44.5, "races_scheduled": 0.0, "coverage_pct": None}
+    )
+    assert result == {"fp_top1_pct": 44.5, "fp_races_scheduled": 0.0}
+
+
 def test_rs_metrics_for_timeline_extracts_overall_and_macro_f1() -> None:
     result = timeline.rs_metrics_for_timeline({"overall_accuracy_pct": 55.0, "macro_f1_pct": 50.0})
     assert result == {"rs_overall_accuracy_pct": 55.0, "rs_macro_f1_pct": 50.0}

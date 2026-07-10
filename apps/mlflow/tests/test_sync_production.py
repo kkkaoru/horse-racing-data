@@ -101,11 +101,30 @@ class _FakeLocalCursor:
             raise psycopg2.OperationalError(f"boom local {date_str}")
         if "_se" in query:
             self._pending = self._conn.result_rows.get(date_str, [])
+        elif "fetch_races_scheduled: jra" in query:
+            # serve_eval.fetch_races_scheduled's jra-dedicated race-calendar
+            # query (`_sync_fp_category_date` now calls this UNCONDITIONALLY
+            # for every category, including jra/nar which never had a local
+            # race-calendar query before 2026-07-11) -- tagged with a
+            # distinguishing SQL comment so it never collides with
+            # fetch_race_metadata's own jvd_ra SELECT (which lists kyori/
+            # shusso_tosu/etc columns and carries no such comment).
+            self._pending = self._conn.race_calendar_rows.get(("jra", date_str), [])
+        elif "fetch_races_scheduled: nar" in query:
+            # Same rationale as the jra branch above, checked BEFORE the
+            # generic "race_bango FROM nvd_ra" substring below -- this
+            # query's own text ALSO contains that substring (it queries the
+            # same nvd_ra table), so order matters here.
+            self._pending = self._conn.race_calendar_rows.get(("nar", date_str), [])
         elif "race_bango FROM nvd_ra" in query:
             # serve_eval.fetch_banei_race_count's dedicated race-calendar
             # query -- a distinct substring from fetch_race_metadata's own
             # nvd_ra SELECT (which lists keibajo_code first), so the two
-            # never collide even though both read the same table.
+            # never collide even though both read the same table. Also hit
+            # by fetch_races_scheduled's own category="banei" branch (an
+            # intentional exact re-issue of this same query text, see that
+            # function's own docstring), so both call sites correctly read
+            # from this SAME `banei_race_rows` fixture.
             self._pending = self._conn.banei_race_rows.get(date_str, [])
         else:
             self._pending = self._conn.meta_rows.get(date_str, [])
@@ -119,13 +138,19 @@ class FakeLocalConnection:
     metadata rows keyed by date_str (jvd_se/nvd_se share the "_se" substring,
     jvd_ra/nvd_ra share "_ra", so category need not be tracked separately).
     `banei_race_rows` backs `serve_eval.fetch_banei_race_count`'s dedicated
-    race-calendar query -- rows are never inspected, only counted, so a
-    caller may reuse `_meta_row(...)`'s tuple shape or any placeholder
-    tuple of the right length."""
+    race-calendar query (and `fetch_races_scheduled`'s category="banei"
+    branch, which re-issues that exact query) -- rows are never inspected,
+    only counted, so a caller may reuse `_meta_row(...)`'s tuple shape or any
+    placeholder tuple of the right length. `race_calendar_rows` (2026-07-11)
+    is the jra/nar counterpart, keyed by (category, date_str) since -- unlike
+    every other dict here -- a single `sync_production_range` call over
+    `categories=("jra", "nar")` can request BOTH categories' own scheduled
+    count for the SAME date_str."""
 
     result_rows: dict[str, list[tuple[object, ...]]]
     meta_rows: dict[str, list[tuple[object, ...]]]
     banei_race_rows: dict[str, list[tuple[object, ...]]]
+    race_calendar_rows: dict[tuple[str, str], list[tuple[object, ...]]]
     raise_for: frozenset[str]
     closed: bool
 
@@ -134,11 +159,13 @@ class FakeLocalConnection:
         result_rows: dict[str, list[tuple[object, ...]]] | None = None,
         meta_rows: dict[str, list[tuple[object, ...]]] | None = None,
         banei_race_rows: dict[str, list[tuple[object, ...]]] | None = None,
+        race_calendar_rows: dict[tuple[str, str], list[tuple[object, ...]]] | None = None,
         raise_for: frozenset[str] = frozenset(),
     ) -> None:
         self.result_rows = result_rows or {}
         self.meta_rows = meta_rows or {}
         self.banei_race_rows = banei_race_rows or {}
+        self.race_calendar_rows = race_calendar_rows or {}
         self.raise_for = raise_for
         self.closed = False
 
@@ -1287,6 +1314,390 @@ def test_backfill_only_gap_type_when_fp_rows_all_backfill(client: MlflowClient) 
     assert gap_run.data.metrics["fp_races_live"] == 0.0
     assert gap_run.data.metrics["fp_races_backfilled"] == 1.0
     assert gap_run.data.metrics["rs_races_observed"] == 1.0
+
+
+# ── Coverage-ratio metrics + GAP_TYPE_PARTIAL_COVERAGE ──────────────────────
+#
+# Regression coverage for a real production blind spot found 2026-07-10: JRA's
+# champion jra-cb-v9-sim-2013-clean has never written a single row since its
+# 07-04 deploy -- only a cell-routed variant serves, for one narrow class-code
+# slice, ~3% of scheduled races (real observed shapes: 11/485, 16/501,
+# 16/476). Because that variant is champion-derived and races_live > 0, EVERY
+# existing gap detector above (races_live == 0-gated) reads such a day as
+# healthy. serve_eval.fetch_races_scheduled + GAP_TYPE_PARTIAL_COVERAGE close
+# this blind spot with an independent coverage-ratio check.
+
+
+def _n_fp_rows(count: int, *, model_version: str = "iter14") -> list[tuple[object, ...]]:
+    """Build `count` distinct-race genuine live FP rows sharing one venue,
+    race_bango "01".."count" -- enough for _distinct_race_count to report
+    exactly `count` distinct races."""
+    return [
+        _fp_row("05", str(i).zfill(3), f"H{i}", model_version, 1) for i in range(1, count + 1)
+    ]
+
+
+def _n_banei_rows(count: int, *, model_version: str = "v1") -> list[tuple[object, ...]]:
+    """Ban-ei counterpart of `_n_fp_rows`, using the Ban-ei keibajo_code
+    (predictions stored under source="nar", see serve_eval.resolve_source)."""
+    return [
+        _fp_row(serve_eval.BANEI_KEIBAJO_CODE, str(i).zfill(3), f"H{i}", model_version, 1)
+        for i in range(1, count + 1)
+    ]
+
+
+def _get_timeline_run(client: MlflowClient, task: str, category: str) -> Run:
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_TIMELINES)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.timeline_key_v2 = '{task}:{category}'",
+    )
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_fp_races_scheduled_and_coverage_pct_logged_on_model_version_run(
+    client: MlflowClient,
+) -> None:
+    """Base-tracking AND eval passes both attach fp_races_scheduled/
+    fp_coverage_pct to the SAME per-(date, category, model_version) run --
+    duplicated day-level values, per this module's own documented judgment
+    call (see _log_base_tracking's docstring)."""
+    # race_calendar_rows == 1 (matching the single served race) keeps
+    # coverage_pct at 100.0 -- comfortably above the default 80% threshold,
+    # so this test's own data never incidentally triggers a partial_coverage
+    # gap/warning (that behavior has its own dedicated tests below).
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(1)})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "001", "H1", "1", "01")]},
+        race_calendar_rows={("jra", DATE_STR): [()]},
+    )
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.metrics["fp_races_scheduled"] == 1.0
+    assert run.data.metrics["fp_coverage_pct"] == pytest.approx(100.0)
+
+
+def test_fp_races_scheduled_and_coverage_pct_logged_on_timeline(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(1)})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "001", "H1", "1", "01")]},
+        race_calendar_rows={("jra", DATE_STR): [()]},
+    )
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    timeline_run = _get_timeline_run(client, "finish-position", "jra")
+    assert timeline_run.data.metrics["fp_races_scheduled"] == 1.0
+    assert timeline_run.data.metrics["fp_coverage_pct"] == pytest.approx(100.0)
+
+
+def test_fp_coverage_pct_absent_and_races_scheduled_zero_when_no_calendar_data(
+    client: MlflowClient,
+) -> None:
+    """A day where the race-calendar oracle itself has no rows (races_
+    scheduled == 0) -- an undefined ratio, never a fabricated 0.0/100.0 --
+    logs fp_races_scheduled=0.0 but omits fp_coverage_pct entirely, and never
+    fires a partial_coverage gap (nothing to compute a ratio from)."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(1)})
+    local = FakeLocalConnection()  # no race_calendar_rows configured at all
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.metrics["fp_races_scheduled"] == 0.0
+    assert "fp_coverage_pct" not in run.data.metrics
+
+
+def test_partial_coverage_gap_detected_jra_real_incident_shape(client: MlflowClient) -> None:
+    """The exact real incident shape (2026-07-10): 485 scheduled races, only
+    11 served live -- coverage rounds to ~2.27%, well under the 80% default
+    threshold, and races_live > 0 so no_rows/backfill_only never fire."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(11)})
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(485)]})
+
+    with pytest.warns(UserWarning, match="partial"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["gap_type"] == "partial_coverage"
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
+    assert gap_run.data.metrics["fp_races_scheduled"] == 485.0
+    assert gap_run.data.metrics["fp_races_live"] == 11.0
+    assert gap_run.data.metrics["expected_races"] == 485.0
+    assert round(gap_run.data.metrics["fp_coverage_pct"], 2) == pytest.approx(2.27)
+
+
+def test_partial_coverage_no_gap_when_coverage_exactly_at_threshold(client: MlflowClient) -> None:
+    """80/100 == exactly the default 80.0% threshold -- the check is a
+    STRICT less-than, so exactly-at-threshold must NOT fire."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(80)})
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(100)]})
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+
+
+def test_partial_coverage_no_gap_when_coverage_above_threshold(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(95)})
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(100)]})
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+
+
+def test_partial_coverage_configurable_threshold(client: MlflowClient) -> None:
+    """The SAME 20/100 (20%) coverage shape is a gap under the default 80%
+    threshold but not under a lowered 10% threshold -- confirms
+    --partial-coverage-threshold genuinely changes the outcome."""
+
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(20)})
+
+    def _fresh_local() -> FakeLocalConnection:
+        return FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(100)]})
+
+    lenient = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        partial_coverage_threshold=10.0,
+        neon_connect=_fresh_neon,
+        local_connect=_fresh_local,
+    )
+    assert lenient.serving_gaps_detected == 0
+
+    with pytest.warns(UserWarning, match="partial"):
+        strict = sync_production.sync_production_range(
+            client,
+            "20260615",
+            "20260615",
+            categories=("jra",),
+            partial_coverage_threshold=sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+            neon_connect=lambda: FakeNeonConnection(
+                fp_rows={
+                    ("jra", "20260615"): [
+                        _fp_row("05", str(i).zfill(3), f"H{i}", "iter14", 1, kaisai_tsukihi="0615")
+                        for i in range(1, 21)
+                    ]
+                }
+            ),
+            local_connect=lambda: FakeLocalConnection(
+                race_calendar_rows={("jra", "20260615"): [() for _ in range(100)]}
+            ),
+        )
+    assert strict.serving_gaps_detected == 1
+
+
+def test_partial_coverage_mixed_backfill_and_partial_live_day(client: MlflowClient) -> None:
+    """A day with BOTH some genuinely-live races AND some backfill-only races
+    (reachable: they're just different race_bango values with different
+    prediction_generated_at timestamps) -- races_live > 0 so no_rows/
+    backfill_only never fire, but coverage is still well under threshold."""
+    live_rows = _n_fp_rows(2)
+    backfill_rows = [
+        _fp_row("05", str(i).zfill(3), f"B{i}", "iter14", 1, _BACKFILL_GEN_AT)
+        for i in range(101, 104)
+    ]
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): live_rows + backfill_rows})
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(50)]})
+
+    with pytest.warns(UserWarning, match="partial"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    gap_run = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )[0]
+    assert gap_run.data.tags["gap_type"] == "partial_coverage"
+    assert gap_run.data.metrics["fp_races_live"] == 2.0
+    assert gap_run.data.metrics["fp_races_backfilled"] == 3.0
+    assert gap_run.data.metrics["fp_races_scheduled"] == 50.0
+
+
+def test_partial_coverage_does_not_override_existing_no_rows_gap(
+    client: MlflowClient,
+) -> None:
+    """A totally-empty FP day (races_live == 0) with race-calendar data ALSO
+    present must still fire GAP_TYPE_NO_ROWS (existing behavior, unaffected),
+    never GAP_TYPE_PARTIAL_COVERAGE -- the two checks are mutually exclusive
+    on races_live, and the pre-existing no_rows/backfill_only logic must keep
+    working exactly as before."""
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(50)]})
+
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    gap_run = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )[0]
+    assert gap_run.data.tags["gap_type"] == "no_rows"
+    assert gap_run.data.tags["gap_source"] == "running_style"
+    # Additive enrichment: the pre-existing no_rows marker run now ALSO
+    # carries the new coverage-ratio metrics.
+    assert gap_run.data.metrics["fp_races_scheduled"] == 50.0
+    assert gap_run.data.metrics["fp_coverage_pct"] == 0.0
+
+
+def test_partial_coverage_banei_uses_race_calendar_gap_source(client: MlflowClient) -> None:
+    """category="banei" reaches GAP_TYPE_PARTIAL_COVERAGE the same way as
+    jra/nar -- fetch_races_scheduled's category="banei" branch (re-issuing
+    the exact banei_race_rows-backed query) makes this reachable without any
+    RS side (Ban-ei has no running-style model at all)."""
+    neon = FakeNeonConnection(fp_rows={("nar", DATE_STR): _n_banei_rows(1)})
+    local = FakeLocalConnection(banei_race_rows={DATE_STR: [() for _ in range(20)]})
+
+    with pytest.warns(UserWarning, match="partial"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("banei",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    gap_run = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:banei'"
+    )[0]
+    assert gap_run.data.tags["gap_type"] == "partial_coverage"
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
+    assert gap_run.data.metrics["fp_races_scheduled"] == 20.0
+    assert gap_run.data.metrics["fp_races_live"] == 1.0
+
+
+def test_serving_gap_partial_coverage_logging_failure_is_isolated_and_recorded(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("boom partial-coverage log")
+
+    monkeypatch.setattr(sync_production, "_log_serving_gap", _boom)
+
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(2)})
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(100)]})
+
+    with pytest.warns(UserWarning, match="partial"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    assert summary.serving_gaps_detected == 0
+    assert len(summary.errors) == 1
+    assert "serving-gap-partial-coverage" in summary.errors[0]
+    assert "boom partial-coverage log" in summary.errors[0]
+
+
+def test_partial_coverage_marker_not_duplicated_on_repeated_calls(client: MlflowClient) -> None:
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(fp_rows={("jra", DATE_STR): _n_fp_rows(2)})
+
+    def _fresh_local() -> FakeLocalConnection:
+        return FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(100)]})
+
+    with pytest.warns(UserWarning, match="partial"):
+        first = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=_fresh_local,
+        )
+    assert first.serving_gaps_detected == 1
+
+    with pytest.warns(UserWarning, match="partial"):
+        second = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=_fresh_neon,
+            local_connect=_fresh_local,
+        )
+    assert second.serving_gaps_detected == 1
+
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )
+    assert len(matches) == 1
 
 
 # ── Champion-vs-served mismatch ─────────────────────────────────────────────

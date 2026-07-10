@@ -200,9 +200,11 @@ uv run python -m mlflow_tracking.cli export-active-models --output active_models
 # Also emits one MLflow trace (+ Feedback assessments) per race/horse the
 # same pass eval metrics are computed -- see "MLflow traces" below.
 # --no-traces skips trace/assessment emission for this call only (base
-# tracking and eval metrics/tables are unaffected).
+# tracking and eval metrics/tables are unaffected). --partial-coverage-threshold
+# configures the coverage-ratio gap check below (default 80.0).
 uv run python -m mlflow_tracking.cli sync-production \
-  --date-from 20260701 --date-to 20260708 --categories jra,nar,banei
+  --date-from 20260701 --date-to 20260708 --categories jra,nar,banei \
+  --partial-coverage-threshold 80.0
 
 # One-time (but safely re-runnable) historical backfill: emit MLflow traces
 # for every already-evaluated (date, category, model_version) run in BOTH
@@ -293,6 +295,65 @@ scales", it is two different measurements of two different things.
 own `VALID_CATEGORIES = ("jra", "nar")`), so there is nothing for
 `upsert_timeline_point`/`backfill-serve-timeline` to backfill for Ban-ei
 without a separate, out-of-scope change to that script first.
+
+### Serving-gap detection, and the coverage-ratio check (`GAP_TYPE_PARTIAL_COVERAGE`)
+
+Every `sync-production` call also checks, per (date, category), whether
+finish-position was genuinely serving that day, logging an idempotent marker
+run (`serving_gap_key = "{date}:{category}"`, tagged `serving_gap=true`) in
+`finish-position/production-usage` whenever it wasn't. There are now THREE
+mutually-exclusive gap types (a `gap_type` tag on the marker run):
+
+- **`no_rows`** — literally zero finish-position rows landed that day, while
+  something else DID (running-style served for jra/nar, or the local race
+  calendar shows races happened for banei). Real incident: 2026-07-04, JRA
+  had 12 running-style predictions logged and zero finish-position rows.
+- **`backfill_only`** — finish-position rows exist, but every one of them is
+  a delayed backfill re-prediction (`prediction_generated_at` days after the
+  race), never a genuinely LIVE serve.
+- **`partial_coverage`** (2026-07-11) — a NEW, genuinely different check: the
+  two gap types above are both gated on `races_live == 0`, so a day where
+  SOME races serve live — no matter how few — was invisible to both. Real
+  incident: JRA's champion `jra-cb-v9-sim-2013-clean` has never written a
+  row since its 07-04 deploy; only a cell-routed variant serves, for one
+  narrow class-code slice, about **3% of scheduled races** (11/485, 16/501,
+  16/476 on recent race days). Because that variant counts as
+  champion-derived and `races_live > 0`, the day read as fully healthy to
+  every prior check.
+
+  This closes the gap with an INDEPENDENT "races expected" oracle,
+  `serve_eval.fetch_races_scheduled(conn, category, date_str)` — a direct
+  count from the local replica's own `jvd_ra` (jra) / `nvd_ra` excluding
+  Ban-ei's keibajo_code (nar) / `nvd_ra` filtered to Ban-ei's keibajo_code
+  (banei) race calendar, for ALL THREE categories (a generalization of the
+  pre-existing Ban-ei-only `fetch_banei_race_count`, which stays a separate,
+  behavior-unchanged function used only by the older RS-vs-FP check). Two
+  new metrics are computed once per (date, category) and logged onto every
+  per-`model_version` run created that day, AND onto the `finish-position`
+  timeline point:
+
+  - **`fp_races_scheduled`** — the race-calendar oracle count.
+  - **`fp_coverage_pct`** — `100 * races_live / races_scheduled`. `None`
+    (never logged, never a fabricated `0.0`) when zero races were scheduled
+    that day.
+
+  `partial_coverage` fires whenever `races_live > 0` AND `fp_coverage_pct`
+  falls below a configurable threshold — default **80.0**, the
+  `sync-production` CLI's `--partial-coverage-threshold` flag (threaded
+  through `sync_production_range`'s `partial_coverage_threshold` parameter).
+  Because this check requires `races_live > 0` while `no_rows`/
+  `backfill_only` require `races_live == 0`, the three types can never fire
+  for the SAME (date, category) in the same call — they safely share the
+  one marker-run-per-(date, category) idempotency key without ever
+  overwriting each other's `gap_type` tag.
+
+There is also a SEPARATE, per-(date, category, **task**) champion-mismatch
+check (`champion_gap_key = "{date}:{category}:{task}"`, tag
+`champion_gap=true`): live rows were genuinely served, but none of them came
+from the currently-registered champion model_version OR a cell-routed
+variant of it (`f"{champion_label}-<routing-scope>"`) — e.g. a rollback left
+production silently serving a superseded, unrelated challenger build for
+weeks.
 
 ### ⚠️ `export-cell-routing` is a synthesis, not a reproduction — always diff before baking
 

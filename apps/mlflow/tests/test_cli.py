@@ -490,6 +490,7 @@ def test_cmd_sync_production_reports_success(
         categories: Sequence[str] = sync_production.FP_CATEGORIES,
         *,
         emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
     ) -> sync_production.SyncProductionSummary:
         return summary
 
@@ -522,6 +523,7 @@ def test_cmd_sync_production_reports_errors(
         categories: Sequence[str] = sync_production.FP_CATEGORIES,
         *,
         emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
     ) -> sync_production.SyncProductionSummary:
         return summary
 
@@ -542,6 +544,7 @@ def test_cmd_sync_production_parses_categories(monkeypatch: pytest.MonkeyPatch) 
         categories: Sequence[str] = sync_production.FP_CATEGORIES,
         *,
         emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
     ) -> sync_production.SyncProductionSummary:
         seen_categories.append(categories)
         return _empty_sync_summary()
@@ -574,6 +577,7 @@ def test_cmd_sync_production_no_traces_flag_passes_emit_traces_false(
         categories: Sequence[str] = sync_production.FP_CATEGORIES,
         *,
         emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
     ) -> sync_production.SyncProductionSummary:
         seen_emit_traces.append(emit_traces)
         return _empty_sync_summary()
@@ -584,6 +588,66 @@ def test_cmd_sync_production_no_traces_flag_passes_emit_traces_false(
     )
     assert exit_code == 0
     assert seen_emit_traces == [False]
+
+
+def test_cmd_sync_production_default_partial_coverage_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting --partial-coverage-threshold passes sync_production's own
+    default through unchanged."""
+    seen_thresholds: list[float] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+    ) -> sync_production.SyncProductionSummary:
+        seen_thresholds.append(partial_coverage_threshold)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        ["sync-production", "--date-from", "20260601", "--date-to", "20260601"]
+    )
+    assert exit_code == 0
+    assert seen_thresholds == [sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD]
+
+
+def test_cmd_sync_production_partial_coverage_threshold_flag_passes_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_thresholds: list[float] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+    ) -> sync_production.SyncProductionSummary:
+        seen_thresholds.append(partial_coverage_threshold)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+            "--partial-coverage-threshold",
+            "50.0",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_thresholds == [50.0]
 
 
 def test_cmd_refresh_eval_metrics_reports_success(
