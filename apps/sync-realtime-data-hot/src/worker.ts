@@ -104,6 +104,7 @@ const MIN_DO_TRUSTED_SNAPSHOTS = 10;
 const PLAN_STABLE_FLAG_KV_PREFIX = "expected-race-count:stable:";
 const PLAN_STABLE_FLAG_TTL_SECONDS = 600;
 const PLAN_STABLE_FLAG_VALUE = "1";
+const MAX_MANUAL_FETCH_RACE_KEYS = 20;
 
 interface OddsPayload {
   fetchedAt: string | null;
@@ -119,6 +120,12 @@ interface CronHealthBody {
   ok: boolean;
   lastTickAt: string | null;
   ageSeconds: number | null;
+}
+
+interface RunFetchOddsRequestBody {
+  force?: boolean;
+  raceKey?: string;
+  raceKeys?: string[];
 }
 
 export const parseRaceKeyFromPath = (pathname: string): string | null => {
@@ -480,6 +487,51 @@ export const handleRunPopulateMultiDay = async (env: Env, request: Request): Pro
   return jsonResponse(result);
 };
 
+const resetOddsFetchGate = async (env: Env, raceKey: string): Promise<void> => {
+  const now = toJstIsoString();
+  await env.REALTIME_HOT_DB.prepare(
+    `update odds_fetch_state set last_odds_fetch_at = null, last_odds_queued_at = null, odds_fetch_lock_until = null, updated_at = ? where race_key = ?`,
+  )
+    .bind(now, raceKey)
+    .run();
+};
+
+const parseRunFetchOddsRaceKeys = (body: RunFetchOddsRequestBody): string[] => {
+  const candidates = Array.isArray(body.raceKeys) ? body.raceKeys : [body.raceKey];
+  return Array.from(
+    new Set(candidates.filter((raceKey): raceKey is string => typeof raceKey === "string")),
+  )
+    .map((raceKey) => raceKey.trim())
+    .filter((raceKey) => raceKey.length > 0);
+};
+
+export const handleRunFetchOdds = async (env: Env, request: Request): Promise<Response> => {
+  if (!isAuthorizedInternalRequest(request, env)) {
+    return jsonResponse({ error: "unauthorized" }, { status: 401 });
+  }
+  const body = (await request.json().catch(() => ({}))) as RunFetchOddsRequestBody;
+  const raceKeys = parseRunFetchOddsRaceKeys(body);
+  if (raceKeys.length === 0 || raceKeys.length > MAX_MANUAL_FETCH_RACE_KEYS) {
+    return jsonResponse(
+      { error: `raceKeys must contain 1-${MAX_MANUAL_FETCH_RACE_KEYS} entries` },
+      { status: 400 },
+    );
+  }
+  const results = [];
+  for (const raceKey of raceKeys) {
+    try {
+      if (body.force === true) {
+        await resetOddsFetchGate(env, raceKey);
+      }
+      await processFetchOddsJob(env, raceKey);
+      results.push({ ok: true, raceKey });
+    } catch (error) {
+      results.push({ error: formatError(error), ok: false, raceKey });
+    }
+  }
+  return jsonResponse({ results });
+};
+
 export const handleGetMigrationState = async (env: Env, request: Request): Promise<Response> => {
   if (!isAuthorizedInternalRequest(request, env)) {
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
@@ -578,6 +630,9 @@ export const handleFetchRequest = async (env: Env, request: Request): Promise<Re
   }
   if (request.method === "POST" && url.pathname === "/api/internal/run-populate-multi-day") {
     return handleRunPopulateMultiDay(env, request);
+  }
+  if (request.method === "POST" && url.pathname === "/api/internal/run-fetch-odds") {
+    return handleRunFetchOdds(env, request);
   }
   const raceKey = parseRaceKeyFromPath(url.pathname);
   if (request.method === "GET" && raceKey) {

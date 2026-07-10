@@ -40,6 +40,7 @@ import worker, {
   handleMigrationState,
   handleQueue,
   handleR2ArchiveRows,
+  handleRunFetchOdds,
   handleRunPopulateMultiDay,
   handleRunPopulateToday,
   handleScheduled,
@@ -1011,6 +1012,66 @@ it("handleFetchRequest routes run-populate-multi-day endpoint", async () => {
   const response = await handleFetchRequest(
     buildEnv(),
     new Request("https://x/api/internal/run-populate-multi-day", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+});
+
+it("handleRunFetchOdds returns 401 when unauthorized", async () => {
+  const response = await handleRunFetchOdds(
+    buildEnv(),
+    new Request("https://x/api/internal/run-fetch-odds", { method: "POST" }),
+  );
+  expect(response.status).toBe(401);
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleRunFetchOdds rejects an empty raceKey list", async () => {
+  const response = await handleRunFetchOdds(
+    buildEnv(),
+    new Request("https://x/api/internal/run-fetch-odds", {
+      body: "{}",
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(400);
+  expect(vi.mocked(fetchAndStoreOdds)).not.toHaveBeenCalled();
+});
+
+it("handleRunFetchOdds force-resets fetch gates and runs the normal odds job", async () => {
+  vi.mocked(fetchAndStoreOdds).mockResolvedValueOnce({
+    fetchedAt: "2026-05-28T10:00:00+09:00",
+    inserted: 2,
+    latest: { tansho: [{ combination: "01", odds: 2.5 }] },
+  });
+  const env = buildEnv();
+  const response = await handleRunFetchOdds(
+    env,
+    new Request("https://x/api/internal/run-fetch-odds", {
+      body: JSON.stringify({ force: true, raceKeys: ["nar:20260528:42:01"] }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    results: [{ ok: true, raceKey: "nar:20260528:42:01" }],
+  });
+  expect(vi.mocked(fetchAndStoreOdds)).toHaveBeenCalledWith(
+    env,
+    "nar:20260528:42:01",
+    expect.any(Date),
+  );
+  const prepareCalls = vi.mocked(env.REALTIME_HOT_DB.prepare).mock.calls.map(([sql]) => sql);
+  expect(prepareCalls.some((sql) => sql.toLowerCase().includes("last_odds_fetch_at = null"))).toBe(
+    true,
+  );
+});
+
+it("handleFetchRequest routes run-fetch-odds endpoint", async () => {
+  const response = await handleFetchRequest(
+    buildEnv(),
+    new Request("https://x/api/internal/run-fetch-odds", { method: "POST" }),
   );
   expect(response.status).toBe(401);
 });
