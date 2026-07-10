@@ -1357,3 +1357,69 @@ flowchart TB
 - **大規模調査ラウンド総括（2026-07-03〜04、全カテゴリ frontier を comprehensive に再確認）** — user 指示の systematic 大規模調査（error/residual analysis + 網羅的 feature discovery + odds-independent 計算特徴 + 夏競馬固有 signal）を 3 カテゴリで実施し、**全 REJECT で frontier を多角的に確認**した: Ban-ei（全 lever + fclass=0 pocket = noise）、JRA（largescale career-rate / relational / odds-free interactions・fit・ability-composite / speed-figure / large-field / 夏固有 signal——全 REJECT）、NAR（style / form / speedfig + large-field——全 REJECT）。**核心**: model + odds が ability / condition / relational / speed を既に捕捉しており、odds-independent な計算特徴でも「ability こそ市場が price する」ため冗長、唯一の pocket 候補（large-field × speed）も上記のとおり fold artifact。本キャンペーンで確定した deployable win はアーキテクチャ lever の 2 件のみ（NAR transformer blend、win #1 = rank-fusion +0.63pp top1 / win #2 = score-z fusion +0.25pp top1）で、特徴量 lever は全カテゴリで市場効率の壁に張り付き飽和。本番 3 モデル無変更。
 
 採否判定は必ず本番 serve system（base + ensemble、正しい特徴量数）を baseline とし、cell 単位で rank 1-6 を評価すること。
+
+---
+
+## 12. MLflow 連携（利用箇所・依存箇所）
+
+学習 run・cell 単位評価・model artifact 参照は MLflow（`apps/mlflow` / `apps/mlflow-ui` / `apps/mlflow-ui-proxy`）に記録される。バックエンド仕様（Neon Postgres backend store・artifact store・Model Registry 規約・cell 評価の記録形式など）の完全な仕様は `docs/mlflow-tracking.md` を正とし、本節では重複させず、本書が扱う着順・脚質予測パイプラインとの接点のみを記す。
+
+### 12.1 MLflow を利用している箇所
+
+学習・評価 hook（`apps/pc-keiba-viewer/src/scripts/mlflow_hook.py` 経由、§8.1 の学習スクリプトから呼ばれる）:
+
+| スクリプト                                                                                 | emit 内容                                                 | experiment                       |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------- | -------------------------------- |
+| `train_finish_position_catboost_walk_forward.py`                                           | `eval_regime=wf` の学習 run                               | `finish-position/wf-eval`        |
+| `train_finish_position_xgboost_walk_forward.py`                                            | 同上                                                      | 同上                             |
+| `score_finish_position_walk_forward.py`                                                    | 同上                                                      | 同上                             |
+| `aggregate_bucket_eval_duckdb.py`                                                          | 同上（cell 集計）                                         | 同上                             |
+| `serve_accuracy_report.py --json`                                                          | `eval_regime=serve` の本番精度                            | `finish-position/serve-accuracy` |
+| `running_style_lightgbm.py`（**未実装**、§10.1 の別セッション WIP と競合するため見送り中） | 手動 `backfill-running-style` / `log-training-run` で代替 | `running-style/*`                |
+
+上記に加えて以下も MLflow を利用する。
+
+- **production-usage 日次 sync**（`sync-production`、Neon の `race_finish_position_model_predictions` / `race_running_style_model_predictions` を read-only で参照）— Mac launchd LaunchAgent `com.horse-racing.mlflow-production-sync` により毎日 **22:30 JST** 自動実行。
+- **champion cell 単位評価**（`eval-champion-cells`）— finish-position は 6 次元（venue/class_code/distance_band/season_band/surface/field_size_band）、running-style は 4 次元（season_band/field_size_band を除く）で、genuinely-served 予測（後述 §12.4）を trailing 90 日窓で評価する。
+- **timeline 系列**（`backfill_serve_timeline.py` / `timeline.py`）— 本番精度の時系列を MLflow UI 上でグラフ化するための過去 backfill + 日次追記。
+- **Model Registry** — registered model 名は `{jra,nar,banei}-finish-position` / `{jra,nar,banei}-running-style` の計 6 種。alias は `champion`（現行参照） / `challenger`（staged）の 2 種のみ。**2026-07-08 時点で champion alias が確認されているのは 5 種のみ**（jra/nar/banei-finish-position + jra/nar-running-style、banei-running-style は未確認）。**champion alias は「参照記録」であり本番の serving pointer ではない**点に注意 — 実際に本番が読むモデルの決定は従来どおり `model_meta.json` / Neon `finish_position_active_models` / `cell_routing.json` / R2 `latest.flatbin` が正で、MLflow Registry はそれを事後追跡するだけである。
+
+### 12.2 MLflow に依存している箇所（止まると影響が出る範囲）
+
+**最重要事項: 予測生成そのものは MLflow に一切依存しない。**
+
+```mermaid
+flowchart LR
+    subgraph TRAIN["学習・評価（Mac）"]
+        SCRIPT["train_*_walk_forward.py 等"] -->|"best-effort, env-gated"| HOOK["mlflow_hook.py"]
+    end
+    HOOK -.->|"非致命: 失敗しても<br/>exit code / stdout 不変"| MLFLOW[("MLflow<br/>(Neon mlflow DB)")]
+
+    subgraph SERVE["本番 serving（Cloudflare）"]
+        CONTAINER["Container / cron / RS 推論"] -->|"MLflow を import しない"| META["model_meta.json /<br/>cell_routing.json / R2"]
+    end
+```
+
+- `mlflow_hook.py` は `HORSE_RACING_MLFLOW_ENABLED`（既定 ON）による env-gate に加え非致命設計 — `uv` 未検出・CLI 非 0 終了・タイムアウト（180 秒）・その他例外はすべて握り潰され stderr へ warning を出すのみで、呼び出し元スクリプトの exit code / stdout には一切影響しない。
+- serving path（Cloudflare Container・finish-position-cron・running-style 推論）は MLflow を import すらしない。model 選択は §12.1 の `model_meta.json` 系が正で、MLflow Registry は追跡側に留まる。
+
+依存が生じるのは以下の範囲に限られる。
+
+- **記録の完全性**: MLflow / Neon mlflow DB が停止していると、その間の学習・評価・本番精度は記録されない（学習・推論自体は成功する）。
+- **export コマンド**（`export-cell-routing` / `export-active-models`）利用時は Registry の内容が必要。ただし export の出力は「本番投入候補」の生成までで、実際の container bake / `model_meta.json` 更新 / Neon flip は従来どおり export の外側の明示的デプロイ手順が担う。
+- **日次 sync**（`sync-production` / `eval-champion-cells`）が停止すると、本番精度の可視化（champion cell 評価・timeline 系列）が更新されなくなるが、予測生成・配信そのものには影響しない。
+
+### 12.3 環境変数と接続先
+
+| 変数                              | 既定                           | 用途                                                                                                  |
+| --------------------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `HORSE_RACING_MLFLOW_ENABLED`     | 有効（`0` で無効化）           | 学習 hook（`mlflow_hook.py`）の on/off                                                                |
+| `HORSE_RACING_MLFLOW_BACKEND_URI` | 未設定時 sqlite フォールバック | Neon Postgres の `mlflow` database（`NEON_PRIMARY_URL` と同一 project/branch・別 database）への接続先 |
+
+env 解決は 3 層（優先順）: 明示的な環境変数 > `apps/mlflow/.env.local` > リポジトリルート `.env` の許可リストキー（`HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix + `CLOUDFLARE_ACCOUNT_ID` のみ、他の秘密情報には触れない）。閲覧経路は local `127.0.0.1:5252`（`mlflow-ui`）または Cloudflare Worker 経由（`apps/mlflow-ui-proxy`、HTTP Basic 認証必須、tunnel 経由。MLflow server 自体は認証機能を持たないためこの Worker が唯一の認証ゲート）。
+
+### 12.4 運用注意
+
+- **`eval_regime` タグが全 manifest で必須な理由**: running-style の精度指標には true out-of-sample（JRA 約 48.3% / NAR 約 52.3%）と、数値が実態より高く出る leaky self-consistency の 2 regime が混在しうる。タグ欠落のまま記録・比較すると regime の取り違え事故につながるため、`validate_eval_regime` が空文字を拒否する（不明なら `unspecified` を明示させる）。
+- **genuine-serving の生成ラグフィルタ**（`GEN_LAG_TOLERANCE_DAYS = 3`）: `race_finish_position_model_predictions` 等には offline walk-forward の再予測行がレース日から大きく外れた `prediction_generated_at` で混在しうるため、レース日 ±3 日を超える行は「本番で実際に配信された予測」として集計しない。
+- **テストから本番 store への書込禁止 guard**: 2026-07-08、ambient 環境変数 `HORSE_RACING_MLFLOW_BACKEND_URI` がテスト実行時にクリアされておらず、pytest が実際の Neon 本番 tracking store に接続・書き込みし、`jra-finish-position` / `jra-running-style` の champion alias がテストデータで上書きされる事故が発生した。以降 `apps/mlflow/tests/conftest.py` の `clear_ambient_backend_uri`（autouse）が全テストで `HORSE_RACING_MLFLOW_BACKEND_URI` と `MLFLOW_TRACKING_URI` を強制的にクリアする。
