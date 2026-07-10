@@ -275,7 +275,7 @@ it("buildTodayRacesPopulatedCheck falls back to the last-known-good expected cou
   vi.setSystemTime(new Date("2026-06-23T22:00:00Z"));
   const { kv } = buildKv({
     get: vi.fn(async (key: string) => {
-      if (key === "expected-race-count:last-known-good") return "48";
+      if (key === "expected-race-count:last-known-good:20260624") return "48";
       return null;
     }),
   });

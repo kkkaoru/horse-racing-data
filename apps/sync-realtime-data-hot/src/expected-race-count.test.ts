@@ -235,7 +235,7 @@ it("getExpectedRaceCountForDate uses real clock when context.now is omitted (smo
 it("getExpectedRaceCountForDate falls back to last-known-good KV when Hyperdrive rejects", async () => {
   // Primary cache miss → query rejects → read LKG from KV.
   const kvGet = vi.fn(async (key: string) =>
-    key === "expected-race-count:last-known-good" ? "42" : null,
+    key === "expected-race-count:last-known-good:20260531" ? "42" : null,
   );
   const kvPut = vi.fn(async () => undefined);
   const env = buildEnv(buildKv(kvGet, kvPut));
@@ -247,6 +247,24 @@ it("getExpectedRaceCountForDate falls back to last-known-good KV when Hyperdrive
     pool: { query } as never,
   });
   expect(total).toBe(42);
+  expect(kvPut).not.toHaveBeenCalled();
+});
+
+it("getExpectedRaceCountForDate does not use another date's last-known-good value", async () => {
+  const kvGet = vi.fn(async (key: string) =>
+    key === "expected-race-count:last-known-good:20260530" ? "48" : null,
+  );
+  const kvPut = vi.fn(async () => undefined);
+  const env = buildEnv(buildKv(kvGet, kvPut));
+  const query = vi.fn(async () => {
+    throw new Error("hyperdrive down");
+  });
+  const total = await getExpectedRaceCountForDate(env, "20260531", {
+    now: ON_WINDOW_NOW,
+    pool: { query } as never,
+  });
+  expect(total).toBe(0);
+  expect(kvGet).toHaveBeenCalledWith("expected-race-count:last-known-good:20260531");
   expect(kvPut).not.toHaveBeenCalled();
 });
 
@@ -275,7 +293,7 @@ it("getExpectedRaceCountForDate writes last-known-good on successful non-zero qu
     pool: { query } as never,
   });
   expect(total).toBe(50);
-  expect(kvPut).toHaveBeenCalledWith("expected-race-count:last-known-good", "50", {
+  expect(kvPut).toHaveBeenCalledWith("expected-race-count:last-known-good:20260531", "50", {
     expirationTtl: 604800,
   });
 });
@@ -295,7 +313,7 @@ it("getExpectedRaceCountForDate skips last-known-good write when query returns z
     expirationTtl: 1800,
   });
   expect(kvPut).not.toHaveBeenCalledWith(
-    "expected-race-count:last-known-good",
+    "expected-race-count:last-known-good:20260531",
     expect.any(String),
     expect.any(Object),
   );
@@ -303,7 +321,7 @@ it("getExpectedRaceCountForDate skips last-known-good write when query returns z
 
 it("getExpectedRaceCountForDate returns last-known-good when Hyperdrive times out past the budget", async () => {
   const kvGet = vi.fn(async (key: string) =>
-    key === "expected-race-count:last-known-good" ? "33" : null,
+    key === "expected-race-count:last-known-good:20260531" ? "33" : null,
   );
   const kvPut = vi.fn(async () => undefined);
   const env = buildEnv(buildKv(kvGet, kvPut));

@@ -28,7 +28,7 @@ const RECENT_ERRORS_SAMPLE_LIMIT = 3;
 const RECENT_ERRORS_WINDOW_SECONDS = 3_600;
 const RECENT_ERRORS_QUERY_LIMIT = 100;
 const EXPECTED_RACE_COUNT_KV_PREFIX = "expected-race-count:";
-const EXPECTED_RACE_COUNT_LAST_KNOWN_GOOD_KV_KEY = "expected-race-count:last-known-good";
+const EXPECTED_RACE_COUNT_LAST_KNOWN_GOOD_KV_PREFIX = "expected-race-count:last-known-good:";
 const RECENT_FETCH_WINDOW_MINUTES = 10;
 const STARTED_RACE_THRESHOLD_MINUTES = 5;
 const POLLING_WINDOW_START_HOUR = 10;
@@ -266,7 +266,9 @@ const readExpectedRaceCount = async (env: Env, yyyymmdd: string): Promise<number
   if (expected !== null) {
     return expected;
   }
-  return parseInteger(await safeKvGet(env, EXPECTED_RACE_COUNT_LAST_KNOWN_GOOD_KV_KEY));
+  return parseInteger(
+    await safeKvGet(env, `${EXPECTED_RACE_COUNT_LAST_KNOWN_GOOD_KV_PREFIX}${yyyymmdd}`),
+  );
 };
 
 const evaluateTodayRacesOk = (snapshot: TodayRacesSnapshot): boolean => {

@@ -20,7 +20,7 @@ import { getJstDateParts } from "./time";
 import type { Env } from "./types";
 
 const KV_KEY_PREFIX = "expected-race-count:";
-const KV_LAST_KNOWN_GOOD_KEY = "expected-race-count:last-known-good";
+const KV_LAST_KNOWN_GOOD_PREFIX = "expected-race-count:last-known-good:";
 // 30-min per-day cache TTL. The expected-race-count for a given JST date is
 // essentially immutable once the morning NAR sync completes (~08:30 JST), so
 // the previous 5-min value was burning ~10 extra Hyperdrive trips per hour
@@ -60,6 +60,7 @@ interface ExpectedRaceCountContext {
 }
 
 const buildKvKey = (ymd: string): string => `${KV_KEY_PREFIX}${ymd}`;
+const buildLastKnownGoodKvKey = (ymd: string): string => `${KV_LAST_KNOWN_GOOD_PREFIX}${ymd}`;
 
 const toCount = (value: number | string | null): number => {
   if (typeof value === "number") {
@@ -108,11 +109,11 @@ const queryHyperdriveExpectedCountWithTimeout = async (
 
 const parseLastKnownGoodValue = (raw: string | null): number | null => parseCachedValue(raw);
 
-const readLastKnownGoodFromKv = async (env: Env): Promise<number | null> =>
-  parseLastKnownGoodValue(await env.ODDS_HOT_KV.get(KV_LAST_KNOWN_GOOD_KEY));
+const readLastKnownGoodFromKv = async (env: Env, ymd: string): Promise<number | null> =>
+  parseLastKnownGoodValue(await env.ODDS_HOT_KV.get(buildLastKnownGoodKvKey(ymd)));
 
-const writeLastKnownGoodToKv = async (env: Env, total: number): Promise<void> => {
-  await env.ODDS_HOT_KV.put(KV_LAST_KNOWN_GOOD_KEY, total.toString(), {
+const writeLastKnownGoodToKv = async (env: Env, ymd: string, total: number): Promise<void> => {
+  await env.ODDS_HOT_KV.put(buildLastKnownGoodKvKey(ymd), total.toString(), {
     expirationTtl: KV_LAST_KNOWN_GOOD_TTL_SECONDS,
   });
 };
@@ -160,14 +161,14 @@ export const getExpectedRaceCountForDate = async (
   // queries; it survives `KV_LAST_KNOWN_GOOD_TTL_SECONDS` (= 7 days).
   const queriedTotal = await queryHyperdriveExpectedCountWithTimeout(pool, ymd);
   if (queriedTotal === null) {
-    return (await readLastKnownGoodFromKv(env)) ?? 0;
+    return (await readLastKnownGoodFromKv(env, ymd)) ?? 0;
   }
   if (shouldSkipZeroCache(queriedTotal, env, resolveNow(context.now))) {
     return queriedTotal;
   }
   await env.ODDS_HOT_KV.put(kvKey, queriedTotal.toString(), { expirationTtl: KV_TTL_SECONDS });
   if (queriedTotal > 0) {
-    await writeLastKnownGoodToKv(env, queriedTotal);
+    await writeLastKnownGoodToKv(env, ymd, queriedTotal);
   }
   return queriedTotal;
 };
