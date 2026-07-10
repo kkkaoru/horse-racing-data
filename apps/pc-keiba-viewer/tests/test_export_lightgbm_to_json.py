@@ -126,6 +126,15 @@ def test_translate_categorical_threshold_integer_categories() -> None:
     assert result == "1||3"
 
 
+def test_translate_categorical_threshold_arbitrary_category_order() -> None:
+    # Mirrors a real jra-running-style-lgbm-prod-v3 kyori_band split: LightGBM
+    # stored the categories in first-seen order, not sorted by value, so index
+    # 0 maps to raw value "2", not "0".
+    raw_categories: list[object] = ["2", "1", "3"]
+    result = subject.translate_categorical_threshold(raw_categories, "0||2")
+    assert result == "2||3"
+
+
 def test_build_categorical_value_maps_orders_by_feature_columns() -> None:
     dump: dict[str, object] = {"pandas_categorical": [["11", "17", "18"], [" ", "A", "B"]]}
     metadata: dict[str, object] = {
