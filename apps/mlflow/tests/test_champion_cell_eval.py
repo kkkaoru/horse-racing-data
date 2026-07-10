@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+import pandas as pd
 import psycopg2
 import pytest
 from mlflow import MlflowClient
@@ -432,6 +433,100 @@ def test_real_coverage_finish_position_hand_verified_math(
     assert metrics["unit_count"] == 4.0
     assert metrics["cell_count"] == 2.0
     assert metrics["low_n_cell_count"] == 1.0
+    # Every race in this fixture has <= 2 finalized results (total_starters
+    # never reaches 4), so place4/5/6_pct are None for both cells --
+    # `overall_place4_pct` etc. must never appear as a fabricated 0.0/None
+    # headline metric.
+    assert "overall_place4_pct" not in metrics
+    assert "overall_place5_pct" not in metrics
+    assert "overall_place6_pct" not in metrics
+
+
+def test_place456_pct_per_cell_denominator_and_headline_nan_dilution_fix(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """Regression test for the `logging_api._weighted_mean` NaN-dilution fix
+    (see that function's own docstring): 2 cells, A with a MIX of an
+    eligible (6-starter) and an ineligible (3-starter) race, B with ONLY an
+    ineligible (3-starter) race.
+
+    Cell A (venue=05): race1 (6 starters, H1 wins) -> place4/5/6_hit=1;
+    race2 (3 starters, H1A2 wins) -> place4/5/6_hit=None. race_count=2, but
+    place4_pct/place5_pct/place6_pct are each computed over ONLY race1 (the
+    one eligible race) = 100.0, NOT diluted by race2's exclusion.
+
+    Cell B (venue=10): race3 (3 starters, H1B wins) -> place4/5/6_hit=None
+    for its only race, so place4_pct/place5_pct/place6_pct are None for the
+    WHOLE cell.
+
+    Headline overall_place4_pct must equal 100.0 (weighted mean over ONLY
+    cell A, weight=2) -- NOT (100.0*2)/(2+1)=66.67, which is what the
+    pre-fix `_weighted_mean` would have produced by including cell B's
+    weight (3 races) in the denominator despite its NaN value.
+    """
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+
+    gen_at = datetime(2026, 6, 1, 3, 0, 0, tzinfo=UTC)
+    prediction_rows: list[tuple[object, ...]] = [
+        ("05", "01", "H1", "iter14", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("05", "02", "H1A2", "iter14", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("10", "01", "H1B", "iter14", 1, gen_at, "mile", "medium", "summer", "B", "dirt",
+         "2026", "0601"),
+    ]
+    results_by_date = {
+        "20260601": [
+            # race1 (05,01): 6 starters, H1 wins.
+            ("05", "01", "H1", "1", "01"),
+            ("05", "01", "H1x2", "2", "02"),
+            ("05", "01", "H1x3", "3", "03"),
+            ("05", "01", "H1x4", "4", "04"),
+            ("05", "01", "H1x5", "5", "05"),
+            ("05", "01", "H1x6", "6", "06"),
+            # race2 (05,02): 3 starters, H1A2 wins.
+            ("05", "02", "H1A2", "1", "01"),
+            ("05", "02", "H1A2x2", "2", "02"),
+            ("05", "02", "H1A2x3", "3", "03"),
+            # race3 (10,01): 3 starters, H1B wins.
+            ("10", "01", "H1B", "1", "01"),
+            ("10", "01", "H1Bx2", "2", "02"),
+            ("10", "01", "H1Bx3", "3", "03"),
+        ],
+    }
+
+    result = champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory(prediction_rows),
+        local_connect=_local_factory(results_by_date),
+    )
+    assert result.cell_count == 2
+
+    downloaded = client.download_artifacts(
+        result.run_id, logging_api.CELL_METRICS_PARQUET_ARTIFACT, str(tmp_path)
+    )
+    cell_df = pd.read_parquet(downloaded)
+    cell_a = cell_df[cell_df["venue"] == "05"].iloc[0]
+    cell_b = cell_df[cell_df["venue"] == "10"].iloc[0]
+    assert cell_a["race_count"] == 2
+    assert cell_a["place4_pct"] == pytest.approx(100.0)
+    assert cell_a["place5_pct"] == pytest.approx(100.0)
+    assert cell_a["place6_pct"] == pytest.approx(100.0)
+    assert cell_b["race_count"] == 1
+    assert pd.isna(cell_b["place4_pct"])
+    assert pd.isna(cell_b["place5_pct"])
+    assert pd.isna(cell_b["place6_pct"])
+
+    metrics = client.get_run(result.run_id).data.metrics
+    assert metrics["overall_place4_pct"] == pytest.approx(100.0)
+    assert metrics["overall_place5_pct"] == pytest.approx(100.0)
+    assert metrics["overall_place6_pct"] == pytest.approx(100.0)
 
 
 def test_real_coverage_running_style_hand_verified_math(
@@ -495,6 +590,218 @@ def test_real_coverage_running_style_hand_verified_math(
     assert metrics["overall_accuracy_pct"] == pytest.approx(200.0 / 3.0)
     assert metrics["best_cell_accuracy_pct"] == pytest.approx(100.0)
     assert metrics["worst_cell_accuracy_pct"] == pytest.approx(50.0)
+
+
+# ── Champion-OR-variant widening (fixes structural-zero-coverage bug) ──────
+#
+# Production routes some races/horses to a CELL-ROUTED VARIANT of the
+# champion, whose model_version is the champion label plus a "-<routing-
+# scope>" suffix. The original exact-match filter dropped every such row,
+# making coverage structurally zero for any category/day where only variants
+# (never the bare label) ever served. These tests cover: an exact match
+# (unchanged), a variant match (NEW), a deliberately-tricky near-miss
+# unrelated model_version that shares a raw string prefix but is NOT
+# "-"-separated from the champion label (must NOT match), the per-cell
+# `variant_of_champion` signal, and the STRICT-vs-VARIANT-INCLUSIVE metric
+# split.
+
+
+def test_variant_serving_widens_fp_coverage_and_flags_cells(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """3 races served: one exact champion match, one CELL-ROUTED VARIANT of
+    the champion (same cell as the exact match), and one exact match in a
+    second cell -- plus a 4th, deliberately-tricky NOISE race served by
+    "iter140": this shares "iter14" as a raw string prefix but is NOT
+    "-"-separated from it (`"iter140".startswith("iter14-")` is False), so
+    it must be classified "other" and excluded entirely, exactly like an
+    unrelated model_version always was.
+
+    Cell A (venue=05, sprint/medium/summer/A/turf): race1 (exact "iter14")
+    + race2 (variant "iter14-jockeyA") -> race_count=2, variant_of_champion
+    =True.
+    Cell B (venue=10, mile/medium/summer/B/dirt): race3 (exact "iter14")
+    only -> race_count=1, variant_of_champion=False.
+
+    unit_count (VARIANT-INCLUSIVE) == 3 (race1+race2+race3).
+    unit_count_champion_only (STRICT) == 2 (race1+race3; race2 excluded
+    since it is a variant, not an exact match).
+    """
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+
+    gen_at = datetime(2026, 6, 1, 3, 0, 0, tzinfo=UTC)
+    prediction_rows: list[tuple[object, ...]] = [
+        ("05", "01", "H1", "iter14", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("05", "02", "H2", "iter14-jockeyA", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("10", "01", "H3", "iter14", 1, gen_at, "mile", "medium", "summer", "B", "dirt",
+         "2026", "0601"),
+        # Deliberately-tricky near-miss: shares "iter14" as a raw prefix but
+        # is NOT "-"-separated from it -- must be excluded entirely.
+        ("20", "01", "NX", "iter140", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+    ]
+    results_by_date = {
+        "20260601": [
+            ("05", "01", "H1", "1", "01"),
+            ("05", "02", "H2", "1", "01"),
+            ("10", "01", "H3", "1", "01"),
+            ("20", "01", "NX", "1", "01"),
+        ],
+    }
+
+    result = champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory(prediction_rows),
+        local_connect=_local_factory(results_by_date),
+    )
+
+    assert result.champion_model_version == "iter14"
+    assert result.has_champion_coverage is True
+    assert result.unit_count == 3
+    assert result.unit_count_champion_only == 2
+    assert result.cell_count == 2
+
+    metrics = client.get_run(result.run_id).data.metrics
+    assert metrics["unit_count"] == 3.0
+    assert metrics["unit_count_champion_only"] == 2.0
+    assert metrics["overall_top1_pct"] == pytest.approx(100.0)
+    # weighted mean of variant_of_champion (True for cell A's 2 races, False
+    # for cell B's 1 race) over 3 total races == 2/3.
+    assert metrics["overall_variant_of_champion"] == pytest.approx(2.0 / 3.0)
+
+    downloaded = client.download_artifacts(
+        result.run_id, logging_api.CELL_METRICS_PARQUET_ARTIFACT, str(tmp_path)
+    )
+    cell_df = pd.read_parquet(downloaded)
+    cell_a = cell_df[cell_df["venue"] == "05"].iloc[0]
+    cell_b = cell_df[cell_df["venue"] == "10"].iloc[0]
+    assert cell_a["race_count"] == 2
+    assert bool(cell_a["variant_of_champion"]) is True
+    assert cell_b["race_count"] == 1
+    assert bool(cell_b["variant_of_champion"]) is False
+    # The noise race's venue ("20") must never appear at all.
+    assert "20" not in set(cell_df["venue"])
+
+
+def test_variant_serving_widens_rs_coverage_and_flags_cells(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """Running-style counterpart: one cell with an exact champion match plus
+    a CELL-ROUTED VARIANT (both horses in the same race), and a deliberately
+    -tricky near-miss NOISE horse ("rsv30", not "-"-separated from champion
+    "rsv3") that must be excluded entirely."""
+    version = registry.register_version(
+        client, "jra-running-style", f"file://{tmp_path}", tags={"model_version": "rsv3"}
+    )
+    registry.set_champion(client, "jra-running-style", version.version)
+
+    gen_at = datetime(2026, 6, 1, 3, 0, 0, tzinfo=UTC)
+    prediction_rows: list[tuple[object, ...]] = [
+        ("05", "01", "H1", "rsv3", serve_eval.RS_CLASS_SASHI, "sashi", gen_at, "2026", "0601"),
+        (
+            "05", "01", "H2", "rsv3-jockeyA", serve_eval.RS_CLASS_SASHI, "sashi", gen_at,
+            "2026", "0601",
+        ),
+        # Deliberately-tricky near-miss: "rsv30" shares "rsv3" as a raw
+        # prefix but is NOT "-"-separated from it -- must be excluded.
+        ("10", "01", "NX", "rsv30", serve_eval.RS_CLASS_NIGE, "nige", gen_at, "2026", "0601"),
+    ]
+    results_by_date = {
+        "20260601": [
+            ("05", "01", "H1", "5", "05"),
+            ("05", "01", "H2", "3", "05"),
+            ("10", "01", "NX", "1", "01"),
+        ],
+    }
+    meta_by_date = {
+        "20260601": [("05", "01", 1200, 10, "10", "A"), ("10", "01", 1600, 8, "24", "B")],
+    }
+
+    result = champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "running-style",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory(prediction_rows),
+        local_connect=_local_factory(results_by_date, meta_by_date),
+    )
+
+    assert result.champion_model_version == "rsv3"
+    assert result.has_champion_coverage is True
+    assert result.unit_count == 2
+    assert result.unit_count_champion_only == 1
+    assert result.cell_count == 1
+
+    metrics = client.get_run(result.run_id).data.metrics
+    assert metrics["unit_count"] == 2.0
+    assert metrics["unit_count_champion_only"] == 1.0
+    # Both H1 and H2 land in the same cell, which contains a variant row.
+    assert metrics["overall_variant_of_champion"] == pytest.approx(1.0)
+
+    downloaded = client.download_artifacts(
+        result.run_id, logging_api.CELL_METRICS_PARQUET_ARTIFACT, str(tmp_path)
+    )
+    cell_df = pd.read_parquet(downloaded)
+    assert len(cell_df) == 1
+    assert cell_df.iloc[0]["horse_count"] == 2
+    assert bool(cell_df.iloc[0]["variant_of_champion"]) is True
+    assert "10" not in set(cell_df["venue"])
+
+
+def test_idempotent_reuse_preserves_unit_count_champion_only(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """The cached/reused-run path (`_result_from_existing_run`) must not
+    silently lose `unit_count_champion_only` -- it must reconstruct the same
+    value a fresh call would have computed."""
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+
+    gen_at = datetime(2026, 6, 1, 3, 0, 0, tzinfo=UTC)
+    prediction_rows: list[tuple[object, ...]] = [
+        ("05", "01", "H1", "iter14", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("05", "02", "H2", "iter14-jockeyA", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+    ]
+    results_by_date = {
+        "20260601": [("05", "01", "H1", "1", "01"), ("05", "02", "H2", "1", "01")],
+    }
+    neon_connect = _neon_factory(prediction_rows)
+    local_connect = _local_factory(results_by_date)
+
+    first = champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=neon_connect,
+        local_connect=local_connect,
+    )
+    assert first.unit_count == 2
+    assert first.unit_count_champion_only == 1
+
+    second = champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=neon_connect,
+        local_connect=local_connect,
+    )
+    assert second.reused_existing_run is True
+    assert second.unit_count == 2
+    assert second.unit_count_champion_only == 1
 
 
 # ── Ban-ei partitioning ──────────────────────────────────────────────────────

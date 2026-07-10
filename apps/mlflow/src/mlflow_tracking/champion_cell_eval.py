@@ -32,9 +32,31 @@ tables but issues one whole-window RANGE query per (category, task) pair
 champion coverage is sparse and this is an evaluation, not a sync. The one
 piece of logic both modules independently need -- resolving the current
 champion's `model_version` label from the registry alias -- is deliberately
-DUPLICATED (see `_resolve_champion_model_version` below) rather than shared,
+DUPLICATED (see `resolve_champion_model_version` below) rather than shared,
 so the two agents building these modules in parallel have zero file-
 ownership overlap.
+
+★ CELL-ROUTED VARIANT widening (2026-07-10, fixes a structural-zero-coverage
+bug): production does not always serve the champion's own EXACT
+`model_version` label. Per-cell serving routes a slice of races/horses to a
+VARIANT build whose `model_version` is the champion label plus a
+`-<routing-scope>` suffix -- e.g. champion `jra-cb-v9-sim-2013-clean` served
+in production as `jra-cb-v9-sim-2013-clean-jockey-pedigree269` for one
+class-code cell. The original exact-match filter
+(`row["model_version"] == model_version_label`) made champion-eval coverage
+STRUCTURALLY ZERO for any category/day where only variants -- never the bare
+label -- ever served: a real, current bug, not a theoretical one.
+`_classify_champion_match`/`_is_champion_derived` below fix this: a served
+label counts as champion-derived iff it equals the champion label exactly OR
+starts with `f"{champion_label}-"` (a bare string-prefix match without the
+"-" separator is deliberately rejected -- see `_classify_champion_match`'s
+own docstring for why this matters). Every cell/run this module logs now
+distinguishes STRICT (exact-champion-only, the `unit_count_champion_only`
+metric) from VARIANT-INCLUSIVE (`unit_count`, also what `has_champion_
+coverage` is now based on -- the point of the fix) coverage, and each
+per-cell row carries a `variant_of_champion` flag (see
+`_FP_CELL_METRIC_COLUMNS`/`_RS_CELL_METRIC_COLUMNS` below for exactly what it
+means and how it interacts with `logging_api.select_headline_metrics`).
 
 Every DB-facing function here takes an INJECTED connection (or a zero-
 argument factory defaulting to `db.connect_racing_neon`/
@@ -49,7 +71,7 @@ import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 import pandas as pd
 import psycopg2
@@ -88,14 +110,50 @@ RS_CATEGORIES: Final[tuple[str, ...]] = ("jra", "nar")
 # same-day re-run must be a cheap no-op rather than a duplicate/append.
 CELL_EVAL_KEY_TAG: Final[str] = "cell_eval_key"
 
+# `variant_of_champion` is a PER-CELL boolean: True iff at least one unit
+# (race for FP, horse for RS) contributing to that cell was served by a
+# VARIANT of the champion rather than the exact champion label (see this
+# module's docstring). A cell can legitimately mix exact-champion and
+# variant rows once the collection filter is widened (see
+# `_collect_champion_prediction_rows`), so this is an "at least one" flag,
+# not "all" -- a cell is never split into two rows over this distinction,
+# since FP_CELL_DIMENSIONS/RS_CELL_DIMENSIONS (the actual grouping key) never
+# included model_version in the first place.
+#
+# Deliberately NOT added to any cells.CELL_KEY_COLUMNS-style exclusion set,
+# mirroring the pre-existing `low_n` column exactly: both are boolean columns
+# that `pd.api.types.is_numeric_dtype` treats as numeric, so
+# `logging_api.select_headline_metrics` (which excludes only
+# `cells.CELL_KEY_COLUMNS` plus the weight column, not this module's own
+# metric-column list) folds them into its race/horse-count-weighted-mean scan
+# like any other metric. That is intentional, not an oversight: the
+# resulting `overall_variant_of_champion` headline metric ("what fraction of
+# evaluated race/horse-observations fall in a cell with at least one
+# variant-served unit") is itself a meaningful coverage-composition signal,
+# exactly like `overall_low_n` already is today for `low_n`.
 _FP_CELL_METRIC_COLUMNS: Final[tuple[str, ...]] = (
     "race_count",
     "top1_pct",
     "place2_pct",
     "place3_pct",
+    # place4_pct/place5_pct/place6_pct (feedback_eval_rank_1_to_6) each carry
+    # a PER-METRIC denominator distinct from `race_count` -- computed by
+    # `_aggregate_fp_cells` via `serve_eval.compute_rank_pct` over only the
+    # races in THIS cell whose total starter count meets that rank's
+    # minimum (see `serve_eval._compute_race_hits`'s own docstring for why
+    # ranks 4/5/6 need this small-field exclusion and ranks 1/2/3 do not).
+    # A cell where every race is too-small-a-field for a given rank stores
+    # NaN in that column (pandas' None-in-a-float-column representation),
+    # which `logging_api._weighted_mean` now excludes from both the
+    # numerator AND the denominator (see that function's own docstring) --
+    # never silently averaged in as a fabricated 0.0.
+    "place4_pct",
+    "place5_pct",
+    "place6_pct",
     "fukusho_2p_pct",
     "top3_box_pct",
     "low_n",
+    "variant_of_champion",
 )
 _FP_CELL_TABLE_COLUMNS: Final[tuple[str, ...]] = (
     "category",
@@ -103,7 +161,14 @@ _FP_CELL_TABLE_COLUMNS: Final[tuple[str, ...]] = (
     *_FP_CELL_METRIC_COLUMNS,
 )
 
-_RS_CELL_METRIC_COLUMNS: Final[tuple[str, ...]] = ("horse_count", "accuracy_pct", "low_n")
+# See `_FP_CELL_METRIC_COLUMNS`'s comment above for the `variant_of_champion`
+# rationale -- identical here, at horse (not race) granularity.
+_RS_CELL_METRIC_COLUMNS: Final[tuple[str, ...]] = (
+    "horse_count",
+    "accuracy_pct",
+    "low_n",
+    "variant_of_champion",
+)
 _RS_CELL_TABLE_COLUMNS: Final[tuple[str, ...]] = (
     "category",
     *RS_CELL_DIMENSIONS,
@@ -133,7 +198,19 @@ class ChampionRef:
 
 @dataclass(frozen=True)
 class ChampionCellEvalResult:
-    """Summary of one eval_champion_cells_for_category call."""
+    """Summary of one eval_champion_cells_for_category call.
+
+    `unit_count` is VARIANT-INCLUSIVE (races/horses served by the exact
+    champion label OR a cell-routed variant of it, see this module's
+    docstring) -- this is the corrected, post-fix meaning, and is also what
+    `has_champion_coverage` (`unit_count > 0`) is based on, so the fix is
+    visible through the SAME field name every existing caller/dashboard
+    already reads rather than a field they'd need to switch to.
+    `unit_count_champion_only` is the STRICT counterpart (exact champion
+    label only, the pre-fix meaning) exposed as a separate field precisely so
+    that information is not lost -- see `_FP_CELL_METRIC_COLUMNS`'s own
+    comment for the analogous per-cell `variant_of_champion` signal.
+    """
 
     run_id: str
     category: str
@@ -144,9 +221,15 @@ class ChampionCellEvalResult:
     low_n_cell_count: int
     has_champion_coverage: bool
     reused_existing_run: bool
+    # STRICT (exact-champion-label-only) counterpart of `unit_count`'s now
+    # VARIANT-INCLUSIVE meaning -- defaulted so pre-existing call sites that
+    # construct this dataclass without knowledge of the widening (e.g.
+    # cli.py's own test doubles) keep working unchanged; every real
+    # constructor in this module always sets it explicitly.
+    unit_count_champion_only: int = 0
 
 
-def _resolve_champion_model_version(client: MlflowClient, category: str, task: str) -> ChampionRef:
+def resolve_champion_model_version(client: MlflowClient, category: str, task: str) -> ChampionRef:
     """Resolve the CURRENT champion for (category, task) via the registry alias.
 
     Every failure mode collapses to `ChampionRef(None, registered_name, None)`
@@ -158,6 +241,13 @@ def _resolve_champion_model_version(client: MlflowClient, category: str, task: s
     MLflow backend) an aliased version number that no longer resolves via
     `get_model_version`. A caller with no champion to evaluate against is a
     normal, expected state (see this module's docstring), not an error.
+
+    PUBLIC (no leading underscore), unlike most of this module's other
+    helpers: this is a shared, single-purpose registry-lookup concern (not
+    the champion-vs-variant business logic this module's own docstring
+    explains is deliberately duplicated elsewhere), so `cell_eval_runs.py`
+    imports and reuses this exact function directly rather than re-deriving
+    its own copy -- see that module's own docstring for why.
     """
     resolved_task: registry.Task = (
         "finish-position" if task == "finish-position" else "running-style"
@@ -186,6 +276,53 @@ def _resolve_champion_model_version(client: MlflowClient, category: str, task: s
     )
 
 
+# ── Champion-or-variant serving predicate ────────────────────────────────────
+#
+# See this module's docstring ("★ CELL-ROUTED VARIANT widening") for the full
+# incident/rationale. Deliberately DUPLICATED (not imported) in
+# sync_production.py, for the exact same reason
+# `resolve_champion_model_version` above is ALSO duplicated as `sync_
+# production._resolve_champion_label` there (that one stays private and
+# duplicated -- the variant-matching predicate immediately below is the
+# business logic the two-agents/zero-file-overlap rationale protects, not
+# this registry lookup, which is why THIS function alone was made public
+# for cell_eval_runs.py's reuse; see this module's own docstring).
+
+ChampionMatchKind = Literal["champion", "variant", "other"]
+
+
+def _classify_champion_match(served_model_version: str, champion_label: str) -> ChampionMatchKind:
+    """Classify one served `model_version` against the resolved champion
+    label.
+
+    Returns "champion" for an exact match, "variant" when `served_model_
+    version` is a CELL-ROUTED VARIANT of the champion -- i.e. it starts with
+    `f"{champion_label}-"` -- and "other" for everything else, INCLUDING a
+    served label that merely happens to share `champion_label` as a raw
+    string prefix without the required "-" separator. That last case is the
+    deliberately-tricky near-miss this function exists to reject correctly:
+    champion "jra-cb-v9" must NOT classify served "jra-cb-v9x-challenger" as
+    a variant just because `str.startswith("jra-cb-v9")` would be True --
+    the routing-scope suffix is always "-"-delimited in practice, so a
+    served label without that delimiter immediately after the champion label
+    is an unrelated model, not one MLflow can attribute to this champion.
+    """
+    if served_model_version == champion_label:
+        return "champion"
+    if served_model_version.startswith(f"{champion_label}-"):
+        return "variant"
+    return "other"
+
+
+def _is_champion_derived(served_model_version: str, champion_label: str) -> bool:
+    """True iff `served_model_version` is the exact champion OR a cell-routed
+    variant of it (see `_classify_champion_match`) -- the widened predicate
+    `_collect_champion_prediction_rows` filters production-served rows by,
+    fixing the structural-zero-coverage bug where only variants (never the
+    bare champion label) actually served for some category/day."""
+    return _classify_champion_match(served_model_version, champion_label) != "other"
+
+
 def _find_existing_cell_eval_run(
     client: MlflowClient, experiment_id: str, cell_eval_key: str
 ) -> str | None:
@@ -208,7 +345,14 @@ def _find_existing_cell_eval_run(
 def _result_from_existing_run(client: MlflowClient, run_id: str) -> ChampionCellEvalResult:
     """Rebuild a ChampionCellEvalResult purely from an already-logged run's
     own tags/metrics -- the idempotency short-circuit path never repeats any
-    DB query or aggregation work."""
+    DB query or aggregation work.
+
+    Reads `unit_count_champion_only` the same defensive way as every other
+    metric here (`.get(..., 0.0)`): a run logged before this field existed
+    (see this module's 2026-07-10 widening) simply reconstructs 0 for it,
+    the same "nothing known" default `ChampionCellEvalResult`'s own field
+    default uses -- never a KeyError, and never a fabricated nonzero count.
+    """
     run = client.get_run(run_id)
     tags = run.data.tags
     metrics = run.data.metrics
@@ -225,6 +369,7 @@ def _result_from_existing_run(client: MlflowClient, run_id: str) -> ChampionCell
         low_n_cell_count=int(metrics.get("low_n_cell_count", 0.0)),
         has_champion_coverage=tags.get("has_champion_coverage") == "true",
         reused_existing_run=True,
+        unit_count_champion_only=int(metrics.get("unit_count_champion_only", 0.0)),
     )
 
 
@@ -236,8 +381,8 @@ def _collect_champion_prediction_rows(
     date_from: str,
     date_to: str,
 ) -> list[dict[str, object]]:
-    """Fetch, genuine-filter, Ban-ei-partition, and champion-filter one
-    task's raw production-prediction rows for `category` over the whole
+    """Fetch, genuine-filter, Ban-ei-partition, and champion-OR-variant-filter
+    one task's raw production-prediction rows for `category` over the whole
     [date_from, date_to] window in a single range query (see this module's
     docstring for why a range query, unlike sync_production.py's per-day
     loop, is correct here).
@@ -247,6 +392,14 @@ def _collect_champion_prediction_rows(
     the Ban-ei partition, category="jra" never partitions at all (JRA
     predictions are never mixed with NAR/Ban-ei rows in the first place,
     since they use a different `source` value).
+
+    The final filter is `_is_champion_derived` (champion-or-variant), NOT a
+    bare `== model_version_label` -- see this module's docstring's ★
+    CELL-ROUTED VARIANT widening note. This is the actual fix for the
+    structural-zero-coverage bug: production routes some races/horses to a
+    VARIANT build of the champion (label = champion label + "-" + a
+    routing-scope suffix), and the original exact-match filter silently
+    dropped every one of those rows.
     """
     source = serve_eval.resolve_source(category)
     raw_rows = (
@@ -259,7 +412,11 @@ def _collect_champion_prediction_rows(
         genuine_rows, _ = serve_eval.partition_by_banei(genuine_rows)
     elif category == "banei":
         _, genuine_rows = serve_eval.partition_by_banei(genuine_rows)
-    return [row for row in genuine_rows if row["model_version"] == model_version_label]
+    return [
+        row
+        for row in genuine_rows
+        if _is_champion_derived(str(row["model_version"]), model_version_label)
+    ]
 
 
 def _group_rows_by_race_date(
@@ -278,12 +435,74 @@ def _group_rows_by_race_date(
     return groups
 
 
+# Race/horse identity keys used to correlate a raw champion-OR-variant
+# prediction row (which still carries its OWN served `model_version`) back
+# to the `FpRaceEvalRow`/`RsHorseEvalRow` built from it -- both
+# `serve_eval.build_fp_race_eval_rows`/`build_rs_horse_eval_rows` take the
+# CHAMPION's label as their `model_version` argument and stamp every output
+# row with THAT value (see their own docstrings/callers), not the row's own
+# served value, so a per-race/per-horse variant flag cannot be read back off
+# the built eval rows directly -- it must be computed from the raw rows
+# first and joined back in by identity key.
+_FpRaceKey = tuple[str, str, str]  # (venue, race_bango, race_date)
+_RsHorseKey = tuple[str, str, str, str]  # (venue, race_bango, ketto_toroku_bango, race_date)
+
+
+def _fp_variant_race_keys(
+    champion_rows: list[dict[str, object]], champion_label: str
+) -> frozenset[_FpRaceKey]:
+    """Return the race keys, among already champion-OR-variant-filtered raw
+    FP prediction rows, for which AT LEAST ONE row was served under a
+    VARIANT label (see `_classify_champion_match`) rather than the exact
+    champion. A race with a mix of exact-champion and variant rows across
+    its horses (not expected in practice, but not structurally impossible)
+    is still flagged here -- `variant_of_champion` is an "at least one" flag,
+    see `_FP_CELL_METRIC_COLUMNS`'s own comment."""
+    keys: set[_FpRaceKey] = set()
+    for row in champion_rows:
+        if _classify_champion_match(str(row["model_version"]), champion_label) != "variant":
+            continue
+        race_date = str(row["kaisai_nen"]) + str(row["kaisai_tsukihi"])
+        keys.add((str(row["keibajo_code"]), str(row["race_bango"]), race_date))
+    return frozenset(keys)
+
+
+def _rs_variant_horse_keys(
+    champion_rows: list[dict[str, object]], champion_label: str
+) -> frozenset[_RsHorseKey]:
+    """Horse-granularity counterpart of `_fp_variant_race_keys` -- running-
+    style evaluation is per-horse, so no "at least one row in the group"
+    reduction is needed here: each raw row already IS one horse."""
+    keys: set[_RsHorseKey] = set()
+    for row in champion_rows:
+        if _classify_champion_match(str(row["model_version"]), champion_label) != "variant":
+            continue
+        race_date = str(row["kaisai_nen"]) + str(row["kaisai_tsukihi"])
+        keys.add(
+            (
+                str(row["keibajo_code"]),
+                str(row["race_bango"]),
+                str(row["ketto_toroku_bango"]),
+                race_date,
+            )
+        )
+    return frozenset(keys)
+
+
 def _aggregate_fp_cells(
-    rows: Sequence[serve_eval.FpRaceEvalRow], *, min_cell_count: int
+    rows: Sequence[serve_eval.FpRaceEvalRow],
+    *,
+    min_cell_count: int,
+    variant_race_keys: frozenset[_FpRaceKey] = frozenset(),
 ) -> pd.DataFrame:
     """Group finish-position race-eval rows into one row per
-    (category, *FP_CELL_DIMENSIONS) cell, computing race_count and the 5
-    hit-rate percentages plus a `low_n` flag (race_count < min_cell_count).
+    (category, *FP_CELL_DIMENSIONS) cell, computing race_count, the 8
+    hit-rate percentages (top1/place2/place3/place4/place5/place6/
+    fukusho_2p/top3_box -- place4/5/6 each via their OWN per-cell,
+    per-metric denominator, see `_FP_CELL_METRIC_COLUMNS`'s own comment), a
+    `low_n` flag (race_count < min_cell_count), and `variant_of_champion`
+    (see `_FP_CELL_METRIC_COLUMNS`'s own comment -- True iff any race in the
+    cell is a key in `variant_race_keys`).
 
     Returns a correctly-columned EMPTY DataFrame when `rows` is empty --
     the champion-cell-eval run must always produce a valid (if
@@ -308,20 +527,30 @@ def _aggregate_fp_cells(
         record["top1_pct"] = 100.0 * sum(r.top1_hit for r in group_rows) / race_count
         record["place2_pct"] = 100.0 * sum(r.place2_hit for r in group_rows) / race_count
         record["place3_pct"] = 100.0 * sum(r.place3_hit for r in group_rows) / race_count
+        record["place4_pct"] = serve_eval.compute_rank_pct([r.place4_hit for r in group_rows])
+        record["place5_pct"] = serve_eval.compute_rank_pct([r.place5_hit for r in group_rows])
+        record["place6_pct"] = serve_eval.compute_rank_pct([r.place6_hit for r in group_rows])
         record["fukusho_2p_pct"] = 100.0 * sum(r.fukusho_2p_hit for r in group_rows) / race_count
         record["top3_box_pct"] = 100.0 * sum(r.top3_box_hit for r in group_rows) / race_count
         record["low_n"] = race_count < min_cell_count
+        record["variant_of_champion"] = any(
+            (r.venue, r.race_bango, r.race_date) in variant_race_keys for r in group_rows
+        )
         records.append(record)
     return pd.DataFrame(records, columns=list(_FP_CELL_TABLE_COLUMNS))
 
 
 def _aggregate_rs_cells(
-    rows: Sequence[serve_eval.RsHorseEvalRow], *, min_cell_count: int
+    rows: Sequence[serve_eval.RsHorseEvalRow],
+    *,
+    min_cell_count: int,
+    variant_horse_keys: frozenset[_RsHorseKey] = frozenset(),
 ) -> pd.DataFrame:
     """Group running-style horse-eval rows into one row per
     (category, *RS_CELL_DIMENSIONS) cell, computing horse_count,
-    accuracy_pct, and a `low_n` flag. Same empty-input contract as
-    `_aggregate_fp_cells` above."""
+    accuracy_pct, a `low_n` flag, and `variant_of_champion` (True iff any
+    horse in the cell is a key in `variant_horse_keys`). Same empty-input
+    contract as `_aggregate_fp_cells` above."""
     if not rows:
         return pd.DataFrame(columns=list(_RS_CELL_TABLE_COLUMNS))
 
@@ -338,6 +567,10 @@ def _aggregate_rs_cells(
         record["horse_count"] = horse_count
         record["accuracy_pct"] = 100.0 * sum(r.hit for r in group_rows) / horse_count
         record["low_n"] = horse_count < min_cell_count
+        record["variant_of_champion"] = any(
+            (r.venue, r.race_bango, r.ketto_toroku_bango, r.race_date) in variant_horse_keys
+            for r in group_rows
+        )
         records.append(record)
     return pd.DataFrame(records, columns=list(_RS_CELL_TABLE_COLUMNS))
 
@@ -378,11 +611,15 @@ def _evaluate_fp_champion(
     date_from: str,
     date_to: str,
     min_cell_count: int,
-) -> tuple[pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, int, int]:
     """Fetch/join/aggregate one finish-position champion's serve-accuracy
-    over [date_from, date_to]. Returns (cell_df, unit_count); unit_count is
-    the number of races actually evaluated (len of the built eval rows, not
-    the raw prediction-row count).
+    over [date_from, date_to]. Returns (cell_df, unit_count,
+    unit_count_champion_only): `unit_count` is VARIANT-INCLUSIVE (races
+    served by the exact champion label OR a cell-routed variant of it, see
+    this module's docstring) -- the number of races actually evaluated (len
+    of the built eval rows, not the raw prediction-row count).
+    `unit_count_champion_only` is the STRICT subset of that same count
+    (races where NONE of the contributing rows were a variant).
 
     Short-circuits to an empty cell table (no local_conn query at all) both
     when there is no champion to evaluate (`model_version_label is None`)
@@ -391,12 +628,12 @@ def _evaluate_fp_champion(
     (see this module's docstring), not error conditions.
     """
     if model_version_label is None:
-        return _aggregate_fp_cells([], min_cell_count=min_cell_count), 0
+        return _aggregate_fp_cells([], min_cell_count=min_cell_count), 0, 0
     champion_rows = _collect_champion_prediction_rows(
         neon_conn, category, "finish-position", model_version_label, date_from, date_to
     )
     if not champion_rows:
-        return _aggregate_fp_cells([], min_cell_count=min_cell_count), 0
+        return _aggregate_fp_cells([], min_cell_count=min_cell_count), 0, 0
 
     eval_rows: list[serve_eval.FpRaceEvalRow] = []
     for race_date, day_rows in _group_rows_by_race_date(champion_rows).items():
@@ -404,7 +641,14 @@ def _evaluate_fp_champion(
         eval_rows.extend(
             serve_eval.build_fp_race_eval_rows(category, model_version_label, day_rows, results)
         )
-    return _aggregate_fp_cells(eval_rows, min_cell_count=min_cell_count), len(eval_rows)
+    variant_race_keys = _fp_variant_race_keys(champion_rows, model_version_label)
+    cell_df = _aggregate_fp_cells(
+        eval_rows, min_cell_count=min_cell_count, variant_race_keys=variant_race_keys
+    )
+    unit_count_champion_only = sum(
+        1 for r in eval_rows if (r.venue, r.race_bango, r.race_date) not in variant_race_keys
+    )
+    return cell_df, len(eval_rows), unit_count_champion_only
 
 
 def _evaluate_rs_champion(
@@ -415,18 +659,18 @@ def _evaluate_rs_champion(
     date_from: str,
     date_to: str,
     min_cell_count: int,
-) -> tuple[pd.DataFrame, int]:
-    """Running-style counterpart to `_evaluate_fp_champion`: unit_count is
-    the number of horses actually evaluated. Also fetches race metadata per
-    distinct date (needed to normalize corner_1 into a running-style class),
-    unlike the finish-position path."""
+) -> tuple[pd.DataFrame, int, int]:
+    """Running-style counterpart to `_evaluate_fp_champion`: unit_count(s)
+    count horses, not races. Also fetches race metadata per distinct date
+    (needed to normalize corner_1 into a running-style class), unlike the
+    finish-position path."""
     if model_version_label is None:
-        return _aggregate_rs_cells([], min_cell_count=min_cell_count), 0
+        return _aggregate_rs_cells([], min_cell_count=min_cell_count), 0, 0
     champion_rows = _collect_champion_prediction_rows(
         neon_conn, category, "running-style", model_version_label, date_from, date_to
     )
     if not champion_rows:
-        return _aggregate_rs_cells([], min_cell_count=min_cell_count), 0
+        return _aggregate_rs_cells([], min_cell_count=min_cell_count), 0, 0
 
     eval_rows: list[serve_eval.RsHorseEvalRow] = []
     for race_date, day_rows in _group_rows_by_race_date(champion_rows).items():
@@ -437,7 +681,16 @@ def _evaluate_rs_champion(
                 category, model_version_label, day_rows, results, race_meta
             )
         )
-    return _aggregate_rs_cells(eval_rows, min_cell_count=min_cell_count), len(eval_rows)
+    variant_horse_keys = _rs_variant_horse_keys(champion_rows, model_version_label)
+    cell_df = _aggregate_rs_cells(
+        eval_rows, min_cell_count=min_cell_count, variant_horse_keys=variant_horse_keys
+    )
+    unit_count_champion_only = sum(
+        1
+        for r in eval_rows
+        if (r.venue, r.race_bango, r.ketto_toroku_bango, r.race_date) not in variant_horse_keys
+    )
+    return cell_df, len(eval_rows), unit_count_champion_only
 
 
 def eval_champion_cells_for_category(
@@ -490,13 +743,13 @@ def eval_champion_cells_for_category(
     if existing_run_id is not None:
         return _result_from_existing_run(client, existing_run_id)
 
-    champion_ref = _resolve_champion_model_version(client, normalized_category, task)
+    champion_ref = resolve_champion_model_version(client, normalized_category, task)
 
     neon_conn = neon_connect()
     local_conn = local_connect()
     try:
         if task == "finish-position":
-            cell_df, unit_count = _evaluate_fp_champion(
+            cell_df, unit_count, unit_count_champion_only = _evaluate_fp_champion(
                 neon_conn,
                 local_conn,
                 normalized_category,
@@ -507,7 +760,7 @@ def eval_champion_cells_for_category(
             )
             weight_column, metric_column = "race_count", "top1_pct"
         else:
-            cell_df, unit_count = _evaluate_rs_champion(
+            cell_df, unit_count, unit_count_champion_only = _evaluate_rs_champion(
                 neon_conn,
                 local_conn,
                 normalized_category,
@@ -521,6 +774,10 @@ def eval_champion_cells_for_category(
         neon_conn.close()
         local_conn.close()
 
+    # `unit_count` is VARIANT-INCLUSIVE (see this module's docstring / the
+    # 2026-07-10 widening) -- so `has_champion_coverage` now correctly
+    # reflects real production coverage even on a day/category where only a
+    # cell-routed variant (never the bare champion label) actually served.
     has_coverage = unit_count > 0
     headline = select_headline_metrics(cell_df, weight_column=weight_column)
     best_cell, worst_cell = _best_worst_cell(cell_df, metric_column)
@@ -551,6 +808,10 @@ def eval_champion_cells_for_category(
     }
     metrics: dict[str, float] = dict(headline)
     metrics["unit_count"] = float(unit_count)
+    # STRICT (exact-champion-label-only) counterpart of `unit_count`'s
+    # VARIANT-INCLUSIVE meaning -- see `ChampionCellEvalResult`'s own
+    # docstring for why both are exposed as separate metrics.
+    metrics["unit_count_champion_only"] = float(unit_count_champion_only)
     metrics["cell_count"] = float(len(cell_df))
     metrics["low_n_cell_count"] = float(low_n_cell_count)
     if best_cell is not None and worst_cell is not None:
@@ -584,6 +845,7 @@ def eval_champion_cells_for_category(
         low_n_cell_count=low_n_cell_count,
         has_champion_coverage=has_coverage,
         reused_existing_run=False,
+        unit_count_champion_only=unit_count_champion_only,
     )
 
 
