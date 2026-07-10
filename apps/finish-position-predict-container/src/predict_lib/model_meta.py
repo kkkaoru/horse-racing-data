@@ -30,6 +30,12 @@ JRA leak-free clean retrain (jra-cb-v9-sim-2013-clean, 2026-07-04):
   [LB95 +0.164, all 3 folds positive], place2 +0.135, top3_box +0.309 -> ADOPT.
   Rollback: flip model_versions.jra back to "jra-cb-v9-sim-2013" (263) and
   feature_counts.jra back to 263; re-point finish_position_active_models.
+  Current fail-closed serving also rejects target_corner_2_norm when present:
+  it is the same current-race label family and may only be used through
+  prior-race history features such as past_corner_2_norm_avg_5.
+  The JRA cell variant jra-cb-v10-prior-corner274-2013 adds 24 prior-only
+  corner2/3/4 history features and is allowed only through cell_routing.json
+  for the accepted dirt small-field 005 cell.
 
 NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188, 2026-07-04):
   iter12-nar-xgb-hpo-v8 (192 features) carried the SAME 4 within-race leak
@@ -40,15 +46,13 @@ NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188, 2026-07-04):
   walk-forward (3 seeds x 3 folds, serve-exact 192-name matrix for the "A"
   arm): top1 +5.496pp [LB95 +5.102], place2 +2.360pp [LB95 +1.923], place3
   +1.358pp [LB95 +0.966], place4/5/6 and top3_box all positive with LB95>0
-  too -> ADOPT (strict gate). NAR_TRANSFORMER_BLEND_ENABLED is held at 0/False
-  at this deploy (see the transformer-blend section below): the currently
-  baked iter40 transformer artifact was found to carry the same 4 leak
-  columns in its own feature_order, so blending it with the new clean base
-  would still serve a half-leaky score. A clean transformer retrain is a
-  planned fast-follow; re-enable the blend only after that artifact passes
-  its own gate. Rollback: flip model_versions.nar back to
-  "iter12-nar-xgb-hpo-v8" (192) and feature_counts.nar back to 192; re-point
-  finish_position_active_models.
+  too -> ADOPT (strict gate). The iter40 transformer companion artifact is
+  clean at serve: it was retrained on the same all-history NAR window after
+  removing the four leaked inputs from its feature_order. Rollback: set
+  NAR_TRANSFORMER_BLEND_ENABLED=0 for pure clean188 base serving; do not re-point
+  NAR to historical iter12-nar-xgb-hpo-v8 in production.
+  As above, target_corner_2_norm is denied by current artifact guards if a new
+  feature store exposes it.
 """
 
 from __future__ import annotations
@@ -68,6 +72,7 @@ MODEL_META_JSON_PATH: Final[Path] = Path(__file__).parent / "model_meta.json"
 
 WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset({
     "target_corner_1_norm",
+    "target_corner_2_norm",
     "target_corner_3_norm",
     "target_corner_4_norm",
     "target_running_style_class",
@@ -75,7 +80,10 @@ WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset({
 
 PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
     "jra-cb-v9-sim-2013-clean",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+    "jra-cb-v10-prior-corner274-2013",
     "iter12-nar-xgb-hpo-v8-clean188",
+    "iter40-nar-settransformer-blend-v1",
     "banei-cb-v9-sim-2011",
     "banei-cb-v8-window2011-wf-15y",
 })
@@ -362,24 +370,18 @@ def build_r2_nar_etop2_key(file_name: str) -> str:
 # ---------------------------------------------------------------------------
 # NAR Set-Transformer x ensemble rank-fusion blend (iter40, 2026-07-03)
 # ---------------------------------------------------------------------------
-# A 117-feature listwise Set Transformer (3 seeds, all-history 2006-2025) whose
-# within-race seed-rank-mean is fused 0.5/0.5 with the NAR production base
-# (iter12-nar-xgb-hpo-v8) within-race rank. The forward is numpy-only
-# (predict_lib.transformer_scorer) and bit-exact to MLX eager. Deploy gate
-# (walk-forward 3-fold, serve-exact ketto tie-break): top1 +0.680 [LB95 +0.518],
-# place2 +0.427 [+0.192], place3 +0.381 [+0.138] -> ADOPT. Mutually exclusive
-# with the NAR E-top2 override (the blend re-ranks the base output), so
-# NAR_ETOP2_ENABLED stays False while this is on.
+# A clean 113-feature listwise Set Transformer (3 seeds, all-history 2006-2025)
+# whose within-race seed score is fused 0.5/0.5 with the clean NAR production
+# base (iter12-nar-xgb-hpo-v8-clean188) score. This is a retrained iter40
+# artifact with the four within-race leak columns removed from the training and
+# serving feature contract, so the transformer path remains active without
+# carrying post-race signals.
 #
-# ENABLED reads the environment at import so an operator can turn the blend ON
-# once the serve path has been smoke-tested — by setting
-# NAR_TRANSFORMER_BLEND_ENABLED=1 in the container / Worker env with no redeploy.
-# Default False = opt-in: the blend stays OFF (pure iter12 ensemble) until the
-# Container serve path is smoke-tested and an operator explicitly enables it via
-# env. The forward has only been validated offline (walk-forward), not on a live
-# Container, so the safe default is OFF to avoid activating an unverified path.
+# ENABLED reads the environment at import. Default True keeps NAR transformer
+# serving active with the cleaned artifact; set NAR_TRANSFORMER_BLEND_ENABLED=0
+# in the container / Worker env for an immediate rollback to pure clean188 base.
 NAR_TRANSFORMER_BLEND_ENABLED: Final[bool] = _env_flag(
-    "NAR_TRANSFORMER_BLEND_ENABLED", default=False
+    "NAR_TRANSFORMER_BLEND_ENABLED", default=True
 )
 
 # The blend artifact version baked at

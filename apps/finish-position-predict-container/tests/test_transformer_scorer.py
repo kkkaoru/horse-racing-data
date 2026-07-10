@@ -17,6 +17,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import predict_lib.transformer_scorer as tsc
+from predict_lib.model_meta import (
+    NAR_TRANSFORMER_MODEL_VERSION,
+    WITHIN_RACE_LEAK_COLUMNS,
+)
 
 # ``_present_float`` is module-private (leading underscore); accessed via
 # getattr with the attribute name held in a variable (not a string literal, so
@@ -356,6 +360,51 @@ def test_load_transformer_flat_schema_defaults_when_alt_keys_absent(tmp_path: Pa
     assert scorer.num_layers == 3
     assert scorer.num_heads == 4
     assert scorer.max_runners == 18
+
+
+def test_load_transformer_rejects_norm_vector_feature_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_artifact(tmp_path, n_seeds=1, use_seed_files=True)
+    norm_path = tmp_path / "norm.json"
+    norm = json.loads(norm_path.read_text(encoding="utf-8"))
+    norm["mean"] = [0.0, 0.0, 0.0]
+    norm_path.write_text(json.dumps(norm), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="norm feature count mismatch"):
+        tsc.load_transformer(tmp_path)
+
+
+def test_load_transformer_rejects_projection_feature_count_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_artifact(tmp_path, n_seeds=1, use_seed_files=True)
+    weights_path = tmp_path / "weights_s1.npz"
+    weights = _tiny_weights(feats=3)
+    _savez(weights_path, {k: v.astype(np.float32) for k, v in weights.items()})
+
+    with pytest.raises(ValueError, match="numeric_projection feature count mismatch"):
+        tsc.load_transformer(tmp_path)
+
+
+def test_baked_nar_transformer_artifact_is_clean_and_shape_consistent() -> None:
+    artifact_dir = (
+        Path(__file__).resolve().parent.parent
+        / "models"
+        / "finish-position"
+        / "nar"
+        / NAR_TRANSFORMER_MODEL_VERSION
+    )
+    scorer = tsc.load_transformer(artifact_dir)
+
+    assert len(scorer.feature_order) == 113
+    assert WITHIN_RACE_LEAK_COLUMNS.isdisjoint(scorer.feature_order)
+    assert scorer.mean.shape == (113,)
+    assert scorer.std.shape == (113,)
+    assert len(scorer.seeds) == 3
+    assert {
+        seed["numeric_projection.weight"].shape for seed in scorer.seeds
+    } == {(96, 113)}
 
 
 def test_seed_rank_mean_two_seeds(tmp_path: Path) -> None:

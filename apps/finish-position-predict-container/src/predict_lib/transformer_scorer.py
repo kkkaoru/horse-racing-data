@@ -14,13 +14,13 @@ Fidelity (see parity_results.json): the float64 forward is bit-exact to MLX
 metric, not reproducible across device/version. float64 gives one deterministic,
 host-invariant score (Linux/x86 container vs Mac/ARM trainer).
 
-Target artifact: 117-feature listwise Set Transformer, 3 seeds, all-history.
-The 117 baseline is a verified subset of the container's iter12 NAR feature
+Target artifact: 113-feature listwise Set Transformer, 3 seeds, all-history.
+The 113 baseline is a leak-free subset of the container's clean188 NAR feature
 build (0 missing), so it is feature-contract-safe (no retrain-on-192, no layer
 additions needed).
 
 Artifact layout (produced by export_artifact.py / mlx-nar):
-  <dir>/norm.json     {feature_order[117], mean[117], std[117], arch{...},
+  <dir>/norm.json     {feature_order[113], mean[113], std[113], arch{...},
                        seed_files:["weights_s1.npz","weights_s2.npz","weights_s3.npz"]}
   <dir>/weights_s*.npz   numpy float32 weights, keys = MLX param paths (per seed)
 
@@ -297,15 +297,29 @@ def load_transformer(artifact_dir: str | Path) -> TransformerScorer:
         npz = np.load(p)
         seeds.append({k: np.asarray(npz[k], dtype=np.float64) for k in npz.files})
 
-    mean = norm.get("numeric_mean", norm.get("mean"))
-    std = norm.get("numeric_std", norm.get("std"))
+    feature_order = tuple(cast("list[str]", norm["feature_order"]))
+    mean = np.asarray(norm.get("numeric_mean", norm.get("mean")), dtype=np.float64)
+    std = np.asarray(norm.get("numeric_std", norm.get("std")), dtype=np.float64)
+    expected_features = len(feature_order)
+    if mean.shape != (expected_features,) or std.shape != (expected_features,):
+        raise ValueError(
+            "transformer norm feature count mismatch: "
+            f"feature_order={expected_features} mean={mean.shape} std={std.shape}"
+        )
+    for idx, seed in enumerate(seeds, start=1):
+        projection = seed["numeric_projection.weight"]
+        if projection.ndim != 2 or projection.shape[1] != expected_features:
+            raise ValueError(
+                "transformer numeric_projection feature count mismatch: "
+                f"seed={idx} expected={expected_features} shape={projection.shape}"
+            )
     # umaban vocab is authoritative from the embedding weight, not the manifest.
     umaban_vocab = int(seeds[0]["umaban_embedding.weight"].shape[0])
     return TransformerScorer(
         seeds=tuple(seeds),
-        feature_order=tuple(cast("list[str]", norm["feature_order"])),
-        mean=np.asarray(mean, dtype=np.float64),
-        std=np.asarray(std, dtype=np.float64),
+        feature_order=feature_order,
+        mean=mean,
+        std=std,
         num_layers=int(field("num_layers", "layers", 3)),
         num_heads=int(field("num_heads", "heads", 4)),
         eps=float(field("eps", "eps", 1e-5)),

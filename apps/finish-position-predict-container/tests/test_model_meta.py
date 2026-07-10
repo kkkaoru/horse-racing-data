@@ -96,7 +96,10 @@ def test_feature_count_banei() -> None:
 def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base() -> None:
     assert frozenset({
         "jra-cb-v9-sim-2013-clean",
+        "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        "jra-cb-v10-prior-corner274-2013",
         "iter12-nar-xgb-hpo-v8-clean188",
+        "iter40-nar-settransformer-blend-v1",
         "banei-cb-v9-sim-2011",
         "banei-cb-v8-window2011-wf-15y",
     }) == PRODUCTION_MODEL_VERSION_ALLOWLIST
@@ -115,6 +118,7 @@ def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
 def test_within_race_leak_columns_are_explicitly_denied() -> None:
     assert frozenset({
         "target_corner_1_norm",
+        "target_corner_2_norm",
         "target_corner_3_norm",
         "target_corner_4_norm",
         "target_running_style_class",
@@ -427,22 +431,20 @@ def test_nar_transformer_blend_weight_constant() -> None:
     assert NAR_TRANSFORMER_BLEND_WEIGHT == 0.5
 
 
-def test_nar_transformer_blend_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The blend defaults to OFF (opt-in): the serve path has only been validated
-    # offline, so an operator must set NAR_TRANSFORMER_BLEND_ENABLED=1 in the
-    # container env to activate it after a Container serve-smoke. Reload with the
-    # env unset to confirm the module wires ``default=False``.
+def test_nar_transformer_blend_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The baked artifact is clean, so transformer serving remains active without
+    # requiring a production secret. Operators can still roll back via env=0.
     monkeypatch.delenv("NAR_TRANSFORMER_BLEND_ENABLED", raising=False)
     reloaded = importlib.reload(model_meta)
-    assert reloaded.NAR_TRANSFORMER_BLEND_ENABLED is False
-
-
-def test_nar_transformer_blend_enabled_by_env_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    # An operator opts in by setting the env flag; reload picks it up at import.
-    monkeypatch.setenv("NAR_TRANSFORMER_BLEND_ENABLED", "1")
-    reloaded = importlib.reload(model_meta)
     assert reloaded.NAR_TRANSFORMER_BLEND_ENABLED is True
-    # Restore the module to its env-unset (default-OFF) state so the reloaded
-    # global does not leak the opt-in value into later tests.
+
+
+def test_nar_transformer_blend_disabled_by_env_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Immediate rollback path: env=0 disables the blend and keeps clean188 base.
+    monkeypatch.setenv("NAR_TRANSFORMER_BLEND_ENABLED", "0")
+    reloaded = importlib.reload(model_meta)
+    assert reloaded.NAR_TRANSFORMER_BLEND_ENABLED is False
+    # Restore the module to its env-unset default state so the reloaded global
+    # does not leak the opt-out value into later tests.
     monkeypatch.delenv("NAR_TRANSFORMER_BLEND_ENABLED", raising=False)
     importlib.reload(model_meta)

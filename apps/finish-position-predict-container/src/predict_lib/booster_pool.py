@@ -32,7 +32,11 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model_meta import Architecture, member_model_file_name
+from .model_meta import (
+    Architecture,
+    assert_no_within_race_leak_columns,
+    member_model_file_name,
+)
 from .scorer import BoosterLike
 
 CATBOOST_MODEL_FORMAT: str = "json"
@@ -94,6 +98,9 @@ def load_member_feature_names(metadata_json_path: Path) -> tuple[str, ...]:
     if not all(isinstance(name, str) for name in feature_names):
         message = f"member feature_names not all strings: {metadata_json_path}"
         raise ValueError(message)
+    assert_no_within_race_leak_columns(
+        feature_names, context=f"member metadata {metadata_json_path}"
+    )
     return tuple(feature_names)
 
 

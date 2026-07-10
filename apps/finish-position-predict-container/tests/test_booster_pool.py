@@ -304,6 +304,19 @@ def test_load_member_feature_names_raises_when_item_not_string(tmp_path: Path) -
         load_member_feature_names(path)
 
 
+def test_load_member_feature_names_rejects_within_race_leak_columns(
+    tmp_path: Path,
+) -> None:
+    """Per-class member sidecars are dormant today but must still fail closed
+    if a historical/leaky artifact is accidentally selected."""
+    path = _write_metadata_json(
+        tmp_path / ITER20_BASE,
+        {"feature_names": ["feature_a", "target_corner_2_norm"]},
+    )
+    with pytest.raises(ValueError, match="target_corner_2_norm"):
+        load_member_feature_names(path)
+
+
 # ---------------------------------------------------------------------------
 # BoosterPool
 
