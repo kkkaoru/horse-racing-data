@@ -1,410 +1,162 @@
-# Deploy runbook — finish-position prediction container (Cloudflare production)
+# Deploy runbook - finish-position prediction container
 
-> **Current production authority (2026-06-29): Cloudflare only.**
-> Production finish-position generation is owned by Cloudflare Cron / Queue /
-> Worker / Container, coordinated with `sync-realtime-data`. Mac launchd and
-> local Docker references in this file are historical or optional local/manual
-> smoke tooling only; they are not production scheduler, authority, fallback, or
-> ordering dependency. See `docs/finish-position-prediction-system.md` for the
-> current system specification.
+Current production authority: Cloudflare only.
 
-> **2026-06-04 status — v8 production deploy COMPLETE (Phase 2 cutover)**
->
-> Phase 1 (2026-06-04 earlier): the historical predictions table +
-> `finish_position_active_models` were flipped to `iter12-nar-xgb-hpo-v8` (NAR,
-> +0.16pp place3 vs v7-lineage) and `iter14-jra-cb-pacestyle-course-v8` (JRA,
-> +0.16/+0.08/+0.04/+0.11pp on the four metrics — first JRA accept since
-> iter 9). 2.57M NAR + 941K JRA rows UPSERTed into
-> `race_finish_position_model_predictions`.
->
-> Phase 2 (2026-06-04 later, THIS COMMIT): the container LAYER_CHAIN +
-> `MODEL_VERSION_BY_CATEGORY` were updated so the daily image now scores
-> UPCOMING races with the v8 boosters. The two new viewer layer scripts
-> (`add-pacestyle-features.py` for iter9 pacestyle + `add-course-numerical-features.py`
-> for iter14 JRA course) are promoted from `tmp/v8/` into
-> `apps/pc-keiba-viewer/src/scripts/finish-position-features/`. The static
-> 119-row course lookup parquet is baked into the image at
-> `/app/lookups/course-numerical-features.parquet` (source of truth:
-> `apps/pc-keiba-viewer/finish-position/lookups/course-numerical-features.parquet`).
-> The v8 chains now produce 241 JRA / 192 NAR / 111 Ban-ei features — matching
-> the booster metadata.
->
-> Boosters for both v8 versions are baked under
-> `models/finish-position/nar/iter12-nar-xgb-hpo-v8/` (model.json 2.8 MB,
-> 192 feats, best_iter=147) and
-> `models/finish-position/jra/iter14-jra-cb-pacestyle-course-v8/` (model.json
-> 3.8 MB, 241 feats, best_iter=224).
->
-> **Remaining manual step (user-side, after this commit):**
->
-> 1. Rebuild the image:
->    `cd apps/finish-position-predict-container && docker build -f Dockerfile -t finish-position-predict-local:split2 ../..`
-> 2. Smoke verify the v8 versions are inside the image:
->    `docker run --rm finish-position-predict-local:split2 python -c "from predict_lib.model_meta import MODEL_VERSION_BY_CATEGORY; print(MODEL_VERSION_BY_CATEGORY)"`
->    Expect:
->    `{'jra': 'iter14-jra-cb-pacestyle-course-v8', 'nar': 'iter12-nar-xgb-hpo-v8', 'ban-ei': 'banei-cb-v7-lineage-wf-21y'}`
-> 3. Optional legacy local smoke run: `bash scripts/launchd/finish-position-predict-daily.sh`
->    and verify the predictions table receives `iter12-nar-xgb-hpo-v8` /
->    `iter14-jra-cb-pacestyle-course-v8` rows for today's UPCOMING races.
+Production finish-position generation is owned by Cloudflare Cron / Queue /
+Worker / Container, coordinated with `sync-realtime-data`. Mac launchd and local
+Docker commands are deprecated local/manual smoke tools only. They are not a
+production scheduler, fallback, or ordering dependency.
 
-Automated serving of UPCOMING-race finish-position predictions with the
-**v8 production** models (`iter14-jra-cb-pacestyle-course-v8` JRA,
-`iter12-nar-xgb-hpo-v8` NAR, `banei-cb-v7-lineage-wf-21y` Ban-ei) is now
-Cloudflare-owned. The legacy monolithic container cron from 2026-06-04 remains
-disabled because start()-style batch instances could be idle-reaped before the
-DuckDB feature build completed. The production path is the Cloudflare per-race
-flow: `sync-realtime-data` completes feature/running-style work, calls
-`finish-position-cron` `POST /run`, and `finish-position-cron` fans work into
-Queues/Containers. GitHub Workflow for prediction remains FORBIDDEN by project
-rule.
+## Current Production Models
 
-This file is a runbook. None of it has been run for you — **no `wrangler deploy`,
-no image push, no secrets set.** Run the steps below from your machine, logged in
-to your own Cloudflare account, with Docker running.
+The source of truth is
+`apps/finish-position-predict-container/src/predict_lib/model_meta.json` plus the
+explicit NAR transformer metadata in `predict_lib/model_meta.py`.
 
-> Credentials are never written here. Use `wrangler secret put` and env refs.
-> The Neon connection string lives ONLY as the `NEON_DATABASE_URL` Worker secret.
+| Category    | Production model_version                      | Notes                                                                            |
+| ----------- | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| JRA         | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default.                                                       |
+| JRA cell    | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1. |
+| NAR         | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.              |
+| Ban-ei      | `banei-cb-v9-sim-2011`                        | Default.                                                                         |
+| Ban-ei cell | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                       |
 
----
+Historical leaky JRA/NAR artifacts must not be selected in production. NAR
+rollback is `NAR_TRANSFORMER_BLEND_ENABLED=0`, which keeps the leak-free
+`iter12-nar-xgb-hpo-v8-clean188` base and disables only the transformer blend.
 
-## Architecture (current — Cloudflare production)
+## Architecture
 
-```
+```text
 sync-realtime-data Worker
-  feature generation + running-style per race
-        │
-        ▼
-service binding POST /run (mode=full, race scope)
-        ▼
+  feature generation + running-style generation per race
+        |
+        v
+focused per-race full message
+        |
+        v
 finish-position-cron Worker
-        │   - validates trigger
-        │   - enqueues focused per-race/container work
-        ▼
-Cloudflare Queue → FinishPositionPredictContainer
-        │   - per-race DuckDB feature build + score
-        │   - UPSERT race_finish_position_model_predictions
-        ▼
-Neon + viewer
+        |
+        v
+Cloudflare Queue -> FinishPositionPredictContainer
+        |
+        v
+per-race DuckDB feature build + scoring -> Neon UPSERT
 ```
 
-## Legacy monolithic Cloudflare Container architecture (historical)
-
-```
-Cron Trigger ("0 18 * * *" = JST 03:00)   --  DISABLED; replaced by Cloudflare per-race production flow above
-        │
-        ▼
-finish-position-cron Worker   ── scheduled(event) ──►  getContainer(...).start({
-  (apps/finish-position-cron)                              entrypoint: predict_upcoming.py,
-        │                                                  envVars: { NEON_DATABASE_URL, RUN_DATE, ... },
-        │                                                  enableInternet: true })
-        │                                              ── writes 1 "started" audit row to D1
-        ▼
-FinishPositionPredictContainer (Durable Object, standard-4: 4 vCPU / 12 GiB / 20 GB)
-  image = apps/finish-position-predict-container/Dockerfile
-        │
-        ▼ predict_upcoming.py, per category (jra / nar / ban-ei):
-  1. build the v8 feature parquet for TODAY's races (DuckDB base in
-     --target-date mode + per-category LAYER_CHAIN including the v7 layers
-     and the v8 pacestyle / course-numerical layers) — see "Today's races
-     feature build" below
-  2. load model from the baked-in image path
-     /models/finish-position/{category}/{modelVersion}/model.json
-     (no runtime R2-scope dependency; MODELS_DIR=/models, layout mirrors the
-     R2 keys so predict_lib.model_meta.build_r2_object_key resolves unchanged)
-  3. score → rank within race → dedupe → chunked UPSERT into
-     race_finish_position_model_predictions (model_version per
-     predict_lib.model_meta.MODEL_VERSION_BY_CATEGORY)
-  4. write 1 detailed audit row to finish_position_cron_executions
-```
-
-On-demand trigger: in addition to the scheduled cron, the Worker exposes an
-authenticated `POST /run` endpoint (Bearer token = `TRIGGER_TOKEN` secret) that
-starts the same container with either an explicit `runDate` (`YYYYMMDD`) or
-today's JST date. Useful for back-to-back runs, manual retries, or a same-day
-kick after a model swap, without waiting for the next cron tick.
-
-### Today's races feature build (UPCOMING + already-run)
-
-The feature build is driven by `RUN_DATE` (JST `YYYYMMDD`, set by the Worker)
-and `PREDICT_DAYS_AHEAD`. `pipeline_runner.py` invokes the reused base
-builder in `--target-date` mode:
-
-```sh
-python finish_position_features_duckdb.py \
-  --category {jra|nar|ban-ei} \
-  --target-date $RUN_DATE --days-ahead $PREDICT_DAYS_AHEAD \
-  --pg-url "$NEON_DATABASE_URL" --output-dir <base>
-```
-
-`--target-date` makes the build emit feature rows for **every** race on
-[RUN_DATE, RUN_DATE + days-ahead], including UPCOMING races whose
-`finish_position` is still NULL. It is leakage-safe by construction: all
-historical aggregates join prior races only (`h.race_date < t.race_date` with
-`finish_position is not null` on the history side), so a target race's own
-outcome is never used and the vector is computable before the race is run. To
-cover today's races that the derived `race_entry_corner_features` table has not
-yet been refreshed with, `--target-date` mode also pulls the day's target rows
-straight from `jvd_se`/`jvd_ra` (JRA) and `nvd_se`/`nvd_ra` (NAR / Ban-ei),
-deduped against the corner-feature rows (corner-feature row wins when present).
-Each layer then LEFT-JOINs its history, preserving UPCOMING rows with NULL/0
-history features — exactly how the model saw NULLs in training (CatBoost/XGBoost
-treat absent numeric inputs as 0; the scorer fills any absent feature with 0.0 in
-the `metadata.json` `feature_names` order, so vector order parity is
-guaranteed).
-
-> **Full feature parity — wired.** `pipeline_args.LAYER_CHAIN` runs the COMPLETE
-> per-category chain that reproduces the exact feature set each model was trained
-> on (validated against `metadata.json` `feature_names`: 226 JRA / 175 NAR / 111
-> Ban-ei, **0 names missing → no missing-layer zero-fill**). The chains are:
->
-> - **JRA (226)** — base → `add-race-internal` → `add-market-signal` →
->   `add-sectional-and-weight` → `add-futan-juryo` → `add-workout` →
->   `add-near-miss` → `add-grade-race-lineage` → `add-head-to-head` →
->   `add-baba-pedigree-affinity` → `add-trainer-stable-affinity`.
-> - **NAR (175)** — base → `add-race-internal` → `add-near-miss` →
->   `add-grade-race-lineage` → `add-head-to-head` → `add-baba-pedigree-affinity`
->   (NAR was never built with the market / sectional / futan / workout layers, and
->   the trainer layer is dropped — it is counter-productive on NAR per
->   docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md §8).
-> - **Ban-ei (111)** — base → `add-grade-race-lineage` → `add-head-to-head` →
->   `add-baba-pedigree-affinity` → `add-banei-futan-class` →
->   `add-banei-grade-career` (distinct base; no JRA v6 layers).
->
-> Per-layer flags are shaped in `pipeline_args.build_layer_argv`: the pure-DuckDB
-> `add-race-internal` layer takes only `--input-dir`/`--output-dir`;
-> Postgres-reading layers also take `--pg-url`/`--from-date`; the lineage layer
-> adds `--config lineage-races/{category}.json`; the trainer layer adds
-> `--category {jra,nar}`. The Dockerfile already COPYs the entire
-> `finish-position-features/` directory, so every chain script (and the
-> `lineage-races/` configs + `_resource_defaults.py`) is present in the image.
->
-> The one-shot "v3 merger" in docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V6_STACKED.md §2 only
-> re-prioritised the VALUE of market-signal columns that `add-market-signal`
-> already computes straight from Postgres; it adds no new feature NAMES and is not
-> part of the automated 21y v7 build, so it is intentionally not reproduced.
-> Columns sourced from `race_entry_corner_features` (speed indices, corner
-> positions, weather, odds, baba condition) are still NULL for races whose entries
-> / odds the realtime pipeline has not yet ingested — that is intrinsic
-> pre-race data availability, not a missing-layer gap.
-
-### Why these choices (Cloudflare docs, 2026)
-
-- Containers are GA. `containers[]` in `wrangler.jsonc` pairs with a Durable
-  Object binding + `migrations.new_sqlite_classes`
-  (`/containers/get-started/`, `/sandbox/get-started/`).
-- `scheduled()` → `getContainer(env.BINDING, name).start({ entrypoint, envVars,
-enableInternet })` is the documented batch / cron container pattern
-  (`/containers/container-class/` — `start()` example is literally a
-  `scheduled` nightly job).
-- `standard-4` (4 vCPU / 12 GiB / 20 GB) is the heaviest predefined instance type
-  (changelog 2025-10-01); custom types (changelog 2026-01-05) can go to the same
-  ceiling if you need to tune.
-- Secrets reach the container as env vars via `start({ envVars })`
-  (`/containers/examples/env-vars-and-secrets/`).
-- `wrangler deploy` builds the image and pushes it to the Cloudflare Registry
-  automatically when Docker is running locally (`/containers/get-started/`).
-
----
+The container always scores race by race in production. Day/category local
+training or offline prediction generation may batch work, but production
+messages must stay focused to one race and include feature generation in the
+container path.
 
 ## Prerequisites
 
-- bun / bunx + uv (no npm/npx).
-- Docker Desktop (or Colima) running locally — required for `wrangler deploy` to
-  build + push the container image. Verify with `docker info`.
-- `wrangler login` to your Cloudflare account (account_id `78109ec18c7c85b194b19fb32e3bb149`).
-- The v7-lineage model artifacts staged into the container build context as
-  `apps/finish-position-predict-container/models/finish-position/{jra,nar,ban-ei}/{modelVersion}/{model.json,metadata.json}`
-  (gitignored scratch — see `.gitignore`). Source-of-truth copies live under
-  `apps/pc-keiba-viewer/tmp/models/{jra-cb,nar-xgb,banei-cb}-v7-lineage-wf-21y/`
-  from Stage 6a of `docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md` §10; the Dockerfile
-  COPYs them into the image at `/models`.
-- A Neon (Postgres) connection string for the production DB.
+- `bun` / `bunx` and `uv`; do not use `npm` / `npx`.
+- Docker or Colima running locally for `wrangler deploy`, because Wrangler builds
+  and pushes the container image.
+- Logged-in Wrangler account for this project.
+- Worker secrets:
+  - `NEON_DATABASE_URL`
+  - `TRIGGER_TOKEN`
+  - `NAR_TRANSFORMER_BLEND_ENABLED` (`1` for current default-on operation; `0`
+    for NAR clean188 base-only rollback)
 
----
+## Build And Deploy
 
-## Step 1 — create the audit D1 database
-
-```sh
-cd apps/finish-position-cron
-bunx wrangler d1 create finish-position-cron-db
-```
-
-Copy the printed `database_id` into `apps/finish-position-cron/wrangler.jsonc`,
-replacing `REPLACE_WITH_D1_DATABASE_ID`. Then apply the migration:
-
-```sh
-bun run --filter finish-position-cron d1:migrate
-```
-
-This creates `finish_position_cron_executions` (insert-only audit — never
-DELETE / TRUNCATE / DROP, per project rule).
-
-## Step 2 — stage the model artifacts into the container build context
-
-Models are **baked into the image** (no runtime R2 read). Copy the production
-v7-lineage artifacts into the gitignored build-context scratch dir before
-`wrangler deploy` so the Dockerfile `COPY apps/finish-position-predict-container/models /models`
-picks them up:
-
-```sh
-for c in jra:jra-cb nar:nar-xgb ban-ei:banei-cb; do
-  cat=${c%%:*}; prefix=${c##*:}
-  ver=${prefix}-v7-lineage-wf-21y
-  dst=apps/finish-position-predict-container/models/finish-position/${cat}/${ver}
-  mkdir -p "$dst"
-  cp apps/pc-keiba-viewer/tmp/models/${ver}/model.json    "$dst/model.json"
-  cp apps/pc-keiba-viewer/tmp/models/${ver}/metadata.json "$dst/metadata.json"
-done
-```
-
-The destination dir is gitignored (`.gitignore` covers
-`apps/finish-position-predict-container/models/`) — verify with `git status`
-that no `model.json` / `metadata.json` is staged. Expected sizes: JRA `model.json`
-~7.0 MB, NAR ~3.6 MB, Ban-ei ~4.1 MB; `metadata.json` `feature_names` lengths
-must be 226 / 175 / 111 respectively (parity sanity).
-
-## Step 3 — set the Worker secrets (never commit them)
+Run from the cron Worker package so Wrangler picks up the Worker and container
+configuration:
 
 ```sh
 cd apps/finish-position-cron
-bunx wrangler secret put NEON_DATABASE_URL
-# paste: postgresql://<user>:<password>@<host>/<db>?sslmode=require
-bunx wrangler secret put TRIGGER_TOKEN
-# paste: a long random token (>= 32 chars). Used as the Bearer token by
-# POST /run (on-demand trigger). Treat it like a password.
+bun run deploy -- --containers-rollout immediate
 ```
 
-`PREDICT_DAYS_AHEAD` is a plain var in `wrangler.jsonc` (default `"2"`); change it
-there if you want a wider window.
+This builds the Docker image from the repo root build context, bakes
+`apps/finish-position-predict-container/models/` into the container, pushes the
+image to Cloudflare, and deploys the Worker.
 
-## Step 4 — build + push the image and deploy the Worker
-
-`wrangler deploy` (run from the cron Worker dir) builds the Dockerfile referenced
-by `containers[].image` using `image_build_context` (the repo root, so the
-Dockerfile can COPY both the container `src/` and the reused
-`apps/pc-keiba-viewer` feature-pipeline scripts), pushes it to the Cloudflare
-Registry, and deploys the Worker + cron trigger + Durable Object migration.
+## Verify Deployment
 
 ```sh
-# Docker must be running.
 cd apps/finish-position-cron
-bun run --filter finish-position-cron deploy
+bunx wrangler deployments list
+bunx wrangler containers list
+bunx wrangler secret list
+curl -fsS https://finish-position-cron.kaoru.workers.dev/
 ```
 
-## Step 5 — verify
+Expected:
 
-1. **Cron registered**: `bunx wrangler deployments list` / dashboard → Worker →
-   Triggers shows `0 18 * * *`.
-2. **Manual dry-run** (optional, before the first scheduled fire):
-   ```sh
-   bunx wrangler dev --test-scheduled
-   curl "http://localhost:8787/cdn-cgi/handler/scheduled?cron=0+18+*+*+*"
-   ```
-   (Local containers run without the `max_instances` cap; use a Neon branch /
-   throwaway DB for a true dry-run so you do not write into prod.)
-3. **On-demand trigger** (after deploy, to predict TODAY immediately without
-   waiting for the next cron tick):
-   ```sh
-   curl -X POST https://finish-position-cron.<your-subdomain>.workers.dev/run \
-     -H "Authorization: Bearer $TRIGGER_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{}'                            # omit runDate → today (JST)
-   # or with an explicit date:
-   #   -d '{"runDate":"20260603"}'
-   ```
-   Expect `{"ok":true,"runDate":"YYYY-MM-DD"}`. A missing / wrong token returns
-   401; a malformed `runDate` returns 400 (no container started).
-4. **Audit rows** after a real fire:
-   ```sh
-   bunx wrangler d1 execute finish-position-cron-db --remote \
-     --command "select run_date, status, races_predicted, duration_ms, error
-                from finish_position_cron_executions
-                order by recorded_at desc limit 5;"
-   ```
-   Expect a `started` row from the Worker and (from the container) a `success`
-   row with `races_predicted > 0`. An `error` row carries the failure message.
-5. **Predictions written** (Neon):
-   ```sql
-   select model_version, source, count(*)
-   from race_finish_position_model_predictions
-   where model_version like '%-v7-lineage-wf-21y'
-     and prediction_generated_at > now() - interval '1 day'
-   group by 1, 2 order by 1, 2;
-   ```
+- latest deployment is at 100 percent
+- container app is `active`
+- required secrets exist
+- health endpoint returns `{"ok":true,...}`
 
-## Step 6 — observability
+## Focused Per-Race Smoke
 
-`observability.head_sampling_rate` is `0.1` in `wrangler.jsonc` (mandatory for
-new Workers to bound log cost). Watch `wrangler tail finish-position-cron` during
-the first scheduled run.
-
----
-
-## Deprecated Mac launchd local/manual tooling
-
-All file paths + commands live under `scripts/launchd/`. These commands are
-retained only for historical local smoke/manual operation. Do not install or
-enable them as production scheduler/authority. See `scripts/launchd/README.md`
-for the deprecated-tooling runbook. Quick reference:
+Use a real upcoming race that has source rows. Keep the trigger token in the
+environment and never print it.
 
 ```sh
-# Install for local testing only
-launchctl bootstrap gui/$(id -u) \
-  /Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data/scripts/launchd/com.kkk4oru.finish-position-predict.plist
-
-# Status
-launchctl print gui/$(id -u)/com.kkk4oru.finish-position-predict | grep -E 'state|last exit code|next firing'
-
-# Manual fire
-launchctl kickstart -k gui/$(id -u)/com.kkk4oru.finish-position-predict
-
-# Uninstall
-launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict
+curl -fsS -X POST \
+  https://finish-position-cron.kaoru.workers.dev/api/admin/run-focused-full-race \
+  -H "Authorization: Bearer $FINISH_POSITION_CRON_TRIGGER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"category":"nar","runYmd":"20260710","keibajoCode":"45","raceBango":"03","debug":true}'
 ```
 
-Logs land in `~/Library/Logs/finish-position-predict/`
-(`YYYYMMDD.log` per run, `failures.log` aggregated). Credentials are masked.
+`accepted` means the container launched detached focused work. Poll Neon for the
+target race until prediction rows appear. For NAR transformer production smoke,
+the target race must write `model_version='iter40-nar-settransformer-blend-v1'`
+with one row per runner and ranks `1..n`. `already-complete` is also a valid
+NAR smoke result when those iter40 rows already exist; it proves the Worker and
+Container focused completion guards are checking the transformer model, not the
+clean188 rollback base.
 
-Mac sleep behaviour: `StartCalendarInterval` queues a missed firing while the
-Mac is asleep and runs it on next wake. If the Mac is powered off at JST
-03:00 the firing is lost — run the manual fire above to recover. The UPSERT
-is idempotent.
+For the JRA 703 cell, choose a race whose `race_entry_corner_features` rows all
+have `source='jra'` and `kyoso_joken_code='703'`. The target race must write
+`model_version='jra-cb-v9-sim-2013-clean-jockey-pedigree269'` with ranks `1..n`.
+
+## Neon Verification Queries
+
+```sql
+select source, model_version, count(*), max(prediction_generated_at)
+from race_finish_position_model_predictions
+where prediction_generated_at > now() - interval '2 hours'
+group by source, model_version
+order by max(prediction_generated_at) desc;
+```
+
+Focused target check:
+
+```sql
+select count(*), min(predicted_rank), max(predicted_rank), max(model_version)
+from race_finish_position_model_predictions
+where source = $1
+  and (kaisai_nen || kaisai_tsukihi) = $2
+  and keibajo_code = $3
+  and race_bango = $4;
+```
 
 ## Rollback
 
-1. **Stop new Cloudflare production runs**:
-   - Disable or gate the relevant Cloudflare Cron / Queue / `POST /run` path,
-     then `wrangler deploy` the change.
-   - Deprecated local launchd, if manually installed for testing only:
-     `launchctl bootout gui/$(id -u)/com.kkk4oru.finish-position-predict`.
-2. **Revert the active model** so the viewer serves the previous version
-   (predictions already written stay; nothing is deleted):
-   ```sql
-   update finish_position_active_models
-   set model_version = 'jra-cb-v6-stacked', activated_at = now()
-   where category = 'jra';
-   -- repeat for nar / ban-ei with their previous model_version
-   ```
-   (Per `docs/finish-position-accuracy/legacy/FINISH_POSITION_MODEL_V7_LINEAGE.md` §7 — the old eval rows +
-   predictions remain, so rollback is immediate.)
-3. The container writes are **UPSERTs only**; there is no DELETE / TRUNCATE /
-   DROP at any point, so a bad run can be re-run idempotently after a fix rather
-   than cleaned up.
+- NAR transformer only: set the Worker secret to `0`.
 
----
+  ```sh
+  cd apps/finish-position-cron
+  printf 0 | bunx wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED
+  ```
 
-## What is verified by unit tests vs. at deploy time
+  This keeps production leak-free by serving the clean188 base. Do not roll back
+  to historical leaky NAR artifacts.
 
-- **Unit-tested (CI / pre-commit, ≥ 95% coverage):** the pure logic — `race_id`
-  parse, batch dedupe (NAR zero-ketto collision), chunked UPSERT SQL, within-race
-  ranking, v7 model-version / R2-key mapping, audit-record builder, feature-row
-  projection + float32 quantisation, the upcoming-prediction transform; and on the
-  Worker side — the cron-gate decision, JST run-date helpers, container
-  start-options builder, audit builder, and the `scheduled()` dispatch (mocked
-  Container binding + D1).
-- **Verified at deploy time (this runbook):** the real container run — Neon TCP
-  read, DuckDB + v7-layer feature build, native CatBoost / XGBoost model load and
-  score, and the live UPSERT into Neon. These are I/O boundaries
-  (`predict_upcoming.py`, `db_driver.py`, `catboost_adapter.py`,
-  `xgboost_adapter.py`, `pipeline_runner.py`) intentionally outside the coverage
-  gate.
+- Bad code/image deploy: use Wrangler rollback or redeploy a known-good commit.
+  Prediction writes are UPSERT-only; do not delete prediction rows as part of
+  rollback.
+
+## Deprecated Local Smoke
+
+Scripts under `scripts/launchd/` and local Docker tags are retained for manual
+operator smoke only. They must not be installed or treated as production
+authority. Production correctness is established by Cloudflare deployment plus
+focused per-race Neon writes.
