@@ -21,8 +21,10 @@ from mlflow_tracking import cells, config, timeline
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
+    log_cell_table,
     log_eval_run,
     log_json_artifact,
+    select_headline_metrics,
 )
 
 TRIAL_REGISTRY_EXPERIMENT: Final[str] = config.EXPERIMENT_FP_WF_EVAL
@@ -78,6 +80,14 @@ RS_SERVE_METRIC_KEYS: Final[tuple[str, ...]] = ("overall_accuracy_pct", "macro_f
 # repeated call) must reuse the same run instead of creating a new one every
 # time.
 SERVE_KEY_TAG: Final[str] = "serve_key"
+
+# Idempotency tag for `ingest_cell_report`'s OPTIONAL `run_key` parameter --
+# same tag-search idiom as `SERVE_KEY_TAG` above, but opt-in: unlike
+# `ingest_serve_accuracy` (which always derives its own key from the
+# payload), a generic cell-metrics table has no reliable identity of its own
+# (two unrelated `retest_wf.py` reports can share the same --run-name), so
+# reuse is only attempted when a caller explicitly opts in via `--run-key`.
+RUN_KEY_TAG: Final[str] = "run_key"
 
 
 def _group_trial_rows(
@@ -421,6 +431,50 @@ def normalize_cell_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _find_run_by_key(client: MlflowClient, experiment_id: str, run_key: str) -> str | None:
+    """Find the run tagged with `run_key`, mirroring `_find_serve_run`'s /
+    `sync_production._find_sync_run`'s / `timeline._find_timeline_run`'s exact
+    tag-search idiom."""
+    matches = client.search_runs(
+        [experiment_id],
+        filter_string=f"tags.{RUN_KEY_TAG} = '{run_key}'",
+        max_results=1,
+    )
+    return matches[0].info.run_id if matches else None
+
+
+def _log_cell_report_onto_run(
+    client: MlflowClient,
+    run_id: str,
+    *,
+    cell_df: pd.DataFrame,
+    aggregate_metrics: Mapping[str, float] | None,
+    tags: Mapping[str, str],
+) -> None:
+    """Log a cell report's metrics/tags/table onto an ALREADY-OPEN run.
+
+    Mirrors `training_run.py`'s own `_ingest_cell_report` (which logs a cell
+    report into an already-open run for the identical reason: a caller-
+    supplied run identity -- there a `hr-mlflow-training-run/v1` manifest's
+    own run, here a `run_key`-reused run -- must be updated in place, not
+    re-created via `logging_api.log_eval_run`, which only ever creates a
+    fresh run). Every field is UNCONDITIONALLY re-logged, exactly like
+    `ingest_serve_accuracy`'s own reused-run semantics: `log_batch_chunked`'s
+    metrics are keyed by (name, step) so re-logging identical values is a
+    no-op in effect, and `log_cell_table`/tag writes simply overwrite, so a
+    later call with a genuinely corrected report also has its latest data win.
+    """
+    metric_items = [
+        Metric(str(k), float(v), 0, 0) for k, v in (aggregate_metrics or {}).items()
+    ]
+    headline = select_headline_metrics(cell_df)
+    metric_items.extend(Metric(k, v, 0, 0) for k, v in headline.items())
+    tag_items = [RunTag(k, v) for k, v in tags.items()]
+    log_batch_chunked(client, run_id, metrics=metric_items, tags=tag_items)
+    log_cell_table(client, run_id, cell_df)
+    client.set_terminated(run_id, status="FINISHED")
+
+
 def ingest_cell_report(
     client: MlflowClient,
     path: Path,
@@ -429,6 +483,7 @@ def ingest_cell_report(
     aggregate_metrics: Mapping[str, float] | None = None,
     experiment_name: str = CELL_REPORT_EXPERIMENT,
     run_name: str | None = None,
+    run_key: str | None = None,
 ) -> str:
     """Ingest a generic cell-metrics table (parquet or JSON records) as one run.
 
@@ -439,14 +494,49 @@ def ingest_cell_report(
     `eval_regime` is required (see `validate_eval_regime`) because a cell
     report can just as easily be a leaky self-consistency report as a true
     held-out one, and that distinction must stay visible in the UI.
+
+    `run_key` (optional, default None) makes repeated ingestion of the SAME
+    underlying report idempotent: when given, an existing run tagged
+    `run_key` (see `RUN_KEY_TAG`) in `experiment_name` is found and reused
+    (its metrics/tags/table are re-logged in place via
+    `_log_cell_report_onto_run` -- see that function's own docstring for why
+    this bypasses `logging_api.log_eval_run`) instead of creating a new run.
+    Omitted (the default), behavior is UNCHANGED from before this parameter
+    existed: every call creates a brand-new run via `logging_api.log_eval_run`,
+    exactly as today -- a generic cell-metrics table has no reliable identity
+    of its own (unlike `ingest_serve_accuracy`'s payload-derived `serve_key`),
+    so opt-in reuse via an explicit, caller-chosen key is the only safe
+    default here.
     """
     validate_eval_regime(eval_regime)
     cell_df = normalize_cell_dataframe(read_cell_table(path))
-    return log_eval_run(
+    resolved_run_name = run_name if run_name is not None else path.stem
+    tags = {"source_file": path.name, "eval_regime": eval_regime}
+
+    if run_key is None:
+        return log_eval_run(
+            client,
+            experiment_name,
+            metrics=aggregate_metrics,
+            cell_df=cell_df,
+            run_name=resolved_run_name,
+            tags=tags,
+        )
+
+    experiment_id = get_or_create_experiment(client, experiment_name)
+    existing_run_id = _find_run_by_key(client, experiment_id, run_key)
+    if existing_run_id is not None:
+        run_id = existing_run_id
+    else:
+        run = client.create_run(
+            experiment_id, run_name=resolved_run_name, tags={RUN_KEY_TAG: run_key}
+        )
+        run_id = run.info.run_id
+    _log_cell_report_onto_run(
         client,
-        experiment_name,
-        metrics=aggregate_metrics,
+        run_id,
         cell_df=cell_df,
-        run_name=run_name if run_name is not None else path.stem,
-        tags={"source_file": path.name, "eval_regime": eval_regime},
+        aggregate_metrics=aggregate_metrics,
+        tags={**tags, RUN_KEY_TAG: run_key},
     )
+    return run_id

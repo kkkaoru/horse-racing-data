@@ -44,16 +44,32 @@ replicates (by hand, not by import) the boundary rules defined in
   ("timeline") layer, so accuracy trends render as real line charts instead
   of one flat dot per run. Exactly one PERSISTENT run per (task, category)
   pair lives in the `timelines` experiment; each call appends one point
-  (step = date, as a YYYYMMDD int) to that run rather than creating a new
-  run. Idempotent: the run is found by a `timeline_key` tag search (not
-  recreated), and each metric key is deduped by step (re-ingesting the same
-  date never double-draws a point). The run is always left `FINISHED` after
-  every append -- MLflow's chart rendering doesn't depend on run status, and
-  a permanently-`RUNNING` timeline run would show a stuck/live indicator in
-  run-list views that never resolves. Wired into BOTH
-  `ingest_eval.py::ingest_serve_accuracy` (manual/CLI-only) and
-  `training_run.py::log_training_run` (the actual automatic live-serve path
-  -- see that module's docstring for the empirical reasoning).
+  (step = `step_for_date(date_yyyymmdd)`, days-since-2020-01-01) to that run
+  rather than creating a new run. Idempotent: the run is found by a
+  `timeline_key_v2` tag search (not recreated), and each metric key is
+  deduped by step (re-ingesting the same date never double-draws a point).
+  The run is always left `FINISHED` after every append -- MLflow's chart
+  rendering doesn't depend on run status, and a permanently-`RUNNING`
+  timeline run would show a stuck/live indicator in run-list views that
+  never resolves. Wired into BOTH `ingest_eval.py::ingest_serve_accuracy`
+  (manual/CLI-only) and `training_run.py::log_training_run` (the actual
+  automatic live-serve path -- see that module's docstring for the
+  empirical reasoning).
+  - **v2 step scheme (2026-07-10):** the original scheme (`step =
+int(date_yyyymmdd)`, e.g. 20260516) made MLflow 3.14's GenAI/Eval
+    run-detail chart tiles (where every timeline run gets auto-routed, since
+    it carries no params/source tags) spin forever at that ~20-million step
+    magnitude -- confirmed with 3 throwaway diagnostic runs left in the real
+    `timelines` experiment, tagged `junk=true`/`diagnostic=true`. The fix:
+    `step_for_date` computes step as days-since-2020-01-01 instead (small,
+    monotonic; step N == 2020-01-01 + N days). v2 runs are tagged
+    `timeline_key_v2` (a different tag KEY, not just a different value) and
+    named `timeline-{task}-{category}-v2`, so they can never be confused
+    with (found by, or appended to by) the 5 pre-existing v1 runs. The
+    one-time migration (`migrate_timeline_v2.py`) copied every v1 run's full
+    metric history into its new v2 counterpart, then tagged the OLD run
+    `deprecated=true` / `superseded_by=<new_run_id>` -- v1 runs are never
+    deleted, only superseded.
 - `src/mlflow_tracking/backfill_serve_timeline.py` — backfills `timelines`
   points over a historical date range by re-invoking
   `serve_accuracy_report.py --json` once per date (jra/nar only -- see
@@ -77,7 +93,19 @@ replicates (by hand, not by import) the boundary rules defined in
   the `sync_base_logged`/`sync_eval_logged` tags, so re-running the same
   range every day (the realistic cron shape) never re-logs already-logged
   base tracking or evaluation, but does retry an unfilled evaluation on a
-  later call once results become final.
+  later call once results become final. Also emits one MLflow trace (+
+  Feedback assessments) per race/horse via `trace_emit.py`, the SAME pass
+  that computes eval metrics — see "MLflow traces" below.
+- `src/mlflow_tracking/trace_emit.py` — hardened, isolated trace/span/
+  assessment emitters built on `mlflow.tracing.client.TracingClient`
+  (constructed explicitly, never the global fluent API) — see "MLflow
+  traces" below for the full shape/rationale. Every semi-internal mlflow
+  API surface this feature depends on is contained to this one file.
+- `src/mlflow_tracking/backfill_traces.py` — one-time (but safely
+  re-runnable) historical backfill: emits traces for every already-
+  evaluated (date, category, model_version) run in both production-usage
+  experiments, re-using `trace_emit.py`'s exact emit functions — see
+  "MLflow traces" below.
 - `src/mlflow_tracking/champion_cell_eval.py` — evaluates each category's
   CURRENT champion model version at CELL granularity (venue × class ×
   distance/season/surface/field-size bands) over a trailing window of
@@ -87,6 +115,27 @@ replicates (by hand, not by import) the boundary rules defined in
   per (category, task, window_days, as_of date) — re-running for the same day
   is a cheap no-op that reuses the existing run's summary rather than
   re-querying or re-logging the cell table.
+- `src/mlflow_tracking/cell_eval_runs.py` — per-CELL-PER-SERVED-VERSION
+  evaluation, as individual PERSISTENT MLflow runs so a single cell's
+  accuracy trend over time is a real, drillable line chart in the UI —
+  structurally different from `champion_cell_eval.py` above, which scores
+  only the champion and logs one run per (category, task) with the per-cell
+  breakdown as a table inside it. This module instead evaluates EVERY
+  model_version that served enough volume this window (champion, every
+  cell-routed variant, and any other version), and logs one run PER
+  (category, cell, model_version), tagged with each cell dimension
+  individually (`venue`, `class_code`, `distance_band`, `season_band`,
+  `surface`, `field_size_band` for finish-position; RS omits the last two),
+  plus `model_version`, `champion_relation` (`champion`/`variant`/`other`),
+  `window_days`, and `low_n`. Idempotency: found-or-created by a
+  `cell_run_key = "{category}:{cell_key}:{model_version}:{window_days}"` tag,
+  with each day's metric point additionally deduped by step (mirroring
+  `timeline.py`'s own idiom) — a same-day re-run is a cheap no-op. A
+  `--min-races` volume floor (default 20) gates run creation per
+  (model_version, cell) group; groups below it are skipped but counted
+  (never silently dropped), and the floor is automatically raised — with a
+  warning — if it would otherwise create more than 1,500 runs for one
+  category/task in a single invocation.
 - `src/mlflow_tracking/cli.py` — the `mlflow_tracking` CLI (see below).
 
 ## Usage
@@ -148,10 +197,23 @@ uv run python -m mlflow_tracking.cli export-active-models --output active_models
 # and (usually already-default) HORSE_RACING_LOCAL_PG_URL -- see Configuration
 # below. Meant to be re-run daily over a small overlapping window (e.g.
 # "yesterday+today"); already-logged base tracking/eval is never re-logged.
-# --no-traces is accepted for interface completeness only -- MLflow traces are
-# never emitted regardless (see the ⚠️ callout below for why).
+# Also emits one MLflow trace (+ Feedback assessments) per race/horse the
+# same pass eval metrics are computed -- see "MLflow traces" below.
+# --no-traces skips trace/assessment emission for this call only (base
+# tracking and eval metrics/tables are unaffected).
 uv run python -m mlflow_tracking.cli sync-production \
   --date-from 20260701 --date-to 20260708 --categories jra,nar,banei
+
+# One-time (but safely re-runnable) historical backfill: emit MLflow traces
+# for every already-evaluated (date, category, model_version) run in BOTH
+# production-usage experiments -- see "MLflow traces" below. Requires the
+# same two env vars as sync-production above. --date-from/--date-to
+# optionally restrict which runs are considered (useful for chunking a very
+# large backfill); omitted, every run ever found is processed. Idempotent:
+# a race/horse whose trace already exists is a cheap no-op, so an
+# interrupted run is trivially safe to resume by just re-running.
+uv run python -m mlflow_tracking.cli backfill-traces \
+  [--date-from 20260601] [--date-to 20260708]
 
 # Evaluate each category's CURRENT champion model at CELL granularity over a
 # trailing window of genuinely-served predictions (default: 90 days ending
@@ -161,6 +223,27 @@ uv run python -m mlflow_tracking.cli sync-production \
 # bug. --as-of overrides "today" for a reproducible re-run of a past window.
 uv run python -m mlflow_tracking.cli eval-champion-cells \
   --category jra,nar --window-days 90 --as-of 20260708
+
+# Score EVERY model_version that served enough volume this window (not just
+# the champion) at CELL granularity, logging one PERSISTENT, individually
+# drillable MLflow run per (category, cell, model_version) -- appending one
+# metric point per day this command runs, so a single cell's accuracy shows
+# as a real trend line in the UI. Requires the same two env vars as
+# sync-production above. --min-races (default 20) gates run creation per
+# (model_version, cell) group; below-floor groups are skipped but counted,
+# never silently dropped, and the floor is auto-raised (with a warning) if
+# it would otherwise exceed 1,500 runs for one category/task.
+uv run python -m mlflow_tracking.cli eval-cells \
+  --category jra,nar,banei --window-days 90 --min-races 20
+
+# One-time metrics-only backfill: append fp_place4_pct/fp_place5_pct/
+# fp_place6_pct (feedback_eval_rank_1_to_6) to every already-evaluated
+# finish-position production-usage run (tagged sync_eval_logged=true) and
+# its corresponding v2 finish-position timeline run, WITHOUT re-logging any
+# existing metric/table/artifact -- see refresh_eval_metrics.py's own module
+# docstring. Idempotent: a run already carrying all 3 keys is skipped with
+# no re-query. Requires the same two env vars as sync-production above.
+uv run python -m mlflow_tracking.cli refresh-eval-metrics
 
 # Registry management.
 uv run python -m mlflow_tracking.cli set-champion jra-finish-position 7
@@ -247,30 +330,104 @@ onto the `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` variables mlflow's boto3-backed
 S3 artifact store reads, without overwriting anything already set.
 
-### ⚠️ MLflow traces are not used — here's why and what replaces them
+### MLflow traces: Option B (`TracingClient`, never the fluent API) — how, why, and what's deferred
 
-`sync-production` deliberately never emits an MLflow trace, even though a
-per-race/per-horse "here's exactly what was predicted" audit trail sounds
-like precisely what `MlflowClient.start_trace`/`end_trace` are for. This was
-evaluated and rejected, not overlooked: in the installed `mlflow-skinny`
-3.14, those calls persist through a process-wide OpenTelemetry singleton that
-resolves its destination via the GLOBAL `mlflow.get_tracking_uri()` state at
-first use — **not** the calling `MlflowClient`'s own `tracking_uri`. This was
-reproduced empirically: writing a trace via an explicit, isolated-store
-`MlflowClient` silently failed until `mlflow.set_tracking_uri()` was ALSO
-called globally. Adopting traces here would mean introducing global mutable
-tracking-URI state into a package built entirely around explicit-client,
-hermetically-testable design — exactly the failure class already responsible
-for a real recorded incident (see `tests/conftest.py`'s
-`clear_ambient_backend_uri` docstring): a leaked global tracking URI once
-caused a test run to silently overwrite two production champion aliases with
-fake test data.
+**This section supersedes an earlier "MLflow traces are not used" decision.**
+That decision was correct about the hazard it identified — evaluated and
+rejected, not overlooked — but had not yet found the fix. In the installed
+`mlflow-skinny` 3.14.0, the FLUENT API (`mlflow.start_trace()`/
+`mlflow.end_trace()`/`mlflow.log_feedback()`) persists through a process-wide
+OpenTelemetry singleton that resolves its destination via the GLOBAL
+`mlflow.get_tracking_uri()` state at first use — **not** the calling
+`MlflowClient`'s own `tracking_uri`. This was reproduced empirically: writing
+a trace via an explicit, isolated-store `MlflowClient` silently failed until
+`mlflow.set_tracking_uri()` was ALSO called globally — exactly the failure
+class already responsible for a real recorded incident (see
+`tests/conftest.py`'s `clear_ambient_backend_uri` docstring): a leaked global
+tracking URI once caused a test run to silently overwrite two production
+champion aliases with fake test data. The fluent API also has a SECOND,
+independent hazard: trace export is async by default, so an assessment
+logged immediately after ending a trace can race the trace actually landing
+in the store (observed empirically as a `ForeignKeyViolation` on
+`assessments.trace_id`).
 
-Decision: this package does not use MLflow traces. The `predictions.json` /
-`eval.json` (finish-position) table artifacts — and their running-style
-analogs — logged by `sync-production` on every run serve as the per-race/
-per-horse audit trail instead, viewable in the MLflow UI's Artifacts /
-Evaluation views.
+**Option B**, implemented in `trace_emit.py`, avoids BOTH hazards by using a
+different, lower-level write path: `mlflow.tracing.client.TracingClient`
+constructed DIRECTLY with an explicit `tracking_uri` (never the global
+`mlflow.set_tracking_uri()`), with manually-built `TraceInfo`/`Span` objects
+written via `TracingClient.start_trace(trace_info)` / `.log_spans(...)` /
+`.log_assessment(...)` — synchronous, direct store writes with no OTel
+exporter, no background thread, and no global state anywhere in the path.
+See `trace_emit.py`'s own module docstring for the full technical rationale,
+including a landmine found empirically during THIS implementation (not
+anticipated by the earlier investigation): `client_request_id` is a real
+`VARCHAR(50)` column on the live Neon-backed store, so a human-readable
+business key is hashed down to a fixed, safe length rather than used
+directly — this is genuinely semi-internal mlflow API surface, and that
+risk is deliberately contained to `trace_emit.py` alone.
+
+**Trace/span/assessment shape:**
+
+- **Finish-position**: one trace per (race, model_version) — root span
+  `predict-race` (`SpanType.TASK`), attributes `race_key`/`category`/
+  `model_version`/`race_date`. Child spans (`SpanType.TOOL`): `score-model`
+  (carries `model_version` — ONE span name shared across every
+  model_version, so the Tool-calls page's per-name aggregation groups them
+  together; per-version splitting stays possible via this attribute or the
+  `model_version` trace tag) and `upsert-neon`. Assessments (`Feedback`,
+  `source_type=CODE`, `source_id="sync_production"`): `place1_hit` through
+  `place6_hit` (booleans — `place1_hit` is `FpRaceEvalRow.top1_hit`), each
+  logged ONLY when that rank is applicable to the race (the place4/5/6
+  small-field exclusion from `serve_eval.py` is respected exactly — a
+  too-small field gets NO assessment for that rank, never a fabricated
+  `False`), plus `top3_box_score` (float 0.0/1.0, `FpRaceEvalRow.
+top3_box_hit`'s existing meaning verbatim — no more graduated per-race
+  definition exists anywhere in this package).
+- **Running-style (judgment call — see `trace_emit.py`'s own docstring for
+  the full rationale)**: RS predicts PER-HORSE, not per-race, so this
+  package emits ONE TRACE PER HORSE, root span `predict-horse`, attributes
+  `race_key`/`ketto_toroku_bango`/`category`/`model_version`/`race_date`.
+  Same two child span names as FP. One assessment, `predicted_class_hit`
+  (boolean, `RsHorseEvalRow.hit` verbatim).
+- **Timing is NOMINAL, always, and disclosed**: there is no real per-race/
+  per-horse serving-latency measurement anywhere in this pipeline (a
+  different team's domain, out of scope here). Every span carries an
+  explicit `timing="approximate"` attribute; only the root span's
+  `start_time` is real (the row's actual `prediction_generated_at`,
+  historical timestamps honored). The Usage page's latency panel will show
+  these nominal numbers until the serving pipeline itself ever emits real
+  timing data.
+- **`status` is always `OK`**: every row this reaches already matched a
+  finalized result (see `serve_eval.py`'s join). A serving GAP day has zero
+  rows and therefore zero traces — never an `ERROR` trace fabricated for a
+  race/horse that simply never got served. `TraceState.ERROR` is
+  unreachable code in `trace_emit.py` today, by design, not an oversight.
+- **Destinations**: ONLY `finish-position/production-usage` and
+  `running-style/production-usage` ever receive a trace — every other
+  experiment in this package intentionally has none.
+
+**Idempotency**: every trace's `client_request_id` is a deterministic hash of
+its business key, and every emit call does a pre-emit `search_traces`
+existence check before writing anything — a re-run (daily sync re-covering
+an overlapping range, or a re-run of `backfill-traces`) creates zero
+duplicate traces/assessments. Proven both by hermetic tests
+(`tests/test_trace_emit.py`, `tests/test_backfill_traces.py`,
+`tests/test_sync_production.py`) and by a real double-run against the live
+store (see this feature's own verification notes).
+
+**Volume/retention — a conscious deferral, not an oversight**: an
+archival/retention scheduler for traces is deliberately NOT built here.
+Trace/span/assessment rows will accumulate indefinitely in the tracking
+store, exactly like every other run/metric this package already logs (see
+this package's no-deletes policy elsewhere in this doc). Building retention
+logic is explicitly OUT OF SCOPE for this feature.
+
+**Backfill**: `backfill_traces.py` (CLI: `backfill-traces`) walks every
+already-evaluated (date, category, model_version) run in both production-
+usage experiments and emits traces for the underlying rows, using the
+EXACT SAME `trace_emit.py` functions the daily sync calls — there is
+exactly one trace-emission code path. See the Usage section above for the
+command.
 
 ### ⚠️ `win5-xgb-*-rs-overlay-*` is intentionally out of scope
 
@@ -284,6 +441,85 @@ corresponding registered model/version for it, so it deliberately carries no
 `backfill-finish-position` coverage. Do not treat its presence in the MLflow
 UI as drift or an oversight, and do not "fix" it by registering a model or
 backfilling tags for it.
+
+### Smoke-test runs: `internal/smoke-tests` + `run_type=smoke`
+
+A one-shot manual smoke run (e.g. a throwaway dry-run of `log-training-run`
+to verify the ingestion pipeline end-to-end against the real store) should
+never land in a real per-task experiment (`finish-position/wf-eval`,
+`running-style/eval`, ...), where it would sit alongside genuine
+backfill/eval/production data and confuse any dashboard or headline-metric
+rollup built against that experiment. `config.EXPERIMENT_SMOKE_TESTS`
+(`"internal/smoke-tests"`, included in `config.ALL_EXPERIMENT_NAMES` so
+`init` always creates it) is the dedicated home for this.
+
+Route a smoke run there via `log-training-run`'s existing, already-generic
+manifest overrides — no new CLI flag or schema field is needed:
+
+```json
+{
+  "schema": "hr-mlflow-training-run/v1",
+  "task": "finish-position",
+  "category": "jra",
+  "model_version": "smoke-test-dry-run",
+  "eval_regime": "unspecified",
+  "experiment": "internal/smoke-tests",
+  "tags": { "run_type": "smoke" }
+}
+```
+
+The manifest's `experiment` field (already free-form, not restricted to a
+canonical list — see `training_run.py::_resolve_experiment`'s override) picks
+the target experiment, and its generic `tags` object (merged verbatim into
+the run's tags) is what MUST carry `run_type=smoke` on every run logged this
+way — this is a required convention, not a suggestion, since it is the only
+thing that lets a stray real manifest accidentally routed to
+`internal/smoke-tests` be told apart from a genuine smoke run later. Nothing
+in `log_training_run` enforces `run_type=smoke` automatically when routing
+to this experiment (by design — the manifest contract stays uniform across
+every destination experiment), so a caller wiring up a new smoke check must
+set both fields itself.
+
+### Filtering out junk runs in the MLflow UI
+
+A handful of runs across this store are marked `junk=true` (verified
+one-offs, diagnostic throwaways, or superseded test artifacts — see e.g.
+`timeline.py`'s v2-migration entry above for the 3 diagnostic `timelines`
+runs tagged this way) rather than deleted, per this package's no-deletes
+policy. To hide them while browsing an experiment's run list in the MLflow
+UI, use the search bar's filter syntax:
+
+```
+tags.junk != 'true'
+```
+
+`junk` is a plain tag, not a built-in column, so it is not shown by default
+— use the run-list column picker (the columns/gear icon above the run
+table) to add `junk` (and, where relevant, `run_type`) as a visible column
+before filtering, so a run's junk status is visible at a glance rather than
+only affecting which rows appear.
+
+### Two views over per-cell accuracy: champion rollup vs. per-cell drilldown
+
+Two different modules both expose CELL-granularity accuracy, for two
+different jobs — reach for whichever matches the question you're actually
+asking:
+
+- **`champion_cell_eval.py`** (`finish-position/champion-eval`,
+  `running-style/champion-eval`) answers "how is the model we're currently
+  serving doing, broken down by cell?" — it logs exactly ONE run per
+  (category, task), with the full per-cell breakdown as a table _inside_
+  that single run. Good for a quick, holistic health check of the current
+  champion, or for diffing one day's rollup against another's summary
+  fields.
+- **`cell_eval_runs.py`** (`finish-position/cell-eval`,
+  `running-style/cell-eval`) answers "how has THIS specific cell's accuracy
+  trended over time, and how does the champion compare to a specific
+  cell-routed variant there?" — it logs one PERSISTENT run PER (category,
+  cell, model_version), so a single cell (e.g. 中山 × class A × sprint ×
+  turf) for a single served version renders as its own drillable run with a
+  real line chart across days. Use this when you need to inspect or compare
+  individual cells/variants rather than skim an overall rollup.
 
 ## Development
 
@@ -299,11 +535,16 @@ bunx oxfmt --check package.json pyproject.toml README.md
 ## Daily automation (LaunchAgent)
 
 A Mac launchd LaunchAgent (`com.horse-racing.mlflow-production-sync`) runs
-`sync-production` then `eval-champion-cells` once daily at **22:30 JST**
-(same-day racing has finished and results have typically already mirrored
-into the local PostgreSQL replica by then). Both commands are idempotent, so
-a delayed launchd catch-up fire (e.g. after the Mac was asleep at 22:30) is
-harmless to re-run.
+`sync-production`, then `eval-champion-cells`, then `eval-cells` once daily
+at **22:30 JST** (same-day racing has finished and results have typically
+already mirrored into the local PostgreSQL replica by then). `eval-cells` is
+the third step: it scores every model_version that served enough volume
+that window (not just the champion) at cell granularity, appending one
+metric point to each (category, cell, model_version)'s own persistent run —
+this is what makes a single cell's accuracy trend visible as a line chart in
+the UI, day over day. All three commands are idempotent, so a delayed
+launchd catch-up fire (e.g. after the Mac was asleep at 22:30) is harmless to
+re-run.
 
 Source files live in this repo at `apps/mlflow/scripts/launchd/`:
 

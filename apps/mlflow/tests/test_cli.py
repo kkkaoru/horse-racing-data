@@ -28,14 +28,18 @@ from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
     backfill_serve_timeline,
+    backfill_traces,
+    cell_eval_runs,
     champion_cell_eval,
     cli,
     config,
     export_production,
+    refresh_eval_metrics,
     registry,
     sync_production,
 )
 from mlflow_tracking.backfill_running_style import RunningStyleBackfillSummary
+from mlflow_tracking.cell_eval_runs import CellEvalRunsSummary
 from mlflow_tracking.champion_cell_eval import ChampionCellEvalResult
 
 WriteJsonFixture = Callable[[Path, object], None]
@@ -453,6 +457,8 @@ def _empty_sync_summary(errors: list[str] | None = None) -> sync_production.Sync
         rs_eval_skipped_no_results=0,
         serving_gaps_detected=0,
         champion_gaps_detected=0,
+        traces_created=0,
+        traces_already_existed=0,
         errors=errors if errors is not None else [],
     )
 
@@ -472,6 +478,8 @@ def test_cmd_sync_production_reports_success(
         rs_eval_skipped_no_results=1,
         serving_gaps_detected=0,
         champion_gaps_detected=0,
+        traces_created=5,
+        traces_already_existed=1,
         errors=[],
     )
 
@@ -498,7 +506,8 @@ def test_cmd_sync_production_reports_success(
     assert "rs runs reused: 0" in captured.out
     assert "rs eval logged: 1" in captured.out
     assert "rs eval skipped (no results): 1" in captured.out
-    assert "MLflow traces are not emitted" in captured.err
+    assert "traces created: 5" in captured.out
+    assert "traces already existed (idempotent no-op): 1" in captured.out
 
 
 def test_cmd_sync_production_reports_errors(
@@ -575,6 +584,159 @@ def test_cmd_sync_production_no_traces_flag_passes_emit_traces_false(
     )
     assert exit_code == 0
     assert seen_emit_traces == [False]
+
+
+def test_cmd_refresh_eval_metrics_reports_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = refresh_eval_metrics.RefreshEvalMetricsSummary(
+        runs_scanned=10,
+        runs_updated=7,
+        runs_skipped_already_enriched=2,
+        runs_skipped_not_applicable=1,
+        metric_points_appended=19,
+        timeline_points_appended=19,
+        errors=[],
+    )
+
+    def _fake_refresh(
+        client: MlflowClient,
+        *,
+        neon_connect: Callable[[], object] = lambda: object(),
+        local_connect: Callable[[], object] = lambda: object(),
+    ) -> refresh_eval_metrics.RefreshEvalMetricsSummary:
+        return summary
+
+    monkeypatch.setattr(refresh_eval_metrics, "refresh_fp_place456_metrics", _fake_refresh)
+    exit_code = cli.main(["refresh-eval-metrics"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "runs scanned: 10" in captured.out
+    assert "runs updated: 7" in captured.out
+    assert "runs skipped (already enriched): 2" in captured.out
+    assert "runs skipped (not applicable -- no eligible races for rank 4/5/6): 1" in captured.out
+    assert "metric points appended: 19" in captured.out
+    assert "timeline points appended: 19" in captured.out
+
+
+def test_cmd_refresh_eval_metrics_reports_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = refresh_eval_metrics.RefreshEvalMetricsSummary(errors=["run-abc: boom"])
+
+    def _fake_refresh(
+        client: MlflowClient,
+        *,
+        neon_connect: Callable[[], object] = lambda: object(),
+        local_connect: Callable[[], object] = lambda: object(),
+    ) -> refresh_eval_metrics.RefreshEvalMetricsSummary:
+        return summary
+
+    monkeypatch.setattr(refresh_eval_metrics, "refresh_fp_place456_metrics", _fake_refresh)
+    exit_code = cli.main(["refresh-eval-metrics"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: run-abc: boom" in captured.err
+
+
+def test_cmd_backfill_traces_reports_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = backfill_traces.BackfillTracesSummary(
+        fp_runs_scanned=10,
+        fp_traces_created=8,
+        fp_traces_already_existed=2,
+        rs_runs_scanned=5,
+        rs_traces_created=4,
+        rs_traces_already_existed=1,
+        errors=[],
+    )
+    seen_bounds: list[tuple[str | None, str | None]] = []
+
+    def _fake_backfill(
+        client: MlflowClient,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        neon_connect: Callable[[], object] = lambda: object(),
+        local_connect: Callable[[], object] = lambda: object(),
+    ) -> backfill_traces.BackfillTracesSummary:
+        seen_bounds.append((date_from, date_to))
+        return summary
+
+    monkeypatch.setattr(backfill_traces, "backfill_traces", _fake_backfill)
+    exit_code = cli.main(
+        ["backfill-traces", "--date-from", "20260601", "--date-to", "20260630"]
+    )
+    assert exit_code == 0
+    assert seen_bounds == [("20260601", "20260630")]
+    captured = capsys.readouterr()
+    assert "fp runs scanned: 10" in captured.out
+    assert "fp traces created: 8" in captured.out
+    assert "fp traces already existed (idempotent no-op): 2" in captured.out
+    assert "rs runs scanned: 5" in captured.out
+    assert "rs traces created: 4" in captured.out
+    assert "rs traces already existed (idempotent no-op): 1" in captured.out
+
+
+def test_cmd_backfill_traces_no_date_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen_bounds: list[tuple[str | None, str | None]] = []
+
+    def _fake_backfill(
+        client: MlflowClient,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        neon_connect: Callable[[], object] = lambda: object(),
+        local_connect: Callable[[], object] = lambda: object(),
+    ) -> backfill_traces.BackfillTracesSummary:
+        seen_bounds.append((date_from, date_to))
+        return backfill_traces.BackfillTracesSummary()
+
+    monkeypatch.setattr(backfill_traces, "backfill_traces", _fake_backfill)
+    exit_code = cli.main(["backfill-traces"])
+    assert exit_code == 0
+    assert seen_bounds == [(None, None)]
+
+
+def test_cmd_backfill_traces_reports_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = backfill_traces.BackfillTracesSummary(errors=["run-xyz: boom"])
+
+    def _fake_backfill(
+        client: MlflowClient,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        neon_connect: Callable[[], object] = lambda: object(),
+        local_connect: Callable[[], object] = lambda: object(),
+    ) -> backfill_traces.BackfillTracesSummary:
+        return summary
+
+    monkeypatch.setattr(backfill_traces, "backfill_traces", _fake_backfill)
+    exit_code = cli.main(["backfill-traces"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: run-xyz: boom" in captured.err
+
+
+def test_cmd_backfill_traces_invalid_date_from_is_rejected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = cli.main(["backfill-traces", "--date-from", "not-a-date"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: --date-from" in captured.err
+
+
+def test_cmd_backfill_traces_invalid_date_to_is_rejected(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = cli.main(["backfill-traces", "--date-to", "not-a-date"])
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "error: --date-to" in captured.err
 
 
 def test_cmd_eval_champion_cells_reports_results(
@@ -681,6 +843,130 @@ def test_cmd_eval_champion_cells_rejects_invalid_as_of(
     assert "error:" in captured.err
 
 
+def test_cmd_eval_cells_reports_results(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    results = [
+        CellEvalRunsSummary(
+            category="jra",
+            task="finish-position",
+            window_days=90,
+            min_races_requested=20,
+            min_races_used=20,
+            volume_guard_triggered=False,
+            projected_run_count_at_requested_floor=5,
+            runs_created=3,
+            runs_reused=2,
+            cells_skipped_low_volume=1,
+            champion_model_version="jra-cb-v9-sim-2013",
+        ),
+        CellEvalRunsSummary(
+            category="jra",
+            task="running-style",
+            window_days=90,
+            min_races_requested=20,
+            min_races_used=45,
+            volume_guard_triggered=True,
+            projected_run_count_at_requested_floor=2000,
+            runs_created=0,
+            runs_reused=0,
+            cells_skipped_low_volume=0,
+            champion_model_version=None,
+        ),
+    ]
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = cell_eval_runs.FP_CATEGORIES,
+        *,
+        window_days: int = cell_eval_runs.DEFAULT_WINDOW_DAYS,
+        min_races: int = cell_eval_runs.DEFAULT_MIN_RACES,
+        as_of: date | None = None,
+    ) -> list[CellEvalRunsSummary]:
+        return results
+
+    monkeypatch.setattr(cell_eval_runs, "eval_cells", _fake_eval)
+    exit_code = cli.main(["eval-cells"])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "category: jra" in captured.out
+    assert "task: finish-position" in captured.out
+    assert "window_days: 90" in captured.out
+    assert "min_races_requested: 20" in captured.out
+    assert "min_races_used: 20" in captured.out
+    assert "volume_guard_triggered: False" in captured.out
+    assert "champion_model_version: jra-cb-v9-sim-2013" in captured.out
+    assert "runs_created: 3" in captured.out
+    assert "runs_reused: 2" in captured.out
+    assert "cells_skipped_low_volume: 1" in captured.out
+    assert "task: running-style" in captured.out
+    assert "volume_guard_triggered: True" in captured.out
+    assert "champion_model_version: None" in captured.out
+
+
+def test_cmd_eval_cells_passes_window_days_min_races_and_categories_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_categories: list[Sequence[str]] = []
+    seen_window_days: list[int] = []
+    seen_min_races: list[int] = []
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = cell_eval_runs.FP_CATEGORIES,
+        *,
+        window_days: int = cell_eval_runs.DEFAULT_WINDOW_DAYS,
+        min_races: int = cell_eval_runs.DEFAULT_MIN_RACES,
+        as_of: date | None = None,
+    ) -> list[CellEvalRunsSummary]:
+        seen_categories.append(categories)
+        seen_window_days.append(window_days)
+        seen_min_races.append(min_races)
+        return []
+
+    monkeypatch.setattr(cell_eval_runs, "eval_cells", _fake_eval)
+    exit_code = cli.main(
+        [
+            "eval-cells",
+            "--category",
+            "jra,nar",
+            "--window-days",
+            "45",
+            "--min-races",
+            "10",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_categories == [("jra", "nar")]
+    assert seen_window_days == [45]
+    assert seen_min_races == [10]
+
+
+def test_cmd_eval_cells_uses_defaults_when_flags_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_window_days: list[int] = []
+    seen_min_races: list[int] = []
+
+    def _fake_eval(
+        client: MlflowClient,
+        categories: Sequence[str] = cell_eval_runs.FP_CATEGORIES,
+        *,
+        window_days: int = cell_eval_runs.DEFAULT_WINDOW_DAYS,
+        min_races: int = cell_eval_runs.DEFAULT_MIN_RACES,
+        as_of: date | None = None,
+    ) -> list[CellEvalRunsSummary]:
+        seen_window_days.append(window_days)
+        seen_min_races.append(min_races)
+        return []
+
+    monkeypatch.setattr(cell_eval_runs, "eval_cells", _fake_eval)
+    exit_code = cli.main(["eval-cells"])
+    assert exit_code == 0
+    assert seen_window_days == [cell_eval_runs.DEFAULT_WINDOW_DAYS]
+    assert seen_min_races == [cell_eval_runs.DEFAULT_MIN_RACES]
+
+
 def test_cmd_ingest_trial_registry(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     duckdb_path = tmp_path / "trial_registry_jra.duckdb"
     con = duckdb.connect(str(duckdb_path))
@@ -721,6 +1007,129 @@ def test_cmd_log_eval(
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "logged run:" in captured.out
+
+
+def test_cmd_log_eval_with_run_key_reuses_run_across_invocations(
+    tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--run-key` wired through the CLI: two separate `cli.main()` calls
+    sharing the same key reuse one run instead of creating a second."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    args = [
+        "log-eval",
+        str(json_path),
+        "--eval-regime",
+        "oos",
+        "--run-name",
+        "daily-report",
+        "--run-key",
+        "daily-jra-oos",
+    ]
+    assert cli.main(args) == 0
+    first_run_id = capsys.readouterr().out.strip().split("logged run: ")[1]
+    assert cli.main(args) == 0
+    second_run_id = capsys.readouterr().out.strip().split("logged run: ")[1]
+    assert first_run_id == second_run_id
+
+
+def test_cmd_log_eval_without_run_key_prints_hint_when_run_name_already_exists(
+    tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Omitting `--run-key` must leave behavior UNCHANGED (still creates a
+    new run, still exits 0) but nudges the caller on stderr when a run with
+    the same --run-name already exists in the target experiment."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    args = [
+        "log-eval",
+        str(json_path),
+        "--eval-regime",
+        "oos",
+        "--run-name",
+        "daily-report-no-key",
+    ]
+
+    first_exit = cli.main(args)
+    first_captured = capsys.readouterr()
+    assert first_exit == 0
+    # A brand-new store's first touch logs mlflow's own sqlite-setup INFO
+    # lines to stderr (unrelated to this command's hint logic), so this
+    # asserts the HINT specifically is absent rather than stderr being
+    # perfectly empty.
+    assert "hint" not in first_captured.err
+
+    second_exit = cli.main(args)
+    second_captured = capsys.readouterr()
+    assert second_exit == 0
+    assert "hint" in second_captured.err
+    assert "--run-key" in second_captured.err
+    assert "daily-report-no-key" in second_captured.err
+    # Still creates a new run despite the hint -- never blocks the command.
+    first_run_id = first_captured.out.strip().split("logged run: ")[1]
+    second_run_id = second_captured.out.strip().split("logged run: ")[1]
+    assert first_run_id != second_run_id
+
+
+def test_cmd_log_eval_no_hint_when_experiment_does_not_exist_yet(
+    tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The very first call against a brand-new experiment has no pre-existing
+    run to find, so no hint is printed."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    exit_code = cli.main(
+        [
+            "log-eval",
+            str(json_path),
+            "--eval-regime",
+            "oos",
+            "--experiment",
+            "diag/brand-new-log-eval-experiment",
+        ]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "hint" not in captured.err
+
+
+def test_cmd_log_eval_no_hint_when_experiment_exists_but_run_name_differs(
+    tmp_path: Path, write_json: WriteJsonFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The experiment already exists (from a prior call), but no run with
+    THIS specific --run-name exists yet -- still no hint."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    exit_code = cli.main(
+        [
+            "log-eval",
+            str(json_path),
+            "--eval-regime",
+            "oos",
+            "--experiment",
+            "diag/log-eval-existing-experiment",
+            "--run-name",
+            "first-report",
+        ]
+    )
+    assert exit_code == 0
+    capsys.readouterr()
+
+    exit_code = cli.main(
+        [
+            "log-eval",
+            str(json_path),
+            "--eval-regime",
+            "oos",
+            "--experiment",
+            "diag/log-eval-existing-experiment",
+            "--run-name",
+            "second-report",
+        ]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "hint" not in captured.err
 
 
 def test_cmd_ingest_local_pg_model_evaluations(

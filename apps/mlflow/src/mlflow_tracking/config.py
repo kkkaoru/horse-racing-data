@@ -95,6 +95,24 @@ EXPERIMENT_RS_PRODUCTION_USAGE: Final[str] = "running-style/production-usage"
 # production-usage sync itself and from wf-eval's offline walk-forward runs.
 EXPERIMENT_FP_CHAMPION_EVAL: Final[str] = "finish-position/champion-eval"
 EXPERIMENT_RS_CHAMPION_EVAL: Final[str] = "running-style/champion-eval"
+# cell_eval_runs.py's per-(category, CELL, model_version) PERSISTENT runs
+# live here -- distinct from EXPERIMENT_FP_CHAMPION_EVAL/EXPERIMENT_RS_
+# CHAMPION_EVAL above (which log ONE run per (category, task) with a
+# champion-only per-cell table INSIDE it): this experiment holds one
+# individually drillable, trend-bearing run PER CELL PER SERVED VERSION
+# (champion, every cell-routed variant, and any other version that served
+# enough volume), so a single cell's accuracy over time renders as a real
+# MLflow line chart. See cell_eval_runs.py's own module docstring.
+EXPERIMENT_FP_CELL_EVAL: Final[str] = "finish-position/cell-eval"
+EXPERIMENT_RS_CELL_EVAL: Final[str] = "running-style/cell-eval"
+# One-shot/manual smoke-test runs (e.g. a throwaway CLI dry-run verifying the
+# log-training-run pipeline end-to-end) route here via that command's own
+# manifest "experiment" override -- kept isolated from every real per-task
+# experiment above so a smoke run is never confused with, or accidentally
+# counted alongside, genuine backfill/eval/production data. Every run logged
+# here MUST additionally carry a `run_type=smoke` tag (via the manifest's own
+# generic "tags" field) -- see README.md's smoke-run convention section.
+EXPERIMENT_SMOKE_TESTS: Final[str] = "internal/smoke-tests"
 ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_FP_REGISTRY_BACKFILL,
     EXPERIMENT_FP_WF_EVAL,
@@ -106,6 +124,9 @@ ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_RS_PRODUCTION_USAGE,
     EXPERIMENT_FP_CHAMPION_EVAL,
     EXPERIMENT_RS_CHAMPION_EVAL,
+    EXPERIMENT_FP_CELL_EVAL,
+    EXPERIMENT_RS_CELL_EVAL,
+    EXPERIMENT_SMOKE_TESTS,
 )
 
 

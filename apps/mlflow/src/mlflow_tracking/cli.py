@@ -19,11 +19,14 @@ from mlflow_tracking import (
     backfill_finish_position,
     backfill_running_style,
     backfill_serve_timeline,
+    backfill_traces,
+    cell_eval_runs,
     champion_cell_eval,
     config,
     export_production,
     ingest_eval,
     ingest_local_pg_history,
+    refresh_eval_metrics,
     registry,
     sync_production,
     timeline,
@@ -161,14 +164,45 @@ def cmd_ingest_serve_accuracy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _warn_if_run_name_already_exists(
+    client: MlflowClient, experiment_name: str, run_name: str
+) -> None:
+    """Print a non-blocking stderr HINT when a run named `run_name` already
+    exists in `experiment_name` -- a "did you mean to pass --run-key?" nudge
+    for the (default) --run-key-omitted `log-eval` path, which always
+    creates a new run and would otherwise silently accumulate same-named
+    duplicates on every repeated call. Never raises and never affects the
+    command's exit code -- a missing/not-yet-created experiment simply has
+    no runs to find, which is not itself worth warning about."""
+    experiment = client.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        return
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"attributes.run_name = '{run_name}'",
+        max_results=1,
+    )
+    if matches:
+        print(
+            f"hint: a run named {run_name!r} already exists in {experiment_name!r} "
+            f"(run_id={matches[0].info.run_id}) -- pass --run-key to reuse it instead of "
+            "creating a duplicate",
+            file=sys.stderr,
+        )
+
+
 def cmd_log_eval(args: argparse.Namespace) -> int:
     client = build_client()
+    if args.run_key is None:
+        resolved_run_name = args.run_name if args.run_name is not None else Path(args.path).stem
+        _warn_if_run_name_already_exists(client, args.experiment, resolved_run_name)
     run_id = ingest_eval.ingest_cell_report(
         client,
         Path(args.path),
         eval_regime=args.eval_regime,
         experiment_name=args.experiment,
         run_name=args.run_name,
+        run_key=args.run_key,
     )
     print(f"logged run: {run_id}")
     return 0
@@ -272,18 +306,61 @@ def cmd_sync_production(args: argparse.Namespace) -> int:
         f"rs eval logged: {summary.rs_eval_logged}\n"
         f"rs eval skipped (no results): {summary.rs_eval_skipped_no_results}\n"
         f"serving gaps detected: {summary.serving_gaps_detected}\n"
-        f"champion gaps detected: {summary.champion_gaps_detected}"
+        f"champion gaps detected: {summary.champion_gaps_detected}\n"
+        f"traces created: {summary.traces_created}\n"
+        f"traces already existed (idempotent no-op): {summary.traces_already_existed}"
     )
-    # Printed unconditionally (regardless of --no-traces): MLflow traces are
-    # never emitted by sync_production_range at all (see its own docstring
-    # for the empirical finding), so this is not a status report on the flag
-    # -- it is a standing note pointing at the real audit-trail mechanism
-    # (the predictions.json/eval.json table artifacts logged on every run).
+    for error in summary.errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary.errors else 0
+
+
+def cmd_refresh_eval_metrics(_args: argparse.Namespace) -> int:
+    """One-time metrics-only enrichment: backfill fp_place4_pct/fp_place5_pct/
+    fp_place6_pct onto every already-evaluated finish-position production-usage
+    run (and the corresponding v2 finish-position timeline run), without
+    re-logging any existing metric/table/artifact. See
+    refresh_eval_metrics.py's own module docstring for the full rationale."""
+    client = build_client()
+    summary = refresh_eval_metrics.refresh_fp_place456_metrics(client)
     print(
-        "note: MLflow traces are not emitted (see docs/mlflow-tracking.md for why); "
-        "per-race/per-horse table artifacts on each run serve as the trace/audit "
-        "record instead.",
-        file=sys.stderr,
+        f"runs scanned: {summary.runs_scanned}\n"
+        f"runs updated: {summary.runs_updated}\n"
+        f"runs skipped (already enriched): {summary.runs_skipped_already_enriched}\n"
+        f"runs skipped (not applicable -- no eligible races for rank 4/5/6): "
+        f"{summary.runs_skipped_not_applicable}\n"
+        f"metric points appended: {summary.metric_points_appended}\n"
+        f"timeline points appended: {summary.timeline_points_appended}"
+    )
+    for error in summary.errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary.errors else 0
+
+
+def cmd_backfill_traces(args: argparse.Namespace) -> int:
+    """One-time (but safely re-runnable) historical backfill: emit MLflow
+    traces (+ Feedback assessments) for every already-evaluated
+    (date, category, model_version) run in BOTH the finish-position and
+    running-style production-usage experiments. See backfill_traces.py's
+    own module docstring for the full idempotency/design rationale."""
+    client = build_client()
+    for bound_name, bound_value in (("--date-from", args.date_from), ("--date-to", args.date_to)):
+        if bound_value is not None:
+            try:
+                timeline.validate_yyyymmdd(bound_value)
+            except ValueError as exc:
+                print(f"error: {bound_name}: {exc}", file=sys.stderr)
+                return 1
+    summary = backfill_traces.backfill_traces(
+        client, date_from=args.date_from, date_to=args.date_to
+    )
+    print(
+        f"fp runs scanned: {summary.fp_runs_scanned}\n"
+        f"fp traces created: {summary.fp_traces_created}\n"
+        f"fp traces already existed (idempotent no-op): {summary.fp_traces_already_existed}\n"
+        f"rs runs scanned: {summary.rs_runs_scanned}\n"
+        f"rs traces created: {summary.rs_traces_created}\n"
+        f"rs traces already existed (idempotent no-op): {summary.rs_traces_already_existed}"
     )
     for error in summary.errors:
         print(f"error: {error}", file=sys.stderr)
@@ -309,7 +386,9 @@ def cmd_eval_champion_cells(args: argparse.Namespace) -> int:
         print(
             f"category: {result.category}  task: {result.task}  "
             f"champion_model_version: {result.champion_model_version}  "
-            f"unit_count: {result.unit_count}  cell_count: {result.cell_count}  "
+            f"unit_count: {result.unit_count}  "
+            f"unit_count_champion_only: {result.unit_count_champion_only}  "
+            f"cell_count: {result.cell_count}  "
             f"low_n_cell_count: {result.low_n_cell_count}  "
             f"has_champion_coverage: {result.has_champion_coverage}  "
             f"run_id: {result.run_id}"
@@ -318,6 +397,30 @@ def cmd_eval_champion_cells(args: argparse.Namespace) -> int:
     # eval_champion_cells itself (via warnings.warn), not surfaced as
     # returned errors -- there is no summary-object error list to check here,
     # unlike cmd_sync_production above, so this command always exits 0.
+    return 0
+
+
+def cmd_eval_cells(args: argparse.Namespace) -> int:
+    client = build_client()
+    categories = _parse_categories(args.category)
+    summaries = cell_eval_runs.eval_cells(
+        client, categories=categories, window_days=args.window_days, min_races=args.min_races
+    )
+    for summary in summaries:
+        print(
+            f"category: {summary.category}  task: {summary.task}  "
+            f"window_days: {summary.window_days}  "
+            f"min_races_requested: {summary.min_races_requested}  "
+            f"min_races_used: {summary.min_races_used}  "
+            f"volume_guard_triggered: {summary.volume_guard_triggered}  "
+            f"champion_model_version: {summary.champion_model_version}  "
+            f"runs_created: {summary.runs_created}  "
+            f"runs_reused: {summary.runs_reused}  "
+            f"cells_skipped_low_volume: {summary.cells_skipped_low_volume}"
+        )
+    # Same rationale as cmd_eval_champion_cells above: per-(category, task)
+    # failures are isolated and warned about inside eval_cells itself, so
+    # this command always exits 0.
     return 0
 
 
@@ -415,6 +518,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--experiment", default=config.EXPERIMENT_FP_WF_EVAL, help="Experiment name"
     )
     log_parser.add_argument("--run-name", default=None, help="Optional run name override")
+    log_parser.add_argument(
+        "--run-key",
+        default=None,
+        help="Optional idempotency key: when given, find-or-reuse an existing run tagged "
+        "with this run_key in --experiment instead of always creating a new run. Omitted "
+        "(default): unchanged behavior, always creates a new run.",
+    )
     log_parser.set_defaults(func=cmd_log_eval)
 
     pg_model_evals_parser = subparsers.add_parser(
@@ -523,10 +633,38 @@ def build_parser() -> argparse.ArgumentParser:
     sync_production_parser.add_argument(
         "--no-traces",
         action="store_true",
-        help="Accepted for interface completeness; MLflow traces are never emitted regardless "
-        "of this flag -- see docs/mlflow-tracking.md for why",
+        help="Skip MLflow trace/assessment emission for this call (base tracking and eval "
+        "metrics/tables are unaffected) -- see trace_emit.py's module docstring",
     )
     sync_production_parser.set_defaults(func=cmd_sync_production)
+
+    subparsers.add_parser(
+        "refresh-eval-metrics",
+        help="One-time metrics-only backfill: append fp_place4_pct/fp_place5_pct/fp_place6_pct "
+        "to every already-evaluated finish-position production-usage run (and its v2 timeline "
+        "run), without re-logging any existing metric/table/artifact",
+    ).set_defaults(func=cmd_refresh_eval_metrics)
+
+    backfill_traces_parser = subparsers.add_parser(
+        "backfill-traces",
+        help="One-time (but safely re-runnable) historical backfill: emit MLflow traces + "
+        "Feedback assessments for every already-evaluated (date, category, model_version) run "
+        "in BOTH the finish-position and running-style production-usage experiments -- see "
+        "backfill_traces.py's own module docstring",
+    )
+    backfill_traces_parser.add_argument(
+        "--date-from",
+        default=None,
+        help="Optional start date (YYYYMMDD), inclusive -- restrict the backfill to runs on or "
+        "after this date (default: no lower bound, every run ever found)",
+    )
+    backfill_traces_parser.add_argument(
+        "--date-to",
+        default=None,
+        help="Optional end date (YYYYMMDD), inclusive -- restrict the backfill to runs on or "
+        "before this date (default: no upper bound)",
+    )
+    backfill_traces_parser.set_defaults(func=cmd_backfill_traces)
 
     champion_cells_parser = subparsers.add_parser(
         "eval-champion-cells",
@@ -551,6 +689,35 @@ def build_parser() -> argparse.ArgumentParser:
         "re-runs",
     )
     champion_cells_parser.set_defaults(func=cmd_eval_champion_cells)
+
+    cell_eval_runs_parser = subparsers.add_parser(
+        "eval-cells",
+        help="Score EVERY served model_version (champion + variants + any other version with "
+        "enough volume) at CELL granularity, logging one PERSISTENT, drillable MLflow run per "
+        "(category, cell, model_version) with a trend of daily points -- see cell_eval_runs.py",
+    )
+    cell_eval_runs_parser.add_argument(
+        "--category",
+        default="jra,nar,banei",
+        help="Comma-separated categories to evaluate, from {jra, nar, banei} "
+        "(default: jra,nar,banei)",
+    )
+    cell_eval_runs_parser.add_argument(
+        "--window-days",
+        type=int,
+        default=cell_eval_runs.DEFAULT_WINDOW_DAYS,
+        help=f"Trailing window size in days (default: {cell_eval_runs.DEFAULT_WINDOW_DAYS})",
+    )
+    cell_eval_runs_parser.add_argument(
+        "--min-races",
+        type=int,
+        default=cell_eval_runs.DEFAULT_MIN_RACES,
+        help="Minimum races/horses in-window for a (model_version, cell) group to get its own "
+        f"run (default: {cell_eval_runs.DEFAULT_MIN_RACES}); automatically raised, with a "
+        "warning, if it would otherwise produce more than "
+        f"{cell_eval_runs.MAX_RUNS_PER_CATEGORY_TASK} runs for one category/task",
+    )
+    cell_eval_runs_parser.set_defaults(func=cmd_eval_cells)
 
     champion_parser = subparsers.add_parser(
         "set-champion", help="Set the champion alias on a registered model"

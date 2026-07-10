@@ -29,6 +29,25 @@ both cheap (nothing already-logged is ever re-logged) and eventually
 correct (a prediction published a few days ahead of race day gets its
 evaluation filled in on a LATER call, once results become final, rather
 than being stuck with no eval forever).
+
+★ MLflow traces (2026-07-10, supersedes the earlier "traces are not used"
+decision -- see `trace_emit.py`'s own module docstring for the full
+before/after story): once the eval join for a (date, category,
+model_version) group succeeds (the SAME pass that computes place-hits, see
+`_sync_fp_eval`/`_sync_rs_eval` below), this module ALSO emits one MLflow
+trace per race (finish-position) / per horse (running-style) via
+`trace_emit.emit_fp_race_traces`/`trace_emit.emit_rs_horse_traces`, with
+Feedback assessments attached in the same call. This is gated by the
+`emit_traces` parameter below (default True; the `sync-production` CLI's
+`--no-traces` flag threads `emit_traces=False` here) and is fully
+idempotent on its own terms (see `trace_emit.py`'s own docstring) -- INDEPENDENT
+of `sync_eval_logged`: a trace is only ever skipped because
+`trace_emit`'s own `client_request_id` existence check found one already
+there, never because the OWNING run's tag says so. `backfill_traces.py`
+calls these exact same `trace_emit` functions over the FULL historical
+`sync_eval_logged=true` run population, so there is exactly ONE
+trace-emission code path shared by the daily sync and the historical
+backfill.
 """
 
 from __future__ import annotations
@@ -36,10 +55,10 @@ from __future__ import annotations
 import tempfile
 import warnings
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Literal, cast
 
 import pandas as pd
 import psycopg2
@@ -48,8 +67,9 @@ import pyarrow.parquet as pq
 from mlflow import MlflowClient
 from mlflow.entities import Metric, RunTag
 from mlflow.exceptions import MlflowException
+from mlflow.tracing.client import TracingClient
 
-from mlflow_tracking import config, db, registry, serve_eval, timeline
+from mlflow_tracking import config, db, registry, serve_eval, timeline, trace_emit
 from mlflow_tracking.logging_api import get_or_create_experiment, log_batch_chunked
 
 # finish-position serving covers all 3 categories; running-style has no
@@ -65,6 +85,24 @@ SYNC_EVAL_LOGGED_TAG: Final[str] = "sync_eval_logged"
 CHAMPION_AT_SYNC_TAG: Final[str] = "champion_at_sync"
 EVAL_REGIME_TAG: Final[str] = "eval_regime"
 SERVE_REGIME: Final[str] = "serve"
+
+# `champion_served` is a tag KEY shared by two entirely different run
+# families with two entirely different value spaces -- never confused with
+# each other since they live in different experiments/tag-search families:
+#   - On the champion-GAP marker run (`_log_champion_gap`, keyed by
+#     `CHAMPION_GAP_KEY_TAG`): a static "false", set once at creation, simply
+#     recording why that marker exists at all (a gap is only ever logged
+#     when NOTHING champion-derived served, see `_check_champion_gap`).
+#   - On the regular per-(date, category, model_version) sync run
+#     (`_get_or_create_run_and_tags`/`_log_base_tracking`, keyed by
+#     `SYNC_KEY_TAG`): set to CHAMPION_SERVED_VARIANT_VALUE ("variant") ONLY
+#     when that run's own `model_version` is a cell-routed VARIANT of the
+#     resolved champion (see `_classify_served_model_version`) -- absent
+#     entirely for an exact champion match or an unrelated model_version, so
+#     a tag search for `tags.champion_served = 'variant'` finds exactly the
+#     runs this widened-serving signal is about.
+CHAMPION_SERVED_TAG: Final[str] = "champion_served"
+CHAMPION_SERVED_VARIANT_VALUE: Final[str] = "variant"
 
 # Tags the serving-gap marker run (see sync_production_range's own docstring
 # and _log_serving_gap below) is identified/searched by -- a distinct tag
@@ -133,6 +171,15 @@ class SyncProductionSummary:
     docstring): live rows were genuinely served for a (date, category, task)
     this call, but none of them came from the currently-registered champion
     model_version.
+
+    `traces_created`/`traces_already_existed` sum `trace_emit.
+    TraceEmitSummary`'s own fields (see that dataclass's docstring) across
+    every fp/rs eval pass this call -- `traces_already_existed` is the
+    NORMAL, expected count on any re-run (daily sync re-covering an
+    overlapping range), not an error. Both stay 0 when `emit_traces=False`
+    (no `trace_emit` call is ever made in that case). Per-trace emission
+    failures are folded into `errors` (prefixed `...:trace-emit:...`), same
+    as every other isolated failure family in this function.
     """
 
     dates_processed: int
@@ -146,6 +193,8 @@ class SyncProductionSummary:
     rs_eval_skipped_no_results: int
     serving_gaps_detected: int
     champion_gaps_detected: int
+    traces_created: int
+    traces_already_existed: int
     errors: list[str]
 
 
@@ -183,12 +232,23 @@ class _CategoryDateOutcome:
     `champion_model_version` is the CURRENT champion label resolved fresh
     this call (None when no champion alias is set at all);
     `champion_live_races` counts races among the LIVE rows that came from
-    that exact model_version; `served_model_versions_live` is the set of
+    that model_version OR a cell-routed VARIANT of it (see
+    `_is_champion_or_variant` -- widened 2026-07-10; the old exact-match-only
+    accumulation made `_check_champion_gap` fire a false "champion did not
+    serve" alarm on a day where only a variant, never the bare champion
+    label, actually served); `served_model_versions_live` is the set of
     every distinct model_version that had at least one live race this call
     (used only for the champion-gap marker run's diagnostic tag, naming what
     WAS served instead). All three stay at their defaults (None/0/empty) on
     the early-empty-`rows` return path -- never inspected there, since
     `_check_champion_gap` short-circuits on `races_live == 0` first.
+
+    `traces_created`/`traces_already_existed`/`trace_errors` accumulate the
+    `trace_emit.TraceEmitSummary` returned by `_sync_fp_eval`/`_sync_rs_eval`
+    each time they successfully compute `eval_rows` (see those functions'
+    own docstrings) -- all stay at their defaults (0/0/empty) whenever
+    `emit_traces=False`, or on any date/category where the eval join itself
+    never produced `eval_rows` (nothing to emit a trace for yet).
     """
 
     runs_created: int = 0
@@ -201,6 +261,9 @@ class _CategoryDateOutcome:
     champion_model_version: str | None = None
     champion_live_races: int = 0
     served_model_versions_live: frozenset[str] = frozenset()
+    traces_created: int = 0
+    traces_already_existed: int = 0
+    trace_errors: list[str] = field(default_factory=list)
 
 
 def _date_range_yyyymmdd(date_from: str, date_to: str) -> list[str]:
@@ -372,9 +435,97 @@ def _champion_at_sync_tag_value(
 ) -> str:
     """Return "true"/"false" for whether `model_version` IS the current
     champion for (category, task), resolved AT THE MOMENT base tracking is
-    logged (never re-resolved later -- see `CHAMPION_AT_SYNC_TAG`'s name)."""
+    logged (never re-resolved later -- see `CHAMPION_AT_SYNC_TAG`'s name).
+
+    Deliberately EXACT-MATCH-ONLY, unchanged semantics: a variant serving is
+    surfaced separately via `CHAMPION_SERVED_TAG` (see
+    `_champion_served_variant_tag` below), additively, not by redefining
+    what this tag has always meant to any existing caller/dashboard.
+    """
     champion_label = _resolve_champion_label(client, category, task)
     return TRUE_STR if champion_label == model_version else FALSE_STR
+
+
+# ── Champion-or-variant serving predicate ────────────────────────────────────
+#
+# Mirrors champion_cell_eval.py's OWN copy of this exact rule
+# (`_classify_champion_match`/`_is_champion_derived` there) -- DUPLICATED
+# here rather than imported, for the identical reason
+# `_resolve_champion_label` above duplicates that module's
+# `_resolve_champion_model_version` instead of sharing it (see this module's
+# own docstring): the two modules were built by separate agents in parallel
+# with zero file-ownership overlap, and that stays true for this predicate
+# too. See champion_cell_eval.py's module docstring ("★ CELL-ROUTED VARIANT
+# widening") for the full incident/rationale this fixes on that module's
+# side; the fix here is the analogous one for `_check_champion_gap`'s
+# `outcome.champion_live_races == 0` "champion did not serve" signal, which
+# the OLD exact-match-only accumulation made structurally over-eager to fire
+# on any day a variant (not the bare champion label) served -- a false
+# "champion gap" alarm, not a real one.
+
+_ServedMatchKind = Literal["champion", "variant", "other"]
+
+
+def _classify_served_model_version(
+    served_model_version: str, champion_label: str | None
+) -> _ServedMatchKind:
+    """Classify one served `model_version` against the resolved champion
+    label for (category, task).
+
+    Returns "champion" for an exact match, "variant" when `served_model_
+    version` starts with `f"{champion_label}-"` (a cell-routed variant of
+    the champion), and "other" for everything else -- including
+    `champion_label is None` (no resolvable champion at all: comparing a
+    served row against nothing is never a match) and a served label that
+    merely shares `champion_label` as a raw string prefix WITHOUT the "-"
+    separator (e.g. champion "iter14" must not classify served "iter140" as
+    a variant just because `str.startswith("iter14")` is True -- the
+    routing-scope suffix is always "-"-delimited in practice, so a served
+    label missing that delimiter is an unrelated model, not a variant of
+    this champion).
+    """
+    if champion_label is None:
+        return "other"
+    if served_model_version == champion_label:
+        return "champion"
+    if served_model_version.startswith(f"{champion_label}-"):
+        return "variant"
+    return "other"
+
+
+def _is_champion_or_variant(served_model_version: str, champion_label: str | None) -> bool:
+    """True iff `served_model_version` is the exact champion OR a cell-routed
+    variant of it (see `_classify_served_model_version`). Used to widen the
+    `champion_live_races` accumulation in `_sync_fp_category_date`/
+    `_sync_rs_category_date` so `_check_champion_gap` no longer fires a
+    false "champion did not serve" alarm on a day where only a variant
+    (never the bare champion label) actually served."""
+    return _classify_served_model_version(served_model_version, champion_label) != "other"
+
+
+def _champion_served_variant_tag(
+    client: MlflowClient, category: str, task: registry.Task, model_version: str
+) -> RunTag | None:
+    """Return a `champion_served="variant"` RunTag when `model_version` is a
+    cell-routed VARIANT of the current champion for (category, task) -- e.g.
+    a champion labeled "jra-cb-v9-sim-2013-clean" actually served in
+    production as "jra-cb-v9-sim-2013-clean-jockey-pedigree269" for one
+    class-code cell -- or None otherwise (an exact champion match, an
+    unrelated model_version, or no resolvable champion at all).
+
+    ADDITIVE to `CHAMPION_AT_SYNC_TAG`, never a replacement for it: an exact
+    match keeps `champion_at_sync="true"` and gets no `champion_served` tag
+    at all (there is nothing extra to say); a variant keeps
+    `champion_at_sync="false"` (still not an EXACT match, that tag's
+    unchanged contract) AND additionally gets `champion_served="variant"`,
+    so a caller can distinguish "served a variant of the champion" from
+    "served something entirely unrelated" without either tag lying about
+    what it has always meant.
+    """
+    champion_label = _resolve_champion_label(client, category, task)
+    if _classify_served_model_version(model_version, champion_label) == "variant":
+        return RunTag(CHAMPION_SERVED_TAG, CHAMPION_SERVED_VARIANT_VALUE)
+    return None
 
 
 def _find_sync_run(client: MlflowClient, experiment_id: str, sync_key: str) -> str | None:
@@ -414,12 +565,19 @@ def _get_or_create_run_and_tags(
     module's own design (see its module docstring's opening paragraph) --
     there is no code path in this module that logs anything else, so there
     is nothing to branch on here.
+
+    `run_name` is set at creation to `"{date_str} {category} {model_version}"`
+    -- matching the display name already carried by every pre-existing run in
+    the real store (renamed there by a prior pass before this function set
+    names at creation time), so a freshly-created run is never blank/default
+    before some later rename step.
     """
     run_id = _find_sync_run(client, experiment_id, sync_key)
     if run_id is not None:
         return run_id, False, client.get_run(run_id).data.tags
     run = client.create_run(
         experiment_id,
+        run_name=f"{date_str} {category} {model_version}",
         tags={
             SYNC_KEY_TAG: sync_key,
             "task": task,
@@ -453,15 +611,26 @@ def _log_base_tracking(
     in the prediction-table artifact on a second call for the same run.
     `model_version`/`date`/`category` are already set as tags at run
     creation time (see `_get_or_create_run_and_tags`) and never change, so
-    only `champion_at_sync` needs to be (re-)written here.
+    only `champion_at_sync` (and, additively, `champion_served`) need to be
+    (re-)written here.
 
     `{metric_prefix}_races_live`/`{metric_prefix}_races_backfilled` split
     `{metric_prefix}_races` by `serve_eval.partition_live_backfill` -- see
     `_CategoryDateOutcome`'s own docstring for the full rationale (this is
     the same split, just scoped to one model_version's own `rows` rather
     than the whole category-date).
+
+    `champion_served="variant"` (see `_champion_served_variant_tag`) is
+    attached ONLY when `model_version` is a cell-routed variant of the
+    resolved champion -- resolved at this SAME moment as `champion_at_sync`
+    (never re-resolved later, matching that tag's own "AT THE MOMENT base
+    tracking is logged" contract), and simply omitted otherwise.
     """
     champion_value = _champion_at_sync_tag_value(client, category, task, model_version)
+    variant_tag = _champion_served_variant_tag(client, category, task, model_version)
+    champion_tags = [RunTag(CHAMPION_AT_SYNC_TAG, champion_value)]
+    if variant_tag is not None:
+        champion_tags.append(variant_tag)
     live_rows, backfill_rows = serve_eval.partition_live_backfill(rows)
     metrics = [
         Metric(f"{metric_prefix}_races", float(_distinct_race_count(rows)), 0, 0),
@@ -471,9 +640,7 @@ def _log_base_tracking(
             f"{metric_prefix}_races_backfilled", float(_distinct_race_count(backfill_rows)), 0, 0
         ),
     ]
-    log_batch_chunked(
-        client, run_id, metrics=metrics, tags=[RunTag(CHAMPION_AT_SYNC_TAG, champion_value)]
-    )
+    log_batch_chunked(client, run_id, metrics=metrics, tags=champion_tags)
     _log_table_and_parquet(
         client, run_id, prediction_table, _PREDICTIONS_JSON_ARTIFACT, _PREDICTIONS_PARQUET_ARTIFACT
     )
@@ -484,33 +651,54 @@ def _sync_fp_eval(
     client: MlflowClient,
     run_id: str,
     *,
+    tracing_client: TracingClient | None,
+    experiment_id: str,
     category: str,
     date_str: str,
     model_version: str,
     rows: list[dict[str, object]],
     local_conn: db.ConnectionLike,
-) -> bool:
+) -> tuple[bool, trace_emit.TraceEmitSummary]:
     """Attempt the FP evaluation join for one (date, category, model_version)
-    group. Returns True (and logs metrics/table/timeline point, plus marks
-    `sync_eval_logged=true`) only when at least one race matched a finalized
-    result; returns False (logging nothing) otherwise, so the caller leaves
-    the tag absent and a future call retries once results are final.
+    group. Returns (True, trace_summary) (and logs metrics/table/timeline
+    point, plus marks `sync_eval_logged=true`, plus emits one MLflow trace
+    per race via `trace_emit.emit_fp_race_traces` -- see this module's own
+    docstring) only when at least one race matched a finalized result;
+    returns (False, an empty TraceEmitSummary) (logging/emitting nothing)
+    otherwise, so the caller leaves the tag absent and a future call retries
+    once results are final.
+
+    `tracing_client` is None exactly when the caller's `emit_traces=False`
+    (see `sync_production_range`) -- trace emission is skipped entirely in
+    that case, not attempted-and-discarded.
     """
     results = serve_eval.fetch_race_results(local_conn, category, date_str)
     eval_rows = serve_eval.build_fp_race_eval_rows(category, model_version, rows, results)
     if not eval_rows:
-        return False
+        return False, trace_emit.TraceEmitSummary()
 
     day_metrics = serve_eval.aggregate_fp_day_metrics(eval_rows)
+    # `place4_pct`/`place5_pct`/`place6_pct` may be None (every race this day
+    # had too small a field for that rank -- see
+    # `serve_eval.aggregate_fp_day_metrics`'s own docstring), so this must
+    # skip a None value rather than blindly `float()`-casting it -- mirroring
+    # `_sync_rs_eval`'s own `isinstance(macro_f1_pct, int | float)` idiom for
+    # its own possibly-None `macro_f1_pct` value.
     metric_items = [
         Metric(f"fp_{key}", float(value), 0, 0)
         for key, value in day_metrics.items()
-        if key != "races"
+        if key != "races" and isinstance(value, int | float)
     ]
     # Named distinctly from the base-tracking `fp_races` metric (ALL served
     # races that day), which this is not: only races that matched at least
-    # one finalized result count here.
-    metric_items.append(Metric("fp_races_evaluated", float(day_metrics["races"]), 0, 0))
+    # one finalized result count here. `day_metrics["races"]` is documented
+    # (see `serve_eval.aggregate_fp_day_metrics`'s own docstring) to always
+    # be a plain float, never None -- `cast` here for the same reason
+    # `_sync_rs_eval`/`_fp_cell_metrics` cast their own always-present,
+    # loosely-Optional-typed fields.
+    metric_items.append(
+        Metric("fp_races_evaluated", float(cast(float, day_metrics["races"])), 0, 0)
+    )
     log_batch_chunked(client, run_id, metrics=metric_items)
     _log_table_and_parquet(
         client,
@@ -530,29 +718,39 @@ def _sync_fp_eval(
             RunTag(SYNC_EVAL_LOGGED_TAG, TRUE_STR),
         ],
     )
-    return True
+    trace_summary = (
+        trace_emit.emit_fp_race_traces(tracing_client, experiment_id, eval_rows, rows)
+        if tracing_client is not None
+        else trace_emit.TraceEmitSummary()
+    )
+    return True, trace_summary
 
 
 def _sync_rs_eval(
     client: MlflowClient,
     run_id: str,
     *,
+    tracing_client: TracingClient | None,
+    experiment_id: str,
     category: str,
     date_str: str,
     model_version: str,
     rows: list[dict[str, object]],
     local_conn: db.ConnectionLike,
-) -> bool:
+) -> tuple[bool, trace_emit.TraceEmitSummary]:
     """Attempt the RS evaluation join for one (date, category, model_version)
     group. Same "log only on a nonempty join, else leave retry-able" contract
-    as `_sync_fp_eval`."""
+    as `_sync_fp_eval` -- including the trace-emission side effect (one
+    trace per HORSE here, via `trace_emit.emit_rs_horse_traces`, see this
+    module's own docstring and `trace_emit.py`'s RS design-decision section)
+    and the same `tracing_client is None` skip-entirely behavior."""
     results = serve_eval.fetch_race_results(local_conn, category, date_str)
     race_meta = serve_eval.fetch_race_metadata(local_conn, category, date_str)
     eval_rows = serve_eval.build_rs_horse_eval_rows(
         category, model_version, rows, results, race_meta
     )
     if not eval_rows:
-        return False
+        return False, trace_emit.TraceEmitSummary()
 
     day_metrics = serve_eval.aggregate_rs_day_metrics(eval_rows)
     # `aggregate_rs_day_metrics` returns `dict[str, object]` (its `per_class`
@@ -583,11 +781,17 @@ def _sync_rs_eval(
             RunTag(SYNC_EVAL_LOGGED_TAG, TRUE_STR),
         ],
     )
-    return True
+    trace_summary = (
+        trace_emit.emit_rs_horse_traces(tracing_client, experiment_id, eval_rows, rows)
+        if tracing_client is not None
+        else trace_emit.TraceEmitSummary()
+    )
+    return True, trace_summary
 
 
 def _sync_fp_category_date(
     client: MlflowClient,
+    tracing_client: TracingClient | None,
     experiment_id: str,
     neon_conn: db.ConnectionLike,
     local_conn: db.ConnectionLike,
@@ -663,9 +867,11 @@ def _sync_fp_category_date(
             )
 
         if existing_tags.get(SYNC_EVAL_LOGGED_TAG) != TRUE_STR:
-            logged = _sync_fp_eval(
+            logged, trace_summary = _sync_fp_eval(
                 client,
                 run_id,
+                tracing_client=tracing_client,
+                experiment_id=experiment_id,
                 category=category,
                 date_str=date_str,
                 model_version=model_version,
@@ -676,11 +882,17 @@ def _sync_fp_category_date(
                 outcome.eval_logged += 1
             else:
                 outcome.eval_skipped_no_results += 1
+            outcome.traces_created += trace_summary.traces_created
+            outcome.traces_already_existed += trace_summary.traces_already_existed
+            outcome.trace_errors.extend(trace_summary.errors)
 
         group_live_rows, _group_backfill_rows = serve_eval.partition_live_backfill(group_rows)
         if group_live_rows:
             served_model_versions_live.add(model_version)
-            if model_version == champion_label:
+            # Widened (2026-07-10) to champion-OR-variant -- see
+            # `_is_champion_or_variant`'s own docstring: a variant-only-
+            # served day must not be miscounted as "champion did not serve".
+            if _is_champion_or_variant(model_version, champion_label):
                 outcome.champion_live_races += _distinct_race_count(group_live_rows)
 
         # Always leave this run FINISHED before moving to the next
@@ -695,6 +907,7 @@ def _sync_fp_category_date(
 
 def _sync_rs_category_date(
     client: MlflowClient,
+    tracing_client: TracingClient | None,
     experiment_id: str,
     neon_conn: db.ConnectionLike,
     local_conn: db.ConnectionLike,
@@ -756,9 +969,11 @@ def _sync_rs_category_date(
             )
 
         if existing_tags.get(SYNC_EVAL_LOGGED_TAG) != TRUE_STR:
-            logged = _sync_rs_eval(
+            logged, trace_summary = _sync_rs_eval(
                 client,
                 run_id,
+                tracing_client=tracing_client,
+                experiment_id=experiment_id,
                 category=category,
                 date_str=date_str,
                 model_version=model_version,
@@ -769,11 +984,17 @@ def _sync_rs_category_date(
                 outcome.eval_logged += 1
             else:
                 outcome.eval_skipped_no_results += 1
+            outcome.traces_created += trace_summary.traces_created
+            outcome.traces_already_existed += trace_summary.traces_already_existed
+            outcome.trace_errors.extend(trace_summary.errors)
 
         group_live_rows, _group_backfill_rows = serve_eval.partition_live_backfill(group_rows)
         if group_live_rows:
             served_model_versions_live.add(model_version)
-            if model_version == champion_label:
+            # Widened (2026-07-10) to champion-OR-variant -- see
+            # `_is_champion_or_variant`'s own docstring: a variant-only-
+            # served day must not be miscounted as "champion did not serve".
+            if _is_champion_or_variant(model_version, champion_label):
                 outcome.champion_live_races += _distinct_race_count(group_live_rows)
 
         # See _sync_fp_category_date's matching comment: always FINISHED,
@@ -851,12 +1072,18 @@ def _log_serving_gap(
     this metric's original (pre-widening) name -- new callers should read
     `expected_races` instead, since it is the only metric name meaningful
     for BOTH sources.
+
+    `run_name` is set at creation to `"gap {date_str} {category} {gap_type}"`
+    -- matching the display name already carried by every pre-existing marker
+    run in the real store, same rationale as `_get_or_create_run_and_tags`'s
+    own `run_name` note.
     """
     serving_gap_key = f"{date_str}:{category}"
     run_id = _find_serving_gap_run(client, experiment_id, serving_gap_key)
     if run_id is None:
         run = client.create_run(
             experiment_id,
+            run_name=f"gap {date_str} {category} {gap_type}",
             tags={
                 SERVING_GAP_KEY_TAG: serving_gap_key,
                 SERVING_GAP_TAG: TRUE_STR,
@@ -922,7 +1149,10 @@ def _resolve_expected_races(
 
 def _check_champion_gap(outcome: _CategoryDateOutcome) -> bool:
     """True when `outcome` had genuinely-served LIVE rows this call but NONE
-    of them came from the currently-registered champion model_version.
+    of them came from the currently-registered champion model_version OR a
+    cell-routed VARIANT of it (`outcome.champion_live_races` is already
+    accumulated champion-OR-variant-inclusive -- see `_is_champion_or_variant`
+    and `_CategoryDateOutcome`'s own docstring for the 2026-07-10 widening).
 
     False both when there were no live rows at all this call (nothing to
     compare -- a plain no-service day, already covered by the serving-gap
@@ -976,16 +1206,33 @@ def _log_champion_gap(
     served can shift day to day) is the diagnostic payload naming what WAS
     actually served instead of the champion, sorted for a deterministic tag
     value.
+
+    `CHAMPION_SERVED_TAG` is set to the static value FALSE_STR ("false") ONCE
+    at creation time here, never re-logged -- this marker run's very reason
+    to exist is that `_check_champion_gap` found ZERO champion-OR-variant
+    live coverage that day (see the widened `champion_live_races`
+    accumulation in `_sync_fp_category_date`/`_sync_rs_category_date`), so
+    "false" is always the correct static fact for it. This is a DIFFERENT
+    run family from the one `_champion_served_variant_tag` tags with
+    CHAMPION_SERVED_VARIANT_VALUE ("variant") -- see this tag's own module-
+    level comment for why the two never collide despite sharing a tag key.
+
+    `run_name` is set at creation to `"champion-gap {date_str} {category}"`
+    (deliberately without `task`, unlike the tag-based `champion_gap_key`) --
+    matching the display name already carried by every pre-existing marker
+    run in the real store, same rationale as `_get_or_create_run_and_tags`'s
+    own `run_name` note.
     """
     champion_gap_key = f"{date_str}:{category}:{task}"
     run_id = _find_champion_gap_run(client, experiment_id, champion_gap_key)
     if run_id is None:
         run = client.create_run(
             experiment_id,
+            run_name=f"champion-gap {date_str} {category}",
             tags={
                 CHAMPION_GAP_KEY_TAG: champion_gap_key,
                 CHAMPION_GAP_TAG: TRUE_STR,
-                "champion_served": FALSE_STR,
+                CHAMPION_SERVED_TAG: FALSE_STR,
                 "gap_date": date_str,
                 "category": category,
                 "task": task,
@@ -1042,30 +1289,23 @@ def sync_production_range(
       never re-attempted, for the same log_table append-duplication reason
       as `sync_base_logged`.
 
-    `emit_traces` is accepted for API-contract completeness (so a future
-    `--no-traces` CLI flag has somewhere to plug in) but has NO effect on
-    behavior. This is a deliberate, investigated decision, not an
-    unfinished feature: MLflow 3.14's `MlflowClient.start_trace`/`end_trace`
-    were evaluated for this exact "per-race/per-horse audit trail" use case
-    and found unsafe for this codebase. Empirically, they persist through a
-    process-wide OpenTelemetry singleton that resolves its destination via
-    the GLOBAL `mlflow.get_tracking_uri()` at first use -- completely
-    bypassing the tracking_uri of the explicit `MlflowClient` instance
-    passed into this very function. A trace logged through an isolated
-    sqlite client silently failed ("No Experiment with id=1 exists") until
-    `mlflow.set_tracking_uri()` was ALSO called globally, which would mean
-    introducing global mutable tracking-URI state into a package built
-    entirely around explicit-client, hermetically-testable design (see
-    every other module's own docstring for why) -- exactly the failure
-    class already responsible for a real production incident recorded in
-    `tests/conftest.py` (the 2026-07-08 champion-alias-corruption incident
-    from a leaked global env var / ambient tracking URI). The per-race/
-    per-horse `predictions.json`/`eval.json` table artifacts logged by this
-    module already give the same predicted-vs-actual audit visibility in
-    the MLflow UI's Artifacts/Evaluation views, without any of that risk --
-    so this module does not use MLflow traces at all, and `emit_traces`
-    exists only so nobody mistakes its absence for an oversight, or a
-    future `False` value for a real toggle that changes behavior today.
+    `emit_traces` (default True) now GENUINELY gates trace emission
+    (2026-07-10 -- see this module's own docstring's "★ MLflow traces"
+    section and `trace_emit.py`'s module docstring for the full before/
+    after story of why this used to be a documented no-op and no longer
+    is). When True, a `trace_emit.TracingClient` is built once for this
+    whole call (`trace_emit.build_tracing_client(client)` -- resolved from
+    `client`'s OWN explicit `tracking_uri`, never ambient/global state) and
+    threaded down to `_sync_fp_eval`/`_sync_rs_eval`, which each emit one
+    trace (+ Feedback assessments) per race/horse the SAME pass they
+    compute eval metrics (see those functions' own docstrings). When False,
+    no `TracingClient` is even constructed, and no `trace_emit` call is
+    ever made -- the `sync-production` CLI's `--no-traces` flag threads
+    `emit_traces=False` here for exactly this reason. The per-race/
+    per-horse `predictions.json`/`eval.json` table artifacts this module
+    already logs remain the audit trail of record regardless of this flag
+    (traces are an ADDITIONAL Usage/Quality/Tool-calls-page view onto the
+    same underlying rows, not a replacement for the table artifacts).
 
     `neon_connect`/`local_connect` are each called exactly ONCE for the
     whole date range (not once per date), in a try/finally that always
@@ -1124,13 +1364,19 @@ def sync_production_range(
     sync for a (date, category), this function checks for a CHAMPION
     MISMATCH via `_check_champion_gap`: live rows were genuinely served that
     day for that task, but NONE of them came from the CURRENT champion
-    model_version (e.g. JRA silently served only a superseded challenger
-    variant for weeks after a rollback). A detected mismatch is surfaced the
-    same two ways as a serving gap -- a `warnings.warn`, and an idempotent
-    marker run (`champion_gap_key = "{date}:{category}:{task}"`, in the
-    task's own FP/RS production-usage experiment) -- with
-    `summary.champion_gaps_detected` counting how many (date, category, task)
-    triples this call observed, and isolated the same way.
+    model_version OR a CELL-ROUTED VARIANT of it (`_is_champion_or_variant`,
+    widened 2026-07-10 -- see that function's own docstring; e.g. per-cell
+    routing dispatching some races/horses to a build labeled
+    `f"{champion_label}-jockey-pedigree269"` no longer, on its own, counts as
+    a mismatch). A genuine mismatch is e.g. JRA silently served only a
+    superseded CHALLENGER build (an entirely different, unrelated
+    model_version, not a variant of the current champion) for weeks after a
+    rollback. A detected mismatch is surfaced the same two ways as a serving
+    gap -- a `warnings.warn`, and an idempotent marker run
+    (`champion_gap_key = "{date}:{category}:{task}"`, in the task's own
+    FP/RS production-usage experiment) -- with `summary.champion_gaps_
+    detected` counting how many (date, category, task) triples this call
+    observed, and isolated the same way.
 
     Raises ValueError for an invalid `date_from`/`date_to` (see
     `timeline.validate_yyyymmdd`) or an inverted range (`date_to < date_from`).
@@ -1151,7 +1397,17 @@ def sync_production_range(
     rs_eval_skipped_no_results = 0
     serving_gaps_detected = 0
     champion_gaps_detected = 0
+    traces_created = 0
+    traces_already_existed = 0
     errors: list[str] = []
+
+    # Built ONCE for this whole call (never per-date/per-category), from
+    # `client`'s OWN explicit tracking_uri -- see `trace_emit.
+    # build_tracing_client`'s own docstring for why this never touches
+    # ambient/global tracking state. None entirely when `emit_traces=False`,
+    # so `_sync_fp_eval`/`_sync_rs_eval` skip trace emission outright rather
+    # than attempting-and-discarding it.
+    tracing_client = trace_emit.build_tracing_client(client) if emit_traces else None
 
     neon_conn = neon_connect()
     local_conn = local_connect()
@@ -1171,7 +1427,13 @@ def sync_production_range(
                 fp_outcome: _CategoryDateOutcome | None = None
                 try:
                     fp_outcome = _sync_fp_category_date(
-                        client, fp_experiment_id, neon_conn, local_conn, category, date_str
+                        client,
+                        tracing_client,
+                        fp_experiment_id,
+                        neon_conn,
+                        local_conn,
+                        category,
+                        date_str,
                     )
                 except _ISOLATED_EXCEPTIONS as exc:
                     errors.append(f"{date_str}:{category}:finish-position: {exc}")
@@ -1180,6 +1442,12 @@ def sync_production_range(
                     fp_runs_reused += fp_outcome.runs_reused
                     fp_eval_logged += fp_outcome.eval_logged
                     fp_eval_skipped_no_results += fp_outcome.eval_skipped_no_results
+                    traces_created += fp_outcome.traces_created
+                    traces_already_existed += fp_outcome.traces_already_existed
+                    errors.extend(
+                        f"{date_str}:{category}:trace-emit:finish-position: {msg}"
+                        for msg in fp_outcome.trace_errors
+                    )
 
                 rs_outcome: _CategoryDateOutcome | None = None
                 if category in RS_CATEGORIES:
@@ -1189,7 +1457,13 @@ def sync_production_range(
                         )
                     try:
                         rs_outcome = _sync_rs_category_date(
-                            client, rs_experiment_id, neon_conn, local_conn, category, date_str
+                            client,
+                            tracing_client,
+                            rs_experiment_id,
+                            neon_conn,
+                            local_conn,
+                            category,
+                            date_str,
                         )
                     except _ISOLATED_EXCEPTIONS as exc:
                         errors.append(f"{date_str}:{category}:running-style: {exc}")
@@ -1198,6 +1472,12 @@ def sync_production_range(
                         rs_runs_reused += rs_outcome.runs_reused
                         rs_eval_logged += rs_outcome.eval_logged
                         rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
+                        traces_created += rs_outcome.traces_created
+                        traces_already_existed += rs_outcome.traces_already_existed
+                        errors.extend(
+                            f"{date_str}:{category}:trace-emit:running-style: {msg}"
+                            for msg in rs_outcome.trace_errors
+                        )
 
                     # Champion-mismatch check, RS side (see this function's
                     # own docstring). Only reachable when the RS sync above
@@ -1313,5 +1593,7 @@ def sync_production_range(
         rs_eval_skipped_no_results=rs_eval_skipped_no_results,
         serving_gaps_detected=serving_gaps_detected,
         champion_gaps_detected=champion_gaps_detected,
+        traces_created=traces_created,
+        traces_already_existed=traces_already_existed,
         errors=errors,
     )

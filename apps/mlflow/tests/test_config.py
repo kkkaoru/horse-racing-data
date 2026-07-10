@@ -660,6 +660,18 @@ def test_new_production_experiment_names_are_included_in_all_experiment_names() 
     assert config.EXPERIMENT_RS_CHAMPION_EVAL in config.ALL_EXPERIMENT_NAMES
 
 
+def test_cell_eval_experiment_names_are_included_in_all_experiment_names() -> None:
+    assert config.EXPERIMENT_FP_CELL_EVAL == "finish-position/cell-eval"
+    assert config.EXPERIMENT_RS_CELL_EVAL == "running-style/cell-eval"
+    assert config.EXPERIMENT_FP_CELL_EVAL in config.ALL_EXPERIMENT_NAMES
+    assert config.EXPERIMENT_RS_CELL_EVAL in config.ALL_EXPERIMENT_NAMES
+
+
+def test_smoke_tests_experiment_name_is_included_in_all_experiment_names() -> None:
+    assert config.EXPERIMENT_SMOKE_TESTS == "internal/smoke-tests"
+    assert config.EXPERIMENT_SMOKE_TESTS in config.ALL_EXPERIMENT_NAMES
+
+
 def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

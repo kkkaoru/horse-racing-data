@@ -22,7 +22,7 @@ from mlflow import MlflowClient
 from mlflow.entities import Run
 from mlflow.exceptions import MlflowException
 
-from mlflow_tracking import config, db, registry, serve_eval, sync_production, timeline
+from mlflow_tracking import config, db, registry, serve_eval, sync_production, timeline, trace_emit
 
 GEN_AT: datetime = datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
 DATE_STR: str = "20260614"
@@ -441,6 +441,78 @@ def test_fp_run_created_with_eval_regime_serve_tag(client: MlflowClient) -> None
     assert run.data.tags["eval_regime"] == "serve"
 
 
+# ── run_name is set AT CREATION (never blank/default) ──────────────────────
+#
+# Regression coverage: none of this module's 3 `client.create_run(...)` call
+# sites used to pass `run_name`, so a freshly created run displayed as a bare
+# run_id in the MLflow UI until some later out-of-band rename. Every pattern
+# below is verified to match exactly what pre-existing runs in the real store
+# already display (confirmed via the REST API against the live store).
+
+
+def test_sync_run_name_set_at_creation(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.info.run_name == f"{DATE_STR} jra iter14"
+
+
+def test_serving_gap_run_name_set_at_creation(client: MlflowClient) -> None:
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection()
+    with pytest.warns(UserWarning, match="jra"):
+        sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )
+    assert len(matches) == 1
+    assert matches[0].info.run_name == f"gap {DATE_STR} jra no_rows"
+
+
+def test_champion_gap_run_name_set_at_creation(client: MlflowClient) -> None:
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter20-challenger", 1)]}
+    )
+    local = FakeLocalConnection()
+    with pytest.warns(UserWarning, match="champion gap"):
+        sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.champion_gap_key = '{DATE_STR}:jra:finish-position'",
+    )
+    assert len(matches) == 1
+    assert matches[0].info.run_name == f"champion-gap {DATE_STR} jra"
+
+
 # ── Idempotency: second call reuses run, never re-logs base ────────────────
 
 
@@ -534,9 +606,76 @@ def test_eval_fills_in_later_once_results_become_final(client: MlflowClient) -> 
     assert run.data.tags["sync_eval_logged"] == "true"
     assert "timeline_run_id:finish-position" in run.data.tags
     fp_dates = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
-    assert int(DATE_STR) in fp_dates
+    assert timeline.step_for_date(DATE_STR) in fp_dates
     assert run.data.metrics["fp_top1_pct"] == 100.0
     assert run.data.metrics["fp_races_evaluated"] == 1.0
+    # This race has only 1 finalized result row (H1) -- total_starters=1, so
+    # place4/5/6_pct are all None (see serve_eval.aggregate_fp_day_metrics)
+    # and must never be logged as a fabricated 0.0 metric.
+    assert "fp_place4_pct" not in run.data.metrics
+    assert "fp_place5_pct" not in run.data.metrics
+    assert "fp_place6_pct" not in run.data.metrics
+
+
+def test_fp_place456_pct_none_is_not_logged_as_a_metric(client: MlflowClient) -> None:
+    """Mirrors test_rs_macro_f1_none_is_not_logged_as_a_metric for the FP
+    side: a too-small field (3 finalized results, all below rank 4) makes
+    place4_pct/place5_pct/place6_pct all None -- must not attempt to log a
+    None metric value, while top1_pct (unaffected by the small-field guard)
+    still logs normally."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={
+            DATE_STR: [
+                _result_row("05", "01", "H1", "1", "01"),
+                _result_row("05", "01", "H2", "2", "02"),
+                _result_row("05", "01", "H3", "3", "03"),
+            ]
+        }
+    )
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.metrics["fp_top1_pct"] == 100.0
+    assert "fp_place4_pct" not in run.data.metrics
+    assert "fp_place5_pct" not in run.data.metrics
+    assert "fp_place6_pct" not in run.data.metrics
+
+
+def test_fp_place456_pct_logged_for_a_large_enough_field(client: MlflowClient) -> None:
+    """A 6-starter field: place4_pct/place5_pct/place6_pct are all real,
+    logged percentages (100.0 -- the predicted winner H1 genuinely won)."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={
+            DATE_STR: [
+                _result_row("05", "01", "H1", "1", "01"),
+                _result_row("05", "01", "H2", "2", "02"),
+                _result_row("05", "01", "H3", "3", "03"),
+                _result_row("05", "01", "H4", "4", "04"),
+                _result_row("05", "01", "H5", "5", "05"),
+                _result_row("05", "01", "H6", "6", "06"),
+            ]
+        }
+    )
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.metrics["fp_place4_pct"] == 100.0
+    assert run.data.metrics["fp_place5_pct"] == 100.0
+    assert run.data.metrics["fp_place6_pct"] == 100.0
 
 
 # ── Ban-ei partitioning (FP) ─────────────────────────────────────────────
@@ -632,7 +771,7 @@ def test_rs_base_and_eval_and_timeline(client: MlflowClient) -> None:
     rs_dates = timeline.timeline_dates_present(
         client, "running-style", "jra", "rs_overall_accuracy_pct"
     )
-    assert int(DATE_STR) in rs_dates
+    assert timeline.step_for_date(DATE_STR) in rs_dates
 
 
 def test_rs_eval_skipped_when_no_finalized_results_yet(client: MlflowClient) -> None:
@@ -1329,6 +1468,137 @@ def test_rs_champion_gap_detected(client: MlflowClient) -> None:
     assert matches[0].data.tags["served_model_versions"] == "rs-v4-challenger"
 
 
+# ── Champion-OR-variant widening (fixes false "champion gap" alarms) ───────
+#
+# Production routes some races/horses to a CELL-ROUTED VARIANT of the
+# champion, whose model_version is the champion label plus a "-<routing-
+# scope>" suffix. The original exact-match-only `champion_live_races`
+# accumulation made `_check_champion_gap` fire a false "champion did not
+# serve" alarm on any day where only a variant (never the bare champion
+# label) actually served. These tests cover: a variant match (NEW, no gap,
+# `champion_served="variant"` tag set), a deliberately-tricky near-miss
+# unrelated model_version that shares a raw string prefix but is NOT
+# "-"-separated from the champion label (still a REAL gap), and that
+# `champion_at_sync`'s existing true/false semantics are untouched.
+
+
+def test_fp_champion_served_variant_tag_and_no_gap(client: MlflowClient) -> None:
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14-jockey-pedigree269", 1)]}
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+
+    run = _get_run(
+        client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14-jockey-pedigree269"
+    )
+    # champion_at_sync keeps its EXACT-MATCH-ONLY semantics: a variant is NOT
+    # an exact match, so this stays "false" -- champion_served is the
+    # additive signal that distinguishes "variant" from "unrelated".
+    assert run.data.tags["champion_at_sync"] == "false"
+    assert run.data.tags["champion_served"] == "variant"
+
+
+def test_rs_champion_served_variant_tag_and_no_gap(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """RS-side twin of the FP variant-widening test above -- exercises the RS
+    sync's own `_is_champion_or_variant` call, a distinct code path from the
+    FP sync's identical-looking one."""
+    _register_champion(client, "jra", "running-style", "rs-v3")
+    neon = FakeNeonConnection(
+        rs_rows={
+            ("jra", DATE_STR): [
+                _rs_row("05", "01", "H1", "rs-v3-jockeyA", serve_eval.RS_CLASS_SASHI)
+            ]
+        }
+    )
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.champion_gaps_detected == 0
+    assert not any("champion gap" in str(w.message) for w in recwarn.list)
+
+    run = _get_run(client, config.EXPERIMENT_RS_PRODUCTION_USAGE, f"{DATE_STR}:jra:rs-v3-jockeyA")
+    assert run.data.tags["champion_at_sync"] == "false"
+    assert run.data.tags["champion_served"] == "variant"
+
+
+def test_fp_champion_gap_still_detected_for_unrelated_near_miss_model_version(
+    client: MlflowClient,
+) -> None:
+    """"iter140" shares "iter14" as a raw string prefix but is NOT
+    "-"-separated from it (`"iter140".startswith("iter14-")` is False) --
+    this must still classify as an unrelated model_version, not a variant,
+    so the champion gap fires exactly as it always did, and no
+    `champion_served` tag is attached."""
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter140", 1)]}
+    )
+    local = FakeLocalConnection()
+
+    with pytest.warns(UserWarning, match="champion gap"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.champion_gaps_detected == 1
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter140")
+    assert run.data.tags["champion_at_sync"] == "false"
+    assert "champion_served" not in run.data.tags
+
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id],
+        filter_string=f"tags.champion_gap_key = '{DATE_STR}:jra:finish-position'",
+    )
+    assert len(matches) == 1
+    assert matches[0].data.tags["champion_served"] == "false"
+    assert matches[0].data.tags["served_model_versions"] == "iter140"
+
+
+def test_champion_served_tag_absent_for_exact_champion_match(client: MlflowClient) -> None:
+    """An exact champion match gets no `champion_served` tag at all -- it is
+    purely additive for the variant case, never a replacement for
+    `champion_at_sync`."""
+    _register_champion(client, "jra", "finish-position", "iter14")
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    run = _get_run(client, config.EXPERIMENT_FP_PRODUCTION_USAGE, f"{DATE_STR}:jra:iter14")
+    assert run.data.tags["champion_at_sync"] == "true"
+    assert "champion_served" not in run.data.tags
+
+
 def test_champion_gap_marker_not_duplicated_on_repeated_calls(client: MlflowClient) -> None:
     _register_champion(client, "jra", "finish-position", "iter14")
 
@@ -1548,31 +1818,169 @@ def test_invalid_date_to_raises_value_error(client: MlflowClient) -> None:
         )
 
 
-def test_emit_traces_parameter_has_no_effect_on_behavior(client: MlflowClient) -> None:
-    """`emit_traces` is accepted for API-contract completeness only -- both
-    True (default) and False must behave identically."""
-    neon_rows = {("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]}
-    with_traces_true = sync_production.sync_production_range(
+def test_emit_traces_true_creates_a_real_trace_with_assessments(client: MlflowClient) -> None:
+    """`emit_traces=True` (the default): once the FP eval join succeeds, a
+    real MLflow trace (+ Feedback assessments) is emitted for that race via
+    `trace_emit.emit_fp_race_traces` -- verified against the REAL tracing
+    store (never mocked), matching this module's own 2026-07-10 wiring."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+    )
+    summary = sync_production.sync_production_range(
         client,
         DATE_STR,
         DATE_STR,
         categories=("jra",),
         emit_traces=True,
-        neon_connect=lambda: FakeNeonConnection(fp_rows=neon_rows),
-        local_connect=lambda: FakeLocalConnection(),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
     )
-    with_traces_false = sync_production.sync_production_range(
+    assert summary.fp_eval_logged == 1
+    assert summary.traces_created == 1
+    assert summary.traces_already_existed == 0
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert fp_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[fp_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(traces) == 1
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert trace.info.tags[trace_emit.TRACE_BUSINESS_KEY_TAG] == f"{DATE_STR}:jra:05:01:iter14"
+    assessment_names = {a.name for a in trace.info.assessments}
+    assert assessment_names >= {"place1_hit", trace_emit.TOP3_BOX_ASSESSMENT_NAME}
+
+
+def test_emit_traces_false_skips_trace_emission_entirely(client: MlflowClient) -> None:
+    """`emit_traces=False` (the `--no-traces` CLI flag's target): metrics/
+    tables are logged as normal, but NO trace is ever built -- not even a
+    `TracingClient` is constructed."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+    )
+    summary = sync_production.sync_production_range(
         client,
-        "20260620",
-        "20260620",
+        DATE_STR,
+        DATE_STR,
         categories=("jra",),
         emit_traces=False,
-        neon_connect=lambda: FakeNeonConnection(),
-        local_connect=lambda: FakeLocalConnection(),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
     )
-    assert with_traces_true.fp_runs_created == 1
-    assert with_traces_false.fp_runs_created == 0
-    assert with_traces_false.errors == []
+    assert summary.fp_eval_logged == 1
+    assert summary.traces_created == 0
+    assert summary.traces_already_existed == 0
+    assert summary.errors == []
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert fp_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[fp_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert traces == []
+
+
+def test_emit_traces_true_rs_creates_a_real_trace_with_predicted_class_hit(
+    client: MlflowClient,
+) -> None:
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "5", "05")]},
+        meta_rows={DATE_STR: [_meta_row("05", "01", 1200, 10, "10", "A")]},
+    )
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        emit_traces=True,
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.rs_eval_logged == 1
+    assert summary.traces_created == 1
+
+    rs_experiment = client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE)
+    assert rs_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[rs_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(traces) == 1
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert {a.name for a in trace.info.assessments} == {
+        trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME
+    }
+
+
+def test_second_sync_call_never_recreates_or_duplicates_traces(client: MlflowClient) -> None:
+    """A second `sync_production_range` call over the SAME range never
+    re-attempts the eval join at all (already gated by `sync_eval_logged`,
+    see this module's own idempotency state machine) -- so trace emission
+    is never even reattempted on a normal daily-cron re-run, and the real
+    trace count in the store stays at exactly 1."""
+
+    def _fresh_neon() -> FakeNeonConnection:
+        return FakeNeonConnection(
+            fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]}
+        )
+
+    def _fresh_local() -> FakeLocalConnection:
+        return FakeLocalConnection(
+            result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+        )
+
+    first = sync_production.sync_production_range(
+        client, DATE_STR, DATE_STR, categories=("jra",), neon_connect=_fresh_neon,
+        local_connect=_fresh_local,
+    )
+    assert first.traces_created == 1
+
+    second = sync_production.sync_production_range(
+        client, DATE_STR, DATE_STR, categories=("jra",), neon_connect=_fresh_neon,
+        local_connect=_fresh_local,
+    )
+    assert second.traces_created == 0
+    assert second.traces_already_existed == 0
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert fp_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[fp_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(traces) == 1
+
+
+def test_trace_emission_errors_are_folded_into_summary_with_prefix(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+    )
+
+    def _boom_emit(*args: object, **kwargs: object) -> trace_emit.TraceEmitSummary:
+        return trace_emit.TraceEmitSummary(errors=["synthetic failure"])
+
+    monkeypatch.setattr(trace_emit, "emit_fp_race_traces", _boom_emit)
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert len(summary.errors) == 1
+    assert "trace-emit:finish-position" in summary.errors[0]
+    assert "synthetic failure" in summary.errors[0]
 
 
 # ── Default connection factories are wired to the real db module ───────────

@@ -250,10 +250,10 @@ def test_ingest_serve_accuracy_logs_finish_position_and_running_style(
     rs_timeline_run_id = run.data.tags["timeline_run_id:running-style"]
     assert fp_timeline_run_id != rs_timeline_run_id
     fp_timeline_run = client.get_run(fp_timeline_run_id)
-    assert fp_timeline_run.info.run_name == "timeline-finish-position-jra"
+    assert fp_timeline_run.info.run_name == "timeline-finish-position-jra-v2"
     assert fp_timeline_run.data.metrics["fp_top1_pct"] == 44.5
     rs_timeline_run = client.get_run(rs_timeline_run_id)
-    assert rs_timeline_run.info.run_name == "timeline-running-style-jra"
+    assert rs_timeline_run.info.run_name == "timeline-running-style-jra-v2"
     assert rs_timeline_run.data.metrics["rs_overall_accuracy_pct"] == 55.0
 
 
@@ -278,7 +278,7 @@ def test_ingest_serve_accuracy_handles_finish_position_only(
     assert "timeline_run_id:running-style" not in run.data.tags
     fp_timeline_run_id = run.data.tags["timeline_run_id:finish-position"]
     fp_dates = timeline.timeline_dates_present(client, "finish-position", "nar", "fp_top1_pct")
-    assert fp_dates == {20260601}
+    assert fp_dates == {timeline.step_for_date("20260601")}
     fp_timeline_run = client.get_run(fp_timeline_run_id)
     assert fp_timeline_run.data.metrics["fp_top1_pct"] == 30.0
 
@@ -306,7 +306,7 @@ def test_ingest_serve_accuracy_handles_running_style_only(
     rs_dates = timeline.timeline_dates_present(
         client, "running-style", "jra", "rs_overall_accuracy_pct"
     )
-    assert rs_dates == {20260602}
+    assert rs_dates == {timeline.step_for_date("20260602")}
     rs_timeline_run = client.get_run(rs_timeline_run_id)
     assert rs_timeline_run.data.metrics["rs_overall_accuracy_pct"] == 60.0
 
@@ -589,3 +589,100 @@ def test_ingest_cell_report_alias_collision_drops_alias_column(
     result_df = pd.read_parquet(artifact_dir)
     assert list(result_df["venue"]) == ["05"]
     assert "keibajo_code" not in result_df.columns
+
+
+# ── --run-key idempotency (optional; default behavior unchanged) ──────────
+
+
+def test_ingest_cell_report_without_run_key_always_creates_new_run(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Regression guard for the default (run_key omitted) path: it must
+    behave EXACTLY as before this parameter existed -- two calls against the
+    identical report (same run_name and all) still create two distinct
+    runs, never reusing one."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    first_run_id = ingest_eval.ingest_cell_report(client, json_path, eval_regime="oos")
+    second_run_id = ingest_eval.ingest_cell_report(client, json_path, eval_regime="oos")
+    assert first_run_id != second_run_id
+
+
+def test_ingest_cell_report_with_run_key_reuses_existing_run(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    first_run_id = ingest_eval.ingest_cell_report(
+        client, json_path, eval_regime="oos", run_key="daily-jra-oos"
+    )
+    second_run_id = ingest_eval.ingest_cell_report(
+        client, json_path, eval_regime="oos", run_key="daily-jra-oos"
+    )
+    assert first_run_id == second_run_id
+
+    run = client.get_run(first_run_id)
+    assert run.data.tags[ingest_eval.RUN_KEY_TAG] == "daily-jra-oos"
+    matches = client.search_runs(
+        [run.info.experiment_id],
+        filter_string=f"tags.{ingest_eval.RUN_KEY_TAG} = 'daily-jra-oos'",
+    )
+    assert len(matches) == 1
+    assert run.info.status == "FINISHED"
+
+
+def test_ingest_cell_report_with_run_key_updates_metrics_in_place(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """Two calls sharing the same run_key but differing in aggregate_metrics
+    reuse the same run, ending up reflecting the LATEST call's data --
+    mirroring `ingest_serve_accuracy`'s own reused-run update-in-place
+    semantics."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    first_run_id = ingest_eval.ingest_cell_report(
+        client,
+        json_path,
+        eval_regime="oos",
+        run_key="daily-jra-oos",
+        aggregate_metrics={"custom": 1.0},
+    )
+    second_run_id = ingest_eval.ingest_cell_report(
+        client,
+        json_path,
+        eval_regime="oos",
+        run_key="daily-jra-oos",
+        aggregate_metrics={"custom": 2.0},
+    )
+    assert first_run_id == second_run_id
+    run = client.get_run(second_run_id)
+    assert run.data.metrics["custom"] == 2.0
+
+
+def test_ingest_cell_report_with_run_key_logs_cell_table(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """The run_key-reuse path still logs the full cell table artifact, same
+    as the default (log_eval_run-backed) path."""
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    run_id = ingest_eval.ingest_cell_report(
+        client, json_path, eval_regime="oos", run_key="daily-jra-oos"
+    )
+    artifact_paths = {a.path for a in client.list_artifacts(run_id)}
+    assert logging_api.CELL_METRICS_JSON_ARTIFACT in artifact_paths
+    assert logging_api.CELL_METRICS_PARQUET_ARTIFACT in artifact_paths
+
+
+def test_ingest_cell_report_different_run_keys_get_different_runs(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    json_path = tmp_path / "cell_report.json"
+    write_json(json_path, [{"venue": "05", "top1": 0.4, "race_count": 10}])
+    first_run_id = ingest_eval.ingest_cell_report(
+        client, json_path, eval_regime="oos", run_key="key-a"
+    )
+    second_run_id = ingest_eval.ingest_cell_report(
+        client, json_path, eval_regime="oos", run_key="key-b"
+    )
+    assert first_run_id != second_run_id

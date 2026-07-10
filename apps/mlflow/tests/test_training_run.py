@@ -162,6 +162,28 @@ def test_log_training_run_explicit_experiment_override(
     assert experiment.name == "custom-experiment"
 
 
+def test_log_training_run_routes_to_smoke_tests_experiment_with_run_type_tag(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """The smoke-run convention (see README.md): a manifest routes to
+    `config.EXPERIMENT_SMOKE_TESTS` via the SAME generic "experiment"
+    override exercised by `test_log_training_run_explicit_experiment_override`
+    above, and carries `run_type=smoke` via the manifest's own generic "tags"
+    field -- both mechanisms already exist and need no new plumbing, this
+    proves the convention actually works end-to-end rather than only being
+    documented."""
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["experiment"] = config.EXPERIMENT_SMOKE_TESTS
+    manifest["tags"] = {"run_type": "smoke"}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+    run_id = training_run.log_training_run(client, manifest_path)
+    run = client.get_run(run_id)
+    experiment = client.get_experiment(run.info.experiment_id)
+    assert experiment.name == config.EXPERIMENT_SMOKE_TESTS
+    assert run.data.tags["run_type"] == "smoke"
+
+
 def test_log_training_run_rejects_non_dict_manifest(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:
@@ -339,11 +361,11 @@ def test_log_training_run_serve_regime_with_date_tag_upserts_finish_position_tim
     run = client.get_run(run_id)
     timeline_run_id = run.data.tags["timeline_run_id:finish-position"]
     timeline_run = client.get_run(timeline_run_id)
-    assert timeline_run.info.run_name == "timeline-finish-position-jra"
+    assert timeline_run.info.run_name == "timeline-finish-position-jra-v2"
     assert timeline_run.data.metrics["fp_top1_pct"] == 44.5
     assert timeline_run.data.metrics["fp_place2_pct"] == 24.0
     fp_dates = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
-    assert fp_dates == {20260601}
+    assert fp_dates == {timeline.step_for_date("20260601")}
 
 
 def test_log_training_run_serve_regime_with_date_tag_upserts_running_style_timeline(
@@ -365,7 +387,7 @@ def test_log_training_run_serve_regime_with_date_tag_upserts_running_style_timel
     run = client.get_run(run_id)
     timeline_run_id = run.data.tags["timeline_run_id:running-style"]
     timeline_run = client.get_run(timeline_run_id)
-    assert timeline_run.info.run_name == "timeline-running-style-nar"
+    assert timeline_run.info.run_name == "timeline-running-style-nar-v2"
     assert timeline_run.data.metrics["rs_overall_accuracy_pct"] == 55.0
     assert timeline_run.data.metrics["rs_macro_f1_pct"] == 50.0
 
