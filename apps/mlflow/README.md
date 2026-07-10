@@ -601,6 +601,29 @@ manual, one-shot smoke-test destination (see "Smoke-test runs" below), not a
 real recurring job or production-serving path — empty Usage/Quality/
 Tool-calls tabs there are by design, not a gap to fill.
 
+**Investigated 2026-07-11 — "Tool calls" tab showed 0 for a `job_trace`
+experiment: not a bug, do not re-litigate without new evidence.** A report
+that the MLflow UI's "Tool calls" tab showed "0 Total Tool Calls" for
+`finish-position/champion-eval` (a `job_trace`-produced experiment) while
+working correctly for `running-style/production-usage` (a per-race one) was
+investigated two ways: a raw-SQL diff of the stored `spans` table found the
+`name`/`type`/`status` columns byte-for-byte identical in shape between a
+job_trace step span and a per-race child span (both `type='TOOL'`,
+`status='OK'`); and the exact frontend query was reverse-engineered from the
+installed, built `mlflow==3.14.0` JS bundle (`apps/mlflow-ui`'s full
+`mlflow` install ships `server/js/build/static/js/*` — this package's own
+`mlflow-skinny` does not) and then captured live via a headless-Chrome CDP
+session (chrome-devtools MCP was unavailable) navigating the real running
+UI. The live Tool-calls tab for `finish-position/champion-eval` rendered "8
+Total Tool Calls / 100.00% Success Rate" — not 0 — and the same held for
+`running-style/production-usage` ("2.83K Total Tool Calls") and a minimal
+one-trace repro logged into `internal/smoke-tests`. **Verdict: not a code
+defect.** `job_trace` ships with deliberately no historical backfill (see
+above) — any experiment's Tool-calls tab legitimately shows empty/zero until
+the first real wired-CLI invocation lands a trace, which is exactly what the
+original report almost certainly caught. See `trace_emit.py`'s own
+docstring for the full evidence trail. No code change was made.
+
 ### ⚠️ `win5-xgb-*-rs-overlay-*` is intentionally out of scope
 
 The `finish-position/serve-accuracy` experiment contains a

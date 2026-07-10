@@ -232,6 +232,61 @@ all: it is a manual, one-shot smoke-test destination (see this package's
 README "Smoke-test runs" section), not a real recurring job -- empty
 Usage/Quality/Tool-calls tabs there are by design, not a gap to fill.
 
+★ INVESTIGATED 2026-07-11, VERDICT: NOT A BUG, DO-NOT-RELITIGATE WITHOUT NEW
+EVIDENCE -- the MLflow UI's "Tool calls" tab was reported showing "0 Total
+Tool Calls" for `job_trace`-produced experiments (e.g. `finish-position/
+champion-eval`) while rendering correctly (nonzero) for the per-race/
+per-horse `production-usage` experiments, despite both paths writing
+genuine `SpanType.TOOL` child spans through this same file's shared
+`_make_span` helper. Two independent methods found NO code-level emission
+difference between the two paths, and both currently show correct,
+matching data:
+
+  1. Raw-SQL structural diff of the stored `spans` table (bypassing any
+     entity-reconstruction normalization) for representative traces from
+     both waves: `name`/`type`/`status` columns are byte-for-byte identical
+     in shape (`type='TOOL'`, `status='OK'`, plain-text `name`) for both a
+     job_trace step span (e.g. `resolve-champion`) and a per-race child
+     span (e.g. `score-model`). No `None`/NULL dimension value anywhere
+     that could trip the frontend's "drop the whole data point if any
+     dimension is None" logic (`sql_trace_metrics_utils.
+     convert_results_to_metric_data_points`, read directly from the
+     installed `mlflow` package).
+  2. The exact frontend query was reverse-engineered from the INSTALLED,
+     BUILT mlflow==3.14.0 JS bundle (`apps/mlflow-ui`'s full `mlflow`
+     install ships `server/js/build/static/js/*`; this package's own
+     `mlflow-skinny` does not) -- the "Tool calls" tab's KPI tiles POST
+     `{view_type: "SPANS", metric_name: "span_count", filters: ["span.type
+     = \"TOOL\""], dimensions: ["span_name", "span_status"], start_time_ms,
+     end_time_ms}` to `/ajax-api/3.0/mlflow/traces/metrics`, bounded by the
+     Overview page's selected time range (default "Last 7 days"). This
+     EXACT request was then captured live -- chrome-devtools MCP was dead
+     for this investigation, so a headless Chrome instance was driven
+     directly over its own remote-debugging (CDP) protocol instead --
+     navigating to the real running UI's Tool-calls tab for
+     `finish-position/champion-eval` (experiment_id 9): the live server
+     returned correct nonzero `span_count` data points, and the rendered
+     page showed "8 Total Tool Calls / 100.00% Success Rate", not 0. The
+     same capture against `running-style/production-usage` (experiment_id
+     8) showed "2.83K Total Tool Calls", and against a minimal, isolated
+     single-trace repro logged directly into `internal/smoke-tests`
+     (`repro-job-trace-debug`, 2 `TOOL` spans -- left over from an earlier
+     stage of this same investigation) showed "2 Total Tool Calls / 100.00%
+     Success Rate". All three are internally consistent and correct.
+
+The most likely explanation for the ORIGINAL "0 Total Tool Calls"
+observation is simply the already-documented, deliberate absence of
+backfill above (see "★ Historical honesty"): `job_trace` shipped in this
+same commit with NO historical backfill, so any experiment's Tool-calls tab
+legitimately shows empty/zero until the first real wired-CLI invocation
+actually lands a trace with `TOOL` spans -- a store queried in that narrow
+window before-first-run shows exactly what was reported, and self-resolves
+the moment that first real job runs. By the time of this follow-up
+investigation, every one of the 10 `job_trace`-wired experiments already
+had at least one real invocation logged, and every Tool-calls tab checked
+rendered correctly. No code change was made to this file as a result of
+this investigation -- there was nothing to fix.
+
 Timing is NOMINAL, always -- disclosed, never hidden: there is no real
 per-race/per-horse serving-latency measurement anywhere in this pipeline (a
 different team's domain, out of scope here). Every span this module emits
