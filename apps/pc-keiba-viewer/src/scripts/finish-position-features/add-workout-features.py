@@ -48,6 +48,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument("--to-date", type=str, default="20991231")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows workout "
+            "staging to target horses."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -58,13 +68,22 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def stage_workout_raw(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+def stage_workout_raw(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    focused_target: bool = False,
+) -> None:
     """Stage jvd_hc workout records, filtered to lookback window from from_date.
 
     jvd_hc.lap_time_*f / time_gokei_*f are zero-padded varchar ('000', '166' = 16.6s).
     Values of '000' or empty mean no recording. Cast to numeric and treat 0 as null.
     """
     history_floor = _shift_date_back(from_date, LOOKBACK_DAYS + 30)
+    focused_filter = (
+        "and ketto_toroku_bango in (select distinct ketto_toroku_bango from base_parquet)"
+        if focused_target
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table workout_raw as
@@ -82,6 +101,7 @@ def stage_workout_raw(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
           nullif(try_cast(time_gokei_2f as double), 0) / 10.0 as gokei_2f
         from pg.jvd_hc
         where chokyo_nengappi >= '{history_floor}'
+          {focused_filter}
         """
     )
     con.execute(
@@ -190,7 +210,7 @@ def main() -> None:
         f"create or replace temp table base_parquet as "
         f"select * from read_parquet('{input_glob}', hive_partitioning=true)"
     )
-    stage_workout_raw(con, args.from_date)
+    stage_workout_raw(con, args.from_date, args.target_race is not None)
     stage_workout_agg(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

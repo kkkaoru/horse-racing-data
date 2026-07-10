@@ -61,6 +61,20 @@ def test_parse_args_accepts_custom_dates(tmp_path: Path) -> None:
     assert args.to_date == "20231231"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "10:02",
+        ]
+    )
+    assert args.target_race == "10:02"
+
+
 # ---------------------------------------------------------------------------
 # install_and_attach_pg
 # ---------------------------------------------------------------------------
@@ -103,6 +117,20 @@ def test_stage_raw_odds_queries_race_entry_corner_features() -> None:
     assert "tansho_ninkijun" in body
 
 
+def test_stage_raw_odds_focused_filters_to_target_odds_scope() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_raw_odds(FakeConn(), "20230101", "20231231", focused_target=True)
+    body = " ".join(captured)
+    assert "from target_odds_scope p" in body
+    assert "p.ketto_toroku_bango = rec.ketto_toroku_bango" in body
+    assert "rec.race_date between '20230101' and '20231231'" in body
+
+
 # ---------------------------------------------------------------------------
 # stage_parquet_odds
 # ---------------------------------------------------------------------------
@@ -118,6 +146,7 @@ def test_stage_parquet_odds_creates_parquet_odds_table() -> None:
     subject.stage_parquet_odds(FakeConn(), "/tmp/in/race_year=*/*.parquet")
     body = " ".join(captured)
     assert "parquet_odds" in body
+    assert "target_odds_scope" in body
     assert "read_parquet('/tmp/in/race_year=*/*.parquet'" in body
     assert "tansho_odds" in body
     assert "tansho_ninkijun" in body
@@ -162,11 +191,19 @@ def test_stage_parquet_odds_end_to_end_reads_parquet_values(tmp_path: Path) -> N
         order by ketto_toroku_bango
         """
     ).fetchall()
+    scope_rows = con.execute(
+        """
+        select ketto_toroku_bango
+        from target_odds_scope
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
     con.close()
     # horse_c has NULL tansho_odds so it must be excluded
     assert len(rows) == 2
     assert rows[0] == ("horse_a", 12.5, 3)
     assert rows[1] == ("horse_b", 5.0, 1)
+    assert scope_rows == [("horse_a",), ("horse_b",), ("horse_c",)]
 
 
 # ---------------------------------------------------------------------------

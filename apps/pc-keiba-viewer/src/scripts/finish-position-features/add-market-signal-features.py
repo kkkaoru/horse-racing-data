@@ -57,6 +57,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument("--to-date", type=str, default="20991231")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows PG odds "
+            "staging to rows present in the input."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -67,19 +77,39 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
 
 
 def stage_raw_odds(
-    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    to_date: str,
+    focused_target: bool = False,
 ) -> None:
     """Stage raw odds from PG race_entry_corner_features (historical rows only).
 
     This table lags behind real-time and will miss upcoming race rows.  Those
     gaps are filled by stage_parquet_odds() + merge_odds_tables().
     """
+    focused_filter = (
+        f"""
+        and exists (
+          select 1
+          from target_odds_scope p
+          where p.source = rec.source
+            and p.kaisai_nen = rec.kaisai_nen
+            and p.kaisai_tsukihi = rec.kaisai_tsukihi
+            and p.keibajo_code = rec.keibajo_code
+            and p.race_bango = rec.race_bango
+            and p.ketto_toroku_bango = rec.ketto_toroku_bango
+        )
+        """
+        if focused_target
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table raw_odds as
         select {PG_RAW_ODDS_COLUMNS}
-        from pg.race_entry_corner_features
-        where race_date between '{from_date}' and '{to_date}'
+        from pg.race_entry_corner_features rec
+        where rec.race_date between '{from_date}' and '{to_date}'
+          {focused_filter}
         """
     )
 
@@ -87,12 +117,24 @@ def stage_raw_odds(
 def stage_parquet_odds(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
     """Stage tansho_odds / tansho_ninkijun from the input parquet.
 
+    target_odds_scope keeps every input horse-row for focused PG filtering,
+    including rows where parquet odds are NULL but PG odds are available.
+
     The base-build parquet already contains these columns via the
     COALESCE(realtime→jvd_se/nvd_se) path in finish_position_features_duckdb.py,
     so upcoming race rows that are absent from race_entry_corner_features still
     carry valid odds data here.  NULL input-parquet rows are excluded so the
     COALESCE in merge_odds_tables() prefers explicit values.
     """
+    con.execute(
+        f"""
+        create or replace temp table target_odds_scope as
+        select distinct
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        """
+    )
     con.execute(
         f"""
         create or replace temp table parquet_odds as
@@ -198,8 +240,8 @@ def main() -> None:
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     install_and_attach_pg(con, args.pg_url)
-    stage_raw_odds(con, args.from_date, args.to_date)
     stage_parquet_odds(con, input_glob)
+    stage_raw_odds(con, args.from_date, args.to_date, args.target_race is not None)
     merge_odds_tables(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

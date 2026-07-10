@@ -46,6 +46,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument("--to-date", type=str, default="20991231")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows history "
+            "staging to target horses."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -56,8 +66,21 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
 
 
 def stage_history(
-    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    to_date: str,
+    focused_target: bool = False,
 ) -> None:
+    focused_bataiju_filter = (
+        "and ketto_toroku_bango in (select distinct ketto_toroku_bango from base_v3)"
+        if focused_target
+        else ""
+    )
+    focused_rec_filter = (
+        "and rec.ketto_toroku_bango in (select distinct ketto_toroku_bango from base_v3)"
+        if focused_target
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table bataiju_hist as
@@ -66,6 +89,7 @@ def stage_history(
         from pg.jvd_se
         where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
           and ketto_toroku_bango is not null
+          {focused_bataiju_filter}
         """
     )
     con.execute(
@@ -91,6 +115,7 @@ def stage_history(
           and bw.ketto_toroku_bango = rec.ketto_toroku_bango
         where rec.race_date between '{from_date}' and '{to_date}'
           and rec.ketto_toroku_bango is not null
+          {focused_rec_filter}
         """
     )
     con.execute("create index rec_hist_horse_date on rec_hist (source, ketto_toroku_bango, race_date)")
@@ -194,7 +219,16 @@ def main() -> None:
     con = duckdb.connect(":memory:")
     con.execute("PRAGMA enable_object_cache=true")
     install_and_attach_pg(con, args.pg_url)
-    stage_history(con, args.from_date, args.to_date)
+    if args.target_race is not None:
+        con.execute(
+            f"""
+            create or replace temp table base_v3 as
+            select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                   ketto_toroku_bango, kyori, race_date
+            from read_parquet('{input_glob}', hive_partitioning=true)
+            """
+        )
+    stage_history(con, args.from_date, args.to_date, args.target_race is not None)
     stage_horse_history_lookup(con, input_glob)
     stage_horse_history_agg(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)

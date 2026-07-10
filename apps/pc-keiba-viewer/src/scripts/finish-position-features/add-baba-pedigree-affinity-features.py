@@ -44,6 +44,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows PG history "
+            "staging to the target horses and their sire/damsire cohorts."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -85,8 +95,69 @@ def stage_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     )
 
 
-def stage_race_history_with_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
+def stage_base_input(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Stage target input rows for focused history narrowing."""
+    con.execute(
+        f"""
+        create or replace temp table base_input as
+        select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        where ketto_toroku_bango is not null
+        """
+    )
+    con.execute("create index base_input_horse_idx on base_input (ketto_toroku_bango)")
+
+
+def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
+    """Stage target horses and their sire/damsire ids for focused mode."""
+    con.execute(
+        """
+        create or replace temp table target_horses as
+        select distinct ketto_toroku_bango
+        from base_input
+        where ketto_toroku_bango is not null
+        """
+    )
+    con.execute("create index target_horses_idx on target_horses (ketto_toroku_bango)")
+    con.execute(
+        """
+        create or replace temp table target_pedigree_ids as
+        select distinct sire_id, damsire_id
+        from base_input b
+        left join horse_pedigree hp using (ketto_toroku_bango)
+        where sire_id is not null or damsire_id is not null
+        """
+    )
+    con.execute("create index target_pedigree_sire_idx on target_pedigree_ids (sire_id)")
+    con.execute("create index target_pedigree_damsire_idx on target_pedigree_ids (damsire_id)")
+
+
+def focused_history_filter_sql(focused_target: bool) -> str:
+    if not focused_target:
+        return ""
+    return """
+          and (
+            rec.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)
+            or exists (
+              select 1
+              from horse_pedigree hp
+              join target_pedigree_ids t
+                on (t.sire_id is not null and hp.sire_id = t.sire_id)
+                or (t.damsire_id is not null and hp.damsire_id = t.damsire_id)
+              where hp.ketto_toroku_bango = rec.ketto_toroku_bango
+            )
+          )
+    """
+
+
+def stage_race_history_with_baba(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    focused_target: bool = False,
+) -> None:
     """horse の過去レース成績 + baba_condition を join。"""
+    target_filter = focused_history_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -109,7 +180,9 @@ def stage_race_history_with_baba(con: duckdb.DuckDBPyConnection, from_date: str)
           and rb.race_bango = rec.race_bango
         where rec.race_date >= '{from_date}'
           and rec.finish_position is not null
+          and rec.ketto_toroku_bango is not null
           and rb.baba_cond is not null
+          {target_filter}
         """
     )
     con.execute(
@@ -300,8 +373,11 @@ def main() -> None:
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
     stage_race_baba(con, args.from_date)
-    stage_race_history_with_baba(con, args.from_date)
     stage_horse_pedigree(con)
+    if args.target_race is not None:
+        stage_base_input(con, input_glob)
+        stage_target_pedigree_context(con)
+    stage_race_history_with_baba(con, args.from_date, args.target_race is not None)
     stage_horse_baba_cumul(con)
     stage_sire_baba_cumul(con)
     stage_damsire_baba_cumul(con)

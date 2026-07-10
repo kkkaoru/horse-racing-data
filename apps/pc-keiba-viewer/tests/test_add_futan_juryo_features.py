@@ -61,6 +61,20 @@ def test_parse_args_accepts_custom_dates(tmp_path: Path) -> None:
     assert args.to_date == "20231231"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "10:02",
+        ]
+    )
+    assert args.target_race == "10:02"
+
+
 # ---------------------------------------------------------------------------
 # install_and_attach_pg
 # ---------------------------------------------------------------------------
@@ -113,6 +127,34 @@ def test_stage_futan_juryo_sql_references_se_table_and_race_entry() -> None:
     assert "coalesce" in body.lower()
     assert "20230101" in body
     assert "20231231" in body
+
+
+def test_stage_target_horses_reads_input_parquet() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_target_horses(FakeConn(), "/tmp/in/race_year=*/*.parquet")
+    body = " ".join(captured)
+    assert "create or replace temp table target_horses" in body
+    assert "read_parquet('/tmp/in/race_year=*/*.parquet'" in body
+    assert "ketto_toroku_bango is not null" in body
+
+
+def test_stage_futan_juryo_focused_filters_to_target_horses() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_futan_juryo(
+        FakeConn(), "20230101", "20231231", "pg.jvd_se", focused_target=True
+    )
+    body = " ".join(captured)
+    assert "b.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)" in body
 
 
 # ---------------------------------------------------------------------------

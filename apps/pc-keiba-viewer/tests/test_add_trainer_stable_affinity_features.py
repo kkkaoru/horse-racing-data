@@ -35,6 +35,20 @@ def test_parse_args_supports_nar_category(tmp_path: Path) -> None:
     assert args.category == "nar"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "10:02",
+        ]
+    )
+    assert args.target_race == "10:02"
+
+
 def test_append_features_sql_jra_uses_jvd_se() -> None:
     sql = subject.append_features_sql("dummy.parquet", "jra")
     assert "pg.jvd_se" in sql
@@ -64,3 +78,35 @@ def test_append_features_sql_joins_grade_and_target_cumul() -> None:
     assert "left join trainer_target_cumul" in sql
     assert "tg.chokyoshi_code = bwt.chokyoshi_code" in sql
     assert "tg.grade_code = bwt.grade_code" in sql
+
+
+def test_stage_target_trainers_reads_trainers_from_base_input() -> None:
+    class FakeConn:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        def execute(self, query: str) -> None:
+            self.sql.append(query)
+
+    conn = FakeConn()
+    subject.stage_target_trainers(conn, "jra")
+    joined = "\n".join(conn.sql)
+    assert "create or replace temp table target_trainers" in joined
+    assert "from base_input b" in joined
+    assert "join pg.jvd_se se" in joined
+    assert "se.chokyoshi_code" in joined
+
+
+def test_stage_race_history_focused_filters_to_target_trainers() -> None:
+    class FakeConn:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        def execute(self, query: str) -> None:
+            self.sql.append(query)
+
+    conn = FakeConn()
+    subject.stage_race_history_with_trainer(conn, "20100101", "jra", focused_target=True)
+    joined = "\n".join(conn.sql)
+    assert "se.chokyoshi_code in (select chokyoshi_code from target_trainers)" in joined
+    assert "rec.finish_position is not null" in joined

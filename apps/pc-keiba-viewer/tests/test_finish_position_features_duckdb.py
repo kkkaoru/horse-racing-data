@@ -333,6 +333,9 @@ def test_build_target_race_entities_sql_filters_to_target_race_and_category():
     assert "target_rec.source = 'nar'" in sql
     assert "target_rec.keibajo_code = '35'" in sql
     assert "target_rec.race_bango = '01'" in sql
+    assert "pg.nvd_se se" in sql
+    assert "se.keibajo_code = '35'" in sql
+    assert "se.race_bango = '01'" in sql
 
 
 def test_jockey_cte_filters_on_kishumei_ryakusho():

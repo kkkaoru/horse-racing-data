@@ -51,6 +51,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument("--to-date", type=str, default="20991231")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows futan "
+            "staging to target horses."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -73,11 +83,24 @@ def _source_literal_from_se_table(se_table: str) -> str:
     return "nar"
 
 
+def stage_target_horses(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    con.execute(
+        f"""
+        create or replace temp table target_horses as
+        select distinct ketto_toroku_bango
+        from read_parquet('{input_glob}', hive_partitioning=true)
+        where ketto_toroku_bango is not null
+        """
+    )
+    con.execute("create index target_horses_idx on target_horses (ketto_toroku_bango)")
+
+
 def stage_futan_juryo(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
     to_date: str,
     se_table: str = "pg.jvd_se",
+    focused_target: bool = False,
 ) -> None:
     """Stage current-race futan_juryo with a fallback for upcoming races.
 
@@ -101,6 +124,11 @@ def stage_futan_juryo(
     into the COALESCE fallback arm.
     """
     source_lit = _source_literal_from_se_table(se_table)
+    focused_filter = (
+        "and b.ketto_toroku_bango in (select ketto_toroku_bango from target_horses)"
+        if focused_target
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table futan_raw as
@@ -129,6 +157,7 @@ def stage_futan_juryo(
           and b.keibajo_code is not null
           and b.race_bango is not null
           and b.ketto_toroku_bango is not null
+          {focused_filter}
           and coalesce(
                 try_cast(rec.futan_juryo as double) / 10.0,
                 try_cast(nullif(trim(b.futan_juryo), '') as double) / 10.0
@@ -224,7 +253,9 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_futan_juryo(con, args.from_date, args.to_date)
+    if args.target_race is not None:
+        stage_target_horses(con, input_glob)
+    stage_futan_juryo(con, args.from_date, args.to_date, focused_target=args.target_race is not None)
     stage_horse_history(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

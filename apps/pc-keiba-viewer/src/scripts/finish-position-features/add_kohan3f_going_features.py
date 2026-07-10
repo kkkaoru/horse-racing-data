@@ -91,6 +91,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="stage kohan_3f history from this kaisai_nen (>= 2 years before "
         "the oldest target year so early targets have a populated window)",
     )
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows kohan3f "
+            "history staging to horses present in that input."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -119,7 +129,21 @@ def going_code_case_sql() -> str:
     )
 
 
-def stage_kohan3f_history(con: _DuckDBConnectionLike, history_from_year: int) -> None:
+def focused_history_filter_sql(focused_target: bool) -> str:
+    if not focused_target:
+        return ""
+    return """
+          and se.ketto_toroku_bango in (
+            select ketto_toroku_bango from base_races
+          )
+    """
+
+
+def stage_kohan3f_history(
+    con: _DuckDBConnectionLike,
+    history_from_year: int,
+    focused_target: bool = False,
+) -> None:
     """Stage per-horse going-coded kohan_3f history rows from PG.
 
     Keeps only rows with a parseable positive ``kohan_3f`` (4-char string in
@@ -127,6 +151,7 @@ def stage_kohan3f_history(con: _DuckDBConnectionLike, history_from_year: int) ->
     itself is filtered later at the join (must be 1-4).
     """
     going_sql = going_code_case_sql()
+    target_filter = focused_history_filter_sql(focused_target)
     con.execute(
         f"""
         create or replace temp table kohan3f_hist as
@@ -147,6 +172,7 @@ def stage_kohan3f_history(con: _DuckDBConnectionLike, history_from_year: int) ->
           and se.ketto_toroku_bango != ''
           and try_cast(nullif(trim(se.kohan_3f), '') as double) is not null
           and try_cast(nullif(trim(se.kohan_3f), '') as double) > 0
+          {target_filter}
         """
     )
 
@@ -255,8 +281,8 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_kohan3f_history(con, args.history_from_year)
     stage_base_races(con, input_glob)
+    stage_kohan3f_history(con, args.history_from_year, args.target_race is not None)
     stage_going_conditional_agg(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

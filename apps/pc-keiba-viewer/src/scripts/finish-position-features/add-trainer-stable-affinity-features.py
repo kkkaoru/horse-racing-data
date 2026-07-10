@@ -53,6 +53,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--target-race",
+        type=str,
+        default=None,
+        help=(
+            "Focused production mode keibajo_code:race_bango. The input parquet "
+            "is already scoped by the base builder; this flag narrows PG history "
+            "staging to trainers present in that input."
+        ),
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -63,7 +73,37 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: str, category: str) -> None:
+def stage_target_trainers(con: duckdb.DuckDBPyConnection, category: str) -> None:
+    """Stage trainer ids present in the target input parquet.
+
+    Used only for focused production mode. The feature values still come from
+    strictly prior race history; this table only narrows which trainers' history
+    needs to be staged.
+    """
+    se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
+    con.execute(
+        f"""
+        create or replace temp table target_trainers as
+        select distinct se.chokyoshi_code
+        from base_input b
+        join {se_table} se
+          on se.kaisai_nen = b.kaisai_nen
+          and se.kaisai_tsukihi = b.kaisai_tsukihi
+          and se.keibajo_code = b.keibajo_code
+          and se.race_bango = b.race_bango
+          and se.ketto_toroku_bango = b.ketto_toroku_bango
+        where se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
+        """
+    )
+    con.execute("create index target_trainers_idx on target_trainers (chokyoshi_code)")
+
+
+def stage_race_history_with_trainer(
+    con: duckdb.DuckDBPyConnection,
+    from_date: str,
+    category: str,
+    focused_target: bool = False,
+) -> None:
     """horse の過去レース成績 + trainer (chokyoshi_code) + grade_code を取得。
 
     category=jra → pg.jvd_se / source='jra' filter
@@ -71,6 +111,11 @@ def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: s
     """
     se_table = "pg.jvd_se" if category == "jra" else "pg.nvd_se"
     source_filter = "jra" if category == "jra" else "nar"
+    trainer_filter = (
+        "and se.chokyoshi_code in (select chokyoshi_code from target_trainers)"
+        if focused_target
+        else ""
+    )
     con.execute(
         f"""
         create or replace temp table race_history as
@@ -96,6 +141,7 @@ def stage_race_history_with_trainer(con: duckdb.DuckDBPyConnection, from_date: s
           and rec.finish_position is not null
           and rec.source = '{source_filter}'
           and se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
+          {trainer_filter}
         """
     )
     con.execute(
@@ -270,9 +316,11 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
-    stage_race_history_with_trainer(con, args.from_date, args.category)
-    stage_trainer_grade_cumul(con)
     stage_base_input(con, input_glob)
+    if args.target_race is not None:
+        stage_target_trainers(con, args.category)
+    stage_race_history_with_trainer(con, args.from_date, args.category, args.target_race is not None)
+    stage_trainer_grade_cumul(con)
     stage_trainer_target_race_cumul(con)
     write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
     con.close()

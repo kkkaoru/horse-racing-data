@@ -106,6 +106,20 @@ def test_parse_args_accepts_resource_args(tmp_path: Path) -> None:
     assert args.memory_limit == "6GB"
 
 
+def test_parse_args_accepts_target_race(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--target-race",
+            "10:02",
+        ]
+    )
+    assert args.target_race == "10:02"
+
+
 # ── constants ──────────────────────────────────────────────────────────────────
 
 
@@ -218,6 +232,14 @@ def test_stage_kohan3f_history_sql_builds_hist_race_date_concat() -> None:
     subject.stage_kohan3f_history(conn, 2005)
     body = " ".join(conn.statements)
     assert "se.kaisai_nen || se.kaisai_tsukihi as hist_race_date" in body
+
+
+def test_stage_kohan3f_history_focused_filters_to_base_race_horses() -> None:
+    conn = FakeConn()
+    subject.stage_kohan3f_history(conn, 2005, focused_target=True)
+    body = " ".join(conn.statements)
+    assert "se.ketto_toroku_bango in (" in body
+    assert "select ketto_toroku_bango from base_races" in body
 
 
 # ── stage_base_races ───────────────────────────────────────────────────────────

@@ -808,7 +808,16 @@ def build_target_race_entities_sql(
     upcoming_window: tuple[str, str] | None,
     target_race: tuple[str, str],
 ) -> str:
-    target_select = build_rec_select_sql(category, target_from, target_to, upcoming_window)
+    if upcoming_window is not None:
+        target_select = upcoming_target_union_sql(category, target_from, target_to, target_race)
+    else:
+        target_select = build_rec_select_sql(
+            category,
+            target_from,
+            target_to,
+            upcoming_window,
+            target_race=target_race,
+        )
     category_filter = category_source_filter(category, "target_rec")
     race_filter = target_race_filter_sql("target_rec", target_race)
     return f"""
