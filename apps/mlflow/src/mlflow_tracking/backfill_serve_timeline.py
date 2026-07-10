@@ -99,15 +99,24 @@ def _date_range_yyyymmdd(date_from: str, date_to: str) -> list[str]:
 
 def _timeline_point_exists_for_date(client: MlflowClient, category: str, date_str: str) -> bool:
     """True when BOTH the finish-position and running-style timelines for
-    `category` already have a point at `date_str`'s step."""
-    date_int = int(date_str)
+    `category` already have a point at `date_str`'s v2 step.
+
+    `timeline.timeline_dates_present` returns v2 step values (days-since-
+    2020-01-01, see `timeline.step_for_date`), NOT the raw YYYYMMDD integer
+    `date_str` itself -- since the v1 -> v2 migration, steps are no longer
+    literally the date, so `date_str` must be converted via
+    `timeline.step_for_date` before comparing against those sets (comparing
+    `int(date_str)` directly, the pre-migration idiom, would never match
+    anything).
+    """
+    step = timeline.step_for_date(date_str)
     fp_dates = timeline.timeline_dates_present(
         client, "finish-position", category, FP_SKIP_EXISTING_METRIC_KEY
     )
     rs_dates = timeline.timeline_dates_present(
         client, "running-style", category, RS_SKIP_EXISTING_METRIC_KEY
     )
-    return date_int in fp_dates and date_int in rs_dates
+    return step in fp_dates and step in rs_dates
 
 
 DateOutcome = Literal["ingested", "skipped_no_data", "error"]

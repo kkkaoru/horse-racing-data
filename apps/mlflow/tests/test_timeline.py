@@ -8,6 +8,7 @@ import pytest
 from mlflow import MlflowClient
 
 from mlflow_tracking import config, timeline
+from mlflow_tracking.logging_api import get_or_create_experiment
 
 
 def test_upsert_timeline_point_creates_run_on_first_call(client: MlflowClient) -> None:
@@ -15,8 +16,9 @@ def test_upsert_timeline_point_creates_run_on_first_call(client: MlflowClient) -
         client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
     )
     run = client.get_run(run_id)
-    assert run.info.run_name == "timeline-finish-position-jra"
-    assert run.data.tags["timeline_key"] == "finish-position:jra"
+    assert run.info.run_name == "timeline-finish-position-jra-v2"
+    assert run.data.tags["timeline_key_v2"] == "finish-position:jra"
+    assert "timeline_key" not in run.data.tags
     assert run.data.tags["task"] == "finish-position"
     assert run.data.tags["category"] == "jra"
     experiment = client.get_experiment(run.info.experiment_id)
@@ -75,7 +77,10 @@ def test_upsert_timeline_point_reuses_same_run_across_dates(client: MlflowClient
     assert run_id_1 == run_id_2
     history = client.get_metric_history(run_id_1, "fp_top1_pct")
     steps = {point.step: point.value for point in history}
-    assert steps == {20260601: 44.5, 20260602: 45.0}
+    assert steps == {
+        timeline.step_for_date("20260601"): 44.5,
+        timeline.step_for_date("20260602"): 45.0,
+    }
 
 
 def test_upsert_timeline_point_metric_timestamp_is_noon_jst_as_utc(client: MlflowClient) -> None:
@@ -111,7 +116,7 @@ def test_upsert_timeline_point_new_metric_key_on_existing_step_still_logs(
     )
     place2_history = client.get_metric_history(run_id, "fp_place2_pct")
     assert len(place2_history) == 1
-    assert place2_history[0].step == 20260601
+    assert place2_history[0].step == timeline.step_for_date("20260601")
     top1_history = client.get_metric_history(run_id, "fp_top1_pct")
     assert len(top1_history) == 1
 
@@ -203,6 +208,9 @@ def test_fp_metrics_for_timeline_extracts_known_keys() -> None:
             "top1_pct": 44.5,
             "place2_pct": 24.0,
             "place3_pct": 15.0,
+            "place4_pct": 10.0,
+            "place5_pct": 8.0,
+            "place6_pct": 6.0,
             "fukusho_2p_pct": 74.0,
             "top3_box_pct": 30.0,
             "races": 12,
@@ -213,6 +221,9 @@ def test_fp_metrics_for_timeline_extracts_known_keys() -> None:
         "fp_top1_pct": 44.5,
         "fp_place2_pct": 24.0,
         "fp_place3_pct": 15.0,
+        "fp_place4_pct": 10.0,
+        "fp_place5_pct": 8.0,
+        "fp_place6_pct": 6.0,
         "fp_fukusho_2p_pct": 74.0,
         "fp_top3_box_pct": 30.0,
         "fp_races": 12.0,
@@ -222,6 +233,23 @@ def test_fp_metrics_for_timeline_extracts_known_keys() -> None:
 def test_fp_metrics_for_timeline_skips_non_numeric_values() -> None:
     result = timeline.fp_metrics_for_timeline({"top1_pct": "not-a-number"})
     assert result == {}
+
+
+def test_fp_metrics_for_timeline_skips_none_place456_pct() -> None:
+    """place4_pct/place5_pct/place6_pct may be None (a day/cell where every
+    race had too small a field for that rank, see
+    serve_eval.aggregate_fp_day_metrics's own docstring) -- these must be
+    silently skipped, never logged as a fabricated 0.0, while other present
+    keys still come through."""
+    result = timeline.fp_metrics_for_timeline(
+        {
+            "top1_pct": 44.5,
+            "place4_pct": None,
+            "place5_pct": None,
+            "place6_pct": None,
+        }
+    )
+    assert result == {"fp_top1_pct": 44.5}
 
 
 def test_fp_metrics_for_timeline_empty_dict_yields_empty_result() -> None:
@@ -293,7 +321,7 @@ def test_timeline_dates_present_returns_logged_steps(client: MlflowClient) -> No
         client, "finish-position", "jra", "20260602", {"fp_top1_pct": 45.0}
     )
     result = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
-    assert result == {20260601, 20260602}
+    assert result == {timeline.step_for_date("20260601"), timeline.step_for_date("20260602")}
 
 
 def test_timeline_dates_present_empty_for_unknown_metric_key(client: MlflowClient) -> None:
@@ -302,3 +330,63 @@ def test_timeline_dates_present_empty_for_unknown_metric_key(client: MlflowClien
     )
     result = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_unknown_key")
     assert result == set()
+
+
+def test_step_for_date_epoch_is_step_zero() -> None:
+    assert timeline.step_for_date("20200101") == 0
+
+
+def test_step_for_date_day_after_epoch_is_step_one() -> None:
+    assert timeline.step_for_date("20200102") == 1
+
+
+def test_step_for_date_matches_known_spot_checked_values() -> None:
+    # Spot-checked independently via `(date(y, m, d) - date(2020, 1, 1)).days`.
+    assert timeline.step_for_date("20260601") == 2343
+    assert timeline.step_for_date("20261231") == 2556
+
+
+def test_step_for_date_recovers_original_date_via_documented_formula() -> None:
+    """The docstring's own recovery formula (TIMELINE_STEP_EPOCH + N days)
+    must round-trip back to the original date for an arbitrary date."""
+    date_str = "20260516"
+    step = timeline.step_for_date(date_str)
+    recovered = timeline.TIMELINE_STEP_EPOCH + dt.timedelta(days=step)
+    assert recovered == dt.date(2026, 5, 16)
+
+
+def test_upsert_timeline_point_never_matches_or_extends_a_legacy_v1_run(
+    client: MlflowClient,
+) -> None:
+    """A pre-migration v1 run (tagged with the legacy `TIMELINE_KEY_TAG`, not
+    `TIMELINE_KEY_TAG_V2`) must never be found or appended to by
+    `upsert_timeline_point` -- it always creates/uses a distinct v2 run
+    instead. Regression test for the v1/v2 tag-KEY split (not just a
+    different tag value)."""
+    experiment_id = get_or_create_experiment(client, config.EXPERIMENT_TIMELINES)
+    v1_run = client.create_run(
+        experiment_id,
+        run_name="timeline-finish-position-jra",
+        tags={
+            timeline.TIMELINE_KEY_TAG: "finish-position:jra",
+            "task": "finish-position",
+            "category": "jra",
+            "eval_regime": "serve",
+        },
+    )
+    client.log_metric(v1_run.info.run_id, "fp_top1_pct", 10.0, step=20260601)
+
+    v2_run_id = timeline.upsert_timeline_point(
+        client, "finish-position", "jra", "20260601", {"fp_top1_pct": 44.5}
+    )
+
+    assert v2_run_id != v1_run.info.run_id
+    v2_run = client.get_run(v2_run_id)
+    assert v2_run.data.tags["timeline_key_v2"] == "finish-position:jra"
+    assert v2_run.info.run_name == "timeline-finish-position-jra-v2"
+    # The legacy v1 run's own history is completely untouched.
+    v1_history = client.get_metric_history(v1_run.info.run_id, "fp_top1_pct")
+    assert len(v1_history) == 1
+    assert v1_history[0].step == 20260601
+    assert v1_history[0].value == 10.0
+

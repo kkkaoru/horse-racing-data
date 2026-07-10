@@ -9,8 +9,31 @@ single-point run every day (e.g. finish-position/serve-accuracy) never forms
 a trend line in the UI -- every run shows one dot. This module provides the
 complementary primitive: exactly one PERSISTENT run per (task, category)
 pair, in the dedicated `config.EXPERIMENT_TIMELINES` experiment, to which
-callers append one point (step = date) per day. That run's own chart then
-shows the real trend.
+callers append one point (step = a small monotonic day-index, see
+`step_for_date` below) per day. That run's own chart then shows the real
+trend.
+
+★ Step scheme is v2 (`step_for_date`, days-since-2020-01-01), not the
+original v1 scheme (`step = int(date_yyyymmdd)`, e.g. 20260516) -- see
+`step_for_date`'s own docstring for the exact mapping and why it changed
+(MLflow 3.14's GenAI/Eval run-detail chart-tile renderer spins forever on a
+~20-million-magnitude step; confirmed empirically with 3 throwaway
+diagnostic runs logged directly into this experiment, tagged
+`junk=true`/`diagnostic=true` -- left in place as a record of that
+investigation, never migrated or deleted). v1 and v2 runs are two entirely
+disjoint families that happen to share this module's machinery: v1 runs were
+tagged `TIMELINE_KEY_TAG` ("timeline_key"); v2 runs (everything
+`upsert_timeline_point` creates today) are tagged `TIMELINE_KEY_TAG_V2`
+("timeline_key_v2") instead -- a DIFFERENT tag KEY, not merely a different
+value, so a v1 run's tag can never satisfy a v2 `_find_timeline_run` search
+and vice versa. v2 run names also carry a `-v2` suffix (e.g.
+`timeline-finish-position-jra-v2`) so old vs. new are visually
+distinguishable in run-list views without inspecting tags. The one-time v1
+-> v2 migration (`migrate_timeline_v2.py`) copies every v1 run's full metric
+history into its new v2 counterpart (recomputing each point's step via
+`step_for_date`; value and timestamp_ms carry over unchanged), then tags the
+OLD run `deprecated=true` / `superseded_by=<new_run_id>` -- the v1 run itself
+is never deleted or renamed.
 
 This module is deliberately generic (task/category/metric-name-agnostic):
 `upsert_timeline_point` doesn't know or care what "finish-position" or
@@ -38,7 +61,22 @@ from mlflow.entities import Metric, RunTag
 from mlflow_tracking import config
 from mlflow_tracking.logging_api import get_or_create_experiment, log_batch_chunked
 
+# Epoch for the v2 timeline `step` value -- see `step_for_date` below.
+TIMELINE_STEP_EPOCH: Final[date] = date(2020, 1, 1)
+
+# v1 (pre-migration) run-finding tag key: `upsert_timeline_point` no longer
+# writes or searches this key (see TIMELINE_KEY_TAG_V2 below) -- it is kept
+# as a named constant purely so `migrate_timeline_v2.py` (and any future
+# reader) has a single, unambiguous name for "the legacy lookup key", rather
+# than a bare string literal scattered across migration code.
 TIMELINE_KEY_TAG: Final[str] = "timeline_key"
+
+# v2 run-finding tag key: a DIFFERENT tag key from TIMELINE_KEY_TAG (not just
+# a different value) so a v1 run can never be found by a v2 lookup, and vice
+# versa -- see this module's own docstring for the full v1/v2 split
+# rationale. Every run `upsert_timeline_point` creates from now on is tagged
+# with this key.
+TIMELINE_KEY_TAG_V2: Final[str] = "timeline_key_v2"
 
 # 12:00 JST is used as the canonical time-of-day for every timeline point
 # (see _timestamp_ms_for_date), so every day's point lands at the same,
@@ -58,6 +96,9 @@ _FP_TIMELINE_METRIC_MAP: Final[dict[str, str]] = {
     "top1_pct": "fp_top1_pct",
     "place2_pct": "fp_place2_pct",
     "place3_pct": "fp_place3_pct",
+    "place4_pct": "fp_place4_pct",
+    "place5_pct": "fp_place5_pct",
+    "place6_pct": "fp_place6_pct",
     "fukusho_2p_pct": "fp_fukusho_2p_pct",
     "top3_box_pct": "fp_top3_box_pct",
     "races": "fp_races",
@@ -90,21 +131,68 @@ def _timestamp_ms_for_date(date_yyyymmdd: str) -> int:
     return int(moment.timestamp() * 1000)
 
 
+def step_for_date(date_yyyymmdd: str) -> int:
+    """Return the v2 timeline metric `step` value for `date_yyyymmdd`.
+
+    ``step = (parsed_date - TIMELINE_STEP_EPOCH).days`` -- i.e. step N means
+    N calendar days AFTER 2020-01-01. To recover the date from a step value
+    seen in `client.get_metric_history` or the MLflow UI, add N days to
+    2020-01-01 (``TIMELINE_STEP_EPOCH + timedelta(days=N)``). Concretely:
+    step 0 == 2020-01-01, step 1 == 2020-01-02, step 2343 == 2026-06-01.
+
+    This formula is the ONLY record of what a step value means: tags are
+    per-RUN, not per-POINT, so there is no per-point tag to fall back on --
+    a future reader with nothing but a bare step integer must be able to
+    derive the calendar date from it using exactly this mapping, with no
+    other context.
+
+    Replaces the original v1 scheme (`step = int(date_yyyymmdd)`, e.g.
+    20260516) -- kept small and monotonic instead of a raw YYYYMMDD int
+    specifically because MLflow 3.14's GenAI/Eval run-detail experience
+    (where every timeline run gets auto-routed, since it carries no
+    params/source tags and looks nothing like a classic training run) spins
+    forever on a Model-metrics chart tile once step magnitude reaches
+    ~20 million -- confirmed empirically with 3 throwaway diagnostic runs
+    logged into the real `timelines` experiment (a copy of a real run at
+    ~20,260,516-magnitude steps spun forever; the same shape at steps [1..8]
+    and at days-since-2020-01-01 magnitude [~2327..2377] both rendered
+    correctly). The classic (non-GenAI) chart renderer was never the
+    problem -- only the GenAI/Eval renderer's handling of that specific
+    magnitude was.
+
+    Does not itself call `validate_yyyymmdd` -- every caller
+    (`upsert_timeline_point`) already validates the date string before
+    computing this.
+    """
+    year, month, day = int(date_yyyymmdd[:4]), int(date_yyyymmdd[4:6]), int(date_yyyymmdd[6:8])
+    return (date(year, month, day) - TIMELINE_STEP_EPOCH).days
+
+
 def _timeline_key(task: str, category: str) -> str:
     return f"{task}:{category}"
 
 
 def _find_timeline_run(client: MlflowClient, experiment_id: str, timeline_key: str) -> str | None:
-    """Find the persistent timeline run for `timeline_key` by tag search.
+    """Find the persistent v2 timeline run for `timeline_key` by a tag search
+    on `TIMELINE_KEY_TAG_V2`.
 
     Returns None both when the experiment has no matching run yet (first
     call for this task/category) and, transitively, when the experiment
     itself was just created (search_runs on a brand-new experiment_id simply
     returns no rows) -- callers treat both the same way: create on demand.
+
+    Always searches `TIMELINE_KEY_TAG_V2`, never the legacy `TIMELINE_KEY_TAG`
+    -- a v1 run's `TIMELINE_KEY_TAG` tag can therefore never satisfy this
+    lookup (they are two different tag KEYS, not just two different tag
+    values on the same key). The one-time v1 -> v2 migration
+    (`migrate_timeline_v2.py`) identifies legacy v1 runs its own way (a bulk
+    `search_runs` + Python-side tag-presence filter over the whole
+    experiment, see `migrate_timeline_v2.find_v1_timeline_runs`), not through
+    this function.
     """
     matches = client.search_runs(
         [experiment_id],
-        filter_string=f"tags.{TIMELINE_KEY_TAG} = '{timeline_key}'",
+        filter_string=f"tags.{TIMELINE_KEY_TAG_V2} = '{timeline_key}'",
         max_results=1,
     )
     return matches[0].info.run_id if matches else None
@@ -126,22 +214,31 @@ def upsert_timeline_point(
     invocation), a timeline run is PERSISTENT: exactly one run per
     (task, category) pair lives for the lifetime of the tracking store, in
     the `config.EXPERIMENT_TIMELINES` experiment, and every call for that
-    pair appends another point to its metric series (step = date, as a
-    YYYYMMDD int) rather than creating a new run. This is what makes
-    MLflow's line-chart view show a real trend instead of one flat dot per
-    run -- see this module's own docstring.
+    pair appends another point to its metric series (step = `step_for_date
+    (date_yyyymmdd)`, days-since-2020-01-01 -- see that function's docstring
+    for the exact mapping and why it replaced the original `int(date_yyyymmdd)`
+    scheme) rather than creating a new run. This is what makes MLflow's
+    line-chart view show a real trend instead of one flat dot per run -- see
+    this module's own docstring.
 
     Idempotent by construction:
     - The run is found (not recreated) via a `timeline_key = "{task}:{category}"`
-      tag search rather than trusting a caller-passed run_id, so calling this
-      twice for the same (task, category) always appends to the same run,
-      even across process restarts / separate CLI invocations. The run is
-      tagged with `timeline_key`/`task`/`category`/`eval_regime` at creation
-      time only -- `eval_regime` is always `"serve"` because, unlike the
-      per-day eval runs this timeline complements, a timeline run by design
-      only ever aggregates genuinely-served (never backtested/WF) accuracy
-      points, so the tag is a fixed fact about every timeline run rather than
-      a caller-supplied, per-call value.
+      tag search on `TIMELINE_KEY_TAG_V2` rather than trusting a
+      caller-passed run_id, so calling this twice for the same (task,
+      category) always appends to the same run, even across process
+      restarts / separate CLI invocations. The run is named
+      `"timeline-{task}-{category}-v2"` and tagged with
+      `TIMELINE_KEY_TAG_V2`/`task`/`category`/`eval_regime` at creation time
+      only -- both the `-v2` run-name suffix and the distinct
+      `TIMELINE_KEY_TAG_V2` tag KEY (not just a different tag value) keep
+      these v2 runs visually and mechanically disjoint from the legacy v1
+      runs a `TIMELINE_KEY_TAG` search would find (see this module's own
+      docstring for the full v1/v2 split rationale). `eval_regime` is always
+      `"serve"` because, unlike the per-day eval runs this timeline
+      complements, a timeline run by design only ever aggregates
+      genuinely-served (never backtested/WF) accuracy points, so the tag is
+      a fixed fact about every timeline run rather than a caller-supplied,
+      per-call value.
     - Each metric key is deduped by STEP, not by value: before logging a
       metric, `client.get_metric_history(run_id, key)` is consulted, and a
       point at the same step is skipped entirely (even if the value
@@ -191,9 +288,9 @@ def upsert_timeline_point(
     if run_id is None:
         run = client.create_run(
             experiment_id,
-            run_name=f"timeline-{task}-{category}",
+            run_name=f"timeline-{task}-{category}-v2",
             tags={
-                TIMELINE_KEY_TAG: timeline_key,
+                TIMELINE_KEY_TAG_V2: timeline_key,
                 "task": task,
                 "category": category,
                 "eval_regime": "serve",
@@ -201,7 +298,7 @@ def upsert_timeline_point(
         )
         run_id = run.info.run_id
 
-    step = int(date_yyyymmdd)
+    step = step_for_date(date_yyyymmdd)
     timestamp_ms = _timestamp_ms_for_date(date_yyyymmdd)
     metric_items: list[Metric] = []
     for key, value in metrics.items():
@@ -228,7 +325,13 @@ def fp_metrics_for_timeline(fp: Mapping[str, object]) -> dict[str, float]:
     float)` -- matching (not excluding bool) the existing
     `ingest_eval._fp_serve_metrics` convention exactly, for consistency
     within this package rather than defending against a value shape that
-    has never actually appeared in this field.
+    has never actually appeared in this field. This same `isinstance` guard
+    is also what makes `place4_pct`/`place5_pct`/`place6_pct` compose
+    correctly here without any extra handling: `isinstance(None, int |
+    float)` is False, so a day/cell where one of those ranks had zero
+    eligible races (see `serve_eval.aggregate_fp_day_metrics`'s own
+    None-handling docstring) is silently skipped rather than logged as a
+    fabricated 0.0.
     """
     result: dict[str, float] = {}
     for source_key, timeline_metric_key in _FP_TIMELINE_METRIC_MAP.items():
@@ -270,13 +373,23 @@ def rs_metrics_for_timeline(rs: Mapping[str, object]) -> dict[str, float]:
 def timeline_dates_present(
     client: MlflowClient, task: str, category: str, metric_key: str
 ) -> set[int]:
-    """Return the set of `step` (YYYYMMDD int) values already logged for
-    `metric_key` on the (task, category) timeline run.
+    """Return the set of v2 `step` values (days-since-2020-01-01, see
+    `step_for_date`) already logged for `metric_key` on the (task, category)
+    v2 timeline run.
 
     Returns an empty set both when the `timelines` experiment does not exist
-    yet at all, and when it exists but this (task, category) has no run yet
-    -- both cases mean "nothing to skip" for
+    yet at all, and when it exists but this (task, category) has no v2 run
+    yet -- both cases mean "nothing to skip" for
     `backfill_serve_timeline.py`'s `--skip-existing` check.
+
+    Only ever looks up the v2 run (`_find_timeline_run`'s default `tag_key`,
+    `TIMELINE_KEY_TAG_V2`) -- a legacy v1 run for the same (task, category)
+    is never matched here. A step value returned by this function is
+    therefore NOT a YYYYMMDD integer: a caller that needs to check "does
+    this YYYYMMDD date already have a point" must convert its own date via
+    `step_for_date` first and compare THAT against this set (see
+    `backfill_serve_timeline._timeline_point_exists_for_date`), not compare
+    a raw `int(date_str)` the way pre-migration code did.
     """
     experiment = client.get_experiment_by_name(config.EXPERIMENT_TIMELINES)
     if experiment is None:

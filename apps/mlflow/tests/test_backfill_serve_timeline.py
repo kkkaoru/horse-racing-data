@@ -80,7 +80,7 @@ def test_backfill_serve_timeline_happy_path_ingests_every_date(
     assert summary.errors == []
     assert len(runner.calls) == 2
     fp_dates = timeline.timeline_dates_present(client, "finish-position", "jra", "fp_top1_pct")
-    assert fp_dates == {20260601, 20260602}
+    assert fp_dates == {timeline.step_for_date("20260601"), timeline.step_for_date("20260602")}
 
 
 def test_backfill_serve_timeline_builds_expected_command(
