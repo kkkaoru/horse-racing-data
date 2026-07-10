@@ -131,6 +131,7 @@ rec as (
     f.time_sa,
     f.kohan_3f,
     f.corner1_norm,
+    f.corner2_norm,
     f.corner3_norm,
     f.corner4_norm,
     f.babajotai_code_shiba,
@@ -172,6 +173,7 @@ target as (
     r.babajotai_code_shiba,
     r.babajotai_code_dirt,
     r.corner1_norm as target_corner_1_norm,
+    r.corner2_norm as target_corner_2_norm,
     r.corner3_norm as target_corner_3_norm,
     r.corner4_norm as target_corner_4_norm,
     case
@@ -262,6 +264,7 @@ horse_history_base as (
     h.time_sa::double precision as time_sa,
     h.kohan_3f::double precision as kohan_3f,
     h.corner1_norm::double precision as corner1_norm,
+    h.corner2_norm::double precision as corner2_norm,
     h.corner3_norm::double precision as corner3_norm,
     h.corner4_norm::double precision as corner4_norm,
     hr.zenhan_3f::double precision as zenhan_3f,
@@ -636,10 +639,28 @@ horse_running_style_history as (
     avg(b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_1_norm_avg_5,
     avg(b.corner1_norm) filter (where b.recent_rank <= 3) as past_corner_1_norm_avg_3,
     avg(b.corner1_norm) filter (where b.recent_rank <= 10) as past_corner_1_norm_avg_10,
+    avg(b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_2_norm_avg_5,
+    avg(b.corner2_norm) filter (where b.recent_rank <= 3) as past_corner_2_norm_avg_3,
+    avg(b.corner2_norm) filter (where b.recent_rank <= 10) as past_corner_2_norm_avg_10,
+    avg(b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_3_norm_avg_5,
+    avg(b.corner3_norm) filter (where b.recent_rank <= 3) as past_corner_3_norm_avg_3,
+    avg(b.corner3_norm) filter (where b.recent_rank <= 10) as past_corner_3_norm_avg_10,
+    avg(b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_4_norm_avg_5,
+    avg(b.corner4_norm) filter (where b.recent_rank <= 3) as past_corner_4_norm_avg_3,
+    avg(b.corner4_norm) filter (where b.recent_rank <= 10) as past_corner_4_norm_avg_10,
     avg(b.corner4_norm - b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_progression_avg_5,
     stddev_samp(b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_1_norm_std_5,
+    stddev_samp(b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_2_norm_std_5,
+    stddev_samp(b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_3_norm_std_5,
+    stddev_samp(b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_4_norm_std_5,
     min(b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_1_norm_best_5,
+    min(b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_2_norm_best_5,
+    min(b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_3_norm_best_5,
+    min(b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_4_norm_best_5,
     max(b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_1_norm_worst_5,
+    max(b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_2_norm_worst_5,
+    max(b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_3_norm_worst_5,
+    max(b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_4_norm_worst_5,
     avg(case when b.corner1_norm = 0 then 1.0 when b.corner1_norm is null then null else 0.0 end) as past_nige_rate_self,
     avg(case when b.corner1_norm is null then null when b.corner1_norm > 0 and b.corner1_norm <= ${RUNNING_STYLE_SENKOU_THRESHOLD} then 1.0 else 0.0 end) as past_senkou_rate_self,
     avg(case when b.corner1_norm is null then null when b.corner1_norm > ${RUNNING_STYLE_SENKOU_THRESHOLD} and b.corner1_norm <= ${RUNNING_STYLE_SASHI_THRESHOLD} then 1.0 else 0.0 end) as past_sashi_rate_self,
@@ -677,6 +698,9 @@ horse_running_style_history as (
         / count(*) filter (where b.recent_rank <= 3 and b.corner1_norm is not null)
       else null end as past_oikomi_rate_self_recent_3,
     max(b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_1_norm,
+    max(b.corner2_norm) filter (where b.recent_rank = 1) as last_race_corner_2_norm,
+    max(b.corner3_norm) filter (where b.recent_rank = 1) as last_race_corner_3_norm,
+    max(b.corner4_norm) filter (where b.recent_rank = 1) as last_race_corner_4_norm,
     max(b.corner4_norm - b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_progression,
     avg(b.corner1_norm) filter (where abs(b.history_kyori - b.target_kyori) <= ${SAME_DISTANCE_TOLERANCE}) as horse_distance_corner_1_norm_avg,
     avg(b.corner1_norm) filter (where left(coalesce(b.history_track_code, ''), 1) = left(coalesce(b.target_track_code, ''), 1)) as horse_track_corner_1_norm_avg,
@@ -688,6 +712,12 @@ horse_running_style_history as (
     avg(case when b.finish_position = 1 then 1.0 else 0.0 end) filter (where b.corner1_norm > ${RUNNING_STYLE_SASHI_THRESHOLD}) as past_oikomi_win_rate_self,
     percentile_cont(0.75) within group (order by b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE})
       - percentile_cont(0.25) within group (order by b.corner1_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_1_norm_iqr_5,
+    percentile_cont(0.75) within group (order by b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE})
+      - percentile_cont(0.25) within group (order by b.corner2_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_2_norm_iqr_5,
+    percentile_cont(0.75) within group (order by b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE})
+      - percentile_cont(0.25) within group (order by b.corner3_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_3_norm_iqr_5,
+    percentile_cont(0.75) within group (order by b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE})
+      - percentile_cont(0.25) within group (order by b.corner4_norm) filter (where b.recent_rank <= ${RECENT_WINDOW_SIZE}) as past_corner_4_norm_iqr_5,
     (count(*) filter (where b.finish_position = 1 and trim(coalesce(b.history_grade_code, '')) in ('A', 'B', 'C')))::bigint as top1_count_in_grade_races,
     (count(*) filter (where b.finish_position between 1 and 3 and trim(coalesce(b.history_grade_code, '')) in ('A', 'B', 'C')))::bigint as place_count_in_grade_races,
     (count(*) filter (where trim(coalesce(b.history_grade_code, '')) = 'A'))::bigint as experience_in_g1_race,
@@ -719,7 +749,7 @@ base_features as (
     t.ketto_toroku_bango, t.umaban, t.bamei, t.category, t.kyori, t.track_code, t.grade_code, t.shusso_tosu,
     t.kyoso_joken_code, t.nar_subclass,
     t.finish_position, t.finish_norm,
-    t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
+    t.target_corner_1_norm, t.target_corner_2_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
     hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.past_first_3f_avg_5, hc.corner_pass_avg_5,
     hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
     hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
@@ -775,10 +805,28 @@ base_features as (
     rsh.past_corner_1_norm_avg_5,
     rsh.past_corner_1_norm_avg_3,
     rsh.past_corner_1_norm_avg_10,
+    rsh.past_corner_2_norm_avg_5,
+    rsh.past_corner_2_norm_avg_3,
+    rsh.past_corner_2_norm_avg_10,
+    rsh.past_corner_3_norm_avg_5,
+    rsh.past_corner_3_norm_avg_3,
+    rsh.past_corner_3_norm_avg_10,
+    rsh.past_corner_4_norm_avg_5,
+    rsh.past_corner_4_norm_avg_3,
+    rsh.past_corner_4_norm_avg_10,
     rsh.past_corner_progression_avg_5,
     rsh.past_corner_1_norm_std_5,
+    rsh.past_corner_2_norm_std_5,
+    rsh.past_corner_3_norm_std_5,
+    rsh.past_corner_4_norm_std_5,
     rsh.past_corner_1_norm_best_5,
+    rsh.past_corner_2_norm_best_5,
+    rsh.past_corner_3_norm_best_5,
+    rsh.past_corner_4_norm_best_5,
     rsh.past_corner_1_norm_worst_5,
+    rsh.past_corner_2_norm_worst_5,
+    rsh.past_corner_3_norm_worst_5,
+    rsh.past_corner_4_norm_worst_5,
     rsh.past_nige_rate_self,
     rsh.past_senkou_rate_self,
     rsh.past_sashi_rate_self,
@@ -792,6 +840,9 @@ base_features as (
     rsh.past_sashi_rate_self_recent_3,
     rsh.past_oikomi_rate_self_recent_3,
     rsh.last_race_corner_1_norm,
+    rsh.last_race_corner_2_norm,
+    rsh.last_race_corner_3_norm,
+    rsh.last_race_corner_4_norm,
     rsh.last_race_corner_progression,
     rsh.horse_distance_corner_1_norm_avg,
     rsh.horse_track_corner_1_norm_avg,
@@ -802,6 +853,9 @@ base_features as (
     rsh.past_sashi_win_rate_self,
     rsh.past_oikomi_win_rate_self,
     rsh.past_corner_1_norm_iqr_5,
+    rsh.past_corner_2_norm_iqr_5,
+    rsh.past_corner_3_norm_iqr_5,
+    rsh.past_corner_4_norm_iqr_5,
     rsh.top1_count_in_grade_races,
     rsh.place_count_in_grade_races,
     rsh.experience_in_g1_race,
@@ -959,6 +1013,7 @@ rec as (
     f.time_sa,
     f.kohan_3f,
     f.corner1_norm,
+    f.corner2_norm,
     f.corner3_norm,
     f.corner4_norm,
     f.babajotai_code_shiba,
@@ -1000,6 +1055,7 @@ target as (
     r.babajotai_code_shiba,
     r.babajotai_code_dirt,
     r.corner1_norm as target_corner_1_norm,
+    r.corner2_norm as target_corner_2_norm,
     r.corner3_norm as target_corner_3_norm,
     r.corner4_norm as target_corner_4_norm,
     case
@@ -1045,33 +1101,20 @@ const applyBatchMaterializedHints = (sql: string): string =>
     sql,
   );
 
-// Markers used to inject corner2_norm / target_corner_2_norm into the batch
-// rec & target CTEs when strict nige target derivation is requested. They
-// match the unique 4-space-indented projections inside `buildBatchCoreCtesSql`
-// and the unique 6-space-indented case-arm inside the target CTE so a single
-// `replace()` call mutates exactly one site per marker. Any future refactor
-// that changes those line shapes must update the markers here in lockstep.
-const BATCH_REC_CORNER1_MARKER = "    f.corner1_norm,\n";
-const BATCH_REC_CORNER1_WITH_CORNER2 = "    f.corner1_norm,\n    f.corner2_norm,\n";
-const BATCH_TARGET_CORNER1_PROPAGATION_MARKER = "    r.corner1_norm as target_corner_1_norm,\n";
-const BATCH_TARGET_CORNER1_PROPAGATION_WITH_CORNER2 =
-  "    r.corner1_norm as target_corner_1_norm,\n    r.corner2_norm as target_corner_2_norm,\n";
+// Strict mode only changes the target label definition. corner2_norm is always
+// present in the feature SQL so current-race target_corner_2_norm remains a
+// label/leak column while prior-race corner2 history can be used as features.
 const BATCH_TARGET_NIGE_LAX_CASE_ARM = `when r.corner1_norm = 0 then ${RUNNING_STYLE_CLASS_NIGE}`;
 const BATCH_TARGET_NIGE_STRICT_CASE_ARM = `when r.corner1_norm = 0 and r.corner2_norm = 0 then ${RUNNING_STYLE_CLASS_NIGE}`;
 
 const applyBatchStrictNigeTargetTransform = (sql: string): string =>
-  sql
-    .replace(BATCH_REC_CORNER1_MARKER, BATCH_REC_CORNER1_WITH_CORNER2)
-    .replace(BATCH_TARGET_CORNER1_PROPAGATION_MARKER, BATCH_TARGET_CORNER1_PROPAGATION_WITH_CORNER2)
-    .replace(BATCH_TARGET_NIGE_LAX_CASE_ARM, BATCH_TARGET_NIGE_STRICT_CASE_ARM);
+  sql.replace(BATCH_TARGET_NIGE_LAX_CASE_ARM, BATCH_TARGET_NIGE_STRICT_CASE_ARM);
 
 export const buildRunningStyleBatchFeatureSql = (
   args: BuildRunningStyleBatchFeatureSqlArgs,
 ): string => {
-  // Default (lax) path stays byte-identical to the pre-strict snapshot so the
-  // production worker / parquet pipeline are not affected. Strict mode is an
-  // opt-in transform that adds corner2_norm to the rec & target CTEs and
-  // narrows the nige case-arm to require leading at both 1st and 2nd corner.
+  // Strict mode is an opt-in transform that narrows the nige case-arm to
+  // require leading at both 1st and 2nd corner.
   const lax = applyBatchMaterializedHints(
     buildBatchCoreCtesSql(args) + buildSharedFeatureCtesSql(),
   );
@@ -1233,6 +1276,7 @@ const D1_TARGET_CTE_SQL = `target as (
     j.babajotai_code_shiba,
     j.babajotai_code_dirt,
     null::numeric as target_corner_1_norm,
+    null::numeric as target_corner_2_norm,
     null::numeric as target_corner_3_norm,
     null::numeric as target_corner_4_norm,
     null::int as target_running_style_class,

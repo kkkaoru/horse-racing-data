@@ -11,26 +11,26 @@ import {
   type DailyTargetRow,
 } from "./running-style-feature-sql";
 
-// Wave P4c P0 + P1 + P3: 11 new columns added — past_{nige,senkou,sashi,oikomi}_rate_self_recent_{3,5}
-// (8 short-window self-rate features), jockey_horse_pair_nige_rate +
-// trainer_horse_pair_nige_rate (2 pair-level nige rate features), and
-// field_nige_pressure_rank (1 in-race rank of past_nige_rate_self_recent_5).
+// Wave P4c P0 + P1 + P3 plus prior-corner expansion:
+// 11 running-style history columns were added, then prior corner2/3/4 history
+// features were added so production per-race SQL can use all previous-race
+// corner positions without using current-race target_corner_* leakage.
 // Snapshots were re-pinned after the addition; downstream parquet schema is
 // additive (existing columns unchanged).
 const PER_RACE_SQL_SHA256_REFERENCE =
-  "c8bb3ea51616d91affdbb2cc9220d31671086baae4f24421878b3920617000dc";
-const PER_RACE_SQL_LENGTH_REFERENCE = 45727;
+  "4a97c05c0725c714e5d524513aef2add234d00932192389df7ed3daacea552b5";
+const PER_RACE_SQL_LENGTH_REFERENCE = 49247;
 const D1_TARGET_SQL_SHA256_REFERENCE =
-  "c2a54327cb96e08670dff723294e46fbf18ca49c2321d2467e3e9981bfc3864e";
-const D1_TARGET_SQL_LENGTH_REFERENCE = 45942;
+  "001c7685693fdf6c3d2d8c325eddc6c8b2425a8fd6877779ad6204ba2fa2d749";
+const D1_TARGET_SQL_LENGTH_REFERENCE = 49461;
 // Batch SQL gets `MATERIALIZED` hints injected for 10 heavy CTEs (rec, target,
 // target_horses, se_lookup, ra_lookup, horse_history_base, jockey_history,
 // trainer_history, pedigree_rec_um, target_months) so PG materializes them once
 // instead of re-inlining per reference. This snapshot pins the post-hint
 // output so any accidental regression on the materialization list trips here.
 const BATCH_JRA_SQL_SHA256_REFERENCE =
-  "40c59e0edfe67e2fc571a2c2ca8993925e965dcc92430d6e658ab3d78e2714ab";
-const BATCH_JRA_SQL_LENGTH_REFERENCE = 45593;
+  "f05c68ed2a1b7133c374e1b4b50c8978aeeecfd88cc4f41e22ed4863cd779ab6";
+const BATCH_JRA_SQL_LENGTH_REFERENCE = 49113;
 const BATCH_MATERIALIZED_HINT_COUNT = 10;
 
 const BATCH_ARGS_JRA = {
@@ -485,7 +485,18 @@ it("buildRunningStyleBatchFeatureSql strict omitted matches strict=false", () =>
   expect(omitted).toBe(explicitFalse);
 });
 
-it("buildRunningStyleBatchFeatureSql strictNigeTarget=true injects f.corner2_norm into the rec CTE", () => {
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=false keeps f.corner2_norm in the rec CTE", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: false,
+    toDate: "20260531",
+  });
+  expect(sql.includes("    f.corner1_norm,\n    f.corner2_norm,\n")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=true keeps f.corner2_norm in the rec CTE", () => {
   const sql = buildRunningStyleBatchFeatureSql({
     featureSchemaVersion: "v1",
     fromDate: "20050101",
@@ -494,6 +505,21 @@ it("buildRunningStyleBatchFeatureSql strictNigeTarget=true injects f.corner2_nor
     toDate: "20260531",
   });
   expect(sql.includes("    f.corner1_norm,\n    f.corner2_norm,\n")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql strictNigeTarget=false propagates r.corner2_norm as target_corner_2_norm", () => {
+  const sql = buildRunningStyleBatchFeatureSql({
+    featureSchemaVersion: "v1",
+    fromDate: "20050101",
+    source: "jra",
+    strictNigeTarget: false,
+    toDate: "20260531",
+  });
+  expect(
+    sql.includes(
+      "    r.corner1_norm as target_corner_1_norm,\n    r.corner2_norm as target_corner_2_norm,\n",
+    ),
+  ).toBe(true);
 });
 
 it("buildRunningStyleBatchFeatureSql strictNigeTarget=true propagates r.corner2_norm as target_corner_2_norm", () => {
@@ -750,6 +776,20 @@ it("buildRunningStylePostgresFeatureSql exposes all 11 new running-style feature
   expect(sql.includes("field_nige_pressure_rank")).toBe(true);
 });
 
+it("buildRunningStylePostgresFeatureSql exposes prior corner2/3/4 history features", () => {
+  const sql = buildRunningStylePostgresFeatureSql();
+  expect(sql.includes("avg(b.corner2_norm) filter")).toBe(true);
+  expect(sql.includes("avg(b.corner3_norm) filter")).toBe(true);
+  expect(sql.includes("avg(b.corner4_norm) filter")).toBe(true);
+  expect(sql.includes("avg(t.target_corner_2_norm)")).toBe(false);
+  expect(sql.includes("past_corner_2_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_3_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_4_norm_avg_5")).toBe(true);
+  expect(sql.includes("last_race_corner_2_norm")).toBe(true);
+  expect(sql.includes("past_corner_2_norm_iqr_5")).toBe(true);
+  expect(sql.includes("target_corner_2_norm")).toBe(true);
+});
+
 it("buildRunningStylePostgresFeatureSqlWithD1Target exposes all 11 new running-style features", () => {
   const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
   expect(sql.includes("past_nige_rate_self_recent_5")).toBe(true);
@@ -765,6 +805,21 @@ it("buildRunningStylePostgresFeatureSqlWithD1Target exposes all 11 new running-s
   expect(sql.includes("field_nige_pressure_rank")).toBe(true);
 });
 
+it("buildRunningStylePostgresFeatureSqlWithD1Target exposes prior corner2/3/4 history features", () => {
+  const sql = buildRunningStylePostgresFeatureSqlWithD1Target();
+  expect(sql.includes("null::numeric as target_corner_2_norm")).toBe(true);
+  expect(sql.includes("avg(b.corner2_norm) filter")).toBe(true);
+  expect(sql.includes("avg(b.corner3_norm) filter")).toBe(true);
+  expect(sql.includes("avg(b.corner4_norm) filter")).toBe(true);
+  expect(sql.includes("avg(t.target_corner_2_norm)")).toBe(false);
+  expect(sql.includes("past_corner_2_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_3_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_4_norm_avg_5")).toBe(true);
+  expect(sql.includes("last_race_corner_2_norm")).toBe(true);
+  expect(sql.includes("past_corner_2_norm_iqr_5")).toBe(true);
+  expect(sql.includes("target_corner_2_norm")).toBe(true);
+});
+
 it("buildRunningStyleBatchFeatureSql strictNigeTarget=true still exposes the 11 new running-style features", () => {
   const sql = buildRunningStyleBatchFeatureSql({
     featureSchemaVersion: "v1",
@@ -777,4 +832,14 @@ it("buildRunningStyleBatchFeatureSql strictNigeTarget=true still exposes the 11 
   expect(sql.includes("jockey_horse_pair_nige_rate")).toBe(true);
   expect(sql.includes("trainer_horse_pair_nige_rate")).toBe(true);
   expect(sql.includes("field_nige_pressure_rank")).toBe(true);
+});
+
+it("buildRunningStyleBatchFeatureSql exposes prior corner2/3/4 history features", () => {
+  const sql = buildRunningStyleBatchFeatureSql(BATCH_ARGS_JRA);
+  expect(sql.includes("past_corner_2_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_3_norm_avg_5")).toBe(true);
+  expect(sql.includes("past_corner_4_norm_avg_5")).toBe(true);
+  expect(sql.includes("last_race_corner_2_norm")).toBe(true);
+  expect(sql.includes("past_corner_2_norm_iqr_5")).toBe(true);
+  expect(sql.includes("target_corner_2_norm")).toBe(true);
 });
