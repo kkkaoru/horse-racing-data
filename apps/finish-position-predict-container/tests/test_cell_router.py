@@ -177,6 +177,61 @@ def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
     assert router.resolve_variant("jra", [miss_class]) == "jockey_pedigree_703"
 
 
+def test_load_cell_router_real_config_has_jra_hakodate_venue_routing() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("jra")
+    assert len(routing.rules) == 3
+    hakodate = {"keibajo_code": "02"}
+    assert router.resolve_variant("jra", [hakodate]) == "jockey_pedigree_703"
+    non_hakodate = {"keibajo_code": "05"}
+    assert router.resolve_variant("jra", [non_hakodate]) == "sim"
+
+
+def test_load_cell_router_real_config_jra_rule_precedence_at_hakodate() -> None:
+    # First-match-wins order: rule 1 (kyoso_joken_code=703), rule 2
+    # (dirt/f_le10/005 prior-corner), rule 3 (venue=02 Hakodate, appended
+    # last). A Hakodate race that also matches an earlier rule routes via
+    # that earlier rule, not the venue rule.
+    router = load_cell_router()
+
+    # 703-class race at Hakodate: rule 1 wins (same variant as rule 3 would
+    # give, but the precedence is what this test documents).
+    class_703_at_hakodate = {"kyoso_joken_code": "703", "keibajo_code": "02"}
+    assert router.resolve_variant("jra", [class_703_at_hakodate]) == "jockey_pedigree_703"
+
+    # dirt / f_le10 / kyoso_joken_code=005 at a non-Hakodate venue (Kokura,
+    # 10) still routes to the prior-corner variant via rule 2.
+    prior_corner_at_kokura = {
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "shusso_tosu": 10,
+        "keibajo_code": "10",
+    }
+    assert (
+        router.resolve_variant("jra", [prior_corner_at_kokura])
+        == "prior_corner_dirt_smallfield_005"
+    )
+
+    # Same dirt/f_le10/005 cell, but AT Hakodate: rule 2 still wins over rule
+    # 3 because it appears earlier in the rules list.
+    prior_corner_at_hakodate = {**prior_corner_at_kokura, "keibajo_code": "02"}
+    assert (
+        router.resolve_variant("jra", [prior_corner_at_hakodate])
+        == "prior_corner_dirt_smallfield_005"
+    )
+
+
+def test_load_cell_router_real_config_jra_hakodate_falls_through_to_venue_rule() -> None:
+    # A Hakodate race that matches neither rule 1 nor rule 2 falls through to
+    # rule 3 (venue) and gets jockey_pedigree_703, not the category default.
+    router = load_cell_router()
+    hakodate_generic = {"keibajo_code": "02", "kyoso_joken_code": "701"}
+    assert router.resolve_variant("jra", [hakodate_generic]) == "jockey_pedigree_703"
+
+    non_hakodate_generic = {"keibajo_code": "05", "kyoso_joken_code": "701"}
+    assert router.resolve_variant("jra", [non_hakodate_generic]) == "sim"
+
+
 def test_load_cell_router_real_config_has_no_nar_routing() -> None:
     # The nar-xgb-cell-a957d8b4-v1 route was reverted 2026-07-03 (adopted on
     # broken cell_training_evaluations data). NAR must carry no cell routing so

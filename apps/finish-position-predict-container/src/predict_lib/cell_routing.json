@@ -32,6 +32,10 @@
           { "dimension": "kyoso_joken_code", "values": ["005"] }
         ],
         "variant": "prior_corner_dirt_smallfield_005"
+      },
+      {
+        "conditions": [{ "dimension": "venue", "values": ["02"] }],
+        "variant": "jockey_pedigree_703"
       }
     ]
   },
