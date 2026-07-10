@@ -22,7 +22,14 @@ const makeEnv = (): Env => ({
   TRIGGER_TOKEN: "secret-token",
 });
 
-import { claimRescoreRace, claimRun, completeRun, getRunState } from "./do-state";
+import {
+  claimFocusedFullRace,
+  claimRescoreRace,
+  claimRun,
+  completeFocusedFullRace,
+  completeRun,
+  getRunState,
+} from "./do-state";
 
 beforeEach(() => {
   fetchMock.mockClear();
@@ -172,4 +179,82 @@ test("claimRescoreRace throws when DO returns non-200", async () => {
       runYmd: "20260619",
     }),
   ).rejects.toThrow("DO claim-race failed: 500");
+});
+
+test("claimFocusedFullRace calls DO /claim-focused-full-race with stale budget", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
+  const result = await claimFocusedFullRace({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/claim-focused-full-race");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as { staleAfterMs: number };
+  expect(body.staleAfterMs).toBe(2100000);
+});
+
+test("claimFocusedFullRace returns proceed:false when DO returns it", async () => {
+  fetchMock.mockResolvedValue(
+    new Response(JSON.stringify({ proceed: false, state: "started" }), { status: 200 }),
+  );
+  const result = await claimFocusedFullRace({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "started" });
+});
+
+test("claimFocusedFullRace throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    claimFocusedFullRace({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260621",
+      staleAfterMs: 2100000,
+    }),
+  ).rejects.toThrow("DO claim-focused-full-race failed: 500");
+});
+
+test("completeFocusedFullRace calls DO /complete-focused-full-race", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+  await completeFocusedFullRace({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    status: "success",
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  expect(req.url).toBe("http://do/complete-focused-full-race");
+  expect(req.method).toBe("POST");
+  const body = (await req.json()) as { status: string };
+  expect(body.status).toBe("success");
+});
+
+test("completeFocusedFullRace throws when DO returns non-200", async () => {
+  fetchMock.mockResolvedValue(new Response("error", { status: 500 }));
+  await expect(
+    completeFocusedFullRace({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260621",
+      status: "error",
+    }),
+  ).rejects.toThrow("DO complete-focused-full-race failed: 500");
 });

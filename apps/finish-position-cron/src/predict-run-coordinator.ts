@@ -4,16 +4,22 @@
 // - Per-category run key:  run:{runYmd}:{category}
 // - Per-race rescore key:  rescore:{runYmd}:{category}:{keibajo}:{race}
 //   used by the per-race coordinator to avoid enqueueing the same race twice.
+// - Focused full key: focused-full:{runYmd}:{category}:{keibajo}:{race}
+//   used by the queue consumer to prevent redelivery from starting a duplicate
+//   container pipeline while the original detached build is still in flight.
 
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./types";
 
 const STORAGE_KEY_PREFIX = "run";
 const RESCORE_KEY_PREFIX = "rescore";
+const FOCUSED_FULL_KEY_PREFIX = "focused-full";
 const CLAIM_PATH = "/claim";
 const COMPLETE_PATH = "/complete";
 const STATE_PATH = "/state";
 const CLAIM_RACE_PATH = "/claim-race";
+const CLAIM_FOCUSED_FULL_RACE_PATH = "/claim-focused-full-race";
+const COMPLETE_FOCUSED_FULL_RACE_PATH = "/complete-focused-full-race";
 const HTTP_OK = 200;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const HTTP_NOT_FOUND = 404;
@@ -44,11 +50,22 @@ interface ClaimRaceParams {
   raceBango: string;
 }
 
+interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  staleAfterMs: number;
+}
+
+interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
+  status: string;
+}
+
 const buildKey = (runYmd: string, category: string): string =>
   `${STORAGE_KEY_PREFIX}:${runYmd}:${category}`;
 
 const buildRaceKey = (params: ClaimRaceParams): string =>
   `${RESCORE_KEY_PREFIX}:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`;
+
+const buildFocusedFullRaceKey = (params: ClaimRaceParams): string =>
+  `${FOCUSED_FULL_KEY_PREFIX}:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`;
 
 const TERMINAL_STATUSES = new Set(["success"]);
 
@@ -104,6 +121,36 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  async claimFocusedFullRace(params: ClaimFocusedFullRaceParams): Promise<ClaimResult> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const key = buildFocusedFullRaceKey(params);
+      const existing = await this.ctx.storage.get<RunRecord>(key);
+      const now = Date.now();
+      if (existing !== undefined) {
+        if (TERMINAL_STATUSES.has(existing.status)) {
+          return { proceed: false, state: existing.status };
+        }
+        const ageMs = now - existing.timestamp;
+        if (existing.status === "started" && ageMs < params.staleAfterMs) {
+          return { proceed: false, state: existing.status };
+        }
+      }
+      await this.ctx.storage.put<RunRecord>(key, {
+        status: "started",
+        timestamp: now,
+      });
+      return { proceed: true };
+    });
+  }
+
+  async completeFocusedFullRace(params: CompleteFocusedFullRaceParams): Promise<void> {
+    await this.ctx.storage.put<RunRecord>(buildFocusedFullRaceKey(params), {
+      completedAt: Date.now(),
+      status: params.status,
+      timestamp: Date.now(),
+    });
+  }
+
   private async handleClaim(request: Request): Promise<Response> {
     const body = (await request.json()) as { runYmd: string; category: string };
     const result = await this.claim(body.runYmd, body.category);
@@ -130,6 +177,18 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return Response.json(result, { status: HTTP_OK });
   }
 
+  private async handleClaimFocusedFullRace(request: Request): Promise<Response> {
+    const body = (await request.json()) as ClaimFocusedFullRaceParams;
+    const result = await this.claimFocusedFullRace(body);
+    return Response.json(result, { status: HTTP_OK });
+  }
+
+  private async handleCompleteFocusedFullRace(request: Request): Promise<Response> {
+    const body = (await request.json()) as CompleteFocusedFullRaceParams;
+    await this.completeFocusedFullRace(body);
+    return Response.json({ ok: true }, { status: HTTP_OK });
+  }
+
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const pathMethodKey = `${request.method}:${url.pathname}`;
@@ -138,12 +197,21 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       [`POST:${COMPLETE_PATH}`, (req) => this.handleComplete(req)],
       [`GET:${STATE_PATH}`, (req) => this.handleState(req)],
       [`POST:${CLAIM_RACE_PATH}`, (req) => this.handleClaimRace(req)],
+      [`POST:${CLAIM_FOCUSED_FULL_RACE_PATH}`, (req) => this.handleClaimFocusedFullRace(req)],
+      [`POST:${COMPLETE_FOCUSED_FULL_RACE_PATH}`, (req) => this.handleCompleteFocusedFullRace(req)],
     ]);
     const handler = handlers.get(pathMethodKey);
     if (handler) {
       return handler(request);
     }
-    const knownPaths = new Set([CLAIM_PATH, COMPLETE_PATH, STATE_PATH, CLAIM_RACE_PATH]);
+    const knownPaths = new Set([
+      CLAIM_PATH,
+      COMPLETE_PATH,
+      STATE_PATH,
+      CLAIM_RACE_PATH,
+      CLAIM_FOCUSED_FULL_RACE_PATH,
+      COMPLETE_FOCUSED_FULL_RACE_PATH,
+    ]);
     return knownPaths.has(url.pathname)
       ? Response.json({ error: "Method not allowed" }, { status: HTTP_METHOD_NOT_ALLOWED })
       : Response.json({ error: "Not found" }, { status: HTTP_NOT_FOUND });

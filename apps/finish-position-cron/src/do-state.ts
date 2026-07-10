@@ -9,6 +9,8 @@ const CLAIM_PATH = "/claim";
 const COMPLETE_PATH = "/complete";
 const STATE_PATH = "/state";
 const CLAIM_RACE_PATH = "/claim-race";
+const CLAIM_FOCUSED_FULL_RACE_PATH = "/claim-focused-full-race";
+const COMPLETE_FOCUSED_FULL_RACE_PATH = "/complete-focused-full-race";
 const DO_HOST = "http://do";
 const HTTP_OK = 200;
 
@@ -37,6 +39,14 @@ interface ClaimRaceParams {
   category: string;
   keibajoCode: string;
   raceBango: string;
+}
+
+interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
+  staleAfterMs: number;
+}
+
+interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
+  status: string;
 }
 
 const getCoordinatorStub = (env: Env): DurableObjectStub => {
@@ -99,6 +109,51 @@ export const claimRescoreRace = async (params: ClaimRaceParams): Promise<ClaimRe
     throw new Error(`DO claim-race failed: ${response.status}`);
   }
   return response.json() as Promise<ClaimResult>;
+};
+
+export const claimFocusedFullRace = async (
+  params: ClaimFocusedFullRaceParams,
+): Promise<ClaimResult> => {
+  const stub = getCoordinatorStub(params.env);
+  const response = await stub.fetch(
+    new Request(`${DO_HOST}${CLAIM_FOCUSED_FULL_RACE_PATH}`, {
+      body: JSON.stringify({
+        category: params.category,
+        keibajoCode: params.keibajoCode,
+        raceBango: params.raceBango,
+        runYmd: params.runYmd,
+        staleAfterMs: params.staleAfterMs,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+  if (response.status !== HTTP_OK) {
+    throw new Error(`DO claim-focused-full-race failed: ${response.status}`);
+  }
+  return response.json() as Promise<ClaimResult>;
+};
+
+export const completeFocusedFullRace = async (
+  params: CompleteFocusedFullRaceParams,
+): Promise<void> => {
+  const stub = getCoordinatorStub(params.env);
+  const response = await stub.fetch(
+    new Request(`${DO_HOST}${COMPLETE_FOCUSED_FULL_RACE_PATH}`, {
+      body: JSON.stringify({
+        category: params.category,
+        keibajoCode: params.keibajoCode,
+        raceBango: params.raceBango,
+        runYmd: params.runYmd,
+        status: params.status,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }),
+  );
+  if (response.status !== HTTP_OK) {
+    throw new Error(`DO complete-focused-full-race failed: ${response.status}`);
+  }
 };
 
 export const getRunState = async (params: ClaimParams): Promise<unknown> => {

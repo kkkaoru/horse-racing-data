@@ -26,10 +26,9 @@ export interface PerRaceParquetEntry {
   parquetKey: string;
 }
 
-// "accepted" is the focused-full fire-and-forget fast-path status: the
-// container launched the real pipeline on a background thread and returned
-// immediately instead of blocking until it finishes. See queue-consumer.ts's
-// FOCUSED_FULL_ACCEPTED_STATUS handling for how it is polled to completion.
+// "accepted" is the focused-full in-progress status for same-race redelivery:
+// the original focused request is still in flight, so this delivery should poll
+// Neon completion later instead of launching a duplicate pipeline.
 // "busy" means a DIFFERENT race in the same category held the container's
 // single per-process pipeline slot, so this race's build never started. See
 // queue-consumer.ts's FOCUSED_FULL_BUSY_STATUS handling for the re-enqueue.

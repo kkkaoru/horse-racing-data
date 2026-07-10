@@ -31,6 +31,7 @@ const makeCoordinator = (): PredictRunCoordinator =>
   new PredictRunCoordinator(stateMock as unknown as DurableObjectState, {} as unknown as Env);
 
 beforeEach(() => {
+  vi.useRealTimers();
   storageMap.clear();
   storageMock.get.mockClear();
   storageMock.put.mockClear();
@@ -293,4 +294,120 @@ test("fetch GET /claim-race returns 405 method not allowed", async () => {
   const request = new Request("http://do/claim-race");
   const response = await coordinator.fetch(request);
   expect(response.status).toBe(405);
+});
+
+test("claimFocusedFullRace stores a focused-full started key for a new race", async () => {
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
+  expect(key).toBe("focused-full:20260621:jra:02:01");
+  expect(value.status).toBe("started");
+});
+
+test("claimFocusedFullRace returns proceed:false for a fresh started key", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20260621:jra:02:01", { status: "started", timestamp: 9_000 });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "started" });
+  expect(storageMock.put).not.toHaveBeenCalled();
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace returns proceed:true and refreshes stale started key", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(3_000_000);
+  storageMap.set("focused-full:20260621:jra:02:01", { status: "started", timestamp: 1_000 });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  expect(storageMock.put).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace returns proceed:false for a successful focused key", async () => {
+  storageMap.set("focused-full:20260621:jra:02:01", { status: "success", timestamp: 1_000 });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "success" });
+  expect(storageMock.put).not.toHaveBeenCalled();
+});
+
+test("completeFocusedFullRace writes terminal focused-full state", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.completeFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    status: "success",
+  });
+  const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
+  expect(key).toBe("focused-full:20260621:jra:02:01");
+  expect(value.status).toBe("success");
+  expect(value.completedAt).toBeTypeOf("number");
+});
+
+test("fetch POST /claim-focused-full-race returns claim result", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/claim-focused-full-race", {
+    body: JSON.stringify({
+      category: "jra",
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260621",
+      staleAfterMs: 2100000,
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { proceed: boolean };
+  expect(body.proceed).toBe(true);
+});
+
+test("fetch POST /complete-focused-full-race writes state and returns ok", async () => {
+  const coordinator = makeCoordinator();
+  const request = new Request("http://do/complete-focused-full-race", {
+    body: JSON.stringify({
+      category: "jra",
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260621",
+      status: "success",
+    }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  const response = await coordinator.fetch(request);
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
 });
