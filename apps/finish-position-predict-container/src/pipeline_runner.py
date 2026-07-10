@@ -34,6 +34,7 @@ built by the pure, unit-tested ``predict_lib.pipeline_args`` builders.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -60,6 +61,8 @@ RACE_ID_FIELD: Final[str] = "race_id"
 STDERR_TAIL_BYTES: Final[int] = 4000
 PG_URL_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"(postgresql://)[^@]+@")
 PG_URL_REDACTED: Final[str] = r"\1<redacted>@"
+PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
+TRUE_ENV_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on", "debug"})
 
 # --- TEMPORARY diagnostic instrumentation (added 2026-07-02) ---------------
 # Investigating a live production hang: the Cloudflare Queue consumer
@@ -101,6 +104,8 @@ def record_layer_timing_row(
     (including the ``CREATE TABLE IF NOT EXISTS``) is swallowed and only
     best-effort logged to stderr.
     """
+    if not debug_logs_enabled():
+        return
     keibajo_code: str | None = None
     race_bango: str | None = None
     if target_race is not None and ":" in target_race:
@@ -178,34 +183,31 @@ def mask_pg_url(text: str) -> str:
     return PG_URL_USERINFO_RE.sub(PG_URL_REDACTED, text)
 
 
-def _tee_stream(src: IO[str], sink: IO[str], buffer: list[str]) -> None:
-    """Forward ``src`` -> ``sink`` line-by-line while also collecting into buffer.
-
-    Used so the child's stderr (heartbeat / progress logs from the bundled
-    feature scripts) keeps streaming through to the parent's stderr in real
-    time AND we still have the tail available to attach to a RuntimeError on
-    non-zero exit. Without this tee, ``subprocess.run(capture_output=True)``
-    would silence the child for the entire (10-30 min) feature build and only
-    surface anything after the child exited — fatal for live observability.
-    """
+def _capture_stream(src: IO[str], buffer: list[str], *, sink: IO[str] | None = None) -> None:
+    """Collect a subprocess stream and optionally forward it for debug output."""
     for line in src:
-        sink.write(line)
-        sink.flush()
+        if sink is not None:
+            sink.write(line)
+            sink.flush()
         buffer.append(line)
 
 
+def debug_logs_enabled() -> bool:
+    return os.environ.get(PREDICT_DEBUG_LOGS_ENV, "").strip().lower() in TRUE_ENV_VALUES
+
+
 def run_with_stderr_capture(args: Sequence[str]) -> None:
-    """Run a subprocess, streaming output through and capturing stderr tail.
+    """Run a subprocess, capturing stderr tail and streaming only in debug mode.
 
     Without this wrapper ``subprocess.run(check=True)`` raises
     ``CalledProcessError`` but does NOT include the child's stderr in the
     message, so a silent ``exit 1`` from the feature pipeline turns into an
     opaque parent-side traceback. We:
 
-    * stream the child's stdout to the parent's stdout line-by-line so the
-      feature build's JSON heartbeat keeps reaching container logs live;
-    * stream the child's stderr to the parent's stderr line-by-line AND keep
-      the tail in memory so it can be attached to the RuntimeError on failure;
+    * capture the child's stdout/stderr and only forward it to parent streams
+      when debug logs are explicitly enabled;
+    * keep the stderr tail in memory so it can be attached to the RuntimeError
+      on failure;
     * mask any ``--pg-url`` in argv before logging so the Neon password never
       reaches logs (defensive).
     """
@@ -220,11 +222,16 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     stderr_buffer: list[str] = []
     assert process.stdout is not None
     assert process.stderr is not None
+    stream_debug = debug_logs_enabled()
     stdout_thread = threading.Thread(
-        target=_tee_stream, args=(process.stdout, sys.stdout, stdout_buffer)
+        target=_capture_stream,
+        args=(process.stdout, stdout_buffer),
+        kwargs={"sink": sys.stdout if stream_debug else None},
     )
     stderr_thread = threading.Thread(
-        target=_tee_stream, args=(process.stderr, sys.stderr, stderr_buffer)
+        target=_capture_stream,
+        args=(process.stderr, stderr_buffer),
+        kwargs={"sink": sys.stderr if stream_debug else None},
     )
     stdout_thread.start()
     stderr_thread.start()
@@ -253,7 +260,8 @@ def _duckdb_temp_dir(category: Category, target_date: str, target_race: str | No
 
 
 def _log_pipeline_progress(message: str) -> None:
-    print(f"[pipeline] {message}", file=sys.stderr, flush=True)
+    if debug_logs_enabled():
+        print(f"[pipeline] {message}", file=sys.stderr, flush=True)
 
 
 def _query_upcoming_race_keys(

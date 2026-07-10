@@ -26,33 +26,25 @@ Exception messages may contain database URLs (``postgresql://user:pass@host/db``
 ``mask_error_message`` replaces the user-info portion with ``[REDACTED]`` before
 the message is included in any outbound NDJSON body.
 
-Focused per-race fire-and-forget dispatch
-------------------------------------------
+Focused per-race guarded dispatch
+---------------------------------
 A "focused per-race full" request (``mode=full`` with both ``keibajoCode`` and
-``raceBango`` present -- one specific race) is a special case that does NOT
-follow the keepalive-poll-then-join design above.  Its DuckDB feature build +
-sequential v7 layer chain + CatBoost/XGBoost scoring can take 10-20+ minutes,
-which exceeds the duration the Cloudflare Queues consumer is allowed to hold a
-``stub.fetch()`` call open; blocking on it caused the platform to silently
-kill the response, leading to queue redelivery and eventual dead-lettering
-with zero Neon rows written (the incident this dispatch fixes).
+``raceBango`` present -- one specific race) is serialized by a single
+per-process slot because the feature pipeline writes category-scoped work dirs.
+Once a request claims the slot, it starts the pipeline in a detached in-process
+thread and immediately returns ``accepted``. The Worker queue consumer polls
+Neon completion on redelivery instead of holding a Cloudflare request open for
+the whole 15+ minute feature chain.
 
-For this one request shape (see :func:`is_focused_full_request`),
-``iter_predict_chunks`` never enters the keepalive/join loop and instead
-yields exactly one of three result-line statuses, WITHOUT waiting for any
-background thread:
+Three non-success statuses are possible for focused full:
 
-- :data:`FOCUSED_FULL_ACCEPTED_STATUS` (``"accepted"``) -- the pipeline was
-  launched in a background daemon thread (slot was free), or the slot is
-  already held by a redelivery of THIS SAME race's own still-running
-  pipeline (nothing new launched).  The background thread keeps running in
-  the same long-lived container OS process after the HTTP response
-  completes; the Worker-side queue's own retry/redelivery mechanism is
-  expected to poll a Neon-based completion check until that thread finishes
-  and UPSERTs.
+- :data:`FOCUSED_FULL_ACCEPTED_STATUS` (``"accepted"``) -- the slot is already
+  held by this same race's own still-running pipeline, or this request just
+  launched the detached pipeline. The Worker-side queue retry keeps polling the
+  Neon-based completion check.
 - :data:`FOCUSED_FULL_BUSY_STATUS` (``"busy"``) -- a DIFFERENT race in the
   same category already holds the single per-process pipeline slot, so this
-  request's pipeline was NOT launched at all.  This status exists to fix a
+  request's pipeline was NOT launched at all. This status exists to fix a
   follow-on incident: earlier code returned ``"accepted"`` in this case too,
   so the other race's queue message kept getting redelivered, burning its
   whole retry budget doing zero work before dead-lettering with no
@@ -68,14 +60,16 @@ Because the DuckDB base build and v7 layer chain write to category-scoped
 (not race-scoped) work directories (``pipeline_runner.WORK_DIR/feat-{category}-*``),
 at most one focused-full pipeline may run at a time per container process --
 see :func:`_claim_focused_full_slot`.  The category/day-level batch path and
-``mode=rescore`` requests (even with race scope) are entirely unaffected by
-this branch and keep the original blocking behaviour.
+``mode=rescore`` requests (even with race scope) are entirely unaffected and
+keep the held-response keepalive behaviour.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Generator
@@ -117,18 +111,20 @@ PredictMode = Literal["full", "rescore"]
 SUPPORTED_MODES: Final[frozenset[str]] = frozenset({"full", "rescore"})
 """Valid values for the ``mode`` query parameter."""
 
+PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
+"""Process env flag read by pipeline_runner to decide whether to stream debug logs."""
+
 R2_FEAT_CACHE_PREFIX: Final[str] = "feat-cache"
 """R2 object key prefix for feature-parquet cache objects."""
 
 FOCUSED_FULL_ACCEPTED_STATUS: Final[str] = "accepted"
 """``build_result_line`` ``status`` value for a focused per-race ``mode=full``
-request whose background pipeline was merely *launched*, not waited on.
+request whose same-race pipeline is already in flight.
 
 See :func:`is_focused_full_request` for the exact request shape and the
-"Focused per-race fire-and-forget dispatch" note in this module's docstring
-for the full incident background.  The Worker-side queue consumer is expected
-to treat this status as "in progress, poll Neon for completion" rather than a
-final outcome.
+"Focused per-race guarded dispatch" note in this module's docstring. The
+Worker-side queue consumer treats this status as "in progress, poll Neon for
+completion" rather than a final outcome.
 """
 
 FOCUSED_FULL_BUSY_STATUS: Final[str] = "busy"
@@ -165,7 +161,15 @@ class PredictParams:
     Both ``None`` (the default, full path) means "all races for the category".
     """
 
-    __slots__ = ("category", "days_ahead", "keibajo_code", "mode", "race_bango", "run_date")
+    __slots__ = (
+        "category",
+        "days_ahead",
+        "debug_logs",
+        "keibajo_code",
+        "mode",
+        "race_bango",
+        "run_date",
+    )
 
     def __init__(
         self,
@@ -175,6 +179,7 @@ class PredictParams:
         mode: PredictMode = "full",
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        debug_logs: bool = False,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -182,6 +187,7 @@ class PredictParams:
         self.mode: PredictMode = mode
         self.keibajo_code: str | None = keibajo_code
         self.race_bango: str | None = race_bango
+        self.debug_logs: bool = debug_logs
 
 
 def is_focused_full_request(params: PredictParams) -> bool:
@@ -189,9 +195,9 @@ def is_focused_full_request(params: PredictParams) -> bool:
 
     A "focused per-race full" request supplies both ``keibajo_code`` and
     ``race_bango`` (the per-race scope filter) together with ``mode="full"``.
-    This is the request shape whose background pipeline
-    :func:`iter_predict_chunks` launches fire-and-forget instead of awaiting
-    -- see :data:`FOCUSED_FULL_ACCEPTED_STATUS`.  Day/category batch requests
+    This is the request shape whose pipeline :func:`iter_predict_chunks`
+    serializes through the focused-full slot before using the normal keepalive
+    path. Day/category batch requests
     (no race scope) and ``mode="rescore"`` requests (even with race scope)
     both return False and keep the original blocking behaviour.
     """
@@ -248,6 +254,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
 
     keibajo_code = _optional_scope_value(_first_qs(qs, "keibajoCode"))
     race_bango = _optional_scope_value(_first_qs(qs, "raceBango"))
+    debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
 
     return PredictParams(
         category=category,
@@ -256,6 +263,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         mode=mode,
         keibajo_code=keibajo_code,
         race_bango=race_bango,
+        debug_logs=debug_logs,
     )
 
 
@@ -273,6 +281,12 @@ def _optional_scope_value(raw: str | None) -> str | None:
     if text == "":
         return None
     return text
+
+
+def _parse_debug_flag(raw: str | None) -> bool:
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on", "debug"}
 
 
 def parse_request_path(raw_path: str) -> tuple[str, str]:
@@ -344,9 +358,9 @@ def build_result_line(
     ``"success"`` or ``"error"``; it is also passed as
     ``FOCUSED_FULL_ACCEPTED_STATUS`` (``"accepted"``) by
     :func:`iter_predict_chunks` for a focused per-race full request whose
-    background pipeline was merely launched, not awaited -- see that
-    constant's docstring.  ``error`` is included only when non-None (masked
-    via :func:`mask_error_message` before encoding).
+    same-race pipeline is already in flight -- see that constant's docstring.
+    ``error`` is included only when non-None (masked via
+    :func:`mask_error_message` before encoding).
 
     When ``parquet_base64`` and ``parquet_key`` are both provided (only on
     ``mode=full`` success), the Worker DO reads these fields and proxies the
@@ -364,7 +378,7 @@ def build_result_line(
         run_date:        The YYYYMMDD run date.
         races_predicted: Number of races written (may be partial on error).
         status:          ``"success"``, ``"error"``, or ``FOCUSED_FULL_ACCEPTED_STATUS``
-                         (``"accepted"``) for a fire-and-forget focused-full launch.
+                         (``"accepted"``) for a same-race focused-full redelivery.
         error:           Optional exception message; credentials will be masked.
         parquet_base64:  Optional base64-encoded feature parquet bytes for Worker R2 proxy.
         parquet_key:     Optional R2 object key matching ``build_r2_feat_cache_key``.
@@ -513,13 +527,21 @@ def _run_predict_fn(
     optional ``keibajo_code`` / ``race_bango`` scope is forwarded so the full
     path can build + score a single race; the rescore path ignores them.
     """
-    return predict_fn(
-        params.category,
-        params.run_date,
-        params.days_ahead,
-        params.keibajo_code,
-        params.race_bango,
-    )
+    previous = os.environ.get(PREDICT_DEBUG_LOGS_ENV)
+    os.environ[PREDICT_DEBUG_LOGS_ENV] = "1" if params.debug_logs else "0"
+    try:
+        return predict_fn(
+            params.category,
+            params.run_date,
+            params.days_ahead,
+            params.keibajo_code,
+            params.race_bango,
+        )
+    finally:
+        if previous is None:
+            os.environ.pop(PREDICT_DEBUG_LOGS_ENV, None)
+        else:
+            os.environ[PREDICT_DEBUG_LOGS_ENV] = previous
 
 
 def _run_in_thread(
@@ -589,7 +611,7 @@ FOCUSED_FULL_SLOT_BUSY: Final[Literal["busy"]] = "busy"
 
 FocusedFullSlotState = Literal["claimed", "in-flight-self", "busy"]
 """Result of attempting to claim the single per-process focused-full slot.
-- ``"claimed"``: slot was free, now held by this race -> launch, return accepted.
+- ``"claimed"``: slot was free, now held by this race -> run through keepalive.
 - ``"in-flight-self"``: slot already held by THIS SAME race key (redelivery of a
   race whose own pipeline is still running) -> do not launch, return accepted.
 - ``"busy"``: slot held by a DIFFERENT race in this category -> return busy.
@@ -626,21 +648,15 @@ _FOCUSED_FULL_LOCK: Final[threading.Lock] = threading.Lock()
 """Guards ``_FOCUSED_FULL_IN_FLIGHT`` across concurrent HTTP requests.
 
 The HTTP server used by ``predict_upcoming.py`` is a single-threaded
-``http.server.HTTPServer`` (not ``ThreadingHTTPServer``), so ``do_GET`` calls
-never overlapped under the old blocking design.  A focused-full request now
-returns almost immediately *before* its background pipeline finishes, which
-frees the server to accept a new connection (e.g. for a different race in the
-same category) while the first race's pipeline is still writing to the
-category-scoped work directories in ``pipeline_runner.WORK_DIR``.  This lock
-protects the claim/release check-then-set from a race between the accept-loop
-thread (claiming for a new request) and a background pipeline thread (calling
-release for a finished one).
+``http.server.HTTPServer`` (not ``ThreadingHTTPServer``), but queue redeliveries
+and future server changes can still present repeated focused requests. This lock
+protects the claim/release check-then-set around the category-scoped work
+directories in ``pipeline_runner.WORK_DIR``.
 """
 
 _FOCUSED_FULL_IN_FLIGHT: Final[list[str | None]] = [None]
-"""Single-slot in-process guard: the race key of the one focused-full
-background pipeline currently running in this container process, or ``None``
-when the slot is free.
+"""Single-slot in-process guard: the race key of the one focused-full pipeline
+currently running in this container process, or ``None`` when the slot is free.
 
 A single slot (not a per-race set) is deliberate: ``pipeline_runner.py``
 builds the DuckDB base feature parquet and each v7 layer's output under work
@@ -655,12 +671,48 @@ intermediate files.  At most one focused-full pipeline may therefore run at a
 time per container process, regardless of which race it is for.
 """
 
+_DETACHED_FOCUSED_FULL_THREADS: Final[list[threading.Thread]] = []
+"""Strong references to detached focused-full worker threads.
+
+Focused full requests can outlive Cloudflare's HTTP fetch window. The request
+therefore starts the pipeline in-process and returns ``accepted`` immediately;
+this list prevents the worker thread object from being garbage-collected before
+it releases the focused slot.
+"""
+
+
+def _run_detached_focused_full(fn: Callable[[], int]) -> None:
+    """Run *fn* in a background thread independent of the HTTP response."""
+
+    def _target() -> None:
+        try:
+            fn()
+        except BaseException as exc:
+            print(
+                f"[focused-full] detached pipeline failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+        finally:
+            current_thread = threading.current_thread()
+            with _FOCUSED_FULL_LOCK:
+                _DETACHED_FOCUSED_FULL_THREADS[:] = [
+                    thread
+                    for thread in _DETACHED_FOCUSED_FULL_THREADS
+                    if thread is not current_thread and thread.is_alive()
+                ]
+
+    thread = threading.Thread(target=_target, daemon=True)
+    with _FOCUSED_FULL_LOCK:
+        _DETACHED_FOCUSED_FULL_THREADS.append(thread)
+    thread.start()
+
 
 def _claim_focused_full_slot(race_key: str) -> FocusedFullSlotState:
     """Claim (or observe) the single per-process focused-full pipeline slot.
 
     Returns :data:`FOCUSED_FULL_SLOT_CLAIMED` (and records *race_key* as
-    in-flight) if no other focused-full background pipeline is currently
+    in-flight) if no other focused-full pipeline is currently
     running in this container process.  Returns
     :data:`FOCUSED_FULL_SLOT_IN_FLIGHT_SELF` when the slot is already held by
     this SAME race key (a redelivery of a race whose own pipeline is still
@@ -697,7 +749,7 @@ def _release_focused_full_slot(race_key: str) -> None:
 
 
 def _focused_full_result_line(params: PredictParams, status: str) -> bytes:
-    """Build the fire-and-forget result line for a focused per-race full request."""
+    """Build an early-return result line for a focused per-race full request."""
     return build_result_line(params.category, params.run_date, 0, status=status)
 
 
@@ -707,7 +759,7 @@ def _focused_full_is_complete(
     """Return True when *completion_fn* reports the race already complete.
 
     ``None`` (no check wired) and any exception both yield False so the pipeline
-    still launches -- a completion-check failure must never block a prediction.
+    still runs -- a completion-check failure must never block a prediction.
     """
     if completion_fn is None:
         return False
@@ -717,47 +769,31 @@ def _focused_full_is_complete(
         return False
 
 
-def _launch_focused_full_pipeline(
-    first_call: Callable[[], int],
-    release_fn: FocusedFullReleaseFn,
-    race_key: str,
-) -> None:
-    """Launch *first_call* in a background daemon thread that releases the slot."""
-
-    def _run_and_release() -> int:
-        try:
-            return first_call()
-        finally:
-            release_fn(race_key)
-
-    _run_in_thread(_run_and_release)
-
-
-def _dispatch_focused_full(
+def _focused_full_preflight(
     params: PredictParams,
-    first_call: Callable[[], int],
     claim_fn: FocusedFullClaimFn,
     release_fn: FocusedFullReleaseFn,
     completion_fn: FocusedFullCompletionFn | None,
-) -> Generator[bytes, None, None]:
-    """Fire-and-forget dispatch: emit exactly one result line, launch at most one pipeline."""
+) -> tuple[str, str]:
+    """Claim the focused-full slot and return ``(race_key, status)``.
+
+    Status is ``"run"`` when the caller should execute the pipeline through the
+    normal keepalive path.
+    Other statuses are final result statuses to return immediately.
+    """
     race_key = build_focused_full_race_key(params)
     state = claim_fn(race_key)
     if state == FOCUSED_FULL_SLOT_BUSY:
-        yield _focused_full_result_line(params, FOCUSED_FULL_BUSY_STATUS)
-        return
+        return race_key, FOCUSED_FULL_BUSY_STATUS
     if state == FOCUSED_FULL_SLOT_IN_FLIGHT_SELF:
-        yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
-        return
+        return race_key, FOCUSED_FULL_ACCEPTED_STATUS
     # state == FOCUSED_FULL_SLOT_CLAIMED: slot was free. Skip re-running a race
     # already complete in Neon (a redundant redelivery) so it does not hold the
     # slot for another ~15-27 min and starve other races.
     if _focused_full_is_complete(params, completion_fn):
         release_fn(race_key)
-        yield _focused_full_result_line(params, FOCUSED_FULL_ALREADY_COMPLETE_STATUS)
-        return
-    _launch_focused_full_pipeline(first_call, release_fn, race_key)
-    yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
+        return race_key, FOCUSED_FULL_ALREADY_COMPLETE_STATUS
+    return race_key, "run"
 
 
 def iter_predict_chunks(
@@ -804,10 +840,6 @@ def iter_predict_chunks(
     the DO receives a keepalive chunk roughly every *progress_interval_s* seconds
     throughout the entire 3-8-minute pipeline run.
 
-    **Exception**: a focused per-race full request (see
-    :func:`is_focused_full_request`) never enters this poll/join loop at all --
-    see "Fire-and-forget dispatch" below.
-
     Mode dispatch:
     - ``mode=full`` (default) -- always calls *predict_fn*.
     - ``mode=rescore`` with *rescore_fn* provided -- calls *rescore_fn* first;
@@ -816,24 +848,23 @@ def iter_predict_chunks(
     - ``mode=rescore`` without *rescore_fn* -- falls back to *predict_fn*
       immediately (same as ``mode=full``; emits fallback progress line).
 
-    Fire-and-forget dispatch (focused per-race full only)
-    -------------------------------------------------------
-    When ``is_focused_full_request(params)`` is True, the generator emits
-    exactly one result line and never enters the poll/join loop above. Before
-    launching anything, the single per-process guard (:func:`_claim_focused_full_slot`
-    by default, or *focused_full_claim_fn* / *focused_full_release_fn* when
-    injected) is consulted, with three possible outcomes:
+    Guarded dispatch (focused per-race full only)
+    --------------------------------------------
+    When ``is_focused_full_request(params)`` is True, the single per-process
+    guard (:func:`_claim_focused_full_slot` by default, or
+    *focused_full_claim_fn* / *focused_full_release_fn* when injected) is
+    consulted before entering the normal poll/join loop, with three possible
+    outcomes:
 
     - **Slot free** (``"claimed"``): the slot is claimed for this race. Unless
       *focused_full_completion_fn* reports the race already has complete
-      predictions in Neon (see below), *predict_fn* is launched in a
-      background daemon thread via :func:`_run_in_thread` -- NOT polled or
-      joined -- and the generator yields ``status=FOCUSED_FULL_ACCEPTED_STATUS``
-      (``"accepted"``).
+      predictions in Neon (see below), *predict_fn* is run through the normal
+      keepalive thread/poll/join path and returns final ``success`` or
+      ``error``.
     - **Slot already held by THIS SAME race key** (``"in-flight-self"``): a
       redelivery of a race whose own pipeline is still running. No second
-      thread is launched; the generator yields ``status=FOCUSED_FULL_ACCEPTED_STATUS``
-      again (keep polling).
+      thread is launched; the generator yields
+      ``status=FOCUSED_FULL_ACCEPTED_STATUS`` again (keep polling).
     - **Slot held by a DIFFERENT race** (``"busy"``): no thread is launched;
       the generator yields ``status=FOCUSED_FULL_BUSY_STATUS`` (``"busy"``) so
       the Worker queue consumer re-enqueues a fresh copy (resetting its retry
@@ -847,14 +878,11 @@ def iter_predict_chunks(
     redelivery of an already-complete race, which would otherwise hold the
     slot for another ~15-27 min and starve other races. A ``None`` completion
     fn, or one that raises, is treated as "not complete" so a genuine
-    prediction always still launches.
+    prediction always still runs.
 
-    In every case ``racesPredicted=0`` in the result line (no synchronous
-    write happened yet). See the module docstring's "Focused per-race
-    fire-and-forget dispatch" section for the full incident background. This
-    branch is purely additive: ``mode=rescore`` and non-focused ``mode=full``
-    requests are completely unaffected and keep using the poll/join loop
-    described above.
+    The focused branch is purely additive: ``mode=rescore`` and non-focused
+    ``mode=full`` requests are completely unaffected and keep using the
+    poll/join loop described above.
 
     The generator NEVER raises -- all exceptions from both *predict_fn* and
     *rescore_fn* are caught and encoded as an error result line so the HTTP
@@ -881,8 +909,8 @@ def iter_predict_chunks(
                              guard deterministically). Only consulted for a
                              focused per-race full request.
         focused_full_release_fn: Optional override for :func:`_release_focused_full_slot`,
-                             called from the background thread once the launched
-                             pipeline finishes (success or error), and also
+                             called once the claimed pipeline finishes
+                             (success or error), and also
                              (synchronously) when *focused_full_completion_fn*
                              reports the race already complete. Only used for a
                              focused per-race full request whose slot was claimed.
@@ -952,13 +980,11 @@ def iter_predict_chunks(
         first_call = _call_predict
 
     if is_focused_full_request(params):
-        # Fire-and-forget dispatch: emit exactly one result line and return
-        # almost instantly instead of polling/joining -- see the module
-        # docstring's "Focused per-race fire-and-forget dispatch" section and
-        # this function's docstring for the incident rationale.  The single
-        # per-process guard prevents two concurrent focused-full pipelines
-        # (for different races) from corrupting the SAME category-scoped work
-        # directories (pipeline_runner.WORK_DIR).
+        # Focused full uses the single per-process slot because the feature
+        # pipeline writes category-scoped work dirs. Once claimed, detach the
+        # real pipeline from the HTTP response and return "accepted"; Worker /
+        # Queue callers poll Neon completion on redelivery. This avoids tying a
+        # 15+ minute feature chain to Cloudflare's request lifetime.
         claim_fn: FocusedFullClaimFn = (
             focused_full_claim_fn if focused_full_claim_fn is not None else _claim_focused_full_slot
         )
@@ -967,9 +993,23 @@ def iter_predict_chunks(
             if focused_full_release_fn is not None
             else _release_focused_full_slot
         )
-        yield from _dispatch_focused_full(
-            params, first_call, claim_fn, release_fn, focused_full_completion_fn
+        focused_race_key, focused_status = _focused_full_preflight(
+            params, claim_fn, release_fn, focused_full_completion_fn
         )
+        if focused_status != "run":
+            yield _focused_full_result_line(params, focused_status)
+            return
+
+        unguarded_first_call = first_call
+
+        def _call_focused_and_release() -> int:
+            try:
+                return unguarded_first_call()
+            finally:
+                release_fn(focused_race_key)
+
+        _run_detached_focused_full(_call_focused_and_release)
+        yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
         return
 
     thread, result_box, error_box = _run_in_thread(first_call)

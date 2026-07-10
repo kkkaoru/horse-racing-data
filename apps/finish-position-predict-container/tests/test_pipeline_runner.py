@@ -44,7 +44,7 @@ def test_run_succeeds_on_zero_exit():
     run_with_stderr_capture(["python", "-c", "print('ok')"])
 
 
-def test_run_streams_child_stdout_to_parent_stdout(capfd: pytest.CaptureFixture[str]):
+def test_run_suppresses_child_stdout_without_debug(capfd: pytest.CaptureFixture[str]):
     run_with_stderr_capture(
         [
             "python",
@@ -53,10 +53,10 @@ def test_run_streams_child_stdout_to_parent_stdout(capfd: pytest.CaptureFixture[
         ]
     )
     captured = capfd.readouterr()
-    assert "hello-child-stdout" in captured.out
+    assert "hello-child-stdout" not in captured.out
 
 
-def test_run_streams_child_stderr_to_parent_stderr_on_success(
+def test_run_suppresses_child_stderr_without_debug(
     capfd: pytest.CaptureFixture[str],
 ):
     run_with_stderr_capture(
@@ -67,7 +67,24 @@ def test_run_streams_child_stderr_to_parent_stderr_on_success(
         ]
     )
     captured = capfd.readouterr()
-    assert "child-progress-log" in captured.err
+    assert "child-progress-log" not in captured.err
+
+
+def test_run_streams_child_output_when_debug_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
+    run_with_stderr_capture(
+        [
+            "python",
+            "-c",
+            "import sys; sys.stdout.write('debug-out\\n'); sys.stderr.write('debug-err\\n')",
+        ]
+    )
+    captured = capfd.readouterr()
+    assert "debug-out" in captured.out
+    assert "debug-err" in captured.err
 
 
 def test_run_raises_runtime_error_with_stderr_tail_on_failure():
@@ -248,6 +265,7 @@ def test_build_pipeline_logs_layer_elapsed_seconds(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
@@ -384,6 +402,7 @@ def test_build_pipeline_resets_stale_category_work_dirs_before_rename(
 def test_record_layer_timing_row_writes_row_via_mocked_connection(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     import psycopg
 
     executed_sql: list[str] = []
@@ -458,6 +477,7 @@ def test_record_layer_timing_row_writes_row_via_mocked_connection(
 def test_record_layer_timing_row_no_target_race_leaves_keys_none(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     import psycopg
 
     inserted_params: list[tuple[object, ...]] = []
@@ -501,6 +521,7 @@ def test_record_layer_timing_row_swallows_connect_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     import psycopg
 
     def fake_connect_raises(*_args: object, **_kwargs: object) -> None:
@@ -531,6 +552,7 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ):
+    monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
     import psycopg
 
     state = {"closed": False}

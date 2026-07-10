@@ -22,8 +22,8 @@ thread is alive.  Tests that exercise this behaviour inject:
 from __future__ import annotations
 
 import json
+import os
 import threading
-import time
 from collections.abc import Callable
 
 import pytest
@@ -136,6 +136,45 @@ def test_parse_predict_params_banei_success() -> None:
     assert isinstance(result, PredictParams)
     assert result.category == "ban-ei"
     assert result.days_ahead == 0  # default
+
+
+def test_parse_predict_params_debug_flag_enabled() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&debug=1")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is True
+
+
+def test_parse_predict_params_debug_flag_default_false() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619")
+    assert isinstance(result, PredictParams)
+    assert result.debug_logs is False
+
+
+def test_iter_predict_chunks_sets_debug_env_during_predict() -> None:
+    seen: list[str | None] = []
+    os.environ["PREDICT_DEBUG_LOGS"] = "previous"
+
+    def _predict_debug(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        seen.append(os.environ.get("PREDICT_DEBUG_LOGS"))
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        debug_logs=True,
+    )
+    chunks = list(iter_predict_chunks(params, _predict_debug, sleep_fn=_noop_sleep))
+    assert json.loads(chunks[-1].decode())["status"] == "success"
+    assert seen == ["1"]
+    assert os.environ["PREDICT_DEBUG_LOGS"] == "previous"
+    os.environ.pop("PREDICT_DEBUG_LOGS", None)
 
 
 def test_parse_predict_params_days_ahead_missing_defaults_to_zero() -> None:
@@ -1629,7 +1668,7 @@ def test_is_focused_full_request_true_for_full_with_both_scope_fields() -> None:
 
 
 def test_is_focused_full_request_false_for_rescore_with_both_scope_fields() -> None:
-    """mode=rescore is never treated as a focused-full fire-and-forget request,
+    """mode=rescore is never treated as a focused-full guarded request,
     even when both race-scope fields are present."""
     params = PredictParams(
         category="jra",
@@ -1702,7 +1741,7 @@ def testbuild_focused_full_race_key_differs_per_race() -> None:
 
 
 # ---------------------------------------------------------------------------
-# iter_predict_chunks — focused per-race full fire-and-forget dispatch
+# iter_predict_chunks — focused per-race full guarded keepalive dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -1717,10 +1756,8 @@ def _make_focused_full_params(keibajo_code: str = "05", race_bango: str = "09") 
     )
 
 
-def test_iter_predict_chunks_focused_full_returns_accepted_without_blocking() -> None:
-    """A focused per-race full request must yield an 'accepted' result quickly,
-    launching predict_fn in the background rather than waiting for it to finish.
-    """
+def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches() -> None:
+    """A claimed focused per-race full request starts the pipeline and returns accepted."""
     invoked = threading.Event()
 
     def _slow_predict(
@@ -1730,7 +1767,6 @@ def test_iter_predict_chunks_focused_full_returns_accepted_without_blocking() ->
         keibajo_code: str | None = None,
         race_bango: str | None = None,
     ) -> int:
-        # A real pipeline would take minutes; this must not block the generator.
         invoked.set()
         return 1
 
@@ -1745,20 +1781,13 @@ def test_iter_predict_chunks_focused_full_returns_accepted_without_blocking() ->
         )
     )
 
-    # Only the initial "starting"/"predict" pre-flight progress lines plus the
-    # final result may appear -- never the keepalive poll/join loop's repeated
-    # "predict" lines (which would mean the generator blocked on the thread).
-    assert len(chunks) <= 3, (
-        f"focused-full dispatch must return almost immediately, got {len(chunks)} chunks"
-    )
     last = json.loads(chunks[-1].decode())
     assert last["type"] == "result"
     assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
     assert last["racesPredicted"] == 0
     assert last["category"] == "jra"
     assert last["runDate"] == "20260619"
-    # The background thread was actually launched (predict_fn got invoked).
-    assert invoked.wait(timeout=2.0), "predict_fn was never invoked in the background"
+    assert invoked.wait(timeout=2.0), "predict_fn was never invoked"
 
 
 def test_iter_predict_chunks_focused_full_claim_busy_skips_launch() -> None:
@@ -1793,8 +1822,7 @@ def test_iter_predict_chunks_focused_full_claim_busy_skips_launch() -> None:
 
 
 def test_iter_predict_chunks_focused_full_release_called_once_with_race_key() -> None:
-    """After the background pipeline completes, the release fn must be called
-    exactly once with the race key that was passed to the claim fn."""
+    """After the detached pipeline completes, the release fn must receive the race key."""
     release_calls: list[str] = []
     released = threading.Event()
 
@@ -1828,14 +1856,15 @@ def test_iter_predict_chunks_focused_full_release_called_once_with_race_key() ->
     )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
 
     assert released.wait(timeout=2.0), "release_fn was never called"
     assert release_calls == [expected_key]
 
 
 def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error() -> None:
-    """The release fn must run even when the launched predict_fn raises -- the
-    slot must not be left permanently claimed after a failed background run."""
+    """The release fn must run even when predict_fn raises -- the slot must not
+    be left permanently claimed after a failed run."""
     released = threading.Event()
 
     def _release(key: str) -> None:
@@ -1848,7 +1877,7 @@ def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error()
         keibajo_code: str | None = None,
         race_bango: str | None = None,
     ) -> int:
-        raise RuntimeError("background pipeline failed")
+        raise RuntimeError("focused pipeline failed")
 
     params = _make_focused_full_params(keibajo_code="44", race_bango="04")
     chunks = list(
@@ -1861,9 +1890,8 @@ def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error()
         )
     )
     last = json.loads(chunks[-1].decode())
-    # The HTTP response itself is unaffected by the later background failure --
-    # it already returned "accepted" before predict_fn ran.
     assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
     assert released.wait(timeout=2.0), "release_fn must run even after predict_fn raises"
 
 
@@ -1872,16 +1900,17 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
     focused_full_claim_fn / focused_full_release_fn injected -- i.e. the
     default ``_claim_focused_full_slot`` / ``_release_focused_full_slot``):
 
-    1. A focused-full request for race A launches its pipeline in the
-       background (predict_fn actually runs) -- the claim succeeds.
+    1. A focused-full request for race A starts its detached pipeline
+       (predict_fn actually runs) -- the claim succeeds.
     2. While race A's pipeline is still in flight, a focused-full request for
        a DIFFERENT race B in the same category is rejected by the guard --
        predict_fn for B is never invoked and the response reports status='busy'
        -- exercising the "slot held by a different race" branch through the
        public API only (no private-module access).
     3. Once race A's pipeline finishes and releases the slot, a follow-up
-       request (race C) can claim it again -- confirming the guard neither
-       wedges permanently nor leaks state for later tests.
+       request (race C) can claim it again and return accepted --
+       confirming the guard neither wedges permanently nor leaks state for
+       later tests.
 
     This single test is intentionally self-contained (it both claims and
     fully drains the shared process-wide slot before returning) so it has no
@@ -1889,8 +1918,12 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
     """
     a_started = threading.Event()
     a_release = threading.Event()
+    a_done = threading.Event()
     b_called = threading.Event()
     c_called = threading.Event()
+    short_sleep = threading.Event()
+    chunks_a: list[bytes] = []
+    errors_a: list[BaseException] = []
 
     def _predict_a(
         category: str,
@@ -1901,6 +1934,7 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
     ) -> int:
         a_started.set()
         a_release.wait(timeout=5.0)
+        a_done.set()
         return 1
 
     def _predict_b(
@@ -1927,28 +1961,43 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
     params_b = _make_focused_full_params(keibajo_code="05", race_bango="02")
     params_c = _make_focused_full_params(keibajo_code="05", race_bango="03")
 
-    chunks_a = list(iter_predict_chunks(params_a, _predict_a, sleep_fn=_noop_sleep))
-    assert json.loads(chunks_a[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
-    assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+    def _sleep_briefly(_: float) -> None:
+        short_sleep.wait(timeout=0.001)
 
-    chunks_b = list(iter_predict_chunks(params_b, _predict_b, sleep_fn=_noop_sleep))
-    assert json.loads(chunks_b[-1].decode())["status"] == FOCUSED_FULL_BUSY_STATUS
-    assert not b_called.wait(timeout=0.2), (
-        "race B predict_fn must not run while race A's pipeline is still in flight"
-    )
+    def _consume_a() -> None:
+        try:
+            chunks_a.extend(iter_predict_chunks(params_a, _predict_a, sleep_fn=_sleep_briefly))
+        except BaseException as exc:
+            errors_a.append(exc)
 
-    # Let race A finish, which releases the slot in its background thread.
-    a_release.set()
+    thread_a = threading.Thread(target=_consume_a)
+    thread_a.start()
 
-    # Poll (via the public API only) until the slot frees up again: retry
-    # launching race C until its predict_fn actually fires, bounded by a
-    # generous deadline so a real bug fails the test instead of hanging.
-    deadline = time.monotonic() + 5.0
-    launched = False
-    while time.monotonic() < deadline and not launched:
-        list(iter_predict_chunks(params_c, _predict_c, sleep_fn=_noop_sleep))
-        launched = c_called.wait(timeout=0.1)
-    assert launched, "race C was never able to claim the slot after race A released it"
+    try:
+        assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+
+        chunks_b = list(iter_predict_chunks(params_b, _predict_b, sleep_fn=_noop_sleep))
+        assert json.loads(chunks_b[-1].decode())["status"] == FOCUSED_FULL_BUSY_STATUS
+        assert not b_called.wait(timeout=0.2), (
+            "race B predict_fn must not run while race A's pipeline is still in flight"
+        )
+    finally:
+        # Let race A finish, which releases the slot from the detached worker path.
+        a_release.set()
+        thread_a.join(timeout=2.0)
+
+    assert not thread_a.is_alive(), "race A accepted response did not finish"
+    assert errors_a == []
+    assert a_done.wait(timeout=0.1), "race A predict_fn did not finish"
+    last_a = json.loads(chunks_a[-1].decode())
+    assert last_a["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last_a["racesPredicted"] == 0
+
+    chunks_c = list(iter_predict_chunks(params_c, _predict_c, sleep_fn=_noop_sleep))
+    last_c = json.loads(chunks_c[-1].decode())
+    assert last_c["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last_c["racesPredicted"] == 0
+    assert c_called.wait(timeout=2.0), "race C was never able to claim the slot"
 
 
 def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaunch() -> None:
@@ -1956,15 +2005,15 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     branch (no focused_full_claim_fn / focused_full_release_fn injected -- i.e.
     the default ``_claim_focused_full_slot`` / ``_release_focused_full_slot``):
 
-    1. A focused-full request for race A launches its pipeline in the
-       background (predict_fn actually runs) -- the claim succeeds.
+    1. A focused-full request for race A starts its detached pipeline
+       (predict_fn actually runs) -- the claim succeeds.
     2. While race A's pipeline is still in flight, a redelivery of the SAME
        race A (identical race key) with a DIFFERENT predict_fn must NOT launch
        a second pipeline -- the real guard returns "in-flight-self" -- yet the
        response must still report status='accepted' (the caller keeps polling).
     3. Once race A's pipeline finishes and releases the slot, a follow-up
-       request (race D) can claim it again -- leaving the shared process-wide
-       slot clean for other tests.
+       request (race D) can claim it again and return accepted -- leaving
+       the shared process-wide slot clean for other tests.
 
     Covers the real guard's "in-flight-self" branch through the public API
     only (no private-module access); the "claimed" branch is covered by race A
@@ -1972,8 +2021,12 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     """
     a_started = threading.Event()
     a_release = threading.Event()
+    a_done = threading.Event()
     a2_called = threading.Event()
     d_called = threading.Event()
+    short_sleep = threading.Event()
+    chunks_a: list[bytes] = []
+    errors_a: list[BaseException] = []
 
     def _predict_a(
         category: str,
@@ -1984,6 +2037,7 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     ) -> int:
         a_started.set()
         a_release.wait(timeout=5.0)
+        a_done.set()
         return 1
 
     def _predict_a2(
@@ -2009,35 +2063,51 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     params_a = _make_focused_full_params(keibajo_code="06", race_bango="01")
     params_d = _make_focused_full_params(keibajo_code="06", race_bango="02")
 
-    chunks_a = list(iter_predict_chunks(params_a, _predict_a, sleep_fn=_noop_sleep))
-    assert json.loads(chunks_a[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
-    assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+    def _sleep_briefly(_: float) -> None:
+        short_sleep.wait(timeout=0.001)
 
-    # Redelivery of the SAME race A (same race key) while A's pipeline is in
-    # flight: the real guard must report in-flight-self -> no second launch,
-    # status still 'accepted'.
-    chunks_a2 = list(iter_predict_chunks(params_a, _predict_a2, sleep_fn=_noop_sleep))
-    assert json.loads(chunks_a2[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
-    assert not a2_called.wait(timeout=0.2), (
-        "a redelivery of the same in-flight race must not launch a second pipeline"
-    )
+    def _consume_a() -> None:
+        try:
+            chunks_a.extend(iter_predict_chunks(params_a, _predict_a, sleep_fn=_sleep_briefly))
+        except BaseException as exc:
+            errors_a.append(exc)
 
-    # Let race A finish, which releases the slot in its background thread.
-    a_release.set()
+    thread_a = threading.Thread(target=_consume_a)
+    thread_a.start()
 
-    # Poll (via the public API only) until the slot frees up again, leaving the
-    # shared process-wide slot clean for other tests.
-    deadline = time.monotonic() + 5.0
-    launched = False
-    while time.monotonic() < deadline and not launched:
-        list(iter_predict_chunks(params_d, _predict_d, sleep_fn=_noop_sleep))
-        launched = d_called.wait(timeout=0.1)
-    assert launched, "race D was never able to claim the slot after race A released it"
+    try:
+        assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+
+        # Redelivery of the SAME race A (same race key) while A's pipeline is in
+        # flight: the real guard must report in-flight-self -> no second launch,
+        # status still 'accepted'.
+        chunks_a2 = list(iter_predict_chunks(params_a, _predict_a2, sleep_fn=_noop_sleep))
+        assert json.loads(chunks_a2[-1].decode())["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+        assert not a2_called.wait(timeout=0.2), (
+            "a redelivery of the same in-flight race must not launch a second pipeline"
+        )
+    finally:
+        # Let race A finish, which releases the slot from the detached worker path.
+        a_release.set()
+        thread_a.join(timeout=2.0)
+
+    assert not thread_a.is_alive(), "race A accepted response did not finish"
+    assert errors_a == []
+    assert a_done.wait(timeout=0.1), "race A predict_fn did not finish"
+    last_a = json.loads(chunks_a[-1].decode())
+    assert last_a["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last_a["racesPredicted"] == 0
+
+    chunks_d = list(iter_predict_chunks(params_d, _predict_d, sleep_fn=_noop_sleep))
+    last_d = json.loads(chunks_d[-1].decode())
+    assert last_d["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last_d["racesPredicted"] == 0
+    assert d_called.wait(timeout=2.0), "race D was never able to claim the slot"
 
 
 def test_iter_predict_chunks_focused_full_does_not_affect_rescore_mode() -> None:
     """mode=rescore with race scope must keep the original blocking behaviour
-    (never routed through the focused-full fire-and-forget branch)."""
+    (never routed through the focused-full guarded branch)."""
     params = PredictParams(
         category="nar",
         run_date="20260619",
@@ -2137,9 +2207,9 @@ def test_iter_predict_chunks_focused_full_already_complete_skips_launch_and_rele
     assert release_calls == [expected_key]
 
 
-def test_iter_predict_chunks_focused_full_completion_false_launches_pipeline() -> None:
+def test_iter_predict_chunks_focused_full_completion_false_runs_pipeline() -> None:
     """When the completion fn reports the race is NOT yet complete, the pipeline
-    must still launch and the response must report status='accepted'."""
+    must still launch and return accepted."""
     invoked = threading.Event()
 
     def _predict(
@@ -2165,12 +2235,13 @@ def test_iter_predict_chunks_focused_full_completion_false_launches_pipeline() -
     )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
     assert invoked.wait(timeout=2.0), (
         "predict_fn was never invoked when completion fn returns False"
     )
 
 
-def test_iter_predict_chunks_focused_full_completion_raises_launches_pipeline() -> None:
+def test_iter_predict_chunks_focused_full_completion_raises_runs_pipeline() -> None:
     """A raising completion fn must be treated as 'not complete' -- the pipeline
     still launches rather than the request silently doing nothing."""
     invoked = threading.Event()
@@ -2201,4 +2272,5 @@ def test_iter_predict_chunks_focused_full_completion_raises_launches_pipeline() 
     )
     last = json.loads(chunks[-1].decode())
     assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
     assert invoked.wait(timeout=2.0), "predict_fn was never invoked when completion fn raises"
