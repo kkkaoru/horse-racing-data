@@ -713,31 +713,31 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
               1600, '11', 'A', '99', 16, 1, 1.0/16,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 50.0, null::int, 0.00, 1, 3),
+              '1', '1', 1, 50.0, null::int, 0.00, 0.00, 1, 3),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100002', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 16, 2, 2.0/16,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 100.0, null::int, 0.20, 1, 4),
+              '1', '1', 2, 100.0, null::int, 0.20, 0.25, 1, 4),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100003', 8, 'jockey_c', 'trainer_c',
               1600, '11', 'A', '99', 16, 10, 10.0/16,
               'name_c', 'fukudai_c',
               null::double, null::double, null::double, null::double,
-              '1', '1', 5, 500.0, null::int, 0.50, 1, 5),
+              '1', '1', 5, 500.0, null::int, 0.50, 0.55, 1, 5),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100004', 12, 'jockey_d', 'trainer_d',
               1600, '11', 'A', '99', 16, 15, 15.0/16,
               'name_d', 'fukudai_d',
               null::double, null::double, null::double, null::double,
-              '1', '1', 12, 1500.0, null::int, 0.95, 1, 6),
+              '1', '1', 12, 1500.0, null::int, 0.95, 0.90, 1, 6),
             ('jra', '20250101', date '2025-01-01', '2025', '0101', '05', '01',
               '2020100005', 16, 'jockey_e', 'trainer_e',
               1600, '11', 'A', '99', 16, null::int, null::double,
               'name_e', 'fukudai_e',
               null::double, null::double, null::double, null::double,
-              '1', '1', 16, 2000.0, null::int, null::double, 1, 7)
+              '1', '1', 16, 2000.0, null::int, null::double, null::double, 1, 7)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -745,37 +745,52 @@ def test_build_target_table_emits_running_style_label_via_duckdb():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code, barei
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
         )
         """
     )
     subject.build_target_table(con, "jra", "20250101", "20251231")
     rows = con.execute(
         """
-        select ketto_toroku_bango, target_corner_1_norm, target_running_style_class
+        select ketto_toroku_bango, target_corner_1_norm, target_corner_2_norm, target_running_style_class
         from target order by ketto_toroku_bango
         """
     ).fetchall()
     assert rows == [
-        ("2020100001", 0.0, 0),
-        ("2020100002", 0.2, 1),
-        ("2020100003", 0.5, 2),
-        ("2020100004", 0.95, 3),
-        ("2020100005", None, None),
+        ("2020100001", 0.0, 0.0, 0),
+        ("2020100002", 0.2, 0.25, 1),
+        ("2020100003", 0.5, 0.55, 2),
+        ("2020100004", 0.95, 0.9, 3),
+        ("2020100005", None, None, None),
     ]
 
 
 def test_horse_running_style_history_cte_aggregates_corner_1_norm():
     cte = subject.horse_running_style_history_cte()
     assert "past_corner_1_norm_avg_5" in cte
+    assert "past_corner_2_norm_avg_5" in cte
+    assert "past_corner_3_norm_avg_5" in cte
+    assert "past_corner_4_norm_avg_5" in cte
     assert "past_corner_1_norm_std_5" in cte
+    assert "past_corner_2_norm_std_5" in cte
+    assert "past_corner_3_norm_std_5" in cte
+    assert "past_corner_4_norm_std_5" in cte
     assert "past_corner_1_norm_best_5" in cte
+    assert "past_corner_2_norm_best_5" in cte
+    assert "past_corner_3_norm_best_5" in cte
+    assert "past_corner_4_norm_best_5" in cte
     assert "past_corner_1_norm_worst_5" in cte
+    assert "past_corner_2_norm_worst_5" in cte
+    assert "past_corner_3_norm_worst_5" in cte
+    assert "past_corner_4_norm_worst_5" in cte
     assert "past_nige_rate_self" in cte
     assert "past_senkou_rate_self" in cte
     assert "past_sashi_rate_self" in cte
     assert "past_oikomi_rate_self" in cte
     assert "last_race_corner_1_norm" in cte
+    assert "last_race_corner_2_norm" in cte
+    assert "last_race_corner_3_norm" in cte
+    assert "last_race_corner_4_norm" in cte
     assert "last_race_corner_progression" in cte
     assert "horse_distance_corner_1_norm_avg" in cte
     assert "horse_track_corner_1_norm_avg" in cte
@@ -798,7 +813,13 @@ def test_horse_running_style_history_cte_emits_style_win_rates():
 def test_horse_running_style_history_cte_emits_iqr_and_grade_counts():
     cte = subject.horse_running_style_history_cte()
     assert "past_corner_1_norm_iqr_5" in cte
+    assert "past_corner_2_norm_iqr_5" in cte
+    assert "past_corner_3_norm_iqr_5" in cte
+    assert "past_corner_4_norm_iqr_5" in cte
     assert "quantile_cont(b.corner1_norm, 0.75)" in cte
+    assert "quantile_cont(b.corner2_norm, 0.75)" in cte
+    assert "quantile_cont(b.corner3_norm, 0.75)" in cte
+    assert "quantile_cont(b.corner4_norm, 0.75)" in cte
     assert "quantile_cont(b.corner1_norm, 0.25)" in cte
     assert "top1_count_in_grade_races" in cte
     assert "place_count_in_grade_races" in cte
@@ -946,8 +967,14 @@ def test_season_band_constants_distinct_values():
 def test_base_features_select_sql_includes_running_style_history_columns():
     sql = subject.base_features_select_sql("jra")
     assert "rsh.past_corner_1_norm_avg_5" in sql
+    assert "rsh.past_corner_2_norm_avg_5" in sql
+    assert "rsh.past_corner_3_norm_avg_5" in sql
+    assert "rsh.past_corner_4_norm_avg_5" in sql
     assert "rsh.past_nige_rate_self" in sql
     assert "rsh.last_race_corner_1_norm" in sql
+    assert "rsh.last_race_corner_2_norm" in sql
+    assert "rsh.last_race_corner_3_norm" in sql
+    assert "rsh.last_race_corner_4_norm" in sql
     assert "rsh.horse_distance_corner_1_norm_avg" in sql
     assert "rsh.horse_track_corner_1_norm_avg" in sql
     assert "left join horse_running_style_history rsh" in sql
@@ -976,7 +1003,7 @@ def test_build_target_table_keeps_finish_position_intact():
               1800, '11', 'A', '99', 12, 3, 3.0/12,
               'name_x', 'fukudai_x',
               null::double, null::double, null::double, null::double,
-              '1', '1', 3, 250.0, null::int, 0.18, 1, 4)
+              '1', '1', 3, 250.0, null::int, 0.18, 0.28, 1, 4)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -984,7 +1011,7 @@ def test_build_target_table_keeps_finish_position_intact():
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code, barei
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
         )
         """
     )
@@ -1795,13 +1822,13 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_a', 'fukudai_a',
               null::double, null::double, null::double, null::double,
-              '1', '1', 2, 5.0, null::int, null::double, '1', 3),
+              '1', '1', 2, 5.0, null::int, null::double, null::double, '1', 3),
             ('jra', '20260607', date '2026-06-07', '2026', '0607', '05', '11',
               'horse_b', 5, 'jockey_b', 'trainer_b',
               1600, '11', 'A', '99', 12, null::int, null::double,
               'name_b', 'fukudai_b',
               null::double, null::double, null::double, null::double,
-              '1', '1', 1, 8.0, null::int, null::double, '2', 5)
+              '1', '1', 1, 8.0, null::int, null::double, null::double, '2', 5)
         ) as v(
           source, race_date, race_dt, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
           ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,
@@ -1810,7 +1837,7 @@ def test_build_target_table_emits_tansho_odds_and_ninkijun() -> None:
           kyosomei_hondai, kyosomei_fukudai,
           time_sa, kohan_3f, corner3_norm, corner4_norm,
           babajotai_code_shiba, babajotai_code_dirt,
-          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, seibetsu_code, barei
+          tansho_ninkijun, tansho_odds, bataiju, corner1_norm, corner2_norm, seibetsu_code, barei
         )
         """
     )

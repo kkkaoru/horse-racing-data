@@ -168,6 +168,7 @@ def test_resolve_feature_columns_excludes_within_race_leak_columns():
         "finish_position": [1.0, 2.0],
         "finish_norm": [1.0, 0.5],
         "target_corner_1_norm": [0.1, 0.2],
+        "target_corner_2_norm": [0.2, 0.3],
         "target_corner_3_norm": [0.3, 0.4],
         "target_corner_4_norm": [0.5, 0.6],
         "target_running_style_class": [0.0, 1.0],
@@ -175,6 +176,7 @@ def test_resolve_feature_columns_excludes_within_race_leak_columns():
     })
     cols = subject.resolve_feature_columns(df, use_cat_features=True)
     assert "target_corner_1_norm" not in cols
+    assert "target_corner_2_norm" not in cols
     assert "target_corner_3_norm" not in cols
     assert "target_corner_4_norm" not in cols
     assert "target_running_style_class" not in cols
@@ -744,11 +746,12 @@ def test_resolve_projection_columns_omits_runtime_column_absent_from_schema():
 
 def test_resolve_projection_columns_excludes_within_race_leak_columns():
     schema_names = [
-        "race_id", "finish_position", "target_corner_1_norm", "target_corner_3_norm",
+        "race_id", "finish_position", "target_corner_1_norm", "target_corner_2_norm", "target_corner_3_norm",
         "target_corner_4_norm", "target_running_style_class", "feat_a",
     ]
     projection = subject.resolve_projection_columns(schema_names)
     assert "target_corner_1_norm" not in projection
+    assert "target_corner_2_norm" not in projection
     assert "target_corner_3_norm" not in projection
     assert "target_corner_4_norm" not in projection
     assert "target_running_style_class" not in projection

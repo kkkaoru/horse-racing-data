@@ -474,7 +474,7 @@ def _rec_select_from_corner_features(history_start: str, to_date: str, entity_fi
             f" ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,"
             f" kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,"
             f" finish_position, finish_norm, time_sa, kohan_3f,"
-            f" corner1_norm, corner3_norm, corner4_norm,"
+            f" corner1_norm, corner2_norm, corner3_norm, corner4_norm,"
             f" babajotai_code_shiba, babajotai_code_dirt,"
             f" tansho_ninkijun, tansho_odds, seibetsu_code, barei"
             f" FROM race_entry_corner_features WHERE {where_clause}"
@@ -498,7 +498,7 @@ def _rec_select_from_corner_features(history_start: str, to_date: str, entity_fi
         )
       ) as shusso_tosu,
       finish_position, finish_norm,
-      time_sa, kohan_3f, corner1_norm, corner3_norm, corner4_norm,
+      time_sa, kohan_3f, corner1_norm, corner2_norm, corner3_norm, corner4_norm,
       babajotai_code_shiba, babajotai_code_dirt,
       tansho_ninkijun, tansho_odds,
       cast(null as int) as bataiju,
@@ -567,6 +567,7 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str
       try_cast(nullif(trim(cast(time_sa as varchar)), '') as double) as time_sa,
       try_cast(nullif(trim(cast(kohan_3f as varchar)), '') as double) as kohan_3f,
       cast(null as double) as corner1_norm,
+      cast(null as double) as corner2_norm,
       cast(null as double) as corner3_norm,
       cast(null as double) as corner4_norm,
       babajotai_code_shiba, babajotai_code_dirt,
@@ -606,6 +607,7 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str
       try_cast(nullif(trim(se.time_sa), '') as double) as time_sa,
       try_cast(nullif(trim(se.kohan_3f), '') as double) as kohan_3f,
       cast(null as double) as corner1_norm,
+      cast(null as double) as corner2_norm,
       cast(null as double) as corner3_norm,
       cast(null as double) as corner4_norm,
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
@@ -685,6 +687,7 @@ def _rec_select_from_se_ra(
       try_cast(nullif(trim(se.time_sa), '') as double) as time_sa,
       try_cast(nullif(trim(se.kohan_3f), '') as double) as kohan_3f,
       cast(null as double) as corner1_norm,
+      cast(null as double) as corner2_norm,
       cast(null as double) as corner3_norm,
       cast(null as double) as corner4_norm,
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
@@ -1306,6 +1309,7 @@ def build_target_table(
           rec.babajotai_code_shiba,
           rec.babajotai_code_dirt,
           rec.corner1_norm as target_corner_1_norm,
+          rec.corner2_norm as target_corner_2_norm,
           rec.corner3_norm as target_corner_3_norm,
           rec.corner4_norm as target_corner_4_norm,
           case
@@ -1984,18 +1988,72 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
         avg(b.corner1_norm)
           filter (where b.recent_rank <= 10)
           as past_corner_1_norm_avg_10,
+        avg(b.corner2_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_2_norm_avg_5,
+        avg(b.corner2_norm)
+          filter (where b.recent_rank <= 3)
+          as past_corner_2_norm_avg_3,
+        avg(b.corner2_norm)
+          filter (where b.recent_rank <= 10)
+          as past_corner_2_norm_avg_10,
+        avg(b.corner3_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_3_norm_avg_5,
+        avg(b.corner3_norm)
+          filter (where b.recent_rank <= 3)
+          as past_corner_3_norm_avg_3,
+        avg(b.corner3_norm)
+          filter (where b.recent_rank <= 10)
+          as past_corner_3_norm_avg_10,
+        avg(b.corner4_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_4_norm_avg_5,
+        avg(b.corner4_norm)
+          filter (where b.recent_rank <= 3)
+          as past_corner_4_norm_avg_3,
+        avg(b.corner4_norm)
+          filter (where b.recent_rank <= 10)
+          as past_corner_4_norm_avg_10,
         avg(b.corner4_norm - b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_progression_avg_5,
         stddev_samp(b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_std_5,
+        stddev_samp(b.corner2_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_2_norm_std_5,
+        stddev_samp(b.corner3_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_3_norm_std_5,
+        stddev_samp(b.corner4_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_4_norm_std_5,
         min(b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_best_5,
+        min(b.corner2_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_2_norm_best_5,
+        min(b.corner3_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_3_norm_best_5,
+        min(b.corner4_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_4_norm_best_5,
         max(b.corner1_norm)
           filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_worst_5,
+        max(b.corner2_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_2_norm_worst_5,
+        max(b.corner3_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_3_norm_worst_5,
+        max(b.corner4_norm)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_4_norm_worst_5,
         avg(case when b.corner1_norm = 0 then 1.0
                  when b.corner1_norm is null then null
                  else 0.0 end) as past_nige_rate_self,
@@ -2010,6 +2068,9 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
                  when b.corner1_norm > {RUNNING_STYLE_SASHI_THRESHOLD} then 1.0
                  else 0.0 end) as past_oikomi_rate_self,
         max(b.corner1_norm) filter (where b.recent_rank = 1) as last_race_corner_1_norm,
+        max(b.corner2_norm) filter (where b.recent_rank = 1) as last_race_corner_2_norm,
+        max(b.corner3_norm) filter (where b.recent_rank = 1) as last_race_corner_3_norm,
+        max(b.corner4_norm) filter (where b.recent_rank = 1) as last_race_corner_4_norm,
         max(b.corner4_norm - b.corner1_norm) filter (where b.recent_rank = 1)
           as last_race_corner_progression,
         avg(b.corner1_norm) filter (where abs(b.history_kyori - b.target_kyori) <= {SAME_DISTANCE_TOLERANCE})
@@ -2041,6 +2102,21 @@ def horse_running_style_history_cte(target_filter: str = "true") -> str:
           - quantile_cont(b.corner1_norm, 0.25)
             filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
           as past_corner_1_norm_iqr_5,
+        quantile_cont(b.corner2_norm, 0.75)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          - quantile_cont(b.corner2_norm, 0.25)
+            filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_2_norm_iqr_5,
+        quantile_cont(b.corner3_norm, 0.75)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          - quantile_cont(b.corner3_norm, 0.25)
+            filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_3_norm_iqr_5,
+        quantile_cont(b.corner4_norm, 0.75)
+          filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          - quantile_cont(b.corner4_norm, 0.25)
+            filter (where b.recent_rank <= {RECENT_WINDOW_SIZE})
+          as past_corner_4_norm_iqr_5,
         count(*) filter (
           where b.finish_position = 1
             and trim(coalesce(b.history_grade_code, '')) in ('A', 'B', 'C')
@@ -2380,7 +2456,7 @@ def base_features_select_sql(category: str) -> str:
       t.finish_position, t.finish_norm,
       t.kyoso_joken_code as kyoso_joken_code,
       {nar_subclass_expr} as nar_subclass,
-      t.target_corner_1_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
+      t.target_corner_1_norm, t.target_corner_2_norm, t.target_corner_3_norm, t.target_corner_4_norm, t.target_running_style_class,
       hc.speed_index_avg_5, hc.speed_index_best_5, hc.kohan3f_avg_5, hc.corner_pass_avg_5,
       hc.career_win_rate, hc.career_place_rate, hc.career_top1_count,
       hc.same_keibajo_win_rate, hc.same_distance_win_rate, hc.same_track_win_rate, hc.same_grade_win_rate,
@@ -2477,15 +2553,36 @@ def base_features_select_sql(category: str) -> str:
       rsh.past_corner_1_norm_avg_5,
       rsh.past_corner_1_norm_avg_3,
       rsh.past_corner_1_norm_avg_10,
+      rsh.past_corner_2_norm_avg_5,
+      rsh.past_corner_2_norm_avg_3,
+      rsh.past_corner_2_norm_avg_10,
+      rsh.past_corner_3_norm_avg_5,
+      rsh.past_corner_3_norm_avg_3,
+      rsh.past_corner_3_norm_avg_10,
+      rsh.past_corner_4_norm_avg_5,
+      rsh.past_corner_4_norm_avg_3,
+      rsh.past_corner_4_norm_avg_10,
       rsh.past_corner_progression_avg_5,
       rsh.past_corner_1_norm_std_5,
+      rsh.past_corner_2_norm_std_5,
+      rsh.past_corner_3_norm_std_5,
+      rsh.past_corner_4_norm_std_5,
       rsh.past_corner_1_norm_best_5,
+      rsh.past_corner_2_norm_best_5,
+      rsh.past_corner_3_norm_best_5,
+      rsh.past_corner_4_norm_best_5,
       rsh.past_corner_1_norm_worst_5,
+      rsh.past_corner_2_norm_worst_5,
+      rsh.past_corner_3_norm_worst_5,
+      rsh.past_corner_4_norm_worst_5,
       rsh.past_nige_rate_self,
       rsh.past_senkou_rate_self,
       rsh.past_sashi_rate_self,
       rsh.past_oikomi_rate_self,
       rsh.last_race_corner_1_norm,
+      rsh.last_race_corner_2_norm,
+      rsh.last_race_corner_3_norm,
+      rsh.last_race_corner_4_norm,
       rsh.last_race_corner_progression,
       rsh.horse_distance_corner_1_norm_avg,
       rsh.horse_track_corner_1_norm_avg,
@@ -2496,6 +2593,9 @@ def base_features_select_sql(category: str) -> str:
       rsh.past_sashi_win_rate_self,
       rsh.past_oikomi_win_rate_self,
       rsh.past_corner_1_norm_iqr_5,
+      rsh.past_corner_2_norm_iqr_5,
+      rsh.past_corner_3_norm_iqr_5,
+      rsh.past_corner_4_norm_iqr_5,
       rsh.top1_count_in_grade_races,
       rsh.place_count_in_grade_races,
       rsh.experience_in_g1_race,
@@ -2973,6 +3073,7 @@ HORSE_HISTORY_BASE_SELECT = """
       cast(h.time_sa as double) as time_sa,
       cast(h.kohan_3f as double) as kohan_3f,
       cast(h.corner1_norm as double) as corner1_norm,
+      cast(h.corner2_norm as double) as corner2_norm,
       cast(h.corner3_norm as double) as corner3_norm,
       cast(h.corner4_norm as double) as corner4_norm,
       h.kyori as history_kyori,

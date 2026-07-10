@@ -69,6 +69,7 @@ LABEL_COLUMNS: tuple[str, ...] = (
     "finish_position",
     "finish_norm",
     "target_corner_1_norm",
+    "target_corner_2_norm",
     "target_corner_3_norm",
     "target_corner_4_norm",
     "target_running_style_class",

@@ -44,7 +44,8 @@ EXCLUDED_FROM_PER_HORSE: tuple[str, ...] = (
     "source", "race_date", "kaisai_nen", "kaisai_tsukihi", "keibajo_code",
     "race_bango", "ketto_toroku_bango", "umaban", "category", "race_id",
     "race_year", "feature_schema_version", "finish_position", "finish_norm",
-    "target_corner_1_norm", "target_corner_3_norm", "target_corner_4_norm",
+    "target_corner_1_norm", "target_corner_2_norm", "target_corner_3_norm",
+    "target_corner_4_norm",
     "target_running_style_class", "bamei",
 )
 SELF_VS_FIELD_PREFIX = "self_"

@@ -263,6 +263,7 @@ def test_resolve_feature_columns_excludes_within_race_leak_labels():
     df = pl.DataFrame({
         "feature_a": [0.1],
         "target_corner_1_norm": [0.2],
+        "target_corner_2_norm": [0.25],
         "target_corner_3_norm": [0.3],
         "target_corner_4_norm": [0.4],
         "target_running_style_class": [1],

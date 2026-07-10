@@ -29,6 +29,7 @@ def test_resolve_feature_columns_excludes_meta_and_label_columns():
         "finish_position",
         "finish_norm",
         "target_corner_1_norm",
+        "target_corner_2_norm",
         "target_running_style_class",
         "speed_index_avg_5",
         "past_nige_rate_self",

@@ -9,6 +9,7 @@ def test_resolve_finish_position_features_excludes_meta_and_labels() -> None:
     columns = [
         "race_id",
         "finish_position",
+        "target_corner_2_norm",
         "target_running_style_class",
         "speed_index",
         "rs_p_nige",
@@ -22,6 +23,7 @@ def test_resolve_running_style_features_excludes_leakage_and_cell_columns() -> N
     columns = [
         "race_id",
         "bamei",
+        "target_corner_2_norm",
         "target_running_style_class",
         "rs_p_nige",
         "__rs_cell_surface",
