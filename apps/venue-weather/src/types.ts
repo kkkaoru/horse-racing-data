@@ -35,7 +35,8 @@ export interface WeatherCacheRow {
 }
 
 export interface UpsertParams {
-  db: D1Database;
+  archive: R2Bucket;
+  catalogStream?: PipelineBinding;
   keibajoCode: string;
   raceDate: string;
   weatherType: WeatherType;
@@ -44,8 +45,14 @@ export interface UpsertParams {
   fetchedAt: string;
 }
 
+export interface PipelineBinding {
+  send(records: unknown[]): Promise<void>;
+}
+
 export interface Env {
-  WEATHER_DB: D1Database;
+  WEATHER_ARCHIVE: R2Bucket;
+  WEATHER_CATALOG_STREAM?: PipelineBinding;
   WEATHER_JOBS: Queue<WeatherJob>;
   WEATHER_KV: KVNamespace;
+  VENUE_WEATHER_INTERNAL_TOKEN?: string;
 }

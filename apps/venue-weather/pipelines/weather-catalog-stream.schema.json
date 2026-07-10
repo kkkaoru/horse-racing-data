@@ -1,0 +1,17 @@
+{
+  "fields": [
+    { "name": "race_date", "type": "string", "required": true },
+    { "name": "keibajo_code", "type": "string", "required": true },
+    { "name": "weather_hour", "type": "int64", "required": true },
+    { "name": "weather_data_type", "type": "string", "required": true },
+    { "name": "venue_name", "type": "string", "required": true },
+    { "name": "latitude", "type": "float64", "required": true },
+    { "name": "longitude", "type": "float64", "required": true },
+    { "name": "weather_code", "type": "int64", "required": false },
+    { "name": "temperature", "type": "float64", "required": false },
+    { "name": "precipitation", "type": "float64", "required": false },
+    { "name": "wind_speed", "type": "float64", "required": false },
+    { "name": "wind_gusts", "type": "float64", "required": false },
+    { "name": "fetched_at", "type": "string", "required": true }
+  ]
+}

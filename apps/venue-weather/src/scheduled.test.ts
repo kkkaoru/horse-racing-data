@@ -4,7 +4,6 @@ import { VENUE_COORDS } from "./venue-coords";
 
 const mockSendBatch = vi.fn().mockResolvedValue(undefined);
 const mockEnv = {
-  WEATHER_DB: {} as unknown as D1Database,
   WEATHER_JOBS: { sendBatch: mockSendBatch },
 } as unknown as import("./types").Env;
 

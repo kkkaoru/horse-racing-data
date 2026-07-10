@@ -6,27 +6,29 @@ vi.mock("./weather-api", () => ({
     {
       date: "2026-06-22",
       hour: 10,
+      precipitation: 0,
+      temperature: 20,
       weatherCode: 1,
-      temperature: 20.0,
-      precipitation: 0.0,
-      windSpeed: 3.0,
-      windGusts: 5.0,
+      windGusts: 5,
+      windSpeed: 3,
     },
   ]),
 }));
 
-vi.mock("./weather-d1", () => ({
+vi.mock("./weather-r2-store", () => ({
   upsertVenueWeather: vi.fn().mockResolvedValue(1),
 }));
 
 import { fetchVenueWeather } from "./weather-api";
-import { upsertVenueWeather } from "./weather-d1";
+import { upsertVenueWeather } from "./weather-r2-store";
 
-const mockDb = {} as unknown as D1Database;
+const mockArchive = {} as unknown as R2Bucket;
+const mockCatalogStream = { send: vi.fn().mockResolvedValue(undefined) };
 const mockSendBatch = vi.fn().mockResolvedValue(undefined);
 const mockKvDelete = vi.fn().mockResolvedValue(undefined);
 const mockEnv = {
-  WEATHER_DB: mockDb,
+  WEATHER_ARCHIVE: mockArchive,
+  WEATHER_CATALOG_STREAM: mockCatalogStream,
   WEATHER_JOBS: { sendBatch: mockSendBatch },
   WEATHER_KV: { delete: mockKvDelete },
 } as unknown as import("./types").Env;
@@ -58,8 +60,8 @@ it("processWeatherJob calls fetchVenueWeather and upsertVenueWeather for known v
 
   expect(fetchVenueWeather).toHaveBeenCalledTimes(1);
   expect(fetchVenueWeather).toHaveBeenCalledWith({
-    venue: { name: "東京", lat: 35.6622, lon: 139.4856 },
     raceDate: "2026-06-22",
+    venue: { lat: 35.6622, lon: 139.4856, name: "東京" },
     weatherType: "forecast",
   });
   expect(upsertVenueWeather).toHaveBeenCalledTimes(1);
@@ -69,30 +71,30 @@ it("processWeatherJob passes correct params to upsertVenueWeather", async () => 
   await processWeatherJob({ type: "actual", keibajoCode: "01", raceDate: "2026-06-15" }, mockEnv);
 
   const upsertCall = vi.mocked(upsertVenueWeather).mock.calls[0]![0]!;
+  expect(upsertCall.archive).toBe(mockArchive);
+  expect(upsertCall.catalogStream).toBe(mockCatalogStream);
   expect(upsertCall.keibajoCode).toBe("01");
   expect(upsertCall.raceDate).toBe("2026-06-15");
   expect(upsertCall.weatherType).toBe("actual");
   expect(upsertCall.venue).toStrictEqual({
-    name: "札幌",
     lat: 43.0775,
     lon: 141.3269,
+    name: "札幌",
   });
-  expect(upsertCall.db).toBe(mockDb);
 });
 
 it("handleWeatherBatch calls processWeatherJob for each message and acks", async () => {
   const mockAck1 = vi.fn();
   const mockAck2 = vi.fn();
-
   const batch = {
     messages: [
       {
-        body: { type: "forecast", keibajoCode: "05", raceDate: "2026-06-22" },
         ack: mockAck1,
+        body: { keibajoCode: "05", raceDate: "2026-06-22", type: "forecast" },
       },
       {
-        body: { type: "actual", keibajoCode: "09", raceDate: "2026-06-22" },
         ack: mockAck2,
+        body: { keibajoCode: "09", raceDate: "2026-06-22", type: "actual" },
       },
     ],
   } as unknown as MessageBatch<import("./types").WeatherJob>;

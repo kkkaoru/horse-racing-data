@@ -2,7 +2,7 @@
 import { VENUE_COORDS } from "./venue-coords";
 import type { Env, WeatherJob, WeatherType } from "./types";
 
-// JST 01:30 (16:30 UTC). Forecast must populate D1 before finish-position production windows.
+// JST 01:30 (16:30 UTC). Forecast must populate R2 before finish-position production windows.
 const FORECAST_CRON = "30 16 * * *";
 
 export const getTodayJst = (): string => {
