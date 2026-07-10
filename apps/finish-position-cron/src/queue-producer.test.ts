@@ -263,6 +263,27 @@ test("enqueuePredict attaches skipDedup when skipDedup is true", async () => {
   });
 });
 
+test("enqueuePredict attaches debug when debug is true", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    debug: true,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    debug: true,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
 test("enqueuePredict omits skipDedup when skipDedup is false", async () => {
   await enqueuePredict({
     category: "jra",

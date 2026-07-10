@@ -11,6 +11,7 @@ const {
   handleQueueMock,
   coordinatorTickMock,
   claimRescoreRaceMock,
+  completeFocusedFullRaceMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -18,6 +19,7 @@ const {
   const handleQueue = vi.fn(async () => undefined);
   const runRaceCoordinatorTick = vi.fn(async () => []);
   const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
+  const completeFocusedFullRace = vi.fn(async () => undefined);
   return {
     getContainerMock: vi.fn(() => ({ start })),
     startMock: start,
@@ -26,6 +28,7 @@ const {
     handleQueueMock: handleQueue,
     coordinatorTickMock: runRaceCoordinatorTick,
     claimRescoreRaceMock: claimRescoreRace,
+    completeFocusedFullRaceMock: completeFocusedFullRace,
   };
 });
 
@@ -47,7 +50,10 @@ vi.mock("./race-coordinator", () => ({
   runRaceCoordinatorTick: coordinatorTickMock,
 }));
 
-vi.mock("./do-state", () => ({ claimRescoreRace: claimRescoreRaceMock }));
+vi.mock("./do-state", () => ({
+  claimRescoreRace: claimRescoreRaceMock,
+  completeFocusedFullRace: completeFocusedFullRaceMock,
+}));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
@@ -104,6 +110,7 @@ beforeEach(() => {
   handleQueueMock.mockClear();
   coordinatorTickMock.mockClear();
   claimRescoreRaceMock.mockClear();
+  completeFocusedFullRaceMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
@@ -125,6 +132,20 @@ const internalRescoreRaceRequest = (token: string | null, body: string): Request
 
 const adminStopContainersRequest = (token: string | null, body: string): Request =>
   new Request("https://cron.example/api/admin/stop-predict-containers", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const adminCompleteFocusedFullRaceRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/complete-focused-full-race", {
+    body,
+    headers: token === null ? {} : { authorization: `Bearer ${token}` },
+    method: "POST",
+  });
+
+const adminRunFocusedFullRaceRequest = (token: string | null, body: string): Request =>
+  new Request("https://cron.example/api/admin/run-focused-full-race", {
     body,
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
@@ -290,9 +311,7 @@ test("handleScheduled skips direct full-mode enqueue for the feature-build cron"
   const logSpy = silenceFeatureBuildCronLog();
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(enqueueMock).not.toHaveBeenCalled();
-  expect(logSpy).toHaveBeenCalledWith(
-    expect.stringContaining("Feature-build cron skipped; waiting for running-style completion"),
-  );
+  expect(logSpy).not.toHaveBeenCalled();
   logSpy.mockRestore();
 });
 
@@ -427,6 +446,40 @@ test("handleFetch forwards downstream full per-race trigger fields with skipDedu
       skipDedup: true,
     }),
   );
+});
+
+test("handleFetch forwards debug flag to downstream queue messages", async () => {
+  enqueueMock.mockResolvedValue(["jra"]);
+  const response = await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        debug: true,
+        keibajoCode: "05",
+        mode: "full",
+        raceBango: "11",
+        runDate: "20260628",
+        skipDedup: true,
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ debug: true }));
+});
+
+test("handleFetch accepts string debug flags for downstream queue messages", async () => {
+  enqueueMock.mockResolvedValue(["jra"]);
+  const response = await handleFetch(
+    triggerRequest(
+      "secret-token",
+      JSON.stringify({ category: "jra", debug: "1", runDate: "20260628" }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ debug: true }));
 });
 
 test("handleFetch trims whitespace from keibajoCode and raceBango", async () => {
@@ -586,6 +639,172 @@ test("admin stop containers endpoint destroys requested predict DO containers", 
   });
 });
 
+test("admin complete focused full race endpoint rejects unauthenticated requests", async () => {
+  const response = await handleFetch(
+    adminCompleteFocusedFullRaceRequest(
+      null,
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "02",
+        raceBango: "01",
+        runYmd: "20260621",
+        status: "error",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+});
+
+test("admin complete focused full race endpoint rejects invalid requests", async () => {
+  const missingStatusResponse = await handleFetch(
+    adminCompleteFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "02",
+        raceBango: "01",
+        runYmd: "20260621",
+      }),
+    ),
+    makeEnv(),
+  );
+  const invalidCategoryResponse = await handleFetch(
+    adminCompleteFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "overseas",
+        keibajoCode: "02",
+        raceBango: "01",
+        runYmd: "20260621",
+        status: "error",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(missingStatusResponse.status).toBe(400);
+  expect(invalidCategoryResponse.status).toBe(400);
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+});
+
+test("admin complete focused full race endpoint writes terminal focused state", async () => {
+  const response = await handleFetch(
+    adminCompleteFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "02",
+        raceBango: "01",
+        runYmd: "20260621",
+        status: "error",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.any(Object),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    status: "error",
+  });
+  const body = (await response.json()) as { ok: boolean };
+  expect(body.ok).toBe(true);
+});
+
+test("admin run focused full race endpoint rejects unauthenticated requests", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      null,
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(401);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin run focused full race endpoint rejects invalid requests", async () => {
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "10",
+        raceBango: "",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+});
+
+test("admin run focused full race endpoint proxies a held predict request", async () => {
+  containerDoFetchMock.mockResolvedValueOnce(
+    new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {
+      headers: { "Content-Type": "application/x-ndjson" },
+      status: 200,
+    }),
+  );
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-jra");
+  const request = (containerDoFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&keibajoCode=10&mode=full&raceBango=07&runDate=20260705",
+  );
+  expect(await response.text()).toBe('{"type":"result","status":"success","racesPredicted":1}\\n');
+});
+
+test("admin run focused full race endpoint forwards debug to the held predict request", async () => {
+  containerDoFetchMock.mockResolvedValueOnce(
+    new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {
+      headers: { "Content-Type": "application/x-ndjson" },
+      status: 200,
+    }),
+  );
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        debug: true,
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  const request = (containerDoFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&keibajoCode=10&mode=full&raceBango=07&runDate=20260705&debug=1",
+  );
+});
+
 test("internal rescore-race endpoint claims, enqueues a per-race rescore message, and returns 202", async () => {
   const response = await handleFetch(
     internalRescoreRaceRequest(
@@ -620,6 +839,31 @@ test("internal rescore-race endpoint claims, enqueues a per-race rescore message
     runDateIso: "2026-06-19",
     runYmd: "20260619",
   });
+});
+
+test("internal rescore-race endpoint forwards debug to per-race queue messages", async () => {
+  const response = await handleFetch(
+    internalRescoreRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        debug: "1",
+        keibajoCode: "45",
+        raceBango: "12",
+        runYmd: "20260619",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  expect(predictQueueSendMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "nar",
+      debug: true,
+      keibajoCode: "45",
+      raceBango: "12",
+    }),
+  );
 });
 
 test("internal rescore-race endpoint response body marks claimed true when proceed", async () => {

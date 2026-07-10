@@ -12,7 +12,7 @@ import {
   shouldRunWarmCron,
 } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
-import { claimRescoreRace } from "./do-state";
+import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
@@ -37,6 +37,7 @@ const CATEGORY_FIELD = "category";
 const KEIBAJO_CODE_FIELD = "keibajoCode";
 const RACE_BANGO_FIELD = "raceBango";
 const SKIP_DEDUP_FIELD = "skipDedup";
+const DEBUG_FIELD = "debug";
 const RUN_YMD_FIELD = "runYmd";
 const DEFAULT_MODE: PredictMode = "full";
 const RESCORE_MODE: PredictMode = "rescore";
@@ -49,7 +50,11 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
 const ADMIN_STOP_CONTAINERS_PATH = "/api/admin/stop-predict-containers";
+const ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH = "/api/admin/complete-focused-full-race";
+const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_STOP_CONTAINER_DO_PATH = "/__admin/stop-container";
+const PREDICT_DO_HOST = "http://do";
+const PREDICT_PATH = "/predict";
 const PREDICT_CONTAINER_NAME_PREFIX = "predict-";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
@@ -62,9 +67,14 @@ const RUN_DATE_SEPARATOR = "-";
 
 interface InternalRescoreRaceRequest {
   category: PredictCategory;
+  debug?: boolean;
   keibajoCode: string;
   raceBango: string;
   runYmd: string;
+}
+
+interface AdminCompleteFocusedFullRaceRequest extends InternalRescoreRaceRequest {
+  status: "error" | "success";
 }
 
 interface StopContainerResult {
@@ -129,6 +139,13 @@ const resolveRaceTargetField = (
   return trimmed === "" ? undefined : trimmed;
 };
 
+const resolveDebugFlag = (body: Record<string, unknown>): boolean => {
+  const requested = body[DEBUG_FIELD];
+  if (requested === true) return true;
+  if (typeof requested !== "string") return false;
+  return ["1", "true", "yes", "on", "debug"].includes(requested.trim().toLowerCase());
+};
+
 const resolveTriggerDates = (body: Record<string, unknown>): RunDates => {
   const requested = body[RUN_DATE_FIELD];
   if (typeof requested === "string") {
@@ -148,23 +165,41 @@ const parseBody = async (request: Request): Promise<Record<string, unknown>> => 
 
 const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] trigger unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const body = await parseBody(request);
   const dates = resolveTriggerDates(body);
   const mode = resolveMode(body);
   const skipDedup = body[SKIP_DEDUP_FIELD] === true;
+  const debug = resolveDebugFlag(body);
+  const category = resolveCategory(body);
+  const keibajoCode = resolveRaceTargetField(body, KEIBAJO_CODE_FIELD);
+  const raceBango = resolveRaceTargetField(body, RACE_BANGO_FIELD);
+  if (debug) {
+    console.log(
+      `[predict-worker] trigger enqueue start runDate=${dates.runDate} runYmd=${dates.runYmd} category=${
+        category ?? "-"
+      } mode=${mode} keibajo=${keibajoCode ?? "-"} race=${raceBango ?? "-"} skipDedup=${skipDedup} debug=true`,
+    );
+  }
   const queued = await enqueuePredict({
-    category: resolveCategory(body),
+    category,
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+    debug,
     env,
-    keibajoCode: resolveRaceTargetField(body, KEIBAJO_CODE_FIELD),
+    keibajoCode,
     mode,
-    raceBango: resolveRaceTargetField(body, RACE_BANGO_FIELD),
+    raceBango,
     runDate: dates.runDate,
     runYmd: dates.runYmd,
     ...(skipDedup ? { skipDedup: true } : {}),
   });
+  console.log(
+    `[predict-worker] trigger enqueue accepted runDate=${dates.runDate} runYmd=${dates.runYmd} category=${
+      category ?? "-"
+    } mode=${mode} queued=${queued.join(",")} debug=${debug}`,
+  );
   return Response.json({ ok: true, queued, runDate: dates.runDate }, { status: HTTP_ACCEPTED });
 };
 
@@ -186,6 +221,12 @@ export const isInternalRescoreRaceRequest = (method: string, pathname: string): 
 export const isAdminStopContainersRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_STOP_CONTAINERS_PATH;
 
+export const isAdminCompleteFocusedFullRaceRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH;
+
+export const isAdminRunFocusedFullRaceRequest = (method: string, pathname: string): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_RUN_FOCUSED_FULL_RACE_PATH;
+
 const isValidRescoreCategory = (value: unknown): value is PredictCategory =>
   typeof value === "string" && VALID_CATEGORIES.has(value);
 
@@ -194,6 +235,11 @@ const isValidNonEmptyString = (value: unknown): value is string =>
 
 const isValidRunYmd = (value: unknown): value is string =>
   typeof value === "string" && value.length === RUN_YMD_LENGTH && RUN_YMD_PATTERN.test(value);
+
+const isFocusedFullTerminalStatus = (
+  value: unknown,
+): value is AdminCompleteFocusedFullRaceRequest["status"] =>
+  value === "error" || value === "success";
 
 const parseInternalRescoreRaceBody = (
   body: Record<string, unknown>,
@@ -208,10 +254,19 @@ const parseInternalRescoreRaceBody = (
   if (!isValidRunYmd(runYmd)) return null;
   return {
     category,
+    ...(resolveDebugFlag(body) ? { debug: true } : {}),
     keibajoCode: keibajoCode.trim(),
     raceBango: raceBango.trim(),
     runYmd,
   };
+};
+
+const parseAdminCompleteFocusedFullRaceBody = (
+  body: Record<string, unknown>,
+): AdminCompleteFocusedFullRaceRequest | null => {
+  const parsed = parseInternalRescoreRaceBody(body);
+  if (!parsed || !isFocusedFullTerminalStatus(body.status)) return null;
+  return { ...parsed, status: body.status };
 };
 
 const buildRunDateFromYmd = (runYmd: string): string =>
@@ -221,6 +276,9 @@ const buildRunDateFromYmd = (runYmd: string): string =>
     runYmd.slice(RUN_YMD_MONTH_END, RUN_YMD_LENGTH),
   ].join(RUN_DATE_SEPARATOR);
 
+const describeRaceRequest = (body: InternalRescoreRaceRequest): string =>
+  `category=${body.category} runYmd=${body.runYmd} keibajo=${body.keibajoCode} race=${body.raceBango}`;
+
 const sendRescoreRaceMessage = async (
   env: Env,
   body: InternalRescoreRaceRequest,
@@ -229,6 +287,7 @@ const sendRescoreRaceMessage = async (
   await env.PREDICT_QUEUE.send({
     category: body.category,
     daysAhead: RESCORE_DAYS_AHEAD,
+    ...(body.debug ? { debug: true } : {}),
     keibajoCode: body.keibajoCode,
     mode: RESCORE_MODE,
     raceBango: body.raceBango,
@@ -240,15 +299,21 @@ const sendRescoreRaceMessage = async (
 
 const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Response> => {
   if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] internal-rescore unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   if (env.RESCORE_ENABLED !== RESCORE_ENABLED_FLAG) {
+    console.log("[predict-worker] internal-rescore skipped rescoreEnabled=false");
     return Response.json({ claimed: false, ok: true, rescoreEnabled: false }, { status: HTTP_OK });
   }
   const raw = await parseBody(request);
   const parsed = parseInternalRescoreRaceBody(raw);
   if (!parsed) {
+    console.warn("[predict-worker] internal-rescore invalid request");
     return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  if (parsed.debug) {
+    console.log(`[predict-worker] internal-rescore claim start ${describeRaceRequest(parsed)}`);
   }
   const claim = await claimRescoreRace({
     category: parsed.category,
@@ -257,10 +322,18 @@ const handleInternalRescoreRace = async (request: Request, env: Env): Promise<Re
     raceBango: parsed.raceBango,
     runYmd: parsed.runYmd,
   });
+  if (parsed.debug) {
+    console.log(
+      `[predict-worker] internal-rescore claim result ${describeRaceRequest(parsed)} proceed=${
+        claim.proceed
+      } state=${claim.state ?? "-"}`,
+    );
+  }
   if (!claim.proceed) {
     return Response.json({ claimed: false, ok: true }, { status: HTTP_OK });
   }
   await sendRescoreRaceMessage(env, parsed);
+  console.log(`[predict-worker] internal-rescore enqueued ${describeRaceRequest(parsed)}`);
   return Response.json({ claimed: true, ok: true }, { status: HTTP_ACCEPTED });
 };
 
@@ -288,6 +361,8 @@ const stopPredictContainer = async (
   authorization: string,
   name: string,
 ): Promise<StopContainerResult> => {
+  const startedAt = Date.now();
+  console.warn(`[predict-worker] admin-stop container start name=${name}`);
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(name);
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   const response = await stub.fetch(
@@ -296,29 +371,144 @@ const stopPredictContainer = async (
       method: INTERNAL_RESCORE_RACE_METHOD,
     }),
   );
+  console.warn(
+    `[predict-worker] admin-stop container response name=${name} status=${
+      response.status
+    } ok=${response.ok} durationMs=${Date.now() - startedAt}`,
+  );
   return { name, ok: response.ok, status: response.status };
+};
+
+const buildFocusedFullPredictUrl = (body: InternalRescoreRaceRequest): string => {
+  const searchParams = new URLSearchParams({
+    category: body.category,
+    daysAhead: String(RESCORE_DAYS_AHEAD),
+    keibajoCode: body.keibajoCode,
+    mode: DEFAULT_MODE,
+    raceBango: body.raceBango,
+    runDate: body.runYmd,
+  });
+  if (body.debug === true) searchParams.set("debug", "1");
+  return `${PREDICT_DO_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
+};
+
+const runFocusedFullRace = async (
+  env: Env,
+  body: InternalRescoreRaceRequest,
+): Promise<Response> => {
+  const startedAt = Date.now();
+  const predictUrl = buildFocusedFullPredictUrl(body);
+  if (body.debug) {
+    console.warn(`[predict-worker] admin-run-focused-full start ${describeRaceRequest(body)}`);
+  }
+  const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
+    `${PREDICT_CONTAINER_NAME_PREFIX}${body.category}`,
+  );
+  const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
+  const response = await stub.fetch(new Request(predictUrl));
+  if (body.debug) {
+    console.warn(
+      `[predict-worker] admin-run-focused-full response ${describeRaceRequest(body)} status=${
+        response.status
+      } ok=${response.ok} durationMs=${Date.now() - startedAt}`,
+    );
+  }
+  return response;
 };
 
 const handleAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
   const authorization = request.headers.get("authorization");
   if (authorization === null || !isAuthorized(authorization, env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] admin-stop unauthorized");
     return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
   }
   const body = await parseBody(request);
   const names = parseStopContainerNames(body);
   if (!names) {
+    console.warn("[predict-worker] admin-stop invalid names");
     return Response.json({ error: "invalid names", ok: false }, { status: HTTP_BAD_REQUEST });
   }
+  console.warn(
+    `[predict-worker] admin-stop requested count=${names.length} names=${names.join(",")}`,
+  );
   const results: StopContainerResult[] = [];
   for (const name of names) {
     results.push(await stopPredictContainer(env, authorization, name));
   }
+  console.warn(
+    `[predict-worker] admin-stop completed ok=${results.every((result) => result.ok)} results=${JSON.stringify(
+      results,
+    )}`,
+  );
   return Response.json({ ok: results.every((result) => result.ok), results });
 };
 
 const guardedAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
   try {
     return await handleAdminStopContainers(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
+const handleAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] admin-run-focused-full unauthorized");
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const raw = await parseBody(request);
+  const parsed = parseInternalRescoreRaceBody(raw);
+  if (!parsed) {
+    console.warn("[predict-worker] admin-run-focused-full invalid request");
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  const response = await runFocusedFullRace(env, parsed);
+  return new Response(response.body, {
+    headers: response.headers,
+    status: response.status,
+  });
+};
+
+const guardedAdminRunFocusedFullRace = async (request: Request, env: Env): Promise<Response> => {
+  try {
+    return await handleAdminRunFocusedFullRace(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+};
+
+const handleAdminCompleteFocusedFullRace = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] admin-complete-focused-full unauthorized");
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const raw = await parseBody(request);
+  const parsed = parseAdminCompleteFocusedFullRaceBody(raw);
+  if (!parsed) {
+    console.warn("[predict-worker] admin-complete-focused-full invalid request");
+    return Response.json({ error: "invalid request", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  console.warn(
+    `[predict-worker] admin-complete-focused-full start ${describeRaceRequest(parsed)} status=${parsed.status}`,
+  );
+  await completeFocusedFullRace({ env, ...parsed });
+  console.warn(
+    `[predict-worker] admin-complete-focused-full completed ${describeRaceRequest(
+      parsed,
+    )} status=${parsed.status}`,
+  );
+  return Response.json({ ok: true });
+};
+
+const guardedAdminCompleteFocusedFullRace = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  try {
+    return await handleAdminCompleteFocusedFullRace(request, env);
   } catch (error) {
     return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
   }
@@ -331,6 +521,12 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   }
   if (isAdminStopContainersRequest(request.method, url.pathname)) {
     return guardedAdminStopContainers(request, env);
+  }
+  if (isAdminCompleteFocusedFullRaceRequest(request.method, url.pathname)) {
+    return guardedAdminCompleteFocusedFullRace(request, env);
+  }
+  if (isAdminRunFocusedFullRaceRequest(request.method, url.pathname)) {
+    return guardedAdminRunFocusedFullRace(request, env);
   }
   if (isInternalRescoreRaceRequest(request.method, url.pathname)) {
     return guardedInternalRescoreRace(request, env);
@@ -358,9 +554,6 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   if (shouldRunFeatureBuildCron(event.cron)) {
     // Production full per-race runs are now triggered by sync-realtime-data
     // after running-style completes via POST /run with skipDedup=true.
-    console.log(
-      `Feature-build cron skipped; waiting for running-style completion trigger scheduledTime=${new Date(event.scheduledTime).toISOString()}`,
-    );
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {

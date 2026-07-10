@@ -17,6 +17,7 @@ interface EnqueuePredictParams {
   keibajoCode?: string;
   raceBango?: string;
   skipDedup?: boolean;
+  debug?: boolean;
 }
 
 // Spread the per-race target only when both fields are defined so the
@@ -42,6 +43,7 @@ export const enqueuePredict = async (params: EnqueuePredictParams): Promise<Pred
       runYmd: params.runYmd,
       ...perRaceTarget,
       ...(params.skipDedup ? { skipDedup: true } : {}),
+      ...(params.debug ? { debug: true } : {}),
     } satisfies PredictQueueMessage);
   }
   return categories;

@@ -17,7 +17,9 @@ interface RescoreResult {
 }
 
 const {
+  claimFocusedFullRaceMock,
   claimRunMock,
+  completeFocusedFullRaceMock,
   completeRunMock,
   parseNdjsonStreamMock,
   rescoreJraRaceMock,
@@ -25,7 +27,9 @@ const {
   warmPredictionCacheForCategoryMock,
   isFocusedFullPredictionCompleteMock,
 } = vi.hoisted(() => {
+  const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
+  const completeFocusedFullRace = vi.fn(async () => undefined);
   const completeRun = vi.fn(async () => undefined);
   const parseNdjsonStream = vi.fn(
     async (
@@ -50,7 +54,9 @@ const {
   const warmPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
   const isFocusedFullPredictionComplete = vi.fn(async (): Promise<boolean> => false);
   return {
+    claimFocusedFullRaceMock: claimFocusedFullRace,
     claimRunMock: claimRun,
+    completeFocusedFullRaceMock: completeFocusedFullRace,
     completeRunMock: completeRun,
     isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
     parseNdjsonStreamMock: parseNdjsonStream,
@@ -61,7 +67,9 @@ const {
 });
 
 vi.mock("./do-state", () => ({
+  claimFocusedFullRace: claimFocusedFullRaceMock,
   claimRun: claimRunMock,
+  completeFocusedFullRace: completeFocusedFullRaceMock,
   completeRun: completeRunMock,
 }));
 
@@ -140,7 +148,9 @@ beforeEach(() => {
   idFromNameMock.mockClear();
   getMock.mockClear();
   stubFetchMock.mockClear();
+  claimFocusedFullRaceMock.mockClear();
   claimRunMock.mockClear();
+  completeFocusedFullRaceMock.mockClear();
   completeRunMock.mockClear();
   parseNdjsonStreamMock.mockClear();
   rescoreJraRaceMock.mockClear();
@@ -157,6 +167,7 @@ beforeEach(() => {
     status: "ok",
   });
   claimRunMock.mockResolvedValue({ proceed: true });
+  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   parseNdjsonStreamMock.mockResolvedValue({
     type: "result",
     racesPredicted: 5,
@@ -321,6 +332,28 @@ test("ignores requestId in the DO name for focused per-race full skipDedup messa
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
+test("retries focused skipDedup full messages without container fetch when focused claim is already started", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  claimFocusedFullRaceMock.mockResolvedValue({ proceed: false, state: "started" });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(parseNdjsonStreamMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
+  expect(ackMock).not.toHaveBeenCalled();
+  consoleSpy.mockRestore();
+});
+
 test("reuses the category-scoped DO across multiple focused per-race full messages", async () => {
   await handleQueue(
     makeBatch([
@@ -413,7 +446,7 @@ test("accepts legacy result lines without status for backward compatibility", as
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("logs container progress for category-level predict messages", async () => {
+test("logs container progress for category-level predict messages when debug is enabled", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -425,12 +458,30 @@ test("logs container progress for category-level predict messages", async () => 
       return { type: "result", racesPredicted: 5, category: "jra", status: "success" };
     },
   );
-  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  await handleQueue(makeBatch([makeMessage({ debug: true })]), makeEnv());
   expect(consoleSpy).toHaveBeenCalledWith(
     "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=predict elapsed=12.3",
   );
   expect(consoleSpy).toHaveBeenCalledWith(
     "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=- elapsed=-",
+  );
+  consoleSpy.mockRestore();
+});
+
+test("suppresses container progress logs for normal predict messages", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  parseNdjsonStreamMock.mockImplementationOnce(
+    async (
+      _body: ReadableStream<Uint8Array>,
+      options?: ParseNdjsonStreamOptions,
+    ): Promise<PredictResultLine> => {
+      options?.onProgress?.({ type: "progress", stage: "predict", elapsed_s: 12.3 });
+      return { type: "result", racesPredicted: 5, category: "jra", status: "success" };
+    },
+  );
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(consoleSpy).not.toHaveBeenCalledWith(
+    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=predict elapsed=12.3",
   );
   consoleSpy.mockRestore();
 });
@@ -595,7 +646,9 @@ test("retries a JRA container per-race rescore when the container fetch throws",
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "Container per-race rescore failed category=jra runYmd=20260619 keibajo=05 race=11:",
+    expect.stringMatching(
+      /^Container per-race rescore failed category=jra runYmd=20260619 keibajo=05 race=11 durationMs=\d+:$/u,
+    ),
     "Error: container down",
   );
   errorSpy.mockRestore();
@@ -687,7 +740,30 @@ test("acks a NAR per-race rescore when the container returns racesPredicted grea
   consoleSpy.mockRestore();
 });
 
-test("logs container progress with race scope for container per-race rescore messages", async () => {
+test("acks unsupported per-race rescore categories without container fetch", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "unsupported" as PredictQueueMessage["category"],
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "Skipping per-race rescore for unsupported category=unsupported runYmd=20260619 keibajo=44 race=01",
+  );
+  warnSpy.mockRestore();
+});
+
+test("logs container progress with race scope for debug container per-race rescore messages", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -703,6 +779,7 @@ test("logs container progress with race scope for container per-race rescore mes
       makeMessage({
         category: "nar",
         daysAhead: 0,
+        debug: true,
         keibajoCode: "44",
         mode: "rescore",
         raceBango: "01",
@@ -903,6 +980,24 @@ test("warms only the race cache for focused per-race skipDedup full messages", a
   );
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "jra",
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260628",
+      staleAfterMs: 2100000,
+    }),
+  );
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "jra",
+      keibajoCode: "02",
+      raceBango: "01",
+      runYmd: "20260628",
+      status: "success",
+    }),
+  );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
@@ -957,9 +1052,14 @@ test("retries focused skipDedup full messages with result status error without c
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error" }),
+  );
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
   expect(errorSpy).toHaveBeenCalledWith(
-    "Predict failed for category=jra runYmd=20260628 keibajo=02 race=01:",
+    expect.stringMatching(
+      /^Predict failed for category=jra runYmd=20260628 keibajo=02 race=01 durationMs=\d+:$/u,
+    ),
     "Error: Container result status=error: RuntimeError: focused build failed",
   );
   errorSpy.mockRestore();
@@ -989,6 +1089,7 @@ test("retries focused skipDedup full messages with a fixed delay when result sta
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 150 });
   expect(ackMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
   consoleSpy.mockRestore();
 });
 
@@ -1026,6 +1127,14 @@ test("re-enqueues a fresh message at the base delay on the first busy encounter"
   );
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith({
+    category: "nar",
+    env: expect.any(Object),
+    keibajoCode: "35",
+    raceBango: "01",
+    runYmd: "20260629",
+    status: "error",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1055,6 +1164,9 @@ test("increments an existing busyRequeueCount and grows the re-enqueue delay whe
     delaySeconds: 130,
   });
   expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error" }),
+  );
   consoleSpy.mockRestore();
 });
 
@@ -1170,6 +1282,9 @@ test("acks focused skipDedup full messages when result status is already-complet
   expect(retryMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
     day: "28",
     keibajoCode: "02",
@@ -1202,6 +1317,9 @@ test("falls through focused skipDedup full messages with result status success t
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(retryMock).not.toHaveBeenCalled();
   expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(warmPredictionCacheForRaceMock).toHaveBeenCalledWith({
     day: "28",
     keibajoCode: "02",

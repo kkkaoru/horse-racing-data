@@ -74,6 +74,28 @@ test("proxyParquetFromNdjson returns non-NDJSON responses unchanged", () => {
   expect(put).not.toHaveBeenCalled();
 });
 
+test("proxyParquetFromNdjson returns responses without content type unchanged", () => {
+  const { env, put } = makeR2Mock();
+  const response = new Response("ok");
+  expect(proxyParquetFromNdjson(response, env)).toBe(response);
+  expect(put).not.toHaveBeenCalled();
+});
+
+test("proxyParquetFromNdjson does not schedule R2 proxy when stream has no result line", async () => {
+  const { env, put } = makeR2Mock();
+  const waitUntil = vi.fn();
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.close();
+      },
+    }),
+  );
+  await expect(proxyParquetFromNdjson(response, env, waitUntil).text()).resolves.toBe("");
+  expect(waitUntil).not.toHaveBeenCalled();
+  expect(put).not.toHaveBeenCalled();
+});
+
 test("proxyParquetFromNdjson streams chunks before upstream closes and proxies result parquets", async () => {
   const { controller, stream } = makeControlledStream();
   const { env, put } = makeR2Mock();
@@ -133,6 +155,42 @@ test("proxyParquetFromNdjson streams chunks before upstream closes and proxies r
     encoder.encode("race2").buffer,
     { httpMetadata: { contentType: "application/octet-stream" } },
   );
+});
+
+test("proxyParquetFromNdjson logs successful R2 proxy only when debug is enabled", async () => {
+  const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { env } = makeR2Mock();
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 1,
+    category: "jra",
+    parquetBase64: "bWFpbg==",
+    parquetKey: "feat-cache/jra/20260629/features.parquet",
+    perRaceParquets: [
+      { parquetBase64: "cmFjZQ==", parquetKey: "feat-cache/jra/20260629/05/01/features.parquet" },
+    ],
+  });
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+
+  await expect(
+    proxyParquetFromNdjson(response, env, waitUntil, undefined, true).text(),
+  ).resolves.toBe(resultLine);
+  await Promise.all(tasks);
+  expect(consoleLog).toHaveBeenCalledWith(
+    "[container-class] R2 proxy ok key=feat-cache/jra/20260629/features.parquet bytes=4",
+  );
+  expect(consoleLog).toHaveBeenCalledWith(
+    "[container-class] R2 per-race proxy ok key=feat-cache/jra/20260629/05/01/features.parquet bytes=4",
+  );
+  consoleLog.mockRestore();
 });
 
 test("proxyParquetFromNdjson renews container activity for each streamed chunk", async () => {

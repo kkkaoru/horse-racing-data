@@ -27,15 +27,21 @@ interface LastLineTracker {
 const logLabel = (kind: ParquetProxyKind): string =>
   kind === SINGLE_PARQUET_KIND ? "R2 proxy" : "R2 per-race proxy";
 
-const putParquetToR2 = async (entry: ParquetProxyEntry, env: R2ProxyEnv): Promise<void> => {
+const putParquetToR2 = async (
+  entry: ParquetProxyEntry,
+  env: R2ProxyEnv,
+  debug: boolean,
+): Promise<void> => {
   try {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
     await env.FEATURES_CACHE.put(entry.key, bytes.buffer, {
       httpMetadata: { contentType: "application/octet-stream" },
     });
-    console.log(
-      `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
-    );
+    if (debug) {
+      console.log(
+        `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
+      );
+    }
   } catch (err) {
     console.error(
       `[container-class] ${logLabel(entry.kind)} failed key=${entry.key}: ${String(err)}`,
@@ -62,15 +68,22 @@ const buildParquetProxyEntries = (result: PredictResultLine): ParquetProxyEntry[
 const proxyResultParquetsToR2 = async (
   result: PredictResultLine,
   env: R2ProxyEnv,
+  debug: boolean,
 ): Promise<void> => {
-  await Promise.all(buildParquetProxyEntries(result).map((entry) => putParquetToR2(entry, env)));
+  await Promise.all(
+    buildParquetProxyEntries(result).map((entry) => putParquetToR2(entry, env, debug)),
+  );
 };
 
-const proxyResultLineParquetsToR2 = async (line: string, env: R2ProxyEnv): Promise<void> => {
+const proxyResultLineParquetsToR2 = async (
+  line: string,
+  env: R2ProxyEnv,
+  debug: boolean,
+): Promise<void> => {
   try {
     const parsed = JSON.parse(line) as { type?: unknown };
     if (parsed.type !== RESULT_LINE_TYPE) return;
-    await proxyResultParquetsToR2(parsed as PredictResultLine, env);
+    await proxyResultParquetsToR2(parsed as PredictResultLine, env, debug);
   } catch {
     // Malformed JSON is left for parseNdjsonStream to surface to the queue consumer.
   }
@@ -80,8 +93,9 @@ const scheduleResultLineProxy = (
   line: string,
   env: R2ProxyEnv,
   waitUntil: WaitUntil | undefined,
+  debug: boolean,
 ): void => {
-  const task = Promise.resolve().then(() => proxyResultLineParquetsToR2(line, env));
+  const task = Promise.resolve().then(() => proxyResultLineParquetsToR2(line, env, debug));
   if (waitUntil) {
     waitUntil(task);
     return;
@@ -133,6 +147,7 @@ const createProxyingNdjsonStream = (
   env: R2ProxyEnv,
   waitUntil: WaitUntil | undefined,
   renewActivityTimeout: RenewActivityTimeout | undefined,
+  debug: boolean,
 ): ReadableStream<Uint8Array> => {
   const tracker = createLastLineTracker();
   return body.pipeThrough(
@@ -144,7 +159,7 @@ const createProxyingNdjsonStream = (
       },
       flush(): void {
         const lastLine = tracker.finish();
-        if (lastLine !== undefined) scheduleResultLineProxy(lastLine, env, waitUntil);
+        if (lastLine !== undefined) scheduleResultLineProxy(lastLine, env, waitUntil, debug);
       },
     }),
   );
@@ -155,12 +170,13 @@ export const proxyParquetFromNdjson = (
   env: R2ProxyEnv,
   waitUntil?: WaitUntil,
   renewActivityTimeout?: RenewActivityTimeout,
+  debug = false,
 ): Response => {
   if (!response.body) return response;
   const contentType = response.headers.get("Content-Type") ?? "";
   if (!contentType.includes(NDJSON_CONTENT_TYPE)) return response;
   return new Response(
-    createProxyingNdjsonStream(response.body, env, waitUntil, renewActivityTimeout),
+    createProxyingNdjsonStream(response.body, env, waitUntil, renewActivityTimeout, debug),
     {
       headers: response.headers,
       status: response.status,

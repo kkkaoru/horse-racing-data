@@ -34,9 +34,9 @@ export interface Env {
   // sync-realtime-data. "1" enables the internal rescore endpoint; any other
   // value accepts the request as a no-op so full generation can drain first.
   RESCORE_ENABLED?: string;
-  // Feature flag forwarded into the container env: "1" enables the NAR
-  // Set-Transformer x ensemble rank-fusion blend (iter40); any other value
-  // (including unset) keeps the container on the pure iter12 base. Set via
+  // Feature flag forwarded into the container env: unset enables the NAR
+  // clean Set-Transformer x ensemble score-z blend (iter40); "0", "false", or
+  // "off" rolls the container back to the pure iter12 clean188 base. Set via
   // `wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED`. Optional so existing
   // callers/tests need not set it.
   NAR_TRANSFORMER_BLEND_ENABLED?: string;
@@ -108,6 +108,9 @@ export interface PredictQueueMessage {
   // Cloudflare retry attempt count) with this incremented, bounded by
   // MAX_BUSY_REQUEUES in queue-consumer.ts. Absent on the first send.
   busyRequeueCount?: number;
+  // Enables verbose diagnostic logs for this message and the downstream
+  // Container /predict request. Absent/false keeps production logs quiet.
+  debug?: boolean;
 }
 
 export interface PredictRunState {
