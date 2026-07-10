@@ -11,8 +11,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities.trace_state import TraceState
 
-from mlflow_tracking import ingest_eval, logging_api, timeline
+from mlflow_tracking import config, ingest_eval, logging_api, timeline, trace_emit
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -257,6 +258,63 @@ def test_ingest_serve_accuracy_logs_finish_position_and_running_style(
     assert rs_timeline_run.data.metrics["rs_overall_accuracy_pct"] == 55.0
 
 
+def test_ingest_serve_accuracy_emits_job_trace_with_races_feedback_and_attributes(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """job_trace wiring (2026-07-11): one trace lands in `finish-position/
+    serve-accuracy` (the SAME experiment this ingest routes to), with
+    `eval_regime`/`era` as span ATTRIBUTES (not Feedback) and a `races`
+    Feedback pulled from the payload's `race_count` field. A SEPARATE
+    nested trace lands in `timelines`, since both fp/rs sections here
+    produce non-empty timeline metrics (`points_appended == 2.0`)."""
+    payload = {
+        "finish_position": {
+            "date_str": "20260601",
+            "category": "jra",
+            "era": "POST_FIX",
+            "top1_pct": 44.5,
+            "race_count": 123,
+        },
+        "running_style": {
+            "date_str": "20260601",
+            "category": "jra",
+            "era": "POST_FIX",
+            "overall_accuracy_pct": 55.0,
+        },
+    }
+    json_path = tmp_path / "serve_accuracy.json"
+    write_json(json_path, payload)
+    ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_SERVE_ACCURACY)
+    assert experiment is not None
+    traces = tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    assert len(traces) == 1
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert trace.info.state == TraceState.OK
+    root_span = next(span for span in trace.data.spans if span.name == "ingest-serve-accuracy")
+    assert root_span.attributes["eval_regime"] == "serve"
+    assert root_span.attributes["era"] == "POST_FIX"
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"races"}
+    races_feedback = assessments_by_name["races"].feedback
+    assert races_feedback is not None
+    assert races_feedback.value == 123.0
+
+    timelines_experiment = client.get_experiment_by_name(config.EXPERIMENT_TIMELINES)
+    assert timelines_experiment is not None
+    timeline_traces = tracing_client.search_traces(
+        experiment_ids=[timelines_experiment.experiment_id], max_results=10
+    )
+    assert len(timeline_traces) == 1
+    timeline_trace = tracing_client.get_trace(timeline_traces[0].info.trace_id)
+    timeline_assessments = {a.name: a for a in timeline_trace.info.assessments}
+    points_feedback = timeline_assessments["points_appended"].feedback
+    assert points_feedback is not None
+    assert points_feedback.value == 2.0
+
+
 def test_ingest_serve_accuracy_handles_finish_position_only(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:
@@ -322,6 +380,10 @@ def test_ingest_serve_accuracy_skips_timeline_upsert_when_fp_extraction_is_empty
     run_id = ingest_eval.ingest_serve_accuracy(client, json_path, eval_regime="serve")
     run = client.get_run(run_id)
     assert "timeline_run_id:finish-position" not in run.data.tags
+    # job_trace wiring (2026-07-11): the nested `timelines` job trace is
+    # never opened at all when extraction is empty -- the `timelines`
+    # experiment itself is never even created.
+    assert client.get_experiment_by_name(config.EXPERIMENT_TIMELINES) is None
 
 
 def test_ingest_serve_accuracy_explicit_experiment_overrides_auto_detection(

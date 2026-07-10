@@ -94,16 +94,25 @@ docstrings for the per-row error-isolation this is paired with (one bad
 row's trace-emission failure must never block every other row's).
 
 Destinations: ONLY `config.EXPERIMENT_FP_PRODUCTION_USAGE` /
-`config.EXPERIMENT_RS_PRODUCTION_USAGE` ever receive a trace from this
-module -- by construction, not by an enforced allow-list inside this file:
-every caller in this package (`sync_production.py`, `backfill_traces.py`)
-only ever resolves and passes in one of those two experiment ids. Every
-OTHER experiment in this package (`wf-eval`, `champion-eval`, `cell-eval`,
-`timelines`, `registry-backfill`, `internal/smoke-tests`, ...)
-intentionally has NONE -- a trace's Usage/Quality/Tool-calls value is
-specifically about "what was actually served in production", which is
-exactly what those two experiments (and only those two) already represent
-(see `sync_production.py`'s own module docstring).
+`config.EXPERIMENT_RS_PRODUCTION_USAGE` ever receive a trace from
+`emit_fp_race_trace(s)`/`emit_rs_horse_trace(s)` -- by construction, not by
+an enforced allow-list inside this file: every caller of THOSE SPECIFIC
+functions (`sync_production.py`, `backfill_traces.py`) only ever resolves
+and passes in one of those two experiment ids. ★ 2026-07-11 update: this is
+no longer true of the module as a whole -- `job_trace` (see this module's
+own "JOB-EXECUTION TRACES" section further down) is a SEPARATE, generic
+primitive that OTHER modules (`champion_cell_eval.py`, `cell_eval_runs.py`,
+`backfill_finish_position.py`, `backfill_running_style.py`, `ingest_eval.py`,
+`training_run.py`, `sync_production.py`, `backfill_serve_timeline.py`) use
+to emit ONE trace per real CLI/job invocation into every OTHER experiment in
+this package except `internal/smoke-tests` (see that section for the full
+per-experiment wiring and why smoke-tests stays untraced). The per-race/
+per-horse functions above and the job-execution `job_trace` primitive below
+are two genuinely different trace SHAPES answering two different questions
+("what got served in production" vs. "did this job run, and how long did it
+take") -- they happen to share this one file's hardened `TracingClient`-
+direct plumbing (see `_make_span`/`_log_feedback`/`_new_id`/`encode_trace_id`
+below), not their destination or semantics.
 
 `status` is always `OK`: every row this module is ever called with already
 represents a genuinely-served, successfully-joined prediction -- the eval
@@ -116,10 +125,112 @@ serving GAP day (see `sync_production._log_serving_gap`) has ZERO rows and
 therefore ZERO traces are emitted for it; this module never fabricates an
 ERROR trace for a race/horse that simply never got served, since that would
 misrepresent reality. `TraceState.ERROR` / `SpanStatusCode.ERROR` are
-therefore UNREACHABLE CODE in this module today -- a documented, deliberate
-absence, not an oversight -- until some future, separate, out-of-scope
-change gives the serving pipeline itself a real failure signal to plumb
-through here.
+therefore UNREACHABLE CODE for `emit_fp_race_trace`/`emit_rs_horse_trace`
+(and the shared `_emit_trace`/`_make_span` machinery, WHEN CALLED FROM
+THOSE TWO FUNCTIONS specifically) -- a documented, deliberate absence, not
+an oversight -- until some future, separate, out-of-scope change gives the
+serving pipeline itself a real failure signal to plumb through here. ★
+2026-07-11: this is now a DELIBERATE, NARROW exception, not a whole-module
+invariant -- `JobTrace` (see "JOB-EXECUTION TRACES" below) legitimately DOES
+reach `TraceState.ERROR`/`SpanStatusCode.ERROR` when the job it wraps raises,
+since a job-execution trace is about a REAL, currently-happening piece of
+work that genuinely can fail, unlike a per-race/per-horse row that (by the
+time this module is ever called with it) already represents a successfully-
+served, successfully-joined prediction. `_make_span` therefore now accepts
+an optional `status` override (defaulting to OK, preserving the old
+always-OK behavior for every existing caller that omits it) precisely so
+`JobTrace` can pass ERROR explicitly, in the one place that legitimately
+needs to.
+
+── JOB-EXECUTION TRACES (`job_trace`, `JobTrace`) ──────────────────────────
+
+Added 2026-07-11 to extend Usage/Quality/Tool-calls-page coverage beyond the
+two `production-usage` experiments above to the OTHER 10 real experiments in
+this package (every one of `config.ALL_EXPERIMENT_NAMES` except the two
+`production-usage` experiments and `internal/smoke-tests`, which stays
+deliberately untraced -- see below). This is a fundamentally SIMPLER shape
+than the per-race/per-horse work above: a job-execution trace represents one
+real CLI/job invocation happening RIGHT NOW, in-process, so its wall-clock
+timing is measured for REAL (`datetime.now(UTC)` at trace/step start and
+end) -- there is no "nominal/approximate" honesty caveat to disclose here,
+unlike `TIMING_APPROXIMATE` above (that caveat was specific to backfilling
+HISTORICAL per-race predictions whose actual serving latency was never
+recorded; a job invocation's own duration, by contrast, is directly
+observable as it happens).
+
+`job_trace(tracing_client, experiment_id, job_name, *, attributes=None)`
+returns a `JobTrace` context manager:
+
+    with trace_emit.job_trace(tracing_client, experiment_id, "eval-cells") as t:
+        with t.step("resolve-champion"):
+            champion = resolve_champion(...)
+        with t.step("collect-rows", category=category):
+            rows = collect_rows(...)
+        t.feedback("runs_created", float(runs_created))
+
+- Each `t.step(name, **attributes)` is a NESTED context manager: entering it
+  records a real wall-clock start, exiting it records a real wall-clock end,
+  and the elapsed span is logged as one `SpanType.TOOL` child span under the
+  job's root (`SpanType.TASK`) span -- mirroring how `_emit_trace`'s
+  `score-model`/`upsert-neon` child spans are structured, except these
+  durations are measured, never nominal constants.
+- `t.feedback(name, value, *, rationale="")` queues one `Feedback`
+  assessment (bool or numeric), flushed once the `with` block exits --
+  AFTER the trace/spans are written via `start_trace`/`log_spans` (mirroring
+  `_emit_trace`'s own start_trace-then-log_assessment ordering, so
+  `log_assessment`'s foreign-key requirement is always satisfied).
+- On a normal exit, the trace is `TraceState.OK` / root span `SpanStatusCode.
+  OK`. On an exception propagating out of the `with` block, the trace AND
+  its root span are logged as `TraceState.ERROR`/`SpanStatusCode.ERROR`
+  (a `_JobStep` whose own body raised also marks THAT step's span ERROR,
+  for finer-grained "which step failed" visibility) -- and the original
+  exception is ALWAYS re-raised afterward; `__exit__` never returns True,
+  so this context manager can never swallow a caller's exception. A
+  SEPARATE, best-effort safety net wraps only the actual `TracingClient`
+  write calls (`start_trace`/`log_spans`/`log_assessment`) in their own
+  `except MlflowException` + `warnings.warn`: a transient tracking-store
+  write failure while trying to RECORD that a job ran must never itself
+  make a genuinely-successful job look like it failed (or mask the real
+  exception from a genuinely-failed one) -- observability must never
+  become a new failure mode for the pipeline it observes.
+- `t.discard()` marks the trace to be silently dropped (nothing written at
+  all) IF AND ONLY IF the `with` block exits normally -- used by callers
+  that only want to emit a trace CONDITIONALLY on some real outcome (e.g.
+  the shared `timelines` experiment: several call sites open a job_trace
+  that spans their WHOLE invocation but only actually appended a timeline
+  point some of the time, see `sync_production.py`/`backfill_serve_
+  timeline.py`'s own wiring) rather than emitting an empty, uninformative
+  trace on every single call. `discard()` has NO effect when the block
+  raises: a real failure is never silently dropped, regardless of any
+  earlier `discard()` call -- that would defeat the entire point of this
+  class.
+
+★ No idempotency/dedup check here, DELIBERATELY, unlike `_emit_trace`'s
+`client_request_id` existence check above -- and this is not an oversight
+to "fix" later. Job-execution traces are correctly ONE-PER-INVOCATION by
+design: every real run of a wired CLI command SHOULD create a brand-new
+trace, because there is no stable "business key" a second call could ever
+collide with -- there IS no second call representing the same event; a
+second real invocation of `eval-cells` (say) is a second, independent,
+genuinely-new piece of work, and deserves its own trace exactly like a
+second real HTTP request to a traced web service would. A future
+maintainer must NOT add a `search_traces` pre-check "to match `_emit_trace`'s
+idempotency style" here -- that would incorrectly suppress traces for real,
+distinct job runs.
+
+★ Historical honesty: there is no record of past job invocations to
+reconstruct (unlike the per-race work above, which had real historical
+`prediction_generated_at` timestamps to backfill against via
+`backfill_traces.py`). Job-execution traces simply start accumulating from
+the first real invocation after this code ships -- there is no
+`backfill_job_traces.py` and none is planned; a store queried before any
+wired command has run since this shipped will correctly show empty Usage/
+Quality/Tool-calls tabs for these experiments until the first real run.
+
+★ `internal/smoke-tests` is DELIBERATELY left with no `job_trace` wiring at
+all: it is a manual, one-shot smoke-test destination (see this package's
+README "Smoke-test runs" section), not a real recurring job -- empty
+Usage/Quality/Tool-calls tabs there are by design, not a gap to fill.
 
 Timing is NOMINAL, always -- disclosed, never hidden: there is no real
 per-race/per-horse serving-latency measurement anywhere in this pipeline (a
@@ -154,10 +265,11 @@ from __future__ import annotations
 
 import hashlib
 import random
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Final, cast
+from datetime import UTC, datetime
+from typing import Final, Literal, cast
 
 from mlflow.entities import AssessmentSource, AssessmentSourceType, Feedback
 from mlflow.entities.span import Span, SpanType
@@ -203,6 +315,30 @@ _FP_PREFIX: Final[str] = "fp"
 _RS_PREFIX: Final[str] = "rs"
 
 _NS_PER_MS: Final[int] = 1_000_000
+
+# ── job_trace (JOB-EXECUTION TRACES) constants -- see module docstring ─────
+
+# Distinct from TIMING_APPROXIMATE above: a job_trace's timing is a REAL,
+# directly-measured wall-clock duration, never a nominal constant, so it
+# gets its own, differently-named attribute value rather than reusing
+# TIMING_APPROXIMATE under the same TIMING_ATTR_KEY (which would falsely
+# imply the same "not really measured" caveat applies here too).
+TIMING_REAL: Final[str] = "real"
+
+# Distinct AssessmentSource.source_id from ASSESSMENT_SOURCE_ID
+# ("sync_production", used only by the per-race/per-horse Feedback above) --
+# job_trace is called from many different modules (champion_cell_eval.py,
+# cell_eval_runs.py, backfill_finish_position.py, backfill_running_style.py,
+# ingest_eval.py, training_run.py, sync_production.py,
+# backfill_serve_timeline.py), so "sync_production" would misattribute every
+# OTHER caller's Feedback to a module that did not actually log it.
+JOB_TRACE_SOURCE_ID: Final[str] = "job_trace"
+
+# Tags every job_trace-produced TraceInfo with `trace_kind="job"` -- lets a
+# future UI/search distinguish a job-execution trace from a per-race/
+# per-horse one without depending on which experiment it happens to live in.
+JOB_TRACE_KIND_TAG: Final[str] = "trace_kind"
+JOB_TRACE_KIND_VALUE: Final[str] = "job"
 
 
 @dataclass
@@ -318,19 +454,27 @@ def _make_span(
     start_ns: int,
     end_ns: int,
     attributes: Mapping[str, object],
+    status: SpanStatus | None = None,
 ) -> Span:
     """Build one `Span` via a raw `opentelemetry.sdk.trace.ReadableSpan` --
     mirrors `tool_calls_proto.py`'s own `_make_span` helper exactly (the
-    proven reference implementation this module builds on). `status` is
-    always OK -- see this module's own docstring for why `ERROR` is
-    unreachable here.
+    proven reference implementation this module builds on).
+
+    `status` defaults to OK when omitted -- every EXISTING caller
+    (`_emit_trace`, used by `emit_fp_race_trace`/`emit_rs_horse_trace`) omits
+    it and keeps its previous always-OK behavior unchanged; see this
+    module's own docstring for why `ERROR` is unreachable for those two
+    functions specifically. `JobTrace` (see the "JOB-EXECUTION TRACES"
+    section of this module's docstring) is the one deliberate exception that
+    passes an explicit ERROR `SpanStatus` here, since a job's root/step spans
+    genuinely can fail.
     """
     encoded_attributes = {
         SpanAttributeKey.REQUEST_ID: dump_span_attribute_value(trace_id_str),
         SpanAttributeKey.SPAN_TYPE: dump_span_attribute_value(span_type),
         **{key: dump_span_attribute_value(value) for key, value in attributes.items()},
     }
-    status = SpanStatus(status_code=SpanStatusCode.OK, description="")
+    resolved_status = status if status is not None else SpanStatus(status_code=SpanStatusCode.OK)
     otel_span = OTelReadableSpan(
         name=name,
         context=build_otel_context(trace_id_int, span_id_int),
@@ -338,27 +482,40 @@ def _make_span(
         start_time=start_ns,
         end_time=end_ns,
         attributes=encoded_attributes,
-        status=status.to_otel_status(),
+        status=resolved_status.to_otel_status(),
         resource=OTelResource.get_empty(),
     )
     return Span(otel_span)
 
 
 def _log_feedback(
-    tracing_client: TracingClient, trace_id: str, *, name: str, value: bool | float, rationale: str
+    tracing_client: TracingClient,
+    trace_id: str,
+    *,
+    name: str,
+    value: bool | float,
+    rationale: str,
+    source_id: str = ASSESSMENT_SOURCE_ID,
 ) -> None:
     """Log one `Feedback` assessment onto `trace_id` via
     `TracingClient.log_assessment` -- a direct, synchronous store write (see
     this module's own docstring for why this sidesteps the async-export
-    race the fluent `mlflow.log_feedback` path has)."""
+    race the fluent `mlflow.log_feedback` path has).
+
+    `source_id` defaults to `ASSESSMENT_SOURCE_ID` ("sync_production"),
+    preserving every existing caller's behavior unchanged (`_log_fp_
+    assessments`/`_log_rs_assessments`, both genuinely called only from
+    `sync_production.py`'s own call graph). `JobTrace.feedback` (see the
+    "JOB-EXECUTION TRACES" section of this module's docstring) passes
+    `JOB_TRACE_SOURCE_ID` instead, since it is called from many OTHER
+    modules that `sync_production` would misattribute.
+    """
     tracing_client.log_assessment(
         trace_id,
         Feedback(
             name=name,
             value=value,
-            source=AssessmentSource(
-                source_type=AssessmentSourceType.CODE, source_id=ASSESSMENT_SOURCE_ID
-            ),
+            source=AssessmentSource(source_type=AssessmentSourceType.CODE, source_id=source_id),
             rationale=rationale,
         ),
     )
@@ -805,3 +962,261 @@ def emit_rs_horse_traces(
         else:
             summary.traces_created += 1
     return summary
+
+
+# ── JOB-EXECUTION TRACES: one trace per CLI/job invocation ──────────────────
+#
+# See this module's own docstring ("JOB-EXECUTION TRACES" section) for the
+# full rationale/contrast with the FP/RS per-race/per-horse functions above.
+
+
+class _JobStep:
+    """Context manager returned by `JobTrace.step(name, **attributes)` --
+    construct only via that method, never directly.
+
+    Records REAL wall-clock start/end (`datetime.now(UTC)` at `__enter__`/
+    `__exit__`) as one `SpanType.TOOL` child span under the enclosing job's
+    root span. Never swallows an exception raised inside the `with` block --
+    `__exit__` always returns False -- it only ADDITIONALLY marks this one
+    step's own span `SpanStatusCode.ERROR` when that happens (for
+    finer-grained "which step failed" visibility in the trace UI); the
+    exception itself still propagates to, and is handled by, the enclosing
+    `JobTrace`.
+    """
+
+    def __init__(self, job_trace_: JobTrace, name: str, attributes: Mapping[str, object]) -> None:
+        self._job_trace: JobTrace = job_trace_
+        self._name: str = name
+        self._attributes: dict[str, object] = dict(attributes)
+        self._start: datetime | None = None
+
+    def __enter__(self) -> _JobStep:
+        self._start = datetime.now(UTC)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> Literal[False]:
+        end = datetime.now(UTC)
+        start = self._start if self._start is not None else end
+        status = (
+            SpanStatus(status_code=SpanStatusCode.ERROR, description=str(exc)[:500])
+            if exc_type is not None
+            else None
+        )
+        self._job_trace.record_step(self._name, start, end, self._attributes, status)
+        return False
+
+
+class JobTrace:
+    """Context manager: one MLflow trace per real CLI/job invocation.
+
+    Construct via `job_trace(...)` below, never directly. See this module's
+    own docstring ("JOB-EXECUTION TRACES") for the full shape/rationale,
+    including why there is deliberately NO idempotency/dedup check here (a
+    job-execution trace is correctly ONE-PER-INVOCATION by design) and why
+    `TraceState.ERROR`/`SpanStatusCode.ERROR` -- unreachable for the FP/RS
+    per-race/per-horse functions above -- are legitimately reachable here.
+    """
+
+    def __init__(
+        self,
+        tracing_client: TracingClient,
+        experiment_id: str,
+        job_name: str,
+        *,
+        attributes: Mapping[str, object] | None = None,
+    ) -> None:
+        self._tracing_client: TracingClient = tracing_client
+        self._experiment_id: str = experiment_id
+        self._job_name: str = job_name
+        self._root_attributes: dict[str, object] = dict(attributes) if attributes else {}
+        self._trace_id_int: int = _new_id(128)
+        self._trace_id_str: str = f"tr-{encode_trace_id(self._trace_id_int)}"
+        self._root_span_id_int: int = _new_id(64)
+        self._child_spans: list[Span] = []
+        self._pending_feedback: list[tuple[str, bool | float, str]] = []
+        self._start: datetime | None = None
+        self._discarded: bool = False
+
+    @property
+    def trace_id(self) -> str:
+        """The trace_id this job's trace will be (or was) logged under --
+        exposed mainly for tests/callers that want to cross-reference the
+        trace after the `with` block closes."""
+        return self._trace_id_str
+
+    def __enter__(self) -> JobTrace:
+        self._start = datetime.now(UTC)
+        return self
+
+    def step(self, name: str, **attributes: object) -> _JobStep:
+        """Return a nested context manager for one named step inside this
+        job's `with` block, e.g. `with t.step("resolve-champion"): ...`.
+        Each step becomes its own `SpanType.TOOL` child span with REAL
+        (measured, not nominal) start/end timing -- see `_JobStep`.
+        `**attributes` (if given) become that child span's own attributes,
+        e.g. `t.step("eval-join", category=category)`.
+        """
+        return _JobStep(self, name, attributes)
+
+    def record_step(
+        self,
+        name: str,
+        start: datetime,
+        end: datetime,
+        attributes: Mapping[str, object],
+        status: SpanStatus | None,
+    ) -> None:
+        """Record one already-completed step as a child span (called by
+        `_JobStep.__exit__` -- NOT part of the `step`/`feedback`/`discard`
+        public contract callers are meant to use directly, but deliberately
+        NOT underscore-prefixed either: `_JobStep` lives in this same module
+        but is a DIFFERENT class, and a leading underscore here would make
+        that legitimate same-module cross-class call a `reportPrivateUsage`
+        violation under this package's strict basedpyright config).
+        """
+        start_ns = int(start.timestamp() * 1_000_000_000)
+        end_ns = int(end.timestamp() * 1_000_000_000)
+        self._child_spans.append(
+            _make_span(
+                trace_id_int=self._trace_id_int,
+                trace_id_str=self._trace_id_str,
+                span_id_int=_new_id(64),
+                parent_id_int=self._root_span_id_int,
+                name=name,
+                span_type=SpanType.TOOL,
+                start_ns=start_ns,
+                end_ns=end_ns,
+                attributes=attributes,
+                status=status,
+            )
+        )
+
+    def feedback(self, name: str, value: bool | float, *, rationale: str = "") -> None:
+        """Queue one `Feedback` assessment (bool or numeric), flushed once
+        this job's `with` block exits -- see this class's own docstring for
+        why queuing-then-flushing-at-`__exit__` (rather than logging
+        immediately) is safe: the trace row is always written via
+        `start_trace`/`log_spans` FIRST, so `log_assessment`'s foreign-key
+        requirement is always already satisfied by the time queued feedback
+        is flushed."""
+        self._pending_feedback.append((name, value, rationale))
+
+    def discard(self) -> None:
+        """Mark this job trace to be silently dropped (nothing written at
+        all) if the `with` block exits NORMALLY -- see this module's own
+        docstring for why some callers need this (a `timelines` sub-trace is
+        only meaningful when it actually appended a point this invocation).
+        Has NO effect when the block raises: a real failure is never
+        silently dropped by `discard()`, regardless of when/whether it was
+        called."""
+        self._discarded = True
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> Literal[False]:
+        end = datetime.now(UTC)
+        failed = exc_type is not None
+        if self._discarded and not failed:
+            return False
+
+        start = self._start if self._start is not None else end
+        start_ns = int(start.timestamp() * 1_000_000_000)
+        end_ns = int(end.timestamp() * 1_000_000_000)
+
+        trace_state = TraceState.ERROR if failed else TraceState.OK
+        root_status = (
+            SpanStatus(status_code=SpanStatusCode.ERROR, description=str(exc)[:500])
+            if failed
+            else None
+        )
+        root_attributes = {**self._root_attributes, TIMING_ATTR_KEY: TIMING_REAL}
+        root_span = _make_span(
+            trace_id_int=self._trace_id_int,
+            trace_id_str=self._trace_id_str,
+            span_id_int=self._root_span_id_int,
+            parent_id_int=None,
+            name=self._job_name,
+            span_type=SpanType.TASK,
+            start_ns=start_ns,
+            end_ns=end_ns,
+            attributes=root_attributes,
+            status=root_status,
+        )
+        trace_info = TraceInfo(
+            trace_id=self._trace_id_str,
+            trace_location=TraceLocation.from_experiment_id(self._experiment_id),
+            request_time=start_ns // _NS_PER_MS,
+            state=trace_state,
+            execution_duration=(end_ns - start_ns) // _NS_PER_MS,
+            tags={
+                TraceTagKey.TRACE_NAME: self._job_name,
+                JOB_TRACE_KIND_TAG: JOB_TRACE_KIND_VALUE,
+            },
+            trace_metadata={},
+        )
+        try:
+            self._tracing_client.start_trace(trace_info)
+            self._tracing_client.log_spans(self._experiment_id, [root_span, *self._child_spans])
+            for name, value, rationale in self._pending_feedback:
+                _log_feedback(
+                    self._tracing_client,
+                    self._trace_id_str,
+                    name=name,
+                    value=value,
+                    rationale=rationale or f"{name} (job_trace: {self._job_name})",
+                    source_id=JOB_TRACE_SOURCE_ID,
+                )
+        except MlflowException as trace_exc:
+            # Observability must never become a NEW failure mode for the
+            # pipeline it observes -- a transient tracking-store write
+            # failure while trying to RECORD that a job ran must never mask
+            # (nor be mistaken for) the job's own real outcome. See this
+            # module's own docstring for the full rationale.
+            warnings.warn(
+                f"job_trace: failed to persist job-execution trace for "
+                f"{self._job_name!r} (experiment_id={self._experiment_id!r}): {trace_exc}",
+                stacklevel=2,
+            )
+        return False  # NEVER suppress the wrapped block's own exception (if any).
+
+
+def job_trace(
+    tracing_client: TracingClient,
+    experiment_id: str,
+    job_name: str,
+    *,
+    attributes: Mapping[str, object] | None = None,
+) -> JobTrace:
+    """Return a NEW `JobTrace` context manager for one job/CLI-invocation
+    execution into `experiment_id`, named `job_name` (becomes the root
+    span's name, `SpanType.TASK`, and the `TraceTagKey.TRACE_NAME` tag).
+
+    Takes an already-resolved `experiment_id` (not an experiment NAME)
+    -- consistent with every other function in this module
+    (`emit_fp_race_trace(s)`/`emit_rs_horse_trace(s)` all take `experiment_id`
+    too) -- since resolving a name to an id requires an `MlflowClient` (via
+    `logging_api.get_or_create_experiment`), not just the `TracingClient`
+    this whole module is otherwise built around, and every real call site
+    already has the resolved id in hand from its own `get_or_create_
+    experiment` call before it ever needs a `JobTrace`.
+
+    `attributes` (if given) become the root span's own attributes (e.g.
+    `{"category": category, "task": task}`), visible on the Tool-calls page.
+
+    Usage (see this module's own docstring for the full contract):
+
+        tracing_client = trace_emit.build_tracing_client(client)
+        with trace_emit.job_trace(tracing_client, experiment_id, "eval-cells") as t:
+            with t.step("resolve-champion"):
+                ...
+            t.feedback("runs_created", float(runs_created))
+    """
+    return JobTrace(tracing_client, experiment_id, job_name, attributes=attributes)

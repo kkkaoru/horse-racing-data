@@ -17,7 +17,7 @@ import pandas as pd
 from mlflow import MlflowClient
 from mlflow.entities import Metric, RunTag
 
-from mlflow_tracking import cells, config, timeline
+from mlflow_tracking import cells, config, timeline, trace_emit
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -88,6 +88,29 @@ SERVE_KEY_TAG: Final[str] = "serve_key"
 # (two unrelated `retest_wf.py` reports can share the same --run-name), so
 # reuse is only attempted when a caller explicitly opts in via `--run-key`.
 RUN_KEY_TAG: Final[str] = "run_key"
+
+# Best-effort key list for the job_trace `races` Feedback on `ingest_serve_
+# accuracy` (see trace_emit.job_trace) -- neither `FP_SERVE_METRIC_KEYS` nor
+# `RS_SERVE_METRIC_KEYS` above includes a race/horse COUNT field, so this
+# checks a small set of known key names that MAY appear in either section's
+# raw payload dict, returning 0.0 (a deliberately honest "unknown", never a
+# fabricated nonzero guess) when none of them are present.
+_RACES_LIKE_KEYS: Final[tuple[str, ...]] = ("races", "race_count", "total_horses", "horse_count")
+
+
+def _races_feedback_value(fp: object, rs: object) -> float:
+    """Best-effort extraction of a "how many races/horses did this serve-
+    accuracy check cover" numeric value for the job_trace `races` Feedback
+    (see `_RACES_LIKE_KEYS`'s own comment) -- checks the finish_position
+    section first, then running_style, returning the first match."""
+    for section in (fp, rs):
+        if not isinstance(section, dict):
+            continue
+        for key in _RACES_LIKE_KEYS:
+            value = section.get(key)
+            if isinstance(value, int | float):
+                return float(value)
+    return 0.0
 
 
 def _group_trial_rows(
@@ -331,6 +354,23 @@ def ingest_serve_accuracy(
     hook, which this function's own JSON-payload shape does not go through.
     Both are wired so a manual backfill (this function) and the live cron
     path (training_run.py) converge on the same timeline runs.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into this SAME `resolved_experiment` (`finish-position/serve-accuracy`
+    or `running-style/eval`) -- Feedback `races` (numeric, see
+    `_races_feedback_value`); `eval_regime`/`era` are span ATTRIBUTES, not
+    Feedback (per this package's own convention: a Feedback is a scored
+    judgment about outcome quality, an attribute is descriptive metadata).
+    When this call ALSO upserts a `timelines` point (whenever the finish-
+    position/running-style timeline-metric extraction is non-empty for the
+    section(s) present), the REAL `timeline.upsert_timeline_point` call
+    itself is wrapped in its OWN NESTED job_trace landing in
+    `config.EXPERIMENT_TIMELINES` (Feedback `points_appended`, 1 or 2) --
+    mirroring `sync_production.py`'s "one trace per call, not per point"
+    convention, except here the decision is known SYNCHRONOUSLY (0/1/2,
+    computed before opening the trace) rather than needing `JobTrace.
+    discard()` after a whole date-range loop, so the inner trace is simply
+    never opened at all when nothing would be appended.
     """
     validate_eval_regime(eval_regime)
     payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -342,59 +382,77 @@ def ingest_serve_accuracy(
     )
 
     experiment_id = get_or_create_experiment(client, resolved_experiment)
-    model_version_identity = _serve_accuracy_model_version_identity(fp, rs)
-    serve_key = f"{model_version_identity}:{date_str}:{category}"
-    run_id = _find_serve_run(client, experiment_id, serve_key)
-    if run_id is None:
-        run = client.create_run(
-            experiment_id,
-            run_name=f"{category}-{date_str}",
-            tags={SERVE_KEY_TAG: serve_key},
-        )
-        run_id = run.info.run_id
-
-    tags: dict[str, str] = {
-        "date": date_str,
-        "category": category,
-        "era": era,
-        "eval_regime": eval_regime,
-    }
-    metric_items: list[Metric] = []
-    if isinstance(fp, dict):
-        metric_items.extend(_fp_serve_metrics(fp))
-        model_version_counts = fp.get("model_version_counts")
-        if isinstance(model_version_counts, dict) and model_version_counts:
-            tags["model_version_counts"] = json.dumps(model_version_counts, ensure_ascii=False)
-    if isinstance(rs, dict):
-        metric_items.extend(_rs_serve_metrics(rs))
-        rs_model_version = rs.get("model_version")
-        if isinstance(rs_model_version, str) and rs_model_version:
-            tags["rs_model_version"] = rs_model_version
-
-    # Timeline upsert rides along in the same log_batch_chunked call below by
-    # writing the returned timeline run_id into `tags` before `tag_items` is
-    # built from it -- see timeline.py's module docstring for why a
-    # persistent per-(task, category) run is needed for the UI's line charts
-    # to show a real trend instead of one dot per day.
-    if isinstance(fp, dict):
-        fp_timeline_metrics = timeline.fp_metrics_for_timeline(fp)
-        if fp_timeline_metrics:
-            timeline_run_id = timeline.upsert_timeline_point(
-                client, "finish-position", category, date_str, fp_timeline_metrics
+    tracing_client = trace_emit.build_tracing_client(client)
+    with trace_emit.job_trace(
+        tracing_client,
+        experiment_id,
+        "ingest-serve-accuracy",
+        attributes={"category": category, "date": date_str, "eval_regime": eval_regime, "era": era},
+    ) as t:
+        model_version_identity = _serve_accuracy_model_version_identity(fp, rs)
+        serve_key = f"{model_version_identity}:{date_str}:{category}"
+        run_id = _find_serve_run(client, experiment_id, serve_key)
+        if run_id is None:
+            run = client.create_run(
+                experiment_id,
+                run_name=f"{category}-{date_str}",
+                tags={SERVE_KEY_TAG: serve_key},
             )
-            tags["timeline_run_id:finish-position"] = timeline_run_id
-    if isinstance(rs, dict):
-        rs_timeline_metrics = timeline.rs_metrics_for_timeline(rs)
-        if rs_timeline_metrics:
-            timeline_run_id = timeline.upsert_timeline_point(
-                client, "running-style", category, date_str, rs_timeline_metrics
-            )
-            tags["timeline_run_id:running-style"] = timeline_run_id
+            run_id = run.info.run_id
 
-    tag_items = [RunTag(k, v) for k, v in tags.items() if v]
-    log_batch_chunked(client, run_id, metrics=metric_items, tags=tag_items)
-    log_json_artifact(client, run_id, "serve_accuracy.json", payload)
-    client.set_terminated(run_id, status="FINISHED")
+        tags: dict[str, str] = {
+            "date": date_str,
+            "category": category,
+            "era": era,
+            "eval_regime": eval_regime,
+        }
+        metric_items: list[Metric] = []
+        if isinstance(fp, dict):
+            metric_items.extend(_fp_serve_metrics(fp))
+            model_version_counts = fp.get("model_version_counts")
+            if isinstance(model_version_counts, dict) and model_version_counts:
+                tags["model_version_counts"] = json.dumps(model_version_counts, ensure_ascii=False)
+        if isinstance(rs, dict):
+            metric_items.extend(_rs_serve_metrics(rs))
+            rs_model_version = rs.get("model_version")
+            if isinstance(rs_model_version, str) and rs_model_version:
+                tags["rs_model_version"] = rs_model_version
+
+        # Timeline upsert rides along in the same log_batch_chunked call
+        # below by writing the returned timeline run_id into `tags` before
+        # `tag_items` is built from it -- see timeline.py's module docstring
+        # for why a persistent per-(task, category) run is needed for the
+        # UI's line charts to show a real trend instead of one dot per day.
+        fp_timeline_metrics = timeline.fp_metrics_for_timeline(fp) if isinstance(fp, dict) else {}
+        rs_timeline_metrics = timeline.rs_metrics_for_timeline(rs) if isinstance(rs, dict) else {}
+        if fp_timeline_metrics or rs_timeline_metrics:
+            timelines_experiment_id = get_or_create_experiment(client, config.EXPERIMENT_TIMELINES)
+            points_appended = 0
+            with trace_emit.job_trace(
+                tracing_client,
+                timelines_experiment_id,
+                "ingest-serve-accuracy",
+                attributes={"category": category, "date": date_str},
+            ) as tt:
+                if fp_timeline_metrics:
+                    timeline_run_id = timeline.upsert_timeline_point(
+                        client, "finish-position", category, date_str, fp_timeline_metrics
+                    )
+                    tags["timeline_run_id:finish-position"] = timeline_run_id
+                    points_appended += 1
+                if rs_timeline_metrics:
+                    timeline_run_id = timeline.upsert_timeline_point(
+                        client, "running-style", category, date_str, rs_timeline_metrics
+                    )
+                    tags["timeline_run_id:running-style"] = timeline_run_id
+                    points_appended += 1
+                tt.feedback("points_appended", float(points_appended))
+
+        tag_items = [RunTag(k, v) for k, v in tags.items() if v]
+        log_batch_chunked(client, run_id, metrics=metric_items, tags=tag_items)
+        log_json_artifact(client, run_id, "serve_accuracy.json", payload)
+        client.set_terminated(run_id, status="FINISHED")
+        t.feedback("races", _races_feedback_value(fp, rs))
     return run_id
 
 

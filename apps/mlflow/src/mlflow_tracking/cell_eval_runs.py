@@ -216,7 +216,15 @@ from mlflow import MlflowClient
 from mlflow.entities import Metric, RunTag
 from mlflow.exceptions import MlflowException
 
-from mlflow_tracking import champion_cell_eval, config, db, registry, serve_eval, timeline
+from mlflow_tracking import (
+    champion_cell_eval,
+    config,
+    db,
+    registry,
+    serve_eval,
+    timeline,
+    trace_emit,
+)
 from mlflow_tracking.logging_api import get_or_create_experiment, log_batch_chunked
 
 logger: Final = logging.getLogger(__name__)
@@ -711,6 +719,26 @@ def eval_cells_for_category(
     has no Ban-ei support) -- both checks run before any DB or MLflow work,
     matching `champion_cell_eval.eval_champion_cells_for_category`'s own
     validation order.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into this SAME (category, task)-resolved `experiment_id` -- steps
+    `resolve-champion`/`collect-rows`/`build-eval-rows`/`log-runs` mirror
+    this function's own phases (`collect-rows` covers ONLY the raw Neon
+    fetch; `build-eval-rows` covers grouping by model_version, the local-
+    replica results/metadata fetch per distinct date, building FP/RS eval
+    rows, cell-grouping, per-cell metrics, AND the volume-guard floor
+    computation, since all of that shares one natural "turn raw rows into
+    scoreable groups" phase; `log-runs` covers the per-(model_version, cell)
+    create-or-reuse-run loop -- a deliberate step-naming judgment call, not
+    a 1:1 mapping onto private helper names, mirroring `champion_cell_eval.
+    eval_champion_cells_for_category`'s own analogous note). The
+    zero-genuinely-served-rows early return (see this module's own
+    docstring: "★ Design choice") still gets its own trace with only
+    `resolve-champion`/`collect-rows` steps recorded (there is nothing to
+    build/log yet) and Feedback `runs_created=0.0`/
+    `runs_skipped_low_volume=0.0`. Feedback `runs_created` (numeric) and
+    `runs_skipped_low_volume` (numeric, `cells_skipped_low_volume`) are read
+    straight off this function's own counters either way.
     """
     if task not in ("finish-position", "running-style"):
         raise ValueError(f"task must be 'finish-position' or 'running-style', got: {task!r}")
@@ -722,11 +750,6 @@ def eval_cells_for_category(
     as_of_str = resolved_as_of.strftime("%Y%m%d")
     date_from = (resolved_as_of - timedelta(days=window_days)).strftime("%Y%m%d")
     date_to = as_of_str
-
-    champion_ref = champion_cell_eval.resolve_champion_model_version(
-        client, normalized_category, task
-    )
-    champion_label = champion_ref.model_version_label
 
     experiment_name = (
         config.EXPERIMENT_FP_CELL_EVAL
@@ -742,122 +765,165 @@ def eval_cells_for_category(
     )
     run_name_labels = _FP_RUN_NAME_LABELS if task == "finish-position" else _RS_RUN_NAME_LABELS
 
-    neon_conn = neon_connect()
-    local_conn = local_connect()
-    try:
-        raw_rows = _collect_all_prediction_rows(
-            neon_conn, normalized_category, task, date_from, date_to
-        )
-        if not raw_rows:
-            logger.info(
-                "eval-cells category=%s task=%s window_days=%d: no genuinely-served rows in "
-                "window, 0 runs created",
-                normalized_category,
-                task,
-                window_days,
+    tracing_client = trace_emit.build_tracing_client(client)
+    with trace_emit.job_trace(
+        tracing_client,
+        experiment_id,
+        "eval-cells",
+        attributes={
+            "category": normalized_category,
+            "task": task,
+            "window_days": window_days,
+            "min_races": min_races,
+            "as_of_date": as_of_str,
+        },
+    ) as t:
+        with t.step("resolve-champion"):
+            champion_ref = champion_cell_eval.resolve_champion_model_version(
+                client, normalized_category, task
             )
-            return CellEvalRunsSummary(
-                category=normalized_category,
-                task=task,
-                window_days=window_days,
-                min_races_requested=min_races,
-                min_races_used=min_races,
-                volume_guard_triggered=False,
-                projected_run_count_at_requested_floor=0,
-                runs_created=0,
-                runs_reused=0,
-                cells_skipped_low_volume=0,
-                champion_model_version=champion_label,
-            )
+            champion_label = champion_ref.model_version_label
 
-        rows_by_version = serve_eval.group_by_model_version(raw_rows)
-        distinct_dates = {str(row["kaisai_nen"]) + str(row["kaisai_tsukihi"]) for row in raw_rows}
-        results_by_date = {
-            race_date: serve_eval.fetch_race_results(local_conn, normalized_category, race_date)
-            for race_date in distinct_dates
-        }
-
-        if task == "finish-position":
-            fp_eval_rows_by_version = _build_fp_eval_rows_by_version(
-                normalized_category, rows_by_version, results_by_date
-            )
-            groups_with_metrics = _fp_groups_with_metrics(fp_eval_rows_by_version)
-        else:
-            meta_by_date = {
-                race_date: serve_eval.fetch_race_metadata(
-                    local_conn, normalized_category, race_date
+        neon_conn = neon_connect()
+        local_conn = local_connect()
+        try:
+            with t.step("collect-rows"):
+                raw_rows = _collect_all_prediction_rows(
+                    neon_conn, normalized_category, task, date_from, date_to
                 )
-                for race_date in distinct_dates
-            }
-            rs_eval_rows_by_version = _build_rs_eval_rows_by_version(
-                normalized_category, rows_by_version, results_by_date, meta_by_date
-            )
-            groups_with_metrics = _rs_groups_with_metrics(rs_eval_rows_by_version)
 
-        group_counts = [unit_count for unit_count, _metrics in groups_with_metrics.values()]
-        # `cap` is passed EXPLICITLY (not left to `_raise_min_races_floor_if_
-        # needed`'s own default parameter) so a test/operator override of the
-        # module-level `MAX_RUNS_PER_CATEGORY_TASK` constant takes effect at
-        # call time -- a default parameter value is bound once at function-
-        # definition time, so relying on it here would silently ignore any
-        # later reassignment of the module attribute.
-        min_races_used, guard_triggered, projected = _raise_min_races_floor_if_needed(
-            group_counts, min_races, cap=MAX_RUNS_PER_CATEGORY_TASK
-        )
-        if guard_triggered:
-            warnings.warn(
-                f"eval-cells volume guard triggered category={normalized_category!r} "
-                f"task={task!r}: requested min_races={min_races} would have produced "
-                f"{projected} runs (cap={MAX_RUNS_PER_CATEGORY_TASK}); floor raised to "
-                f"{min_races_used}",
-                stacklevel=2,
-            )
-
-        runs_created = 0
-        runs_reused = 0
-        cells_skipped_low_volume = 0
-        step = timeline.step_for_date(as_of_str)
-        timestamp_ms = _timestamp_ms_for_date(as_of_str)
-
-        for (model_version, cell_values), (unit_count, metrics) in groups_with_metrics.items():
-            if unit_count < min_races_used:
-                cells_skipped_low_volume += 1
-                continue
-
-            relation = _classify_champion_match(model_version, champion_label)
-            cell_key = _encode_cell_key(dimensions, cell_values)
-            cell_run_key = f"{normalized_category}:{cell_key}:{model_version}:{window_days}"
-            low_n = unit_count < champion_cell_eval.MIN_CELL_COUNT
-            tags = {
-                CELL_RUN_KEY_TAG: cell_run_key,
-                "category": normalized_category,
-                **_cell_tags(dimensions, cell_values),
-                "model_version": model_version,
-                "champion_relation": relation,
-                "window_days": str(window_days),
-                "low_n": "true" if low_n else "false",
-            }
-            run_name = _build_run_name(
-                normalized_category, dimensions, cell_values, run_name_labels, model_version
-            )
-
-            existing_run_id = _find_existing_cell_run(client, experiment_id, cell_run_key)
-            if existing_run_id is None:
-                run = client.create_run(
-                    experiment_id, run_name=run_name, tags={CELL_RUN_KEY_TAG: cell_run_key}
+            if not raw_rows:
+                logger.info(
+                    "eval-cells category=%s task=%s window_days=%d: no genuinely-served rows "
+                    "in window, 0 runs created",
+                    normalized_category,
+                    task,
+                    window_days,
                 )
-                run_id = run.info.run_id
-                runs_created += 1
-            else:
-                run_id = existing_run_id
-                runs_reused += 1
+                summary = CellEvalRunsSummary(
+                    category=normalized_category,
+                    task=task,
+                    window_days=window_days,
+                    min_races_requested=min_races,
+                    min_races_used=min_races,
+                    volume_guard_triggered=False,
+                    projected_run_count_at_requested_floor=0,
+                    runs_created=0,
+                    runs_reused=0,
+                    cells_skipped_low_volume=0,
+                    champion_model_version=champion_label,
+                )
+                t.feedback("runs_created", 0.0)
+                t.feedback("runs_skipped_low_volume", 0.0)
+                return summary
 
-            log_batch_chunked(client, run_id, tags=[RunTag(k, v) for k, v in tags.items()])
-            _append_cell_metric_point(client, run_id, metrics, step=step, timestamp_ms=timestamp_ms)
-            client.set_terminated(run_id, status="FINISHED")
-    finally:
-        neon_conn.close()
-        local_conn.close()
+            with t.step("build-eval-rows"):
+                rows_by_version = serve_eval.group_by_model_version(raw_rows)
+                distinct_dates = {
+                    str(row["kaisai_nen"]) + str(row["kaisai_tsukihi"]) for row in raw_rows
+                }
+                results_by_date = {
+                    race_date: serve_eval.fetch_race_results(
+                        local_conn, normalized_category, race_date
+                    )
+                    for race_date in distinct_dates
+                }
+
+                if task == "finish-position":
+                    fp_eval_rows_by_version = _build_fp_eval_rows_by_version(
+                        normalized_category, rows_by_version, results_by_date
+                    )
+                    groups_with_metrics = _fp_groups_with_metrics(fp_eval_rows_by_version)
+                else:
+                    meta_by_date = {
+                        race_date: serve_eval.fetch_race_metadata(
+                            local_conn, normalized_category, race_date
+                        )
+                        for race_date in distinct_dates
+                    }
+                    rs_eval_rows_by_version = _build_rs_eval_rows_by_version(
+                        normalized_category, rows_by_version, results_by_date, meta_by_date
+                    )
+                    groups_with_metrics = _rs_groups_with_metrics(rs_eval_rows_by_version)
+
+                group_counts = [
+                    unit_count for unit_count, _metrics in groups_with_metrics.values()
+                ]
+                # `cap` is passed EXPLICITLY (not left to `_raise_min_races_
+                # floor_if_needed`'s own default parameter) so a test/
+                # operator override of the module-level
+                # `MAX_RUNS_PER_CATEGORY_TASK` constant takes effect at call
+                # time -- a default parameter value is bound once at
+                # function-definition time, so relying on it here would
+                # silently ignore any later reassignment of the module
+                # attribute.
+                min_races_used, guard_triggered, projected = _raise_min_races_floor_if_needed(
+                    group_counts, min_races, cap=MAX_RUNS_PER_CATEGORY_TASK
+                )
+                if guard_triggered:
+                    warnings.warn(
+                        f"eval-cells volume guard triggered category={normalized_category!r} "
+                        f"task={task!r}: requested min_races={min_races} would have produced "
+                        f"{projected} runs (cap={MAX_RUNS_PER_CATEGORY_TASK}); floor raised to "
+                        f"{min_races_used}",
+                        stacklevel=2,
+                    )
+
+            runs_created = 0
+            runs_reused = 0
+            cells_skipped_low_volume = 0
+            step_value = timeline.step_for_date(as_of_str)
+            timestamp_ms = _timestamp_ms_for_date(as_of_str)
+
+            with t.step("log-runs"):
+                for (model_version, cell_values), (unit_count, metrics) in (
+                    groups_with_metrics.items()
+                ):
+                    if unit_count < min_races_used:
+                        cells_skipped_low_volume += 1
+                        continue
+
+                    relation = _classify_champion_match(model_version, champion_label)
+                    cell_key = _encode_cell_key(dimensions, cell_values)
+                    cell_run_key = (
+                        f"{normalized_category}:{cell_key}:{model_version}:{window_days}"
+                    )
+                    low_n = unit_count < champion_cell_eval.MIN_CELL_COUNT
+                    tags = {
+                        CELL_RUN_KEY_TAG: cell_run_key,
+                        "category": normalized_category,
+                        **_cell_tags(dimensions, cell_values),
+                        "model_version": model_version,
+                        "champion_relation": relation,
+                        "window_days": str(window_days),
+                        "low_n": "true" if low_n else "false",
+                    }
+                    run_name = _build_run_name(
+                        normalized_category, dimensions, cell_values, run_name_labels, model_version
+                    )
+
+                    existing_run_id = _find_existing_cell_run(client, experiment_id, cell_run_key)
+                    if existing_run_id is None:
+                        run = client.create_run(
+                            experiment_id, run_name=run_name, tags={CELL_RUN_KEY_TAG: cell_run_key}
+                        )
+                        run_id = run.info.run_id
+                        runs_created += 1
+                    else:
+                        run_id = existing_run_id
+                        runs_reused += 1
+
+                    log_batch_chunked(client, run_id, tags=[RunTag(k, v) for k, v in tags.items()])
+                    _append_cell_metric_point(
+                        client, run_id, metrics, step=step_value, timestamp_ms=timestamp_ms
+                    )
+                    client.set_terminated(run_id, status="FINISHED")
+        finally:
+            neon_conn.close()
+            local_conn.close()
+
+        t.feedback("runs_created", float(runs_created))
+        t.feedback("runs_skipped_low_volume", float(cells_skipped_low_volume))
 
     logger.info(
         "eval-cells category=%s task=%s window_days=%d min_races=%d(used=%d) runs_created=%d "

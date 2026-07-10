@@ -213,6 +213,25 @@ def backfill_serve_timeline(
     `runner` defaults to `_default_subprocess_runner` (real subprocess,
     HORSE_RACING_MLFLOW_ENABLED forced off) -- tests always inject a fake
     one so this function never shells out or touches Neon/local-PG.
+
+    ★ Job-execution trace (2026-07-11) -- DELIBERATELY none of its OWN: this
+    function does NOT open a dedicated `trace_emit.job_trace` of its own
+    (unlike `sync_production.sync_production_range`'s analogous `timelines`
+    wiring). `_run_one_date` routes every ingested date through
+    `ingest_eval.ingest_serve_accuracy`, which is ITSELF already fully
+    job_trace-wired (one primary trace per call into finish-position/
+    serve-accuracy or running-style/eval, PLUS a nested `timelines` trace
+    whenever it actually upserts a point) -- see that function's own
+    docstring. A first implementation of this wiring wrapped the WHOLE
+    date-range loop in its own SEPARATE `timelines` job_trace on top of
+    that, and a real test run caught the resulting DOUBLE-COUNT immediately
+    (a 2-date range produced 3 `timelines` traces: 2 from the per-date
+    `ingest_serve_accuracy` delegation + 1 redundant aggregate here). The
+    correct grain for THIS module is therefore "N traces, one per genuinely
+    ingested date" (via delegation), not "one trace per whole call" --
+    despite `sync_production.py`'s sibling docstring note about preferring
+    coarser granularity, which does not apply here since this function has
+    no `timeline.upsert_timeline_point` call of its own to bundle.
     """
     if category not in SUPPORTED_CATEGORIES:
         raise ValueError(

@@ -48,6 +48,29 @@ calls these exact same `trace_emit` functions over the FULL historical
 `sync_eval_logged=true` run population, so there is exactly ONE
 trace-emission code path shared by the daily sync and the historical
 backfill.
+
+★ JOB-EXECUTION trace (2026-07-11, see `trace_emit.py`'s own "JOB-EXECUTION
+TRACES" docstring section): `sync_production_range` itself ALSO gets ONE
+`trace_emit.job_trace` per call, but landing in `timelines`, NEVER in either
+production-usage experiment -- a job-level trace there would double-count
+the per-race/per-horse traces above, which are already this module's Usage-
+page signal for those two experiments. `timelines` gets one instead because
+this whole call's `_sync_fp_eval`/`_sync_rs_eval` passes may collectively
+call `timeline.upsert_timeline_point` many times across the date/category
+range, and bundling all of them into ONE trace per `sync_production_range`
+call (never one per date) is the "meaningful unit of work" grain
+`trace_emit.py`'s own docstring calls for. Feedback `points_appended`
+(numeric) counts how many `_sync_fp_eval`/`_sync_rs_eval` calls this call
+returned `logged=True` from (`fp_eval_logged + rs_eval_logged`) -- each such
+call makes EXACTLY one `timeline.upsert_timeline_point` call, so this is an
+exact count of upsert *attempts*, not a finer "how many individual metric
+keys were genuinely new after that function's own per-step dedup" count
+(threading that back through would be a much larger change to `timeline.py`'s
+widely-used return contract). When zero points were appended this call
+(the common case: most days sync nothing new), the trace is discarded
+(`JobTrace.discard()`) rather than logged empty -- see that method's own
+docstring. Deliberately UNCONDITIONAL, independent of `emit_traces`/
+`--no-traces` (see the code's own comment at `job_tracing_client` for why).
 """
 
 from __future__ import annotations
@@ -1409,6 +1432,22 @@ def sync_production_range(
     # than attempting-and-discarding it.
     tracing_client = trace_emit.build_tracing_client(client) if emit_traces else None
 
+    # ★ Job-execution trace (2026-07-11) into `timelines` -- see this
+    # module's own docstring's "★ MLflow traces" section for the full
+    # rationale. DELIBERATELY UNCONDITIONAL (independent of `emit_traces`/
+    # `--no-traces`, unlike `tracing_client` above): `--no-traces`'s own
+    # docstring scopes it to the per-race/per-horse emission into the
+    # production-usage experiments specifically (a potentially large trace
+    # volume); this ONE lightweight, always-lands-in-`timelines` job trace
+    # per `sync_production_range` call is a different, much cheaper
+    # signal (one trace, one small Feedback), so it is not gated by that
+    # flag. Reuses the SAME `TracingClient` when one was already built
+    # above (`emit_traces=True`) rather than constructing a second one.
+    job_tracing_client = (
+        tracing_client if tracing_client is not None else trace_emit.build_tracing_client(client)
+    )
+    timelines_experiment_id = get_or_create_experiment(client, config.EXPERIMENT_TIMELINES)
+
     neon_conn = neon_connect()
     local_conn = local_connect()
     # Both experiment ids are resolved lazily (on first actual use) rather
@@ -1417,169 +1456,191 @@ def sync_production_range(
     # production-usage experiment at all.
     fp_experiment_id: str | None = None
     rs_experiment_id: str | None = None
-    try:
-        for date_str in dates:
-            for category in categories:
-                if fp_experiment_id is None:
-                    fp_experiment_id = get_or_create_experiment(
-                        client, config.EXPERIMENT_FP_PRODUCTION_USAGE
-                    )
-                fp_outcome: _CategoryDateOutcome | None = None
-                try:
-                    fp_outcome = _sync_fp_category_date(
-                        client,
-                        tracing_client,
-                        fp_experiment_id,
-                        neon_conn,
-                        local_conn,
-                        category,
-                        date_str,
-                    )
-                except _ISOLATED_EXCEPTIONS as exc:
-                    errors.append(f"{date_str}:{category}:finish-position: {exc}")
-                else:
-                    fp_runs_created += fp_outcome.runs_created
-                    fp_runs_reused += fp_outcome.runs_reused
-                    fp_eval_logged += fp_outcome.eval_logged
-                    fp_eval_skipped_no_results += fp_outcome.eval_skipped_no_results
-                    traces_created += fp_outcome.traces_created
-                    traces_already_existed += fp_outcome.traces_already_existed
-                    errors.extend(
-                        f"{date_str}:{category}:trace-emit:finish-position: {msg}"
-                        for msg in fp_outcome.trace_errors
-                    )
-
-                rs_outcome: _CategoryDateOutcome | None = None
-                if category in RS_CATEGORIES:
-                    if rs_experiment_id is None:
-                        rs_experiment_id = get_or_create_experiment(
-                            client, config.EXPERIMENT_RS_PRODUCTION_USAGE
+    with trace_emit.job_trace(
+        job_tracing_client,
+        timelines_experiment_id,
+        "sync-production",
+        attributes={
+            "date_from": date_from,
+            "date_to": date_to,
+            "categories": ",".join(categories),
+        },
+    ) as t:
+        try:
+            for date_str in dates:
+                for category in categories:
+                    if fp_experiment_id is None:
+                        fp_experiment_id = get_or_create_experiment(
+                            client, config.EXPERIMENT_FP_PRODUCTION_USAGE
                         )
+                    fp_outcome: _CategoryDateOutcome | None = None
                     try:
-                        rs_outcome = _sync_rs_category_date(
+                        fp_outcome = _sync_fp_category_date(
                             client,
                             tracing_client,
-                            rs_experiment_id,
+                            fp_experiment_id,
                             neon_conn,
                             local_conn,
                             category,
                             date_str,
                         )
                     except _ISOLATED_EXCEPTIONS as exc:
-                        errors.append(f"{date_str}:{category}:running-style: {exc}")
+                        errors.append(f"{date_str}:{category}:finish-position: {exc}")
                     else:
-                        rs_runs_created += rs_outcome.runs_created
-                        rs_runs_reused += rs_outcome.runs_reused
-                        rs_eval_logged += rs_outcome.eval_logged
-                        rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
-                        traces_created += rs_outcome.traces_created
-                        traces_already_existed += rs_outcome.traces_already_existed
+                        fp_runs_created += fp_outcome.runs_created
+                        fp_runs_reused += fp_outcome.runs_reused
+                        fp_eval_logged += fp_outcome.eval_logged
+                        fp_eval_skipped_no_results += fp_outcome.eval_skipped_no_results
+                        traces_created += fp_outcome.traces_created
+                        traces_already_existed += fp_outcome.traces_already_existed
                         errors.extend(
-                            f"{date_str}:{category}:trace-emit:running-style: {msg}"
-                            for msg in rs_outcome.trace_errors
+                            f"{date_str}:{category}:trace-emit:finish-position: {msg}"
+                            for msg in fp_outcome.trace_errors
                         )
 
-                    # Champion-mismatch check, RS side (see this function's
-                    # own docstring). Only reachable when the RS sync above
-                    # completed without raising -- a failed sync's champion
-                    # coverage is unknown, not meaningfully "no coverage".
-                    if rs_outcome is not None and _check_champion_gap(rs_outcome):
+                    rs_outcome: _CategoryDateOutcome | None = None
+                    if category in RS_CATEGORIES:
+                        if rs_experiment_id is None:
+                            rs_experiment_id = get_or_create_experiment(
+                                client, config.EXPERIMENT_RS_PRODUCTION_USAGE
+                            )
+                        try:
+                            rs_outcome = _sync_rs_category_date(
+                                client,
+                                tracing_client,
+                                rs_experiment_id,
+                                neon_conn,
+                                local_conn,
+                                category,
+                                date_str,
+                            )
+                        except _ISOLATED_EXCEPTIONS as exc:
+                            errors.append(f"{date_str}:{category}:running-style: {exc}")
+                        else:
+                            rs_runs_created += rs_outcome.runs_created
+                            rs_runs_reused += rs_outcome.runs_reused
+                            rs_eval_logged += rs_outcome.eval_logged
+                            rs_eval_skipped_no_results += rs_outcome.eval_skipped_no_results
+                            traces_created += rs_outcome.traces_created
+                            traces_already_existed += rs_outcome.traces_already_existed
+                            errors.extend(
+                                f"{date_str}:{category}:trace-emit:running-style: {msg}"
+                                for msg in rs_outcome.trace_errors
+                            )
+
+                        # Champion-mismatch check, RS side (see this function's
+                        # own docstring). Only reachable when the RS sync above
+                        # completed without raising -- a failed sync's champion
+                        # coverage is unknown, not meaningfully "no coverage".
+                        if rs_outcome is not None and _check_champion_gap(rs_outcome):
+                            warnings.warn(
+                                f"champion gap: category={category!r} date={date_str!r} "
+                                "task='running-style': champion "
+                                f"{rs_outcome.champion_model_version!r} did not serve; "
+                                f"served {sorted(rs_outcome.served_model_versions_live)}",
+                                stacklevel=2,
+                            )
+                            try:
+                                _log_champion_gap(
+                                    client,
+                                    rs_experiment_id,
+                                    date_str=date_str,
+                                    category=category,
+                                    task="running-style",
+                                    champion_model_version=rs_outcome.champion_model_version,
+                                    served_model_versions=rs_outcome.served_model_versions_live,
+                                )
+                            except _ISOLATED_EXCEPTIONS as exc:
+                                errors.append(
+                                    f"{date_str}:{category}:champion-gap:running-style: {exc}"
+                                )
+                            else:
+                                champion_gaps_detected += 1
+
+                    # Champion-mismatch check, FP side. Attempted for every
+                    # category (including banei, which has no RS side at all) --
+                    # only reachable when the FP sync above completed without
+                    # raising, same reasoning as the RS check above.
+                    if fp_outcome is not None and _check_champion_gap(fp_outcome):
                         warnings.warn(
                             f"champion gap: category={category!r} date={date_str!r} "
-                            "task='running-style': champion "
-                            f"{rs_outcome.champion_model_version!r} did not serve; "
-                            f"served {sorted(rs_outcome.served_model_versions_live)}",
+                            "task='finish-position': champion "
+                            f"{fp_outcome.champion_model_version!r} did not serve; "
+                            f"served {sorted(fp_outcome.served_model_versions_live)}",
                             stacklevel=2,
                         )
                         try:
                             _log_champion_gap(
                                 client,
-                                rs_experiment_id,
+                                fp_experiment_id,
                                 date_str=date_str,
                                 category=category,
-                                task="running-style",
-                                champion_model_version=rs_outcome.champion_model_version,
-                                served_model_versions=rs_outcome.served_model_versions_live,
+                                task="finish-position",
+                                champion_model_version=fp_outcome.champion_model_version,
+                                served_model_versions=fp_outcome.served_model_versions_live,
                             )
                         except _ISOLATED_EXCEPTIONS as exc:
                             errors.append(
-                                f"{date_str}:{category}:champion-gap:running-style: {exc}"
+                                f"{date_str}:{category}:champion-gap:finish-position: {exc}"
                             )
                         else:
                             champion_gaps_detected += 1
 
-                # Champion-mismatch check, FP side. Attempted for every
-                # category (including banei, which has no RS side at all) --
-                # only reachable when the FP sync above completed without
-                # raising, same reasoning as the RS check above.
-                if fp_outcome is not None and _check_champion_gap(fp_outcome):
+                    # Serving-gap check (see this function's own docstring). Only
+                    # reachable when the FP sync above completed without raising
+                    # -- a failed FP sync's race count is simply unknown, not
+                    # meaningfully "zero", so it must not be misread as a gap.
+                    if fp_outcome is None:
+                        continue
+                    try:
+                        expected = _resolve_expected_races(
+                            category, rs_outcome, local_conn, date_str
+                        )
+                    except _ISOLATED_EXCEPTIONS as exc:
+                        errors.append(f"{date_str}:{category}:serving-gap-expected: {exc}")
+                        continue
+                    if expected is None:
+                        continue
+                    expected_races, gap_source = expected
+                    if not (expected_races > 0 and fp_outcome.races_live == 0):
+                        continue
+                    gap_type = (
+                        GAP_TYPE_BACKFILL_ONLY
+                        if fp_outcome.races_observed > 0
+                        else GAP_TYPE_NO_ROWS
+                    )
                     warnings.warn(
-                        f"champion gap: category={category!r} date={date_str!r} "
-                        "task='finish-position': champion "
-                        f"{fp_outcome.champion_model_version!r} did not serve; "
-                        f"served {sorted(fp_outcome.served_model_versions_live)}",
+                        f"serving gap: category={category!r} date={date_str!r}: "
+                        f"{expected_races} expected race(s) ({gap_source}) but "
+                        f"0 live finish-position races served (gap_type={gap_type!r})",
                         stacklevel=2,
                     )
                     try:
-                        _log_champion_gap(
+                        _log_serving_gap(
                             client,
                             fp_experiment_id,
                             date_str=date_str,
                             category=category,
-                            task="finish-position",
-                            champion_model_version=fp_outcome.champion_model_version,
-                            served_model_versions=fp_outcome.served_model_versions_live,
+                            gap_source=gap_source,
+                            gap_type=gap_type,
+                            expected_races=expected_races,
+                            fp_races_observed=fp_outcome.races_observed,
+                            fp_races_live=fp_outcome.races_live,
+                            fp_races_backfilled=fp_outcome.races_backfilled,
                         )
                     except _ISOLATED_EXCEPTIONS as exc:
-                        errors.append(f"{date_str}:{category}:champion-gap:finish-position: {exc}")
+                        errors.append(f"{date_str}:{category}:serving-gap: {exc}")
                     else:
-                        champion_gaps_detected += 1
+                        serving_gaps_detected += 1
+        finally:
+            neon_conn.close()
+            local_conn.close()
 
-                # Serving-gap check (see this function's own docstring). Only
-                # reachable when the FP sync above completed without raising
-                # -- a failed FP sync's race count is simply unknown, not
-                # meaningfully "zero", so it must not be misread as a gap.
-                if fp_outcome is None:
-                    continue
-                try:
-                    expected = _resolve_expected_races(category, rs_outcome, local_conn, date_str)
-                except _ISOLATED_EXCEPTIONS as exc:
-                    errors.append(f"{date_str}:{category}:serving-gap-expected: {exc}")
-                    continue
-                if expected is None:
-                    continue
-                expected_races, gap_source = expected
-                if not (expected_races > 0 and fp_outcome.races_live == 0):
-                    continue
-                gap_type = (
-                    GAP_TYPE_BACKFILL_ONLY if fp_outcome.races_observed > 0 else GAP_TYPE_NO_ROWS
-                )
-                warnings.warn(
-                    f"serving gap: category={category!r} date={date_str!r}: "
-                    f"{expected_races} expected race(s) ({gap_source}) but "
-                    f"0 live finish-position races served (gap_type={gap_type!r})",
-                    stacklevel=2,
-                )
-                try:
-                    _log_serving_gap(
-                        client,
-                        fp_experiment_id,
-                        date_str=date_str,
-                        category=category,
-                        gap_source=gap_source,
-                        gap_type=gap_type,
-                        expected_races=expected_races,
-                        fp_races_observed=fp_outcome.races_observed,
-                        fp_races_live=fp_outcome.races_live,
-                        fp_races_backfilled=fp_outcome.races_backfilled,
-                    )
-                except _ISOLATED_EXCEPTIONS as exc:
-                    errors.append(f"{date_str}:{category}:serving-gap: {exc}")
-                else:
-                    serving_gaps_detected += 1
-    finally:
-        neon_conn.close()
-        local_conn.close()
+        timeline_points_appended = fp_eval_logged + rs_eval_logged
+        if timeline_points_appended == 0:
+            t.discard()
+        else:
+            t.feedback("points_appended", float(timeline_points_appended))
 
     return SyncProductionSummary(
         dates_processed=len(dates),

@@ -7,8 +7,10 @@ from pathlib import Path
 
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities.trace_state import TraceState
 
 from mlflow_tracking import backfill_running_style as brs
+from mlflow_tracking import config, trace_emit
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -303,6 +305,66 @@ def test_backfill_running_style_is_idempotent_across_repeated_calls(
 
     assert len(client.search_model_versions("name='jra-running-style'")) == 1
     assert len(client.search_model_versions("name='nar-running-style'")) == 1
+
+
+def test_backfill_running_style_emits_job_trace_with_champion_sync_ok_feedback(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """job_trace wiring (2026-07-11): one trace lands in the SAME
+    running-style/registry-backfill experiment this function's own runs use,
+    with the documented step names and an aggregate `champion_sync_ok`
+    Feedback (True here: both jra/nar champion syncs are "ok")."""
+    artifact_root = tmp_path / "models"
+    write_json(artifact_root / "jra-running-style-lgbm-prod-v3" / "metadata.json", RS_METADATA)
+    nar_metadata = dict(RS_METADATA)
+    nar_metadata["model_version"] = "nar-running-style-lgbm-prod-v3"
+    write_json(artifact_root / "nar-running-style-lgbm-prod-v3" / "metadata.json", nar_metadata)
+
+    brs.backfill_running_style(client, artifact_root, tmp_path / "no-calibrators")
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_RS_REGISTRY_BACKFILL)
+    assert experiment is not None
+    traces = tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {
+        "backfill-running-style",
+        "register-versions",
+        "register-production-pointers",
+        "champion-sync",
+    }
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"champion_sync_ok"}
+    feedback = assessments_by_name["champion_sync_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is True
+
+
+def test_backfill_running_style_champion_sync_ok_false_when_one_category_skipped(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """A partial `champion_sync` (one category "ok", one "skipped: ...") is
+    a documented NOT-ok aggregate, not a fabricated True -- mirrors
+    `test_backfill_running_style_champion_sync_skips_when_pointer_
+    registration_fails`'s exact malformed-calibrator setup."""
+    calibrator_dir = tmp_path / "calibrators"
+    calibrator_dir.mkdir()
+    (calibrator_dir / "jra-rs-v3-calibrators.json").write_text("{not valid json", encoding="utf-8")
+
+    brs.backfill_running_style(client, tmp_path / "empty-models", calibrator_dir)
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_RS_REGISTRY_BACKFILL)
+    assert experiment is not None
+    traces = tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    assert len(traces) == 1
+    assessments_by_name = {a.name: a for a in traces[0].info.assessments}
+    feedback = assessments_by_name["champion_sync_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is False
 
 
 def test_backfill_running_style_adds_production_pointer_when_local_mirror_is_a_different_version(

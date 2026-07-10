@@ -31,9 +31,19 @@ import pandas as pd
 import psycopg2
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities import Trace
+from mlflow.entities.trace_state import TraceState
 from mlflow.exceptions import MlflowException
 
-from mlflow_tracking import champion_cell_eval, config, db, logging_api, registry, serve_eval
+from mlflow_tracking import (
+    champion_cell_eval,
+    config,
+    db,
+    logging_api,
+    registry,
+    serve_eval,
+    trace_emit,
+)
 
 # ── Hermetic fake DB connections ─────────────────────────────────────────────
 
@@ -314,6 +324,125 @@ def test_idempotent_reuse_skips_db_work_and_preserves_summary(
     assert result2.has_champion_coverage is False
     assert result2.unit_count == 0
     assert result2.cell_count == 0
+
+
+def _cell_eval_traces(client: MlflowClient, experiment_name: str) -> list[Trace]:
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    return list(
+        tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=50)
+    )
+
+
+def test_eval_champion_cells_emits_job_trace_with_feedback_on_fresh_run(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """job_trace wiring (2026-07-11): a FRESH (non-idempotent-reuse) call
+    logs one trace into `finish-position/champion-eval` with the documented
+    4 steps and `has_champion_coverage`/`cells_evaluated` Feedback."""
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+
+    champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory([]),
+        local_connect=_local_factory({}),
+    )
+
+    traces = _cell_eval_traces(client, config.EXPERIMENT_FP_CHAMPION_EVAL)
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {
+        "eval-champion-cells",
+        "resolve-champion",
+        "eval-join",
+        "aggregate-cells",
+        "log-run",
+    }
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"has_champion_coverage", "cells_evaluated"}
+    has_coverage_feedback = assessments_by_name["has_champion_coverage"].feedback
+    assert has_coverage_feedback is not None
+    assert has_coverage_feedback.value is False  # zero rows in this fixture
+    cells_evaluated_feedback = assessments_by_name["cells_evaluated"].feedback
+    assert cells_evaluated_feedback is not None
+    assert cells_evaluated_feedback.value == 0.0
+
+
+def test_eval_champion_cells_idempotent_reuse_still_emits_a_job_trace(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """The SAME-day idempotent short-circuit (see `_result_from_existing_
+    run`) still gets its own job-execution trace -- job traces are ONE-PER-
+    INVOCATION regardless of whether the underlying MLflow run was reused,
+    just with none of the 4 named steps recorded (none of that work ran)."""
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+    neon_connect = _neon_factory([])
+    local_connect = _local_factory({})
+
+    champion_cell_eval.eval_champion_cells_for_category(
+        client, "jra", "finish-position", as_of=_AS_OF,
+        neon_connect=neon_connect, local_connect=local_connect,
+    )
+    champion_cell_eval.eval_champion_cells_for_category(
+        client, "jra", "finish-position", as_of=_AS_OF,
+        neon_connect=neon_connect, local_connect=local_connect,
+    )
+
+    traces = _cell_eval_traces(client, config.EXPERIMENT_FP_CHAMPION_EVAL)
+    assert len(traces) == 2
+    # Both calls share the same as_of/day, so ordering by request_time is
+    # not reliable to distinguish first-vs-second; instead assert that AT
+    # LEAST one of the two traces has only the root span (the reused call)
+    # and AT LEAST one has all 4 steps (the fresh call).
+    all_span_name_sets = [{span.name for span in tr.data.spans} for tr in traces]
+    assert {"eval-champion-cells"} in all_span_name_sets
+    assert {
+        "eval-champion-cells",
+        "resolve-champion",
+        "eval-join",
+        "aggregate-cells",
+        "log-run",
+    } in all_span_name_sets
+    for tr in traces:
+        assessments_by_name = {a.name: a for a in tr.info.assessments}
+        assert set(assessments_by_name) == {"has_champion_coverage", "cells_evaluated"}
+
+
+def test_eval_champion_cells_running_style_job_trace_lands_in_rs_champion_eval(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """RS payloads route their job trace into `running-style/champion-eval`,
+    distinct from the FP experiment above."""
+    version = registry.register_version(
+        client, "jra-running-style", f"file://{tmp_path}", tags={"model_version": "rsv3"}
+    )
+    registry.set_champion(client, "jra-running-style", version.version)
+
+    champion_cell_eval.eval_champion_cells_for_category(
+        client,
+        "jra",
+        "running-style",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory([]),
+        local_connect=_local_factory({}),
+    )
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_CHAMPION_EVAL)
+    assert fp_experiment is None
+    traces = _cell_eval_traces(client, config.EXPERIMENT_RS_CHAMPION_EVAL)
+    assert len(traces) == 1
 
 
 def test_idempotent_reuse_preserves_none_champion_tag(client: MlflowClient) -> None:

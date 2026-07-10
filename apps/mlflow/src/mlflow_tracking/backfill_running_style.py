@@ -52,7 +52,7 @@ from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
 from mlflow.entities.model_registry import ModelVersion
 
-from mlflow_tracking import config, registry
+from mlflow_tracking import config, registry, trace_emit
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -396,6 +396,17 @@ def backfill_running_style(
     snapshotted up front so a duplicate-guarded return (same version number
     as something already in the snapshot) can be told apart from a genuine
     new registration and excluded from the count.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into `config.EXPERIMENT_RS_REGISTRY_BACKFILL` (the SAME experiment this
+    function's own runs already land in) -- steps `register-versions`,
+    `register-production-pointers`, `champion-sync`, mirroring this
+    function's own three phases (there is no Ban-ei/cell-routing equivalent
+    here, unlike finish-position's `backfill_finish_position`, since
+    running-style has neither). Feedback `champion_sync_ok` (bool) is an
+    AGGREGATE across both `RS_CATEGORIES` -- same "non-empty AND every
+    status == 'ok'" rule as `backfill_finish_position`'s identical Feedback,
+    for consistency between the two sibling registry-backfill modules.
     """
     errors: list[str] = []
     count = 0
@@ -405,24 +416,42 @@ def backfill_running_style(
         known_versions[registered_name] = {
             mv.version for mv in client.search_model_versions(f"name='{registered_name}'")
         }
-    for metadata_path in discover_metadata_files(artifact_root):
-        try:
-            version = backfill_one_running_style_metadata(client, metadata_path, calibrator_dir)
-            registered_versions = known_versions.setdefault(version.name, set())
-            if version.version not in registered_versions:
-                registered_versions.add(version.version)
-                count += 1
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            errors.append(f"{metadata_path}: {exc}")
 
-    for category in RS_CATEGORIES:
-        try:
-            if register_production_pointer_if_missing(client, category, calibrator_dir) is not None:
-                count += 1
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            errors.append(f"production pointer ({category}): {exc}")
+    experiment_id = get_or_create_experiment(client, EXPERIMENT_REGISTRY_BACKFILL)
+    tracing_client = trace_emit.build_tracing_client(client)
+    with trace_emit.job_trace(tracing_client, experiment_id, "backfill-running-style") as t:
+        with t.step("register-versions"):
+            for metadata_path in discover_metadata_files(artifact_root):
+                try:
+                    version = backfill_one_running_style_metadata(
+                        client, metadata_path, calibrator_dir
+                    )
+                    registered_versions = known_versions.setdefault(version.name, set())
+                    if version.version not in registered_versions:
+                        registered_versions.add(version.version)
+                        count += 1
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    errors.append(f"{metadata_path}: {exc}")
 
-    champion_sync = _sync_running_style_champions(client)
+        with t.step("register-production-pointers"):
+            for category in RS_CATEGORIES:
+                try:
+                    if (
+                        register_production_pointer_if_missing(client, category, calibrator_dir)
+                        is not None
+                    ):
+                        count += 1
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    errors.append(f"production pointer ({category}): {exc}")
+
+        with t.step("champion-sync"):
+            champion_sync = _sync_running_style_champions(client)
+
+        champion_sync_ok = bool(champion_sync) and all(
+            status == "ok" for status in champion_sync.values()
+        )
+        t.feedback("champion_sync_ok", champion_sync_ok)
+
     return RunningStyleBackfillSummary(
         versions_registered=count, errors=errors, champion_sync=champion_sync
     )

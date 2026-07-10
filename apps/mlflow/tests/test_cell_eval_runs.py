@@ -21,6 +21,8 @@ from unittest.mock import MagicMock
 import psycopg2
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities import Trace
+from mlflow.entities.trace_state import TraceState
 
 from mlflow_tracking import (
     cell_eval_runs,
@@ -29,6 +31,7 @@ from mlflow_tracking import (
     registry,
     serve_eval,
     timeline,
+    trace_emit,
 )
 
 # ── Hermetic fake DB connections (mirrors test_champion_cell_eval.py) ───────
@@ -182,6 +185,128 @@ def test_non_genuine_rows_are_filtered_out_before_grouping(client: MlflowClient)
     )
     assert result.runs_created == 0
     assert result.cells_skipped_low_volume == 0
+
+
+def _cell_eval_traces(client: MlflowClient, experiment_name: str) -> list[Trace]:
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    return list(
+        tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=50)
+    )
+
+
+def test_eval_cells_zero_rows_still_emits_job_trace_with_zero_feedback(
+    client: MlflowClient,
+) -> None:
+    """job_trace wiring (2026-07-11): the zero-genuinely-served-rows early
+    return still gets its own trace, with only `resolve-champion`/
+    `collect-rows` steps (nothing to build/log yet) and zero-valued
+    Feedback."""
+    cell_eval_runs.eval_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory([]),
+        local_connect=_local_factory({}),
+    )
+
+    traces = _cell_eval_traces(client, config.EXPERIMENT_FP_CELL_EVAL)
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {"eval-cells", "resolve-champion", "collect-rows"}
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"runs_created", "runs_skipped_low_volume"}
+    runs_created_feedback = assessments_by_name["runs_created"].feedback
+    assert runs_created_feedback is not None
+    assert runs_created_feedback.value == 0.0
+    runs_skipped_feedback = assessments_by_name["runs_skipped_low_volume"].feedback
+    assert runs_skipped_feedback is not None
+    assert runs_skipped_feedback.value == 0.0
+
+
+def test_eval_cells_fp_flow_emits_job_trace_with_all_4_steps_and_feedback(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """job_trace wiring (2026-07-11): a real, non-empty FP flow logs one
+    trace into `finish-position/cell-eval` with all 4 documented steps and
+    `runs_created`/`runs_skipped_low_volume` Feedback matching the returned
+    summary -- reuses `test_fp_flow_creates_one_run_per_model_version_per_
+    cell`'s exact fixture (3 runs created, 0 skipped)."""
+    version = registry.register_version(
+        client, "jra-finish-position", f"file://{tmp_path}", tags={"model_version": "iter14"}
+    )
+    registry.set_champion(client, "jra-finish-position", version.version)
+
+    gen_at = datetime(2026, 6, 1, 3, 0, 0, tzinfo=UTC)
+    prediction_rows: list[tuple[object, ...]] = [
+        ("05", "01", "H1", "iter14", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("05", "02", "H2", "iter14-jockeyA", 1, gen_at, "sprint", "medium", "summer", "A", "turf",
+         "2026", "0601"),
+        ("10", "01", "H3", "other-model", 1, gen_at, "mile", "medium", "summer", "B", "dirt",
+         "2026", "0601"),
+    ]
+    results_by_date = {
+        "20260601": [
+            ("05", "01", "H1", "1", "01"),
+            ("05", "02", "H2", "1", "01"),
+            ("10", "01", "H3", "2", "01"),
+        ],
+    }
+
+    cell_eval_runs.eval_cells_for_category(
+        client,
+        "jra",
+        "finish-position",
+        as_of=_AS_OF,
+        min_races=1,
+        neon_connect=_neon_factory(prediction_rows),
+        local_connect=_local_factory(results_by_date),
+    )
+
+    traces = _cell_eval_traces(client, config.EXPERIMENT_FP_CELL_EVAL)
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {
+        "eval-cells",
+        "resolve-champion",
+        "collect-rows",
+        "build-eval-rows",
+        "log-runs",
+    }
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    runs_created_feedback = assessments_by_name["runs_created"].feedback
+    assert runs_created_feedback is not None
+    assert runs_created_feedback.value == 3.0
+    runs_skipped_feedback = assessments_by_name["runs_skipped_low_volume"].feedback
+    assert runs_skipped_feedback is not None
+    assert runs_skipped_feedback.value == 0.0
+
+
+def test_eval_cells_running_style_job_trace_lands_in_rs_cell_eval(
+    client: MlflowClient,
+) -> None:
+    """RS payloads route their job trace into `running-style/cell-eval`,
+    distinct from the FP experiment above."""
+    cell_eval_runs.eval_cells_for_category(
+        client,
+        "jra",
+        "running-style",
+        as_of=_AS_OF,
+        neon_connect=_neon_factory([]),
+        local_connect=_local_factory({}),
+    )
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_CELL_EVAL)
+    assert fp_experiment is None
+    traces = _cell_eval_traces(client, config.EXPERIMENT_RS_CELL_EVAL)
+    assert len(traces) == 1
 
 
 # ── Full FP flow: champion / variant / other, run naming, tags, metrics ───

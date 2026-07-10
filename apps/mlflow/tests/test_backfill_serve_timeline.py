@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities.trace_state import TraceState
 
-from mlflow_tracking import backfill_serve_timeline, timeline
+from mlflow_tracking import backfill_serve_timeline, config, timeline, trace_emit
 
 
 def _payload_for(date_str: str) -> dict[str, object]:
@@ -106,6 +107,72 @@ def test_backfill_serve_timeline_builds_expected_command(
         "--json",
     )
     assert cwd == tmp_path
+
+
+def test_backfill_serve_timeline_gets_job_traces_only_via_ingest_serve_accuracy_delegation(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """job_trace wiring (2026-07-11): `backfill_serve_timeline` does NOT
+    open a job_trace of its own -- see this module's own docstring for why
+    (a first implementation that ALSO wrapped the whole date-range loop in
+    its own `timelines` job_trace double-counted against the per-date
+    traces `ingest_eval.ingest_serve_accuracy` already emits via
+    delegation, caught by this exact test). Each of the 2 ingested dates
+    here gets its OWN primary trace (into finish-position/serve-accuracy)
+    AND its own nested `timelines` trace, entirely through `ingest_eval.
+    ingest_serve_accuracy`'s own wiring."""
+    responses = {
+        "20260601": _completed(json.dumps(_payload_for("20260601"))),
+        "20260602": _completed(json.dumps(_payload_for("20260602"))),
+    }
+    runner = _FakeRunner(responses)
+    summary = backfill_serve_timeline.backfill_serve_timeline(
+        client, "jra", "20260601", "20260602", viewer_root=tmp_path, runner=runner
+    )
+    assert summary.dates_ingested == 2
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    serve_accuracy_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_SERVE_ACCURACY)
+    assert serve_accuracy_experiment is not None
+    ingest_traces = tracing_client.search_traces(
+        experiment_ids=[serve_accuracy_experiment.experiment_id], max_results=10
+    )
+    assert len(ingest_traces) == 2  # one per ingested date, via ingest_serve_accuracy
+
+    timelines_experiment = client.get_experiment_by_name(config.EXPERIMENT_TIMELINES)
+    assert timelines_experiment is not None
+    timeline_traces = tracing_client.search_traces(
+        experiment_ids=[timelines_experiment.experiment_id], max_results=10
+    )
+    assert len(timeline_traces) == 2  # one per ingested date's nested upsert-point trace
+    for trace_summary in timeline_traces:
+        trace = tracing_client.get_trace(trace_summary.info.trace_id)
+        assert trace.info.state == TraceState.OK
+        assessments_by_name = {a.name: a for a in trace.info.assessments}
+        points_feedback = assessments_by_name["points_appended"].feedback
+        assert points_feedback is not None
+        assert points_feedback.value == 2.0  # both fp+rs sections present in _payload_for
+
+
+def test_backfill_serve_timeline_no_data_only_range_creates_no_traces_at_all(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """A call whose only date is `no_data` never calls `ingest_serve_
+    accuracy` at all -- neither the primary nor the nested `timelines`
+    trace is ever created, since there is nothing to delegate to."""
+    responses = {
+        "20260601": _completed(
+            json.dumps({"error": "no_data", "date": "20260601", "category": "jra"}),
+            returncode=1,
+        )
+    }
+    runner = _FakeRunner(responses)
+    summary = backfill_serve_timeline.backfill_serve_timeline(
+        client, "jra", "20260601", "20260601", viewer_root=tmp_path, runner=runner
+    )
+    assert summary.dates_ingested == 0
+    assert client.get_experiment_by_name(config.EXPERIMENT_FP_SERVE_ACCURACY) is None
+    assert client.get_experiment_by_name(config.EXPERIMENT_TIMELINES) is None
 
 
 def test_backfill_serve_timeline_no_data_date_is_skipped(

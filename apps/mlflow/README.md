@@ -429,6 +429,117 @@ EXACT SAME `trace_emit.py` functions the daily sync calls — there is
 exactly one trace-emission code path. See the Usage section above for the
 command.
 
+### Job-execution traces (`trace_emit.job_trace`): the other 10 experiments
+
+The per-race/per-horse traces above are this package's Usage/Quality/
+Tool-calls signal for the two `production-usage` experiments specifically —
+they answer "what got served in production". Every OTHER real experiment in
+`config.ALL_EXPERIMENT_NAMES` (10 of them; `internal/smoke-tests` is the one
+deliberate exception, see below) instead gets a **job-execution trace**: one
+trace per real CLI/job invocation, built on the SAME hardened `TracingClient`
+plumbing in `trace_emit.py` (`job_trace`/`JobTrace`), but answering a
+different, much simpler question — "did this job run, and how long did it
+take" — with REAL, directly-measured wall-clock timing (no "nominal/
+approximate" disclosure needed, unlike the per-race work: a job invocation is
+happening right now, in-process, so its duration is directly observable).
+
+```python
+tracing_client = trace_emit.build_tracing_client(client)
+with trace_emit.job_trace(tracing_client, experiment_id, "eval-cells") as t:
+    with t.step("resolve-champion"):
+        ...
+    t.feedback("runs_created", float(runs_created))
+```
+
+- `t.step(name, **attributes)` — a nested context manager; each one becomes
+  a `SpanType.TOOL` child span with REAL start/end timing.
+- `t.feedback(name, value, *, rationale="")` — queues a bool/numeric
+  `Feedback` assessment, flushed once the trace is written.
+- On an exception, the trace AND its root span are logged `TraceState.ERROR`
+  / `SpanStatusCode.ERROR` (a failed step's own span is marked ERROR too),
+  and the exception ALWAYS re-raises — this is the ONE place in this package
+  where `TraceState.ERROR` is reachable at all (see `trace_emit.py`'s own
+  docstring for why it is unreachable everywhere else). A SEPARATE,
+  best-effort safety net catches a failure while merely trying to PERSIST the
+  trace itself (`warnings.warn`, never raised) — observability must never
+  become a new failure mode for the job it observes.
+- `t.discard()` silently drops the trace (nothing written) if the `with`
+  block exits normally — used where a call spans a whole date range but only
+  sometimes has anything to report (e.g. the `timelines` wiring below), so a
+  day with nothing new to sync doesn't leave an empty, uninformative trace.
+  Has no effect when the block raises.
+- **No idempotency/dedup check, deliberately**: unlike the per-race work's
+  `client_request_id` existence check, a job-execution trace is correctly
+  ONE-PER-INVOCATION by design — every real run of a wired command SHOULD
+  create a brand-new trace, since there is no "business key" a second call
+  could ever collide with (a second real invocation is a second, genuinely
+  new piece of work). Do not "fix" this into an idempotency check.
+- **Historical honesty**: there is no record of past job invocations to
+  reconstruct (unlike the per-race work's real historical
+  `prediction_generated_at` timestamps) — no `backfill_job_traces.py` exists
+  or is planned. These traces simply start accumulating from the first real
+  invocation after this shipped; a store queried before that will correctly
+  show empty tabs for these experiments until then.
+
+**Per-experiment wiring** (job_name → steps → Feedback):
+
+| Experiment                                                                                   | Call site                                                                                                                                                                                                                                                        | job_name                                                       | Steps                                                                                           | Feedback                                                               |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `finish-position/champion-eval`, `running-style/champion-eval`                               | `champion_cell_eval.eval_champion_cells_for_category`                                                                                                                                                                                                            | `eval-champion-cells`                                          | `resolve-champion`, `eval-join`, `aggregate-cells`, `log-run`                                   | `has_champion_coverage` (bool), `cells_evaluated` (numeric)            |
+| `finish-position/cell-eval`, `running-style/cell-eval`                                       | `cell_eval_runs.eval_cells_for_category`                                                                                                                                                                                                                         | `eval-cells`                                                   | `resolve-champion`, `collect-rows`, `build-eval-rows`, `log-runs`                               | `runs_created` (numeric), `runs_skipped_low_volume` (numeric)          |
+| `finish-position/registry-backfill`                                                          | `backfill_finish_position.backfill_finish_position`                                                                                                                                                                                                              | `backfill-finish-position`                                     | `register-base-versions`, `register-per-class-versions`, `champion-sync`, `cell-routing-ingest` | `champion_sync_ok` (bool, aggregate across categories)                 |
+| `running-style/registry-backfill`                                                            | `backfill_running_style.backfill_running_style`                                                                                                                                                                                                                  | `backfill-running-style`                                       | `register-versions`, `register-production-pointers`, `champion-sync`                            | `champion_sync_ok` (bool, aggregate)                                   |
+| `finish-position/serve-accuracy` or `running-style/eval`                                     | `ingest_eval.ingest_serve_accuracy`                                                                                                                                                                                                                              | `ingest-serve-accuracy`                                        | (none named)                                                                                    | `races` (numeric, best-effort); `eval_regime`/`era` as span ATTRIBUTES |
+| `finish-position/serve-accuracy` (SERVE mode) or `running-style/eval`                        | `training_run.log_training_run`                                                                                                                                                                                                                                  | `log-training-run-serve`                                       | (none named)                                                                                    | `races` (numeric); `eval_regime`/`era` as span ATTRIBUTES              |
+| `finish-position/wf-eval` or `running-style/eval` (WF/oos/self-consistency/unspecified mode) | `training_run.log_training_run`                                                                                                                                                                                                                                  | `log-training-run-wf`                                          | `parse-manifest`, `log-metrics`, `ingest-metadata`                                              | `ingestion_ok` (bool)                                                  |
+| `timelines`                                                                                  | `sync_production.sync_production_range` (own trace); `ingest_eval.ingest_serve_accuracy` (nested); `training_run.log_training_run` (nested, via `_maybe_log_serve_timeline_point`) — **NOT** `backfill_serve_timeline.backfill_serve_timeline` itself, see below | `sync-production`, `ingest-serve-accuracy`, `log-training-run` | (none named; each nested trace wraps exactly the real `timeline.upsert_timeline_point` call)    | `points_appended` (numeric)                                            |
+
+**`races` Feedback — a documented best-effort proxy**: neither the
+finish-position nor running-style `serve_accuracy_report.py` payload shape
+guarantees a field literally named `races`; `ingest_eval._races_feedback_value`
+/ `training_run._races_feedback_value` each check a small, independently-
+duplicated set of known key names (`races`, `race_count`, `total_horses`,
+`horse_count`) across whichever section(s) are present, returning `0.0` (a
+deliberately honest "unknown", never a fabricated nonzero guess) when none
+match.
+
+**`timelines` wiring — "one trace per call, not per point" (mostly)**:
+`sync_production_range` walks a whole date range and may call `timeline.
+upsert_timeline_point` many times across it — bundling all of them into ONE
+job trace per top-level call (not one per date) is the "meaningful unit of
+work" grain this shape calls for. Its `points_appended` Feedback is a
+CALL-COUNT proxy (`fp_eval_logged + rs_eval_logged`), not a finer "how many
+individual metric keys were genuinely new after per-step dedup" count —
+threading that back through `timeline.py`'s widely-used return contract
+would be a much larger change. When nothing was appended (the common case on
+most days), the trace is DISCARDED (`JobTrace.discard()`), not logged empty.
+This `timelines` job trace is DELIBERATELY UNCONDITIONAL, independent of
+`emit_traces`/`--no-traces` (that flag scopes only the per-race/per-horse
+emission into the production-usage experiments — a much larger trace volume
+— not this one lightweight summary trace into a different experiment).
+`ingest_eval.ingest_serve_accuracy` and `training_run.log_training_run`
+instead know SYNCHRONOUSLY whether they will upsert 0, 1, or 2 points (no
+date-range loop involved), so their nested `timelines` trace is simply never
+opened at all when there is nothing to report — no `discard()` needed there.
+
+**`backfill_serve_timeline` is the ONE deliberate exception — no trace of its
+own, by design, not an oversight**: it never calls `timeline.upsert_
+timeline_point` directly; every date it processes routes through `ingest_
+eval.ingest_serve_accuracy` (already fully job_trace-wired). A first
+implementation ALSO wrapped `backfill_serve_timeline`'s own whole-range loop
+in a second, redundant `timelines` job trace — and a real test run caught the
+resulting double-count immediately (a 2-date range produced 3 `timelines`
+traces instead of 1: 2 from the per-date `ingest_serve_accuracy` delegation
+
+- 1 redundant aggregate). The correct signal for this module is therefore
+  "N traces, one per genuinely ingested date", entirely via delegation — see
+  `backfill_serve_timeline.py`'s own docstring for the full incident/rationale.
+
+**`internal/smoke-tests` gets NEITHER trace shape, deliberately**: it is a
+manual, one-shot smoke-test destination (see "Smoke-test runs" below), not a
+real recurring job or production-serving path — empty Usage/Quality/
+Tool-calls tabs there are by design, not a gap to fill.
+
 ### ⚠️ `win5-xgb-*-rs-overlay-*` is intentionally out of scope
 
 The `finish-position/serve-accuracy` experiment contains a

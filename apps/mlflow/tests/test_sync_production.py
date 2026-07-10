@@ -19,7 +19,7 @@ import pandas as pd
 import psycopg2
 import pytest
 from mlflow import MlflowClient
-from mlflow.entities import Run
+from mlflow.entities import Run, Trace
 from mlflow.exceptions import MlflowException
 
 from mlflow_tracking import config, db, registry, serve_eval, sync_production, timeline, trace_emit
@@ -1981,6 +1981,101 @@ def test_trace_emission_errors_are_folded_into_summary_with_prefix(
     assert len(summary.errors) == 1
     assert "trace-emit:finish-position" in summary.errors[0]
     assert "synthetic failure" in summary.errors[0]
+
+
+# ── job_trace wiring: one trace per call into `timelines` ──────────────────
+
+
+def _timelines_traces(client: MlflowClient) -> list[Trace]:
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_TIMELINES)
+    assert experiment is not None
+    return list(
+        tracing_client.search_traces(
+            experiment_ids=[experiment.experiment_id], include_spans=False, max_results=10
+        )
+    )
+
+
+def test_sync_production_range_emits_timelines_job_trace_with_points_appended(
+    client: MlflowClient,
+) -> None:
+    """job_trace wiring (2026-07-11): once at least one timeline point was
+    appended this call (`fp_eval_logged + rs_eval_logged > 0`), one trace
+    lands in `timelines` (never in `finish-position/production-usage`)
+    with a `points_appended` Feedback matching that count."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+    )
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.fp_eval_logged == 1
+
+    traces = _timelines_traces(client)
+    assert len(traces) == 1
+    tracing_client = trace_emit.build_tracing_client(client)
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert {span.name for span in trace.data.spans} == {"sync-production"}
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"points_appended"}
+    feedback = assessments_by_name["points_appended"].feedback
+    assert feedback is not None
+    assert feedback.value == float(summary.fp_eval_logged + summary.rs_eval_logged)
+
+
+def test_sync_production_range_discards_timelines_job_trace_when_nothing_appended(
+    client: MlflowClient,
+) -> None:
+    """A call with zero served rows at all (nothing to sync, the common
+    daily case) never appends a timeline point -- the `timelines` job trace
+    must be discarded, not logged empty."""
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.fp_eval_logged == 0
+    assert summary.rs_eval_logged == 0
+    assert _timelines_traces(client) == []
+
+
+def test_sync_production_range_timelines_job_trace_is_unaffected_by_no_traces_flag(
+    client: MlflowClient,
+) -> None:
+    """DELIBERATE design choice (see this module's own docstring): the
+    `timelines` job trace is independent of `emit_traces=False`
+    (`--no-traces`) -- that flag scopes only the per-race/per-horse
+    emission into the production-usage experiments."""
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "1", "01")]}
+    )
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        emit_traces=False,
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.fp_eval_logged == 1
+    assert summary.traces_created == 0  # per-race trace emission stays off
+
+    traces = _timelines_traces(client)
+    assert len(traces) == 1  # the timelines job trace still fires
 
 
 # ── Default connection factories are wired to the real db module ───────────

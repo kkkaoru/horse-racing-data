@@ -10,8 +10,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities import Trace
+from mlflow.entities.trace_state import TraceState
 
-from mlflow_tracking import config, logging_api, registry, timeline, training_run
+from mlflow_tracking import config, logging_api, registry, timeline, trace_emit, training_run
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -436,6 +438,116 @@ def test_log_training_run_serve_regime_with_empty_timeline_extraction_does_not_u
     run_id = training_run.log_training_run(client, manifest_path)
     run = client.get_run(run_id)
     assert "timeline_run_id:finish-position" not in run.data.tags
+
+
+def _training_run_traces(client: MlflowClient, experiment_name: str) -> list[Trace]:
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    return list(
+        tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    )
+
+
+def test_log_training_run_serve_mode_emits_job_trace_with_races_and_era_attribute(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """job_trace wiring (2026-07-11): SERVE-mode `log_training_run` logs one
+    trace into `finish-position/serve-accuracy` with `eval_regime`/`era` as
+    span ATTRIBUTES (era pulled from the manifest's own `tags.era`) and a
+    `races` Feedback pulled from `aggregate_metrics["race_count"]`. It ALSO
+    triggers a SEPARATE nested trace into `timelines` (see the dedicated
+    `_maybe_log_serve_timeline_point` test below for that trace's content)."""
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["eval_regime"] = "serve"
+    manifest["tags"] = {"date": "20260601", "era": "POST_FIX"}
+    manifest["aggregate_metrics"] = {"top1_pct": 44.5, "race_count": 87}
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    training_run.log_training_run(client, manifest_path)
+
+    traces = _training_run_traces(client, config.EXPERIMENT_FP_SERVE_ACCURACY)
+    assert len(traces) == 1
+    tracing_client = trace_emit.build_tracing_client(client)
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert trace.info.state == TraceState.OK
+    root_span = next(span for span in trace.data.spans if span.name == "log-training-run-serve")
+    assert root_span.attributes["eval_regime"] == "serve"
+    assert root_span.attributes["era"] == "POST_FIX"
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"races"}
+    races_feedback = assessments_by_name["races"].feedback
+    assert races_feedback is not None
+    assert races_feedback.value == 87.0
+
+    timeline_traces = _training_run_traces(client, config.EXPERIMENT_TIMELINES)
+    assert len(timeline_traces) == 1
+    timeline_trace = tracing_client.get_trace(timeline_traces[0].info.trace_id)
+    assert {span.name for span in timeline_trace.data.spans} == {"log-training-run"}
+    timeline_assessments = {a.name: a for a in timeline_trace.info.assessments}
+    points_feedback = timeline_assessments["points_appended"].feedback
+    assert points_feedback is not None
+    assert points_feedback.value == 1.0
+
+
+def test_log_training_run_wf_mode_emits_job_trace_with_3_steps_and_ingestion_ok_true(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """job_trace wiring (2026-07-11): WF-mode `log_training_run` (the
+    default `eval_regime="wf"` MINIMAL_MANIFEST) logs one trace into
+    `finish-position/wf-eval` with the documented 3 steps and
+    `ingestion_ok=True` (nothing was requested via artifact_dir/cell_report,
+    so there was nothing to fail ingesting)."""
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, MINIMAL_MANIFEST)
+
+    training_run.log_training_run(client, manifest_path)
+
+    traces = _training_run_traces(client, config.EXPERIMENT_FP_WF_EVAL)
+    assert len(traces) == 1
+    tracing_client = trace_emit.build_tracing_client(client)
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {
+        "log-training-run-wf",
+        "parse-manifest",
+        "log-metrics",
+        "ingest-metadata",
+    }
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"ingestion_ok"}
+    feedback = assessments_by_name["ingestion_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is True
+
+
+def test_log_training_run_wf_mode_ingestion_ok_false_when_artifact_dir_metadata_missing(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """A specified `artifact_dir` whose `metadata.json` is missing is a real,
+    observable soft-failure -- `ingestion_ok` must be False, not a
+    fabricated True, even though the run itself still completes (see
+    `test_log_training_run_artifact_dir_without_metadata_json_is_a_noop`,
+    whose exact fixture this reuses)."""
+    artifact_dir = tmp_path / "empty-artifacts"
+    artifact_dir.mkdir()
+    manifest = dict(MINIMAL_MANIFEST)
+    manifest["artifact_dir"] = str(artifact_dir)
+    manifest_path = tmp_path / "manifest.json"
+    write_json(manifest_path, manifest)
+
+    training_run.log_training_run(client, manifest_path)
+
+    traces = _training_run_traces(client, config.EXPERIMENT_FP_WF_EVAL)
+    assert len(traces) == 1
+    tracing_client = trace_emit.build_tracing_client(client)
+    trace = tracing_client.get_trace(traces[0].info.trace_id)
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    feedback = assessments_by_name["ingestion_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is False
 
 
 def test_log_training_run_cell_report_with_no_headline_metrics_still_logs_table(

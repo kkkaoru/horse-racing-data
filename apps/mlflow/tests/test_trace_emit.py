@@ -29,20 +29,6 @@ from mlflow_tracking import serve_eval, trace_emit
 GEN_AT: datetime = datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
 
 
-def _module_attribute_accesses(module: types.ModuleType) -> set[tuple[str, str]]:
-    """Return every `(name, attr)` pair for a real `name.attr` attribute
-    access anywhere in `module`'s source AST -- used to prove a specific
-    attribute access (e.g. `TraceState.ERROR`) is absent from the CODE
-    itself, immune to false positives from docstring/comment prose
-    mentioning the same string."""
-    tree = ast.parse(inspect.getsource(module))
-    return {
-        (node.value.id, node.attr)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-    }
-
-
 def _module_name_references(module: types.ModuleType) -> set[str]:
     """Return every bare `Name` identifier referenced anywhere in `module`'s
     source AST -- used to prove a bare module reference (e.g. `mlflow`) is
@@ -550,14 +536,47 @@ def test_every_emitted_trace_is_state_ok(
     assert rs_trace_id is not None
     assert tracing_client.get_trace(fp_trace_id).info.state == TraceState.OK
     assert tracing_client.get_trace(rs_trace_id).info.state == TraceState.OK
-    # Structural confirmation that ERROR is unreachable, not merely
-    # untested: walk the real AST (never a naive string/docstring search,
-    # which would false-positive on this module's own docstring prose
-    # describing WHY ERROR is unreachable) and confirm no `TraceState.ERROR`/
-    # `SpanStatusCode.ERROR` attribute access exists anywhere in the code.
-    attribute_pairs = _module_attribute_accesses(trace_emit)
-    assert ("TraceState", "ERROR") not in attribute_pairs
-    assert ("SpanStatusCode", "ERROR") not in attribute_pairs
+
+
+def _function_attribute_accesses(func: types.FunctionType) -> set[tuple[str, str]]:
+    """Same AST-level attribute-access extraction the pre-2026-07-11 form of
+    this test module applied to the WHOLE module, scoped instead to ONE
+    function's own source -- see `test_fp_rs_emit_path_never_reaches_error_
+    status` for why this scoping matters after `job_trace`'s addition."""
+    tree = ast.parse(inspect.getsource(func))
+    return {
+        (node.value.id, node.attr)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+    }
+
+
+def test_fp_rs_emit_path_never_reaches_error_status() -> None:
+    """Structural confirmation that ERROR is unreachable for the FP/RS
+    per-race/per-horse emit path's PUBLIC entry points specifically
+    (`emit_fp_race_trace`/`emit_rs_horse_trace`), not merely untested: walk
+    each function's own real AST (never a naive string/docstring search,
+    which would false-positive on this module's own docstring prose
+    describing WHY ERROR is unreachable there) and confirm no `TraceState.
+    ERROR`/`SpanStatusCode.ERROR` attribute access exists in either of them.
+    Their shared private helper `_emit_trace` is, by inspection, ALSO
+    ERROR-free (it always builds `TraceInfo(state=TraceState.OK, ...)` and
+    never passes a `status=` override to `_make_span`) -- not re-verified
+    here at the AST level to avoid a `reportPrivateUsage`/`getattr`-workaround
+    dance for a private module member, which this package's lint rules both
+    discourage.
+
+    Scoped to these two functions only (not the whole module, unlike this
+    test's pre-2026-07-11 form) because `job_trace`'s `JobTrace` class
+    (added 2026-07-11) legitimately DOES reach `TraceState.ERROR`/
+    `SpanStatusCode.ERROR` when the job it wraps raises -- see
+    `trace_emit.py`'s own "JOB-EXECUTION TRACES" docstring section for why
+    that is a deliberate, narrow exception, not a whole-module invariant.
+    """
+    for func in (trace_emit.emit_fp_race_trace, trace_emit.emit_rs_horse_trace):
+        attribute_pairs = _function_attribute_accesses(func)
+        assert ("TraceState", "ERROR") not in attribute_pairs, func
+        assert ("SpanStatusCode", "ERROR") not in attribute_pairs, func
 
 
 # ── ★ Regression: never touches ambient/global tracking-URI state ─────────
@@ -640,3 +659,228 @@ def test_fp_race_key_shape() -> None:
 
 def test_rs_race_key_shape() -> None:
     assert trace_emit.rs_race_key(_rs_eval_row()) == "20260614:jra:05:01"
+
+
+# ── job_trace: one trace per CLI/job invocation ─────────────────────────────
+
+
+@pytest.fixture
+def job_experiment_id(client: MlflowClient) -> str:
+    return client.create_experiment("finish-position/champion-eval")
+
+
+def test_job_trace_happy_path_logs_root_span_and_steps_with_real_timing(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    with trace_emit.job_trace(
+        tracing_client, job_experiment_id, "eval-champion-cells", attributes={"category": "jra"}
+    ) as t:
+        trace_id = t.trace_id
+        with t.step("resolve-champion"):
+            pass
+        with t.step("eval-join", category="jra"):
+            pass
+
+    trace = tracing_client.get_trace(trace_id)
+    assert trace.info.state == TraceState.OK
+    assert trace.info.tags[trace_emit.JOB_TRACE_KIND_TAG] == trace_emit.JOB_TRACE_KIND_VALUE
+    assert trace.info.execution_duration is not None
+    assert trace.info.execution_duration >= 0
+
+    span_by_name = {span.name: span for span in trace.data.spans}
+    assert set(span_by_name) == {"eval-champion-cells", "resolve-champion", "eval-join"}
+    root_span = span_by_name["eval-champion-cells"]
+    assert root_span.span_type == SpanType.TASK
+    assert root_span.attributes["category"] == "jra"
+    assert root_span.attributes[trace_emit.TIMING_ATTR_KEY] == trace_emit.TIMING_REAL
+    resolve_span = span_by_name["resolve-champion"]
+    assert resolve_span.span_type == SpanType.TOOL
+    eval_join_span = span_by_name["eval-join"]
+    assert eval_join_span.attributes["category"] == "jra"
+    # REAL timing: every span's end must be >= its own start (never negative
+    # duration), and the root span must fully CONTAIN each child span's
+    # window (it started before, and ended after, every step it wraps).
+    # `end_time_ns` is typed `int | None` on `Span` in general (an
+    # in-flight/unfinished span has none) -- every span `job_trace` itself
+    # ever logs is always already-finished, so `is not None` narrows this
+    # via a real `assert` rather than a type-ignore-style suppression.
+    for span in trace.data.spans:
+        assert span.end_time_ns is not None
+        assert span.end_time_ns >= span.start_time_ns
+    assert root_span.start_time_ns <= resolve_span.start_time_ns
+    assert eval_join_span.end_time_ns is not None
+    assert root_span.end_time_ns is not None
+    assert root_span.end_time_ns >= eval_join_span.end_time_ns
+
+
+def test_job_trace_no_steps_still_logs_a_valid_root_span_only_trace(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    with trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells") as t:
+        trace_id = t.trace_id
+
+    trace = tracing_client.get_trace(trace_id)
+    assert trace.info.state == TraceState.OK
+    assert {span.name for span in trace.data.spans} == {"eval-cells"}
+
+
+def test_job_trace_sets_error_status_and_reraises_on_exception(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    captured_trace_id: str | None = None
+
+    with (
+        pytest.raises(ValueError, match="boom"),
+        trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells") as t,
+    ):
+        captured_trace_id = t.trace_id
+        with t.step("collect-rows"):
+            raise ValueError("boom")
+
+    assert captured_trace_id is not None
+    trace = tracing_client.get_trace(captured_trace_id)
+    assert trace.info.state == TraceState.ERROR
+    span_by_name = {span.name: span for span in trace.data.spans}
+    assert span_by_name["eval-cells"].status.status_code == "ERROR"
+    assert span_by_name["collect-rows"].status.status_code == "ERROR"
+
+
+def test_job_trace_step_failure_does_not_mark_earlier_steps_error(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    trace_id_holder: list[str] = []
+    with (
+        pytest.raises(RuntimeError),
+        trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells") as t,
+    ):
+        trace_id_holder.append(t.trace_id)
+        with t.step("resolve-champion"):
+            pass
+        with t.step("collect-rows"):
+            raise RuntimeError("boom")
+
+    trace = tracing_client.get_trace(trace_id_holder[0])
+    span_by_name = {span.name: span for span in trace.data.spans}
+    assert span_by_name["resolve-champion"].status.status_code == "OK"
+    assert span_by_name["collect-rows"].status.status_code == "ERROR"
+
+
+def test_job_trace_feedback_numeric_and_bool(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    with trace_emit.job_trace(tracing_client, job_experiment_id, "eval-champion-cells") as t:
+        trace_id = t.trace_id
+        t.feedback("has_champion_coverage", True)
+        t.feedback("cells_evaluated", 12.0)
+
+    trace = tracing_client.get_trace(trace_id)
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"has_champion_coverage", "cells_evaluated"}
+    assert _feedback_value(assessments_by_name["has_champion_coverage"]) is True
+    assert _feedback_value(assessments_by_name["cells_evaluated"]) == 12.0
+    for assessment in trace.info.assessments:
+        assert assessment.source.source_id == trace_emit.JOB_TRACE_SOURCE_ID
+
+
+def test_job_trace_feedback_default_rationale_mentions_job_name(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    with trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells") as t:
+        trace_id = t.trace_id
+        t.feedback("runs_created", 3.0)
+
+    trace = tracing_client.get_trace(trace_id)
+    assessment = trace.info.assessments[0]
+    assert assessment.rationale is not None
+    assert "eval-cells" in assessment.rationale
+
+
+def test_job_trace_discard_drops_trace_on_normal_exit(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    with trace_emit.job_trace(tracing_client, job_experiment_id, "sync-production") as t:
+        trace_id = t.trace_id
+        t.discard()
+
+    all_traces = tracing_client.search_traces(
+        experiment_ids=[job_experiment_id], include_spans=False, max_results=100
+    )
+    assert all_traces == []
+    with pytest.raises(MlflowException):
+        tracing_client.get_trace(trace_id)
+
+
+def test_job_trace_discard_has_no_effect_when_block_raises(
+    tracing_client: trace_emit.TracingClient, job_experiment_id: str
+) -> None:
+    """A real failure must never be silently dropped, even if `discard()`
+    was already called earlier in the same `with` block."""
+    trace_id_holder: list[str] = []
+    with (
+        pytest.raises(ValueError, match="boom"),
+        trace_emit.job_trace(tracing_client, job_experiment_id, "sync-production") as t,
+    ):
+        trace_id_holder.append(t.trace_id)
+        t.discard()
+        raise ValueError("boom")
+
+    trace = tracing_client.get_trace(trace_id_holder[0])
+    assert trace.info.state == TraceState.ERROR
+
+
+def test_job_trace_persist_failure_is_swallowed_when_job_itself_succeeded(
+    tracing_client: trace_emit.TracingClient,
+    job_experiment_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient tracking-store failure while trying to RECORD that a job
+    ran must never itself crash a job that otherwise completed
+    successfully -- see trace_emit.py's own docstring rationale."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("transient store failure")
+
+    monkeypatch.setattr(tracing_client, "start_trace", _boom)
+
+    with (
+        pytest.warns(UserWarning, match="failed to persist job-execution trace"),
+        trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells"),
+    ):
+        pass  # the wrapped "job" itself succeeds
+
+
+def test_job_trace_persist_failure_does_not_mask_the_real_exception(
+    tracing_client: trace_emit.TracingClient,
+    job_experiment_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When BOTH the wrapped job raises AND trace persistence itself fails,
+    the job's own (original) exception must still be what propagates."""
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("transient store failure")
+
+    monkeypatch.setattr(tracing_client, "start_trace", _boom)
+
+    with (
+        pytest.warns(UserWarning, match="failed to persist job-execution trace"),
+        pytest.raises(ValueError, match="real job failure"),
+        trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells"),
+    ):
+        raise ValueError("real job failure")
+
+
+def test_job_trace_never_calls_mlflow_set_tracking_uri(
+    tracing_client: trace_emit.TracingClient,
+    job_experiment_id: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("job_trace must never call mlflow.set_tracking_uri()")
+
+    monkeypatch.setattr(mlflow, "set_tracking_uri", _boom)
+
+    with trace_emit.job_trace(tracing_client, job_experiment_id, "eval-cells") as t:
+        with t.step("resolve-champion"):
+            pass
+        t.feedback("runs_created", 1.0)

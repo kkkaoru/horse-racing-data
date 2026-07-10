@@ -19,7 +19,7 @@ from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
 from mlflow.entities.model_registry import ModelVersion
 
-from mlflow_tracking import config, registry
+from mlflow_tracking import config, registry, trace_emit
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -442,6 +442,24 @@ def backfill_finish_position(
     snapshotted up front so a duplicate-guarded return (same version number
     as something already in the snapshot) can be told apart from a genuine
     new registration and excluded from the count.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into `config.EXPERIMENT_FP_REGISTRY_BACKFILL` itself (the SAME
+    experiment this function's own runs already land in) -- steps
+    `register-base-versions`/`register-per-class-versions`/`champion-sync`/
+    `cell-routing-ingest` mirror this function's own four phases. Feedback
+    `champion_sync_ok` (bool) is an AGGREGATE across every category (not one
+    Feedback per category): True iff `champion_sync` is non-empty AND every
+    category's status is the literal string `"ok"` -- a category-by-category
+    Feedback would need one assessment name per category, which does not
+    compose cleanly with this module's `registry.CATEGORIES` being static
+    across categories/tasks; a single aggregate answers the practically
+    useful question ("did the daily champion sync fully succeed this run")
+    directly. An EMPTY `champion_sync` (e.g. `model_meta.json` missing
+    entirely from `predict_lib_root` -- see `sync_champions`) is treated as
+    NOT ok: nothing was synced at all, which is not a healthy daily-backfill
+    outcome for the real production `models_root`/`predict_lib_root` this
+    function is normally run against.
     """
     errors: list[str] = []
     known_versions: dict[str, set[str]] = {}
@@ -451,30 +469,44 @@ def backfill_finish_position(
             mv.version for mv in client.search_model_versions(f"name='{registered_name}'")
         }
 
-    base_count = 0
-    for metadata_path in discover_base_metadata_files(models_root):
-        try:
-            version = backfill_one_metadata_file(client, metadata_path, models_root)
-            registered_versions = known_versions.setdefault(version.name, set())
-            if version.version not in registered_versions:
-                registered_versions.add(version.version)
-                base_count += 1
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            errors.append(f"{metadata_path}: {exc}")
+    experiment_id = get_or_create_experiment(client, EXPERIMENT_REGISTRY_BACKFILL)
+    tracing_client = trace_emit.build_tracing_client(client)
+    with trace_emit.job_trace(
+        tracing_client, experiment_id, "backfill-finish-position"
+    ) as t:
+        base_count = 0
+        with t.step("register-base-versions"):
+            for metadata_path in discover_base_metadata_files(models_root):
+                try:
+                    version = backfill_one_metadata_file(client, metadata_path, models_root)
+                    registered_versions = known_versions.setdefault(version.name, set())
+                    if version.version not in registered_versions:
+                        registered_versions.add(version.version)
+                        base_count += 1
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    errors.append(f"{metadata_path}: {exc}")
 
-    per_class_count = 0
-    for manifest_path in discover_per_class_manifests(models_root):
-        try:
-            version = backfill_one_manifest(client, manifest_path, models_root)
-            registered_versions = known_versions.setdefault(version.name, set())
-            if version.version not in registered_versions:
-                registered_versions.add(version.version)
-                per_class_count += 1
-        except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-            errors.append(f"{manifest_path}: {exc}")
+        per_class_count = 0
+        with t.step("register-per-class-versions"):
+            for manifest_path in discover_per_class_manifests(models_root):
+                try:
+                    version = backfill_one_manifest(client, manifest_path, models_root)
+                    registered_versions = known_versions.setdefault(version.name, set())
+                    if version.version not in registered_versions:
+                        registered_versions.add(version.version)
+                        per_class_count += 1
+                except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+                    errors.append(f"{manifest_path}: {exc}")
 
-    champion_sync = sync_champions(client, predict_lib_root)
-    cell_routing_run_id = ingest_cell_routing(client, predict_lib_root)
+        with t.step("champion-sync"):
+            champion_sync = sync_champions(client, predict_lib_root)
+        with t.step("cell-routing-ingest"):
+            cell_routing_run_id = ingest_cell_routing(client, predict_lib_root)
+
+        champion_sync_ok = bool(champion_sync) and all(
+            status == "ok" for status in champion_sync.values()
+        )
+        t.feedback("champion_sync_ok", champion_sync_ok)
 
     return BackfillSummary(
         base_versions_registered=base_count,

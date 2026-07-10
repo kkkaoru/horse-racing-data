@@ -79,7 +79,7 @@ from mlflow import MlflowClient
 from mlflow.entities import Metric, RunTag
 from mlflow.exceptions import MlflowException
 
-from mlflow_tracking import config, db, registry, serve_eval
+from mlflow_tracking import config, db, registry, serve_eval, trace_emit
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -720,6 +720,25 @@ def eval_champion_cells_for_category(
     has no Ban-ei support, matching the same rule already enforced in
     `training_run.log_training_run`) -- both checks run before any DB or
     MLflow work.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into this SAME (category, task)-resolved `experiment_id` -- steps
+    `resolve-champion`/`eval-join`/`aggregate-cells`/`log-run` mirror this
+    function's own four phases (`eval-join` covers `_evaluate_fp_champion`/
+    `_evaluate_rs_champion`'s fetch+join+per-cell-aggregate in one span,
+    since that function bundles all three; `aggregate-cells` covers the
+    SEPARATE roll-up of the already-built per-cell table into headline/
+    best/worst/low_n_cell_count summary stats -- a deliberate step-naming
+    judgment call, not a 1:1 mapping onto private helper names). The
+    IDEMPOTENT short-circuit path (an existing same-day run is reused, see
+    above) still gets its own trace -- job-execution traces are ONE-PER-
+    INVOCATION regardless of whether the underlying MLflow run was newly
+    created or reused this call (see `trace_emit.py`'s own docstring) --
+    just with no `resolve-champion`/`eval-join`/`aggregate-cells`/`log-run`
+    steps recorded, since none of that work actually ran. Feedback
+    `has_champion_coverage` (bool) and `cells_evaluated` (numeric,
+    `cell_count`) are read straight off the returned `ChampionCellEvalResult`
+    either way.
     """
     if task not in ("finish-position", "running-style"):
         raise ValueError(f"task must be 'finish-position' or 'running-style', got: {task!r}")
@@ -739,114 +758,148 @@ def eval_champion_cells_for_category(
     )
     experiment_id = get_or_create_experiment(client, experiment_name)
     cell_eval_key = f"{normalized_category}:{task}:{window_days}:{as_of_str}"
-    existing_run_id = _find_existing_cell_eval_run(client, experiment_id, cell_eval_key)
-    if existing_run_id is not None:
-        return _result_from_existing_run(client, existing_run_id)
 
-    champion_ref = resolve_champion_model_version(client, normalized_category, task)
+    tracing_client = trace_emit.build_tracing_client(client)
+    with trace_emit.job_trace(
+        tracing_client,
+        experiment_id,
+        "eval-champion-cells",
+        attributes={
+            "category": normalized_category,
+            "task": task,
+            "window_days": window_days,
+            "as_of_date": as_of_str,
+        },
+    ) as t:
+        existing_run_id = _find_existing_cell_eval_run(client, experiment_id, cell_eval_key)
+        if existing_run_id is not None:
+            result = _result_from_existing_run(client, existing_run_id)
+            t.feedback("has_champion_coverage", result.has_champion_coverage)
+            t.feedback("cells_evaluated", float(result.cell_count))
+            return result
 
-    neon_conn = neon_connect()
-    local_conn = local_connect()
-    try:
-        if task == "finish-position":
-            cell_df, unit_count, unit_count_champion_only = _evaluate_fp_champion(
-                neon_conn,
-                local_conn,
-                normalized_category,
-                champion_ref.model_version_label,
-                date_from,
-                date_to,
-                min_cell_count,
+        with t.step("resolve-champion"):
+            champion_ref = resolve_champion_model_version(client, normalized_category, task)
+
+        neon_conn = neon_connect()
+        local_conn = local_connect()
+        try:
+            with t.step("eval-join"):
+                if task == "finish-position":
+                    cell_df, unit_count, unit_count_champion_only = _evaluate_fp_champion(
+                        neon_conn,
+                        local_conn,
+                        normalized_category,
+                        champion_ref.model_version_label,
+                        date_from,
+                        date_to,
+                        min_cell_count,
+                    )
+                    weight_column, metric_column = "race_count", "top1_pct"
+                else:
+                    cell_df, unit_count, unit_count_champion_only = _evaluate_rs_champion(
+                        neon_conn,
+                        local_conn,
+                        normalized_category,
+                        champion_ref.model_version_label,
+                        date_from,
+                        date_to,
+                        min_cell_count,
+                    )
+                    weight_column, metric_column = "horse_count", "accuracy_pct"
+        finally:
+            neon_conn.close()
+            local_conn.close()
+
+        # `unit_count` is VARIANT-INCLUSIVE (see this module's docstring /
+        # the 2026-07-10 widening) -- so `has_champion_coverage` now
+        # correctly reflects real production coverage even on a day/
+        # category where only a cell-routed variant (never the bare
+        # champion label) actually served.
+        with t.step("aggregate-cells"):
+            has_coverage = unit_count > 0
+            headline = select_headline_metrics(cell_df, weight_column=weight_column)
+            best_cell, worst_cell = _best_worst_cell(cell_df, metric_column)
+            low_n_cell_count = _bool_column_true_count(cell_df, "low_n")
+
+        with t.step("log-run"):
+            run = client.create_run(experiment_id, run_name=f"champion-cells-{normalized_category}")
+            run_id = run.info.run_id
+
+            tags = {
+                CELL_EVAL_KEY_TAG: cell_eval_key,
+                "category": normalized_category,
+                "task": task,
+                "champion_model_version": (
+                    champion_ref.model_version_label
+                    if champion_ref.model_version_label is not None
+                    else "none"
+                ),
+                "window_days": str(window_days),
+                "as_of_date": as_of_str,
+                "has_champion_coverage": "true" if has_coverage else "false",
+                # Every run this module logs evaluates genuinely-served
+                # production predictions against finalized results (see the
+                # module docstring) -- never a walk-forward/offline backtest
+                # -- so this is always "serve", unconditionally, even on a
+                # zero-coverage run: finding no genuinely-served rows is
+                # still an answer about the serve regime, not a different
+                # regime.
+                "eval_regime": "serve",
+            }
+            metrics: dict[str, float] = dict(headline)
+            metrics["unit_count"] = float(unit_count)
+            # STRICT (exact-champion-label-only) counterpart of
+            # `unit_count`'s VARIANT-INCLUSIVE meaning -- see
+            # `ChampionCellEvalResult`'s own docstring for why both are
+            # exposed as separate metrics.
+            metrics["unit_count_champion_only"] = float(unit_count_champion_only)
+            metrics["cell_count"] = float(len(cell_df))
+            metrics["low_n_cell_count"] = float(low_n_cell_count)
+            if best_cell is not None and worst_cell is not None:
+                metrics[f"best_cell_{metric_column}"] = float(
+                    cast(float, best_cell[metric_column])
+                )
+                metrics[f"worst_cell_{metric_column}"] = float(
+                    cast(float, worst_cell[metric_column])
+                )
+
+            log_batch_chunked(
+                client,
+                run_id,
+                metrics=[Metric(k, v, 0, 0) for k, v in metrics.items()],
+                tags=[RunTag(k, v) for k, v in tags.items()],
             )
-            weight_column, metric_column = "race_count", "top1_pct"
-        else:
-            cell_df, unit_count, unit_count_champion_only = _evaluate_rs_champion(
-                neon_conn,
-                local_conn,
-                normalized_category,
-                champion_ref.model_version_label,
-                date_from,
-                date_to,
-                min_cell_count,
-            )
-            weight_column, metric_column = "horse_count", "accuracy_pct"
-    finally:
-        neon_conn.close()
-        local_conn.close()
+            # Logged even when cell_df has zero rows: an empty-but-
+            # correctly-columned table is still a valid, useful artifact --
+            # it visibly documents "no champion coverage" rather than an
+            # absent artifact looking like a bug.
+            log_cell_table(client, run_id, cell_df)
+            client.set_terminated(run_id, status="FINISHED")
 
-    # `unit_count` is VARIANT-INCLUSIVE (see this module's docstring / the
-    # 2026-07-10 widening) -- so `has_champion_coverage` now correctly
-    # reflects real production coverage even on a day/category where only a
-    # cell-routed variant (never the bare champion label) actually served.
-    has_coverage = unit_count > 0
-    headline = select_headline_metrics(cell_df, weight_column=weight_column)
-    best_cell, worst_cell = _best_worst_cell(cell_df, metric_column)
-    low_n_cell_count = _bool_column_true_count(cell_df, "low_n")
+            if champion_ref.version is not None:
+                client.set_model_version_tag(
+                    champion_ref.registered_name,
+                    champion_ref.version,
+                    "latest_cell_eval_run_id",
+                    run_id,
+                )
 
-    run = client.create_run(experiment_id, run_name=f"champion-cells-{normalized_category}")
-    run_id = run.info.run_id
-
-    tags = {
-        CELL_EVAL_KEY_TAG: cell_eval_key,
-        "category": normalized_category,
-        "task": task,
-        "champion_model_version": (
-            champion_ref.model_version_label
-            if champion_ref.model_version_label is not None
-            else "none"
-        ),
-        "window_days": str(window_days),
-        "as_of_date": as_of_str,
-        "has_champion_coverage": "true" if has_coverage else "false",
-        # Every run this module logs evaluates genuinely-served production
-        # predictions against finalized results (see the module docstring)
-        # -- never a walk-forward/offline backtest -- so this is always
-        # "serve", unconditionally, even on a zero-coverage run: finding no
-        # genuinely-served rows is still an answer about the serve regime,
-        # not a different regime.
-        "eval_regime": "serve",
-    }
-    metrics: dict[str, float] = dict(headline)
-    metrics["unit_count"] = float(unit_count)
-    # STRICT (exact-champion-label-only) counterpart of `unit_count`'s
-    # VARIANT-INCLUSIVE meaning -- see `ChampionCellEvalResult`'s own
-    # docstring for why both are exposed as separate metrics.
-    metrics["unit_count_champion_only"] = float(unit_count_champion_only)
-    metrics["cell_count"] = float(len(cell_df))
-    metrics["low_n_cell_count"] = float(low_n_cell_count)
-    if best_cell is not None and worst_cell is not None:
-        metrics[f"best_cell_{metric_column}"] = float(cast(float, best_cell[metric_column]))
-        metrics[f"worst_cell_{metric_column}"] = float(cast(float, worst_cell[metric_column]))
-
-    log_batch_chunked(
-        client,
-        run_id,
-        metrics=[Metric(k, v, 0, 0) for k, v in metrics.items()],
-        tags=[RunTag(k, v) for k, v in tags.items()],
-    )
-    # Logged even when cell_df has zero rows: an empty-but-correctly-columned
-    # table is still a valid, useful artifact -- it visibly documents "no
-    # champion coverage" rather than an absent artifact looking like a bug.
-    log_cell_table(client, run_id, cell_df)
-    client.set_terminated(run_id, status="FINISHED")
-
-    if champion_ref.version is not None:
-        client.set_model_version_tag(
-            champion_ref.registered_name, champion_ref.version, "latest_cell_eval_run_id", run_id
+        result = ChampionCellEvalResult(
+            run_id=run_id,
+            category=normalized_category,
+            task=task,
+            champion_model_version=champion_ref.model_version_label,
+            unit_count=unit_count,
+            cell_count=len(cell_df),
+            low_n_cell_count=low_n_cell_count,
+            has_champion_coverage=has_coverage,
+            reused_existing_run=False,
+            unit_count_champion_only=unit_count_champion_only,
         )
-
-    return ChampionCellEvalResult(
-        run_id=run_id,
-        category=normalized_category,
-        task=task,
-        champion_model_version=champion_ref.model_version_label,
-        unit_count=unit_count,
-        cell_count=len(cell_df),
-        low_n_cell_count=low_n_cell_count,
-        has_champion_coverage=has_coverage,
-        reused_existing_run=False,
-        unit_count_champion_only=unit_count_champion_only,
-    )
+        t.feedback("has_champion_coverage", result.has_champion_coverage)
+        t.feedback("cells_evaluated", float(result.cell_count))
+        return result
 
 
 def _tasks_for_category(category: str) -> tuple[str, ...]:

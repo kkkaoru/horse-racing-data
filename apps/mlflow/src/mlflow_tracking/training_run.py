@@ -55,13 +55,15 @@ the timeline hook belongs here, not only in `ingest_eval.py`, or the
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
 from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
+from mlflow.tracing.client import TracingClient
 
-from mlflow_tracking import config, ingest_eval, logging_api, registry, timeline
+from mlflow_tracking import config, ingest_eval, logging_api, registry, timeline, trace_emit
 from mlflow_tracking.logging_api import (
     get_or_create_experiment,
     log_batch_chunked,
@@ -70,6 +72,14 @@ from mlflow_tracking.logging_api import (
 )
 
 MANIFEST_SCHEMA: Final[str] = "hr-mlflow-training-run/v1"
+
+# Best-effort key list for the SERVE-mode job_trace `races` Feedback (see
+# trace_emit.job_trace) -- mirrors ingest_eval._RACES_LIKE_KEYS/_races_
+# feedback_value's identical rationale, kept as a SEPARATE small duplicate
+# here (not imported) since it operates on a different payload shape: a
+# single flattened `aggregate_metrics` dict for ONE task, not a (fp, rs)
+# section pair.
+_RACES_LIKE_KEYS: Final[tuple[str, ...]] = ("races", "race_count", "total_horses", "horse_count")
 
 VALID_TASKS: Final[frozenset[str]] = frozenset({"finish-position", "running-style"})
 
@@ -190,6 +200,19 @@ def _register_and_promote(
         registry.set_champion(client, registered_name, version.version)
 
 
+def _races_feedback_value(aggregate_metrics: Mapping[str, object]) -> float:
+    """Best-effort extraction of a "how many races/horses did this
+    training-run manifest's `aggregate_metrics` represent" numeric value,
+    for the SERVE-mode job_trace `races` Feedback (see `_RACES_LIKE_KEYS`'s
+    own comment). Returns 0.0 when none of these keys are present -- a
+    deliberately honest "unknown", never a fabricated nonzero guess."""
+    for key in _RACES_LIKE_KEYS:
+        value = aggregate_metrics.get(key)
+        if isinstance(value, int | float):
+            return float(value)
+    return 0.0
+
+
 def _maybe_log_serve_timeline_point(
     client: MlflowClient,
     task: registry.Task,
@@ -197,6 +220,8 @@ def _maybe_log_serve_timeline_point(
     eval_regime: str,
     manifest_tags: dict[str, object],
     aggregate_metrics: dict[str, object],
+    *,
+    tracing_client: TracingClient,
 ) -> str | None:
     """Upsert a `timelines` point for a live-serve manifest, or no-op.
 
@@ -212,6 +237,22 @@ def _maybe_log_serve_timeline_point(
     fire (wrong regime, no date tag, or the extracted metric subset was
     empty — e.g. an `aggregate_metrics` that happens to carry no
     timeline-relevant keys).
+
+    ★ Job-execution trace (2026-07-11): `tracing_client` is REQUIRED
+    (unlike a "None disables tracing" optional design) since this module's
+    ONLY call site (`log_training_run` below) always has one built already
+    -- there is no other real or test caller that needs a no-tracing
+    variant (this package's own convention -- see `sync_production.py`'s
+    `emit_traces`-gated `tracing_client` -- is to make tracing OPTIONAL only
+    where a caller genuinely needs to skip it, e.g. `--no-traces`; no such
+    flag exists for `log-training-run`). When this hook is ABOUT to
+    actually upsert a point, that REAL `timeline.upsert_timeline_point`
+    call is wrapped in its OWN nested `trace_emit.job_trace` landing in
+    `config.EXPERIMENT_TIMELINES` (Feedback `points_appended`, always 1.0
+    here -- this hook upserts at most one point per call, unlike
+    `ingest_eval.ingest_serve_accuracy`'s up-to-two) -- mirrors that
+    function's identical nested-job-trace pattern (see its own docstring).
+    Never opened when this hook does not fire.
     """
     if eval_regime != "serve":
         return None
@@ -225,7 +266,19 @@ def _maybe_log_serve_timeline_point(
     )
     if not timeline_metrics:
         return None
-    return timeline.upsert_timeline_point(client, task, category, date_tag, timeline_metrics)
+
+    timelines_experiment_id = get_or_create_experiment(client, config.EXPERIMENT_TIMELINES)
+    with trace_emit.job_trace(
+        tracing_client,
+        timelines_experiment_id,
+        "log-training-run",
+        attributes={"task": task, "category": category},
+    ) as t:
+        timeline_run_id = timeline.upsert_timeline_point(
+            client, task, category, date_tag, timeline_metrics
+        )
+        t.feedback("points_appended", 1.0)
+    return timeline_run_id
 
 
 def log_training_run(client: MlflowClient, manifest_path: Path) -> str:
@@ -234,6 +287,32 @@ def log_training_run(client: MlflowClient, manifest_path: Path) -> str:
     Raises ValueError/OSError/json.JSONDecodeError on a malformed manifest —
     callers (the CLI) are expected to catch these and exit non-zero with a
     clear message, per the fixed manifest contract's error-handling policy.
+
+    ★ Job-execution trace (2026-07-11): one `trace_emit.job_trace` per call
+    into this SAME `resolved_experiment`. Two distinct SHAPES, chosen by
+    `eval_regime == "serve"` (mirrors `_resolve_experiment`'s own serve/non-
+    serve split, though the two are independent decisions -- an explicit
+    `experiment` override can route a serve-regime manifest anywhere):
+      - SERVE mode (job_name `log-training-run-serve`): Feedback `races`
+        (numeric, see `_races_feedback_value`) -- no named steps (this
+        package's per-race/per-horse serve-usage signal already lives in
+        `finish-position/production-usage`/`running-style/production-usage`
+        via the prior wave's traces; this job trace is about "did THIS
+        ingestion run", not a second usage signal).
+      - WF mode (job_name `log-training-run-wf`, every OTHER eval_regime --
+        wf/oos/self-consistency/unspecified): steps `parse-manifest`
+        (extracting params/tags/aggregate_metrics from the payload),
+        `log-metrics` (the `log_batch_chunked` call), `ingest-metadata`
+        (the optional `artifact_dir`/`cell_report` ingestion -- entered
+        even when neither is present, a trivial no-op span in that case).
+        Feedback `ingestion_ok` (bool): True unless `artifact_dir` was
+        given but its `metadata.json` was missing (`_ingest_artifact_dir`'s
+        own silent no-op path -- see that function's docstring) -- the one
+        real "specified but nothing there" soft-failure this function can
+        observe without raising.
+    `eval_regime`/`era` (era from the manifest's own `tags.era`, when
+    present -- this manifest schema has no dedicated top-level `era` field)
+    are span ATTRIBUTES on EITHER shape, never a Feedback.
     """
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -262,67 +341,113 @@ def log_training_run(client: MlflowClient, manifest_path: Path) -> str:
         if experiment_override is not None
         else _resolve_experiment(task, eval_regime)
     )
-
-    manifest_params = _optional_dict(payload, "params")
-    manifest_tags = _optional_dict(payload, "tags")
-    aggregate_metrics = _optional_dict(payload, "aggregate_metrics")
-
     experiment_id = get_or_create_experiment(client, resolved_experiment)
-    run = client.create_run(experiment_id, run_name=model_version_label)
-    run_id = run.info.run_id
 
-    tags: dict[str, str] = {
-        "eval_regime": eval_regime,
+    # A cheap, direct peek at the manifest's own (not-yet-validated) "tags"
+    # object purely to surface "era" as a job-trace ATTRIBUTE if present --
+    # done here (before the `with` block below even opens) rather than
+    # inside the "parse-manifest" step, since job_trace's `attributes` are
+    # fixed at construction time; the real, validated parse still happens
+    # in "parse-manifest" below via `_optional_dict`.
+    raw_manifest_tags = payload.get("tags")
+    era_hint = raw_manifest_tags.get("era") if isinstance(raw_manifest_tags, dict) else None
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    is_serve_mode = eval_regime == "serve"
+    job_name = "log-training-run-serve" if is_serve_mode else "log-training-run-wf"
+    job_attributes: dict[str, object] = {
         "task": task,
         "category": category,
         "model_version": model_version_label,
+        "eval_regime": eval_regime,
     }
-    tags.update({str(k): str(v) for k, v in manifest_tags.items()})
+    if isinstance(era_hint, str) and era_hint:
+        job_attributes["era"] = era_hint
 
-    # See this module's docstring for why a generic training-run ingester
-    # also upserts a `timelines` point: this is the empirically-real,
-    # automatic live-serve path (ingest_eval.py's own timeline wiring is
-    # manual/CLI-only). No-ops for every non-serve eval_regime and every
-    # manifest without a `date` tag.
-    timeline_run_id = _maybe_log_serve_timeline_point(
-        client, task, category, eval_regime, manifest_tags, aggregate_metrics
-    )
-    if timeline_run_id is not None:
-        tags[f"timeline_run_id:{task}"] = timeline_run_id
+    with trace_emit.job_trace(
+        tracing_client, experiment_id, job_name, attributes=job_attributes
+    ) as t:
+        with t.step("parse-manifest"):
+            manifest_params = _optional_dict(payload, "params")
+            manifest_tags = _optional_dict(payload, "tags")
+            aggregate_metrics = _optional_dict(payload, "aggregate_metrics")
 
-    params: dict[str, str] = {str(k): str(v) for k, v in manifest_params.items()}
-    metric_items = [
-        Metric(str(k), float(v), 0, 0)
-        for k, v in aggregate_metrics.items()
-        if isinstance(v, int | float)
-    ]
-    log_batch_chunked(
-        client,
-        run_id,
-        metrics=metric_items,
-        params=[Param(k, v) for k, v in params.items()],
-        tags=[RunTag(k, v) for k, v in tags.items()],
-    )
+        run = client.create_run(experiment_id, run_name=model_version_label)
+        run_id = run.info.run_id
 
-    artifact_dir = _optional_str(payload, "artifact_dir")
-    if artifact_dir is not None:
-        _ingest_artifact_dir(client, run_id, Path(artifact_dir))
+        tags: dict[str, str] = {
+            "eval_regime": eval_regime,
+            "task": task,
+            "category": category,
+            "model_version": model_version_label,
+        }
+        tags.update({str(k): str(v) for k, v in manifest_tags.items()})
 
-    cell_report = _optional_str(payload, "cell_report")
-    if cell_report is not None:
-        _ingest_cell_report(client, run_id, Path(cell_report))
-
-    client.set_terminated(run_id, status="FINISHED")
-
-    if _optional_bool(payload, "register"):
-        _register_and_promote(
+        # See this module's docstring for why a generic training-run ingester
+        # also upserts a `timelines` point: this is the empirically-real,
+        # automatic live-serve path (ingest_eval.py's own timeline wiring is
+        # manual/CLI-only). No-ops for every non-serve eval_regime and every
+        # manifest without a `date` tag. Threading `tracing_client` through
+        # makes the ACTUAL upsert (when it fires) get its own nested job
+        # trace into `timelines` -- see that function's own docstring.
+        timeline_run_id = _maybe_log_serve_timeline_point(
             client,
-            run_id,
             task,
             category,
-            model_version_label,
-            artifact_dir,
-            _optional_bool(payload, "champion"),
+            eval_regime,
+            manifest_tags,
+            aggregate_metrics,
+            tracing_client=tracing_client,
         )
+        if timeline_run_id is not None:
+            tags[f"timeline_run_id:{task}"] = timeline_run_id
+
+        with t.step("log-metrics"):
+            params: dict[str, str] = {str(k): str(v) for k, v in manifest_params.items()}
+            metric_items = [
+                Metric(str(k), float(v), 0, 0)
+                for k, v in aggregate_metrics.items()
+                if isinstance(v, int | float)
+            ]
+            log_batch_chunked(
+                client,
+                run_id,
+                metrics=metric_items,
+                params=[Param(k, v) for k, v in params.items()],
+                tags=[RunTag(k, v) for k, v in tags.items()],
+            )
+
+        artifact_dir = _optional_str(payload, "artifact_dir")
+        # True unless `artifact_dir` was given but its metadata.json is
+        # missing (`_ingest_artifact_dir`'s own silent no-op path) -- the
+        # WF-mode `ingestion_ok` Feedback's basis (see this function's own
+        # docstring). Nothing requested at all is trivially "ok".
+        metadata_ingested = True
+        with t.step("ingest-metadata"):
+            if artifact_dir is not None:
+                _ingest_artifact_dir(client, run_id, Path(artifact_dir))
+                metadata_ingested = (Path(artifact_dir) / "metadata.json").is_file()
+
+            cell_report = _optional_str(payload, "cell_report")
+            if cell_report is not None:
+                _ingest_cell_report(client, run_id, Path(cell_report))
+
+        client.set_terminated(run_id, status="FINISHED")
+
+        if _optional_bool(payload, "register"):
+            _register_and_promote(
+                client,
+                run_id,
+                task,
+                category,
+                model_version_label,
+                artifact_dir,
+                _optional_bool(payload, "champion"),
+            )
+
+        if is_serve_mode:
+            t.feedback("races", _races_feedback_value(aggregate_metrics))
+        else:
+            t.feedback("ingestion_ok", metadata_ingested)
 
     return run_id

@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 from mlflow import MlflowClient
+from mlflow.entities.trace_state import TraceState
 from mlflow.exceptions import MlflowException
 
 from mlflow_tracking import backfill_finish_position as bfp
-from mlflow_tracking import registry
+from mlflow_tracking import config, registry, trace_emit
 
 WriteJsonFixture = Callable[[Path, object], None]
 
@@ -572,6 +573,65 @@ def test_backfill_finish_position_is_idempotent_across_repeated_calls(
 
     assert len(client.search_model_versions("name='jra-finish-position'")) == 1
     assert len(client.search_model_versions("name='nar-finish-position'")) == 1
+
+
+def test_backfill_finish_position_emits_job_trace_with_champion_sync_ok_feedback(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """job_trace wiring (2026-07-11): one trace lands in the SAME
+    finish-position/registry-backfill experiment this function's own runs
+    use, with the documented step names and an aggregate `champion_sync_ok`
+    Feedback (True here: the single registered category's champion sync
+    status is "ok")."""
+    models_root = tmp_path / "models" / "finish-position"
+    write_json(models_root / "jra" / "test-cb-v1" / "metadata.json", BASE_METADATA)
+    predict_lib_root = tmp_path / "predict_lib"
+    write_json(predict_lib_root / "model_meta.json", {"model_versions": {"jra": "test-cb-v1"}})
+
+    bfp.backfill_finish_position(client, models_root, predict_lib_root)
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_REGISTRY_BACKFILL)
+    assert experiment is not None
+    traces = tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    assert len(traces) == 1
+    trace = traces[0]
+    assert trace.info.state == TraceState.OK
+    span_names = {span.name for span in trace.data.spans}
+    assert span_names == {
+        "backfill-finish-position",
+        "register-base-versions",
+        "register-per-class-versions",
+        "champion-sync",
+        "cell-routing-ingest",
+    }
+    assessments_by_name = {a.name: a for a in trace.info.assessments}
+    assert set(assessments_by_name) == {"champion_sync_ok"}
+    feedback = assessments_by_name["champion_sync_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is True
+
+
+def test_backfill_finish_position_champion_sync_ok_false_when_meta_missing(
+    client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
+) -> None:
+    """An empty `champion_sync` (no model_meta.json at all) is a documented
+    NOT-ok aggregate, not a fabricated True."""
+    models_root = tmp_path / "models" / "finish-position"
+    write_json(models_root / "jra" / "test-cb-v1" / "metadata.json", BASE_METADATA)
+    predict_lib_root = tmp_path / "predict_lib"  # no model_meta.json written at all
+
+    bfp.backfill_finish_position(client, models_root, predict_lib_root)
+
+    tracing_client = trace_emit.build_tracing_client(client)
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_REGISTRY_BACKFILL)
+    assert experiment is not None
+    traces = tracing_client.search_traces(experiment_ids=[experiment.experiment_id], max_results=10)
+    assert len(traces) == 1
+    assessments_by_name = {a.name: a for a in traces[0].info.assessments}
+    feedback = assessments_by_name["champion_sync_ok"].feedback
+    assert feedback is not None
+    assert feedback.value is False
 
 
 def test_discover_flat_metadata_files_finds_one_level_metadata(
