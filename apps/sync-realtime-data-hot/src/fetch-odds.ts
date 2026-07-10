@@ -71,6 +71,20 @@ const parseOddsLinks = (value: string): Partial<Record<OddsType, string>> => {
   }
 };
 
+const oddsLinksEqual = (
+  left: Partial<Record<OddsType, string>>,
+  right: Partial<Record<OddsType, string>>,
+): boolean => {
+  const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+  for (const key of keys) {
+    const oddsType = key as OddsType;
+    if (left[oddsType] !== right[oddsType]) {
+      return false;
+    }
+  }
+  return true;
+};
+
 export const getRaceStartFromState = (state: OddsFetchStateRow): Date | null =>
   parseRaceStartJst(
     state.kaisaiNen,
@@ -116,18 +130,21 @@ const scrapeOddsForState = async (env: Env, state: OddsFetchStateRow): Promise<S
     return { latest: result.latest, missingTypes: result.missingTypes };
   }
   const cachedLinks = parseOddsLinks(state.oddsLinksJson);
+  const directLinks = buildNarOddsLinksFromRaceUrl(state.debaUrl);
   const oddsLinks =
-    Object.keys(cachedLinks).length > 0 ? cachedLinks : buildNarOddsLinksFromRaceUrl(state.debaUrl);
-  if (Object.keys(cachedLinks).length === 0) {
-    await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, oddsLinks);
-  }
+    Object.keys(directLinks).length > 0 ? { ...cachedLinks, ...directLinks } : cachedLinks;
   if (Object.keys(oddsLinks).length > 0) {
+    if (!oddsLinksEqual(cachedLinks, oddsLinks)) {
+      await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, oddsLinks);
+    }
     const latest = await fetchOdds(state.debaUrl, oddsLinks);
     return { latest, missingTypes: [] };
   }
   const entryHtml = await fetchRacePage(state.debaUrl);
   const fallbackLinks = extractOddsLinks(entryHtml, state.debaUrl);
-  await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, fallbackLinks);
+  if (!oddsLinksEqual(cachedLinks, fallbackLinks)) {
+    await updateOddsLinks(env.REALTIME_HOT_DB, state.raceKey, fallbackLinks);
+  }
   const latest = await fetchOdds(state.debaUrl, fallbackLinks);
   return { latest, missingTypes: [] };
 };

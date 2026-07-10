@@ -298,6 +298,32 @@ it("fetchAndStoreOdds reuses cached odds links when present", async () => {
   expect(vi.mocked(extractOddsLinks)).not.toHaveBeenCalled();
 });
 
+it("fetchAndStoreOdds expands partial cached NAR odds links with direct generated links", async () => {
+  vi.mocked(buildNarOddsLinksFromRaceUrl).mockReturnValueOnce({
+    fukusho: "https://nar/tanfuku-direct",
+    tansho: "https://nar/tanfuku-direct",
+    umaren: "https://nar/umaren-direct",
+    wide: "https://nar/wide-direct",
+  });
+  const state = sampleNarState({
+    oddsLinksJson: JSON.stringify({ tansho: "https://nar/tanfuku-cached" }),
+  });
+  const env = buildEnv({}, { state });
+  await fetchAndStoreOdds(env, state.raceKey, new Date("2026-05-28T05:55:00Z"));
+  expect(vi.mocked(fetchOdds)).toHaveBeenCalledWith(state.debaUrl, {
+    fukusho: "https://nar/tanfuku-direct",
+    tansho: "https://nar/tanfuku-direct",
+    umaren: "https://nar/umaren-direct",
+    wide: "https://nar/wide-direct",
+  });
+  expect(vi.mocked(fetchRacePage)).not.toHaveBeenCalled();
+  const prepareMock = env.REALTIME_HOT_DB.prepare as unknown as ReturnType<typeof vi.fn>;
+  const linkUpdateCalls = prepareMock.mock.calls.filter((call: unknown[]) =>
+    String(call[0]).toLowerCase().includes("set odds_links_json"),
+  );
+  expect(linkUpdateCalls).toHaveLength(1);
+});
+
 it("fetchAndStoreOdds uses direct NAR links when state json is malformed", async () => {
   const env = buildEnv(
     {},
