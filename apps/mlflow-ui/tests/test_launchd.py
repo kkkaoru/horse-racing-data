@@ -59,14 +59,14 @@ def test_generate_plist_carries_set_env_vars_and_omits_unset(
 ) -> None:
     cfg = _make_cfg(tmp_path)
     monkeypatch.setenv("HORSE_RACING_MLFLOW_UI_PORT", "6100")
-    monkeypatch.setenv("R2_ACCOUNT_ID", "acct123")
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_R2_PREFIX", "acct123-prefix")
 
     text = launchd.generate_plist(cfg)
     parsed = plistlib.loads(text.encode())
 
     env_vars = parsed["EnvironmentVariables"]
     assert env_vars["HORSE_RACING_MLFLOW_UI_PORT"] == "6100"
-    assert env_vars["R2_ACCOUNT_ID"] == "acct123"
+    assert env_vars["HORSE_RACING_MLFLOW_R2_PREFIX"] == "acct123-prefix"
     assert "HORSE_RACING_MLFLOW_R2_BUCKET" not in env_vars
     assert "R2_SECRET_ACCESS_KEY" not in env_vars
 
@@ -80,19 +80,59 @@ def test_generate_plist_empty_environment_when_nothing_set(tmp_path: Path) -> No
     assert parsed["EnvironmentVariables"] == {}
 
 
-def test_generate_plist_carries_backend_store_uri_override(
+def test_generate_plist_never_carries_secret_bearing_env_vars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Regression guard for the plist-secret-leak incident: the backend DSN
+    and R2 credentials must NEVER land in the generated plist's
+    EnvironmentVariables, even when they're set in the generating process's
+    own environment -- a LaunchAgents plist is a plausible world-readable
+    file, and the spawned process resolves these itself via cli.main()'s
+    3-tier env loader instead (see launchd.py's module-level comment)."""
     cfg = _make_cfg(tmp_path)
     monkeypatch.setenv("HORSE_RACING_MLFLOW_BACKEND_URI", "postgresql://user:pw@host/db")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "fake-access-key-id")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "fake-secret-access-key")
+    monkeypatch.setenv("R2_ACCOUNT_ID", "fake-account-id")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "fake-cf-account-id")
 
     text = launchd.generate_plist(cfg)
     parsed = plistlib.loads(text.encode())
 
-    assert (
-        parsed["EnvironmentVariables"]["HORSE_RACING_MLFLOW_BACKEND_URI"]
-        == "postgresql://user:pw@host/db"
-    )
+    env_vars = parsed["EnvironmentVariables"]
+    assert "HORSE_RACING_MLFLOW_BACKEND_URI" not in env_vars
+    assert "R2_ACCESS_KEY_ID" not in env_vars
+    assert "R2_SECRET_ACCESS_KEY" not in env_vars
+    assert "R2_ACCOUNT_ID" not in env_vars
+    assert "CLOUDFLARE_ACCOUNT_ID" not in env_vars
+
+    # And none of the actual secret values leaked into the plist text via
+    # any other key either (belt-and-suspenders on top of the key check).
+    assert "postgresql://user:pw@host/db" not in text
+    assert "fake-access-key-id" not in text
+    assert "fake-secret-access-key" not in text
+
+
+def test_generate_plist_still_carries_non_secret_config_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-secret operational config (data dir, artifacts mode, host/port,
+    R2 bucket/prefix names) must still be carried through -- only the
+    credential-bearing vars were removed."""
+    cfg = _make_cfg(tmp_path)
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ARTIFACTS_MODE", "r2")
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_UI_HOST", "127.0.0.1")
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_R2_BUCKET", "my-bucket")
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_R2_PREFIX", "mlflow-prefix")
+
+    text = launchd.generate_plist(cfg)
+    parsed = plistlib.loads(text.encode())
+
+    env_vars = parsed["EnvironmentVariables"]
+    assert env_vars["HORSE_RACING_MLFLOW_ARTIFACTS_MODE"] == "r2"
+    assert env_vars["HORSE_RACING_MLFLOW_UI_HOST"] == "127.0.0.1"
+    assert env_vars["HORSE_RACING_MLFLOW_R2_BUCKET"] == "my-bucket"
+    assert env_vars["HORSE_RACING_MLFLOW_R2_PREFIX"] == "mlflow-prefix"
 
 
 def test_generate_plist_program_arguments_never_contain_backend_uri_or_artifacts_destination(

@@ -43,7 +43,7 @@ would just restart it).
 ```sh
 cd apps/mlflow-ui
 uv run python -m mlflow_ui.cli plist --output ~/Library/LaunchAgents/com.horse-racing.mlflow-ui.plist
-chmod 600 ~/Library/LaunchAgents/com.horse-racing.mlflow-ui.plist  # embeds the backend DSN and R2 credentials
+chmod 600 ~/Library/LaunchAgents/com.horse-racing.mlflow-ui.plist  # defense-in-depth; see "Plist contains no secrets" below
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.horse-racing.mlflow-ui.plist
 
 # status / logs
@@ -52,6 +52,12 @@ tail -f "$(uv run python -c 'from mlflow_ui.config import load_config; print(loa
 
 # stop supervision entirely (KeepAlive means a plain `stop` won't hold)
 launchctl bootout gui/$(id -u)/com.horse-racing.mlflow-ui
+
+# to pick up a regenerated plist on an already-running install, bootout then
+# bootstrap again (see "Plist contains no secrets" below for why this is
+# safe to do without re-supplying any credential):
+launchctl bootout gui/$(id -u)/com.horse-racing.mlflow-ui
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.horse-racing.mlflow-ui.plist
 ```
 
 The generated plist's `ProgramArguments` invoke `uv run --project <this dir>
@@ -65,6 +71,37 @@ bare `uv` will fail to resolve under launchd and crash-loop under
 `KeepAlive`. `foreground` execs `mlflow server` directly (`os.execvpe`, no
 wrapper subprocess left running), so `KeepAlive` supervises the real server
 process, not a shell around it.
+
+### Plist contains no secrets
+
+The generated plist's `EnvironmentVariables` dict deliberately carries
+**only** non-secret operational config -- `HORSE_RACING_MLFLOW_DATA_DIR`,
+`_ARTIFACTS_MODE`, `_UI_HOST`, `_UI_PORT`, `_R2_BUCKET`, `_R2_PREFIX` (see
+`launchd._CARRIED_ENV_VARS`). It never embeds
+`HORSE_RACING_MLFLOW_BACKEND_URI` (the Neon/Postgres DSN, plaintext password
+included), `R2_ACCESS_KEY_ID`, or `R2_SECRET_ACCESS_KEY` -- and, for
+defense-in-depth, not `R2_ACCOUNT_ID`/`CLOUDFLARE_ACCOUNT_ID` either, even
+though an account id alone isn't a credential.
+
+This is a deliberate security fix (the 3rd recurring incident of an
+unrelated agent reading this plist and ingesting its embedded secrets into
+its own transcript), not an oversight, and it costs nothing functionally:
+`cli.main()` unconditionally calls `load_dotenv_local()` then
+`load_repo_root_env_fallback()` **before** dispatching to any subcommand,
+including `foreground` (exactly what the plist's `ProgramArguments` run).
+So the spawned process resolves the DSN and R2 credentials itself from
+`apps/mlflow/.env.local` (or the repo-root `.env` allow-listed fallback) at
+startup, via the same 3-tier precedence every other entrypoint in this
+package already relies on (explicit process env wins, then `.env.local`,
+then the root `.env` fallback) -- the plist doesn't need to hand any of it
+over.
+
+Practical effect: it's safe to `cat`/`grep` the installed plist, or for an
+unrelated agent to stumble across it while investigating something else --
+there is nothing secret left to leak. `chmod 600` above is still good
+practice (least-privilege, and it hides the non-secret config values too),
+but is no longer the thing standing between a world-readable file and a
+leaked database password.
 
 ## Security
 
@@ -85,6 +122,10 @@ always merge `server_env()` into the child's environment. Verify with `ps
 -p <pid> -o command=` on the actual `mlflow server` process (not the `uv
 run`/`python -m mlflow_ui.cli foreground` wrapper) -- it should show only
 `--host`/`--port`, never a URI.
+
+See "Plist contains no secrets" above for the complementary guarantee that
+the DSN/R2 credentials also never land in the installed launchd plist
+itself, not just off the process argv.
 
 ## Environment variables
 
