@@ -34,7 +34,6 @@ from predict_lib.model_meta import (
     NAR_ETOP2_MODEL_VERSION,
     Architecture,
     Category,
-    model_version_for,
 )
 from predict_lib.rescore import RaceScope
 from predict_lib.scorer import BoosterLike
@@ -735,9 +734,9 @@ def test_load_model_metadata_rejects_within_race_leak_columns(tmp_path: Path) ->
     _write_category_metadata(
         tmp_path,
         "nar",
-        ["feat"] * 187 + ["target_corner_1_norm"],
+        ["feat"] * 187 + ["target_corner_2_norm"],
     )
-    with pytest.raises(ValueError, match="within-race leak columns"):
+    with pytest.raises(ValueError, match="target_corner_2_norm"):
         _load_model_metadata(tmp_path, "nar")
 
 
@@ -1047,8 +1046,8 @@ def test_focused_full_prediction_complete_checks_expected_cell_model_version(
 
         def fetchall(self) -> list[tuple[object, ...]]:
             return [
-                ("H1", "E", "20", 1400, "0702", "54"),
-                ("H2", "E", "20", 1400, "0702", "54"),
+                ("H1", "E", "20", 1400, None, "0702", "54", 12),
+                ("H2", "E", "20", 1400, None, "0702", "54", 12),
             ]
 
         def fetchone(self) -> tuple[int]:
@@ -1089,7 +1088,261 @@ def test_focused_full_prediction_complete_checks_expected_cell_model_version(
     assert completion_fn("postgresql://example", params) is expected
     final_params = cursor.executed_params[-1]
     assert isinstance(final_params, tuple)
-    assert final_params[-1] == model_version_for("nar")
+    assert final_params[-1] == predict_upcoming.NAR_TRANSFORMER_MODEL_VERSION
+    assert connection.closed is True
+
+
+@pytest.mark.parametrize(
+    ("existing_row", "expected"),
+    [((5, 1, 5), True), ((5, 1, 4), False), ((0, None, None), False)],
+)
+def test_focused_full_prediction_complete_uses_existing_prediction_fallback_when_sources_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    existing_row: tuple[int, int | None, int | None],
+    expected: bool,
+) -> None:
+    """A completed NAR iter40 race still counts when source rows aged out."""
+
+    @final
+    class _FocusedCursor:
+        def __init__(self) -> None:
+            self.executed_params: list[object] = []
+
+        def execute(self, query: str, params: object = None) -> None:
+            del query
+            self.executed_params.append(params)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return []
+
+        def fetchone(self) -> tuple[int, int | None, int | None]:
+            return existing_row
+
+    @final
+    class _FocusedConnection:
+        def __init__(self, cursor: _FocusedCursor) -> None:
+            self._cursor = cursor
+            self.closed = False
+
+        def cursor(self) -> _FocusedCursor:
+            return self._cursor
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = _FocusedCursor()
+    connection = _FocusedConnection(cursor)
+
+    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
+        assert database_url == "postgresql://example"
+        assert connect_timeout > 0
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
+    params = PredictParams(
+        category="nar",
+        run_date="20260710",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="45",
+        race_bango="03",
+    )
+
+    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
+    assert callable(completion_fn)
+    assert completion_fn("postgresql://example", params) is expected
+    final_params = cursor.executed_params[-1]
+    assert isinstance(final_params, tuple)
+    assert final_params[-1] == predict_upcoming.NAR_TRANSFORMER_MODEL_VERSION
+    assert connection.closed is True
+
+
+def test_focused_full_prediction_complete_uses_jra_kyoso_joken_code_for_model_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JRA 703 focused completion must wait for the cell variant model_version."""
+
+    candidate_version = "jra-cb-v9-sim-2013-clean-jockey-pedigree269"
+    default_version = "jra-cb-v9-sim-2013-clean"
+
+    @final
+    class _Jra703Router:
+        def has_routing(self, category: str) -> bool:
+            return category == "jra"
+
+        def routing_for(self, category: str) -> _FakeRouting:
+            assert category == "jra"
+            return _FakeRouting(
+                variants={
+                    "default": _FakeVariantSpec(default_version, 250, "catboost"),
+                    "jra_kyoso_joken_703_jockey_pedigree269": _FakeVariantSpec(
+                        candidate_version, 269, "catboost"
+                    ),
+                },
+                default_variant="default",
+            )
+
+        def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
+            assert category == "jra"
+            class_codes = {str(entry.get("kyoso_joken_code", "")).strip() for entry in entries}
+            if "703" in class_codes:
+                return "jra_kyoso_joken_703_jockey_pedigree269"
+            return "default"
+
+    @final
+    class _FocusedCursor:
+        def __init__(self) -> None:
+            self.executed_params: list[object] = []
+
+        def execute(self, query: str, params: object = None) -> None:
+            if not self.executed_params:
+                assert "kyoso_joken_code" in query
+            self.executed_params.append(params)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                ("H1", "A", "24", 2000, "703", "0705", "10", 14),
+                ("H2", "A", "24", 2000, "703", "0705", "10", 14),
+            ]
+
+        def fetchone(self) -> tuple[int]:
+            return (2,)
+
+    @final
+    class _FocusedConnection:
+        def __init__(self, cursor: _FocusedCursor) -> None:
+            self._cursor = cursor
+            self.closed = False
+
+        def cursor(self) -> _FocusedCursor:
+            return self._cursor
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = _FocusedCursor()
+    connection = _FocusedConnection(cursor)
+
+    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
+        assert database_url == "postgresql://example"
+        assert connect_timeout > 0
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
+    monkeypatch.setattr(predict_upcoming, "load_cell_router", lambda: _Jra703Router())
+    params = PredictParams(
+        category="jra",
+        run_date="20260705",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="10",
+        race_bango="02",
+    )
+
+    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
+    assert callable(completion_fn)
+    assert completion_fn("postgresql://example", params) is True
+    final_params = cursor.executed_params[-1]
+    assert isinstance(final_params, tuple)
+    assert final_params[-1] == candidate_version
+    assert final_params[-1] != default_version
+    assert connection.closed is True
+
+
+def test_focused_full_prediction_complete_uses_jra_prior_corner_cell_model_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JRA 005 dirt small-field focused completion must wait for the prior-corner variant."""
+
+    candidate_version = "jra-cb-v10-prior-corner274-2013"
+    default_version = "jra-cb-v9-sim-2013-clean"
+
+    @final
+    class _JraPriorCornerRouter:
+        def has_routing(self, category: str) -> bool:
+            return category == "jra"
+
+        def routing_for(self, category: str) -> _FakeRouting:
+            assert category == "jra"
+            return _FakeRouting(
+                variants={
+                    "default": _FakeVariantSpec(default_version, 250, "catboost"),
+                    "prior_corner_dirt_smallfield_005": _FakeVariantSpec(
+                        candidate_version, 274, "catboost"
+                    ),
+                },
+                default_variant="default",
+            )
+
+        def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
+            assert category == "jra"
+            for entry in entries:
+                track_code = str(entry.get("track_code", "")).strip()
+                class_code = str(entry.get("kyoso_joken_code", "")).strip()
+                runners = int(str(entry.get("shusso_tosu", "0")).strip() or "0")
+                if track_code.startswith("2") and class_code == "005" and runners <= 10:
+                    return "prior_corner_dirt_smallfield_005"
+            return "default"
+
+    @final
+    class _FocusedCursor:
+        def __init__(self) -> None:
+            self.executed_params: list[object] = []
+
+        def execute(self, query: str, params: object = None) -> None:
+            if not self.executed_params:
+                assert "kyoso_joken_code" in query
+                assert "track_code" in query
+                assert "shusso_tosu" in query
+            self.executed_params.append(params)
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                ("H1", "A", "23", 1800, "005", "0705", "10", 10),
+                ("H2", "A", "23", 1800, "005", "0705", "10", 10),
+            ]
+
+        def fetchone(self) -> tuple[int]:
+            return (2,)
+
+    @final
+    class _FocusedConnection:
+        def __init__(self, cursor: _FocusedCursor) -> None:
+            self._cursor = cursor
+            self.closed = False
+
+        def cursor(self) -> _FocusedCursor:
+            return self._cursor
+
+        def close(self) -> None:
+            self.closed = True
+
+    cursor = _FocusedCursor()
+    connection = _FocusedConnection(cursor)
+
+    def _connect(database_url: str, connect_timeout: int) -> _FocusedConnection:
+        assert database_url == "postgresql://example"
+        assert connect_timeout > 0
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=_connect))
+    monkeypatch.setattr(predict_upcoming, "load_cell_router", lambda: _JraPriorCornerRouter())
+    params = PredictParams(
+        category="jra",
+        run_date="20260705",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="10",
+        race_bango="02",
+    )
+
+    completion_fn = predict_upcoming.__dict__["_focused_full_prediction_complete"]
+    assert callable(completion_fn)
+    assert completion_fn("postgresql://example", params) is True
+    final_params = cursor.executed_params[-1]
+    assert isinstance(final_params, tuple)
+    assert final_params[-1] == candidate_version
+    assert final_params[-1] != default_version
     assert connection.closed is True
 
 

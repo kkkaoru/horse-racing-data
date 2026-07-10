@@ -103,6 +103,16 @@ def derive_distance_band(kyori: int) -> str:
     return "extended"
 
 
+def derive_field_band(shusso_tosu: int) -> str:
+    if shusso_tosu <= 10:
+        return "f_le10"
+    if shusso_tosu <= 13:
+        return "f11_13"
+    if shusso_tosu <= 15:
+        return "f14_15"
+    return "f16p"
+
+
 def derive_season(month: int) -> str:
     if month in {3, 4, 5}:
         return "spring"
@@ -131,6 +141,11 @@ def resolve_dimension(entry: Mapping[str, object], dimension: str, category: str
         if kyori is None:
             return None
         return derive_distance_band(int(float(str(kyori))))
+    if dimension == "field_band":
+        shusso_tosu = entry.get("shusso_tosu")
+        if shusso_tosu is None:
+            return None
+        return derive_field_band(int(float(str(shusso_tosu))))
     if dimension == "season":
         tsukihi = entry.get("kaisai_tsukihi")
         if tsukihi is not None:

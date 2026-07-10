@@ -16,6 +16,7 @@ from predict_lib.cell_router import (
     build_base_model_r2_key,
     derive_class,
     derive_distance_band,
+    derive_field_band,
     derive_season,
     derive_surface,
     load_cell_router,
@@ -131,6 +132,49 @@ def test_load_cell_router_real_config_new_format() -> None:
     condition = rule.conditions[0]
     assert condition.dimension == "grade_code"
     assert condition.values == frozenset({"E"})
+
+
+def test_load_cell_router_real_config_has_jra_703_routing() -> None:
+    router = load_cell_router()
+    assert router.has_routing("jra") is True
+    routing = router.routing_for("jra")
+    assert routing.default_variant == "sim"
+    assert routing.variants["sim"].model_version == "jra-cb-v9-sim-2013-clean"
+    assert (
+        routing.variants["jockey_pedigree_703"].model_version
+        == "jra-cb-v9-sim-2013-clean-jockey-pedigree269"
+    )
+    assert routing.variants["jockey_pedigree_703"].feature_count == 269
+    assert (
+        routing.variants["jockey_pedigree_703"].feature_set_hash
+        == "1f70d678d48b485d4fcf593de786880c8fcf748e464174279f1dfe1251c9ef07"
+    )
+    assert router.resolve_variant("jra", [{"kyoso_joken_code": "703"}]) == "jockey_pedigree_703"
+    assert router.resolve_variant("jra", [{"kyoso_joken_code": "701"}]) == "sim"
+
+
+def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
+    router = load_cell_router()
+    routing = router.routing_for("jra")
+    assert (
+        routing.variants["prior_corner_dirt_smallfield_005"].model_version
+        == "jra-cb-v10-prior-corner274-2013"
+    )
+    assert routing.variants["prior_corner_dirt_smallfield_005"].feature_count == 274
+    assert (
+        routing.variants["prior_corner_dirt_smallfield_005"].feature_set_hash
+        == "0b90ab1c7e19ef8d61c2b5419bd034bf277600c73b3f4a05e3b1ff1d99bbbb22"
+    )
+    hit = {
+        "kyoso_joken_code": "005",
+        "track_code": "23",
+        "shusso_tosu": 10,
+    }
+    miss_field = {**hit, "shusso_tosu": 11}
+    miss_class = {**hit, "kyoso_joken_code": "703"}
+    assert router.resolve_variant("jra", [hit]) == "prior_corner_dirt_smallfield_005"
+    assert router.resolve_variant("jra", [miss_field]) == "sim"
+    assert router.resolve_variant("jra", [miss_class]) == "jockey_pedigree_703"
 
 
 def test_load_cell_router_real_config_has_no_nar_routing() -> None:
@@ -594,6 +638,15 @@ def test_derived_distance_band_extended() -> None:
     assert derive_distance_band(3000) == "extended"
 
 
+def test_derived_field_band_boundaries() -> None:
+    assert derive_field_band(10) == "f_le10"
+    assert derive_field_band(11) == "f11_13"
+    assert derive_field_band(13) == "f11_13"
+    assert derive_field_band(14) == "f14_15"
+    assert derive_field_band(15) == "f14_15"
+    assert derive_field_band(16) == "f16p"
+
+
 def test_derived_season_spring() -> None:
     assert derive_season(4) == "spring"
 
@@ -640,6 +693,14 @@ def testresolve_dimension_distance_band() -> None:
 
 def testresolve_dimension_distance_band_none() -> None:
     assert resolve_dimension({}, "distance_band", "jra") is None
+
+
+def testresolve_dimension_field_band() -> None:
+    assert resolve_dimension({"shusso_tosu": "10"}, "field_band", "jra") == "f_le10"
+
+
+def testresolve_dimension_field_band_none() -> None:
+    assert resolve_dimension({}, "field_band", "jra") is None
 
 
 def testresolve_dimension_season_from_tsukihi() -> None:

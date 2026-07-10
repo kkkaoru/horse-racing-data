@@ -700,8 +700,8 @@ def _load_nar_transformer(
     """Load the NAR transformer-blend artifact, or None for ensemble-only fallback.
 
     Fail-closed at startup (mirrors the E-top2 companion-load pattern): a missing
-    / unreadable artifact OR a feature-contract gap (any of the 117 transformer
-    features absent from the category's 192-feature production build) returns
+    / unreadable artifact OR a feature-contract gap (any of the 113 transformer
+    features absent from the category's clean188-feature production build) returns
     None so ``score_races`` scores NAR with the pure iter12 ensemble unchanged.
     Loaded once per category run from the baked MODELS_DIR (no runtime R2 read).
     """
@@ -752,8 +752,8 @@ def _score_one_race_nar_blend(
 ) -> list[list[object]]:
     """Score one NAR race with the Set-Transformer x base score-level z-fusion blend.
 
-    The pure iter12 XGBoost base scores the 192-feature matrix; the transformer
-    contributes its mean seed score over the 117-feature subset. The two are
+    The pure clean188 XGBoost base scores the category matrix; the transformer
+    contributes its mean seed score over the clean 113-feature subset. The two are
     within-race z-normalised (scale-invariant) then fused 0.5/0.5 at the score
     level, reproducing the deploy gate (deploy variant ``score_z_55``); the
     caller's ``rank_race_entries`` applies the ketto-ascending tie-break on the
@@ -1503,6 +1503,8 @@ def _expected_model_version_for_entries(
         spec = routing.variants.get(variant)
         if spec is not None:
             return spec.model_version
+    if category == "nar" and NAR_TRANSFORMER_BLEND_ENABLED:
+        return NAR_TRANSFORMER_MODEL_VERSION
     return model_version_for(category)
 
 
@@ -1536,8 +1538,10 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
                   grade_code,
                   track_code,
                   kyori,
+                  kyoso_joken_code,
                   kaisai_tsukihi,
-                  keibajo_code
+                  keibajo_code,
+                  shusso_tosu
                 from race_entry_corner_features
                 where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
                   and keibajo_code = %s and race_bango = %s
@@ -1546,17 +1550,45 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
             )
             expected_rows = cursor.fetchall()
             expected_horses = {str(row[0]).strip() for row in expected_rows if row[0] is not None}
-            if not expected_horses:
-                return False
             category = cast(Category, params.category)
+            if not expected_horses:
+                expected_model_version = _expected_model_version_for_entries(category, [])
+                cursor.execute(
+                    """
+                    select count(distinct ketto_toroku_bango)::int as actual_rows,
+                           min(predicted_rank)::int as min_rank,
+                           max(predicted_rank)::int as max_rank
+                    from race_finish_position_model_predictions
+                    where source = %s and kaisai_nen = %s and kaisai_tsukihi = %s
+                      and keibajo_code = %s and race_bango = %s
+                      and model_version = %s
+                    """,
+                    (
+                        source,
+                        kaisai_nen,
+                        kaisai_tsukihi,
+                        keibajo_code,
+                        race_bango,
+                        expected_model_version,
+                    ),
+                )
+                existing_row = cursor.fetchone()
+                if existing_row is None:
+                    return False
+                actual_rows = int(existing_row[0]) if existing_row[0] is not None else 0
+                min_rank = int(existing_row[1]) if existing_row[1] is not None else 0
+                max_rank = int(existing_row[2]) if existing_row[2] is not None else 0
+                return actual_rows > 0 and min_rank == 1 and max_rank == actual_rows
             entries = [
                 {
                     "ketto_toroku_bango": row[0],
                     "grade_code": row[1],
                     "track_code": row[2],
                     "kyori": row[3],
-                    "kaisai_tsukihi": row[4],
-                    "keibajo_code": row[5],
+                    "kyoso_joken_code": row[4],
+                    "kaisai_tsukihi": row[5],
+                    "keibajo_code": row[6],
+                    "shusso_tosu": row[7],
                 }
                 for row in expected_rows
             ]
@@ -1621,7 +1653,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
     @override
     def log_message(self, format: str, *args: object) -> None:
         # Redirect access log to stderr to avoid polluting stdout.
-        print(f"[predict-serve] {format % args}", file=sys.stderr)
+        print(f"[predict-serve] {format % args}", file=sys.stderr, flush=True)
 
     def do_GET(self) -> None:  # N802: stdlib BaseHTTPRequestHandler requires this name
         path, query = parse_request_path(self.path)

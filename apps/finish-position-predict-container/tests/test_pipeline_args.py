@@ -12,6 +12,7 @@ from predict_lib.pipeline_args import (
     EXOTIC_CATEGORY_BY_CATEGORY,
     EXOTIC_SCRIPT,
     HISTORY_FROM_DATE,
+    JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     KOHAN3F_GOING_SCRIPT,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
@@ -375,6 +376,7 @@ def test_layer_chain_jra_is_full_v6_plus_v7_with_trainer_plus_v8_plus_kohan3f() 
         "add_kohan3f_going_features.py",
         "add-similar-race-features.py",
         "add-sire-venue-bias-features.py",
+        "add-jra-jockey-pedigree-cell-features.py",
     ]
 
 
@@ -672,12 +674,29 @@ def test_build_layer_argv_kohan3f_going_passes_pg_url_only_no_from_date() -> Non
     ]
 
 
+def test_build_layer_argv_kohan3f_going_target_race_adds_scope() -> None:
+    argv = build_layer_argv(
+        KOHAN3F_GOING_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="10:02",
+    )
+    assert argv[-2:] == ["--target-race", "10:02"]
+
+
 def test_kohan3f_going_script_is_in_scripts_with_pg_url() -> None:
     assert KOHAN3F_GOING_SCRIPT in SCRIPTS_WITH_PG_URL
 
 
 def test_kohan3f_going_script_is_not_in_scripts_with_from_date() -> None:
     assert KOHAN3F_GOING_SCRIPT not in SCRIPTS_WITH_FROM_DATE
+
+
+def test_kohan3f_going_script_is_in_target_race_scope_allowlist() -> None:
+    assert KOHAN3F_GOING_SCRIPT in SCRIPTS_WITH_TARGET_RACE_SCOPE
 
 
 def test_kohan3f_going_script_is_not_in_layer_chain_nar() -> None:
@@ -831,9 +850,22 @@ def test_build_layer_argv_near_miss_target_race_adds_scope() -> None:
     assert argv[-2:] == ["--target-race", "05:11"]
 
 
+def test_build_layer_argv_baba_pedigree_target_race_adds_scope() -> None:
+    argv = build_layer_argv(
+        "add-baba-pedigree-affinity-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="05:11",
+    )
+    assert argv[-2:] == ["--target-race", "05:11"]
+
+
 def test_build_layer_argv_unsupported_script_omits_target_race_scope() -> None:
     argv = build_layer_argv(
-        "add-market-signal-features.py",
+        "add-race-internal-features.py",
         "jra",
         LAYER_DIR,
         Path("/tmp/in"),
@@ -847,12 +879,52 @@ def test_build_layer_argv_unsupported_script_omits_target_race_scope() -> None:
 def test_target_race_scope_allowlist_is_only_supported_layer_scripts() -> None:
     assert {
         "add-head-to-head-features.py",
+        "add-baba-pedigree-affinity-features.py",
+        "add-market-signal-features.py",
+        "add-sectional-and-weight-features.py",
+        "add-futan-juryo-features.py",
+        "add-workout-features.py",
         "add-near-miss-features.py",
         "add-pacestyle-features.py",
         "add-relationship-r1-features.py",
+        "add-trainer-stable-affinity-features.py",
+        KOHAN3F_GOING_SCRIPT,
         "add-similar-race-features.py",
         "add-sire-venue-bias-features.py",
+        "add-jra-jockey-pedigree-cell-features.py",
     } == SCRIPTS_WITH_TARGET_RACE_SCOPE
+
+
+def test_build_layer_argv_trainer_target_race_adds_scope() -> None:
+    argv = build_layer_argv(
+        "add-trainer-stable-affinity-features.py",
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="10:02",
+    )
+    assert argv[-2:] == ["--target-race", "10:02"]
+
+
+def test_build_layer_argv_early_jra_layers_target_race_adds_scope() -> None:
+    for script in [
+        "add-market-signal-features.py",
+        "add-sectional-and-weight-features.py",
+        "add-futan-juryo-features.py",
+        "add-workout-features.py",
+    ]:
+        argv = build_layer_argv(
+            script,
+            "jra",
+            LAYER_DIR,
+            Path("/tmp/in"),
+            Path("/tmp/out"),
+            URL,
+            target_race="10:02",
+        )
+        assert argv[-2:] == ["--target-race", "10:02"]
 
 
 # ---------------------------------------------------------------------------
@@ -862,7 +934,7 @@ def test_target_race_scope_allowlist_is_only_supported_layer_scripts() -> None:
 
 def test_layer_chain_jra_has_similar_race_before_sire_venue_bias() -> None:
     chain = layer_chain_for("jra")
-    assert chain[-2] == SIMILAR_RACE_SCRIPT
+    assert chain[chain.index(SIRE_VENUE_BIAS_SCRIPT) - 1] == SIMILAR_RACE_SCRIPT
 
 
 def test_layer_chain_nar_has_similar_race_before_sire_venue_bias() -> None:
@@ -978,7 +1050,7 @@ def test_build_layer_argv_non_similar_race_script_omits_similar_race_flags() -> 
 def test_sire_venue_bias_script_in_jra_layer_chain() -> None:
     chain = layer_chain_for("jra")
     assert SIRE_VENUE_BIAS_SCRIPT in chain
-    assert chain[-1] == SIRE_VENUE_BIAS_SCRIPT
+    assert chain[-2] == SIRE_VENUE_BIAS_SCRIPT
 
 
 def test_sire_venue_bias_script_in_nar_layer_chain() -> None:
@@ -1045,3 +1117,54 @@ def test_build_layer_argv_sire_venue_bias_banei_has_category() -> None:
     )
     cat_idx = argv.index("--category")
     assert argv[cat_idx + 1] == "ban-ei"
+
+
+# ---------------------------------------------------------------------------
+# JRA jockey/pedigree cell-routing layer
+# ---------------------------------------------------------------------------
+
+
+def test_jra_jockey_pedigree_cell_script_is_last_jra_layer_only() -> None:
+    assert layer_chain_for("jra")[-1] == JRA_JOCKEY_PEDIGREE_CELL_SCRIPT
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT not in layer_chain_for("nar")
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT not in layer_chain_for("ban-ei")
+
+
+def test_jra_jockey_pedigree_cell_script_receives_pg_url_only() -> None:
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT in SCRIPTS_WITH_PG_URL
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT not in SCRIPTS_WITH_FROM_DATE
+
+
+def test_build_layer_argv_jra_jockey_pedigree_cell_flags() -> None:
+    argv = build_layer_argv(
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert argv == [
+        "python",
+        "/app/pipeline/finish-position-features/add-jra-jockey-pedigree-cell-features.py",
+        "--input-dir",
+        "/tmp/in",
+        "--output-dir",
+        "/tmp/out",
+        "--pg-url",
+        "postgresql://u:p@h/db",
+    ]
+
+
+def test_build_layer_argv_jra_jockey_pedigree_cell_target_race() -> None:
+    argv = build_layer_argv(
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="02:01",
+    )
+    assert argv[-2:] == ["--target-race", "02:01"]
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT in SCRIPTS_WITH_TARGET_RACE_SCOPE

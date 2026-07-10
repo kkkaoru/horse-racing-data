@@ -1,4 +1,40 @@
 {
+  "jra": {
+    "default_variant": "sim",
+    "variants": {
+      "sim": {
+        "model_version": "jra-cb-v9-sim-2013-clean",
+        "feature_count": 250,
+        "architecture": "catboost"
+      },
+      "jockey_pedigree_703": {
+        "model_version": "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        "feature_count": 269,
+        "architecture": "catboost",
+        "feature_set_hash": "1f70d678d48b485d4fcf593de786880c8fcf748e464174279f1dfe1251c9ef07"
+      },
+      "prior_corner_dirt_smallfield_005": {
+        "model_version": "jra-cb-v10-prior-corner274-2013",
+        "feature_count": 274,
+        "architecture": "catboost",
+        "feature_set_hash": "0b90ab1c7e19ef8d61c2b5419bd034bf277600c73b3f4a05e3b1ff1d99bbbb22"
+      }
+    },
+    "rules": [
+      {
+        "conditions": [{ "dimension": "kyoso_joken_code", "values": ["703"] }],
+        "variant": "jockey_pedigree_703"
+      },
+      {
+        "conditions": [
+          { "dimension": "surface", "values": ["dirt"] },
+          { "dimension": "field_band", "values": ["f_le10"] },
+          { "dimension": "kyoso_joken_code", "values": ["005"] }
+        ],
+        "variant": "prior_corner_dirt_smallfield_005"
+      }
+    ]
+  },
   "ban-ei": {
     "default_variant": "sim",
     "variants": {

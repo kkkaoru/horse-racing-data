@@ -102,6 +102,12 @@ SIMILAR_RACE_SCRIPT: Final[str] = "add-similar-race-features.py"
 # ``--pg-url`` + ``--from-date`` to bound the history scan.
 SIRE_VENUE_BIAS_SCRIPT: Final[str] = "add-sire-venue-bias-features.py"
 
+# JRA cell-routing candidate layer: appends race-grain prior jockey/pedigree
+# cell features used only by the 269-feature class-703 routed variant. It keeps
+# its script-level 20080101 history default to match the offline gate/training
+# artifacts, so it is intentionally not in ``SCRIPTS_WITH_FROM_DATE``.
+JRA_JOCKEY_PEDIGREE_CELL_SCRIPT: Final[str] = "add-jra-jockey-pedigree-cell-features.py"
+
 # DuckDB resource caps for the similar-race layer inside the prediction
 # container (standard-4 / 12 GiB) — mirror the per-year OOM-safe limits used by
 # the offline store build so the pairwise similarity scan spills to disk instead
@@ -144,6 +150,7 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     ),
     "nar": (
         RACE_INTERNAL_SCRIPT,
@@ -192,6 +199,7 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
         KOHAN3F_GOING_SCRIPT,  # reads PG but uses --history-from-year, NOT --from-date
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     }
 )
 
@@ -282,11 +290,19 @@ SIRE_VENUE_BIAS_CATEGORY_BY_CATEGORY: Final[dict[Category, str]] = {
 SCRIPTS_WITH_TARGET_RACE_SCOPE: Final[frozenset[str]] = frozenset(
     {
         HEAD_TO_HEAD_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
+        MARKET_SIGNAL_SCRIPT,
+        SECTIONAL_WEIGHT_SCRIPT,
+        FUTAN_JURYO_SCRIPT,
+        WORKOUT_SCRIPT,
         NEAR_MISS_SCRIPT,
         PACESTYLE_SCRIPT,
         RELATIONSHIP_SCRIPT,
+        TRAINER_SCRIPT,
+        KOHAN3F_GOING_SCRIPT,
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     }
 )
 
