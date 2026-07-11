@@ -13,6 +13,7 @@ const {
   coordinatorTickMock,
   claimRescoreRaceMock,
   completeFocusedFullRaceMock,
+  runDayBasePrewarmMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -22,6 +23,7 @@ const {
   const runRaceCoordinatorTick = vi.fn(async () => []);
   const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
+  const runDayBasePrewarm = vi.fn(async () => undefined);
   return {
     getContainerMock: vi.fn(() => ({ start })),
     startMock: start,
@@ -32,6 +34,7 @@ const {
     coordinatorTickMock: runRaceCoordinatorTick,
     claimRescoreRaceMock: claimRescoreRace,
     completeFocusedFullRaceMock: completeFocusedFullRace,
+    runDayBasePrewarmMock: runDayBasePrewarm,
   };
 });
 
@@ -61,6 +64,10 @@ vi.mock("./race-coordinator", () => ({
 vi.mock("./do-state", () => ({
   claimRescoreRace: claimRescoreRaceMock,
   completeFocusedFullRace: completeFocusedFullRaceMock,
+}));
+
+vi.mock("./day-base-prewarm", () => ({
+  runDayBasePrewarm: runDayBasePrewarmMock,
 }));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
@@ -120,6 +127,7 @@ beforeEach(() => {
   coordinatorTickMock.mockClear();
   claimRescoreRaceMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
+  runDayBasePrewarmMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
@@ -159,9 +167,6 @@ const adminRunFocusedFullRaceRequest = (token: string | null, body: string): Req
     headers: token === null ? {} : { authorization: `Bearer ${token}` },
     method: "POST",
   });
-
-const silenceFeatureBuildCronLog = (): ReturnType<typeof vi.spyOn> =>
-  vi.spyOn(console, "log").mockImplementation(() => undefined);
 
 test("fetch returns a health payload for GET", async () => {
   const response = await workerDefault.fetch(healthRequest(), makeEnv());
@@ -316,38 +321,25 @@ test("handleScheduled does not run the coordinator for the rescore cron", async 
   expect(coordinatorTickMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled skips direct full-mode enqueue for the feature-build cron", async () => {
-  const logSpy = silenceFeatureBuildCronLog();
+test("handleScheduled dispatches the day-base prewarm for the feature-build cron", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(enqueueMock).not.toHaveBeenCalled();
-  expect(logSpy).not.toHaveBeenCalled();
-  logSpy.mockRestore();
+  expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
+  expect(runDayBasePrewarmMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
+  );
 });
 
-test("handleScheduled feature-build cron does not read today's races from REALTIME_DB", async () => {
-  const logSpy = silenceFeatureBuildCronLog();
-  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(realtimePrepareMock).not.toHaveBeenCalled();
-  expect(realtimeBindMock).not.toHaveBeenCalled();
-  logSpy.mockRestore();
-});
-
-test("handleScheduled feature-build cron does not consult realtime DB results", async () => {
-  const logSpy = silenceFeatureBuildCronLog();
+test("handleScheduled feature-build cron does not enqueue a direct full-mode predict", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(enqueueMock).not.toHaveBeenCalled();
-  expect(realtimeAllMock).not.toHaveBeenCalled();
-  logSpy.mockRestore();
 });
 
 test("handleScheduled feature-build cron does not start container or warm or coordinate", async () => {
-  const logSpy = silenceFeatureBuildCronLog();
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
   expect(warmNeonMock).not.toHaveBeenCalled();
   expect(coordinatorTickMock).not.toHaveBeenCalled();
-  logSpy.mockRestore();
 });
 
 test("queue default handler delegates to handleQueue for the primary queue", async () => {

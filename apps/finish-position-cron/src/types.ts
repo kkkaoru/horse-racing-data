@@ -47,6 +47,17 @@ export interface Env {
   // `wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED`. Optional so existing
   // callers/tests need not set it.
   NAR_TRANSFORMER_BLEND_ENABLED?: string;
+  // Feature flag forwarded into the container env: gates whether the Python
+  // container's day-base feature split path (day-stable layers cached once
+  // per category per day via GET /prewarm-day-base, reused by per-race full
+  // builds) is active. A comma-separated PredictCategory allowlist (e.g.
+  // "jra" or "jra,nar"); empty/unset disables the split for every category.
+  // The Worker does not interpret the value itself -- it only forwards it
+  // into the container env (see container-class.ts); the Python side reads
+  // it via is_day_base_split_enabled(category). Set via
+  // `wrangler secret put DAY_BASE_SPLIT_ENABLED`. Optional so existing
+  // callers/tests need not set it.
+  DAY_BASE_SPLIT_ENABLED?: string;
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // DO-backed strong-consistency coordinator replaces KV for run dedup/state.
   PREDICT_RUN_COORDINATOR: DurableObjectNamespace<PredictRunCoordinator>;

@@ -11,6 +11,7 @@ import {
   shouldRunRescoreCron,
   shouldRunWarmCron,
 } from "./cron-decision";
+import { runDayBasePrewarm } from "./day-base-prewarm";
 import { buildPredictStartOptions } from "./dispatch";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
@@ -557,8 +558,18 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     return;
   }
   if (shouldRunFeatureBuildCron(event.cron)) {
-    // Production full per-race runs are now triggered by sync-realtime-data
-    // after running-style completes via POST /run with skipDedup=true.
+    // Warms the per-category, per-day "day-base" feature parquet cache in the
+    // Container (see day-base-prewarm.ts) so the day-stable feature layers are
+    // built once per day instead of once per race. Production full per-race
+    // runs are still triggered by sync-realtime-data after running-style
+    // completes via POST /run with skipDedup=true; this cron only pre-builds
+    // the cache those runs then reuse.
+    const scheduledAt = new Date(event.scheduledTime);
+    await runDayBasePrewarm({
+      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+      env,
+      runYmd: getRunYmdJst(scheduledAt),
+    });
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {
