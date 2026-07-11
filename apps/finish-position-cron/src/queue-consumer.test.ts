@@ -21,6 +21,7 @@ const {
   claimRunMock,
   completeFocusedFullRaceMock,
   completeRunMock,
+  isOldDateRunYmdMock,
   parseNdjsonStreamMock,
   rescoreJraRaceMock,
   warmPredictionCacheForRaceMock,
@@ -31,6 +32,7 @@ const {
   const claimRun = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const completeRun = vi.fn(async () => undefined);
+  const isOldDateRunYmd = vi.fn((): boolean => false);
   const parseNdjsonStream = vi.fn(
     async (
       _body: ReadableStream<Uint8Array>,
@@ -59,6 +61,7 @@ const {
     completeFocusedFullRaceMock: completeFocusedFullRace,
     completeRunMock: completeRun,
     isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
+    isOldDateRunYmdMock: isOldDateRunYmd,
     parseNdjsonStreamMock: parseNdjsonStream,
     rescoreJraRaceMock: rescoreJraRace,
     warmPredictionCacheForCategoryMock: warmPredictionCacheForCategory,
@@ -75,6 +78,11 @@ vi.mock("./do-state", () => ({
 
 vi.mock("./ndjson-stream", () => ({
   parseNdjsonStream: parseNdjsonStreamMock,
+}));
+
+vi.mock("./old-date-guard", () => ({
+  isOldDateRunYmd: isOldDateRunYmdMock,
+  OLD_DATE_THRESHOLD_DAYS: 2,
 }));
 
 vi.mock("./scoring/rescore-consumer", () => ({
@@ -95,6 +103,9 @@ import { handleQueue } from "./queue-consumer";
 const ackMock = vi.fn();
 const retryMock = vi.fn();
 const sendMock = vi.fn();
+const runMock = vi.fn(async () => ({ success: true }));
+const bindMock = vi.fn(() => ({ run: runMock }));
+const prepareMock = vi.fn(() => ({ bind: bindMock }));
 const idFromNameMock = vi.fn(() => ({ name: "test-id" }));
 const stubFetchMock = vi.fn(
   async () =>
@@ -109,7 +120,7 @@ const getMock = vi.fn(() => ({ fetch: stubFetchMock }));
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
-  FINISH_POSITION_CRON_DB: {} as unknown as D1Database,
+  FINISH_POSITION_CRON_DB: { prepare: prepareMock } as unknown as D1Database,
   FINISH_POSITION_PREDICT_CONTAINER: {
     get: getMock,
     idFromName: idFromNameMock,
@@ -145,6 +156,10 @@ beforeEach(() => {
   retryMock.mockClear();
   sendMock.mockClear();
   sendMock.mockResolvedValue(undefined);
+  runMock.mockClear();
+  runMock.mockResolvedValue({ success: true });
+  bindMock.mockClear();
+  prepareMock.mockClear();
   idFromNameMock.mockClear();
   getMock.mockClear();
   stubFetchMock.mockClear();
@@ -152,6 +167,8 @@ beforeEach(() => {
   claimRunMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
   completeRunMock.mockClear();
+  isOldDateRunYmdMock.mockClear();
+  isOldDateRunYmdMock.mockReturnValue(false);
   parseNdjsonStreamMock.mockClear();
   rescoreJraRaceMock.mockClear();
   warmPredictionCacheForRaceMock.mockClear();
@@ -1567,4 +1584,109 @@ test("does not warm the race cache when a container per-race rescore response bo
   );
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
+});
+
+test("old-runYmd message is acked without touching the Container DO stub", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  await handleQueue(makeBatch([makeMessage({ runYmd: "20260101" })]), makeEnv());
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(getMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(prepareMock).toHaveBeenCalledTimes(1);
+  expect(bindMock).toHaveBeenCalledWith("20260101", "jra", "full", null, null, 2);
+  expect(runMock).toHaveBeenCalledTimes(1);
+});
+
+test("old-runYmd message with force:true bypasses the guard and reaches the Container DO", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  await handleQueue(makeBatch([makeMessage({ force: true, runYmd: "20260101" })]), makeEnv());
+  expect(isOldDateRunYmdMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(prepareMock).not.toHaveBeenCalled();
+});
+
+test("old-runYmd focused-full skipDedup message completes the DO claim with status skipped-old-date", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260101",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith({
+    category: "jra",
+    env: expect.any(Object),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260101",
+    status: "skipped-old-date",
+  });
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+});
+
+test("old-runYmd per-race-rescore message is acked without dispatching to the container", async () => {
+  isOldDateRunYmdMock.mockReturnValue(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260101",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
+});
+
+test("acks an old-runYmd message even when the D1 skip-event write fails, logging instead of retrying", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  isOldDateRunYmdMock.mockReturnValue(true);
+  runMock.mockRejectedValue(new Error("d1 unavailable"));
+  await handleQueue(makeBatch([makeMessage({ runYmd: "20260101" })]), makeEnv());
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringMatching(/^Old-date skip bookkeeping failed /u),
+    "Error: d1 unavailable",
+  );
+  errorSpy.mockRestore();
+});
+
+test("logs a warning describing the skip with category, runYmd, mode, and threshold", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  isOldDateRunYmdMock.mockReturnValue(true);
+  await handleQueue(makeBatch([makeMessage({ runYmd: "20260101" })]), makeEnv());
+  expect(warnSpy).toHaveBeenCalledWith(
+    "Skipping old-dated predict message category=jra runYmd=20260101 mode=full daysAhead=2 skipDedup=false busyRequeueCount=0 thresholdDays=2",
+  );
+  warnSpy.mockRestore();
+});
+
+test("passes the message runYmd and a Date instance to isOldDateRunYmd", async () => {
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(isOldDateRunYmdMock).toHaveBeenCalledWith("20260603", expect.any(Date));
+});
+
+test("recent-runYmd messages proceed normally when isOldDateRunYmd returns false", async () => {
+  isOldDateRunYmdMock.mockReturnValue(false);
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(prepareMock).not.toHaveBeenCalled();
 });
