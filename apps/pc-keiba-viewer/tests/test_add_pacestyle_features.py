@@ -183,18 +183,121 @@ def test_build_version_filter_sql_jra_includes_all_known_years() -> None:
     assert "kaisai_nen = '2025'" in sql
     assert "kaisai_nen = '2026'" in sql
     assert "jra-running-style-ens-lgbm-trans-v1.3" in sql
-    assert "jra-running-style-lgbm-prod-v1.5" in sql
+    assert "jra-running-style-lgbm-prod-v3" in sql
 
 
 def test_build_version_filter_sql_nar_uses_nar_model_versions() -> None:
     sql = subject.build_version_filter_sql("nar")
     assert "nar-running-style-trans-v1.4" in sql
-    assert "nar-running-style-lgbm-prod-v1.5" in sql
+    assert "nar-running-style-lgbm-prod-v3" in sql
 
 
 def test_build_version_filter_sql_unknown_category_returns_false() -> None:
     sql = subject.build_version_filter_sql("ban-ei")
     assert sql == "false"
+
+
+def test_build_version_filter_sql_from_pairs_empty_returns_false() -> None:
+    assert subject.build_version_filter_sql_from_pairs({}) == "false"
+
+
+def test_build_version_filter_sql_from_pairs_builds_or_clauses() -> None:
+    sql = subject.build_version_filter_sql_from_pairs({2026: "jra-running-style-lgbm-prod-v3"})
+    assert sql == "(kaisai_nen = '2026' and model_version = 'jra-running-style-lgbm-prod-v3')"
+
+
+def test_preferred_version_has_rows_true_when_row_found() -> None:
+    con = MagicMock()
+    con.execute.return_value.fetchone.return_value = (1,)
+    result = subject._preferred_version_has_rows(
+        con, "jra", 2026, "jra-running-style-lgbm-prod-v3"
+    )
+    assert result is True
+    sql = con.execute.call_args_list[0].args[0]
+    assert "model_version = 'jra-running-style-lgbm-prod-v3'" in sql
+    assert "kaisai_nen = '2026'" in sql
+    assert "source = 'jra'" in sql
+
+
+def test_preferred_version_has_rows_false_when_no_row() -> None:
+    con = MagicMock()
+    con.execute.return_value.fetchone.return_value = None
+    result = subject._preferred_version_has_rows(
+        con, "nar", 2026, "nar-running-style-lgbm-prod-v1.5"
+    )
+    assert result is False
+
+
+def test_latest_available_model_version_returns_top_row() -> None:
+    con = MagicMock()
+    con.execute.return_value.fetchone.return_value = ("jra-running-style-lgbm-prod-v3",)
+    result = subject._latest_available_model_version(con, "jra", 2026)
+    assert result == "jra-running-style-lgbm-prod-v3"
+    sql = con.execute.call_args_list[0].args[0]
+    assert "group by model_version" in sql
+    assert "order by max(kaisai_tsukihi) desc, model_version desc" in sql
+
+
+def test_latest_available_model_version_returns_none_when_no_rows() -> None:
+    con = MagicMock()
+    con.execute.return_value.fetchone.return_value = None
+    result = subject._latest_available_model_version(con, "jra", 2099)
+    assert result is None
+
+
+def test_resolve_version_pref_keeps_preferred_when_rows_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    con = MagicMock()
+    monkeypatch.setattr(subject, "_preferred_version_has_rows", lambda c, cat, year, ver: True)
+    monkeypatch.setattr(
+        subject,
+        "_latest_available_model_version",
+        lambda c, cat, year: pytest.fail(
+            "fallback lookup must not run when the preference already has rows"
+        ),
+    )
+    resolved = subject.resolve_version_pref(con, "jra")
+    assert resolved == subject.RS_VERSION_PREF["jra"]
+
+
+def test_resolve_version_pref_falls_back_when_preferred_has_zero_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    con = MagicMock()
+    monkeypatch.setattr(
+        subject, "_preferred_version_has_rows", lambda c, cat, year, ver: year != 2026
+    )
+    monkeypatch.setattr(
+        subject,
+        "_latest_available_model_version",
+        lambda c, cat, year: "jra-running-style-lgbm-prod-v3" if year == 2026 else None,
+    )
+    resolved = subject.resolve_version_pref(con, "jra")
+    assert resolved[2026] == "jra-running-style-lgbm-prod-v3"
+    assert resolved[2024] == subject.RS_VERSION_PREF["jra"][2024]
+    captured = capsys.readouterr()
+    assert "RS_VERSION_PREF stale for jra 2026" in captured.err
+
+
+def test_resolve_version_pref_keeps_preferred_when_no_pg_rows_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    con = MagicMock()
+    monkeypatch.setattr(subject, "_preferred_version_has_rows", lambda c, cat, year, ver: False)
+    monkeypatch.setattr(subject, "_latest_available_model_version", lambda c, cat, year: None)
+    resolved = subject.resolve_version_pref(con, "nar")
+    assert resolved == subject.RS_VERSION_PREF["nar"]
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_resolve_version_pref_unknown_category_returns_empty_dict() -> None:
+    con = MagicMock()
+    resolved = subject.resolve_version_pref(con, "ban-ei")
+    assert resolved == {}
 
 
 def test_append_features_sql_emits_all_thirteen_pacestyle_columns() -> None:
@@ -398,8 +501,13 @@ def test_stage_rs_predictions_from_r2_focused_filters_to_target_race_ids() -> No
     assert "target_race_ids" in create_sql
 
 
-def test_stage_rs_predictions_from_pg_uses_pg_attach_table() -> None:
+def test_stage_rs_predictions_from_pg_uses_pg_attach_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     con = MagicMock()
+    monkeypatch.setattr(
+        subject, "resolve_version_pref", lambda c, cat: subject.RS_VERSION_PREF[cat]
+    )
     subject.stage_rs_predictions_from_pg(con, "jra")
     create_sql = con.execute.call_args_list[0].args[0]
     assert "from pg.race_running_style_model_predictions" in create_sql
@@ -416,12 +524,36 @@ def test_stage_rs_predictions_from_pg_uses_pg_attach_table() -> None:
     ) in create_sql
 
 
-def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids() -> None:
+def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     con = MagicMock()
+    monkeypatch.setattr(
+        subject, "resolve_version_pref", lambda c, cat: subject.RS_VERSION_PREF[cat]
+    )
     subject.stage_rs_predictions_from_pg(con, "nar", focused_target=True)
     create_sql = con.execute.call_args_list[0].args[0]
     assert "where source = 'nar'" in create_sql
     assert "target_race_ids" in create_sql
+
+
+def test_stage_rs_predictions_from_pg_uses_resolved_version_pref_not_raw_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stage_rs_predictions_from_pg must filter on resolve_version_pref's
+    output, not the raw RS_VERSION_PREF table directly — otherwise a stale
+    hardcoded string bypasses the fallback entirely."""
+    con = MagicMock()
+    monkeypatch.setattr(
+        subject,
+        "resolve_version_pref",
+        lambda c, cat: {2099: "fallback-only-version"},
+    )
+    subject.stage_rs_predictions_from_pg(con, "jra")
+    create_sql = con.execute.call_args_list[0].args[0]
+    assert "kaisai_nen = '2099'" in create_sql
+    assert "model_version = 'fallback-only-version'" in create_sql
+    assert "jra-running-style-lgbm-prod-v3" not in create_sql
 
 
 def test_stage_rs_predictions_pg_mode_skips_r2_and_attaches_pg(

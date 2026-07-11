@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import duckdb
@@ -74,16 +75,27 @@ def ensure_rs_pred_cell_columns(con: duckdb.DuckDBPyConnection, table_name: str)
 # (source, year). Mirrors tmp/v8/iter9_build_pacestyle_features.py
 # RS_VERSION_PREF — the 2026 production model wins for 2026 rows, the late-2024
 # ensemble wins for 2024/2025.
+#
+# This table is a starting preference, not the sole source of truth: the live
+# PG staging path (stage_rs_predictions_from_pg) resolves each entry through
+# resolve_version_pref(), which falls back to whatever model_version PG
+# actually has the most recent race date for when the preferred string
+# matches zero rows. That fallback exists because this table went stale
+# 2026-05-24 (production moved prod-v1.5 -> prod-v3 for 2026 without this
+# table being updated) and silently zeroed every rs_p_* feature for the rest
+# of 2026 until discovered 2026-07-11 — updating the string here again is
+# expected to keep happening as the champion line changes; the fallback is
+# what prevents the next change from repeating the same silent failure.
 RS_VERSION_PREF: dict[str, dict[int, str]] = {
     "jra": {
         2024: "jra-running-style-ens-lgbm-trans-v1.3",
         2025: "jra-running-style-ens-lgbm-trans-v1.3",
-        2026: "jra-running-style-lgbm-prod-v1.5",
+        2026: "jra-running-style-lgbm-prod-v3",
     },
     "nar": {
         2024: "nar-running-style-trans-v1.4",
         2025: "nar-running-style-trans-v1.4",
-        2026: "nar-running-style-lgbm-prod-v1.5",
+        2026: "nar-running-style-lgbm-prod-v3",
     },
 }
 
@@ -142,14 +154,14 @@ def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
     con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
 
 
-def build_version_filter_sql(category: str) -> str:
-    """SQL fragment: ``(kaisai_nen='YYYY' and model_version='V') or ...``.
+def build_version_filter_sql_from_pairs(pairs: dict[int, str]) -> str:
+    """SQL fragment: ``(kaisai_nen='YYYY' and model_version='V') or ...``
+    built from an explicit year -> model_version mapping.
 
-    Returns ``'false'`` when no year-version mapping is configured for the
-    category (defensive — at present both categories have entries for
-    2024/2025/2026 so this branch is only hit by a category typo).
+    Returns ``'false'`` when ``pairs`` is empty (defensive — at present both
+    categories have entries for 2024/2025/2026 so this branch is only hit by
+    a category typo).
     """
-    pairs = RS_VERSION_PREF.get(category, {})
     if not pairs:
         return "false"
     clauses = [
@@ -157,6 +169,100 @@ def build_version_filter_sql(category: str) -> str:
         for year, version in pairs.items()
     ]
     return " or ".join(clauses)
+
+
+def build_version_filter_sql(category: str) -> str:
+    """Static preference-only SQL fragment (no PG lookups).
+
+    Reads straight from the hardcoded ``RS_VERSION_PREF`` table. Kept for
+    ``--rs-source=r2`` (which never attaches PG, so cannot resolve against
+    live data) and as a preference-table preview. The live PG staging path
+    (``stage_rs_predictions_from_pg``) uses ``resolve_version_pref`` +
+    ``build_version_filter_sql_from_pairs`` instead, so a stale hardcoded
+    version cannot silently zero every rs_p_* column the way it did for all
+    of 2026 (RS_VERSION_PREF pinned to prod-v1.5 while production moved to
+    prod-v3 on 2026-05-24 — discovered 2026-07-11).
+    """
+    return build_version_filter_sql_from_pairs(RS_VERSION_PREF.get(category, {}))
+
+
+def _preferred_version_has_rows(
+    con: duckdb.DuckDBPyConnection, category: str, year: int, version: str
+) -> bool:
+    """True when >=1 PG row exists for this (category, year, model_version)."""
+    row = con.execute(
+        f"""
+        select 1
+        from pg.race_running_style_model_predictions
+        where source = '{category}' and kaisai_nen = '{year}' and model_version = '{version}'
+        limit 1
+        """
+    ).fetchone()
+    return row is not None
+
+
+def _latest_available_model_version(
+    con: duckdb.DuckDBPyConnection, category: str, year: int
+) -> str | None:
+    """Model_version with the most recent kaisai_tsukihi for (category, year).
+
+    ``None`` when PG has no rows at all for that (category, year) — e.g. a
+    future year the champion has not scored yet. Ties (two model_versions
+    sharing the same latest race date, such as a same-day champion flip
+    plus rollback) break on model_version string descending, so the result
+    is deterministic across repeated calls.
+    """
+    row = con.execute(
+        f"""
+        select model_version
+        from pg.race_running_style_model_predictions
+        where source = '{category}' and kaisai_nen = '{year}'
+        group by model_version
+        order by max(kaisai_tsukihi) desc, model_version desc
+        limit 1
+        """
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
+
+def resolve_version_pref(con: duckdb.DuckDBPyConnection, category: str) -> dict[int, str]:
+    """Resolve ``RS_VERSION_PREF`` against what PG actually holds, per year.
+
+    ``RS_VERSION_PREF`` is a hardcoded per-year preference that goes stale
+    whenever the champion RS model_version changes without this dict being
+    updated in the same commit — exactly what happened 2026-05-24, when
+    production moved from ``{jra,nar}-running-style-lgbm-prod-v1.5`` to
+    ``prod-v3`` and this dict kept pinning v1.5, silently zeroing every
+    rs_p_* column for the whole 2026 PG-fallback path until this fix
+    (discovered 2026-07-11).
+
+    A preferred version that still has >=1 row is kept as-is (one cheap
+    existence check, no behavior change from before). A preferred version
+    with zero rows falls back to whichever model_version actually has the
+    most recent race date for that (category, year) — self-healing across
+    future champion changes instead of needing another hardcoded-string
+    fix. Years with no PG rows at all for the category keep the original
+    preference (harmless no-op: the filter clause matches nothing either
+    way, same as pre-fix behavior).
+    """
+    preferred = RS_VERSION_PREF.get(category, {})
+    resolved: dict[int, str] = {}
+    for year, preferred_version in preferred.items():
+        if _preferred_version_has_rows(con, category, year, preferred_version):
+            resolved[year] = preferred_version
+            continue
+        fallback = _latest_available_model_version(con, category, year)
+        if fallback is None:
+            resolved[year] = preferred_version
+            continue
+        resolved[year] = fallback
+        print(
+            f"[add-pacestyle-features] RS_VERSION_PREF stale for {category} {year}: "
+            f"preferred {preferred_version!r} has 0 rows, falling back to "
+            f"most-recent {fallback!r}",
+            file=sys.stderr,
+        )
+    return resolved
 
 
 def stage_target_race_ids(
@@ -195,9 +301,13 @@ def stage_rs_predictions_from_pg(
 
     Only the best model_version per (category, year) is loaded; rows from other
     model_versions are filtered out so each (race, horse) maps to exactly one
-    probability vector.
+    probability vector. The best version is resolved against live PG data
+    (``resolve_version_pref``) rather than read verbatim off the hardcoded
+    ``RS_VERSION_PREF`` table, so a stale preference for the current year
+    falls back to whatever model_version PG actually has instead of
+    matching zero rows.
     """
-    version_filter = build_version_filter_sql(category)
+    version_filter = build_version_filter_sql_from_pairs(resolve_version_pref(con, category))
     target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
     con.execute(
         f"""
