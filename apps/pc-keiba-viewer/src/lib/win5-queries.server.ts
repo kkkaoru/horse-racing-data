@@ -352,7 +352,7 @@ export const getWin5Prediction = cache(
     }
     const averagePayoutYen = await getAverageWin5PayoutYen();
     return buildWin5PredictionPayload({
-      averagePayoutYen,
+      averagePayoutYen: averagePayoutYen ?? undefined,
       kaisaiNen,
       kaisaiTsukihi,
       legInputs,
@@ -360,7 +360,15 @@ export const getWin5Prediction = cache(
   },
 );
 
-export const getAverageWin5PayoutYen = cache(async (): Promise<number> => {
+// Fail-closed: when jvd_wf can't produce a real average (e.g. a transiently
+// empty/partial Neon branch), returns null rather than a guessed constant. A
+// prior 250_000 fallback here was measured to be ~92x too low against the
+// real historical average (~22.9M yen) — silently substituting it would have
+// corrupted the recommended-budget expected-value calculation with no
+// indication to the user. Callers must omit the budget-recommendation
+// section rather than build one on a fabricated number; see
+// buildWin5PredictionPayload's optional averagePayoutYen handling.
+export const getAverageWin5PayoutYen = cache(async (): Promise<number | null> => {
   const db = getDb();
   const result = await db.execute(sql`
     select avg(
@@ -375,7 +383,7 @@ export const getAverageWin5PayoutYen = cache(async (): Promise<number> => {
       and haraimodoshi_win5_001 is not null
   `);
   const average = Number(result.rows[0]?.average_payout ?? 0);
-  return Number.isFinite(average) && average > 0 ? average : 250_000;
+  return Number.isFinite(average) && average > 0 ? average : null;
 });
 
 export const getTodayWin5DateParts = (): { year: string; month: string; day: string } => {

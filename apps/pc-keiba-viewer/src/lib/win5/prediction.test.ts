@@ -160,6 +160,37 @@ test("buildWin5PredictionPayload uses provided modelVersion-bound payload struct
   expect(payload.legs.length).toBe(5);
 });
 
+test("buildWin5PredictionPayload computes a numeric recommendedBudgetYen when averagePayoutYen is provided", () => {
+  const legInputs: Win5LegInput[] = Array.from({ length: 5 }, (_, index) => ({
+    leg: { ...TEST_LEG, legIndex: index + 1, raceBango: String(10 + index) },
+    runners: [{ horseName: `H${index}`, horseNumber: "1" }],
+  }));
+  const payload = buildWin5PredictionPayload({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0524",
+    legInputs,
+    averagePayoutYen: 22_920_776,
+  });
+  expect(typeof payload.recommendedBudgetYen).toBe("number");
+});
+
+// Regression guard: a prior 250_000 fallback silently substituted here was
+// measured to be ~92x too low against the real historical win5 average
+// (~22.9M yen). The fix is to omit the recommendation, never fabricate one.
+test("buildWin5PredictionPayload omits recommendedBudgetYen (no fallback constant) when averagePayoutYen is not provided", () => {
+  const legInputs: Win5LegInput[] = Array.from({ length: 5 }, (_, index) => ({
+    leg: { ...TEST_LEG, legIndex: index + 1, raceBango: String(10 + index) },
+    runners: [{ horseName: `H${index}`, horseNumber: "1" }],
+  }));
+  const payload = buildWin5PredictionPayload({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0524",
+    legInputs,
+  });
+  expect(payload.recommendedBudgetYen).toBeUndefined();
+  expect(Object.keys(payload.plans).toSorted()).toStrictEqual(["10000", "2000", "20000", "5000"]);
+});
+
 test("getWin5PlanForBudget returns the cached plan when present", () => {
   const legInputs: Win5LegInput[] = Array.from({ length: 5 }, (_, index) => ({
     leg: { ...TEST_LEG, legIndex: index + 1, raceBango: String(10 + index) },

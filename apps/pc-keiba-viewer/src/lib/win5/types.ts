@@ -58,7 +58,10 @@ export interface Win5PredictionPayload {
   modelVersion: string;
   kaisaiNen: string;
   kaisaiTsukihi: string;
-  recommendedBudgetYen: number;
+  // Omitted (not a guessed constant) when the historical average payout
+  // can't be computed — callers must hide the budget-recommendation UI
+  // rather than render a recommendation built on a fabricated number.
+  recommendedBudgetYen?: number;
   defaultBudgetYen: number;
   legs: Win5LegPrediction[];
   plans: Record<string, Win5TicketPlan>;

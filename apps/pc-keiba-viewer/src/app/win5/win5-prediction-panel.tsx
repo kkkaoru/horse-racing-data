@@ -33,6 +33,7 @@ export function Win5PredictionPanel({ day, month, prediction, year }: Win5Predic
   const [budgetYen, setBudgetYen] = useState(prediction.defaultBudgetYen);
   const [showAllHorses, setShowAllHorses] = useState(false);
   const plan = useMemo(() => getWin5PlanForBudget(prediction, budgetYen), [budgetYen, prediction]);
+  const { recommendedBudgetYen } = prediction;
 
   return (
     <section aria-label="WIN5買い目提案" className="win5-section">
@@ -90,14 +91,16 @@ export function Win5PredictionPanel({ day, month, prediction, year }: Win5Predic
         >
           標準 {formatYen(WIN5_DEFAULT_BUDGET_YEN)}
         </button>
-        <button
-          aria-pressed={budgetYen === prediction.recommendedBudgetYen}
-          className="running-style-tab"
-          onClick={() => setBudgetYen(prediction.recommendedBudgetYen)}
-          type="button"
-        >
-          推奨 {formatYen(prediction.recommendedBudgetYen)}
-        </button>
+        {recommendedBudgetYen === undefined ? null : (
+          <button
+            aria-pressed={budgetYen === recommendedBudgetYen}
+            className="running-style-tab"
+            onClick={() => setBudgetYen(recommendedBudgetYen)}
+            type="button"
+          >
+            推奨 {formatYen(recommendedBudgetYen)}
+          </button>
+        )}
       </fieldset>
 
       <div aria-label="選択中の買い目" className="win5-pick-summary">

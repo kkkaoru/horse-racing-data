@@ -16,6 +16,7 @@ import {
 const HEURISTIC_SOFTMAX_TEMPERATURE = 0.65;
 const MODEL_SCORE_SOFTMAX_TEMPERATURE = 0.4;
 const MIN_WIN_PROBABILITY = 0.001;
+const FIXED_BUDGET_CANDIDATES_YEN = [WIN5_DEFAULT_BUDGET_YEN, 5000, 10000, 20000];
 
 export interface Win5RunnerInput {
   horseNumber: string;
@@ -116,6 +117,24 @@ export const buildWin5LegPredictions = (legInputs: readonly Win5LegInput[]): Win
     };
   });
 
+// averagePayoutYen is undefined when the historical average couldn't be
+// computed (see getAverageWin5PayoutYen) — never substitute a guessed
+// constant here, just omit the recommendation instead of fabricating one.
+const buildRecommendedBudgetYen = (
+  legs: Win5LegPrediction[],
+  averagePayoutYen: number | undefined,
+): number | undefined =>
+  averagePayoutYen === undefined ? undefined : recommendWin5BudgetYen(legs, averagePayoutYen);
+
+const buildBudgetCandidatesYen = (recommendedBudgetYen: number | undefined): number[] =>
+  Array.from(
+    new Set(
+      recommendedBudgetYen === undefined
+        ? FIXED_BUDGET_CANDIDATES_YEN
+        : [...FIXED_BUDGET_CANDIDATES_YEN, recommendedBudgetYen],
+    ),
+  ).toSorted((left, right) => left - right);
+
 export const buildWin5PredictionPayload = (params: {
   kaisaiNen: string;
   kaisaiTsukihi: string;
@@ -124,11 +143,8 @@ export const buildWin5PredictionPayload = (params: {
   predictedAt?: string;
 }): Win5PredictionPayload => {
   const legs = buildWin5LegPredictions(params.legInputs);
-  const averagePayoutYen = params.averagePayoutYen ?? 250_000;
-  const recommendedBudgetYen = recommendWin5BudgetYen(legs, averagePayoutYen);
-  const budgets = Array.from(
-    new Set([WIN5_DEFAULT_BUDGET_YEN, recommendedBudgetYen, 5000, 10000, 20000]),
-  ).toSorted((left, right) => left - right);
+  const recommendedBudgetYen = buildRecommendedBudgetYen(legs, params.averagePayoutYen);
+  const budgets = buildBudgetCandidatesYen(recommendedBudgetYen);
 
   return {
     defaultBudgetYen: WIN5_DEFAULT_BUDGET_YEN,

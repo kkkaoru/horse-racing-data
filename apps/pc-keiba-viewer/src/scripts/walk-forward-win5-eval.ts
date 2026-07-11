@@ -24,7 +24,6 @@ const DEFAULT_LOCAL_DATABASE_URL =
   "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing";
 const DEFAULT_PREDICTIONS_DIR = "tmp/finish-position-eval/predictions-jra-xgb-v7-lineage/jra";
 const DEFAULT_OUTPUT_PATH = "tmp/win5-validation-report.json";
-const DEFAULT_AVERAGE_PAYOUT_YEN = 250_000;
 const DEFAULT_START_YEAR = 2006;
 const DEFAULT_END_YEAR = 2025;
 const PERCENTAGE_BASIS = 10_000;
@@ -278,6 +277,13 @@ const buildLookupForRows = async (params: {
   };
 };
 
+// Fail loud, not fail silent: this backtest's entire purpose is measuring
+// recommendation quality, so a wrong-but-plausible average-payout constant
+// would silently corrupt the backtest metrics rather than crash — the same
+// class of bug the live-serving 250_000 fallback was (measured ~92x too low
+// against the real historical average, ~22.9M yen). If jvd_wf genuinely has
+// no usable payout rows for the requested window, that's a data problem the
+// operator needs to see immediately, not a number the script should guess.
 const loadAveragePayout = async (pool: Pool): Promise<number> => {
   const result = await pool.query<{ median_payout: string | null }>(
     `
@@ -292,8 +298,13 @@ const loadAveragePayout = async (pool: Pool): Promise<number> => {
       where payout is not null
     `,
   );
-  const value = Number(result.rows[0]?.median_payout ?? DEFAULT_AVERAGE_PAYOUT_YEN);
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_AVERAGE_PAYOUT_YEN;
+  const value = Number(result.rows[0]?.median_payout ?? Number.NaN);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(
+      "loadAveragePayout: jvd_wf produced no usable win5 payout rows to compute a median from — refusing to substitute a guessed constant",
+    );
+  }
+  return value;
 };
 
 const loadWfRows = async (params: {
@@ -367,8 +378,18 @@ const evaluateRow = async (params: EvaluateRowParams): Promise<Win5ValidationRes
     kaisaiTsukihi: row.kaisai_tsukihi,
     legInputs,
   });
+  const { recommendedBudgetYen } = prediction;
+  // averagePayoutYen above is always a defined number (loadAveragePayout
+  // throws rather than returning undefined/a guess), so this is always
+  // defined too — the guard exists only to satisfy the payload's general
+  // (possibly-omitted) type.
+  if (recommendedBudgetYen === undefined) {
+    throw new Error(
+      "buildWin5PredictionPayload omitted recommendedBudgetYen despite a defined averagePayoutYen input",
+    );
+  }
   const defaultPlan = getWin5PlanForBudget(prediction, WIN5_DEFAULT_BUDGET_YEN);
-  const recommendedPlan = getWin5PlanForBudget(prediction, prediction.recommendedBudgetYen);
+  const recommendedPlan = getWin5PlanForBudget(prediction, recommendedBudgetYen);
   const defaultHit = planCoversWinningCombination(
     defaultPlan.selections,
     payout.winningHorseNumbers,
@@ -386,7 +407,7 @@ const evaluateRow = async (params: EvaluateRowParams): Promise<Win5ValidationRes
     kaisaiNen: row.kaisai_nen,
     kaisaiTsukihi: row.kaisai_tsukihi,
     payoutYen: payout.payoutYen,
-    recommendedBudgetYen: prediction.recommendedBudgetYen,
+    recommendedBudgetYen,
     recommendedCostYen: recommendedPlan.totalCostYen,
     recommendedHit,
     recommendedReturnYen: recommendedHit ? payout.payoutYen : 0,
