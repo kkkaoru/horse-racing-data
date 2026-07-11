@@ -19,6 +19,31 @@ MotherDuck agent skill などから参照しやすいように、`PC-KEIBAテー
 
 ## Known Data Quality Issues
 
+### Operational trap: two local Postgres processes coexist (found 2026-07-11)
+
+This Mac currently runs **two separate PostgreSQL processes against cloned data
+directories, both named `horse-racing-local-postgresql`**:
+
+- **Production**: Apple's native `container` runtime (`container exec` /
+  `container list`, matching this package's own `psql.sh` / `package.json`
+  scripts). Owns TCP `*:15432` — this is what `.env`'s `DATABASE_URL`
+  (`127.0.0.1:15432`), the Windows VM's PC-KEIBA writer, replica-push, and every
+  other real consumer actually reach. `pg_postmaster_start_time()` = `2026-07-09
+15:03:41+00`.
+- **Shadow**: a colima/Docker container of the same name, started later the same
+  day, whose own port publish is shadowed by the Apple-runtime process above.
+  Only reachable via `docker exec` — never via TCP. It is a stale clone frozen at
+  whatever data existed when it diverged; it receives no live writes.
+
+**`docker exec ... psql` silently talks to the shadow, not production.** Any
+verification or DDL against this database must go over TCP (`127.0.0.1:15432`,
+e.g. `container exec horse-racing-local-postgresql psql ...` or any TCP client
+using `DATABASE_URL`) and should print `select pg_postmaster_start_time();` to
+confirm `15:03:41Z` before trusting the result. Disposition of the shadow
+container (stop/remove) is an operator decision, not something to do
+unilaterally. See memory `project-dual-local-postgres-2026-07-11` for the full
+incident writeup.
+
 ### `jvd_ra` NAR-reference contamination (found 2026-07-11)
 
 `jvd_ra` is written directly by PC-KEIBA Database (`Com.Pckeiba.Database.exe`), a
@@ -49,6 +74,16 @@ see `apps/local-postgresql/sql/20260711220000_jvd_ra_nar_reference_guard.sql`.
 The trigger does not touch existing rows or `data_kubun = 'B'` overseas rows.
 Any query against `jvd_ra` should still filter `keibajo_code BETWEEN '01' AND
 '10'` defensively until the pre-existing contaminated rows are cleaned up.
+
+**Verification note**: the trigger was first installed against the colima
+shadow container (see the dual-Postgres trap above) and appeared correct there,
+but was absent/dangling on the real production instance until re-applied.
+Confirmed live on production via TCP (`pg_postmaster_start_time` =
+`2026-07-09 15:03:41+00`) on 2026-07-11: 4-case synthetic test (JRA row passes,
+NAR-reference row silently skipped, overseas row passes, edge-case NAR-numeric
+keibajo with `data_kubun='7'` passes) all correct, rolled back cleanly. The
+`data_kubun` partition was re-verified clean on the full 238,897-row production
+table at the same time.
 
 ## MotherDuck Agent Check
 
