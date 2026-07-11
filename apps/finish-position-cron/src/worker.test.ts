@@ -9,6 +9,7 @@ const {
   warmNeonMock,
   enqueueMock,
   handleQueueMock,
+  handleDlqQueueMock,
   coordinatorTickMock,
   claimRescoreRaceMock,
   completeFocusedFullRaceMock,
@@ -17,6 +18,7 @@ const {
   const warmNeon = vi.fn(async () => undefined);
   const enqueuePredict = vi.fn(async (_p: Record<string, unknown>) => ["jra", "nar", "ban-ei"]);
   const handleQueue = vi.fn(async () => undefined);
+  const handleDlqQueue = vi.fn(async () => undefined);
   const runRaceCoordinatorTick = vi.fn(async () => []);
   const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
@@ -26,6 +28,7 @@ const {
     warmNeonMock: warmNeon,
     enqueueMock: enqueuePredict,
     handleQueueMock: handleQueue,
+    handleDlqQueueMock: handleDlqQueue,
     coordinatorTickMock: runRaceCoordinatorTick,
     claimRescoreRaceMock: claimRescoreRace,
     completeFocusedFullRaceMock: completeFocusedFullRace,
@@ -44,6 +47,11 @@ vi.mock("./neon-warm", () => ({
 vi.mock("./queue-producer", () => ({ enqueuePredict: enqueueMock }));
 
 vi.mock("./queue-consumer", () => ({ handleQueue: handleQueueMock }));
+
+vi.mock("./dlq-consumer", () => ({
+  DLQ_QUEUE_NAME: "finish-position-predict-dlq",
+  handleDlqQueue: handleDlqQueueMock,
+}));
 
 vi.mock("./race-coordinator", () => ({
   DEFAULT_RESCORE_LEAD_MINUTES: 25,
@@ -108,6 +116,7 @@ beforeEach(() => {
   warmNeonMock.mockClear();
   enqueueMock.mockClear();
   handleQueueMock.mockClear();
+  handleDlqQueueMock.mockClear();
   coordinatorTickMock.mockClear();
   claimRescoreRaceMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
@@ -341,7 +350,7 @@ test("handleScheduled feature-build cron does not start container or warm or coo
   logSpy.mockRestore();
 });
 
-test("queue default handler delegates to handleQueue", async () => {
+test("queue default handler delegates to handleQueue for the primary queue", async () => {
   const batch = { messages: [] } as unknown as MessageBatch<import("./types").PredictQueueMessage>;
   await workerDefault.queue(batch, makeEnv());
   expect(handleQueueMock).toHaveBeenCalledTimes(1);
@@ -349,6 +358,21 @@ test("queue default handler delegates to handleQueue", async () => {
     batch,
     expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
   );
+  expect(handleDlqQueueMock).not.toHaveBeenCalled();
+});
+
+test("queue default handler routes the dead-letter queue name to handleDlqQueue", async () => {
+  const batch = {
+    messages: [],
+    queue: "finish-position-predict-dlq",
+  } as unknown as MessageBatch<import("./types").PredictQueueMessage>;
+  await workerDefault.queue(batch, makeEnv());
+  expect(handleDlqQueueMock).toHaveBeenCalledTimes(1);
+  expect(handleDlqQueueMock).toHaveBeenCalledWith(
+    batch,
+    expect.objectContaining({ NEON_DATABASE_URL: "postgres://example" }),
+  );
+  expect(handleQueueMock).not.toHaveBeenCalled();
 });
 
 test("handleFetch passes category nar when body specifies category nar", async () => {

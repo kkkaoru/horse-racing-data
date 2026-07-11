@@ -115,6 +115,13 @@ export interface PredictQueueMessage {
   // Cloudflare retry attempt count) with this incremented, bounded by
   // MAX_BUSY_REQUEUES in queue-consumer.ts. Absent on the first send.
   busyRequeueCount?: number;
+  // Number of times this message has been re-enqueued by dlq-consumer.ts
+  // after landing in the dead-letter queue (finish-position-predict-dlq),
+  // having exhausted the primary queue's max_retries. Bounded by
+  // MAX_DLQ_REDRIVES in dlq-consumer.ts so a poison-pill message is redriven
+  // at most once instead of bouncing between the two queues forever. Absent
+  // on every message that has not yet been dead-lettered.
+  dlqRedriveCount?: number;
   // Enables verbose diagnostic logs for this message and the downstream
   // Container /predict request. Absent/false keeps production logs quiet.
   debug?: boolean;

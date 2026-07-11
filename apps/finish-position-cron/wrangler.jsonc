@@ -158,23 +158,58 @@
         // most 3 concurrent category DOs run — well under max_instances: 10
         // above — while letting a hung category stop blocking the others.
         "max_concurrency": 3,
-        // max_retries: 12 replaces the implicit Cloudflare platform default of
-        // 3 retries. Focused per-race full messages get a fast "accepted"
-        // result while the container's real pipeline keeps running in a
-        // detached non-daemon thread. The queue consumer retries accepted
-        // responses with a 150s delay (FOCUSED_FULL_RETRY_DELAY_SECONDS in
-        // src/queue-consumer.ts) to poll completion via
-        // ackIfFocusedFullAlreadyComplete. A DO-backed focused-full in-flight
-        // gate prevents redeliveries from starting duplicate pipelines while
-        // the original detached build is still running. 150s x 12 retries =
-        // a 30-minute total retry budget per message, comfortably above the
-        // worst-case observed/extrapolated single-run duration. Other error
-        // retries on this queue also get more attempts as a side effect of this
-        // change, which is acceptable since
-        // dead_letter_queue below is still the eventual backstop for genuine
-        // persistent failures.
-        "max_retries": 12,
+        // max_retries: 16 (raised from 12 on 2026-07-11) replaces the implicit
+        // Cloudflare platform default of 3 retries. Focused per-race full
+        // messages get a fast "accepted" result while the container's real
+        // pipeline keeps running in a detached non-daemon thread. The queue
+        // consumer retries accepted responses with a 150s delay
+        // (FOCUSED_FULL_RETRY_DELAY_SECONDS in src/queue-consumer.ts) to poll
+        // completion via ackIfFocusedFullAlreadyComplete. A DO-backed
+        // focused-full in-flight gate (claimFocusedFullRace,
+        // src/predict-run-coordinator.ts) prevents redeliveries from starting
+        // duplicate pipelines while the original detached build is still
+        // running; that gate now refreshes its heartbeat on every poll that
+        // observes the race as still in flight
+        // (FOCUSED_FULL_IN_FLIGHT_STALE_MS in src/queue-consumer.ts, 15 min).
+        // 150s x 16 retries = a 40-minute total retry budget per message,
+        // comfortably above the worst-case observed/extrapolated single-run
+        // duration (raised from 12 retries / 30 min alongside the reliability
+        // fix below). Reordering note (2026-07-11 defect fix): the retry
+        // budget must exceed FOCUSED_FULL_IN_FLIGHT_STALE_MS with real margin
+        // -- the old 30-minute budget was SHORTER than the old 35-minute
+        // stale window, so a genuinely dead detached pipeline could never be
+        // reclaimed in-band before its message exhausted retries and landed
+        // in dead_letter_queue below, which had zero consumer (silent black
+        // hole, same shape as the finish-position serving blackout). Other
+        // error retries on this queue also get more attempts as a side
+        // effect of this change, which is acceptable since dead_letter_queue
+        // is still the eventual backstop for genuine persistent failures --
+        // it now has a consumer (see the dlq-consumer entry below and
+        // src/dlq-consumer.ts) that logs a durable ERROR row and re-enqueues
+        // once instead of dropping the message silently.
+        "max_retries": 16,
         "dead_letter_queue": "finish-position-predict-dlq",
+      },
+      // Dead-letter consumer: messages land here only after exhausting
+      // max_retries above. Historically this queue had NO consumer at all --
+      // messages (including genuinely-dead focused-full pipelines) were
+      // retained by Cloudflare but never processed, acked, or surfaced
+      // anywhere. handleDlqQueue (src/dlq-consumer.ts) now logs a durable
+      // ERROR row per message into FINISH_POSITION_CRON_DB
+      // (finish_position_predict_dlq_events, migrations/0002) and re-enqueues
+      // the original message once (bounded by dlqRedriveCount on the message
+      // body) onto the primary queue above, giving the race one more full
+      // retry cycle. A second dead-letter landing for the same logical
+      // message is logged and dropped (no infinite bounce). No
+      // dead_letter_queue is set here on purpose: if the redrive path itself
+      // fails max_retries times, Cloudflare drops the message after logging
+      // it platform-side -- the durable D1 row already written on first
+      // landing is the permanent record, so a second DLQ is not needed.
+      {
+        "queue": "finish-position-predict-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 30,
+        "max_retries": 3,
       },
     ],
   },

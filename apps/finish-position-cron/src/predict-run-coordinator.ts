@@ -121,6 +121,20 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  // Poll = every redelivery of a focused-full skipDedup message while the
+  // race is still claimed and not yet stale (see queue-consumer.ts
+  // claimFocusedFullOrRetry, called on every delivery attempt). Each such
+  // poll is itself evidence that the queue is actively watching this race,
+  // so the claim's heartbeat is refreshed here rather than left at its
+  // original claim-time value. Without this refresh, staleAfterMs measured
+  // "time since the pipeline was launched" instead of "time since we last
+  // confirmed it was still worth waiting for" -- so shrinking staleAfterMs
+  // to react quickly to a genuinely dead pipeline would also falsely
+  // reclaim (and duplicate-launch) a legitimately slow one. With the
+  // refresh, a live poll cadence keeps staleAfterMs from ever tripping for
+  // work that is still being watched; it only trips once redeliveries stop
+  // landing (retries exhausted -> dead-letter queue, see dlq-consumer.ts),
+  // which is the actual "nobody is polling this anymore" signal.
   async claimFocusedFullRace(params: ClaimFocusedFullRaceParams): Promise<ClaimResult> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const key = buildFocusedFullRaceKey(params);
@@ -132,6 +146,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         }
         const ageMs = now - existing.timestamp;
         if (existing.status === "started" && ageMs < params.staleAfterMs) {
+          await this.ctx.storage.put<RunRecord>(key, { status: existing.status, timestamp: now });
           return { proceed: false, state: existing.status };
         }
       }

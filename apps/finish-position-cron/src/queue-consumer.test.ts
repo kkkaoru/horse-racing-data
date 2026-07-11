@@ -986,7 +986,7 @@ test("warms only the race cache for focused per-race skipDedup full messages", a
       keibajoCode: "02",
       raceBango: "01",
       runYmd: "20260628",
-      staleAfterMs: 2100000,
+      staleAfterMs: 900000,
     }),
   );
   expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(

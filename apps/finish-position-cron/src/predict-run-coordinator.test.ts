@@ -311,7 +311,7 @@ test("claimFocusedFullRace stores a focused-full started key for a new race", as
   expect(value.status).toBe("started");
 });
 
-test("claimFocusedFullRace returns proceed:false for a fresh started key", async () => {
+test("claimFocusedFullRace returns proceed:false and refreshes the heartbeat for a fresh started key", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(10_000);
   storageMap.set("focused-full:20260621:jra:02:01", { status: "started", timestamp: 9_000 });
@@ -324,7 +324,10 @@ test("claimFocusedFullRace returns proceed:false for a fresh started key", async
     staleAfterMs: 2100000,
   });
   expect(result).toStrictEqual({ proceed: false, state: "started" });
-  expect(storageMock.put).not.toHaveBeenCalled();
+  expect(storageMock.put).toHaveBeenCalledTimes(1);
+  const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
+  expect(key).toBe("focused-full:20260621:jra:02:01");
+  expect(value).toStrictEqual({ status: "started", timestamp: 10_000 });
   vi.useRealTimers();
 });
 

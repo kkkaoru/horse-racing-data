@@ -60,14 +60,34 @@ const BUSY_REQUEUE_COUNT_INCREMENT = 1;
 // CatBoost/XGBoost scoring + Neon UPSERT) has been observed taking 10-20+
 // minutes end-to-end (NAR ~13-17 min extrapolated from partial timing; JRA has
 // ~1.6x as many layers so plausibly up to ~25-27 min).
-// FOCUSED_FULL_RETRY_DELAY_SECONDS (2.5 min) x max_retries (12, set in
-// wrangler.jsonc) gives a 30-minute total retry budget per message --
+// FOCUSED_FULL_RETRY_DELAY_SECONDS (2.5 min) x max_retries (16, set in
+// wrangler.jsonc) gives a 40-minute total retry budget per message --
 // comfortably above the worst-case observed/extrapolated single-run duration,
 // while each individual delivery after launch is a cheap fast completion /
 // accepted check (not a re-run) once the in-container single-slot guard sees
-// that race already in flight for that category.
+// that race already in flight for that category. SLEEP_AFTER in
+// container-class.ts is kept above this budget so the container outlives it.
 const FOCUSED_FULL_RETRY_DELAY_SECONDS = 150;
-const FOCUSED_FULL_IN_FLIGHT_STALE_MS = 35 * 60 * 1000;
+// Heartbeat-gap staleness, not "time since claim start": claimFocusedFullRace
+// (predict-run-coordinator.ts) refreshes this claim's timestamp on every poll
+// that observes the race as still genuinely in flight (not complete, not
+// stale), so as long as redeliveries keep landing every
+// FOCUSED_FULL_RETRY_DELAY_SECONDS (~2.5 min), this window never trips for a
+// legitimately slow pipeline -- it only trips once redeliveries stop, which
+// happens either because the race finished/errored (claim moved to a
+// terminal/error state) or because retries were exhausted and the message
+// landed in the dead-letter queue (see dlq-consumer.ts). Because it is now a
+// heartbeat gap rather than an absolute pipeline-duration ceiling, it can be
+// set far below the worst-case single-run duration above: 15 minutes is 6x
+// the nominal poll cadence (generous margin for Cloudflare Queues redelivery
+// jitter) while staying well under the 40-minute retry budget, so a message
+// that stops being redelivered (queue misbehavior, not the pipeline itself)
+// still gets 25 minutes / ~10 further retries of in-band reclaim attempts
+// before it would ever reach the dead-letter queue. This closes the defect
+// where the old 35-minute absolute window exceeded the old 30-minute retry
+// budget, so a genuinely dead run could never be reclaimed in-band before
+// its message was dead-lettered into a queue with zero consumer.
+const FOCUSED_FULL_IN_FLIGHT_STALE_MS = 15 * 60 * 1000;
 const JRA_CATEGORY = "jra";
 const NAR_CATEGORY = "nar";
 const BAN_EI_CATEGORY = "ban-ei";
@@ -177,7 +197,10 @@ const assertPredictResultSucceeded = (result: PredictResultLine): void => {
   throw new Error(`Container result status=${result.status}${detail}`);
 };
 
-const isFocusedSkipDedupMessage = (
+// Exported for reuse by dlq-consumer.ts, which needs the same narrowing to
+// decide whether a dead-lettered message holds a focused-full DO claim that
+// must be force-unstuck before redriving it.
+export const isFocusedSkipDedupMessage = (
   message: PredictQueueMessage,
 ): message is FocusedFullSkipDedupMessage =>
   message.skipDedup === true &&

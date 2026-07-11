@@ -12,6 +12,7 @@ import {
   shouldRunWarmCron,
 } from "./cron-decision";
 import { buildPredictStartOptions } from "./dispatch";
+import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
@@ -580,6 +581,22 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   });
 };
 
+// A single Worker script consumes both the primary predict queue and its
+// dead-letter queue (two consumer entries in wrangler.jsonc, both routed to
+// this one `queue()` export); MessageBatch.queue names which queue the batch
+// came from, so route accordingly instead of running the two independent
+// consumer implementations against the wrong batch shape.
+export const handleQueueBatch = async (
+  batch: MessageBatch<PredictQueueMessage>,
+  env: Env,
+): Promise<void> => {
+  if (batch.queue === DLQ_QUEUE_NAME) {
+    await handleDlqQueue(batch, env);
+    return;
+  }
+  await handleQueue(batch, env);
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     return handleFetch(request, env);
@@ -588,6 +605,6 @@ export default {
     await handleScheduled(event, env);
   },
   async queue(batch: MessageBatch<PredictQueueMessage>, env: Env): Promise<void> {
-    await handleQueue(batch, env);
+    await handleQueueBatch(batch, env);
   },
 };
