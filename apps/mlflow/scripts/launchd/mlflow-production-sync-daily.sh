@@ -9,7 +9,15 @@
 #      `|| echo "WARNING: ..."` guard below).
 #   1. `sync-production` over a "yesterday -> today" JST window, so a
 #      genuinely-served prediction logged just before local midnight is not
-#      missed by a same-day-only range.
+#      missed by a same-day-only range. This step ALSO runs a startup
+#      self-heal sweep by default (2026-07-11, see sync_production.py's own
+#      module docstring's "SELF-HEAL" section): any run left stuck
+#      status=RUNNING by a previously-interrupted invocation (killed
+#      mid-loop, e.g. a Mac sleep/crash) for longer than
+#      --stale-running-hours (default 6h) is force-terminated FINISHED
+#      before this call's own date/category loop starts. No flag needed
+#      here to opt in -- pass --no-repair-stale-running to disable it for a
+#      one-off manual invocation if ever needed.
 #   2. `eval-champion-cells` for all three categories (default trailing
 #      90-day window as of today), re-scoring each category's CURRENT
 #      champion model at cell granularity against whatever genuinely-served
@@ -24,6 +32,20 @@
 #      daily, giving a shorter/fresher trailing-window view (e.g. for
 #      spotting a recent serving-coverage gap sooner) next to the existing
 #      longer one.
+#   2c. `eval-champion-cells --window-days 3650` (REALIZED "all-period" view,
+#      ~10y, comfortably covering the full genuinely-served production
+#      history without an unbounded/open-ended window) for all three
+#      categories, but ONLY on Sundays (TZ=Asia/Tokyo `%u` == 7) -- this is
+#      a materially heavier query than steps 2/2b (it scans every
+#      genuinely-served row ever logged, not just a trailing window, joining
+#      finalized results per distinct date touched), so per the standing
+#      Neon-cost-consciousness rule it runs weekly, not daily, mirroring the
+#      "daily 60d + weekly all-period" cadence agreed for this cell-eval
+#      recording. Same idempotency key mechanism as 2b (window_days=3650 is
+#      simply a different cell_eval_key), so a catch-up fire after a missed
+#      Sunday (Mac asleep, see IDEMPOTENCY section below) is harmless -- it
+#      just logs that day's all-period run a bit late, same as any other
+#      launchd catch-up.
 #   3. `eval-cells` for all three categories (default trailing 90-day
 #      window, default --min-races 20): scores EVERY model_version that
 #      served enough volume this window -- champion, every cell-routed
@@ -111,6 +133,17 @@ echo "--- eval-champion-cells --category jra,nar,banei ---"
 
 echo "--- eval-champion-cells --category jra,nar,banei --window-days 60 ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei --window-days 60
+
+# Weekly (Sunday, JST) REALIZED "all-period" cell-eval -- see step 2c's
+# header comment above for why this is gated to once a week rather than run
+# alongside steps 2/2b every day.
+DOW_JST="$(TZ=Asia/Tokyo date +%u)"
+if [ "$DOW_JST" = "7" ]; then
+  echo "--- eval-champion-cells --category jra,nar,banei --window-days 3650 (Sunday all-period) ---"
+  "$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei --window-days 3650
+else
+  echo "--- skipping all-period eval-champion-cells (DOW_JST=$DOW_JST, runs Sundays only) ---"
+fi
 
 echo "--- eval-cells --category jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-cells --category jra,nar,banei
