@@ -40,9 +40,11 @@ jockey-trainer combo, sire-surface-split, age-sex-bw z-score, speed-fade (B4),
 kyakushitsu_keiko running style (ρ=0.074 just sub-gate), odds-decoupling, NAR locality
 features, NAR similarity, pgvector, WF-based LGB lambdarank for JRA classes 703/005/010
 (all 4 axes negative on full judge), calibration/isotonic stacking on per-class residuals
-(REJECT all 7 NAR classes), partial-pooling / James-Stein (identity limit proof),
-per-class HARD split (iter20), post-hoc cascade, NAR B lgb-lambdarank residual (REJECT
-H4, place3 −0.421pp).
+(REJECT all 7 NAR classes), per-(cat × bucket) isotonic calibration of raw WF scores
+(iter1 lever L2, 2026-06-03: top1 +0.000pp JRA and NAR, REJECT both — see §Lever 3
+below, this is the item Lever 3 re-proposes), partial-pooling / James-Stein (identity
+limit proof), per-class HARD split (iter20), post-hoc cascade, NAR B lgb-lambdarank
+residual (REJECT H4, place3 −0.421pp).
 
 **Architecture:** MLX transformer (2-fold underpowered), C4 expected-placement rerank
 (real-holdout REJECT), per-place calibration (collinear P̂₁/P̂₃, all-REJECT).
@@ -166,6 +168,24 @@ Full run: fukusho_2p paired-bootstrap LB95 > 0 vs iter19 (JRA) or iter12 (NAR).
 ---
 
 ### Lever 3 — Post-Hoc Isotonic Score Recalibration (JRA; NAR secondary)
+
+> **[2026-07-11] CLOSED — DO-NOT-RETEST.** Verified by a dedicated audit
+> (`apps/pc-keiba-viewer/tmp/lever3-isotonic/verdict.md`). Two independent
+> disqualifiers: (1) **mechanism**: the calibration curve is fit per race-level
+> bucket (`kyoso_joken_code` / `grade_code` in `calibrate_finish_position.py`),
+> so every horse in a race is transformed by the same monotone function —
+> monotone transforms cannot change within-race argmax or top-K rank order by
+> construction, so this cannot move top1 or fukusho_2p regardless of which base
+> model or fit window is used. (2) **already executed**: this exact experiment
+> ran as `iter1.md` lever **L2** (2026-06-03): per-(cat × bucket) isotonic
+> calibration on WF predictions, JRA bucket=kyoso_joken, NAR bucket=grade.
+> Result: top1 delta **+0.000pp in both JRA and NAR** (REJECT), matching the
+> mechanism prediction exactly. The "never tried" framing below is a
+> documentation gap — `rootcause-2026-06-11-DIAGNOSIS.md` (8 days after
+> iter1's reject) re-proposed the same script without cross-referencing
+> `iter1.md`, and that re-proposal is the source of this Lever-3 writeup. Do
+> not re-propose this lever. The original write-up is preserved below for
+> historical record.
 
 **Target model:** JRA iter19 base scores (used for rank-1 assignment at serve time).
 
@@ -499,6 +519,12 @@ probe gates are listed with probe first.
 | 7    | **Lever 5: NAR XGBoost expanded HPO**                 | 16–25 hours              | +0.05–0.2pp NAR                        | LOW-MEDIUM                                    |
 | 8    | **Lever 8: NAR class B win-priority residual**        | 20 hours                 | +0.0–0.15pp NAR (uncertain gate)       | LOW                                           |
 
+> **[2026-07-11] Step 1 (Lever 3) is CLOSED / DO-NOT-RETEST** — see §Lever 3
+> above. Isotonic calibration of raw per-race scores is a monotone transform
+> and cannot move rank-based metrics (top1/fukusho_2p) by construction;
+> already executed as iter1/L2 (2026-06-03, REJECT, top1 +0.000pp both
+> categories). Treat Steps 2-4 as the parallel cheap-filter batch instead.
+
 Execute steps 1-4 in parallel (all are cheap filters or no-retrain probes). Execute steps
 5-8 sequentially after cheap filters report.
 
@@ -519,6 +545,11 @@ Optimistic stack:
 Pessimistic stack (calibration adds 0.3pp, others reject):
 
 - **Pessimistic total: +0.3pp**
+
+> **[2026-07-11]** Lever 3 is CLOSED / DO-NOT-RETEST (see §Lever 3) and
+> contributes **+0.0pp**, not +0.8pp/+0.3pp as assumed above. Revised
+> optimistic total excluding Lever 3: **+0.7pp**. Revised pessimistic total:
+> **+0.0pp**.
 
 **Central estimate: +0.5–1.0pp JRA top1**, which is approximately 50% of the relative-5%
 target (0.4548 → 0.4773 requires +2.25pp). The relative-5% target is achievable only if

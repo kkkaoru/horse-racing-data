@@ -251,6 +251,21 @@ capture.
 
 ### Hypothesis 1: Post-Hoc Score Recalibration Directly Lifts Top1 by 0.5–2pp
 
+> **[2026-07-11] CORRECTED — this was tried, and it is a no-op by construction.**
+> The "Never tried" verdict below is wrong: per-(cat × bucket) isotonic
+> calibration of raw WF scores ran as `iter1.md` lever **L2** (2026-06-03,
+> before this doc's 2026-06-11 date) — JRA bucket=kyoso_joken, NAR bucket=grade,
+> via the same `calibrate_finish_position.py` referenced below. Result: top1
+> delta **+0.000pp in both JRA and NAR** (REJECT). This is not a coincidence:
+> the calibration curve is fit per race-level bucket, so every horse in a race
+> passes through the same monotone function, which cannot change within-race
+> argmax or top-K rank order (top1/place are rank-based decisions) regardless
+> of base model or fit window. The ECE/decile-gap evidence below is a
+> probability-calibration signal (Brier/ECE), which is orthogonal to ranking
+> accuracy — fixing one does not fix the other. Full mechanism proof and
+> evidence trail: `apps/pc-keiba-viewer/tmp/lever3-isotonic/verdict.md`. Text
+> below is preserved as historical record of the (mistaken) original analysis.
+
 **Failure slice:** JRA ECE=0.062. Model decile 10 (top confidence picks): predicted win prob 0.71,
 actual win rate 0.85 — gap of +14pp. This shrinkage is most severe in races the model already
 gets right (high confidence). I2 estimated 0.5–2pp top1 lift from isotonic recalibration.
