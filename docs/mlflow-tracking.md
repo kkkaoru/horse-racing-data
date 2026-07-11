@@ -150,7 +150,7 @@ Ingestion は既存パイプラインが出力するファイルを読むだけ�
 
 ### 9.1 Neon Postgres backend への移行（2026-07-08）
 
-- **移行元**: `apps/mlflow/data/mlflow.db`（sqlite、WAL）。移行後もこのファイルは削除せず、スナップショットとしてディスク上に残してある。
+- **移行元**: `apps/mlflow/data/mlflow.db`（sqlite、WAL）。移行後もこのファイルは削除せず、スナップショットとしてディスク上に残してある。**訂正（2026-07-11、§15 参照）**: 「移行後は書き込まれない凍結スナップショット」という想定は誤りだった — `config.load_dotenv_local()` を呼ばずに `MlflowClient` を直接構築する ad-hoc スクリプトは `get_tracking_uri()` のフォールバックによりこのファイルへ**サイレントに**書き込み続けており、実際に移行後も run が蓄積している（発覚時点で 103 run）。「sqlite = 過去の凍結データ」と思い込まず、疑わしい run は必ず生 SQL でどちらの store に着地したか確認すること。
 - **移行先**: 既存 Neon project（`NEON_PRIMARY_URL` と同一 project/branch、`ep-frosty-cloud-ao28v17l`）内に新規作成した `mlflow` database。`CREATE DATABASE mlflow` は `neondb_owner` ロールで実行し成功（racing 用の `neondb` database とは完全に分離）。
 - **スキーマ初期化**: `uv run mlflow db upgrade <postgres_uri>`（alembic）。sqlite 側と同じ `mlflow-skinny==3.14.0` から生成したため、テーブル一覧・`alembic_version`（`b7e4c1a90f23`）・既定 `workspaces` 行まで完全一致した。
 - **データ移行**: 一回限りの migration script（リポジトリには含まれない、scratchpad 上のみ）で FK 安全な順序（`workspaces → experiments → experiment_tags → runs → metrics/latest_metrics/params/tags → registered_models → model_versions → model_version_tags/registered_model_tags/registered_model_aliases → datasets/inputs/input_tags`）で `INSERT ... ON CONFLICT DO NOTHING` によりコピーした。`experiments.experiment_id` の identity sequence は移行後に `MAX(experiment_id)` へ再設定済み。
@@ -285,3 +285,21 @@ flowchart LR
 - **ソースファイルの場所**: `apps/mlflow/scripts/launchd/`(`mlflow-production-sync-daily.sh` と `com.horse-racing.mlflow-production-sync.plist` の 2 ファイル、いずれも git 管理下)。
 - **インストールは手動操作**: このパッケージが自動でインストールすることはない。`launchctl bootstrap` によるインストール手順は `apps/mlflow/README.md` の「Daily automation (LaunchAgent)」節に記載している。
 - 両コマンドとも idempotent なため、launchd の「Mac がスリープ中に予定時刻を逃した場合は次回起床時に発火する」catch-up 挙動により遅延・重複して発火しても安全に再実行できる。
+
+---
+
+## 15. アドホックスクリプトの dotenv 未ロード罠(2026-07-11 発見・解決済み)
+
+**現象**: いくつかの ad-hoc ロギングスクリプト(`apps/pc-keiba-viewer/tmp/d60-cell-recorder/log_honest_atlas.py` / `log_honest_60d.py`)が、run の作成・tags/metrics 記録・cell table 記録・`set_terminated` まで一切例外を出さず「成功」を報告し、`client.get_run()` による直後の確認も成功したように見えたにもかかわらず、Neon 側の `runs` テーブルには当該行が存在しない、という現象が観測された(2026-07-11 セッション中、4 件)。
+
+**根本原因(確定・再現性あり)**: これらのスクリプトは `MlflowClient(tracking_uri=config.get_tracking_uri())` を呼ぶ前に `config.load_dotenv_local()` / `config.load_repo_root_env_fallback()` を呼んでいなかった。§2.1 に記載の通り `get_tracking_uri()` は `HORSE_RACING_MLFLOW_BACKEND_URI` が環境変数として存在しない場合 sqlite フォールバック(`apps/mlflow/data/mlflow.db`)へ**サイレントに**切り替わる仕様であり、環境変数を対話シェルの direnv 経由でしか持たない実行コンテキスト(素の `uv run python <script>.py` など)からこれらのスクリプトを直接実行すると、この分岐を踏んで sqlite に書き込んでいた。**Neon には最初から一度も接続していない** — write-loss ではなく、単純に別の(生きている)データベースファイルに書き込んでいただけである。実際、疑わしかった 4 run(`170a6928e9dd41b8b4e3c92aede95746` / `cad093f515b0457a90eefbb7a1e97d43` / `762333db580d4a15b8166f461f1b94e8` / `aae217e5eadc445786708de999b92603`)はいずれも `apps/mlflow/data/mlflow.db` に `status=FINISHED` の完全な行として存在することを直接 `sqlite3` CLI で確認済み(run 名も `cells-honest-all-20260711` / `cells-honest-60d-20260711` で該当スクリプトの命名規則と完全一致)。`mlflow_tracking.cli` 経由(`eval-champion-cells` / `log-eval` など)の呼び出しが一貫して無事だったのは、CLI の `main()`(`cli.py`)が呼び出しの先頭で必ず `load_dotenv_local()` / `load_repo_root_env_fallback()` を実行するため — 影響を受けるのは、CLI を経由せず `MlflowClient` を直接構築する ad-hoc スクリプトのみである。
+
+**訂正**: 当初「multi-round-trip 呼び出し列ほど失敗しやすい(Neon pooled endpoint の接続 handoff で silent rollback)」という作業仮説を立てたが、これは round-trip 数と「dotenv を明示ロードしない ad-hoc スクリプトかどうか」が偶然相関していたことによる誤った相関であり、メカニズムとしては誤りだった。§9.1 で述べた「`apps/mlflow/data/mlflow.db` は 07-08 移行後に凍結されたスナップショットで、以後書き込まれない」という記述も不正確 — dotenv 未ロードのまま実行された ad-hoc スクリプトによって、移行後も静かに書き込まれ続けている(本件発覚時点で 103 run が同ファイルに存在)。**Neon の接続プーリング自体には既知の write-durability 問題はない** — pooler/engine 構成を変更する必要はない。
+
+**安全なロギングパターン(確定)**:
+
+1. `mlflow_tracking.cli` を経由しない ad-hoc スクリプト(`uv run python <script>.py` で直接実行するもの)は、`MlflowClient(...)` を構築する**前**に必ず `config.load_dotenv_local()` → `config.load_repo_root_env_fallback()` の順で呼ぶ(`cli.py` の `main()` と同じ順序)。`log_honest_60d_v2.py` の `main()` がこのパターンの正しい参照実装。
+2. 上記を徹底しても、`get_tracking_uri()` が実際にどの URI を解決したかは呼び出し元から見えないため、疑わしい run は `HORSE_RACING_MLFLOW_BACKEND_URI` への生 `psycopg2` 接続(または万一 sqlite に落ちていないかの `sqlite3 apps/mlflow/data/mlflow.db` 直接確認)で `runs` テーブルを突合するのを標準運用とする。`client.get_run()` はクライアントが実際に接続した先(Neon か sqlite か)でしか探さないため、「dotenv 未ロードで sqlite に接続してしまっている」状態でも `get_run()` 自体は成功して見える ——「client レベルの成功」は「Neon に書けた証拠」にはならない。
+3. 恒久策として `apps/mlflow/src/mlflow_tracking/logging_api.py` に dotenv ロード込みの共通ヘルパー(例: `build_adhoc_client()`)を追加し、ad-hoc スクリプトは素の `MlflowClient(tracking_uri=config.get_tracking_uri())` を直接書かずこのヘルパー経由に統一することを推奨する(未着手、緊急度低)。
+
+**既知の phantom run(sqlite に着地しているのを確認済み、Neon 側への再ログは `log_honest_views_v2.py` 系で対応済み/対応中)**: `170a6928e9dd41b8b4e3c92aede95746` / `cad093f515b0457a90eefbb7a1e97d43` / `762333db580d4a15b8166f461f1b94e8` / `aae217e5eadc445786708de999b92603`。詳細は `apps/pc-keiba-viewer/tmp/d60-cell-recorder/README.md` の「MLflow backend write-durability issue」節(訂正込み)を参照。
