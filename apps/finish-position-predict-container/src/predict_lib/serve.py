@@ -160,9 +160,18 @@ class PredictParams:
     ``keibajo_code`` / ``race_bango`` are the optional race-scope filter for the
     Stage-2 per-race rescore: when set, only the matching race(s) are rescored.
     Both ``None`` (the default, full path) means "all races for the category".
+
+    ``card_max_race_bango`` is the optional registered-card-max race_bango for
+    the ``is_final_race`` cell-routing dimension (``cell_router.py``), sourced
+    by the Worker from discovery for a single-race-scoped request (per-race
+    rescore, focused-full-race). ``None`` on a whole-category request is not a
+    missing value -- ``score_races`` self-derives the equivalent from the
+    whole-category batch it already has (see that function's docstring and
+    ``tmp/kochi-final/cell_design.md`` section 3.2).
     """
 
     __slots__ = (
+        "card_max_race_bango",
         "category",
         "days_ahead",
         "debug_logs",
@@ -181,6 +190,7 @@ class PredictParams:
         keibajo_code: str | None = None,
         race_bango: str | None = None,
         debug_logs: bool = False,
+        card_max_race_bango: int | None = None,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -189,6 +199,7 @@ class PredictParams:
         self.keibajo_code: str | None = keibajo_code
         self.race_bango: str | None = race_bango
         self.debug_logs: bool = debug_logs
+        self.card_max_race_bango: int | None = card_max_race_bango
 
 
 def is_focused_full_request(params: PredictParams) -> bool:
@@ -219,6 +230,9 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     - ``runDate`` must be exactly 8 ASCII digits (YYYYMMDD).
     - ``daysAhead`` must be a non-negative integer (default ``0``).
     - ``mode`` must be one of ``full``, ``rescore`` (default ``full``).
+    - ``cardMaxRaceBango`` (optional) must be a non-negative integer when
+      present -- the Worker-supplied registered-card-max race_bango for the
+      ``is_final_race`` cell-routing dimension (see :class:`PredictParams`).
     """
     qs = parse_qs(query_string, keep_blank_values=True)
 
@@ -257,6 +271,17 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     race_bango = _optional_scope_value(_first_qs(qs, "raceBango"))
     debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
 
+    raw_card_max_race_bango = _first_qs(qs, "cardMaxRaceBango")
+    if raw_card_max_race_bango is None:
+        card_max_race_bango: int | None = None
+    else:
+        try:
+            card_max_race_bango = int(raw_card_max_race_bango)
+        except ValueError:
+            return f"invalid cardMaxRaceBango: {raw_card_max_race_bango!r}; must be an integer"
+        if card_max_race_bango < 0:
+            return f"invalid cardMaxRaceBango: {card_max_race_bango}; must be non-negative"
+
     return PredictParams(
         category=category,
         run_date=run_date,
@@ -265,6 +290,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         keibajo_code=keibajo_code,
         race_bango=race_bango,
         debug_logs=debug_logs,
+        card_max_race_bango=card_max_race_bango,
     )
 
 
@@ -604,20 +630,25 @@ class CacheMissError(Exception):
 # Core streaming generator
 # ---------------------------------------------------------------------------
 
-PredictCategoryFn = Callable[[str, str, int, str | None, str | None], int]
+PredictCategoryFn = Callable[[str, str, int, str | None, str | None, int | None], int]
 """Signature of the ``_predict_category`` adapter passed to :func:`iter_predict_chunks`.
 
 Args:
-    category:     One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
-    run_date:     YYYYMMDD date string.
-    days_ahead:   Non-negative integer window extension.
-    keibajo_code: Optional per-race scope keibajo code (``None`` = all races).
-    race_bango:   Optional per-race scope race number (``None`` = all races).
+    category:            One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
+    run_date:             YYYYMMDD date string.
+    days_ahead:           Non-negative integer window extension.
+    keibajo_code:         Optional per-race scope keibajo code (``None`` = all races).
+    race_bango:           Optional per-race scope race number (``None`` = all races).
+    card_max_race_bango:  Optional registered-card-max race_bango (see
+                          :class:`PredictParams`), forwarded to
+                          ``cell_router.resolve_variant`` for the
+                          ``is_final_race`` dimension.
 
 When ``keibajo_code`` and ``race_bango`` are both set, the full path builds and
 scores only that one race (``mode=full`` per-race feature generation); both
-``None`` is the whole-window default.  The rescore path ignores these args
-because its race scope is bound by the rescore factory.
+``None`` is the whole-window default.  The rescore path ignores the
+``keibajo_code`` / ``race_bango`` args because its race scope is bound by the
+rescore factory, but still forwards ``card_max_race_bango`` (not scope-bound).
 
 Returns:
     Number of races predicted (written to Neon).
@@ -690,6 +721,8 @@ def _run_predict_fn(
     the signature is the same whether we are on the full or rescore path.  The
     optional ``keibajo_code`` / ``race_bango`` scope is forwarded so the full
     path can build + score a single race; the rescore path ignores them.
+    ``card_max_race_bango`` is always forwarded (not scope-bound) -- see
+    :data:`PredictCategoryFn`.
 
     The whole body runs under :data:`_PIPELINE_EXEC_LOCK` -- see that lock's
     docstring for why every caller of this function must be serialized.
@@ -704,6 +737,7 @@ def _run_predict_fn(
                 params.days_ahead,
                 params.keibajo_code,
                 params.race_bango,
+                params.card_max_race_bango,
             )
         finally:
             if previous is None:

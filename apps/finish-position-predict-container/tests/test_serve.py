@@ -91,6 +91,7 @@ def _mock_predict_ok(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     return 42
 
@@ -167,6 +168,7 @@ def test_iter_predict_chunks_sets_debug_env_during_predict() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         seen.append(os.environ.get("PREDICT_DEBUG_LOGS"))
         return 1
@@ -414,6 +416,7 @@ def _mock_predict_raises(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     raise RuntimeError("feature build failed: postgresql://user:pw@host/db")
 
@@ -458,6 +461,7 @@ def test_iter_predict_chunks_never_raises() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise ValueError("unexpected kaboom")
 
@@ -650,6 +654,36 @@ def test_parse_predict_params_scope_whitespace_is_none() -> None:
     assert result.race_bango is None
 
 
+def test_parse_predict_params_card_max_race_bango_absent_is_none() -> None:
+    result = parse_predict_params("category=nar&runDate=20260619&keibajoCode=54&raceBango=10")
+    assert isinstance(result, PredictParams)
+    assert result.card_max_race_bango is None
+
+
+def test_parse_predict_params_card_max_race_bango_parsed() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260619&keibajoCode=54&raceBango=10&cardMaxRaceBango=10"
+    )
+    assert isinstance(result, PredictParams)
+    assert result.card_max_race_bango == 10
+
+
+def test_parse_predict_params_card_max_race_bango_non_integer() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260619&keibajoCode=54&raceBango=10&cardMaxRaceBango=abc"
+    )
+    assert isinstance(result, str)
+    assert "cardMaxRaceBango" in result
+
+
+def test_parse_predict_params_card_max_race_bango_negative() -> None:
+    result = parse_predict_params(
+        "category=nar&runDate=20260619&keibajoCode=54&raceBango=10&cardMaxRaceBango=-1"
+    )
+    assert isinstance(result, str)
+    assert "cardMaxRaceBango" in result
+
+
 def test_predict_params_scope_stored_correctly() -> None:
     params = PredictParams(
         category="nar",
@@ -821,6 +855,7 @@ def test_iter_predict_chunks_mode_full_default_calls_predict_fn() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         called[0] = True
         return 5
@@ -844,6 +879,7 @@ def _mock_rescore_ok(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     return 7
 
@@ -858,6 +894,7 @@ def test_iter_predict_chunks_mode_rescore_calls_rescore_fn() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         full_called[0] = True
         return 99  # should not be reached
@@ -897,6 +934,7 @@ def _mock_rescore_cache_miss(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     raise CacheMissError(f"no cache for {category}/{run_date}")
 
@@ -958,6 +996,7 @@ def test_iter_predict_chunks_rescore_non_cache_miss_propagates_as_error() -> Non
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise RuntimeError("unexpected DB error")
 
@@ -982,6 +1021,7 @@ def test_iter_predict_chunks_rescore_non_cache_miss_does_not_call_full_fn() -> N
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         full_called[0] = True
         return 99
@@ -992,6 +1032,7 @@ def test_iter_predict_chunks_rescore_non_cache_miss_does_not_call_full_fn() -> N
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise RuntimeError("unexpected")
 
@@ -1024,6 +1065,7 @@ def test_threaded_predict_fn_exception_surfaces_as_error_result() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise ValueError("thread boom")
 
@@ -1045,6 +1087,7 @@ def test_threaded_predict_fn_does_not_block_generator_indefinitely() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         done.wait()
         return 7
@@ -1072,6 +1115,7 @@ def _make_blocking_predict(
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         done_event.wait()
         return return_value
@@ -1518,6 +1562,7 @@ def test_iter_predict_chunks_keepalive_exception_in_thread_yields_error_result()
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         done.wait()
         raise RuntimeError("thread crash: postgresql://user:pw@host/db")
@@ -1571,6 +1616,7 @@ def test_iter_predict_chunks_keepalive_rescore_cache_miss_fallback_with_progress
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         rescore_done.wait()
         raise CacheMissError("no cache")
@@ -1581,6 +1627,7 @@ def test_iter_predict_chunks_keepalive_rescore_cache_miss_fallback_with_progress
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         predict_done.wait()
         return 77
@@ -1645,6 +1692,7 @@ def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise CacheMissError("miss")
 
@@ -1654,6 +1702,7 @@ def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         done.wait()
         raise RuntimeError("fallback exploded")
@@ -1810,6 +1859,7 @@ def test_iter_predict_chunks_focused_full_claimed_returns_accepted_and_detaches(
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         invoked.set()
         return 1
@@ -1846,6 +1896,7 @@ def test_iter_predict_chunks_focused_full_claim_busy_skips_launch() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         call_count[0] += 1
         return 1
@@ -1883,6 +1934,7 @@ def test_iter_predict_chunks_focused_full_release_called_once_with_race_key() ->
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         return 9
 
@@ -1920,6 +1972,7 @@ def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error()
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         raise RuntimeError("focused pipeline failed")
 
@@ -1975,6 +2028,7 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         a_started.set()
         a_release.wait(timeout=5.0)
@@ -1987,6 +2041,7 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         b_called.set()
         return 2
@@ -1997,6 +2052,7 @@ def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         c_called.set()
         return 3
@@ -2078,6 +2134,7 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         a_started.set()
         a_release.wait(timeout=5.0)
@@ -2090,6 +2147,7 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         a2_called.set()
         return 2
@@ -2100,6 +2158,7 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         d_called.set()
         return 4
@@ -2184,6 +2243,7 @@ def test_iter_predict_chunks_pipeline_exec_lock_serializes_batch_against_focused
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         order.append("a-start")
         a_started.set()
@@ -2198,6 +2258,7 @@ def test_iter_predict_chunks_pipeline_exec_lock_serializes_batch_against_focused
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         order.append("batch-start")
         batch_started.set()
@@ -2304,6 +2365,7 @@ def test_iter_predict_chunks_focused_full_in_flight_self_skips_second_launch() -
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         call_count[0] += 1
         return 1
@@ -2336,6 +2398,7 @@ def test_iter_predict_chunks_focused_full_already_complete_skips_launch_and_rele
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         call_count[0] += 1
         return 1
@@ -2373,6 +2436,7 @@ def test_iter_predict_chunks_focused_full_completion_false_runs_pipeline() -> No
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         invoked.set()
         return 1
@@ -2407,6 +2471,7 @@ def test_iter_predict_chunks_focused_full_completion_raises_runs_pipeline() -> N
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         invoked.set()
         return 1

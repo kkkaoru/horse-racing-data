@@ -19,7 +19,11 @@ import { warmNeon } from "./neon-warm";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
-import { DEFAULT_RESCORE_LEAD_MINUTES, runRaceCoordinatorTick } from "./race-coordinator";
+import {
+  DEFAULT_RESCORE_LEAD_MINUTES,
+  resolveCardMaxRaceBangoForKochi,
+  runRaceCoordinatorTick,
+} from "./race-coordinator";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
@@ -384,7 +388,10 @@ const stopPredictContainer = async (
   return { name, ok: response.ok, status: response.status };
 };
 
-const buildFocusedFullPredictUrl = (body: InternalRescoreRaceRequest): string => {
+const buildFocusedFullPredictUrl = (
+  body: InternalRescoreRaceRequest,
+  cardMaxRaceBango: number | undefined,
+): string => {
   const searchParams = new URLSearchParams({
     category: body.category,
     daysAhead: String(RESCORE_DAYS_AHEAD),
@@ -394,6 +401,9 @@ const buildFocusedFullPredictUrl = (body: InternalRescoreRaceRequest): string =>
     runDate: body.runYmd,
   });
   if (body.debug === true) searchParams.set("debug", "1");
+  if (cardMaxRaceBango !== undefined) {
+    searchParams.set("cardMaxRaceBango", String(cardMaxRaceBango));
+  }
   return `${PREDICT_DO_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
@@ -402,7 +412,12 @@ const runFocusedFullRace = async (
   body: InternalRescoreRaceRequest,
 ): Promise<Response> => {
   const startedAt = Date.now();
-  const predictUrl = buildFocusedFullPredictUrl(body);
+  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({
+    env,
+    keibajoCode: body.keibajoCode,
+    runYmd: body.runYmd,
+  });
+  const predictUrl = buildFocusedFullPredictUrl(body, cardMaxRaceBango);
   if (body.debug) {
     console.warn(`[predict-worker] admin-run-focused-full start ${describeRaceRequest(body)}`);
   }

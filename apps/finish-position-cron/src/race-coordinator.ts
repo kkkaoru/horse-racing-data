@@ -56,6 +56,13 @@ const RESCORE_CATEGORIES_SEPARATOR = ",";
 // back until the day-base full-pass speedup, so it does not contend with the
 // morning bulk run for those categories' single per-category container slot.
 const DEFAULT_RESCORE_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra"];
+// Kochi racecourse: the venue the is_final_race cell-routing dimension
+// currently exists for (predict_lib.cell_router.py, no live routing rule
+// yet -- see apps/pc-keiba-viewer/tmp/kochi-final/cell_design.md). Gates the
+// extra D1 read in fetchCardMaxRaceBangoForKochi below so every other venue's
+// dispatch pays zero added cost for a dimension it will never route on.
+export const KOCHI_KEIBAJO_CODE = "54";
+const KOCHI_SOURCE = "nar";
 interface CategoryRaceFilter {
   keibajoCodes: ReadonlyArray<string>;
   keibajoMode: "all" | "exclude" | "include";
@@ -212,6 +219,81 @@ const listRacesForCategory = async (
     .bind(...filter.sources, nen, tsukihi, ...keibajoFilter.binds)
     .all<RaceSourceRow>();
   return result.results;
+};
+
+interface CardMaxRaceBangoRow {
+  max_race_bango: number | null;
+}
+
+interface FetchCardMaxRaceBangoParams {
+  env: Env;
+  source: string;
+  keibajoCode: string;
+  runYmd: string;
+}
+
+// Registered-card-max derivation for the is_final_race cell-routing dimension
+// (predict_lib.cell_router.resolve_dimension, no live routing rule yet -- see
+// apps/pc-keiba-viewer/tmp/kochi-final/cell_design.md): the highest race_bango
+// discovery has ever recorded for this (source, keibajoCode, day) card, over
+// ALL realtime_race_sources rows for that day -- not just races that have
+// already posted or settled, and a cancelled race still occupies its
+// registered race_bango slot. This mirrors nvd_ra's registered-card-max
+// semantics but reads from discovery instead: realtime_race_sources completes
+// for the day well before any race's post time (the 20:05/21:00 crons land
+// the schedule T-1), whereas a settlement-column read only lands after each
+// race actually runs. Returns null when discovery has no rows yet for this
+// card -- callers must treat null as "not yet known" (never a 0-race card)
+// and omit the value entirely so the container's is_final_race dimension
+// fails closed rather than guessing (predict_lib.cell_router.py's
+// resolve_dimension does the same on a missing value).
+export const fetchCardMaxRaceBango = async (
+  params: FetchCardMaxRaceBangoParams,
+): Promise<number | null> => {
+  const { nen, tsukihi } = splitRunYmd(params.runYmd);
+  const row = await params.env.REALTIME_DB.prepare(
+    `select max(cast(race_bango as integer)) as max_race_bango
+       from realtime_race_sources
+      where source = ? and keibajo_code = ? and kaisai_nen = ? and kaisai_tsukihi = ?`,
+  )
+    .bind(params.source, params.keibajoCode, nen, tsukihi)
+    .first<CardMaxRaceBangoRow>();
+  return row?.max_race_bango ?? null;
+};
+
+interface ResolveCardMaxRaceBangoForKochiParams {
+  env: Env;
+  keibajoCode: string | undefined;
+  runYmd: string;
+}
+
+// Gated, fail-closed convenience wrapper around fetchCardMaxRaceBango for the
+// only venue any live cell-routing rule references today: every dispatch
+// path (queue-consumer.ts, worker.ts's admin focused-full-race trigger) calls
+// this rather than fetchCardMaxRaceBango directly, so a non-Kochi race (the
+// overwhelming majority of NAR/JRA/Ban-ei dispatch) never pays the extra D1
+// read, and a D1 failure never blocks a genuine prediction dispatch -- it
+// just omits the value, which is indistinguishable downstream from "not
+// computed" (both fail is_final_race closed to the category default).
+export const resolveCardMaxRaceBangoForKochi = async (
+  params: ResolveCardMaxRaceBangoForKochiParams,
+): Promise<number | undefined> => {
+  if (params.keibajoCode !== KOCHI_KEIBAJO_CODE) return undefined;
+  try {
+    const value = await fetchCardMaxRaceBango({
+      env: params.env,
+      keibajoCode: params.keibajoCode,
+      runYmd: params.runYmd,
+      source: KOCHI_SOURCE,
+    });
+    return value ?? undefined;
+  } catch (err) {
+    console.warn(
+      `[race-coordinator] cardMaxRaceBango lookup failed keibajo=${params.keibajoCode} runYmd=${params.runYmd}:`,
+      String(err),
+    );
+    return undefined;
+  }
 };
 
 // A race is within window when its post time is in [now, now + leadMinutes].

@@ -14,6 +14,7 @@ const {
   claimRescoreRaceMock,
   completeFocusedFullRaceMock,
   runDayBasePrewarmMock,
+  resolveCardMaxRaceBangoForKochiMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -24,6 +25,7 @@ const {
   const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => undefined);
+  const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
   return {
     getContainerMock: vi.fn(() => ({ start })),
     startMock: start,
@@ -35,6 +37,7 @@ const {
     claimRescoreRaceMock: claimRescoreRace,
     completeFocusedFullRaceMock: completeFocusedFullRace,
     runDayBasePrewarmMock: runDayBasePrewarm,
+    resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
   };
 });
 
@@ -59,6 +62,7 @@ vi.mock("./dlq-consumer", () => ({
 vi.mock("./race-coordinator", () => ({
   DEFAULT_RESCORE_LEAD_MINUTES: 25,
   runRaceCoordinatorTick: coordinatorTickMock,
+  resolveCardMaxRaceBangoForKochi: resolveCardMaxRaceBangoForKochiMock,
 }));
 
 vi.mock("./do-state", () => ({
@@ -135,9 +139,11 @@ beforeEach(() => {
   realtimeAllMock.mockClear();
   realtimeBindMock.mockClear();
   realtimePrepareMock.mockClear();
+  resolveCardMaxRaceBangoForKochiMock.mockClear();
   enqueueMock.mockResolvedValue(["jra", "nar", "ban-ei"]);
   coordinatorTickMock.mockResolvedValue([]);
   claimRescoreRaceMock.mockResolvedValue({ proceed: true });
+  resolveCardMaxRaceBangoForKochiMock.mockResolvedValue(undefined);
 });
 
 const internalRescoreRaceRequest = (token: string | null, body: string): Request =>
@@ -823,6 +829,38 @@ test("admin run focused full race endpoint proxies a held predict request", asyn
     "http://do/predict?category=jra&daysAhead=0&keibajoCode=10&mode=full&raceBango=07&runDate=20260705",
   );
   expect(await response.text()).toBe('{"type":"result","status":"success","racesPredicted":1}\\n');
+});
+
+test("admin run focused full race endpoint threads cardMaxRaceBango for a Kochi race", async () => {
+  resolveCardMaxRaceBangoForKochiMock.mockResolvedValueOnce(10);
+  containerDoFetchMock.mockResolvedValueOnce(
+    new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {
+      headers: { "Content-Type": "application/x-ndjson" },
+      status: 200,
+    }),
+  );
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "nar",
+        keibajoCode: "54",
+        raceBango: "10",
+        runYmd: "20260712",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  expect(resolveCardMaxRaceBangoForKochiMock).toHaveBeenCalledWith({
+    env: expect.anything(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+  });
+  const request = (containerDoFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.url).toBe(
+    "http://do/predict?category=nar&daysAhead=0&keibajoCode=54&mode=full&raceBango=10&runDate=20260712&cardMaxRaceBango=10",
+  );
 });
 
 test("admin run focused full race endpoint forwards debug to the held predict request", async () => {

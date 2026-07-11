@@ -63,7 +63,12 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
-from predict_lib.cell_router import build_base_model_r2_key, load_cell_router
+from predict_lib.cell_router import (
+    build_base_model_r2_key,
+    card_max_race_bango_for_race_id,
+    derive_card_max_race_bango_by_card,
+    load_cell_router,
+)
 from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
@@ -557,6 +562,7 @@ def score_races(
     category: Category,
     models_dir: Path,
     feature_names: Sequence[str],
+    card_max_race_bango: int | None = None,
 ) -> list[list[list[object]]]:
     """Score every race in ``races`` into per-race prediction rows.
 
@@ -567,6 +573,21 @@ def score_races(
     override path.
     Connection-free and CPU-bound so the caller can defer the Neon connect until
     the first write (avoiding Neon autosuspend during the long score phase).
+
+    ``card_max_race_bango`` feeds the ``is_final_race`` cell-routing dimension
+    (see ``cell_router.resolve_dimension``). Two sourcing modes, chosen per
+    caller shape (see ``tmp/kochi-final/cell_design.md`` section 3.2):
+    - Whole-category requests (``mode=full`` / whole-category ``mode=rescore``,
+      no single-race scope) pass ``None`` here; ``races`` already contains
+      every race on every card it touches, so this function derives each
+      card's registered-max race_bango for free from that same batch
+      (``cell_router.derive_card_max_race_bango_by_card``) -- zero extra I/O,
+      guaranteed consistent with what is actually being scored.
+    - Single-race-scoped requests (per-race rescore, focused-full-race) pass
+      an explicit value sourced by the HTTP caller from discovery, because a
+      lone race in ``races`` cannot self-derive its card's size (it would
+      trivially compute itself as the only, hence "final", race). This
+      explicit value always wins over batch derivation when supplied.
     """
     fallback_booster = _load_booster(models_dir, category)
     cell_router = load_cell_router()
@@ -619,6 +640,15 @@ def score_races(
     nar_transformer: TransformerScorer | None = None
     if NAR_TRANSFORMER_BLEND_ENABLED and category == "nar":
         nar_transformer = _load_nar_transformer(models_dir, feature_names)
+    # See this function's docstring: an explicit caller-supplied value always
+    # wins; batch self-derivation only ever runs (and is only ever correct)
+    # when none was supplied, i.e. this is a whole-category request whose
+    # ``races`` already spans every card it touches.
+    card_max_race_bango_by_card = (
+        derive_card_max_race_bango_by_card(races.keys())
+        if variant_pool and card_max_race_bango is None
+        else {}
+    )
     scored: list[list[list[object]]] = []
     for race_id, entries in races.items():
         effective_booster = fallback_booster
@@ -626,7 +656,14 @@ def score_races(
         effective_architecture = architecture_for(category)
         cell_variant_model: VariantModel | None = None
         if variant_pool:
-            variant = cell_router.resolve_variant(category, entries)
+            effective_card_max_race_bango = (
+                card_max_race_bango
+                if card_max_race_bango is not None
+                else card_max_race_bango_for_race_id(race_id, card_max_race_bango_by_card)
+            )
+            variant = cell_router.resolve_variant(
+                category, entries, card_max_race_bango=effective_card_max_race_bango
+            )
             if variant in variant_pool:
                 vm = variant_pool[variant]
                 effective_booster = vm.booster
@@ -825,15 +862,20 @@ def _score_and_flush_races(
     category: Category,
     models_dir: Path,
     races: Mapping[str, Sequence[Mapping[str, object]]],
+    card_max_race_bango: int | None = None,
 ) -> int:
     """Score ``races`` then UPSERT to Neon; the shared core of full + rescore.
 
     The races map is supplied by the caller — built from the 21y Neon scan on
     the full path, or read from the R2 / local feature cache (with the 5
-    late-binding columns refreshed) on the rescore path.
+    late-binding columns refreshed) on the rescore path. ``card_max_race_bango``
+    is forwarded to :func:`score_races` untouched -- see that function's
+    docstring for the whole-category-vs-single-race sourcing split.
     """
     feature_names = _load_model_metadata(models_dir, category)
-    scored = score_races(races, category, models_dir, feature_names)
+    scored = score_races(
+        races, category, models_dir, feature_names, card_max_race_bango=card_max_race_bango
+    )
     return _flush_scored(database_url, category, scored)
 
 
@@ -844,6 +886,7 @@ def predict_category(
     window: PredictWindow,
     target_race: str | None = None,
     r2_config: R2Config | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     # Score all races before opening the Neon write connection. The feature
     # build is the longest step (DuckDB base build + 14 layer scripts, typically
@@ -854,9 +897,12 @@ def predict_category(
     # the Container can generate features per race instead of scanning the day.
     # ``r2_config`` is forwarded so the day-base/RACE_CHAIN split path (when
     # enabled for this category) can fetch a prewarmed day-base from R2 --
-    # unused by the unmodified full-pipeline fallback.
+    # unused by the unmodified full-pipeline fallback. ``card_max_race_bango``
+    # is forwarded to :func:`_score_and_flush_races` untouched.
     races = _build_feature_rows(category, window, target_race=target_race, r2_config=r2_config)
-    return _score_and_flush_races(database_url, category, models_dir, races)
+    return _score_and_flush_races(
+        database_url, category, models_dir, races, card_max_race_bango=card_max_race_bango
+    )
 
 
 def _load_booster_by_arch(model_path: Path, architecture: Architecture) -> BoosterLike:
@@ -1157,6 +1203,7 @@ def _make_predict_fn(
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         from predict_lib.model_meta import resolve_category
 
@@ -1164,7 +1211,13 @@ def _make_predict_fn(
         target_race = f"{keibajo_code}:{race_bango}" if keibajo_code and race_bango else None
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
         written = predict_category(
-            database_url, category, models_dir, window, target_race=target_race, r2_config=r2
+            database_url,
+            category,
+            models_dir,
+            window,
+            target_race=target_race,
+            r2_config=r2,
+            card_max_race_bango=card_max_race_bango,
         )
         # Record the last successful run so parquet_payload_fn can retrieve it.
         with _last_run_lock:
@@ -1442,11 +1495,19 @@ def _make_rescore_fn(
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         # ``days_ahead`` is unused (the cache already spans the morning build
         # window); the per-race scope is bound by the rescore factory, so the
         # ``keibajo_code`` / ``race_bango`` args carried by the shared
-        # PredictCategoryFn contract are ignored here.
+        # PredictCategoryFn contract are ignored here. ``card_max_race_bango``
+        # is NOT scope-bound (unlike keibajo_code/race_bango) -- it is forwarded
+        # untouched to ``_score_and_flush_races``, whose ``score_races`` call
+        # self-derives it from ``scoped`` when this stays None (the
+        # whole-category rescore shape, i.e. ``scope`` has no keibajo_code /
+        # race_bango) and trusts this explicit value otherwise (the per-race
+        # rescore shape, where self-derivation from a single-race ``scoped`` map
+        # would be wrong -- see score_races' docstring).
         del days_ahead, keibajo_code, race_bango
         from pipeline_runner import WORK_DIR  # bundled in image
         from predict_lib.model_meta import resolve_category
@@ -1465,7 +1526,9 @@ def _make_rescore_fn(
         _last.append((category_str, run_date))
 
         scoped = filter_races_by_scope(refreshed, scope)
-        return _score_and_flush_races(database_url, category, models_dir, scoped)
+        return _score_and_flush_races(
+            database_url, category, models_dir, scoped, card_max_race_bango=card_max_race_bango
+        )
 
     def _per_race_payloads() -> list[dict[str, str]] | None:
         if not _last:
@@ -1513,17 +1576,24 @@ def _scope_from_params(params: PredictParams) -> RaceScope:
 def _expected_model_version_for_entries(
     category: Category,
     entries: Sequence[Mapping[str, object]],
+    card_max_race_bango: int | None = None,
 ) -> str:
     """Return the model_version current production routing should write.
 
     A focused full run must not be skipped just because an older per-class/base
     model already scored the same race. Completion is tied to the same
-    per-cell-first routing contract used by ``score_races``.
+    per-cell-first routing contract used by ``score_races``. ``card_max_race_bango``
+    mirrors ``score_races``' single-race-scoped caller shape: this function is
+    always called for exactly one race (see ``_focused_full_prediction_complete``,
+    the only caller), so an explicit value -- never self-derivation, which
+    would be wrong for a lone race -- is the only correct source here.
     """
     cell_router = load_cell_router()
     if cell_router.has_routing(category):
         routing = cell_router.routing_for(category)
-        variant = cell_router.resolve_variant(category, entries)
+        variant = cell_router.resolve_variant(
+            category, entries, card_max_race_bango=card_max_race_bango
+        )
         spec = routing.variants.get(variant)
         if spec is not None:
             return spec.model_version
@@ -1576,7 +1646,9 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
             expected_horses = {str(row[0]).strip() for row in expected_rows if row[0] is not None}
             category = cast(Category, params.category)
             if not expected_horses:
-                expected_model_version = _expected_model_version_for_entries(category, [])
+                expected_model_version = _expected_model_version_for_entries(
+                    category, [], card_max_race_bango=params.card_max_race_bango
+                )
                 cursor.execute(
                     """
                     select count(distinct ketto_toroku_bango)::int as actual_rows,
@@ -1603,6 +1675,11 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
                 min_rank = int(existing_row[1]) if existing_row[1] is not None else 0
                 max_rank = int(existing_row[2]) if existing_row[2] is not None else 0
                 return actual_rows > 0 and min_rank == 1 and max_rank == actual_rows
+            # race_id is synthesized (this table carries no such column) so the
+            # is_final_race cell-routing dimension can resolve here exactly as
+            # it would in score_races -- see resolve_dimension's race_id-based
+            # race_bango decode.
+            race_id = f"{source}:{kaisai_nen}:{kaisai_tsukihi}:{keibajo_code}:{race_bango}"
             entries = [
                 {
                     "ketto_toroku_bango": row[0],
@@ -1613,10 +1690,13 @@ def _focused_full_prediction_complete(database_url: str, params: PredictParams) 
                     "kaisai_tsukihi": row[5],
                     "keibajo_code": row[6],
                     "shusso_tosu": row[7],
+                    "race_id": race_id,
                 }
                 for row in expected_rows
             ]
-            expected_model_version = _expected_model_version_for_entries(category, entries)
+            expected_model_version = _expected_model_version_for_entries(
+                category, entries, card_max_race_bango=params.card_max_race_bango
+            )
             cursor.execute(
                 """
                 with expected as (

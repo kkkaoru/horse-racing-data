@@ -14,6 +14,8 @@ from predict_lib.cell_router import (
     all_conditions_match,
     build_base_metadata_r2_key,
     build_base_model_r2_key,
+    card_max_race_bango_for_race_id,
+    derive_card_max_race_bango_by_card,
     derive_class,
     derive_distance_band,
     derive_field_band,
@@ -972,6 +974,57 @@ def testall_conditions_match_true() -> None:
 def testall_conditions_match_false_on_missing_dimension() -> None:
     conditions = (CellCondition(dimension="venue", values=frozenset({"03"})),)
     assert all_conditions_match({}, conditions, "jra") is False
+
+
+def test_derive_card_max_race_bango_by_card_single_card() -> None:
+    race_ids = [
+        "nar:2026:0712:54:01",
+        "nar:2026:0712:54:10",
+        "nar:2026:0712:54:05",
+    ]
+    assert derive_card_max_race_bango_by_card(race_ids) == {("2026", "0712", "54"): 10}
+
+
+def test_derive_card_max_race_bango_by_card_groups_by_card() -> None:
+    race_ids = [
+        "nar:2026:0712:54:10",
+        "nar:2026:0712:30:12",
+        "nar:2026:0711:54:08",
+    ]
+    assert derive_card_max_race_bango_by_card(race_ids) == {
+        ("2026", "0712", "54"): 10,
+        ("2026", "0712", "30"): 12,
+        ("2026", "0711", "54"): 8,
+    }
+
+
+def test_derive_card_max_race_bango_by_card_skips_malformed_race_id() -> None:
+    race_ids = ["nar:2026:0712", "nar:2026:0712:54:10"]
+    assert derive_card_max_race_bango_by_card(race_ids) == {("2026", "0712", "54"): 10}
+
+
+def test_derive_card_max_race_bango_by_card_skips_non_digit_race_bango() -> None:
+    race_ids = ["nar:2026:0712:54:xx", "nar:2026:0712:54:07"]
+    assert derive_card_max_race_bango_by_card(race_ids) == {("2026", "0712", "54"): 7}
+
+
+def test_derive_card_max_race_bango_by_card_empty_input() -> None:
+    assert derive_card_max_race_bango_by_card([]) == {}
+
+
+def test_card_max_race_bango_for_race_id_hit() -> None:
+    by_card = {("2026", "0712", "54"): 10}
+    assert card_max_race_bango_for_race_id("nar:2026:0712:54:05", by_card) == 10
+
+
+def test_card_max_race_bango_for_race_id_miss_returns_none() -> None:
+    by_card = {("2026", "0712", "54"): 10}
+    assert card_max_race_bango_for_race_id("nar:2026:0711:54:05", by_card) is None
+
+
+def test_card_max_race_bango_for_race_id_malformed_returns_none() -> None:
+    by_card = {("2026", "0712", "54"): 10}
+    assert card_max_race_bango_for_race_id("not-a-race-id", by_card) is None
 
 
 def _kochi_final_shaped_router() -> CellRouter:

@@ -19,6 +19,7 @@ import {
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
+import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
 import type { Env, PredictQueueMessage } from "./types";
 
 const RUN_YMD_YEAR_START = 0;
@@ -122,6 +123,10 @@ interface PredictUrlParams {
   raceBango?: string;
   // runYmd is the YYYYMMDD date string required by the container /predict endpoint.
   runYmd: string;
+  // Registered-card-max race_bango for the is_final_race cell-routing
+  // dimension (predict_lib.cell_router.py). Only ever set for a single-race
+  // scoped request (keibajoCode present) -- see resolveCardMaxRaceBangoForKochi.
+  cardMaxRaceBango?: number;
 }
 
 // PredictQueueMessage with the per-race target fields proven present. isPerRaceRescore
@@ -147,6 +152,7 @@ interface PerRaceRescoreUrlParams {
   raceBango: string;
   // runYmd is the YYYYMMDD date string required by the container /predict endpoint.
   runYmd: string;
+  cardMaxRaceBango?: number;
 }
 
 interface PredictDoNameParams {
@@ -173,6 +179,9 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
   if (params.keibajoCode) searchParams.set("keibajoCode", params.keibajoCode);
   if (params.raceBango) searchParams.set("raceBango", params.raceBango);
   if (params.debug === true) searchParams.set("debug", "1");
+  if (params.cardMaxRaceBango !== undefined) {
+    searchParams.set("cardMaxRaceBango", String(params.cardMaxRaceBango));
+  }
   return `${PREDICT_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
@@ -186,6 +195,9 @@ const buildPerRaceRescoreUrl = (params: PerRaceRescoreUrlParams): string => {
     runDate: params.runYmd,
   });
   if (params.debug === true) searchParams.set("debug", "1");
+  if (params.cardMaxRaceBango !== undefined) {
+    searchParams.set("cardMaxRaceBango", String(params.cardMaxRaceBango));
+  }
   return `${PREDICT_HOST}${PREDICT_PATH}?${searchParams.toString()}`;
 };
 
@@ -454,7 +466,9 @@ const processContainerPerRaceRescore = async (
   const { category, daysAhead, debug, keibajoCode, raceBango, runYmd } = message.body;
   const startedAt = Date.now();
   const predictDoName = buildPredictDoName({ category, keibajoCode, raceBango, runYmd });
+  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPerRaceRescoreUrl({
+    cardMaxRaceBango,
     category,
     daysAhead,
     debug,
@@ -621,7 +635,9 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     raceBango,
     runYmd,
   });
+  const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPredictUrl({
+    cardMaxRaceBango,
     category,
     daysAhead,
     debug: message.body.debug,

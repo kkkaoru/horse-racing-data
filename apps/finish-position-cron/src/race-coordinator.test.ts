@@ -8,11 +8,14 @@ vi.mock("./do-state", () => ({ claimRescoreRace: claimRescoreRaceMock }));
 
 import {
   DEFAULT_RESCORE_LEAD_MINUTES,
+  KOCHI_KEIBAJO_CODE,
+  fetchCardMaxRaceBango,
   formatRunDateJst,
   formatRunYmdJst,
   isCoordinatorEnabled,
   isWithinRescoreWindow,
   planRescoreForCategory,
+  resolveCardMaxRaceBangoForKochi,
   resolveRescoreCategories,
   runRaceCoordinatorTick,
   selectRacesWithinWindow,
@@ -46,6 +49,10 @@ const makeEnv = (overrides: Partial<Env> = {}): Env => ({
 
 const stubD1Rows = (rows: RaceSourceRow[]): void => {
   bindMock.mockReturnValue({ all: vi.fn(async () => ({ results: rows })) });
+};
+
+const stubD1FirstRow = (maxRaceBango: number | null): void => {
+  bindMock.mockReturnValue({ first: vi.fn(async () => ({ max_race_bango: maxRaceBango })) });
 };
 
 beforeEach(() => {
@@ -603,4 +610,96 @@ test("runRaceCoordinatorTick does not trigger weight rebuild when the coordinato
   });
   expect(claimRescoreRaceMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalled();
+});
+
+test("KOCHI_KEIBAJO_CODE is 54", () => {
+  expect(KOCHI_KEIBAJO_CODE).toBe("54");
+});
+
+test("fetchCardMaxRaceBango queries realtime_race_sources with source/keibajo/date binds", async () => {
+  stubD1FirstRow(10);
+  const result = await fetchCardMaxRaceBango({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+    source: "nar",
+  });
+  expect(result).toBe(10);
+  expect(bindMock).toHaveBeenCalledWith("nar", "54", "2026", "0712");
+});
+
+test("fetchCardMaxRaceBango returns null when discovery has no rows for the card", async () => {
+  stubD1FirstRow(null);
+  const result = await fetchCardMaxRaceBango({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+    source: "nar",
+  });
+  expect(result).toBe(null);
+});
+
+test("fetchCardMaxRaceBango returns null when the D1 row itself is undefined", async () => {
+  bindMock.mockReturnValue({ first: vi.fn(async () => undefined) });
+  const result = await fetchCardMaxRaceBango({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+    source: "nar",
+  });
+  expect(result).toBe(null);
+});
+
+test("resolveCardMaxRaceBangoForKochi returns undefined without querying D1 for a non-Kochi venue", async () => {
+  const result = await resolveCardMaxRaceBangoForKochi({
+    env: makeEnv(),
+    keibajoCode: "10",
+    runYmd: "20260712",
+  });
+  expect(result).toBe(undefined);
+  expect(prepareMock).not.toHaveBeenCalled();
+});
+
+test("resolveCardMaxRaceBangoForKochi returns undefined when keibajoCode is absent", async () => {
+  const result = await resolveCardMaxRaceBangoForKochi({
+    env: makeEnv(),
+    keibajoCode: undefined,
+    runYmd: "20260712",
+  });
+  expect(result).toBe(undefined);
+  expect(prepareMock).not.toHaveBeenCalled();
+});
+
+test("resolveCardMaxRaceBangoForKochi returns the fetched value for keibajoCode 54", async () => {
+  stubD1FirstRow(10);
+  const result = await resolveCardMaxRaceBangoForKochi({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+  });
+  expect(result).toBe(10);
+});
+
+test("resolveCardMaxRaceBangoForKochi returns undefined when discovery has no rows yet", async () => {
+  stubD1FirstRow(null);
+  const result = await resolveCardMaxRaceBangoForKochi({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+  });
+  expect(result).toBe(undefined);
+});
+
+test("resolveCardMaxRaceBangoForKochi fails closed to undefined when the D1 query throws", async () => {
+  bindMock.mockReturnValue({
+    first: vi.fn(async () => {
+      throw new Error("D1 unavailable");
+    }),
+  });
+  const result = await resolveCardMaxRaceBangoForKochi({
+    env: makeEnv(),
+    keibajoCode: "54",
+    runYmd: "20260712",
+  });
+  expect(result).toBe(undefined);
 });

@@ -258,6 +258,34 @@ test("uses a stable category-scoped DO name for focused per-race full skipDedup 
   }
 });
 
+test("threads cardMaxRaceBango into a Kochi focused-full skipDedup query URL", async () => {
+  const realtimeBindMock = vi.fn(() => ({
+    first: vi.fn(async () => ({ max_race_bango: 10 })),
+  }));
+  const env: Env = {
+    ...makeEnv(),
+    REALTIME_DB: { prepare: vi.fn(() => ({ bind: realtimeBindMock })) } as unknown as D1Database,
+  };
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "54",
+        mode: "full",
+        raceBango: "10",
+        runYmd: "20260712",
+        skipDedup: true,
+      }),
+    ]),
+    env,
+  );
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=nar&daysAhead=0&mode=full&runDate=20260712&keibajoCode=54&raceBango=10&cardMaxRaceBango=10",
+  );
+});
+
 test("acks focused full skipDedup messages without container when Neon already has all rows", async () => {
   isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
   await handleQueue(
@@ -712,6 +740,57 @@ test("targets the per-race rescore at a category-scoped predict-nar DO with the 
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
+  );
+  consoleSpy.mockRestore();
+});
+
+test("threads cardMaxRaceBango into a Kochi per-race rescore query URL", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const realtimeBindMock = vi.fn(() => ({
+    first: vi.fn(async () => ({ max_race_bango: 10 })),
+  }));
+  const env: Env = {
+    ...makeEnv(),
+    REALTIME_DB: { prepare: vi.fn(() => ({ bind: realtimeBindMock })) } as unknown as D1Database,
+  };
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "54",
+        mode: "rescore",
+        raceBango: "10",
+        runYmd: "20260712",
+      }),
+    ]),
+    env,
+  );
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=54&raceBango=10&runDate=20260712&cardMaxRaceBango=10",
+  );
+  consoleSpy.mockRestore();
+});
+
+test("omits cardMaxRaceBango from a non-Kochi per-race rescore query URL", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "30",
+        mode: "rescore",
+        raceBango: "10",
+        runYmd: "20260712",
+      }),
+    ]),
+    makeEnv(),
+  );
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=30&raceBango=10&runDate=20260712",
   );
   consoleSpy.mockRestore();
 });

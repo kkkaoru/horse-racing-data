@@ -21,7 +21,7 @@ does not require touching the serve loop.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -292,6 +292,60 @@ class CellRouter:
             ):
                 return rule.variant
         return routing.default_variant
+
+
+def derive_card_max_race_bango_by_card(
+    race_ids: Iterable[str],
+) -> dict[tuple[str, str, str], int]:
+    """Derive each card's registered-max race_bango from a batch already being
+    scored together -- the batch-wide analog of ``resolve_variant``'s
+    ``field_size = len(entries)`` (zero external dependency, trust only what
+    this request is already processing). Correct ONLY when the batch
+    genuinely contains every race registered for each card it touches (the
+    whole-category ``mode=full`` / whole-category ``mode=rescore`` request
+    shapes): a request scoped to a single race must NOT call this, since a
+    lone race would trivially compute itself as its own card's only (hence
+    "final") race. Such callers -- the per-race rescore and focused-full-race
+    request shapes -- receive an explicit ``card_max_race_bango`` from the
+    caller instead (sourced from discovery; see
+    tmp/kochi-final/cell_design.md), which ``score_races`` prefers over this
+    derivation whenever supplied.
+
+    Keyed by ``(kaisai_nen, kaisai_tsukihi, keibajo_code)`` decoded from each
+    ``race_id`` (``predict_lib.race_id.parse_race_id``). A malformed or
+    non-numeric ``race_bango`` is skipped rather than raising, matching every
+    other fail-closed dimension resolver in this module -- a batch containing
+    one bad id still yields a usable map for every well-formed one.
+    """
+    result: dict[tuple[str, str, str], int] = {}
+    for race_id in race_ids:
+        try:
+            parts = parse_race_id(race_id)
+        except ValueError:
+            continue
+        race_bango = parts.race_bango.strip()
+        if not race_bango.isdigit():
+            continue
+        key = (parts.kaisai_nen, parts.kaisai_tsukihi, parts.keibajo_code)
+        result[key] = max(result.get(key, 0), int(race_bango))
+    return result
+
+
+def card_max_race_bango_for_race_id(
+    race_id: str,
+    card_max_race_bango_by_card: Mapping[tuple[str, str, str], int],
+) -> int | None:
+    """Look up one race's own card's max race_bango from a pre-derived batch map.
+
+    Returns ``None`` (fail-closed) when ``race_id`` is malformed or this
+    race's card is absent from the map -- never raises.
+    """
+    try:
+        parts = parse_race_id(race_id)
+    except ValueError:
+        return None
+    key = (parts.kaisai_nen, parts.kaisai_tsukihi, parts.keibajo_code)
+    return card_max_race_bango_by_card.get(key)
 
 
 def _as_mapping(value: object, field: str) -> Mapping[str, object]:

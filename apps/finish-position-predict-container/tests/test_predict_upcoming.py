@@ -388,6 +388,7 @@ def _fake_predict(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     """Dummy predict_fn that returns the length of category as a sentinel."""
     return len(category)
@@ -409,6 +410,7 @@ def _fake_rescore(
     days_ahead: int,
     keibajo_code: str | None = None,
     race_bango: str | None = None,
+    card_max_race_bango: int | None = None,
 ) -> int:
     """Dummy rescore_fn that returns a fixed sentinel value."""
     return 99
@@ -436,7 +438,7 @@ def test_make_handler_class_predict_fn_callable_without_instance() -> None:
         None,
     )
     # Call directly on the class (no instance) — must NOT inject self.
-    result = handler_cls.predict_fn("nar", "20260618", 0, None, None)
+    result = handler_cls.predict_fn("nar", "20260618", 0, None, None, None)
     assert result == len("nar")
 
 
@@ -480,7 +482,7 @@ def test_make_handler_class_rescore_factory_callable_without_instance() -> None:
     factory = handler_cls.rescore_factory
     assert factory is not None
     rescore, per_race = factory(RaceScope())
-    result = rescore("jra", "20260618", 1, None, None)
+    result = rescore("jra", "20260618", 1, None, None, None)
     assert result == 99
     assert per_race() is None
 
@@ -510,12 +512,13 @@ def test_make_handler_class_predict_fn_not_bound_method() -> None:
     )
 
 
-def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
-    """Verify predict_fn exposes the 5-arg contract and no injected ``self``.
+def test_make_handler_class_predict_fn_accepts_exactly_6_args() -> None:
+    """Verify predict_fn exposes the 6-arg contract and no injected ``self``.
 
-    The staticmethod wrapping must keep the signature at exactly five parameters
-    (category, run_date, days_ahead, keibajo_code, race_bango) — if ``self`` were
-    injected by the descriptor protocol the count would be six.
+    The staticmethod wrapping must keep the signature at exactly six parameters
+    (category, run_date, days_ahead, keibajo_code, race_bango,
+    card_max_race_bango) — if ``self`` were injected by the descriptor protocol
+    the count would be seven.
     """
     import inspect
 
@@ -528,10 +531,10 @@ def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
     )
     sig = inspect.signature(handler_cls.predict_fn)
     params = list(sig.parameters.values())
-    assert len(params) == 5, (
-        f"predict_fn must have exactly 5 parameters "
-        f"(category, run_date, days_ahead, keibajo_code, race_bango), "
-        f"got {len(params)}: {[p.name for p in params]}"
+    assert len(params) == 6, (
+        f"predict_fn must have exactly 6 parameters "
+        f"(category, run_date, days_ahead, keibajo_code, race_bango, "
+        f"card_max_race_bango), got {len(params)}: {[p.name for p in params]}"
     )
 
 
@@ -606,6 +609,7 @@ def test_threading_server_ping_stays_responsive_during_slow_batch_predict() -> N
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         started.set()
         release.wait(timeout=5.0)
@@ -668,6 +672,7 @@ def test_threading_server_focused_full_accept_stays_fast_while_unrelated_predict
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         batch_started.set()
         batch_release.wait(timeout=5.0)
@@ -732,6 +737,7 @@ def test_threading_server_focused_full_busy_check_stays_fast_during_slow_pipelin
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         a_started.set()
         a_release.wait(timeout=5.0)
@@ -1088,8 +1094,13 @@ class _FakeRouter:
         del category
         return self._routing
 
-    def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
-        del category, entries
+    def resolve_variant(
+        self,
+        category: str,
+        entries: Sequence[Mapping[str, object]],
+        card_max_race_bango: int | None = None,
+    ) -> str:
+        del category, entries, card_max_race_bango
         return self._resolved
 
 
@@ -1571,7 +1582,13 @@ def test_focused_full_prediction_complete_uses_jra_kyoso_joken_code_for_model_ve
                 default_variant="default",
             )
 
-        def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
+        def resolve_variant(
+            self,
+            category: str,
+            entries: Sequence[Mapping[str, object]],
+            card_max_race_bango: int | None = None,
+        ) -> str:
+            del card_max_race_bango
             assert category == "jra"
             class_codes = {str(entry.get("kyoso_joken_code", "")).strip() for entry in entries}
             if "703" in class_codes:
@@ -1663,7 +1680,13 @@ def test_focused_full_prediction_complete_uses_jra_prior_corner_cell_model_versi
                 default_variant="default",
             )
 
-        def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
+        def resolve_variant(
+            self,
+            category: str,
+            entries: Sequence[Mapping[str, object]],
+            card_max_race_bango: int | None = None,
+        ) -> str:
+            del card_max_race_bango
             assert category == "jra"
             for entry in entries:
                 track_code = str(entry.get("track_code", "")).strip()
@@ -1855,6 +1878,7 @@ def test_full_mode_handler_flow_passes_race_scope_to_predict_fn() -> None:
         days_ahead: int,
         keibajo_code: str | None = None,
         race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
     ) -> int:
         recorded.append((category, run_date, days_ahead, keibajo_code, race_bango))
         return 1
