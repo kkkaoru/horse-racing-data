@@ -35,7 +35,6 @@
       "0 5 * * 6",
       "0 12 * * *",
       "30 12 * * *",
-      "30 18 * * *",
       // 2026-06-06: 0 0-13 (hourly, JST 09-22) -> */15 0-14 (every 15 min,
       // JST 09:00-23:45). Paired with WEIGHT_FETCH_LEAD_MINUTES = 180 so
       // each race has ~12 attempts to capture bataiju before post time.

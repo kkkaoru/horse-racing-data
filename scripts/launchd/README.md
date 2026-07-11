@@ -7,15 +7,66 @@
 
 Two deprecated LaunchAgents live here:
 
-1. `com.kkk4oru.finish-position-predict` — single daily JST 03:00 fire that
-   can run the legacy local Docker pipeline for finish-position predictions.
-   This is not the production path.
+1. `com.kkk4oru.finish-position-predict` — **two** daily JST fires (not a
+   single fire, despite older wording here): 03:00 (NAR + Ban-ei only, JRA
+   mirror not yet available) and 09:30 (all categories, once JRA mirror +
+   real advance odds are available). Both can run the legacy local Docker
+   pipeline for finish-position predictions. This is not the production
+   path. **DISABLED as of 2026-07-11 — see "Status" below.**
 2. `com.kkk4oru.race-prediction-guard` — hourly completeness guard that
    compares D1 `realtime_race_sources` against Neon prediction tables and
-   can exercise legacy local/manual recovery checks.
+   can exercise legacy local/manual recovery checks. **Still loaded**, but
+   its local-Docker last-resort escalation is now off by default — see
+   "Status" below.
 
 See `apps/finish-position-predict-container/DEPLOY.md` for the architecture
 backstory and the Cloudflare-Container cron-disable rationale.
+
+## Status (2026-07-11) — Mac batch disabled, guard reduced to monitor + CF-retrigger
+
+Production prediction generation must not run on this Mac (user directive,
+2026-07-11 night, so that 2026-07-12's races are served by Cloudflare only).
+This converges the actual runtime state to the CF-only policy documented in
+`docs/finish-position-prediction-system.md` §1.1/§1.2 and §9 — a real local
+Docker fallback had been running via both the direct launchd fires and
+`race-prediction-guard.sh`'s escalation, and per the 2026-07-11
+serving-latency-audit it had been load-bearing (a same-day 10:47 JST batch
+run rescued 28/36 races that Cloudflare had not yet served).
+
+- **`com.kkk4oru.finish-position-predict` — disabled.**
+  `launchctl bootout gui/501/com.kkk4oru.finish-position-predict` was run
+  (job was `state = not running` at the time — no in-flight run was killed),
+  then the plist was moved (not deleted) from `~/Library/LaunchAgents/` to
+  `~/Library/LaunchAgents.disabled-20260711/` so it cannot reload on next
+  login/reboot. Neither the 03:00 nor the 09:30 fire will occur while
+  disabled. **Re-enable (emergency rollback), one command:**
+  ```sh
+  cp ~/Library/LaunchAgents.disabled-20260711/com.kkk4oru.finish-position-predict.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.finish-position-predict.plist
+  ```
+- **`com.kkk4oru.race-prediction-guard` — still loaded, scope reduced.**
+  The plist was left in place and loaded; the guard keeps doing its
+  monitor duties (RS completeness checks, discover-urls re-kicks,
+  corner-features prerequisite build, prewarm ticks) and keeps the
+  Cloudflare-trigger escalation (`POST finish-position-cron.../run`, the
+  same production trigger surface `sync-realtime-data` uses) as the sole
+  fallback tier. Only the local-Docker "last resort" branch
+  (`cf-trigger-failed->local` / `cf-already-tried->local`) is now gated by
+  `GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"`
+  (default off, logs `local fallback disabled by design 2026-07-11 — CF-only
+architecture` and skips the exec instead of running
+  `finish-position-predict-daily.sh`). Set `GUARD_LOCAL_FALLBACK_ENABLED=1`
+  to restore the old behavior for an explicit emergency/manual run only —
+  never as a standing default.
+- **`com.kkkaoru.win5-overlay` (Sat/Sun 09:00 JST, lives in
+  `apps/pc-keiba-viewer/scripts/`) — NOT disabled tonight.** It generates
+  WIN5 overlay predictions and is currently the only refresher for
+  `race_entry_corner_features`; disabling it would break that dependency,
+  and 2026-07-12's corner-feature rows are already built. As of 2026-07-11
+  it is confirmed **not installed** under `~/Library/LaunchAgents/` on this
+  Mac (only the reference plist in the repo exists), so it poses no live
+  risk tonight — but it remains the one documented Mac-resident
+  production-adjacent job. Migrate it once the corner-features refresh is
+  decoupled from it (reliability-wave item 21); until then, do not disable.
 
 ## Historical launchd rationale
 

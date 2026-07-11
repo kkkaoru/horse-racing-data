@@ -79,6 +79,17 @@ flowchart TB
 
 `sync-realtime-data` は feature generation と running-style generation の完了を race scope で確認してから、`FINISH_POSITION_PREDICT_QUEUE` に focused per-race full message を enqueue する。`FINISH_POSITION_CRON` service binding への `POST /run` は queue binding が無い環境の fallback であり、同じ message を `finish-position-cron` 経由で enqueue する。Container が着順 feature build と scoring を完了させる。
 
+### 1.2 Mac batch 無効化ステータス（2026-07-11、実体を方針に一致させた変更）
+
+上記の「Mac は学習専用・production は Cloudflare-only」は方針として前から明記していたが、実際には `com.kkk4oru.finish-position-predict` launchd job（JST 03:00 NAR/Ban-ei、09:30 全カテゴリ）と `race-prediction-guard.sh` の local Docker "last resort" escalation が稼働しており、07-11 の serving-latency-audit ではこの Mac fallback が実測で load-bearing（当日 10:47 の一括書込が 28/36 races を救済）だったことが判明していた。ユーザー指示（2026-07-11 夜、07-12 のカードは Cloudflare のみで serve する）を受け、方針と実体を一致させた:
+
+- **`com.kkk4oru.finish-position-predict` を無効化**（2026-07-11 22:16 JST）: `launchctl bootout gui/501/com.kkk4oru.finish-position-predict` 実行後、plist を `~/Library/LaunchAgents/` から `~/Library/LaunchAgents.disabled-20260711/` へ退避（削除ではない）。JST 03:00 / 09:30 のいずれの fire も発生しない。緊急ロールバック（emergency rollback）は 1 コマンド:
+  ```sh
+  cp ~/Library/LaunchAgents.disabled-20260711/com.kkk4oru.finish-position-predict.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.finish-position-predict.plist
+  ```
+- **`race-prediction-guard.sh` は稼働を継続**するが、純粋な monitor + CF-retrigger loop に縮小した。RS completeness check / discover-urls 再kick / corner-features prerequisite / prewarm tick、および CF trigger escalation（`POST finish-position-cron.../run`、per-category、marker で二重発火防止）はすべてそのまま。local Docker "last resort" 分岐（`cf-trigger-failed->local` / `cf-already-tried->local`）のみ `GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"` で既定 OFF 化し、CF trigger を唯一の escalation tier にした。`GUARD_LOCAL_FALLBACK_ENABLED=1` で明示的にオーバーライド可能（緊急時のみ、常用しない）。
+- **win5-overlay（`apps/pc-keiba-viewer/scripts/com.kkkaoru.win5-overlay.plist`、Sat/Sun 09:00 JST）は今回は無効化していない** — WIN5 オーバーレイ行の生成に加え、事実上 `race_entry_corner_features` の唯一の refresher であり、07-12 分の corner feature は既にビルド済みのため依存関係を壊さないための判断。2026-07-11 時点の調査では `~/Library/LaunchAgents/` に本 plist は **install されていない**（repo 内の reference plist のみ存在）ため今夜の実害はないが、将来 install した場合に備え、Mac 上に残る唯一の production-adjacent job として明記する。corner-features refresh が decouple されるまでは無効化しない方針（reliability-wave item 21 で移行予定）。
+
 ---
 
 ## 2. 本番モデル（2026-07-08 時点）
@@ -1159,7 +1170,7 @@ flowchart TB
 6. **Mac での本番予測禁止** — Mac は学習・artifact 生成専用。本番の特徴量生成・脚質予測・着順予測は Cloudflare Worker / Queue / Container。
 7. **blind holdout なしの HPO 禁止** — 選択バイアスを避けるため、deploy 前に独立 holdout で confirm する。
 8. **日付単位・カテゴリ一括の本番予測生成禁止** — 本番の特徴量生成・脚質予測・着順予測は常にレース単位（per-race）で実行する。日付単位やカテゴリ一括のバッチ処理を新規に構築してはならない。日次 cron であっても内部はレース単位の collect の集約として構成すること（§5.4 参照）。
-9. **ローカル scheduler 依存の本番運用禁止** — ローカル scheduler、手元 shell script を本番 trigger / ordering / retry / fallback に使わない。本番順序は Cloudflare Cron / Queue / Worker / Container で担保し、service binding / API は queue primary path が使えない環境の fallback に限る。
+9. **ローカル scheduler 依存の本番運用禁止** — ローカル scheduler、手元 shell script を本番 trigger / ordering / retry / fallback に使わない。本番順序は Cloudflare Cron / Queue / Worker / Container で担保し、service binding / API は queue primary path が使えない環境の fallback に限る。2026-07-11 に `com.kkk4oru.finish-position-predict` launchd job（この禁止事項に反していた実際の local Docker fallback）を無効化し、`race-prediction-guard.sh` の local Docker escalation も既定 OFF 化して方針と実体を一致させた（§1.2）。
 10. **within-race leak 候補特徴の見分け方（2026-07-04 追加、2026-07-08 更新）** — 列名やロジックが `target_*` / `rec.*` である、または「予測対象レース当日・当該レースの現在行から直接計算される」特徴量は within-race leak 候補として扱い、genuine な pre-race serve で NULL になるかを必ず確認してから feature に加える。`past_*` / prior-N（当該レースより前の履歴）集計は合法。実際に `target_corner_1/3/4_norm` / `target_running_style_class` の 4 列がこのパターンで JRA / NAR モデルに混入していた（§2.6）。`target_corner_2_norm` も新しい current-race label として同じ denylist に含めるが、`past_corner_2_norm_avg_5` や `last_race_corner_2_norm` のような前走までの履歴特徴は利用してよい。
 11. **sort 前 group_by mask での cell 単位 claim 禁止（2026-07-04 追加）** — cell / subgroup 単位の精度 claim を出す harness は、per-race 予測 frame と mask 元 frame の両方を `race_id` で sort してから boolean mask を適用すること。sort せずに `group_by()` の出力順のまま mask すると行順が食い違い、偽の LB95>0 cell を生成する（§7.3 に詳細、`retest_wf.py` の実バグ事例）。
 

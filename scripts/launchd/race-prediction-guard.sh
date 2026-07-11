@@ -33,6 +33,12 @@
 #      TRIGGER_TOKEN unavailable, the CF trigger POST itself failed (any
 #      category non-2xx), or a PREVIOUS tick already sent a CF trigger for
 #      this date (marker present) and coverage is STILL incomplete now.
+#      DISABLED BY DEFAULT (2026-07-11, CF-only architecture):
+#      GUARD_LOCAL_FALLBACK_ENABLED=0 skips this tier entirely and logs
+#      "local fallback disabled by design 2026-07-11" instead of executing
+#      the local Docker pipeline. The CF trigger (tier 1) is now the ONLY
+#      escalation; set GUARD_LOCAL_FALLBACK_ENABLED=1 for an explicit
+#      emergency/manual override, never as a standing default.
 #
 # Reference data checked by this diagnostic:
 #   * expected races: Cloudflare D1 sync-realtime-data.realtime_race_sources.
@@ -59,10 +65,11 @@
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
 #     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # cf-trigger-sent for nar only (marker written, no local docker this tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
-#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 bash ...  # cf-trigger-failed->local (CF POST fails -> immediate local docker)
-#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local docker (last resort)
-#   # second-tick example: run the "cf-trigger-sent" command above once (leaves a marker), then run the SAME command again ->
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # cf-trigger-failed->local (CF POST fails -> immediate local docker; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local docker (last resort; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
+#   # second-tick example: run the "cf-trigger-sent" command above once (leaves a marker), then run the SAME command again (add GUARD_LOCAL_FALLBACK_ENABLED=1) ->
 #   # cf-already-tried->local (previous tick's CF trigger didn't clear coverage -> local docker last resort)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 bash ...  # GUARD_LOCAL_FALLBACK_ENABLED unset (default 0) -> "local fallback disabled by design 2026-07-11" logged, no exec
 set -euo pipefail
 
 # Resolve repo root from this script's location (scripts/launchd -> repo root).
@@ -117,6 +124,14 @@ EXPECTED_JRA_RACES_PER_VENUE=11
 # diagnostics so the local Docker runner cannot become production authority.
 # Set FINISH_POSITION_OFFLOADED_TO_CF=0 only for an explicit manual backfill.
 FINISH_POSITION_OFFLOADED_TO_CF="${FINISH_POSITION_OFFLOADED_TO_CF:-1}"
+
+# CF-only architecture (2026-07-11): the local-Docker "last resort" fallback
+# inside the offloaded branch (cf-trigger-failed->local / cf-already-tried->
+# local, see header) is disabled by default. The Cloudflare trigger POST is
+# now the ONLY escalation tier; this guard stays a monitor + CF-retrigger
+# loop. Set GUARD_LOCAL_FALLBACK_ENABLED=1 to restore the old behavior for an
+# explicit emergency/manual run — never as a standing default.
+GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"
 
 # NAR major venue keibajo_codes (門別/盛岡/水沢/浦和/船橋/大井/川崎/金沢/笠松/
 # 名古屋/園田/姫路/高知/佐賀/帯広). Listed as a space-separated string so the
@@ -901,7 +916,9 @@ guard_target() {
       fi
     fi
 
-    if [ -d "$FINISH_LOCK_DIR" ]; then
+    if [ "$GUARD_LOCAL_FALLBACK_ENABLED" != "1" ]; then
+      log "local fallback disabled by design 2026-07-11 — CF-only architecture (reason=$cf_trigger_status, set GUARD_LOCAL_FALLBACK_ENABLED=1 to override)"
+    elif [ -d "$FINISH_LOCK_DIR" ]; then
       log "finish-position-predict lock $FINISH_LOCK_DIR held — another run in progress, skip fallback kick"
     elif [ "${DRY_RUN:-0}" = "1" ]; then
       log "DRY_RUN: would exec RUN_DATE=$target_date PREDICT_DAYS_AHEAD=$days_ahead RUN_DATE_MODE=auto bash $FINISH_SCRIPT (CF-offload fallback, last resort, reason=$cf_trigger_status)"
@@ -910,7 +927,7 @@ guard_target() {
       RUN_DATE="$target_date" PREDICT_DAYS_AHEAD="$days_ahead" RUN_DATE_MODE=auto \
         bash "$FINISH_SCRIPT" || log "finish-position-predict-daily.sh exited non-zero (continuing)"
     fi
-    log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=1 cf_trigger=$cf_trigger_status)"
+    log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=1 cf_trigger=$cf_trigger_status local_fallback_enabled=$GUARD_LOCAL_FALLBACK_ENABLED)"
     return 0
   fi
 
