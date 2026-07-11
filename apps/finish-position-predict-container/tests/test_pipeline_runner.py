@@ -12,7 +12,10 @@ becomes diagnosable instead of an opaque ``CalledProcessError``).
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from time import perf_counter
+from typing import cast
 
 import pytest
 
@@ -20,6 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pipeline_runner
 from pipeline_runner import has_parquet_output, mask_pg_url, run_with_stderr_capture
+
+_TIMEOUT_SECONDS_ATTR = "_pipeline_subprocess_timeout_seconds"
+_pipeline_subprocess_timeout_seconds = cast(
+    Callable[[], float], getattr(pipeline_runner, _TIMEOUT_SECONDS_ATTR)
+)
 
 
 def test_mask_pg_url_redacts_userinfo():
@@ -115,6 +123,97 @@ def test_run_masks_pg_url_in_error_message():
     message = str(exc_info.value)
     assert "hunter2" not in message
     assert "<redacted>" in message
+
+
+def test_pipeline_subprocess_timeout_seconds_defaults_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, raising=False)
+    assert (
+        _pipeline_subprocess_timeout_seconds()
+        == pipeline_runner.DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def test_pipeline_subprocess_timeout_seconds_defaults_when_blank(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "   ")
+    assert (
+        _pipeline_subprocess_timeout_seconds()
+        == pipeline_runner.DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def test_pipeline_subprocess_timeout_seconds_defaults_when_non_numeric(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "not-a-number")
+    assert (
+        _pipeline_subprocess_timeout_seconds()
+        == pipeline_runner.DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def test_pipeline_subprocess_timeout_seconds_defaults_when_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "0")
+    assert (
+        _pipeline_subprocess_timeout_seconds()
+        == pipeline_runner.DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    )
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "-5")
+    assert (
+        _pipeline_subprocess_timeout_seconds()
+        == pipeline_runner.DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    )
+
+
+def test_pipeline_subprocess_timeout_seconds_honours_valid_override(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "42.5")
+    assert _pipeline_subprocess_timeout_seconds() == 42.5
+
+
+def test_run_kills_hanging_subprocess_at_short_timeout(monkeypatch: pytest.MonkeyPatch):
+    """A subprocess that never exits on its own must be killed, not hung on forever.
+
+    Sets a short override (0.2s) and launches a child that sleeps far longer
+    (30s) than that. If the kill did not actually happen, this test would take
+    ~30s (or longer) instead of finishing in well under a second -- the
+    ``elapsed`` bound below is the proxy for "the process group was really
+    killed", since a unit test cannot otherwise observe the reaped pid.
+    """
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "0.2")
+    started = perf_counter()
+    with pytest.raises(RuntimeError) as exc_info:
+        run_with_stderr_capture(["python", "-c", "import time; time.sleep(30)"])
+    elapsed = perf_counter() - started
+    message = str(exc_info.value)
+    assert "timed out after" in message
+    assert elapsed < 10.0, f"hanging subprocess was not killed promptly (took {elapsed:.1f}s)"
+
+
+def test_run_kills_hanging_subprocess_reports_stderr_tail_from_before_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(pipeline_runner.PIPELINE_SUBPROCESS_TIMEOUT_ENV, "0.3")
+    with pytest.raises(RuntimeError) as exc_info:
+        run_with_stderr_capture(
+            [
+                "python",
+                "-c",
+                (
+                    "import sys, time; "
+                    "sys.stderr.write('hung-before-timeout\\n'); sys.stderr.flush(); "
+                    "time.sleep(30)"
+                ),
+            ]
+        )
+    message = str(exc_info.value)
+    assert "hung-before-timeout" in message
 
 
 def test_has_parquet_output_false_for_missing_dir(tmp_path: Path):

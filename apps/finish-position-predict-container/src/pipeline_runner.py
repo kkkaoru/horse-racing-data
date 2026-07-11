@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -63,6 +64,75 @@ PG_URL_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"(postgresql://)[^@]+@"
 PG_URL_REDACTED: Final[str] = r"\1<redacted>@"
 PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
 TRUE_ENV_VALUES: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on", "debug"})
+
+PIPELINE_SUBPROCESS_TIMEOUT_ENV: Final[str] = "PIPELINE_SUBPROCESS_TIMEOUT_SECONDS"
+"""Env var overriding :data:`DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS`."""
+
+DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS: Final[float] = 35 * 60
+"""Default ceiling on a single feature-pipeline subprocess (DuckDB base build
+or one v7 layer script).
+
+Without a bound, a subprocess that hangs (a stuck DuckDB spill, a wedged
+``psql`` connection) never returns from ``Popen.wait()``, permanently
+occupying the single per-process focused-full pipeline slot (or, for a batch
+request, the process-wide ``_PIPELINE_EXEC_LOCK`` in ``predict_lib.serve``)
+and requiring a manual container restart to clear -- the exact failure mode
+that wedged JRA/NAR serving twice on 2026-07-11/12. 35 minutes is chosen to
+comfortably exceed the worst observed/extrapolated single LAYER's duration
+(the whole chain, all layers combined, has been observed taking up to
+~25-27 minutes for JRA) while still being far below the Worker's ~40-minute
+per-message retry budget (``FOCUSED_FULL_RETRY_DELAY_SECONDS`` x
+``max_retries`` in ``finish-position-cron/src/queue-consumer.ts``), so a
+genuine timeout still gets converted into a DLQ-visible error within that
+budget rather than silently exhausting it. Env-overridable so an
+unusually large backfill window (multi-day ``daysAhead``) can raise it
+without a code change.
+"""
+
+
+def _pipeline_subprocess_timeout_seconds() -> float:
+    """Read :data:`PIPELINE_SUBPROCESS_TIMEOUT_ENV`, falling back to the default.
+
+    A missing, blank, non-numeric, or non-positive value all fall back to
+    :data:`DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS` -- a malformed
+    override must never silently disable the timeout by producing e.g. a
+    zero or negative ``Popen.wait(timeout=...)`` bound.
+    """
+    raw = os.environ.get(PIPELINE_SUBPROCESS_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    if value <= 0:
+        return DEFAULT_PIPELINE_SUBPROCESS_TIMEOUT_SECONDS
+    return value
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    """Best-effort SIGKILL of *process*'s entire process group.
+
+    ``run_with_stderr_capture`` starts the child with ``start_new_session=True``,
+    making it its own process group leader, so killing the group (not just the
+    direct child pid) also reaps any grandchild the feature-pipeline script
+    spawned (e.g. a DuckDB/psql subprocess of its own) that would otherwise
+    survive as an orphan still holding the category work directories open.
+    Never raises: a process that already exited between the timeout firing and
+    this call (``ProcessLookupError``) is expected, not an error.
+    """
+    try:
+        pgid = os.getpgid(process.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        print(
+            f"[pipeline] failed to kill process group pid={process.pid}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
 
 # --- TEMPORARY diagnostic instrumentation (added 2026-07-02) ---------------
 # Investigating a live production hang: the Cloudflare Queue consumer
@@ -209,14 +279,24 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     * keep the stderr tail in memory so it can be attached to the RuntimeError
       on failure;
     * mask any ``--pg-url`` in argv before logging so the Neon password never
-      reaches logs (defensive).
+      reaches logs (defensive);
+    * bound the wait with :func:`_pipeline_subprocess_timeout_seconds` -- on
+      expiry, SIGKILL the whole process group (see :func:`_kill_process_group`)
+      and raise ``RuntimeError`` instead of hanging forever. ``args`` already
+      carries the category / target-date / target-race identity as CLI flags
+      (``build_base_argv`` / ``build_layer_argv``), so the same masked argv
+      used in the exit-code failure message below also serves as the "which
+      race" identity for the timeout log line.
     """
+    timeout_seconds = _pipeline_subprocess_timeout_seconds()
+    safe_args = [mask_pg_url(arg) for arg in args]
     process = subprocess.Popen(
         list(args),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
+        start_new_session=True,
     )
     stdout_buffer: list[str] = []
     stderr_buffer: list[str] = []
@@ -235,12 +315,30 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
     )
     stdout_thread.start()
     stderr_thread.start()
-    returncode = process.wait()
+    try:
+        returncode = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        print(
+            f"[pipeline] SUBPROCESS TIMEOUT after {timeout_seconds:.0f}s -- "
+            f"killing process group: {safe_args}",
+            file=sys.stderr,
+            flush=True,
+        )
+        _kill_process_group(process)
+        process.wait()  # reap now that the group has been signaled
+        stdout_thread.join()
+        stderr_thread.join()
+        stderr_text = "".join(stderr_buffer)
+        stderr_tail = stderr_text[-STDERR_TAIL_BYTES:]
+        message = (
+            f"subprocess timed out after {timeout_seconds:.0f}s and was killed: {safe_args}\n"
+            f"stderr (last {STDERR_TAIL_BYTES} bytes):\n{stderr_tail}"
+        )
+        raise RuntimeError(message) from None
     stdout_thread.join()
     stderr_thread.join()
     if returncode == 0:
         return
-    safe_args = [mask_pg_url(arg) for arg in args]
     stderr_text = "".join(stderr_buffer)
     stderr_tail = stderr_text[-STDERR_TAIL_BYTES:]
     message = (

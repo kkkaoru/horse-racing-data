@@ -2105,6 +2105,117 @@ def test_iter_predict_chunks_focused_full_default_guard_in_flight_self_no_relaun
     assert d_called.wait(timeout=2.0), "race D was never able to claim the slot"
 
 
+def test_iter_predict_chunks_pipeline_exec_lock_serializes_batch_against_focused_full() -> None:
+    """Real (non-injected) module-level guards: a focused-full request's
+    detached pipeline execution must fully finish before a CONCURRENT batch
+    (day-level, non-focused) ``mode=full`` request's predict_fn is allowed to
+    run -- even though the focused-full slot bookkeeping
+    (``_FOCUSED_FULL_IN_FLIGHT``) never tracks batch requests at all.
+
+    This is ``_PIPELINE_EXEC_LOCK``'s job: every ``PredictCategoryFn``
+    invocation funnels through ``_run_predict_fn``, so the two executions can
+    never overlap regardless of which path did (or did not) claim the
+    focused-full slot. Guards against a regression where
+    ``ThreadingHTTPServer`` lets a batch and a focused-full request's
+    handlers run on separate threads: without this lock both predict_fn
+    bodies could run at the same time and corrupt the SAME category-scoped
+    ``pipeline_runner.WORK_DIR`` directories (the batch path writes them
+    directly; the focused-full path writes them from its detached thread).
+    """
+    a_started = threading.Event()
+    a_release = threading.Event()
+    a_done = threading.Event()
+    batch_started = threading.Event()
+    batch_done = threading.Event()
+    short_sleep = threading.Event()
+    chunks_a: list[bytes] = []
+    chunks_batch: list[bytes] = []
+    errors_a: list[BaseException] = []
+    errors_batch: list[BaseException] = []
+    order: list[str] = []
+
+    def _predict_a(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        order.append("a-start")
+        a_started.set()
+        a_release.wait(timeout=5.0)
+        order.append("a-end")
+        a_done.set()
+        return 1
+
+    def _predict_batch(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        order.append("batch-start")
+        batch_started.set()
+        order.append("batch-end")
+        batch_done.set()
+        return 9
+
+    params_a = _make_focused_full_params(keibajo_code="07", race_bango="01")
+    params_batch = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="full")
+
+    def _sleep_briefly(_: float) -> None:
+        short_sleep.wait(timeout=0.001)
+
+    def _consume_a() -> None:
+        try:
+            chunks_a.extend(iter_predict_chunks(params_a, _predict_a, sleep_fn=_sleep_briefly))
+        except BaseException as exc:
+            errors_a.append(exc)
+
+    def _consume_batch() -> None:
+        try:
+            chunks_batch.extend(
+                iter_predict_chunks(params_batch, _predict_batch, sleep_fn=_sleep_briefly)
+            )
+        except BaseException as exc:
+            errors_batch.append(exc)
+
+    thread_a = threading.Thread(target=_consume_a)
+    thread_batch = threading.Thread(target=_consume_batch)
+    thread_a.start()
+    try:
+        assert a_started.wait(timeout=2.0), "race A predict_fn never started"
+
+        thread_batch.start()
+        try:
+            assert not batch_started.wait(timeout=0.3), (
+                "batch predict_fn must not start while a focused-full pipeline "
+                "holds _PIPELINE_EXEC_LOCK -- it must wait its turn"
+            )
+        finally:
+            a_release.set()
+            thread_batch.join(timeout=2.0)
+    finally:
+        a_release.set()
+        thread_a.join(timeout=2.0)
+
+    assert not thread_a.is_alive(), "race A accepted response did not finish"
+    assert not thread_batch.is_alive(), "batch request did not finish"
+    assert errors_a == []
+    assert errors_batch == []
+    assert a_done.wait(timeout=0.1), "race A predict_fn did not finish"
+    assert batch_done.wait(timeout=0.1), "batch predict_fn did not finish"
+    assert order == ["a-start", "a-end", "batch-start", "batch-end"], (
+        f"executions overlapped or ran out of order: {order}"
+    )
+    last_a = json.loads(chunks_a[-1].decode())
+    assert last_a["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    last_batch = json.loads(chunks_batch[-1].decode())
+    assert last_batch["status"] == "success"
+    assert last_batch["racesPredicted"] == 9
+
+
 def test_iter_predict_chunks_focused_full_does_not_affect_rescore_mode() -> None:
     """mode=rescore with race scope must keep the original blocking behaviour
     (never routed through the focused-full guarded branch)."""

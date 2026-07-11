@@ -516,6 +516,43 @@ keepalive frequency prevents busy-waiting while still producing timely keepalive
 """
 
 
+_PIPELINE_EXEC_LOCK: Final[threading.Lock] = threading.Lock()
+"""Serializes every *execution* of a ``PredictCategoryFn`` (predict_fn or
+rescore_fn) across ALL call paths -- batch (day-level) ``mode=full``, plain
+``mode=rescore``, the rescore-CacheMissError-to-full fallback, AND focused
+per-race full's detached pipeline.
+
+This is deliberately broader than :data:`_FOCUSED_FULL_LOCK`, which only
+governs the claim/busy *bookkeeping* for focused-full-vs-focused-full
+requests (a race is fast-rejected with ``"busy"`` before ever reaching this
+lock). ``_run_predict_fn`` is the single choke point every one of those call
+paths passes through on its way to the real predict_fn/rescore_fn, and it
+does two things a genuinely concurrent request must never overlap on:
+
+1. It mutates the PROCESS-WIDE ``PREDICT_DEBUG_LOGS`` environment variable
+   (set for the duration of the call, restored after) -- two interleaved
+   calls would stomp each other's setting and could restore the wrong value.
+2. The real predict_fn / rescore_fn read and write ``pipeline_runner.WORK_DIR``
+   directories keyed by *category only* (``feat-{category}-base``,
+   ``feat-{category}-layer-N``, ``feat-{category}-v7-final``) -- see
+   :data:`_FOCUSED_FULL_IN_FLIGHT`'s docstring for why two concurrent builds
+   for the same category corrupt each other's intermediate files. The
+   rescore path reads AND rewrites the same ``feat-{category}-v7-final``
+   directory the full path renames into, so this hazard is not limited to
+   two ``mode=full`` calls -- a rescore racing a full build hits it too.
+
+Before the HTTP server was switched to ``ThreadingHTTPServer``, a
+single-threaded ``http.server.HTTPServer`` accepted (and therefore ran) at
+most one request handler at a time, so this was accidentally safe for every
+path except the ONE case that intentionally detaches from the request/
+response cycle (focused-full's background pipeline thread) -- which is
+exactly why :data:`_FOCUSED_FULL_LOCK` was invented first. Real handler
+concurrency exposes the other paths too, hence this general lock. Acquired
+for the whole body of :func:`_run_predict_fn`, never held across a
+``thread.join`` or another lock acquisition, so it cannot deadlock.
+"""
+
+
 def _run_predict_fn(
     predict_fn: PredictCategoryFn,
     params: PredictParams,
@@ -526,22 +563,26 @@ def _run_predict_fn(
     the signature is the same whether we are on the full or rescore path.  The
     optional ``keibajo_code`` / ``race_bango`` scope is forwarded so the full
     path can build + score a single race; the rescore path ignores them.
+
+    The whole body runs under :data:`_PIPELINE_EXEC_LOCK` -- see that lock's
+    docstring for why every caller of this function must be serialized.
     """
-    previous = os.environ.get(PREDICT_DEBUG_LOGS_ENV)
-    os.environ[PREDICT_DEBUG_LOGS_ENV] = "1" if params.debug_logs else "0"
-    try:
-        return predict_fn(
-            params.category,
-            params.run_date,
-            params.days_ahead,
-            params.keibajo_code,
-            params.race_bango,
-        )
-    finally:
-        if previous is None:
-            os.environ.pop(PREDICT_DEBUG_LOGS_ENV, None)
-        else:
-            os.environ[PREDICT_DEBUG_LOGS_ENV] = previous
+    with _PIPELINE_EXEC_LOCK:
+        previous = os.environ.get(PREDICT_DEBUG_LOGS_ENV)
+        os.environ[PREDICT_DEBUG_LOGS_ENV] = "1" if params.debug_logs else "0"
+        try:
+            return predict_fn(
+                params.category,
+                params.run_date,
+                params.days_ahead,
+                params.keibajo_code,
+                params.race_bango,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop(PREDICT_DEBUG_LOGS_ENV, None)
+            else:
+                os.environ[PREDICT_DEBUG_LOGS_ENV] = previous
 
 
 def _run_in_thread(
@@ -647,11 +688,14 @@ predict_upcoming.py. Must not raise (a raising fn is treated as 'not complete').
 _FOCUSED_FULL_LOCK: Final[threading.Lock] = threading.Lock()
 """Guards ``_FOCUSED_FULL_IN_FLIGHT`` across concurrent HTTP requests.
 
-The HTTP server used by ``predict_upcoming.py`` is a single-threaded
-``http.server.HTTPServer`` (not ``ThreadingHTTPServer``), but queue redeliveries
-and future server changes can still present repeated focused requests. This lock
-protects the claim/release check-then-set around the category-scoped work
-directories in ``pipeline_runner.WORK_DIR``.
+The HTTP server used by ``predict_upcoming.py`` is ``http.server.ThreadingHTTPServer``,
+so request handlers run truly concurrently on separate threads; this lock protects
+the claim/release check-then-set bookkeeping (which race key currently holds the
+single focused-full slot) so two focused-full requests never both observe the slot
+as free. It does NOT by itself serialize pipeline *execution* -- see
+:data:`_PIPELINE_EXEC_LOCK` for the lock that does that across every call path
+(batch full, rescore, rescore-fallback, and focused-full alike) around the
+category-scoped work directories in ``pipeline_runner.WORK_DIR``.
 """
 
 _FOCUSED_FULL_IN_FLIGHT: Final[list[str | None]] = [None]

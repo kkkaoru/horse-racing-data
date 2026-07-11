@@ -13,10 +13,14 @@ the small helpers.
 
 from __future__ import annotations
 
+import http.client
+import http.server
 import json
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 from typing import cast, final, override
 from unittest.mock import patch
@@ -514,6 +518,241 @@ def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
         f"(category, run_date, days_ahead, keibajo_code, race_bango), "
         f"got {len(params)}: {[p.name for p in params]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# serve_http concurrency — real ThreadingHTTPServer + real sockets
+# ---------------------------------------------------------------------------
+#
+# serve_http() itself is I/O-boundary glue (real socket, blocking
+# serve_forever()) and is excluded from the coverage gate, but the
+# concurrency behaviour it wires up -- ThreadingHTTPServer + make_handler_class
+# -- is exactly what the 2026-07-11/12 incident needed: a slow /predict
+# handler must not block /ping or another race's request from being accepted
+# and answered. A single-threaded http.server.HTTPServer let one wedged
+# handler starve every other queued connection until Cloudflare's platform
+# connect-timeout (~6s) killed them. These tests spin up a REAL
+# http.server.ThreadingHTTPServer on 127.0.0.1 (ephemeral port) with the
+# production handler_cls and drive it over real sockets to prove the fix.
+
+
+def _start_threading_server(
+    predict_fn: PredictCategoryFn,
+) -> tuple[http.server.ThreadingHTTPServer, threading.Thread, int]:
+    """Start a real ThreadingHTTPServer with the production handler_cls."""
+    handler_cls = make_handler_class(
+        predict_fn,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        None,
+        None,
+    )
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, thread, port
+
+
+def _stop_threading_server(
+    httpd: http.server.ThreadingHTTPServer, thread: threading.Thread
+) -> None:
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join(timeout=2.0)
+
+
+def _get(port: int, path: str, timeout: float = 5.0) -> tuple[int, bytes]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("GET", path)
+        response = conn.getresponse()
+        return response.status, response.read()
+    finally:
+        conn.close()
+
+
+def test_threading_server_ping_stays_responsive_during_slow_batch_predict() -> None:
+    """A slow batch (day-level, non-focused) ``mode=full`` predict_fn call
+    blocks its OWN handler thread for its whole duration (that path is not
+    detached, unlike focused-full). Under the old single-threaded
+    ``http.server.HTTPServer`` this would also block every OTHER queued
+    connection's ``accept()`` -- reproducing the incident shape where
+    Cloudflare killed unrelated connections for exceeding its connect-timeout.
+    ``ThreadingHTTPServer`` must keep ``/ping`` answering fast regardless.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        started.set()
+        release.wait(timeout=5.0)
+        return 1
+
+    httpd, thread, port = _start_threading_server(_slow_predict)
+    try:
+        errors: list[BaseException] = []
+
+        def _fire_batch_predict() -> None:
+            try:
+                _get(
+                    port,
+                    "/predict?category=jra&runDate=20260619&daysAhead=0&mode=full",
+                    timeout=5.0,
+                )
+            except BaseException as exc:  # collected below, not raised on this thread
+                errors.append(exc)
+
+        batch_thread = threading.Thread(target=_fire_batch_predict)
+        batch_thread.start()
+        try:
+            assert started.wait(timeout=2.0), "slow batch predict_fn never started"
+
+            ping_started = perf_counter()
+            status, body = _get(port, "/ping", timeout=2.0)
+            ping_elapsed = perf_counter() - ping_started
+            assert status == 200
+            assert body == b"ok"
+            assert ping_elapsed < 1.0, (
+                f"/ping took {ping_elapsed:.2f}s while a slow /predict handler "
+                "was in flight -- accept()/handler concurrency regressed"
+            )
+        finally:
+            release.set()
+            batch_thread.join(timeout=5.0)
+        assert errors == []
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_threading_server_focused_full_accept_stays_fast_while_unrelated_predict_in_flight() -> (
+    None
+):
+    """A focused-full request's own accept()/NDJSON response must stay fast
+    even while an UNRELATED slow batch predict_fn call occupies another
+    handler thread (and, via ``_PIPELINE_EXEC_LOCK``, is the current holder of
+    the process-wide pipeline-execution lock). The focused-full response only
+    waits for the single-process SLOT claim (independent of
+    ``_PIPELINE_EXEC_LOCK``) -- its own detached pipeline execution correctly
+    queues behind the lock, but the HTTP response reporting status='accepted'
+    must not.
+    """
+    batch_started = threading.Event()
+    batch_release = threading.Event()
+
+    def _slow_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        batch_started.set()
+        batch_release.wait(timeout=5.0)
+        return 1
+
+    httpd, thread, port = _start_threading_server(_slow_predict)
+    try:
+        errors: list[BaseException] = []
+
+        def _fire_batch_predict() -> None:
+            try:
+                _get(
+                    port,
+                    "/predict?category=jra&runDate=20260619&daysAhead=0&mode=full",
+                    timeout=5.0,
+                )
+            except BaseException as exc:  # collected below, not raised on this thread
+                errors.append(exc)
+
+        batch_thread = threading.Thread(target=_fire_batch_predict)
+        batch_thread.start()
+        try:
+            assert batch_started.wait(timeout=2.0), "slow batch predict_fn never started"
+
+            focused_started = perf_counter()
+            status, body = _get(
+                port,
+                "/predict?category=jra&runDate=20260619&daysAhead=0"
+                "&mode=full&keibajoCode=05&raceBango=01",
+                timeout=2.0,
+            )
+            focused_elapsed = perf_counter() - focused_started
+            assert status == 200
+            last_line = body.strip().splitlines()[-1]
+            assert json.loads(last_line)["status"] == "accepted"
+            assert focused_elapsed < 1.0, (
+                f"focused-full request took {focused_elapsed:.2f}s while an "
+                "unrelated slow batch predict_fn held another handler thread"
+            )
+        finally:
+            batch_release.set()
+            batch_thread.join(timeout=5.0)
+        assert errors == []
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_threading_server_focused_full_busy_check_stays_fast_during_slow_pipeline() -> None:
+    """Two REAL concurrent focused-full requests for DIFFERENT races in the
+    same category, driven over real sockets: the second must get a fast
+    ``status='busy'`` response while the first race's detached pipeline is
+    still in flight -- the single-process slot's fast-reject semantics
+    (already unit-tested at the ``iter_predict_chunks`` layer) must survive
+    the switch to real handler concurrency end-to-end.
+    """
+    a_started = threading.Event()
+    a_release = threading.Event()
+
+    def _slow_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+    ) -> int:
+        a_started.set()
+        a_release.wait(timeout=5.0)
+        return 1
+
+    httpd, thread, port = _start_threading_server(_slow_predict)
+    try:
+        first_status, first_body = _get(
+            port,
+            "/predict?category=jra&runDate=20260619&daysAhead=0&mode=full&keibajoCode=05&raceBango=01",
+            timeout=5.0,
+        )
+        assert first_status == 200
+        assert json.loads(first_body.strip().splitlines()[-1])["status"] == "accepted"
+        assert a_started.wait(timeout=2.0), "race A's detached pipeline never started"
+
+        try:
+            busy_started = perf_counter()
+            second_status, second_body = _get(
+                port,
+                "/predict?category=jra&runDate=20260619&daysAhead=0"
+                "&mode=full&keibajoCode=05&raceBango=02",
+                timeout=2.0,
+            )
+            busy_elapsed = perf_counter() - busy_started
+            assert second_status == 200
+            second_last_line = second_body.strip().splitlines()[-1]
+            assert json.loads(second_last_line)["status"] == "busy"
+            assert busy_elapsed < 1.0, (
+                f"busy-check took {busy_elapsed:.2f}s while race A's pipeline "
+                "was in flight -- slot fast-reject semantics regressed"
+            )
+        finally:
+            a_release.set()
+    finally:
+        _stop_threading_server(httpd, thread)
 
 
 # ---------------------------------------------------------------------------

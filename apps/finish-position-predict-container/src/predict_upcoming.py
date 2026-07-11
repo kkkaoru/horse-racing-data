@@ -1184,10 +1184,16 @@ def _make_predict_fn(
       per-race R2 object, letting a Stage-2 rescore hit a single race even when
       the whole-day parquet upload was skipped.
 
-    All three functions share a thread-safe ``_last_run`` state box so the payload
-    fns can retrieve category/run_date after the predict thread completes.
+    All three functions share a thread-safe ``_last_run`` state box (guarded by
+    ``_last_run_lock``, a lock private to THIS factory call) so the payload fns
+    can retrieve category/run_date after the predict thread completes.
+    ``predict_fn`` itself is additionally serialized process-wide by
+    ``predict_lib.serve._PIPELINE_EXEC_LOCK`` (every call funnels through
+    ``_run_predict_fn``), so this lock only needs to protect ``_last_run``'s own
+    read/write, not re-derive that broader guarantee.
     """
     _last_run: list[tuple[str, str]] = []
+    _last_run_lock = threading.Lock()
 
     def _predict(
         category_str: str,
@@ -1205,18 +1211,35 @@ def _make_predict_fn(
             database_url, category, models_dir, window, target_race=target_race
         )
         # Record the last successful run so parquet_payload_fn can retrieve it.
-        if _last_run:
+        with _last_run_lock:
             _last_run.clear()
-        _last_run.append((category_str, run_date))
+            _last_run.append((category_str, run_date))
         return written
+
+    def _last_run_snapshot() -> tuple[str, str] | None:
+        """Return a snapshot of the most recent ``(category, run_date)``, if any.
+
+        Reading under ``_last_run_lock`` avoids observing the momentary empty
+        window between ``clear()`` and ``append()`` in ``_predict`` above if a
+        DIFFERENT concurrent request's predict_fn call is mutating ``_last_run``
+        at the same instant this one reads it (``_PIPELINE_EXEC_LOCK`` prevents
+        two predict_fn bodies from running at once, but does not by itself
+        order a request's OWN post-pipeline payload read against the NEXT
+        request's write once that lock is released).
+        """
+        with _last_run_lock:
+            if not _last_run:
+                return None
+            return _last_run[-1]
 
     def _parquet_payload() -> tuple[str, str] | None:
         """Return ``(parquet_base64, parquet_key)`` for the last successful run."""
         from pipeline_runner import WORK_DIR  # bundled in image
 
-        if not _last_run:
+        snapshot = _last_run_snapshot()
+        if snapshot is None:
             return None
-        category_str, run_date = _last_run[-1]
+        category_str, run_date = snapshot
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
@@ -1246,9 +1269,10 @@ def _make_predict_fn(
         """
         from pipeline_runner import WORK_DIR  # bundled in image
 
-        if not _last_run:
+        snapshot = _last_run_snapshot()
+        if snapshot is None:
             return None
-        category_str, run_date = _last_run[-1]
+        category_str, run_date = snapshot
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
@@ -1778,7 +1802,21 @@ def serve_http(
     It is intentionally NOT covered by unit tests — it is the I/O-boundary glue
     that creates the real socket and blocks forever.  The pure logic it delegates
     to (``iter_predict_chunks``, ``parse_predict_params``, etc.) is fully tested
-    in ``tests/test_serve.py``.
+    in ``tests/test_serve.py``; the real-socket concurrency behaviour this
+    function wires up (``ThreadingHTTPServer`` + ``make_handler_class``) is
+    covered end-to-end in ``tests/test_predict_upcoming.py``.
+
+    Uses ``ThreadingHTTPServer`` (not the single-threaded ``HTTPServer``) so a
+    slow or hung request handler cannot block ``accept()`` for every other
+    connection — a single-threaded server let one wedged ``/predict`` handler
+    starve ``/ping`` health checks and OTHER races' focused-full busy-checks
+    behind it, which Cloudflare's platform then killed for exceeding its
+    connect-timeout ("Container is taking too long to accept the connection").
+    ``predict_lib.serve._PIPELINE_EXEC_LOCK`` (not this server config) is what
+    keeps concurrent handlers from corrupting the shared category-scoped
+    ``pipeline_runner.WORK_DIR`` directories — see that lock's docstring.
+    ``daemon_threads = True`` so a still-running handler thread never blocks
+    process shutdown.
     """
     handler_cls = make_handler_class(
         predict_fn,
@@ -1787,7 +1825,9 @@ def serve_http(
         rescore_factory,
         focused_full_completion_fn,
     )
-    with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
+    httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
+    httpd.daemon_threads = True
+    with httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
         httpd.serve_forever()
 
