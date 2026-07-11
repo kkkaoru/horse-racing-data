@@ -74,6 +74,7 @@ import threading
 import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Literal, final
 from urllib.parse import parse_qs, urlparse
 
@@ -267,6 +268,61 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     )
 
 
+@final
+class PrewarmParams:
+    """Parsed + validated query parameters for ``GET /prewarm-day-base``.
+
+    Deliberately a narrower parameter set than :class:`PredictParams`
+    (category / runDate / daysAhead only, no mode / keibajoCode / raceBango):
+    the day-base build is always whole-day scope (see
+    ``pipeline_runner.build_day_base``), never a single race.
+    """
+
+    __slots__ = ("category", "days_ahead", "run_date")
+
+    def __init__(self, category: str, run_date: str, days_ahead: int) -> None:
+        self.category: str = category
+        self.run_date: str = run_date
+        self.days_ahead: int = days_ahead
+
+
+def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
+    """Parse ``?category=...&runDate=...&daysAhead=...`` into :class:`PrewarmParams`.
+
+    Returns a :class:`PrewarmParams` on success or a human-readable error
+    string on validation failure -- mirrors :func:`parse_predict_params`'s
+    validation style (same ``category`` / ``runDate`` / ``daysAhead`` rules),
+    minus the ``mode`` / ``keibajoCode`` / ``raceBango`` parameters that only
+    apply to the per-race ``/predict`` request shape.
+    """
+    qs = parse_qs(query_string, keep_blank_values=True)
+
+    category = _first_qs(qs, "category")
+    if category is None:
+        return "missing required parameter: category"
+    if category not in SUPPORTED_CATEGORIES:
+        return f"invalid category: {category!r}; must be one of jra, nar, ban-ei"
+
+    run_date = _first_qs(qs, "runDate")
+    if run_date is None:
+        return "missing required parameter: runDate"
+    if not DATE_PATTERN.match(run_date):
+        return f"invalid runDate: {run_date!r}; must be YYYYMMDD"
+
+    raw_days = _first_qs(qs, "daysAhead")
+    if raw_days is None:
+        days_ahead = 0
+    else:
+        try:
+            days_ahead = int(raw_days)
+        except ValueError:
+            return f"invalid daysAhead: {raw_days!r}; must be a non-negative integer"
+        if days_ahead < 0:
+            return f"invalid daysAhead: {days_ahead}; must be non-negative"
+
+    return PrewarmParams(category=category, run_date=run_date, days_ahead=days_ahead)
+
+
 def _optional_scope_value(raw: str | None) -> str | None:
     """Normalize an optional race-scope query value (absent / blank -> None).
 
@@ -402,6 +458,44 @@ def build_result_line(
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
 
 
+PREWARM_EMPTY_STATUS: Final[str] = "empty"
+"""``build_prewarm_result_line`` status when the day-base build emitted zero
+target rows for the category+day (e.g. JRA on a NAR-only weekday) -- not an
+error, just nothing to cache. Mirrors ``build_day_base``'s ``None`` return."""
+
+
+def build_prewarm_result_line(
+    category: str,
+    run_date: str,
+    *,
+    status: str,
+    error: str | None = None,
+    parquet_base64: str | None = None,
+    parquet_key: str | None = None,
+) -> bytes:
+    """Return a single UTF-8 NDJSON result line for ``GET /prewarm-day-base``.
+
+    Mirrors :func:`build_result_line`'s shape (``type``, ``category``,
+    ``runDate``, ``status``, optional ``error`` / ``parquetBase64`` /
+    ``parquetKey``) minus ``racesPredicted`` -- prewarm builds the day-base
+    cache, it does not score or write any predictions. ``status`` is one of
+    ``"success"``, ``"error"``, or :data:`PREWARM_EMPTY_STATUS` (``"empty"``).
+    """
+    payload: dict[str, object] = {
+        "type": "result",
+        "category": category,
+        "runDate": run_date,
+        "status": status,
+    }
+    if error is not None:
+        payload["error"] = mask_error_message(error)
+    if parquet_base64 is not None:
+        payload["parquetBase64"] = parquet_base64
+    if parquet_key is not None:
+        payload["parquetKey"] = parquet_key
+    return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
+
+
 # ---------------------------------------------------------------------------
 # R2 feature-cache helpers
 # ---------------------------------------------------------------------------
@@ -450,6 +544,39 @@ def build_r2_per_race_feat_cache_key(
     return (
         f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/{keibajo_code}/{race_bango}/features.parquet"
     )
+
+
+R2_DAY_BASE_PREFIX: Final[str] = "feat-daybase"
+"""R2 object key prefix for the per-category+day DAY_CHAIN-only cache.
+
+Deliberately a DISTINCT namespace from :data:`R2_FEAT_CACHE_PREFIX`
+(``feat-cache/...``, the existing whole-day / per-race FULL-pipeline cache
+used by ``mode=rescore``). A prior design explicitly rejected merging cache
+granularities: the day-base object holds ONLY the DAY_CHAIN output (no
+MARKET_SIGNAL / NEAR_MISS / BABA_PEDIGREE / RELATIONSHIP / JRA
+jockey-pedigree-cell columns yet -- see ``pipeline_args.DAY_CHAIN`` /
+``RACE_CHAIN``), while ``feat-cache`` objects are the FULL post-RACE_CHAIN,
+directly-scoreable parquet. Conflating the two keys would let a rescore
+request silently load a day-base-only parquet missing the RACE_CHAIN columns,
+corrupting the feature vector without raising."""
+
+
+def build_r2_day_base_key(category: str, run_date: str) -> str:
+    """Return the R2 object key for a category+day day-base feature-parquet cache.
+
+    Key format: ``feat-daybase/{category}/{runDate}/features.parquet``
+
+    This is the whole-day DAY_CHAIN-only cache object written once per
+    category+day (see ``pipeline_runner.build_day_base``) and read by every
+    per-race ``build_pipeline_from_day_base`` call for that day -- see
+    :data:`R2_DAY_BASE_PREFIX` for why this is a distinct namespace from
+    :func:`build_r2_feat_cache_key`.
+
+    Args:
+        category: One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
+        run_date: YYYYMMDD string (e.g. ``"20260712"``).
+    """
+    return f"{R2_DAY_BASE_PREFIX}/{category}/{run_date}/features.parquet"
 
 
 # ---------------------------------------------------------------------------
@@ -585,9 +712,9 @@ def _run_predict_fn(
                 os.environ[PREDICT_DEBUG_LOGS_ENV] = previous
 
 
-def _run_in_thread(
-    fn: Callable[[], int],
-) -> tuple[threading.Thread, list[int], list[BaseException]]:
+def _run_in_thread[T](
+    fn: Callable[[], T],
+) -> tuple[threading.Thread, list[T], list[BaseException]]:
     """Run *fn* in a daemon thread; return (thread, result_box, error_box).
 
     ``result_box`` is a 1-element list that will hold the return value of *fn*
@@ -595,8 +722,13 @@ def _run_in_thread(
     hold the exception when *fn* raises.  Exactly one of the two will be
     populated after the thread finishes.  The caller polls ``thread.is_alive()``
     (or calls ``thread.join(timeout=...)``) to detect completion.
+
+    Generic over the return type so this single helper backs both the
+    ``PredictCategoryFn`` (``int``) callables driven by
+    :func:`iter_predict_chunks` and the ``PrewarmBuildFn`` (``Path | None``)
+    callable driven by :func:`iter_prewarm_chunks`.
     """
-    result_box: list[int] = []
+    result_box: list[T] = []
     error_box: list[BaseException] = []
 
     def _target() -> None:
@@ -608,6 +740,53 @@ def _run_in_thread(
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
     return thread, result_box, error_box
+
+
+def _iter_keepalive[T](
+    fn: Callable[[], T],
+    stage: str,
+    *,
+    time_fn: TimeFn,
+    sleep_fn: SleepFn,
+    progress_interval_s: float,
+    elapsed_fn: Callable[[], float],
+    last_progress: float,
+) -> Generator[bytes, None, tuple[T | None, BaseException | None, float]]:
+    """Run *fn* in a background daemon thread, yielding keepalive progress lines.
+
+    Shared thread/poll/keepalive loop used by :func:`iter_predict_chunks` (both
+    the primary predict/rescore call AND the rescore-cache-miss fallback call)
+    and :func:`iter_prewarm_chunks`, so the shape that keeps the Cloudflare
+    Container from reaping a long-running request lives in exactly one place.
+
+    Yields ``build_progress_line(stage, elapsed_fn())`` whenever *fn* is still
+    running in its background thread and at least *progress_interval_s*
+    seconds have elapsed since the most recent keepalive. Returns
+    ``(result, error, last_progress)`` as the generator's return value
+    (retrieved via ``result, error, last_progress = yield from
+    _iter_keepalive(...)``) -- exactly one of ``result`` / ``error`` is
+    non-``None``.
+
+    ``last_progress`` is the caller's most recent keepalive timestamp (usually
+    just after a pre-flight progress line) so the FIRST interval check inside
+    this helper measures from the same baseline an un-factored inline loop
+    would have used -- no extra or missing keepalive line versus the original.
+    The returned ``last_progress`` lets the caller continue the SAME running
+    interval clock after this call returns (e.g. for a "post-pipeline
+    progress" check, or a second call to this helper for the rescore-fallback
+    retry).
+    """
+    thread, result_box, error_box = _run_in_thread(fn)
+    while thread.is_alive():
+        sleep_fn(_POLL_INTERVAL_S)
+        now = time_fn()
+        if now - last_progress >= progress_interval_s:
+            yield build_progress_line(stage, elapsed_fn())
+            last_progress = now
+    thread.join()
+    if error_box:
+        return None, error_box[0], last_progress
+    return result_box[0], None, last_progress
 
 
 ParquetPayloadFn = Callable[[], tuple[str, str] | None]
@@ -1056,22 +1235,22 @@ def iter_predict_chunks(
         yield _focused_full_result_line(params, FOCUSED_FULL_ACCEPTED_STATUS)
         return
 
-    thread, result_box, error_box = _run_in_thread(first_call)
-
-    # Keepalive loop: poll the thread while it runs, yielding progress lines so
-    # the Worker DO can call renewActivityTimeout and the Container is not reaped.
-    while thread.is_alive():
-        sleep_fn(_POLL_INTERVAL_S)
-        now = time_fn()
-        if now - last_progress >= progress_interval_s:
-            yield build_progress_line("predict", _elapsed())
-            last_progress = now
-
-    thread.join()  # final join to synchronise memory visibility
+    # Keepalive loop: run the pipeline in a background thread, yielding progress
+    # lines while it runs so the Worker DO can call renewActivityTimeout and the
+    # Container is not reaped (see _iter_keepalive).
+    thread_result, thread_error, last_progress = yield from _iter_keepalive(
+        first_call,
+        "predict",
+        time_fn=time_fn,
+        sleep_fn=sleep_fn,
+        progress_interval_s=progress_interval_s,
+        elapsed_fn=_elapsed,
+        last_progress=last_progress,
+    )
 
     # Check thread outcome.
-    if error_box:
-        first_exc = error_box[0]
+    if thread_error is not None:
+        first_exc = thread_error
 
         # If rescore raised CacheMissError, fall back to the full pipeline.
         if use_rescore_first and isinstance(first_exc, CacheMissError):
@@ -1081,19 +1260,18 @@ def iter_predict_chunks(
             def _fallback_call() -> int:
                 return _run_predict_fn(predict_fn, params)
 
-            fb_thread, fb_result_box, fb_error_box = _run_in_thread(_fallback_call)
+            fb_result, fb_error, last_progress = yield from _iter_keepalive(
+                _fallback_call,
+                "predict",
+                time_fn=time_fn,
+                sleep_fn=sleep_fn,
+                progress_interval_s=progress_interval_s,
+                elapsed_fn=_elapsed,
+                last_progress=last_progress,
+            )
 
-            while fb_thread.is_alive():
-                sleep_fn(_POLL_INTERVAL_S)
-                now = time_fn()
-                if now - last_progress >= progress_interval_s:
-                    yield build_progress_line("predict", _elapsed())
-                    last_progress = now
-
-            fb_thread.join()
-
-            if fb_error_box:
-                fallback_exc = fb_error_box[0]
+            if fb_error is not None:
+                fallback_exc = fb_error
                 error_msg = f"{type(fallback_exc).__name__}: {fallback_exc}"
                 yield build_result_line(
                     params.category,
@@ -1104,7 +1282,8 @@ def iter_predict_chunks(
                 )
                 return
 
-            races_predicted = fb_result_box[0]
+            assert fb_result is not None
+            races_predicted = fb_result
         else:
             # Non-CacheMissError (or non-rescore path): encode as error result.
             error_msg = f"{type(first_exc).__name__}: {first_exc}"
@@ -1117,7 +1296,8 @@ def iter_predict_chunks(
             )
             return
     else:
-        races_predicted = result_box[0]
+        assert thread_result is not None
+        races_predicted = thread_result
 
     # Post-pipeline progress (only if interval elapsed -- pipeline was fast in tests).
     now = time_fn()
@@ -1153,4 +1333,145 @@ def iter_predict_chunks(
         parquet_base64=parquet_b64,
         parquet_key=parquet_key_val,
         per_race_parquets=per_race_parquets,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /prewarm-day-base — day-base build streaming generator
+# ---------------------------------------------------------------------------
+
+PrewarmBuildFn = Callable[[str, str, int], Path | None]
+"""Signature of the day-base build callable passed to :func:`iter_prewarm_chunks`.
+
+Args:
+    category:   One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
+    run_date:   YYYYMMDD date string.
+    days_ahead: Non-negative integer window extension.
+
+Returns the day-base's final parquet directory on success, or ``None`` when
+the base build emitted zero target rows for this category+day (mirrors
+``pipeline_runner.build_day_base``'s own ``Path | None`` contract). ``database_url``
+(and any realtime-odds / venue-weather wiring) is already bound by the
+caller's closure -- matching how :data:`PredictCategoryFn` is bound in
+``predict_upcoming.py``'s ``_make_predict_fn``.
+
+Raises:
+    Any exception from the day-base build -- caught by
+    :func:`iter_prewarm_chunks` and encoded as an error result line.
+"""
+
+PrewarmParquetPayloadFn = Callable[[str, str, Path], tuple[str, str] | None]
+"""Reads the day-base parquet under the given directory for (category,
+run_date) and returns ``(parquet_base64, parquet_key)``, or ``None`` when no
+parquet file is found. Injected so :func:`iter_prewarm_chunks` stays I/O-free
+(mirrors :data:`ParquetPayloadFn` for ``/predict``); the real file read lives
+in ``predict_upcoming.py``. Unlike :data:`ParquetPayloadFn` (which reads
+mutable ``_last_run`` state because it takes zero args), this callable
+receives the day-base directory directly from the just-completed build
+result, so no shared state box is needed.
+"""
+
+
+def iter_prewarm_chunks(
+    params: PrewarmParams,
+    build_fn: PrewarmBuildFn,
+    *,
+    parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
+    time_fn: TimeFn = time.monotonic,
+    sleep_fn: SleepFn = time.sleep,
+    progress_interval_s: float = PROGRESS_INTERVAL_S,
+) -> Generator[bytes, None, None]:
+    """Yield NDJSON bytes chunks for a single ``GET /prewarm-day-base`` request.
+
+    Same chunked-keepalive shape as :func:`iter_predict_chunks` (see the
+    module docstring's "Chunked encoding rationale") -- JRA's DAY_CHAIN alone
+    is still 12 layers and can take several minutes, so this must never be a
+    blocking single-response endpoint. Drives *build_fn* via the shared
+    :func:`_iter_keepalive` thread/poll/keepalive loop and emits:
+
+    - A pre-flight ``"starting"`` progress line, then a ``"day-base-build"``
+      progress line just before the long-running build call.
+    - Periodic ``"day-base-build"`` keepalive progress lines every
+      *progress_interval_s* seconds while *build_fn* runs in a background
+      thread.
+    - A single result line as the last yield: ``status="success"`` (with
+      ``parquetBase64`` / ``parquetKey`` when *parquet_payload_fn* is provided
+      and finds a parquet), :data:`PREWARM_EMPTY_STATUS` (``"empty"``) when
+      *build_fn* returns ``None`` (zero target rows for this category+day), or
+      ``status="error"`` when *build_fn* raises.
+
+    The generator NEVER raises -- any exception from *build_fn* is caught and
+    encoded as an error result line so the HTTP response always terminates
+    cleanly, same contract as :func:`iter_predict_chunks`.
+
+    Args:
+        params:              Parsed request parameters.
+        build_fn:            Day-base build callable matching :data:`PrewarmBuildFn`.
+        parquet_payload_fn:  Optional callable invoked after a successful build.
+                             Returns ``(parquet_base64, parquet_key)`` or ``None``
+                             when no parquet is available. Embedded in the success
+                             result line so the Worker DO can proxy the bytes to R2
+                             without a write-capable S3 token in the Container.
+        time_fn:             Monotonic clock (injectable for deterministic tests).
+        sleep_fn:            Sleep callable (injectable for deterministic tests).
+        progress_interval_s: Minimum seconds between progress keepalive lines.
+    """
+    started = time_fn()
+
+    def _elapsed() -> float:
+        return time_fn() - started
+
+    yield build_progress_line("starting", _elapsed())
+    last_progress = time_fn()
+
+    yield build_progress_line("day-base-build", _elapsed())
+    last_progress = time_fn()  # reset after forced emit
+
+    def _call_build() -> Path | None:
+        return build_fn(params.category, params.run_date, params.days_ahead)
+
+    day_base_dir, error, last_progress = yield from _iter_keepalive(
+        _call_build,
+        "day-base-build",
+        time_fn=time_fn,
+        sleep_fn=sleep_fn,
+        progress_interval_s=progress_interval_s,
+        elapsed_fn=_elapsed,
+        last_progress=last_progress,
+    )
+
+    if error is not None:
+        error_msg = f"{type(error).__name__}: {error}"
+        yield build_prewarm_result_line(
+            params.category, params.run_date, status="error", error=error_msg
+        )
+        return
+
+    if day_base_dir is None:
+        yield build_prewarm_result_line(
+            params.category, params.run_date, status=PREWARM_EMPTY_STATUS
+        )
+        return
+
+    # Post-build progress (only if interval elapsed -- build was fast in tests).
+    now = time_fn()
+    if now - last_progress >= progress_interval_s:
+        yield build_progress_line("complete", _elapsed())
+
+    parquet_b64: str | None = None
+    parquet_key_val: str | None = None
+    if parquet_payload_fn is not None:
+        try:
+            payload_result = parquet_payload_fn(params.category, params.run_date, day_base_dir)
+            if payload_result is not None:
+                parquet_b64, parquet_key_val = payload_result
+        except BaseException:
+            pass
+
+    yield build_prewarm_result_line(
+        params.category,
+        params.run_date,
+        status="success",
+        parquet_base64=parquet_b64,
+        parquet_key=parquet_key_val,
     )
