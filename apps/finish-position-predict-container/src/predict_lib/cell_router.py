@@ -159,6 +159,18 @@ def resolve_dimension(
         # ``len(entries)`` -- is the declared-runner count with zero
         # dependency on that (or any other) parquet column, so it is used in
         # preference to the entry's own (poisoned) field whenever supplied.
+        #
+        # SEMANTIC NOTE: len(entries) is the count of DECLARED runners at
+        # predict time (one row per entered horse). The offline WF cell
+        # analysis that validated field_band-gated rules (e.g.
+        # prior_corner_dirt_smallfield_005) gated on ACTUAL STARTERS --
+        # post-race shusso_tosu, which can differ from the declaration count
+        # when a horse scratches between entry and post. Near a field_band
+        # boundary (<=10 vs 11-13 etc.) a late scratch can therefore make
+        # live serving route a race the WF analysis would not have (or the
+        # reverse). This is an accepted, unavoidable predict-time reality
+        # (the actual starter count is never known before the race runs),
+        # not a bug in this fix.
         shusso_tosu = field_size if field_size is not None else entry.get("shusso_tosu")
         if shusso_tosu is None:
             return None
