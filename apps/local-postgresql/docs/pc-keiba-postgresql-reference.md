@@ -17,6 +17,39 @@ MotherDuck agent skill などから参照しやすいように、`PC-KEIBAテー
 - Excel table definitions parsed: 93
 - Present in PostgreSQL but missing in Excel definition: `apd_tohyo_python`
 
+## Known Data Quality Issues
+
+### `jvd_ra` NAR-reference contamination (found 2026-07-11)
+
+`jvd_ra` is written directly by PC-KEIBA Database (`Com.Pckeiba.Database.exe`), a
+closed-source Windows app running on the Parallels VM that connects to this Mac's
+exposed PostgreSQL port (see `apps/local-postgresql/README.md`). No in-repo code
+writes to `jvd_ra` or `nvd_ra`; `scripts/pc_keiba_auto_update.py` only UI-automates
+clicking "start" in the vendor app and has no visibility into its internal write
+logic.
+
+Besides the authoritative JRA race lifecycle (`data_kubun` `7`/`9`,
+`keibajo_code` `01`-`10`), JV-Link also ships a secondary reference "RA" subtype
+that the vendor importer drops into `jvd_ra` without checking `data_kubun`:
+
+- `data_kubun = 'A'`: NAR reference records (abbreviated race names, some blank
+  fields) for NAR venues — `keibajo_code` is purely numeric, outside `01`-`10`.
+  A large subset of these exactly duplicates the authoritative `nvd_ra` race key;
+  the rest shares the identical fingerprint but has no `nvd_ra` match.
+- `data_kubun = 'B'`: legitimate overseas-race reference records (Milano Gran
+  Premio, Grand Prix de Saint-Cloud, etc.), `keibajo_code` alphanumeric
+  (`A4`, `B6`, `C0`, ...). These are genuine data and must not be filtered.
+
+Verified as a 100%-clean partition over the full table on 2026-07-11:
+`data_kubun IN ('7','9') <=> keibajo_code BETWEEN '01' AND '10'`;
+`data_kubun = 'A' <=> keibajo_code` numeric and outside `01`-`10`;
+`data_kubun = 'B' <=> keibajo_code` alphanumeric. New inflow of the `data_kubun
+= 'A'` NAR-reference rows is silently diverted by a `BEFORE INSERT` trigger —
+see `apps/local-postgresql/sql/20260711220000_jvd_ra_nar_reference_guard.sql`.
+The trigger does not touch existing rows or `data_kubun = 'B'` overseas rows.
+Any query against `jvd_ra` should still filter `keibajo_code BETWEEN '01' AND
+'10'` defensively until the pre-existing contaminated rows are cleaned up.
+
 ## MotherDuck Agent Check
 
 The MotherDuck MCP server can read the local PostgreSQL database through DuckDB's `postgres` extension:
