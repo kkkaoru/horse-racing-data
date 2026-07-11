@@ -1414,15 +1414,23 @@ const TIMEOUT_WARNING_RATIO = 0.8;
 const PER_TABLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_OPERATION_TIMEOUT_SECONDS_";
 const PER_TABLE_IDLE_TIMEOUT_ENV_PREFIX = "REPLICA_SYNC_IDLE_TIMEOUT_SECONDS_";
 const PER_TABLE_SKIP_ENV = "REPLICA_SYNC_SKIP_TABLES";
-// Both tables are written directly to Neon by production (the finish-position
-// predict container / rescore-consumer Worker and the running-style Cloudflare
-// pipeline respectively). Local Postgres never receives those rows, so any
+// All five tables are written directly to Neon by production (the finish-position
+// predict container / rescore-consumer Worker, the running-style Cloudflare
+// pipeline, and the WF training loop's aggregate_bucket_eval_duckdb.py Stage 4
+// respectively). Local Postgres never receives those rows, so any
 // replica-push mode (full-replace TRUNCATE, or incremental delete-missing /
 // re-incremental rollback-window delete) would erase Neon-only production
-// predictions. Keep these skipped entirely — never synced in either direction.
+// data. The bucket/global/subgroup evaluation tables are additionally exposed
+// to full-replace TRUNCATE even on an otherwise-safe incremental run, because
+// resolveStrategy falls back to full-replace whenever the local side lacks a
+// primary key (which they do, since local never writes them). Keep these
+// skipped entirely — never synced in either direction.
 const DEFAULT_NEON_WRITER_SKIP_TABLES = [
   "race_running_style_model_predictions",
   "race_finish_position_model_predictions",
+  "model_prediction_bucket_evaluations",
+  "model_prediction_evaluations",
+  "model_prediction_subgroup_evaluations",
 ];
 
 export function resolveSkipTables(env: Record<string, string | undefined>): ReadonlySet<string> {

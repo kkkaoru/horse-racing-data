@@ -2577,19 +2577,37 @@ describe("decideVerifyMismatchAction re-incremental action", () => {
 describe("resolveSkipTables", () => {
   it("returns the Neon-writer skip tables when REPLICA_SYNC_SKIP_TABLES is unset", () => {
     expect(resolveSkipTables({})).toStrictEqual(
-      new Set(["race_running_style_model_predictions", "race_finish_position_model_predictions"]),
+      new Set([
+        "race_running_style_model_predictions",
+        "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
+      ]),
     );
   });
 
   it("returns the Neon-writer skip tables when REPLICA_SYNC_SKIP_TABLES is empty string", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "" })).toStrictEqual(
-      new Set(["race_running_style_model_predictions", "race_finish_position_model_predictions"]),
+      new Set([
+        "race_running_style_model_predictions",
+        "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
+      ]),
     );
   });
 
   it("returns the Neon-writer skip tables when REPLICA_SYNC_SKIP_TABLES is whitespace only", () => {
     expect(resolveSkipTables({ REPLICA_SYNC_SKIP_TABLES: "   " })).toStrictEqual(
-      new Set(["race_running_style_model_predictions", "race_finish_position_model_predictions"]),
+      new Set([
+        "race_running_style_model_predictions",
+        "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
+      ]),
     );
   });
 
@@ -2598,6 +2616,9 @@ describe("resolveSkipTables", () => {
       new Set([
         "race_running_style_model_predictions",
         "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
         "legacy_logs",
       ]),
     );
@@ -2610,6 +2631,9 @@ describe("resolveSkipTables", () => {
       new Set([
         "race_running_style_model_predictions",
         "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
         "table_a",
         "table_b",
         "table_c",
@@ -2624,6 +2648,9 @@ describe("resolveSkipTables", () => {
       new Set([
         "race_running_style_model_predictions",
         "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
         "table_a",
         "table_b",
         "table_c",
@@ -2636,6 +2663,9 @@ describe("resolveSkipTables", () => {
       new Set([
         "race_running_style_model_predictions",
         "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
         "table_a",
         "table_b",
       ]),
@@ -2647,6 +2677,9 @@ describe("resolveSkipTables", () => {
       new Set([
         "race_running_style_model_predictions",
         "race_finish_position_model_predictions",
+        "model_prediction_bucket_evaluations",
+        "model_prediction_evaluations",
+        "model_prediction_subgroup_evaluations",
         "table_a",
         "table_b",
       ]),
