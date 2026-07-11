@@ -3,6 +3,7 @@
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
+import { runCoverageSelfHeal, shouldRunCoverageSelfHealCron } from "./coverage-self-heal";
 import {
   PREDICT_CRON,
   shouldRunCoordinatorCron,
@@ -570,6 +571,17 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
       leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,
       now: new Date(event.scheduledTime),
     });
+    return;
+  }
+  if (shouldRunCoverageSelfHealCron(event.cron)) {
+    // Per-race coverage self-healing scan (doc §4.3,
+    // docs/cf-only-serving-architecture.md): the direct functional
+    // replacement for race-prediction-guard.sh's day-wide COUNT check.
+    // Re-enqueues only the specific races whose post time is >15 min past
+    // and still missing a complete prediction, respecting the existing
+    // focused-full DO claim/heartbeat/staleness semantics -- never a
+    // day-wide re-run. See coverage-self-heal.ts.
+    await runCoverageSelfHeal({ env, now: new Date(event.scheduledTime) });
     return;
   }
   if (shouldRunFeatureBuildCron(event.cron)) {

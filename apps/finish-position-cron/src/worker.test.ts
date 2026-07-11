@@ -15,6 +15,7 @@ const {
   completeFocusedFullRaceMock,
   runDayBasePrewarmMock,
   resolveCardMaxRaceBangoForKochiMock,
+  runCoverageSelfHealMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -26,6 +27,15 @@ const {
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => undefined);
   const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
+  const runCoverageSelfHeal = vi.fn(async () => ({
+    alreadyComplete: 0,
+    alreadyInFlight: 0,
+    candidates: 0,
+    enqueued: 0,
+    errors: 0,
+    escalated: 0,
+    scanned: 0,
+  }));
   return {
     getContainerMock: vi.fn(() => ({ start })),
     startMock: start,
@@ -38,6 +48,7 @@ const {
     completeFocusedFullRaceMock: completeFocusedFullRace,
     runDayBasePrewarmMock: runDayBasePrewarm,
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
+    runCoverageSelfHealMock: runCoverageSelfHeal,
   };
 });
 
@@ -72,6 +83,15 @@ vi.mock("./do-state", () => ({
 
 vi.mock("./day-base-prewarm", () => ({
   runDayBasePrewarm: runDayBasePrewarmMock,
+}));
+
+// shouldRunCoverageSelfHealCron is a pure string comparison against the real
+// cron constant (COVERAGE_SELF_HEAL_CRON, coverage-self-heal.ts) -- inlined
+// here as a literal rather than re-derived, mirroring the DLQ_QUEUE_NAME
+// literal in the "./dlq-consumer" mock above.
+vi.mock("./coverage-self-heal", () => ({
+  runCoverageSelfHeal: runCoverageSelfHealMock,
+  shouldRunCoverageSelfHealCron: (cron: string) => cron === "7,22,37,52 1-11 * * *",
 }));
 
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
@@ -132,6 +152,7 @@ beforeEach(() => {
   claimRescoreRaceMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
   runDayBasePrewarmMock.mockClear();
+  runCoverageSelfHealMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
@@ -325,6 +346,29 @@ test("handleScheduled coordinator cron does not start container or warm or enque
 test("handleScheduled does not run the coordinator for the rescore cron", async () => {
   await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
   expect(coordinatorTickMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled runs the coverage self-heal scan for the coverage self-heal cron", async () => {
+  await handleScheduled(makeEvent("7,22,37,52 1-11 * * *"), makeEnv());
+  expect(runCoverageSelfHealMock).toHaveBeenCalledTimes(1);
+  expect(runCoverageSelfHealMock).toHaveBeenCalledWith(
+    expect.objectContaining({ now: new Date("2026-06-02T18:00:00.000Z") }),
+  );
+});
+
+test("handleScheduled coverage self-heal cron does not start container, warm, coordinate, or day-base prewarm", async () => {
+  await handleScheduled(makeEvent("7,22,37,52 1-11 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+  expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not run the coverage self-heal scan for the coordinator cron", async () => {
+  await handleScheduled(makeEvent("*/10 1-11 * * *"), makeEnv());
+  expect(runCoverageSelfHealMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled dispatches the day-base prewarm for the feature-build cron", async () => {
