@@ -4,6 +4,10 @@ import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import {
+  getAllFinishPositionCellRoutingModelVersions,
+  resolveFinishPositionCellRoutingModelVersion,
+} from "../lib/finish-position-cell-routing";
+import {
   deriveFinishPositionWilsonScoreCI,
   type FinishPositionBucketFilter,
   type FinishPositionBucketMetrics,
@@ -2892,12 +2896,24 @@ const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
   return "nar";
 };
 
-const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = [
+const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   "jra-cb-v9-sim-2013-clean",
   "iter12-nar-xgb-hpo-v8-clean188",
   "banei-cb-v9-sim-2011",
   "banei-cb-v8-window2011-wf-15y",
-] as const;
+];
+
+// The base leak-free models plus every cell-routing variant model_version
+// (derived from finish-position-cell-routing.ts, itself parity-tested
+// against the container's cell_routing.json), so a routed prediction is
+// never filtered out downstream by allowed_prediction_model_versions even
+// when priority 0 below selects it.
+const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = Array.from(
+  new Set([
+    ...FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS,
+    ...getAllFinishPositionCellRoutingModelVersions(),
+  ]),
+);
 
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
@@ -2914,6 +2930,10 @@ export const getFinishPositionLambdarankPredictions = cache(
       async () => {
         if (runners.length <= 1) return [];
         const category = CATEGORY_FROM_RACE(race);
+        const cellVariantModelVersion = resolveFinishPositionCellRoutingModelVersion({
+          category,
+          race,
+        });
         try {
           const result = await getDb().execute<{
             model_version: string;
@@ -2946,6 +2966,20 @@ export const getFinishPositionLambdarankPredictions = cache(
             selected_model as (
               select model_version
               from (
+                select p0.model_version, 0 as priority, max(p0.prediction_generated_at) as recency
+                from race_finish_position_model_predictions p0
+                where ${
+                  cellVariantModelVersion === null
+                    ? sql`false`
+                    : sql`p0.model_version = ${cellVariantModelVersion}`
+                }
+                  and p0.source = ${race.source}
+                  and p0.kaisai_nen = ${race.kaisaiNen}
+                  and p0.kaisai_tsukihi = ${race.kaisaiTsukihi}
+                  and p0.keibajo_code = ${race.keibajoCode}
+                  and p0.race_bango = ${race.raceBango}
+                group by p0.model_version
+                union all
                 select p.model_version, 1 as priority, max(p.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p
                 join active on p.model_version =

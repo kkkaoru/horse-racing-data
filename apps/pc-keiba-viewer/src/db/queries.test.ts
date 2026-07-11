@@ -791,10 +791,59 @@ it("getFinishPositionLambdarankPredictions does not prioritize reverted NAR a957
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(/allowed_model_versions\(model_version\) as/u);
-  expect(queryText).not.toMatch(/p_cell/u);
-  expect(queryText).not.toMatch(/0 as priority/u);
   expect(queryText).not.toMatch(/nar-xgb-cell-a957d8b4-v1/u);
   expect(queryText).toMatch(/'nar'/u);
+});
+
+it("getFinishPositionLambdarankPredictions gates priority 0 to false for a race with no cell-routing rule", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/select p0\.model_version, 0 as priority/u);
+  expect(queryText).toMatch(/from race_finish_position_model_predictions p0/u);
+  expect(queryText).toMatch(/where false\s+and p0\.source = 'nar'/u);
+});
+
+it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch for a routed JRA race", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /where p0\.model_version = 'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u,
+  );
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u);
+  expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013'/u);
+});
+
+it("getFinishPositionLambdarankPredictions returns rows selected via the priority 0 cell-routing branch", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        predicted_rank: 1,
+        predicted_score: "0.93",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        predicted_rank: 2,
+        predicted_score: "0.51",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result.length).toBe(2);
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+  expect(result[0]?.predictedFinishNorm).toBe(0);
+  expect(result[1]?.predictedFinishNorm).toBe(1);
 });
 
 it("getFinishPositionLambdarankPredictions emits priority 2 active fallback guarded by exists clause", async () => {

@@ -446,11 +446,25 @@ elif ! docker info >/dev/null 2>&1; then
   fail "docker info failed (colima up but docker unreachable)"
 fi
 
-# Pre-flight 5: image exists locally; rebuild if not.
+# Pre-flight 5: always rebuild the image so a stale cache can never survive a
+# routing/model/pipeline deploy.
+#
+# Incident (2026-07-11): this step used to only build when the tag was
+# entirely MISSING (`docker image inspect` existence check), so a
+# previously-built image kept running forever regardless of git commits to
+# predict_lib/, cell_routing.json, or baked model artifacts. The image in
+# use that day was 7 days stale and had no JRA entry in its baked
+# cell_routing.json at all, so this deprecated local runner silently
+# overwrote every cell-routed JRA prediction (e.g. the venue-02 Hakodate
+# route added same-day) with the plain category-default model, shadowing
+# the correctly-routed Cloudflare Container predictions on the viewer's
+# display layer. Docker's build cache makes a no-op rebuild cheap (typically
+# a few seconds once the base layers are warm), so always building trades a
+# small constant cost for eliminating this staleness class entirely.
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  log "DRY_RUN: would inspect image $IMAGE_TAG and build from $DOCKERFILE_PATH if missing"
-elif ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-  log "image $IMAGE_TAG missing; building from $DOCKERFILE_PATH..."
+  log "DRY_RUN: would build image $IMAGE_TAG from $DOCKERFILE_PATH"
+else
+  log "building image $IMAGE_TAG from $DOCKERFILE_PATH (always-rebuild, cache-accelerated)..."
   if ! docker build -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$REPO_ROOT"; then
     fail "docker build $IMAGE_TAG failed"
   fi
