@@ -15,6 +15,15 @@
 #      champion model at cell granularity against whatever genuinely-served
 #      predictions now have finalized results. Logs ONE run per (category,
 #      task), with the per-cell breakdown as a table INSIDE that run.
+#   2b. `eval-champion-cells --window-days 60` for all three categories, the
+#      same command as step 2 but with an explicit trailing 60-day window
+#      instead of the 90-day default. This is a SEPARATE (category, task,
+#      window_days, as_of_date) idempotency key (see champion_cell_eval.py's
+#      cell_eval_key), so it logs its own run alongside step 2's 90-day run
+#      rather than colliding with or replacing it -- both windows accumulate
+#      daily, giving a shorter/fresher trailing-window view (e.g. for
+#      spotting a recent serving-coverage gap sooner) next to the existing
+#      longer one.
 #   3. `eval-cells` for all three categories (default trailing 90-day
 #      window, default --min-races 20): scores EVERY model_version that
 #      served enough volume this window -- champion, every cell-routed
@@ -99,6 +108,9 @@ echo "--- sync-production --date-from $YESTERDAY_JST --date-to $TODAY_JST --cate
 
 echo "--- eval-champion-cells --category jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei
+
+echo "--- eval-champion-cells --category jra,nar,banei --window-days 60 ---"
+"$UV_BIN" run python -m mlflow_tracking.cli eval-champion-cells --category jra,nar,banei --window-days 60
 
 echo "--- eval-cells --category jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli eval-cells --category jra,nar,banei
