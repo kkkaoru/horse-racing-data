@@ -94,6 +94,7 @@ from predict_lib.nar_etop2_override import (
     apply_nar_etop2_scores,
     is_nar_etop2_override_active,
 )
+from predict_lib.r2_client import r2_get_parquet
 from predict_lib.rescore import (
     RaceFreshSnapshot,
     RaceScope,
@@ -108,11 +109,16 @@ from predict_lib.serve import (
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
+    PrewarmBuildFn,
+    PrewarmParquetPayloadFn,
     R2Config,
+    build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     iter_predict_chunks,
+    iter_prewarm_chunks,
     parse_predict_params,
+    parse_prewarm_params,
     parse_request_path,
 )
 from predict_lib.transformer_scorer import (
@@ -837,6 +843,7 @@ def predict_category(
     models_dir: Path,
     window: PredictWindow,
     target_race: str | None = None,
+    r2_config: R2Config | None = None,
 ) -> int:
     # Score all races before opening the Neon write connection. The feature
     # build is the longest step (DuckDB base build + 14 layer scripts, typically
@@ -845,7 +852,10 @@ def predict_category(
     # and connection-free, so we defer the Neon connect until the first write.
     # ``target_race`` ("keibajo:bango") restricts the DuckDB build to one race so
     # the Container can generate features per race instead of scanning the day.
-    races = _build_feature_rows(category, window, target_race=target_race)
+    # ``r2_config`` is forwarded so the day-base/RACE_CHAIN split path (when
+    # enabled for this category) can fetch a prewarmed day-base from R2 --
+    # unused by the unmodified full-pipeline fallback.
+    races = _build_feature_rows(category, window, target_race=target_race, r2_config=r2_config)
     return _score_and_flush_races(database_url, category, models_dir, races)
 
 
@@ -891,6 +901,7 @@ def _build_feature_rows(
     category: Category,
     window: PredictWindow,
     target_race: str | None = None,
+    r2_config: R2Config | None = None,
 ) -> Mapping[str, list[Mapping[str, object]]]:
     """Run the repo feature pipeline and load the resulting parquet per race.
 
@@ -900,8 +911,35 @@ def _build_feature_rows(
     feature dicts for today's races (incl. UPCOMING). When ``target_race``
     ("keibajo:bango") is set it is forwarded to the DuckDB builder's
     ``--target-race`` so only that one race is built.
+
+    When ``target_race`` is set AND
+    ``predict_lib.pipeline_args.is_day_base_split_enabled(category)`` is True,
+    the focused per-race day-base/RACE_CHAIN split path
+    (``pipeline_runner.build_upcoming_feature_rows_split``) is tried first --
+    it re-runs only the RACE_CHAIN layers against a cached per-category+day
+    day-base instead of the full ``LAYER_CHAIN``. When that path returns
+    ``None`` (day-base unavailable, entry-list drift, or any error) this falls
+    through unchanged to the existing full ``build_upcoming_feature_rows``
+    call below -- the split path is purely an opt-in fast path, never a
+    behavioural change to the fallback.
     """
-    from pipeline_runner import build_upcoming_feature_rows  # bundled in image
+    from pipeline_runner import (  # bundled in image
+        build_upcoming_feature_rows,
+        build_upcoming_feature_rows_split,
+    )
+    from predict_lib.pipeline_args import is_day_base_split_enabled
+
+    if target_race is not None and is_day_base_split_enabled(category):
+        split_rows = build_upcoming_feature_rows_split(
+            category,
+            window.target_date,
+            window.days_ahead,
+            window.database_url,
+            target_race,
+            r2_config=r2_config,
+        )
+        if split_rows is not None:
+            return split_rows
 
     return build_upcoming_feature_rows(
         category,
@@ -992,88 +1030,6 @@ def _load_r2_config() -> R2Config | None:
         secret_access_key=secret_access_key,
         bucket=bucket,
     )
-
-
-def _r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
-    """Download an R2 object to ``dest_path``.
-
-    Returns ``True`` on success, ``False`` when the object does not exist (HTTP
-    404).  Any other error (network, auth) propagates to the caller.
-
-    Args:
-        r2:          R2 credentials and bucket name.
-        object_key:  R2 object key to download.
-        dest_path:   Local destination path (will be created / overwritten).
-    """
-    import hashlib
-    import hmac
-    import urllib.error
-    import urllib.request
-    from datetime import UTC, datetime
-
-    payload_hash = hashlib.sha256(b"").hexdigest()
-    now = datetime.now(UTC)
-    amzdate = now.strftime("%Y%m%dT%H%M%SZ")
-    datestamp = now.strftime("%Y%m%d")
-    host = f"{r2.account_id}.r2.cloudflarestorage.com"
-    url = f"https://{host}/{r2.bucket}/{object_key}"
-
-    canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amzdate}\n"
-    signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical_request = (
-        f"GET\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
-    )
-
-    credential_scope = f"{datestamp}/auto/s3/aws4_request"
-    string_to_sign = (
-        f"AWS4-HMAC-SHA256\n{amzdate}\n{credential_scope}\n"
-        + hashlib.sha256(canonical_request.encode()).hexdigest()
-    )
-
-    def _sign(key: bytes, msg: str) -> bytes:
-        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
-
-    signing_key = _sign(
-        _sign(
-            _sign(
-                _sign(
-                    f"AWS4{r2.secret_access_key}".encode(),
-                    datestamp,
-                ),
-                "auto",
-            ),
-            "s3",
-        ),
-        "aws4_request",
-    )
-    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
-    auth_header = (
-        f"AWS4-HMAC-SHA256 Credential={r2.access_key_id}/{credential_scope},"
-        f" SignedHeaders={signed_headers}, Signature={signature}"
-    )
-    req = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "Authorization": auth_header,
-            "x-amz-date": amzdate,
-            "x-amz-content-sha256": payload_hash,
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return False
-        raise
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
-    dest_path.write_bytes(data)
-    print(
-        f"[predict-serve] R2 get ok key={object_key} bytes={len(data)}",
-        file=sys.stderr,
-    )
-    return True
 
 
 RACE_ID_KEIBAJO_INDEX: int = 3
@@ -1202,7 +1158,7 @@ def _make_predict_fn(
         target_race = f"{keibajo_code}:{race_bango}" if keibajo_code and race_bango else None
         window = PredictWindow(target_date=run_date, days_ahead=days_ahead, database_url=source_url)
         written = predict_category(
-            database_url, category, models_dir, window, target_race=target_race
+            database_url, category, models_dir, window, target_race=target_race, r2_config=r2
         )
         # Record the last successful run so parquet_payload_fn can retrieve it.
         if _last_run:
@@ -1269,6 +1225,50 @@ def _make_predict_fn(
     return _predict, _parquet_payload, _per_race_parquet_payloads
 
 
+def _make_prewarm_fn(database_url: str) -> PrewarmBuildFn:
+    """Build the ``GET /prewarm-day-base`` build callable bound to ``database_url``.
+
+    Mirrors ``_make_predict_fn``'s closure-binding pattern: ``serve.py`` stays
+    I/O-free, so the real Neon URL is bound here (not passed through the query
+    string) and ``pipeline_runner.build_day_base`` does the actual DuckDB base
+    build + DAY_CHAIN layers.
+    """
+
+    def _prewarm(category_str: str, run_date: str, days_ahead: int) -> Path | None:
+        from pipeline_runner import build_day_base  # bundled in image
+        from predict_lib.model_meta import resolve_category
+
+        category = resolve_category(category_str)
+        return build_day_base(category, run_date, days_ahead, database_url)
+
+    return _prewarm
+
+
+def _prewarm_parquet_payload(
+    category_str: str, run_date: str, day_base_dir: Path
+) -> tuple[str, str] | None:
+    """Read the day-base parquet and return ``(base64, R2 key)`` for the Worker
+    DO proxy -- the ``PrewarmParquetPayloadFn`` injected into
+    :func:`predict_lib.serve.iter_prewarm_chunks`. Returns ``None`` (non-blocking)
+    when no parquet file is found under ``day_base_dir``.
+    """
+    parquet_files = list(day_base_dir.rglob("*.parquet"))
+    if not parquet_files:
+        print(
+            f"[predict-serve] prewarm_parquet_payload skip: no parquet in {day_base_dir}",
+            file=sys.stderr,
+        )
+        return None
+    data = parquet_files[0].read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    parquet_key = build_r2_day_base_key(category_str, run_date)
+    print(
+        f"[predict-serve] prewarm_parquet_payload ready key={parquet_key} bytes={len(data)}",
+        file=sys.stderr,
+    )
+    return encoded, parquet_key
+
+
 def _ensure_cached_parquet(
     final_dir: Path,
     category_str: str,
@@ -1289,7 +1289,7 @@ def _ensure_cached_parquet(
         )
     object_key = build_r2_feat_cache_key(category_str, run_date)
     dest_path = final_dir / "features.parquet"
-    if not _r2_get_parquet(r2, object_key, dest_path):
+    if not r2_get_parquet(r2, object_key, dest_path):
         raise CacheMissError(f"R2 cache miss: {object_key} not found in bucket {r2.bucket}")
 
 
@@ -1642,13 +1642,16 @@ def _make_focused_full_completion_fn(database_url: str) -> FocusedFullCompletion
 
 
 class _PredictHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal HTTP/1.1 request handler for ``/ping`` and ``/predict``."""
+    """Minimal HTTP/1.1 request handler for ``/ping``, ``/predict``, and
+    ``/prewarm-day-base``."""
 
     predict_fn: PredictCategoryFn  # injected by make_handler_class
     parquet_payload_fn: ParquetPayloadFn  # injected by make_handler_class
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn  # injected by make_handler_class
     rescore_factory: RescoreFactory | None  # injected by make_handler_class
     focused_full_completion_fn: FocusedFullCompletionFn | None  # injected by make_handler_class
+    prewarm_fn: PrewarmBuildFn | None  # injected by make_handler_class
+    prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None  # injected by make_handler_class
 
     @override
     def log_message(self, format: str, *args: object) -> None:
@@ -1724,6 +1727,56 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 pass
             return
 
+        if path == "/prewarm-day-base":
+            prewarm_result = parse_prewarm_params(query)
+            if isinstance(prewarm_result, str):
+                # Validation error — return 400 before writing any body.
+                error_body = prewarm_result.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+
+            if self.prewarm_fn is None:
+                # Prewarm not wired (e.g. local/test run without the day-base
+                # split configured) — 404 rather than silently no-op.
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+            # Start 200 chunked response immediately so the DO renews its timeout
+            # (same keepalive contract as /predict — see iter_prewarm_chunks).
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.end_headers()
+
+            for chunk in iter_prewarm_chunks(
+                prewarm_result,
+                self.prewarm_fn,
+                parquet_payload_fn=self.prewarm_parquet_payload_fn,
+            ):
+                size_line = f"{len(chunk):X}\r\n".encode()
+                try:
+                    self.wfile.write(size_line + chunk + b"\r\n")
+                    self.wfile.flush()
+                except OSError as write_err:
+                    print(
+                        f"[predict-serve] write error: {write_err}",
+                        file=sys.stderr,
+                    )
+                    return
+
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
+            return
+
         # Unknown path
         self.send_response(404)
         self.send_header("Content-Length", "0")
@@ -1736,6 +1789,8 @@ def make_handler_class(
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None,
     focused_full_completion_fn: FocusedFullCompletionFn | None,
+    prewarm_fn: PrewarmBuildFn | None = None,
+    prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
 ) -> type[_PredictHandler]:
     """Return a ``_PredictHandler`` subclass with bound callables.
 
@@ -1746,12 +1801,18 @@ def make_handler_class(
     stored as a ``staticmethod`` to avoid the same ``self`` injection.
     ``focused_full_completion_fn`` follows the same optional-``staticmethod``
     pattern as ``rescore_factory`` since it may be ``None`` in tests / local runs.
+    ``prewarm_fn`` / ``prewarm_parquet_payload_fn`` follow the same
+    optional-``staticmethod`` pattern -- ``None`` when the day-base prewarm
+    endpoint is not wired (e.g. a local run without R2 configured), in which
+    case ``do_GET`` 404s ``/prewarm-day-base`` instead of erroring.
     """
     _predict: PredictCategoryFn = predict_fn
     _parquet_payload: ParquetPayloadFn = parquet_payload_fn
     _per_race_parquet_payload: PerRaceParquetPayloadFn = per_race_parquet_payload_fn
     _rescore_factory: RescoreFactory | None = rescore_factory
     _completion: FocusedFullCompletionFn | None = focused_full_completion_fn
+    _prewarm: PrewarmBuildFn | None = prewarm_fn
+    _prewarm_parquet_payload: PrewarmParquetPayloadFn | None = prewarm_parquet_payload_fn
 
     @final
     class _BoundHandler(_PredictHandler):
@@ -1760,6 +1821,10 @@ def make_handler_class(
         per_race_parquet_payload_fn = staticmethod(_per_race_parquet_payload)
         rescore_factory = staticmethod(_rescore_factory) if _rescore_factory is not None else None
         focused_full_completion_fn = staticmethod(_completion) if _completion is not None else None
+        prewarm_fn = staticmethod(_prewarm) if _prewarm is not None else None
+        prewarm_parquet_payload_fn = (
+            staticmethod(_prewarm_parquet_payload) if _prewarm_parquet_payload is not None else None
+        )
 
     return _BoundHandler
 
@@ -1771,6 +1836,8 @@ def serve_http(
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn,
     rescore_factory: RescoreFactory | None = None,
     focused_full_completion_fn: FocusedFullCompletionFn | None = None,
+    prewarm_fn: PrewarmBuildFn | None = None,
+    prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
 
@@ -1786,6 +1853,8 @@ def serve_http(
         per_race_parquet_payload_fn,
         rescore_factory,
         focused_full_completion_fn,
+        prewarm_fn,
+        prewarm_parquet_payload_fn,
     )
     with http.server.HTTPServer(("0.0.0.0", port), handler_cls) as httpd:
         print(f"[predict-serve] listening on :{port}", file=sys.stderr)
@@ -1826,6 +1895,7 @@ def main() -> int:
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
         focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
+        prewarm_fn = _make_prewarm_fn(source_url)
         serve_http(
             HTTP_PORT,
             predict_fn,
@@ -1833,6 +1903,8 @@ def main() -> int:
             per_race_payload_fn,
             rescore_factory,
             focused_full_completion_fn,
+            prewarm_fn,
+            _prewarm_parquet_payload,
         )
         return 0  # unreachable but satisfies the return type
 

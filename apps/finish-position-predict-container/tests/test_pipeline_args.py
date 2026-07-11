@@ -5,15 +5,22 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from predict_lib.model_meta import CATEGORIES, Category
 from predict_lib.pipeline_args import (
     COURSE_LOOKUP_PATH,
+    DAY_BASE_SPLIT_ENABLED_ENV,
+    DAY_CHAIN,
     EXOTIC_CATEGORY_BY_CATEGORY,
     EXOTIC_SCRIPT,
     HISTORY_FROM_DATE,
     JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
     KOHAN3F_GOING_SCRIPT,
+    LAYER_CHAIN,
+    RACE_CHAIN,
     RELATIONSHIP_CATEGORY_BY_CATEGORY,
     RELATIONSHIP_SCRIPT,
     SCRIPTS_WITH_FROM_DATE,
@@ -27,7 +34,10 @@ from predict_lib.pipeline_args import (
     SIRE_VENUE_BIAS_SCRIPT,
     build_base_argv,
     build_layer_argv,
+    day_chain_for,
+    is_day_base_split_enabled,
     layer_chain_for,
+    race_chain_for,
 )
 
 BUILDER = Path("/app/pipeline/finish_position_features_duckdb.py")
@@ -1168,3 +1178,119 @@ def test_build_layer_argv_jra_jockey_pedigree_cell_target_race() -> None:
     )
     assert argv[-2:] == ["--target-race", "02:01"]
     assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT in SCRIPTS_WITH_TARGET_RACE_SCOPE
+
+
+# ---------------------------------------------------------------------------
+# DAY_CHAIN / RACE_CHAIN split (per-race rebuild speedup)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("category", CATEGORIES)
+def test_day_chain_and_race_chain_partition_layer_chain(category: Category) -> None:
+    """Regression guard: DAY_CHAIN union RACE_CHAIN must equal LAYER_CHAIN
+    exactly, and the two must be disjoint — a future LAYER_CHAIN edit that
+    forgets to categorize a new script into DAY/RACE must fail loudly here
+    instead of silently dropping (or double-running) a layer at serve time."""
+    day = frozenset(DAY_CHAIN[category])
+    race = frozenset(RACE_CHAIN[category])
+    full = frozenset(LAYER_CHAIN[category])
+    assert day | race == full
+    assert day & race == frozenset()
+
+
+def test_day_chain_jra_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("jra")
+    day = day_chain_for("jra")
+    assert [s for s in full if s in set(day)] == list(day)
+
+
+def test_race_chain_jra_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("jra")
+    race = race_chain_for("jra")
+    assert [s for s in full if s in set(race)] == list(race)
+
+
+def test_day_chain_nar_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("nar")
+    day = day_chain_for("nar")
+    assert [s for s in full if s in set(day)] == list(day)
+
+
+def test_race_chain_nar_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("nar")
+    race = race_chain_for("nar")
+    assert [s for s in full if s in set(race)] == list(race)
+
+
+def test_day_chain_banei_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("ban-ei")
+    day = day_chain_for("ban-ei")
+    assert [s for s in full if s in set(day)] == list(day)
+
+
+def test_race_chain_banei_preserves_layer_chain_relative_order() -> None:
+    full = layer_chain_for("ban-ei")
+    race = race_chain_for("ban-ei")
+    assert [s for s in full if s in set(race)] == list(race)
+
+
+def test_jra_jockey_pedigree_cell_script_stays_in_race_chain() -> None:
+    # Deliberate exception (same-day-cumulative live PG query) — must never
+    # move to DAY_CHAIN, see the DAY_CHAIN module comment.
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT in race_chain_for("jra")
+    assert JRA_JOCKEY_PEDIGREE_CELL_SCRIPT not in day_chain_for("jra")
+
+
+def test_race_chain_counts_match_architecture_spec() -> None:
+    assert len(day_chain_for("jra")) == 12
+    assert len(race_chain_for("jra")) == 5
+    assert len(day_chain_for("nar")) == 7
+    assert len(race_chain_for("nar")) == 3
+    assert len(day_chain_for("ban-ei")) == 6
+    assert len(race_chain_for("ban-ei")) == 1
+
+
+# ---------------------------------------------------------------------------
+# is_day_base_split_enabled — env-flag gate
+# ---------------------------------------------------------------------------
+
+
+def test_is_day_base_split_enabled_unset_disables_all_categories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(DAY_BASE_SPLIT_ENABLED_ENV, raising=False)
+    assert is_day_base_split_enabled("jra") is False
+    assert is_day_base_split_enabled("nar") is False
+    assert is_day_base_split_enabled("ban-ei") is False
+
+
+def test_is_day_base_split_enabled_empty_string_disables_all_categories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DAY_BASE_SPLIT_ENABLED_ENV, "")
+    assert is_day_base_split_enabled("jra") is False
+
+
+def test_is_day_base_split_enabled_single_category_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DAY_BASE_SPLIT_ENABLED_ENV, "jra")
+    assert is_day_base_split_enabled("jra") is True
+    assert is_day_base_split_enabled("nar") is False
+    assert is_day_base_split_enabled("ban-ei") is False
+
+
+def test_is_day_base_split_enabled_multi_category_allowlist_with_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DAY_BASE_SPLIT_ENABLED_ENV, " jra, nar ,")
+    assert is_day_base_split_enabled("jra") is True
+    assert is_day_base_split_enabled("nar") is True
+    assert is_day_base_split_enabled("ban-ei") is False
+
+
+def test_is_day_base_split_enabled_unknown_token_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(DAY_BASE_SPLIT_ENABLED_ENV, "jraa,typo")
+    assert is_day_base_split_enabled("jra") is False

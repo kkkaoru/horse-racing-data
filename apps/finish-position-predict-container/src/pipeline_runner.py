@@ -50,8 +50,12 @@ from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
     build_base_argv,
     build_layer_argv,
+    day_chain_for,
     layer_chain_for,
+    race_chain_for,
 )
+from predict_lib.r2_client import r2_get_parquet
+from predict_lib.serve import R2Config, build_r2_day_base_key
 
 PIPELINE_DIR: Final[Path] = Path("/app/pipeline")
 DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py"
@@ -259,6 +263,20 @@ def _duckdb_temp_dir(category: Category, target_date: str, target_race: str | No
     return WORK_DIR / "duckdb-spill" / f"{category}-{target_date}-{target_label}"
 
 
+def _day_base_dir(category: Category, target_date: str) -> Path:
+    """Return the per-category+day work dir for the DAY_CHAIN-only day-base build.
+
+    Deliberately named ``daybase-{category}-{target_date}`` (NOT
+    ``feat-{category}-...``) so it never matches the ``feat-{category}-*``
+    glob that :func:`_reset_category_work_dirs` sweeps between sequential
+    same-category focused-full races -- see that function's docstring for the
+    "excluded by construction" invariant this naming choice guarantees, and
+    ``tests/test_pipeline_runner.py::test_reset_category_work_dirs_does_not_delete_day_base_dir``
+    for the regression test pinning it.
+    """
+    return WORK_DIR / f"daybase-{category}-{target_date}"
+
+
 def _log_pipeline_progress(message: str) -> None:
     if debug_logs_enabled():
         print(f"[pipeline] {message}", file=sys.stderr, flush=True)
@@ -418,6 +436,14 @@ def _reset_category_work_dirs(category: Category, final_dir: Path) -> None:
     The race-scoped ``duckdb-spill`` dir is intentionally NOT removed here: it
     is already keyed per race (category + target_date + target_race) and cleaned
     separately, so it never collides across sequential same-category races.
+
+    The per-category+day ``daybase-{category}-{target_date}`` dir (see
+    :func:`_day_base_dir`) is ALSO intentionally excluded from this sweep --
+    by construction, not by an extra guard clause: its name does not match the
+    ``feat-{category}-*`` glob below, so a stale-work-dir reset for a focused
+    per-race full request never evicts the day-base cache that
+    :func:`ensure_day_base` / :func:`build_pipeline_from_day_base` rely on for
+    every OTHER race of the same category+day.
 
     ``shutil.rmtree(..., ignore_errors=True)`` makes a missing dir (the first
     race in a process) a no-op.
@@ -602,3 +628,532 @@ def build_pipeline(
         f"done pipeline category={category} target_race={target_label} output={final_dir}"
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# DAY_CHAIN / RACE_CHAIN split (per-race rebuild speedup)
+#
+# docs/cf-only-serving-architecture.md §2-3 +
+# docs/finish-position-cloudflare-container/08-per-race-rebuild-plan.md.
+# ---------------------------------------------------------------------------
+
+# race_id format emitted by the DuckDB base build:
+# "source:kaisai_nen:kaisai_tsukihi:keibajo_code:race_bango" (see
+# finish_position_features_duckdb.py). ``day_base_covers_entry_list`` matches
+# the day-base's own rows for one race by splitting this string rather than
+# reconstructing it (mirrors ``predict_upcoming._split_parquet_by_race``'s
+# identical split-based matching -- the constants are duplicated rather than
+# imported because ``predict_upcoming`` already imports FROM this module and
+# a reverse import would be circular).
+_RACE_ID_KEIBAJO_SPLIT_PART: Final[int] = 4  # DuckDB split_part is 1-indexed
+_RACE_ID_BANGO_SPLIT_PART: Final[int] = 5
+
+
+def build_day_base(
+    category: Category,
+    target_date: str,
+    days_ahead: int,
+    database_url: str,
+    realtime_odds_path: Path | None = None,
+    venue_weather_dir: Path | None = None,
+) -> Path | None:
+    """Run the DuckDB base build + DAY_CHAIN layers once per category+day.
+
+    Returns the day-base's ``final`` parquet directory on success, or ``None``
+    when the base build emits zero target rows for ``target_date`` (mirrors
+    :func:`build_pipeline`'s ``has_parquet_output`` contract).
+
+    Why the base build belongs HERE (day-base, whole-day scope, no
+    ``--target-race``) and not in the per-race ``RACE_CHAIN`` path
+    -------------------------------------------------------------------
+    The DuckDB base build (``finish_position_features_duckdb.py``) emits a
+    handful of columns straight off the target row: ``tansho_odds``,
+    ``tansho_ninkijun``, ``popularity_score``, ``odds_score``,
+    ``current_bataiju``, ``target_zogen_sa``, and
+    ``babajotai_code_shiba`` / ``babajotai_code_dirt``. All seven are
+    RACE-FRESH in principle -- odds and weight move up to post time -- so it
+    is reasonable to ask whether freezing them at day-base build time
+    (~09:30 JST, once per category+day) rather than re-fetching them per race
+    silently stales the served vector. It does not, for three independently
+    sufficient reasons:
+
+    1. Verified via the actual SQL, not assumed: none of these seven columns
+       are RE-FETCHED by any ``RACE_CHAIN`` layer script. For example,
+       ``add-baba-pedigree-affinity-features.py``'s ``current_baba_condition``
+       (~line 331) is `rb.baba_cond` sourced from the INPUT PARQUET's own
+       ``babajotai_code_shiba`` / ``_dirt`` columns (a CTE over the base
+       build's own output) -- not an independent live PG query. So whether the
+       base build ran at day-base time or at old per-race time, the RACE_CHAIN
+       layers consume whatever the base build already wrote; splitting the
+       base build out of the per-race path changes WHEN these 7 columns are
+       computed, not WHAT downstream layers see.
+    2. The already-deployed ``mode=rescore`` path
+       (``predict_lib.rescore.apply_fresh_snapshots``, wired in
+       ``predict_upcoming._make_rescore_fn``) already re-fetches live odds /
+       weight and recomputes exactly these late-binding columns close to race
+       post time, INDEPENDENT of and unaffected by this split. It is a
+       separate freshness layer that runs on TOP of whatever
+       ``mode=full`` / day-base produced, both before and after this change.
+    3. For the mandatory byte-parity acceptance test
+       (``tests/test_day_base_parity.py``) against HISTORICAL dates, this is a
+       non-issue: for a past, already-settled race, ``tansho_odds`` /
+       ``tansho_ninkijun`` / ``babajotai_code_*`` / ``bataiju`` in
+       ``jvd_se`` / ``nvd_se`` are FIXED (no live odds movement), so the OLD
+       (full rebuild) and NEW (day-base + race-chain) paths read identical
+       values regardless of when each subprocess ran within the same test.
+
+    This also exactly matches the reference architecture this design ports
+    from: the Mac-batch pipeline builds its base once per day and relies on a
+    separate freshness layer for late-binding columns, the same shape as here.
+
+    ``realtime_odds_path`` / ``venue_weather_dir`` are forwarded to the base
+    build exactly as :func:`build_pipeline` forwards them -- when the caller
+    (the ``/prewarm-day-base`` HTTP path) chooses to fetch them before this
+    call, the day-base's frozen odds/weather snapshot reflects that fetch;
+    when omitted (``None``), the base build falls back to its existing
+    NULL-odds / NULL-weather path unchanged, same as always.
+    """
+    day_dir = _day_base_dir(category, target_date)
+    # A retried/failed prior day-base build for the SAME category+day must not
+    # leave partial base/layer dirs behind -- reset unconditionally before
+    # building (mirrors _reset_category_work_dirs's rationale for the
+    # per-race path, scoped to this day-base's own isolated dir tree).
+    shutil.rmtree(day_dir, ignore_errors=True)
+    day_dir.mkdir(parents=True, exist_ok=True)
+    base_dir = day_dir / "base"
+    duckdb_temp_dir = day_dir / "duckdb-spill"
+    duckdb_temp_dir.mkdir(parents=True, exist_ok=True)
+    chain = day_chain_for(category)
+    run_id = f"{category}:{target_date}:daybase:{uuid.uuid4().hex[:8]}"
+    base_start = perf_counter()
+    _log_pipeline_progress(
+        f"step=daybase-base index=0 status=start category={category} "
+        f"target_date={target_date} days_ahead={days_ahead} elapsed_seconds=0.000"
+    )
+    try:
+        run_with_stderr_capture(
+            build_base_argv(
+                DUCKDB_BUILDER,
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                base_dir,
+                realtime_odds_path,
+                venue_weather_dir,
+                None,  # target_race: whole-day scope -- every race of the day
+                temp_dir=duckdb_temp_dir,
+            )
+        )
+    except Exception:
+        base_elapsed = perf_counter() - base_start
+        _log_pipeline_progress(
+            f"step=daybase-base index=0 status=failed category={category} "
+            f"elapsed_seconds={base_elapsed:.3f}"
+        )
+        record_layer_timing_row(
+            database_url,
+            run_id,
+            category,
+            target_date,
+            None,
+            0,
+            len(chain),
+            "__daybase_base__",
+            "failed",
+            base_elapsed,
+            base_elapsed,
+        )
+        raise
+    base_elapsed = perf_counter() - base_start
+    _log_pipeline_progress(
+        f"step=daybase-base index=0 status=done category={category} "
+        f"elapsed_seconds={base_elapsed:.3f}"
+    )
+    record_layer_timing_row(
+        database_url,
+        run_id,
+        category,
+        target_date,
+        None,
+        0,
+        len(chain),
+        "__daybase_base__",
+        "done",
+        base_elapsed,
+        base_elapsed,
+    )
+    if not has_parquet_output(base_dir):
+        _log_pipeline_progress(
+            f"step=daybase-layers index=0 status=skipped category={category} "
+            f"reason=no-parquet elapsed_seconds=0.000"
+        )
+        return None
+    current = base_dir
+    for index, script in enumerate(chain):
+        nxt = day_dir / f"layer-{index}"
+        layer_start = perf_counter()
+        _log_pipeline_progress(
+            f"step=daybase-layer index={index + 1}/{len(chain)} status=start "
+            f"category={category} script={script} elapsed_seconds=0.000"
+        )
+        try:
+            run_with_stderr_capture(
+                build_layer_argv(
+                    script,
+                    category,
+                    LAYER_DIR,
+                    current,
+                    nxt,
+                    database_url,
+                    target_date=target_date,
+                    target_race=None,
+                )
+            )
+        except Exception:
+            layer_elapsed = perf_counter() - layer_start
+            _log_pipeline_progress(
+                f"step=daybase-layer index={index + 1}/{len(chain)} status=failed "
+                f"category={category} script={script} elapsed_seconds={layer_elapsed:.3f}"
+            )
+            record_layer_timing_row(
+                database_url,
+                run_id,
+                category,
+                target_date,
+                None,
+                index + 1,
+                len(chain),
+                script,
+                "failed",
+                layer_elapsed,
+                perf_counter() - base_start,
+            )
+            raise
+        layer_elapsed = perf_counter() - layer_start
+        _log_pipeline_progress(
+            f"step=daybase-layer index={index + 1}/{len(chain)} status=done "
+            f"category={category} script={script} elapsed_seconds={layer_elapsed:.3f}"
+        )
+        record_layer_timing_row(
+            database_url,
+            run_id,
+            category,
+            target_date,
+            None,
+            index + 1,
+            len(chain),
+            script,
+            "done",
+            layer_elapsed,
+            perf_counter() - base_start,
+        )
+        current = nxt
+    final_dir = day_dir / "final"
+    shutil.rmtree(final_dir, ignore_errors=True)
+    current.rename(final_dir)
+    _log_pipeline_progress(
+        f"done daybase category={category} target_date={target_date} output={final_dir}"
+    )
+    return final_dir
+
+
+def ensure_day_base(
+    category: Category,
+    target_date: str,
+    days_ahead: int,
+    database_url: str,
+    r2_config: R2Config | None,
+) -> Path | None:
+    """Resolve the cached day-base parquet dir for category+day, or ``None``.
+
+    Never raises and never builds -- pure freshness/fallback resolution
+    mirroring ``weather_fetcher.fetch_venue_weather_dir``'s
+    fetch/materialize/fallback shape:
+
+    1. Local disk fast path -- if this container process already built (or
+       downloaded) the day-base for this category+day, return it immediately.
+       This is the common case for the 2nd+ race of the day served by the same
+       long-lived container process.
+    2. R2 fast path -- when ``r2_config`` is provided, GET
+       ``build_r2_day_base_key(category, target_date)`` (the prewarm job's
+       upload target) into the local day-base dir and return it on success.
+    3. Otherwise return ``None`` -- the caller decides whether to build the
+       day-base synchronously via :func:`build_day_base` or fall back to the
+       full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
+       function itself never blocks on a multi-minute build.
+    """
+    day_dir = _day_base_dir(category, target_date)
+    final_dir = day_dir / "final"
+    if has_parquet_output(final_dir):
+        return final_dir
+    if r2_config is None:
+        return None
+    object_key = build_r2_day_base_key(category, target_date)
+    dest_path = final_dir / "features.parquet"
+    try:
+        if r2_get_parquet(r2_config, object_key, dest_path):
+            return final_dir
+    except Exception as exc:
+        print(
+            f"[day-base] ensure_day_base r2 fetch failed category={category} "
+            f"target_date={target_date} key={object_key} error={exc}",
+            file=sys.stderr,
+        )
+    return None
+
+
+def day_base_covers_entry_list(
+    day_base_dir: Path,
+    category: Category,
+    target_race: str,
+    database_url: str,
+) -> bool:
+    """True when every CURRENT entrant of ``target_race`` appears in the day-base.
+
+    Guards against entry-list drift between the day-base build (prewarm,
+    ~09:30 JST) and a later per-race request: a late scratch or a late add
+    changes the CURRENT entry list in Postgres without changing the already
+    frozen day-base parquet. When any current ``ketto_toroku_bango`` from
+    ``jvd_se`` / ``nvd_se`` is missing from the day-base's rows for this race,
+    the day-base is stale for this race.
+
+    ``target_race`` is ``"keibajo_code:race_bango"``. The day-base's own rows
+    for the race are matched by splitting its ``race_id`` column
+    (``source:kaisai_nen:kaisai_tsukihi:keibajo_code:race_bango``) rather than
+    reconstructing the full ``race_id`` string, since the exact
+    ``source`` / ``kaisai_nen`` / ``kaisai_tsukihi`` tokens the day-base build
+    used are not assumed here.
+
+    Returns ``False`` on ANY exception (missing dir, PG error, malformed
+    parquet, ...) -- fail toward the safe fallback (a fresh build / the full
+    ``LAYER_CHAIN`` path), never toward trusting a possibly-stale cache.
+    """
+    try:
+        import duckdb
+
+        from db_driver import connect_postgres
+
+        keibajo_code, race_bango = target_race.split(":", 1)
+        se_table = "jvd_se" if category == "jra" else "nvd_se"
+        conn = connect_postgres(database_url)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                select distinct ketto_toroku_bango
+                from {se_table}
+                where keibajo_code = %s and race_bango = %s
+                  and ketto_toroku_bango is not null
+                """,
+                (keibajo_code, race_bango),
+            )
+            current_horses = {str(row[0]).strip() for row in cursor.fetchall() if row[0]}
+        finally:
+            conn.close()
+        if not current_horses:
+            return False
+        glob_path = str(day_base_dir / "**" / "*.parquet")
+        con = duckdb.connect(":memory:")
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT ketto_toroku_bango FROM "
+                "read_parquet(?, hive_partitioning = false) "
+                "WHERE split_part(race_id, ':', ?) = ? AND split_part(race_id, ':', ?) = ?",
+                [
+                    glob_path,
+                    _RACE_ID_KEIBAJO_SPLIT_PART,
+                    keibajo_code,
+                    _RACE_ID_BANGO_SPLIT_PART,
+                    race_bango,
+                ],
+            ).fetchall()
+        finally:
+            con.close()
+        day_base_horses = {str(row[0]).strip() for row in rows if row[0]}
+        return current_horses.issubset(day_base_horses)
+    except Exception as exc:
+        print(
+            f"[day-base] entry-list drift check failed target_race={target_race} error={exc}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def build_pipeline_from_day_base(
+    category: Category,
+    target_date: str,
+    days_ahead: int,
+    database_url: str,
+    day_base_dir: Path,
+    final_dir: Path,
+    target_race: str,
+    realtime_odds_path: Path | None = None,
+    venue_weather_dir: Path | None = None,
+) -> bool:
+    """Run only the RACE_CHAIN layers against a pre-built day-base, into ``final_dir``.
+
+    Mirrors :func:`build_pipeline`'s per-layer loop (including the timing
+    instrumentation) but SKIPS the base build entirely: ``current`` starts at
+    ``day_base_dir`` and only :func:`predict_lib.pipeline_args.race_chain_for`
+    runs, with ``target_race`` forwarded to every RACE_CHAIN script's
+    ``build_layer_argv`` call (all RACE_CHAIN scripts already declare
+    ``SCRIPTS_WITH_TARGET_RACE_SCOPE`` support). The final layer's output is
+    renamed into ``final_dir`` using the SAME ``feat-{category}-v7-final``
+    contract :func:`build_pipeline` already uses, so
+    ``predict_upcoming.py``'s downstream scoring / R2-payload code needs ZERO
+    changes to consume either path's output.
+
+    ``days_ahead`` / ``realtime_odds_path`` / ``venue_weather_dir`` are
+    accepted for signature parity with :func:`build_pipeline` /
+    :func:`build_day_base` (the top-level orchestrator
+    :func:`build_upcoming_feature_rows_split` forwards the same argument set
+    to every stage) but are not currently consumed here: no RACE_CHAIN script
+    declares a ``--realtime-odds`` / ``--venue-weather-dir`` flag (only the
+    base build does, and this function never runs a base build), and the
+    RACE_CHAIN loop needs no day-window bound beyond ``target_race`` itself.
+    Kept in the signature so a future RACE_CHAIN script that DOES need
+    race-time-fresh odds/weather can be wired without changing every caller.
+    """
+    del days_ahead, realtime_odds_path, venue_weather_dir
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    _reset_category_work_dirs(category, final_dir)
+    chain = race_chain_for(category)
+    run_id = f"{category}:{target_date}:{target_race}:racechain:{uuid.uuid4().hex[:8]}"
+    run_start = perf_counter()
+    current = day_base_dir
+    for index, script in enumerate(chain):
+        nxt = WORK_DIR / f"feat-{category}-layer-{index}"
+        layer_start = perf_counter()
+        _log_pipeline_progress(
+            f"step=racechain-layer index={index + 1}/{len(chain)} status=start "
+            f"category={category} script={script} target_race={target_race} "
+            f"elapsed_seconds=0.000"
+        )
+        try:
+            run_with_stderr_capture(
+                build_layer_argv(
+                    script,
+                    category,
+                    LAYER_DIR,
+                    current,
+                    nxt,
+                    database_url,
+                    target_date=target_date,
+                    target_race=target_race,
+                )
+            )
+        except Exception:
+            layer_elapsed = perf_counter() - layer_start
+            _log_pipeline_progress(
+                f"step=racechain-layer index={index + 1}/{len(chain)} status=failed "
+                f"category={category} script={script} target_race={target_race} "
+                f"elapsed_seconds={layer_elapsed:.3f}"
+            )
+            record_layer_timing_row(
+                database_url,
+                run_id,
+                category,
+                target_date,
+                target_race,
+                index + 1,
+                len(chain),
+                script,
+                "failed",
+                layer_elapsed,
+                perf_counter() - run_start,
+            )
+            raise
+        layer_elapsed = perf_counter() - layer_start
+        _log_pipeline_progress(
+            f"step=racechain-layer index={index + 1}/{len(chain)} status=done "
+            f"category={category} script={script} target_race={target_race} "
+            f"elapsed_seconds={layer_elapsed:.3f}"
+        )
+        record_layer_timing_row(
+            database_url,
+            run_id,
+            category,
+            target_date,
+            target_race,
+            index + 1,
+            len(chain),
+            script,
+            "done",
+            layer_elapsed,
+            perf_counter() - run_start,
+        )
+        current = nxt
+    current.rename(final_dir)
+    _log_pipeline_progress(
+        f"done racechain category={category} target_race={target_race} output={final_dir}"
+    )
+    return True
+
+
+def build_upcoming_feature_rows_split(
+    category: Category,
+    target_date: str,
+    days_ahead: int,
+    database_url: str,
+    target_race: str,
+    r2_config: R2Config | None = None,
+) -> Mapping[str, list[Mapping[str, object]]] | None:
+    """Focused per-race build via the day-base + RACE_CHAIN split path.
+
+    Returns ``None`` on ANY gap -- day-base unavailable and could not be built
+    inline, entry-list drift, or any exception -- so the caller falls back to
+    the existing, unmodified :func:`build_upcoming_feature_rows` (full
+    ``LAYER_CHAIN``) for this race. This preserves the mandatory
+    fail-safe / never-fail-closed contract: a day-base problem degrades to the
+    slower-but-correct full path rather than serving a stale or incomplete
+    feature vector.
+
+    ``target_race`` (``"keibajo_code:race_bango"``) is REQUIRED here -- this
+    function is for the focused per-race full path
+    (``predict_lib.serve.is_focused_full_request``) only, never for
+    whole-category / whole-day dispatch.
+
+    Resolution order: :func:`ensure_day_base` (local-disk / R2 fast paths)
+    first; if that returns ``None``, build the day-base synchronously via
+    :func:`build_day_base` (slow, but still saves work for the NEXT race of
+    the same category+day via the day-base's on-disk cache). Realtime-odds /
+    venue-weather are intentionally NOT fetched on this path (``None`` /
+    ``None``) -- the day-base is expected to be pre-warmed once per day via
+    ``GET /prewarm-day-base`` before genuine odds volatility begins, and the
+    already-deployed ``mode=rescore`` path is the freshness layer for
+    late-binding odds/weight columns (see :func:`build_day_base`'s docstring).
+    """
+    try:
+        day_base_dir = ensure_day_base(category, target_date, days_ahead, database_url, r2_config)
+        if day_base_dir is None:
+            day_base_dir = build_day_base(category, target_date, days_ahead, database_url)
+        if day_base_dir is None:
+            return None
+        if not day_base_covers_entry_list(day_base_dir, category, target_race, database_url):
+            return None
+        final_dir = _final_parquet_dir(category)
+        built = build_pipeline_from_day_base(
+            category,
+            target_date,
+            days_ahead,
+            database_url,
+            day_base_dir,
+            final_dir,
+            target_race,
+        )
+        if not built:
+            return None
+        import pandas as pd
+
+        frame = pd.read_parquet(final_dir)
+        grouped: dict[str, list[Mapping[str, object]]] = {}
+        for race_id, race_frame in frame.groupby(RACE_ID_FIELD):
+            grouped[str(race_id)] = list(race_frame.to_dict(orient="records"))
+        return grouped
+    except Exception as exc:
+        _log_pipeline_progress(
+            f"build_upcoming_feature_rows_split failed category={category} "
+            f"target_race={target_race} error={exc}"
+        )
+        return None

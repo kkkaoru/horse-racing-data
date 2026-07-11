@@ -12,7 +12,9 @@ becomes diagnosable instead of an opaque ``CalledProcessError``).
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,6 +22,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import pipeline_runner
 from pipeline_runner import has_parquet_output, mask_pg_url, run_with_stderr_capture
+
+# ``_day_base_dir`` / ``_reset_category_work_dirs`` are module-private (leading
+# underscore); accessed via getattr + cast (same pattern as
+# ``test_predict_upcoming.py`` / ``test_model_meta.py``'s ``_env_flag``
+# helper) so this is a dynamic attribute lookup, not a static
+# ``pipeline_runner._day_base_dir`` expression -- strict basedpyright does not
+# flag ``reportPrivateUsage`` on this, and the attribute name is read from a
+# variable (not a string literal) so ruff's B009 does not fire either.
+_DAY_BASE_DIR_ATTR = "_day_base_dir"
+_RESET_CATEGORY_WORK_DIRS_ATTR = "_reset_category_work_dirs"
+_day_base_dir = cast(
+    Callable[[str, str], Path],
+    getattr(pipeline_runner, _DAY_BASE_DIR_ATTR),
+)
+_reset_category_work_dirs = cast(
+    Callable[[str, Path], None],
+    getattr(pipeline_runner, _RESET_CATEGORY_WORK_DIRS_ATTR),
+)
 
 
 def test_mask_pg_url_redacts_userinfo():
@@ -591,3 +611,710 @@ def test_record_layer_timing_row_swallows_execute_error_and_still_closes(
     assert "debug-timing write failed" in captured.err
     assert "boom-execute" in captured.err
     assert state["closed"] is True
+
+
+# ---------------------------------------------------------------------------
+# DAY_CHAIN / RACE_CHAIN split — _day_base_dir naming + reset exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_day_base_dir_naming_does_not_match_feat_glob():
+    day_dir = _day_base_dir("jra", "20260712")
+    assert day_dir == pipeline_runner.WORK_DIR / "daybase-jra-20260712"
+    assert not day_dir.name.startswith("feat-")
+
+
+def test_reset_category_work_dirs_does_not_delete_day_base_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Regression guard for the 'excluded by construction' invariant: the
+    per-race stale-work-dir sweep must never evict the per-category+day
+    day-base cache other races of the same day rely on."""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+
+    day_base_dir = _day_base_dir("jra", "20260712")
+    day_base_dir.mkdir(parents=True)
+    (day_base_dir / "marker.txt").write_text("keep-me")
+
+    final_dir = work_dir / "feat-jra-v7-final"
+    _reset_category_work_dirs("jra", final_dir)
+
+    assert day_base_dir.exists()
+    assert (day_base_dir / "marker.txt").read_text() == "keep-me"
+
+
+# ---------------------------------------------------------------------------
+# build_day_base
+# ---------------------------------------------------------------------------
+
+
+def test_build_day_base_returns_final_dir_on_success(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(
+        pipeline_runner, "day_chain_for", lambda _category: ("script-a.py", "script-b.py")
+    )
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+
+    captured_target_race: list[object] = []
+
+    def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
+        output_dir = args[5]
+        captured_target_race.append(args[8])
+        return ["base", str(output_dir)]
+
+    def fake_layer_argv(*args: object, **kwargs: object) -> list[str]:
+        output_dir = args[4]
+        return ["layer", str(output_dir)]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", fake_base_argv)
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    result = pipeline_runner.build_day_base("jra", "20260712", 2, "postgresql://u:p@h/db")
+
+    assert result == _day_base_dir("jra", "20260712") / "final"
+    assert result is not None
+    assert result.exists()
+    # Whole-day scope: base build must NOT receive --target-race.
+    assert captured_target_race == [None]
+
+
+def test_build_day_base_returns_none_when_base_build_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ("script-a.py",))
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: False)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", lambda *args, **kwargs: ["base"])
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", lambda args: None)
+
+    result = pipeline_runner.build_day_base("nar", "20260712", 0, "postgresql://u:p@h/db")
+
+    assert result is None
+
+
+def test_build_day_base_resets_stale_day_dir_before_building(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ("script-a.py",))
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+
+    stale_day_dir = _day_base_dir("jra", "20260712")
+    stale_final = stale_day_dir / "final"
+    stale_final.mkdir(parents=True)
+    (stale_final / "stale.parquet").write_bytes(b"STALE")
+
+    def fake_base_argv(*args: object, **kwargs: object) -> list[str]:
+        return ["base", str(args[5])]
+
+    def fake_layer_argv(*args: object, **kwargs: object) -> list[str]:
+        return ["layer", str(args[4])]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", fake_base_argv)
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    result = pipeline_runner.build_day_base("jra", "20260712", 0, "postgresql://u:p@h/db")
+
+    assert result is not None
+    assert result.exists()
+    assert not (result / "stale.parquet").exists()
+
+
+def test_build_day_base_propagates_base_build_failure_and_records_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ())
+    recorded: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        pipeline_runner, "record_layer_timing_row", lambda *args: recorded.append(args)
+    )
+    monkeypatch.setattr(pipeline_runner, "build_base_argv", lambda *args, **kwargs: ["base"])
+
+    def fake_run_raises(args: list[str]) -> None:
+        raise RuntimeError("base build boom")
+
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run_raises)
+
+    with pytest.raises(RuntimeError, match="base build boom"):
+        pipeline_runner.build_day_base("jra", "20260712", 0, "postgresql://u:p@h/db")
+
+    assert len(recorded) == 1
+    # Positional args: (database_url, run_id, category, run_date, target_race,
+    # layer_index, layer_total, layer_script, status, elapsed, cumulative).
+    assert recorded[0][7] == "__daybase_base__"
+    assert recorded[0][8] == "failed"
+
+
+def test_build_day_base_signature_accepts_realtime_and_weather():
+    import inspect
+
+    sig = inspect.signature(pipeline_runner.build_day_base)
+    assert "realtime_odds_path" in sig.parameters
+    assert "venue_weather_dir" in sig.parameters
+    assert sig.parameters["realtime_odds_path"].default is None
+    assert sig.parameters["venue_weather_dir"].default is None
+
+
+# ---------------------------------------------------------------------------
+# ensure_day_base
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_day_base_local_disk_hit_skips_r2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    final_dir = _day_base_dir("jra", "20260712") / "final"
+    partition = final_dir / "race_year=2026"
+    partition.mkdir(parents=True)
+    (partition / "data.parquet").write_bytes(b"PAR1")
+
+    called: list[bool] = []
+    monkeypatch.setattr(
+        pipeline_runner, "r2_get_parquet", lambda *args, **kwargs: called.append(True) or True
+    )
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "postgresql://u:p@h/db", None)
+
+    assert result == final_dir
+    assert called == []
+
+
+def test_ensure_day_base_r2_hit_when_local_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from predict_lib.serve import R2Config
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", lambda *args, **kwargs: True)
+
+    result = pipeline_runner.ensure_day_base("nar", "20260712", 0, "postgresql://u:p@h/db", r2)
+
+    assert result == _day_base_dir("nar", "20260712") / "final"
+
+
+def test_ensure_day_base_r2_miss_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from predict_lib.serve import R2Config
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", lambda *args, **kwargs: False)
+
+    result = pipeline_runner.ensure_day_base("ban-ei", "20260712", 0, "postgresql://u:p@h/db", r2)
+
+    assert result is None
+
+
+def test_ensure_day_base_no_local_no_r2_config_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "postgresql://u:p@h/db", None)
+
+    assert result is None
+
+
+def test_ensure_day_base_r2_exception_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    from predict_lib.serve import R2Config
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    def raiser(*args: object, **kwargs: object) -> bool:
+        raise RuntimeError("network boom")
+
+    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", raiser)
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "postgresql://u:p@h/db", r2)
+
+    assert result is None
+    captured = capsys.readouterr()
+    assert "network boom" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# day_base_covers_entry_list
+# ---------------------------------------------------------------------------
+
+
+def _write_day_base_parquet(day_base_dir: Path, rows: list[tuple[str, str]]) -> None:
+    import pandas as pd
+
+    day_base_dir.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows, columns=["race_id", "ketto_toroku_bango"])
+    frame.to_parquet(day_base_dir / "data.parquet")
+
+
+def test_day_base_covers_entry_list_true_when_all_current_horses_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(
+        day_base_dir,
+        [
+            ("jra:2026:0712:05:11", "H1"),
+            ("jra:2026:0712:05:11", "H2"),
+            ("jra:2026:0712:05:12", "H3"),
+        ],
+    )
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            pass
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("H1",), ("H2",)]
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is True
+
+
+def test_day_base_covers_entry_list_false_when_current_horse_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            pass
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("H1",), ("H2",)]  # H2 scratched-in / late add, not in day-base
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is False
+
+
+def test_day_base_covers_entry_list_only_matches_target_race_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A horse present elsewhere in the day-base but NOT under the target
+    race's own keibajo/bango must not count as coverage — proves the SQL
+    filter is scoped to the target race, not the whole day-base."""
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(
+        day_base_dir,
+        [
+            ("jra:2026:0712:05:11", "H1"),
+            ("jra:2026:0712:06:11", "H9"),
+        ],
+    )
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            pass
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("H9",)]
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is False
+
+
+def test_day_base_covers_entry_list_false_when_no_current_entrants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            pass
+
+        def fetchall(self) -> list[tuple[str]]:
+            return []
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is False
+
+
+def test_day_base_covers_entry_list_false_on_pg_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
+
+    def raiser(_url: str) -> None:
+        raise RuntimeError("connect boom")
+
+    monkeypatch.setattr(db_driver, "connect_postgres", raiser)
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is False
+    captured = capsys.readouterr()
+    assert "connect boom" in captured.err
+
+
+def test_day_base_covers_entry_list_uses_nvd_se_for_nar(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import db_driver
+
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(day_base_dir, [("nar:2026:0712:30:03", "H1")])
+
+    captured_sql: list[str] = []
+
+    class FakeCursor:
+        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
+            captured_sql.append(sql)
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("H1",)]
+
+    class FakeConn:
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "nar", "30:03", "postgresql://u:p@h/db"
+    )
+
+    assert result is True
+    assert any("nvd_se" in sql for sql in captured_sql)
+
+
+# ---------------------------------------------------------------------------
+# build_pipeline_from_day_base
+# ---------------------------------------------------------------------------
+
+
+def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(
+        pipeline_runner, "race_chain_for", lambda _category: ("script-a.py", "script-b.py")
+    )
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+
+    captured_inputs: list[Path] = []
+    captured_target_races: list[str | None] = []
+
+    def fake_layer_argv(
+        script: str,
+        category: str,
+        layer_dir: Path,
+        input_dir: Path,
+        output_dir: Path,
+        database_url: str,
+        target_date: str | None = None,
+        target_race: str | None = None,
+    ) -> list[str]:
+        captured_inputs.append(input_dir)
+        captured_target_races.append(target_race)
+        return ["layer", str(output_dir)]
+
+    def fake_run(args: list[str]) -> None:
+        Path(args[-1]).mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(pipeline_runner, "build_layer_argv", fake_layer_argv)
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    final_dir = work_dir / "feat-jra-v7-final"
+
+    result = pipeline_runner.build_pipeline_from_day_base(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", day_base_dir, final_dir, "05:11"
+    )
+
+    assert result is True
+    assert final_dir.exists()
+    assert captured_inputs[0] == day_base_dir
+    assert captured_target_races == ["05:11", "05:11"]
+
+
+def test_build_pipeline_from_day_base_signature_accepts_extra_params():
+    import inspect
+
+    sig = inspect.signature(pipeline_runner.build_pipeline_from_day_base)
+    assert "realtime_odds_path" in sig.parameters
+    assert "venue_weather_dir" in sig.parameters
+    assert sig.parameters["realtime_odds_path"].default is None
+    assert sig.parameters["venue_weather_dir"].default is None
+    assert "days_ahead" in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# build_upcoming_feature_rows_split
+# ---------------------------------------------------------------------------
+
+
+def test_build_upcoming_feature_rows_split_returns_none_when_day_base_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: None)
+    monkeypatch.setattr(pipeline_runner, "build_day_base", lambda *args, **kwargs: None)
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is None
+
+
+def test_build_upcoming_feature_rows_split_returns_none_on_entry_list_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: day_base_dir)
+    monkeypatch.setattr(
+        pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: False
+    )
+    called: list[bool] = []
+    monkeypatch.setattr(
+        pipeline_runner,
+        "build_pipeline_from_day_base",
+        lambda *args, **kwargs: called.append(True) or True,
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is None
+    assert called == []
+
+
+def test_build_upcoming_feature_rows_split_returns_none_when_race_chain_build_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: day_base_dir)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        pipeline_runner, "build_pipeline_from_day_base", lambda *args, **kwargs: False
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is None
+
+
+def test_build_upcoming_feature_rows_split_success_reads_grouped_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import pandas as pd
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: day_base_dir)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
+
+    def fake_build_pipeline_from_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        day_base_dir_arg: Path,
+        final_dir: Path,
+        target_race: str,
+        realtime_odds_path: Path | None = None,
+        venue_weather_dir: Path | None = None,
+    ) -> bool:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        frame = pd.DataFrame(
+            {"race_id": ["jra:2026:0712:05:11", "jra:2026:0712:05:11"], "umaban": [1, 2]}
+        )
+        frame.to_parquet(final_dir / "data.parquet")
+        return True
+
+    monkeypatch.setattr(
+        pipeline_runner, "build_pipeline_from_day_base", fake_build_pipeline_from_day_base
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is not None
+    assert "jra:2026:0712:05:11" in result
+    assert len(result["jra:2026:0712:05:11"]) == 2
+
+
+def test_build_upcoming_feature_rows_split_falls_back_to_inline_build_day_base(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    import pandas as pd
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: None)
+
+    called: list[tuple[object, ...]] = []
+
+    def fake_build_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        realtime_odds_path: Path | None = None,
+        venue_weather_dir: Path | None = None,
+    ) -> Path:
+        called.append((category, target_date, days_ahead, database_url))
+        return day_base_dir
+
+    monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
+
+    def fake_build_pipeline_from_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        day_base_dir_arg: Path,
+        final_dir: Path,
+        target_race: str,
+        realtime_odds_path: Path | None = None,
+        venue_weather_dir: Path | None = None,
+    ) -> bool:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"race_id": ["jra:2026:0712:05:11"], "umaban": [1]}).to_parquet(
+            final_dir / "data.parquet"
+        )
+        return True
+
+    monkeypatch.setattr(
+        pipeline_runner, "build_pipeline_from_day_base", fake_build_pipeline_from_day_base
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is not None
+    assert called == [("jra", "20260712", 0, "postgresql://u:p@h/db")]
+
+
+def test_build_upcoming_feature_rows_split_returns_none_on_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path / "work")
+
+    def raiser(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", raiser)
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20260712", 0, "postgresql://u:p@h/db", "05:11"
+    )
+
+    assert result is None

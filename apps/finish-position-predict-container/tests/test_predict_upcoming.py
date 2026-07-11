@@ -57,6 +57,9 @@ from predict_upcoming import (
 
 _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
+_BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
+_MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
+_PREWARM_PARQUET_PAYLOAD_ATTR = "_prewarm_parquet_payload"
 _load_model_metadata = cast(
     Callable[[Path, Category], Sequence[str]],
     getattr(predict_upcoming, _LOAD_MODEL_METADATA_ATTR),
@@ -64,6 +67,18 @@ _load_model_metadata = cast(
 _load_nar_transformer = cast(
     Callable[[Path, Sequence[str]], object | None],
     getattr(predict_upcoming, _LOAD_NAR_TRANSFORMER_ATTR),
+)
+_build_feature_rows = cast(
+    Callable[..., Mapping[str, list[Mapping[str, object]]]],
+    getattr(predict_upcoming, _BUILD_FEATURE_ROWS_ATTR),
+)
+_make_prewarm_fn = cast(
+    Callable[[str], Callable[[str, str, int], Path | None]],
+    getattr(predict_upcoming, _MAKE_PREWARM_FN_ATTR),
+)
+_prewarm_parquet_payload = cast(
+    Callable[[str, str, Path], tuple[str, str] | None],
+    getattr(predict_upcoming, _PREWARM_PARQUET_PAYLOAD_ATTR),
 )
 
 # ---------------------------------------------------------------------------
@@ -514,6 +529,141 @@ def test_make_handler_class_predict_fn_accepts_exactly_5_args() -> None:
         f"(category, run_date, days_ahead, keibajo_code, race_bango), "
         f"got {len(params)}: {[p.name for p in params]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# make_handler_class — /prewarm-day-base wiring
+# ---------------------------------------------------------------------------
+
+
+def _fake_prewarm(category: str, run_date: str, days_ahead: int) -> Path | None:
+    """Dummy prewarm build fn that returns a deterministic sentinel path."""
+    return Path(f"/tmp/daybase-{category}-{run_date}-{days_ahead}")
+
+
+def _fake_prewarm_parquet_payload(
+    category: str, run_date: str, day_base_dir: Path
+) -> tuple[str, str] | None:
+    return "cGF5bG9hZA==", f"feat-daybase/{category}/{run_date}/features.parquet"
+
+
+def test_make_handler_class_prewarm_fn_callable_without_instance() -> None:
+    """prewarm_fn on the handler class must be callable as a plain 3-arg function."""
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
+        _fake_prewarm,
+        _fake_prewarm_parquet_payload,
+    )
+    prewarm_fn = handler_cls.prewarm_fn
+    assert prewarm_fn is not None
+    result = prewarm_fn("nar", "20260712", 1)
+    assert result == Path("/tmp/daybase-nar-20260712-1")
+
+
+def test_make_handler_class_prewarm_fn_none_when_not_provided() -> None:
+    """When prewarm_fn=None, the class attribute must also be None."""
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
+    )
+    assert handler_cls.prewarm_fn is None
+    assert handler_cls.prewarm_parquet_payload_fn is None
+
+
+def test_make_handler_class_prewarm_parquet_payload_fn_callable_without_instance() -> None:
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
+        _fake_prewarm,
+        _fake_prewarm_parquet_payload,
+    )
+    payload_fn = handler_cls.prewarm_parquet_payload_fn
+    assert payload_fn is not None
+    result = payload_fn("jra", "20260712", Path("/tmp/x"))
+    assert result == ("cGF5bG9hZA==", "feat-daybase/jra/20260712/features.parquet")
+
+
+def test_make_handler_class_prewarm_fn_not_bound_method() -> None:
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        _fake_rescore_factory,
+        None,
+        _fake_prewarm,
+        _fake_prewarm_parquet_payload,
+    )
+    import inspect
+
+    assert not inspect.ismethod(handler_cls.prewarm_fn), (
+        "prewarm_fn must not be a bound method — staticmethod wrapping is required"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _make_prewarm_fn / _prewarm_parquet_payload
+# ---------------------------------------------------------------------------
+
+
+def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+
+    captured: list[tuple[object, ...]] = []
+
+    def fake_build_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        realtime_odds_path: Path | None = None,
+        venue_weather_dir: Path | None = None,
+    ) -> Path | None:
+        captured.append((category, target_date, days_ahead, database_url))
+        return Path("/tmp/daybase-final")
+
+    monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
+
+    prewarm_fn = _make_prewarm_fn("postgresql://u:p@h/db")
+    result = prewarm_fn("nar", "20260712", 2)
+
+    assert result == Path("/tmp/daybase-final")
+    assert captured == [("nar", "20260712", 2, "postgresql://u:p@h/db")]
+
+
+def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) -> None:
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    (day_base_dir / "data.parquet").write_bytes(b"PARQUET-DATA")
+
+    result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
+
+    assert result is not None
+    encoded, key = result
+    import base64
+
+    assert base64.b64decode(encoded) == b"PARQUET-DATA"
+    assert key == "feat-daybase/jra/20260712/features.parquet"
+
+
+def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) -> None:
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+
+    result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
+
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -1481,3 +1631,126 @@ def test_predict_params_default_full_mode_has_no_race_scope() -> None:
     assert params.mode == "full"
     assert params.keibajo_code is None
     assert params.race_bango is None
+
+
+# ---------------------------------------------------------------------------
+# _build_feature_rows — day-base/RACE_CHAIN split wiring
+# ---------------------------------------------------------------------------
+
+
+def test_build_feature_rows_uses_split_path_when_enabled_and_target_race_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.setenv("DAY_BASE_SPLIT_ENABLED", "jra")
+
+    split_called: list[object] = []
+
+    def fake_split(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        target_race: str,
+        r2_config: object = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        split_called.append(
+            (category, target_date, days_ahead, database_url, target_race, r2_config)
+        )
+        return {"race-1": [{"umaban": 1}]}
+
+    def fake_full(*args: object, **kwargs: object) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("full path must not be called when split succeeds")
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows_split", fake_split)
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows", fake_full)
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    result = _build_feature_rows("jra", window, target_race="05:11")
+
+    assert result == {"race-1": [{"umaban": 1}]}
+    assert len(split_called) == 1
+
+
+def test_build_feature_rows_falls_back_to_full_when_split_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.setenv("DAY_BASE_SPLIT_ENABLED", "jra")
+    monkeypatch.setattr(
+        pipeline_runner, "build_upcoming_feature_rows_split", lambda *args, **kwargs: None
+    )
+
+    full_called: list[object] = []
+
+    def fake_full(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        target_race: str | None = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        full_called.append((category, target_date, days_ahead, database_url, target_race))
+        return {"race-2": [{"umaban": 2}]}
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows", fake_full)
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    result = _build_feature_rows("jra", window, target_race="05:11")
+
+    assert result == {"race-2": [{"umaban": 2}]}
+    assert len(full_called) == 1
+
+
+def test_build_feature_rows_skips_split_when_flag_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.delenv("DAY_BASE_SPLIT_ENABLED", raising=False)
+
+    def fake_split(*args: object, **kwargs: object) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("split path must not be called when flag disabled")
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows_split", fake_split)
+    monkeypatch.setattr(
+        pipeline_runner, "build_upcoming_feature_rows", lambda *args, **kwargs: {"race-3": []}
+    )
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    result = _build_feature_rows("jra", window, target_race="05:11")
+
+    assert result == {"race-3": []}
+
+
+def test_build_feature_rows_skips_split_when_target_race_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whole-category/whole-day dispatch (target_race=None) must never hit the
+    single-race split path, even when the category is in the allowlist."""
+    import pipeline_runner
+
+    monkeypatch.setenv("DAY_BASE_SPLIT_ENABLED", "jra")
+
+    def fake_split(*args: object, **kwargs: object) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("split path must not be called for whole-category dispatch")
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows_split", fake_split)
+    monkeypatch.setattr(
+        pipeline_runner, "build_upcoming_feature_rows", lambda *args, **kwargs: {"race-4": []}
+    )
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    result = _build_feature_rows("jra", window)
+
+    assert result == {"race-4": []}

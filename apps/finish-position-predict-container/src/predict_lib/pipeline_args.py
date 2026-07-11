@@ -37,6 +37,7 @@ automated 21y v7 build, so it is intentionally NOT reproduced here.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Final
@@ -173,6 +174,88 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
         SIMILAR_RACE_SCRIPT,
         SIRE_VENUE_BIAS_SCRIPT,
     ),
+}
+
+# ---------------------------------------------------------------------------
+# DAY_CHAIN / RACE_CHAIN split (per-race rebuild speedup, docs/
+# cf-only-serving-architecture.md §2-3 + docs/finish-position-cloudflare-
+# container/08-per-race-rebuild-plan.md).
+#
+# Every ``LAYER_CHAIN`` script's output is either DAY-STABLE (identical for
+# every race of the same category+day — career stats, pedigree, lineage,
+# workouts, ...) or RACE-FRESH (depends on the target race's own field / the
+# same-day-cumulative jockey/pedigree cell aggregation). ``pipeline_runner``
+# now runs DAY_CHAIN once per category+day against the whole-day DuckDB base
+# build (cached), then RACE_CHAIN per race against that cached day-base —
+# instead of re-running all 17 (JRA) / 10 (NAR) / 7 (Ban-ei) scripts for every
+# single race. Relative order within each chain is preserved from
+# ``LAYER_CHAIN`` (this is a partition, not a reordering).
+#
+# A script is RACE_CHAIN when its output cannot be safely frozen at the
+# day-base build time:
+#   * MARKET_SIGNAL_SCRIPT / NEAR_MISS_SCRIPT — read odds/near-miss signals
+#     that are still moving right up to post time.
+#   * BABA_PEDIGREE_SCRIPT — reads ``current_baba_condition`` off the base
+#     build's own babajotai_code_shiba/dirt columns for THIS race (see the
+#     ``build_day_base`` docstring for why freezing those 7 base-build columns
+#     at day-base time is still correct).
+#   * RELATIONSHIP_SCRIPT — race-grain interaction features keyed on the
+#     target race's own field composition.
+#   * JRA_JOCKEY_PEDIGREE_CELL_SCRIPT — SAME-DAY-CUMULATIVE by design: it sums
+#     EARLIER-TODAY races via its own live PG query, independent of the input
+#     parquet. This is the one deliberate exception that must stay per-race
+#     FOREVER — never move it to DAY_CHAIN even if every other layer above it
+#     turns out to be day-stable, because its value literally changes race by
+#     race within the same day as earlier races post their jockey results.
+# Every other LAYER_CHAIN script is DAY-STABLE and belongs in DAY_CHAIN.
+DAY_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
+    "jra": (
+        RACE_INTERNAL_SCRIPT,
+        SECTIONAL_WEIGHT_SCRIPT,
+        FUTAN_JURYO_SCRIPT,
+        WORKOUT_SCRIPT,
+        LINEAGE_SCRIPT,
+        HEAD_TO_HEAD_SCRIPT,
+        TRAINER_SCRIPT,
+        PACESTYLE_SCRIPT,
+        COURSE_NUMERICAL_SCRIPT,
+        KOHAN3F_GOING_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
+    ),
+    "nar": (
+        RACE_INTERNAL_SCRIPT,
+        LINEAGE_SCRIPT,
+        HEAD_TO_HEAD_SCRIPT,
+        TRAINER_SCRIPT,
+        PACESTYLE_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
+    ),
+    "ban-ei": (
+        LINEAGE_SCRIPT,
+        HEAD_TO_HEAD_SCRIPT,
+        BANEI_FUTAN_CLASS_SCRIPT,
+        BANEI_GRADE_CAREER_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
+    ),
+}
+
+RACE_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
+    "jra": (
+        MARKET_SIGNAL_SCRIPT,
+        NEAR_MISS_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
+        JRA_JOCKEY_PEDIGREE_CELL_SCRIPT,
+    ),
+    "nar": (
+        NEAR_MISS_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
+        RELATIONSHIP_SCRIPT,
+    ),
+    "ban-ei": (BABA_PEDIGREE_SCRIPT,),
 }
 
 # Scripts that read history straight from Postgres need ``--pg-url``. The pure
@@ -525,3 +608,52 @@ def build_layer_argv(
 def layer_chain_for(category: Category) -> Sequence[str]:
     """Return the ordered full layer chain for ``category``."""
     return LAYER_CHAIN[category]
+
+
+def day_chain_for(category: Category) -> Sequence[str]:
+    """Return the ordered day-stable layer chain for ``category``.
+
+    Run once per category+day against the whole-day DuckDB base build (see
+    ``pipeline_runner.build_day_base``); the output is cached and reused for
+    every race of that category+day.
+    """
+    return DAY_CHAIN[category]
+
+
+def race_chain_for(category: Category) -> Sequence[str]:
+    """Return the ordered race-fresh layer chain for ``category``.
+
+    Run per race against the cached day-base output (see
+    ``pipeline_runner.build_pipeline_from_day_base``).
+    """
+    return RACE_CHAIN[category]
+
+
+# ---------------------------------------------------------------------------
+# Env-flag gate: DAY_BASE_SPLIT_ENABLED (per-category rollout allowlist)
+# ---------------------------------------------------------------------------
+
+DAY_BASE_SPLIT_ENABLED_ENV: Final[str] = "DAY_BASE_SPLIT_ENABLED"
+"""Comma-separated category allowlist enabling the day-base/race-chain split
+(e.g. ``"jra"`` or ``"jra,nar"``). Empty / unset disables the split for every
+category (the pre-existing full ``LAYER_CHAIN`` path is used unconditionally)."""
+
+
+def is_day_base_split_enabled(category: Category) -> bool:
+    """Return True when ``category`` is in the ``DAY_BASE_SPLIT_ENABLED`` allowlist.
+
+    Mirrors the instant-rollback env-flag convention already used for
+    ``NAR_TRANSFORMER_BLEND_ENABLED`` in ``predict_lib.model_meta`` — an
+    operator flips a comma-separated allowlist through the container / Worker
+    env without a redeploy. Unlike that single global boolean, this flag is
+    per-category (mirrors ``PREDICT_CATEGORIES`` in ``predict_upcoming.py``),
+    so the env var is read live on every call (not cached at import time) --
+    this lets a rollout enable ``jra`` first, watch the
+    ``tests/test_day_base_parity.py`` byte-parity confirmation, then add
+    ``nar`` / ``ban-ei`` later without a redeploy. Unknown tokens are ignored
+    (a typo can never accidentally enable a category), matching
+    ``predict_upcoming._resolve_categories``'s same defensive parsing.
+    """
+    raw = os.environ.get(DAY_BASE_SPLIT_ENABLED_ENV, "")
+    allowlist = {token.strip() for token in raw.split(",") if token.strip()}
+    return category in allowlist
