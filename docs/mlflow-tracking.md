@@ -303,3 +303,14 @@ flowchart LR
 3. 恒久策として `apps/mlflow/src/mlflow_tracking/logging_api.py` に dotenv ロード込みの共通ヘルパー(例: `build_adhoc_client()`)を追加し、ad-hoc スクリプトは素の `MlflowClient(tracking_uri=config.get_tracking_uri())` を直接書かずこのヘルパー経由に統一することを推奨する(未着手、緊急度低)。
 
 **既知の phantom run(sqlite に着地しているのを確認済み、Neon 側への再ログは `log_honest_views_v2.py` 系で対応済み/対応中)**: `170a6928e9dd41b8b4e3c92aede95746` / `cad093f515b0457a90eefbb7a1e97d43` / `762333db580d4a15b8166f461f1b94e8` / `aae217e5eadc445786708de999b92603`。詳細は `apps/pc-keiba-viewer/tmp/d60-cell-recorder/README.md` の「MLflow backend write-durability issue」節(訂正込み)を参照。
+
+### 15.1 関連の別問題: `backfill-running-style` の champion-sync 罠(同日発見)
+
+上記の write-durability バグとは別に、同じ 2026-07-11 のセッション中に registry 側でもう一つの罠が実際に踏まれた。`backfill_running_style.py` の `_sync_running_style_champions()` は、`RS_CATEGORIES`(jra/nar)それぞれについて `model_version={category}-running-style-lgbm-prod-v3` という**固定ラベル**を持つ version を探し、champion alias を**無条件に**そのバージョンへ張り替える(`backfill_running_style()` の `champion-sync` ステップから毎回呼ばれる)。この関数は「今の champion が誰か」「その champion がいつ・どういう経緯で設定されたか」を一切見ない。
+
+**実際に起きたこと**: 別経路(rs-deploy agent による承認済みの本番切替)で jra-running-style の champion が `jra-running-style-lgbm-serve-available-v1`(mlflow version 3)へ意図的に設定された数時間後、`backfill-running-style` が(既定の `apps/pc-keiba-viewer/tmp/models/` ではなくリポジトリルートの `tmp/models/` を指定して)実行され、そこにあった 7 個の候補アーティファクトを一括登録(version 4-10)した上で champion-sync ステップが走り、`model_version=jra-running-style-lgbm-prod-v3` タグを持つ version 6(カテゴリカル閾値エクスポートが壊れている、まさにこの晩の作業が置き換えようとしていた旧バージョン)へ champion を**サイレントに差し戻した**。例外は出ない。気づいたのは、その後たまたま champion alias を確認したタイミングだけである。
+
+**運用ルール**:
+
+1. `backfill-running-style` を実行した後は、`jra-running-style` / `nar-running-style` の champion alias を必ず再確認する。直前に意図した version と一致しない場合、champion-sync ステップに上書きされた可能性を疑うこと。
+2. 恒久修正の方向性(未着手): champion-sync は、現在の champion alias が指す version の `model_version` タグが `prod-v3` ラベルを**持たない**場合(= 何らかの経緯で意図的に別バージョンへ切り替えられていると解釈できる場合)は再同期をスキップする。無条件の再 pointing をやめ、「out-of-band で override されている」状態を検出して尊重する形に変える。
