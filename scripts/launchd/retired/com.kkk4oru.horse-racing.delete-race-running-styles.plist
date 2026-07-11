@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CHUNK_DELAY_MS</key>
+		<string>10000</string>
+		<key>CHUNK_SIZE</key>
+		<string>100</string>
+		<key>CONFIRM_DELETE</key>
+		<string>1</string>
+		<key>FEATURES_WORKER_URL</key>
+		<string>https://sync-realtime-data-features.kkk4oru.com</string>
+		<key>OLD_WORKER_URL</key>
+		<string>https://sync-realtime-data.kkk4oru.com</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>PC_KEIBA_VIEWER_INTERNAL_TOKEN</key>
+		<string>REDACTED-see-local-secret-store</string>
+		<key>REALTIME_ADMIN_TOKEN</key>
+		<string>REDACTED-see-local-secret-store</string>
+	</dict>
+	<key>Label</key>
+	<string>com.kkk4oru.horse-racing.delete-race-running-styles</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/bin/bun</string>
+		<string>run</string>
+		<string>apps/sync-realtime-data/scripts/run-delete-race-running-styles-chunk.ts</string>
+	</array>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardErrorPath</key>
+	<string>/Users/kkk4oru/Library/Logs/delete-race-running-styles.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/kkk4oru/Library/Logs/delete-race-running-styles.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>1</integer>
+		<key>Minute</key>
+		<integer>15</integer>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/kkk4oru/ghq/github.com/kkkaoru/horse-racing-data</string>
+</dict>
+</plist>
