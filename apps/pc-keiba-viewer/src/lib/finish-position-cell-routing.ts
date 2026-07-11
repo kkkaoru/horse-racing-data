@@ -2,12 +2,14 @@
 //
 // TypeScript port of the finish-position-predict-container's cell-level model
 // routing (apps/finish-position-predict-container/src/predict_lib/cell_router.py
-// + cell_routing.json), so the viewer's display-priority query can tell when a
-// race was cell-routed to a non-default model and must surface that
-// prediction instead of a later/duplicate write of the plain category
-// default. See docs/finish-position-prediction-system.md for the incident
-// this guards against (2026-07-11: a routed Hakodate prediction was shadowed
-// by a stale-image fallback write of the champion model).
+// + cell_routing.json), plus the NAR Set-Transformer blend override (see
+// NAR_TRANSFORMER_BLEND_MODEL_VERSION below), so the viewer's display-priority
+// query can tell when a race was scored by a non-default model and must
+// surface that prediction instead of a later/duplicate write of the plain
+// category default. See docs/finish-position-prediction-system.md for the
+// incidents this guards against (2026-07-11: a JRA cell-routed Hakodate
+// prediction, and separately the NAR transformer blend, were both shadowed by
+// fallback writes of the plain champion model).
 //
 // FINISH_POSITION_CELL_ROUTING_CONFIG below is a hand-kept mirror of the
 // container's cell_routing.json contract, not a runtime import of it (the
@@ -18,6 +20,18 @@
 // can never silently drift the way the 2026-07-03 hardcoded single-rule
 // mechanism did before it was deleted wholesale on 2026-07-07.
 import type { RaceDetail } from "./race-types";
+
+// Mirrors predict_lib.model_meta.NAR_TRANSFORMER_MODEL_VERSION exactly. Unlike
+// the JRA cell-routing variants above, this is not a cell_routing.json rule:
+// the container opportunistically blends every NAR race with the Set
+// Transformer whenever NAR_TRANSFORMER_BLEND_ENABLED is on and the race has no
+// missing transformer features, writing this model_version only for races
+// where the blend actually ran (races that fall back keep the plain category
+// default, iter12-nar-xgb-hpo-v8-clean188). So this is always attempted as a
+// display-priority candidate for every NAR race; the priority-0 SQL branch's
+// row-existence check naturally does nothing when no blended row was written,
+// falling through correctly to the plain champion tier below.
+export const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1";
 
 export interface CellRoutingCondition {
   dimension: string;
@@ -300,6 +314,21 @@ export const resolveFinishPositionCellRoutingModelVersion = (
     race: params.race,
   });
 
+/**
+ * Return the display-priority-0 candidate model_version for `race`: the NAR
+ * transformer blend for category "nar" (always attempted, see
+ * NAR_TRANSFORMER_BLEND_MODEL_VERSION above), otherwise the cell-routing
+ * variant for jra / ban-ei. This is the single entry point queries.ts should
+ * call — it composes both opportunistic-override mechanisms so callers never
+ * need to know NAR uses a different one than JRA / ban-ei.
+ */
+export const resolveFinishPositionDisplayPriorityModelVersion = (
+  params: ResolveCellRoutingParams,
+): string | null =>
+  params.category === "nar"
+    ? NAR_TRANSFORMER_BLEND_MODEL_VERSION
+    : resolveFinishPositionCellRoutingModelVersion(params);
+
 /** Every distinct model_version referenced by any category's variants, deduped. */
 export const getAllFinishPositionCellRoutingModelVersions = (): string[] => {
   const versions = Object.values(FINISH_POSITION_CELL_ROUTING_CONFIG).flatMap((categoryConfig) =>
@@ -307,6 +336,20 @@ export const getAllFinishPositionCellRoutingModelVersions = (): string[] => {
   );
   return Array.from(new Set(versions));
 };
+
+/**
+ * Every model_version a priority-0 display override could ever select: every
+ * cell-routing variant plus the NAR transformer blend. queries.ts merges this
+ * into FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS so a priority-0 selection is
+ * never filtered out downstream by allowed_prediction_model_versions.
+ */
+export const getAllFinishPositionDisplayPriorityModelVersions = (): string[] =>
+  Array.from(
+    new Set([
+      ...getAllFinishPositionCellRoutingModelVersions(),
+      NAR_TRANSFORMER_BLEND_MODEL_VERSION,
+    ]),
+  );
 
 export const FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS: CellRoutingConfig =
   FINISH_POSITION_CELL_ROUTING_CONFIG;

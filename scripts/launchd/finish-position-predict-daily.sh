@@ -580,6 +580,18 @@ fi
 # host.docker.internal:15432 (the Mac host) because local PG now runs under
 # Apple Container CLI on the host (post-migration commits ac8626f4 / 0fe46d1c /
 # 8887fb52). --rm so the container is removed after exit.
+#
+# NAR_TRANSFORMER_BLEND_ENABLED default (2026-07-11): commit 2e6c8c4c
+# (2026-07-03) enabled the NAR Set-Transformer blend here with default "1",
+# matching the CF Container path. Commit 0a2cf54f (2026-07-07, no rationale
+# given) silently flipped this local default to "0" and it was never
+# restored — an orphaned regression, not an intentional rollback: iter40 is
+# still the documented, currently-live production NAR model (docs/finish-
+# position-prediction-system.md), and the CF path kept writing
+# iter40-nar-settransformer-blend-v1 rows the whole time. With the default
+# back at "1" the Mac fallback batch writes the same blended rows CF does;
+# apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.ts makes the
+# viewer prefer them over the plain iter12 base regardless of write order.
 log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>}..."
 set +e
 if [ "${DRY_RUN:-0}" = "1" ]; then
@@ -593,7 +605,7 @@ else
     -e RUN_DATE_ISO="$RUN_DATE_ISO" \
     -e PREDICT_DAYS_AHEAD="$DAYS_AHEAD" \
     -e MODELS_DIR=/models \
-    -e NAR_TRANSFORMER_BLEND_ENABLED="${NAR_TRANSFORMER_BLEND_ENABLED:-0}" \
+    -e NAR_TRANSFORMER_BLEND_ENABLED="${NAR_TRANSFORMER_BLEND_ENABLED:-1}" \
     -e RS_SOURCE="$RS_SOURCE" \
     -e R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
     -e R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \

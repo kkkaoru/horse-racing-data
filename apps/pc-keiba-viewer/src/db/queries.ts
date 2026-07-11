@@ -4,8 +4,8 @@ import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import {
-  getAllFinishPositionCellRoutingModelVersions,
-  resolveFinishPositionCellRoutingModelVersion,
+  getAllFinishPositionDisplayPriorityModelVersions,
+  resolveFinishPositionDisplayPriorityModelVersion,
 } from "../lib/finish-position-cell-routing";
 import {
   deriveFinishPositionWilsonScoreCI,
@@ -2903,15 +2903,16 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   "banei-cb-v8-window2011-wf-15y",
 ];
 
-// The base leak-free models plus every cell-routing variant model_version
-// (derived from finish-position-cell-routing.ts, itself parity-tested
-// against the container's cell_routing.json), so a routed prediction is
-// never filtered out downstream by allowed_prediction_model_versions even
-// when priority 0 below selects it.
+// The base leak-free models plus every model_version a priority-0 display
+// override could select (cell-routing variants + the NAR transformer blend,
+// derived from finish-position-cell-routing.ts, itself parity-tested against
+// the container's cell_routing.json), so a routed/blended prediction is never
+// filtered out downstream by allowed_prediction_model_versions even when
+// priority 0 below selects it.
 const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = Array.from(
   new Set([
     ...FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS,
-    ...getAllFinishPositionCellRoutingModelVersions(),
+    ...getAllFinishPositionDisplayPriorityModelVersions(),
   ]),
 );
 
@@ -2930,7 +2931,7 @@ export const getFinishPositionLambdarankPredictions = cache(
       async () => {
         if (runners.length <= 1) return [];
         const category = CATEGORY_FROM_RACE(race);
-        const cellVariantModelVersion = resolveFinishPositionCellRoutingModelVersion({
+        const cellVariantModelVersion = resolveFinishPositionDisplayPriorityModelVersion({
           category,
           race,
         });

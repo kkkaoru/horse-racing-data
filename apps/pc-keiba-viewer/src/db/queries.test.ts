@@ -795,14 +795,28 @@ it("getFinishPositionLambdarankPredictions does not prioritize reverted NAR a957
   expect(queryText).toMatch(/'nar'/u);
 });
 
-it("getFinishPositionLambdarankPredictions gates priority 0 to false for a race with no cell-routing rule", async () => {
+it("getFinishPositionLambdarankPredictions gates priority 0 to false for a JRA race matching no cell-routing rule", async () => {
+  const unroutedJraRace: RaceDetail = {
+    ...PERCLASS_703_RACE,
+    keibajoCode: "05",
+    kyosoJokenCode: "010",
+  };
   executeMock.mockResolvedValue({ rows: [] });
-  await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
+  await getFinishPositionLambdarankPredictions(unroutedJraRace, PERCLASS_703_RUNNERS);
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(/select p0\.model_version, 0 as priority/u);
   expect(queryText).toMatch(/from race_finish_position_model_predictions p0/u);
-  expect(queryText).toMatch(/where false\s+and p0\.source = 'nar'/u);
+  expect(queryText).toMatch(/where false\s+and p0\.source = 'jra'/u);
+});
+
+it("getFinishPositionLambdarankPredictions always attempts the NAR transformer blend as priority 0", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(NAR_CELL_RACE, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(/where p0\.model_version = 'iter40-nar-settransformer-blend-v1'/u);
+  expect(queryText).toMatch(/'iter40-nar-settransformer-blend-v1'/u);
 });
 
 it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch for a routed JRA race", async () => {
