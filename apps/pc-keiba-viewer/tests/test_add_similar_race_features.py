@@ -312,6 +312,57 @@ def test_class_group_sql_nar_derives_label_from_meisho_in_duckdb() -> None:
     assert by_meisho["特別"] == "other"
 
 
+# ── target_class_group_sql ─────────────────────────────────────────────────────
+
+
+def test_target_class_group_sql_jra_uses_kyoso_joken_code_column_in_duckdb() -> None:
+    con = duckdb.connect(":memory:")
+    sql = subject.target_class_group_sql("jra", "joken", "nar_subclass")
+    rows = con.execute(
+        f"""
+        with v(joken, nar_subclass) as (
+          values ('010', cast(null as varchar)), ('', 'x'), (cast(null as varchar), 'y')
+        )
+        select joken, {sql} as cg from v
+        """
+    ).fetchall()
+    con.close()
+    by_joken = {row[0]: row[1] for row in rows}
+    assert by_joken["010"] == "010"
+    assert by_joken[""] == "000"
+    assert by_joken[None] == "000"
+
+
+def test_target_class_group_sql_banei_uses_kyoso_joken_code_column() -> None:
+    con = duckdb.connect(":memory:")
+    sql = subject.target_class_group_sql("ban-ei", "joken", "nar_subclass")
+    rows = con.execute(
+        f"""
+        with v(joken, nar_subclass) as (values ('703', cast(null as varchar)))
+        select {sql} as cg from v
+        """
+    ).fetchall()
+    con.close()
+    assert rows[0][0] == "703"
+
+
+def test_target_class_group_sql_nar_passes_through_nar_subclass_column() -> None:
+    con = duckdb.connect(":memory:")
+    sql = subject.target_class_group_sql("nar", "joken", "nar_subclass")
+    rows = con.execute(
+        f"""
+        with v(joken, nar_subclass) as (values (cast(null as varchar), 'OP'), (cast(null as varchar), 'MUKATSU'))
+        select nar_subclass, {sql} as cg from v
+        """
+    ).fetchall()
+    con.close()
+    by_subclass = {row[0]: row[1] for row in rows}
+    # NAR reuses the parquet's own nar_subclass verbatim -- no regex re-derivation,
+    # since the parquet does not carry raw kyoso_joken_meisho text.
+    assert by_subclass["OP"] == "OP"
+    assert by_subclass["MUKATSU"] == "MUKATSU"
+
+
 # ── focused target scope ───────────────────────────────────────────────────────
 
 
@@ -336,6 +387,42 @@ def test_similar_history_focus_filter_sql_true_preserves_level4_dims() -> None:
     assert "ts.kyori_band =" in sql
     assert "rec.race_date <= ts.race_date" in sql
     assert "- 10" in sql
+
+
+# ── stage_target_races (SQL shape) ──────────────────────────────────────────────
+
+
+def test_stage_target_races_reads_directly_from_parquet_not_race_summary() -> None:
+    conn = FakeConn()
+    subject.stage_target_races(conn, "/tmp/in/race_year=2024/*.parquet", "jra")
+    body = " ".join(conn.statements)
+    assert "create or replace temp table target_races" in body
+    assert "read_parquet('/tmp/in/race_year=2024/*.parquet'" in body
+    # The fix: no longer joins against race_summary (completed-races-only),
+    # which is what made an upcoming target race unmatchable.
+    assert "from race_summary" not in body
+    assert "join" not in body
+
+
+def test_stage_target_races_jra_derives_surface_and_class_from_parquet_columns() -> None:
+    conn = FakeConn()
+    subject.stage_target_races(conn, "/tmp/in/race_year=2024/*.parquet", "jra")
+    body = " ".join(conn.statements)
+    assert "left(coalesce(track_code, ''), 1) as surface" in body
+    assert "coalesce(nullif(trim(kyoso_joken_code), ''), '000') as class_group" in body
+
+
+def test_stage_target_races_nar_derives_class_from_nar_subclass_column() -> None:
+    conn = FakeConn()
+    subject.stage_target_races(conn, "/tmp/in/race_year=2024/*.parquet", "nar")
+    body = " ".join(conn.statements)
+    assert "nar_subclass as class_group" in body
+
+
+def test_stage_target_races_creates_index() -> None:
+    conn = FakeConn()
+    subject.stage_target_races(conn, "/tmp/in/race_year=2024/*.parquet", "jra")
+    assert any("create index target_races_idx" in s for s in conn.statements)
 
 
 # ── _level_match_predicate ─────────────────────────────────────────────────────
@@ -663,7 +750,7 @@ def test_drop_staging_tables_keeps_stat_tables_in_duckdb(tmp_path: Path) -> None
     _seed_pg_schema(con)
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
     subject.stage_similar_pool(con)
     subject.stage_race_level_features(con)
@@ -780,18 +867,27 @@ def _seed_pg_schema(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def _seed_base_parquet(input_dir: Path) -> None:
-    """Write a minimal feature parquet for the target race horses."""
+    """Write a minimal feature parquet for the target race horses.
+
+    track_code / kyori / kyoso_joken_code mirror the real base build's own
+    columns (finish_position_features_duckdb.py::base_features_select_sql) --
+    stage_target_races now derives the target's similarity key from these
+    directly rather than from race_summary. Values match the seeded PG
+    history's venue-06/1600m-turf/class-010 races so the existing
+    level-4-fallback assertions (only 3 similar races, below MIN_SIMILAR at
+    every level) are unaffected by the key derivation source.
+    """
     seed_con = duckdb.connect(":memory:")
     seed_con.execute(
         """
         create or replace temp table seed as
         select * from (
           values
-            ('jra', '2025', '0415', '06', '11', 'horse_a', '20250415', 2025),
-            ('jra', '2025', '0415', '06', '11', 'horse_b', '20250415', 2025),
-            ('jra', '2025', '0415', '06', '11', 'horse_c', '20250415', 2025)
+            ('jra', '2025', '0415', '06', '11', 'horse_a', '20250415', 2025, '17', 1600, '010'),
+            ('jra', '2025', '0415', '06', '11', 'horse_b', '20250415', 2025, '17', 1600, '010'),
+            ('jra', '2025', '0415', '06', '11', 'horse_c', '20250415', 2025, '17', 1600, '010')
         ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-               ketto_toroku_bango, race_date, race_year)
+               ketto_toroku_bango, race_date, race_year, track_code, kyori, kyoso_joken_code)
         """
     )
     seed_con.execute(
@@ -811,7 +907,7 @@ def test_staging_pipeline_computes_race_level_features(tmp_path: Path) -> None:
     _seed_pg_schema(con)
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
     subject.stage_similar_pool(con)
     subject.stage_race_level_features(con)
@@ -833,6 +929,105 @@ def test_staging_pipeline_computes_race_level_features(tmp_path: Path) -> None:
     assert rows[0][2] == pytest.approx(2.0 / 3.0, abs=0.05)
 
 
+def test_staging_pipeline_resolves_upcoming_target_absent_from_pg_history(
+    tmp_path: Path,
+) -> None:
+    """Regression for the serve-time defect: sim_* was always NULL/0 at live serve.
+
+    stage_target_races used to derive a target's similarity key by INNER JOINing
+    the target race identity against race_summary, which is built exclusively
+    from COMPLETED races (finish_position is not null). A genuinely upcoming
+    race -- by definition not yet run -- can never have a
+    race_entry_corner_features row of its own, so it could never match and
+    target_races (and every downstream sim_* column) came out empty for every
+    live prediction. This seeds PG with ONLY the 3 historical races -- no row
+    at all for the target race identity, simulating a real not-yet-run race --
+    and asserts the target still resolves against the historical pool via the
+    parquet's own track_code/kyori/kyoso_joken_code columns.
+    """
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            -- history race A: 2024/0401, venue 06, race 11
+            ('jra','20240401','2024','0401','06','11','h_a1', 1, '17', 1600, 4, 1, '010', '1', 'J01', 'T01', 'O01'),
+            ('jra','20240401','2024','0401','06','11','h_a2', 2, '17', 1600, 4, 2, '010', '1', 'J02', 'T02', 'O02'),
+            -- history race B: 2024/0408
+            ('jra','20240408','2024','0408','06','12','h_b1', 1, '17', 1600, 4, 1, '010', '1', 'J01', 'T01', 'O01'),
+            ('jra','20240408','2024','0408','06','12','h_b2', 2, '17', 1600, 4, 2, '010', '1', 'J05', 'T05', 'O05'),
+            -- history race C: 2024/0415
+            ('jra','20240415','2024','0415','06','11','h_c1', 1, '17', 1600, 4, 2, '010', '1', 'J08', 'T08', 'O08'),
+            ('jra','20240415','2024','0415','06','11','h_c2', 2, '17', 1600, 4, 1, '010', '2', 'J09', 'T09', 'O09')
+            -- NOTE: no row for 2025/0415/06/11 (the target race) at all -- it
+            -- has not been run and race_entry_corner_features has never seen it.
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                ketto_toroku_bango, umaban, track_code, kyori, shusso_tosu, finish_position,
+                kyoso_joken_code, tansho_ninkijun, kishumei_ryakusho, chokyoshimei_ryakusho, banushimei)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_ra as
+        select * from (
+          values
+            ('2024','0401','06','11','010'),
+            ('2024','0408','06','12','010'),
+            ('2024','0415','06','11','010')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, kyoso_joken_meisho)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_se as
+        select cast(null as varchar) as kaisai_nen, cast(null as varchar) as kaisai_tsukihi,
+               cast(null as varchar) as keibajo_code, cast(null as varchar) as race_bango,
+               cast(null as varchar) as ketto_toroku_bango
+        where false
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as
+        select * from (values ('h_a1', 'SIRE_X', 'DAMSIRE_Y')) as v(
+          ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b
+        )
+        """
+    )
+    subject.stage_similar_history(con, "20000101", "jra")
+    subject.stage_race_summary(con)
+    subject.stage_target_races(con, input_glob, "jra")
+
+    target_rows = con.execute(
+        "select surface, kyori_band, class_group from target_races"
+    ).fetchall()
+    assert len(target_rows) == 1
+    assert target_rows[0] == ("1", 1, "010")
+
+    subject.stage_target_match_level(con)
+    subject.stage_similar_pool(con)
+    subject.stage_race_level_features(con)
+
+    rows = con.execute(
+        "select sim_race_count, sim_match_level from sim_race_features"
+    ).fetchall()
+    con.close()
+
+    assert len(rows) == 1
+    # The 3 pre-existing historical races are found via level-4 fallback --
+    # this table would have been EMPTY under the old race_summary-join code
+    # because the target race is absent from PG entirely.
+    assert rows[0][0] == 3
+    assert rows[0][1] == 4
+
+
 def test_staging_pipeline_match_level_falls_back_to_broad(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     input_dir.mkdir()
@@ -843,7 +1038,7 @@ def test_staging_pipeline_match_level_falls_back_to_broad(tmp_path: Path) -> Non
     _seed_pg_schema(con)
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
 
     rows = con.execute("select n1, n2, n3, sim_match_level from target_match_level "
@@ -864,7 +1059,7 @@ def test_staging_pipeline_computes_entity_stats(tmp_path: Path) -> None:
     _seed_pg_schema(con)
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
     subject.stage_similar_pool(con)
     subject.stage_entity_features(con)
@@ -1130,10 +1325,10 @@ def test_staging_pipeline_level4_caps_pool_to_most_recent_races(
         create or replace temp table seed as
         select * from (
           values
-            ('jra', '2025', '0601', '06', '11', 'tg1', '20250601', 2025),
-            ('jra', '2025', '0601', '06', '11', 'tg2', '20250601', 2025)
+            ('jra', '2025', '0601', '06', '11', 'tg1', '20250601', 2025, '17', 1600, 'C99'),
+            ('jra', '2025', '0601', '06', '11', 'tg2', '20250601', 2025, '17', 1600, 'C99')
         ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-               ketto_toroku_bango, race_date, race_year)
+               ketto_toroku_bango, race_date, race_year, track_code, kyori, kyoso_joken_code)
         """
     )
     seed_con.execute(
@@ -1193,7 +1388,7 @@ def test_staging_pipeline_level4_caps_pool_to_most_recent_races(
     )
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
     subject.stage_similar_pool(con)
 
@@ -1252,10 +1447,10 @@ def test_staging_pipeline_level1_collapse_fans_identical_pool_to_shared_key_targ
         create or replace temp table seed as
         select * from (
           values
-            ('jra', '2025', '0415', '06', '11', 'tg11', '20250415', 2025),
-            ('jra', '2025', '0415', '06', '12', 'tg12', '20250415', 2025)
+            ('jra', '2025', '0415', '06', '11', 'tg11', '20250415', 2025, '17', 1600, '010'),
+            ('jra', '2025', '0415', '06', '12', 'tg12', '20250415', 2025, '17', 1600, '010')
         ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-               ketto_toroku_bango, race_date, race_year)
+               ketto_toroku_bango, race_date, race_year, track_code, kyori, kyoso_joken_code)
         """
     )
     seed_con.execute(
@@ -1323,7 +1518,7 @@ def test_staging_pipeline_level1_collapse_fans_identical_pool_to_shared_key_targ
     )
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_races(con, input_glob, "jra")
     subject.stage_target_match_level(con)
     subject.stage_similar_pool(con)
     subject.stage_race_level_features(con)

@@ -176,6 +176,41 @@ def class_group_sql(category: str, joken_col: str, meisho_col: str) -> str:
     return f"coalesce(nullif(trim({joken_col}), ''), '000')"
 
 
+def target_class_group_sql(category: str, joken_col: str, nar_subclass_col: str) -> str:
+    """Class-group key for a TARGET race, derived from the feature parquet's own columns.
+
+    stage_target_races used to obtain a target's class_group (and surface /
+    kyori_band / season_band) by INNER JOINing the target race identity against
+    ``race_summary`` -- but race_summary is built exclusively from COMPLETED
+    races (stage_similar_history filters ``finish_position is not null``), so an
+    upcoming target race could never match and every downstream sim_* column
+    silently fell back to its LEFT-JOIN default. This derives class_group
+    directly from the parquet instead, so it works identically for completed and
+    upcoming races.
+
+    JRA / Ban-ei: the parquet carries the base build's own ``kyoso_joken_code``
+    column (finish_position_features_duckdb.py::base_features_select_sql,
+    ``t.kyoso_joken_code``), so mirror class_group_sql's default branch on it
+    directly.
+    NAR: class_group_sql's nar branch regexp-matches the free-text
+    kyoso_joken_meisho, which the final feature parquet does not carry raw --
+    but the parquet DOES carry ``nar_subclass``
+    (finish_position_features_duckdb.py::nar_subclass_case_sql), a column
+    already derived from kyoso_joken_meisho via the IDENTICAL regex tokens in
+    the IDENTICAL priority order, joined on the same
+    (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango) key that
+    stage_similar_history's ``ra`` join uses. nar_subclass is also the same
+    column predict_lib/upcoming.py and per_class.py rely on for LIVE per-class
+    routing of upcoming NAR races, confirming it is populated pre-race. Reusing
+    it verbatim avoids re-deriving from text the parquet does not have and
+    guarantees the same value domain (OP/NEW/MUKATSU/2YO/3YO/A/B/C/other) as
+    class_group_sql's nar branch.
+    """
+    if category == "nar":
+        return nar_subclass_col
+    return f"coalesce(nullif(trim({joken_col}), ''), '000')"
+
+
 def stage_target_similarity_scope(con: _DuckDBConnectionLike, input_glob: str) -> None:
     """Stage broad similarity keys from the scoped input parquet.
 
@@ -321,37 +356,35 @@ def stage_race_summary(con: _DuckDBConnectionLike) -> None:
     )
 
 
-def stage_target_races(con: _DuckDBConnectionLike, input_glob: str) -> None:
+def stage_target_races(con: _DuckDBConnectionLike, input_glob: str, category: str) -> None:
     """Distinct target races from the feature parquet, carrying the similarity key.
 
-    The parquet already exposes kyori_band / season_band / track_code / source /
-    race_date, but the parquet's class_group and surface are recomputed here from
-    the base columns so the key derivation is identical to the historical side.
+    Derives (surface, kyori_band, season_band, class_group) directly from the
+    parquet's OWN base columns (track_code, kyori, kaisai_tsukihi,
+    kyoso_joken_code / nar_subclass) using the same SQL builders
+    stage_similar_history uses for the historical side. This used to instead
+    INNER JOIN the target race identity against race_summary, which only
+    contains COMPLETED races (stage_similar_history filters
+    ``finish_position is not null``) -- an upcoming target race can never
+    appear there, so every live prediction silently produced an empty
+    target_races and every downstream sim_* column fell back to its
+    LEFT-JOIN default (see target_class_group_sql's docstring). Deriving the
+    key from the parquet itself makes this work identically for completed and
+    upcoming races: for a COMPLETED race this produces the same
+    (surface, kyori_band, season_band, class_group) values the old
+    race_summary-joined path did, because both ultimately trace back to the
+    same underlying PG columns joined on the same race identity.
     """
     con.execute(
         f"""
         create or replace temp table target_races as
         select distinct
-          rs.source,
-          rs.race_date,
-          rs.kaisai_nen,
-          rs.kaisai_tsukihi,
-          rs.keibajo_code,
-          rs.race_bango,
-          rs.surface,
-          rs.kyori_band,
-          rs.season_band,
-          rs.class_group
-        from race_summary rs
-        join (
-          select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-          from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
-        ) p
-          on p.source = rs.source
-          and p.kaisai_nen = rs.kaisai_nen
-          and p.kaisai_tsukihi = rs.kaisai_tsukihi
-          and p.keibajo_code = rs.keibajo_code
-          and p.race_bango = rs.race_bango
+          source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          {surface_sql("track_code")} as surface,
+          {kyori_band_sql("kyori")} as kyori_band,
+          {season_band_sql("kaisai_tsukihi")} as season_band,
+          {target_class_group_sql(category, "kyoso_joken_code", "nar_subclass")} as class_group
+        from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
         """
     )
     con.execute(
@@ -1018,7 +1051,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for year in years:
         year_glob = f"{args.input_dir.as_posix()}/race_year={year}/*.parquet"
-        stage_target_races(con, year_glob)
+        stage_target_races(con, year_glob, args.category)
         stage_target_match_level(con)
         stage_similar_pool(con)
         stage_race_level_features(con)
