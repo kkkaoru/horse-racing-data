@@ -186,7 +186,25 @@ def stage_race_history(
 
 
 def stage_horse_near_miss(con: duckdb.DuckDBPyConnection) -> None:
-    """馬ごとの 2 着特化 stats を計算 (lookback only, 当該レース除外)。"""
+    """馬ごとの 2 着特化 stats を計算 (lookback only, 当該レース除外)。
+
+    Windows are INCLUSIVE of the current row (rows ... and current row), not
+    exclusive (... and 1 preceding). append_features_sql ASOF-joins this table
+    to the target using a STRICT race_date inequality (b.race_date >
+    h.race_date), which picks the horse's latest ACTUAL prior race and takes
+    its inclusive cumulative -- equivalent to "everything strictly before the
+    target's race_date". This is what lets an upcoming target race (whose own
+    race_date the horse has never raced on) still resolve: the old exact-date
+    equality join required horse_near_miss to carry a row keyed at exactly the
+    target's own race_date, which only a COMPLETED race can ever produce (see
+    stage_race_history's finish_position is not null filter), so every live
+    prediction fell back to NULL. For a historical row (where the target's own
+    race_date IS one of the horse's actual race dates), the inclusive
+    cumulative at the immediately-preceding actual race date is byte-identical
+    to the old exclusive-window value at the target's own race_date, because
+    both represent "every race with race_date < target.race_date" and there is
+    no other race for this horse strictly between the two dates.
+    """
     con.execute(
         """
         create or replace temp table horse_near_miss as
@@ -209,12 +227,12 @@ def stage_horse_near_miss(con: duckdb.DuckDBPyConnection) -> None:
           horse_career as (
             partition by source, ketto_toroku_bango
             order by race_date
-            rows between unbounded preceding and 1 preceding
+            rows between unbounded preceding and current row
           ),
           horse_recent_5 as (
             partition by source, ketto_toroku_bango
             order by race_date
-            rows between 5 preceding and 1 preceding
+            rows between 4 preceding and current row
           )
         """
     )
@@ -513,6 +531,11 @@ def stage_horse_distance_grade(con: duckdb.DuckDBPyConnection) -> None:
 def stage_jockey_near_miss(con: duckdb.DuckDBPyConnection) -> None:
     """騎手ごとの 2 着率を race_history (PG-staged) から計算。
     同一日に同騎手が複数騎乗する → date 単位 deduplicate して 1 行/日とする。
+
+    Window is INCLUSIVE of the current row (see stage_horse_near_miss's
+    docstring for why -- append_features_sql ASOF-joins this table with a
+    strict race_date inequality so an upcoming target race resolves against
+    the jockey's latest actual prior ride).
     """
     con.execute(
         """
@@ -535,7 +558,7 @@ def stage_jockey_near_miss(con: duckdb.DuckDBPyConnection) -> None:
         window jockey_career as (
           partition by source, kishumei_ryakusho
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -641,10 +664,10 @@ def append_features_sql(input_glob: str) -> str:
              then hdg.dg_p2::double / hdg.dg_starts
              else null end as horse_distance_grade_place2_rate
       from base_with_meta b
-      left join horse_near_miss h
+      asof left join horse_near_miss h
         on h.source = b.source
         and h.ketto_toroku_bango = b.ketto_toroku_bango
-        and h.race_date = b.race_date
+        and b.race_date > h.race_date
       left join horse_context hc
         on hc.source = b.source
         and hc.ketto_toroku_bango = b.ketto_toroku_bango
@@ -657,10 +680,10 @@ def append_features_sql(input_glob: str) -> str:
         on hdg.source = b.source
         and hdg.ketto_toroku_bango = b.ketto_toroku_bango
         and hdg.race_date = b.race_date
-      left join jockey_near_miss j
+      asof left join jockey_near_miss j
         on j.source = b.source
         and j.kishumei_ryakusho = b.kishumei_ryakusho
-        and j.race_date = b.race_date
+        and b.race_date > j.race_date
       left join race_favorite_dominance f
         on f.source = b.source
         and f.kaisai_nen = b.kaisai_nen

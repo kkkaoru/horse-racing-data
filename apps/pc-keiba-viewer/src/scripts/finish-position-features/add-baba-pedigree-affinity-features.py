@@ -195,6 +195,25 @@ def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
 
     Pre-aggregate to (horse, race_date, baba_cond): starts + wins per day
     → window cumulative.
+
+    The window is INCLUSIVE of the current row (rows ... and current row), not
+    exclusive (... and 1 preceding). append_features_sql ASOF-joins this table
+    to the target using a STRICT race_date inequality (bwp.race_date >
+    hbc.race_date) instead of an exact-date equality, so this resolves the
+    horse's latest ACTUAL prior race in the same baba_cond and takes its
+    inclusive cumulative -- equivalent to "everything strictly before the
+    target's race_date". The old exact-date equality join required
+    horse_baba_cumul to carry a row keyed at exactly the target's own
+    race_date, which only a COMPLETED race can ever produce (race_history is
+    built from race_entry_corner_features filtered to finish_position is not
+    null), so every live prediction on an upcoming race fell back to NULL. For
+    a historical row (target's own race_date IS one of this horse's actual
+    race dates in this baba_cond), the inclusive cumulative at the
+    immediately-preceding actual race date is byte-identical to the old
+    exclusive-window value at the target's own race_date -- both represent
+    "every same-baba_cond race with race_date < target.race_date" and there is
+    no other same-baba_cond race for this horse strictly between the two
+    dates.
     """
     con.execute(
         """
@@ -216,7 +235,7 @@ def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window horse_baba_career as (
           partition by source, ketto_toroku_bango, baba_cond
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -229,6 +248,10 @@ def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
     """sire 単位の baba 別 cumul stats。
 
     horse_pedigree で sire_id を取得 → race_history と join → 集計。
+
+    Window is INCLUSIVE of the current row -- see stage_horse_baba_cumul's
+    docstring for why (append_features_sql ASOF-joins with a strict race_date
+    inequality instead of an exact-date equality).
     """
     con.execute(
         """
@@ -252,7 +275,7 @@ def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window sire_baba_career as (
           partition by sire_id, baba_cond
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -262,6 +285,12 @@ def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
 
 
 def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
+    """damsire 単位の baba 別 cumul stats.
+
+    Window is INCLUSIVE of the current row -- see stage_horse_baba_cumul's
+    docstring for why (append_features_sql ASOF-joins with a strict race_date
+    inequality instead of an exact-date equality).
+    """
     con.execute(
         """
         create or replace temp table damsire_baba_daily as
@@ -284,7 +313,7 @@ def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         window damsire_baba_career as (
           partition by damsire_id, baba_cond
           order by race_date
-          rows between unbounded preceding and 1 preceding
+          rows between unbounded preceding and current row
         )
         """
     )
@@ -336,19 +365,19 @@ def append_features_sql(input_glob: str) -> str:
           else null
         end as sire_horse_baba_combined_score
       from base_with_pedigree bwp
-      left join horse_baba_cumul hbc
+      asof left join horse_baba_cumul hbc
         on hbc.source = bwp.source
         and hbc.ketto_toroku_bango = bwp.ketto_toroku_bango
         and hbc.baba_cond = bwp.current_baba_condition
-        and hbc.race_date = bwp.race_date
-      left join sire_baba_cumul sbc
+        and bwp.race_date > hbc.race_date
+      asof left join sire_baba_cumul sbc
         on sbc.sire_id = bwp.sire_id
         and sbc.baba_cond = bwp.current_baba_condition
-        and sbc.race_date = bwp.race_date
-      left join damsire_baba_cumul dbc
+        and bwp.race_date > sbc.race_date
+      asof left join damsire_baba_cumul dbc
         on dbc.damsire_id = bwp.damsire_id
         and dbc.baba_cond = bwp.current_baba_condition
-        and dbc.race_date = bwp.race_date
+        and bwp.race_date > dbc.race_date
     )
     select * from joined
     """
