@@ -219,39 +219,39 @@ test("WrappedFinishPredictionEvaluation shows panel by default on desktop viewpo
   expect(panel?.closest("[hidden]")).toStrictEqual(null);
 });
 
-test("getCorrectionTogglesSnapshot returns all ON with default strength when localStorage has no key", () => {
+test("getCorrectionTogglesSnapshot regression guard (06-13 decided OFF, silently reverted ON by cd1e71ad same day, restored 07-11): returns all OFF with strength 0 when localStorage has no key", () => {
   vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => null>(() => null) } });
   const result = getCorrectionTogglesSnapshot();
   expect(result).toStrictEqual({
-    formEnabled: true,
-    jockeyEnabled: true,
-    oddsPopularityStrength: 1,
-    sameDayJockeyEnabled: true,
-    trainerEnabled: true,
+    formEnabled: false,
+    jockeyEnabled: false,
+    oddsPopularityStrength: 0,
+    sameDayJockeyEnabled: false,
+    trainerEnabled: false,
   });
 });
 
-test("getCorrectionTogglesSnapshot returns all ON when localStorage returns invalid JSON", () => {
+test("getCorrectionTogglesSnapshot returns all OFF when localStorage returns invalid JSON", () => {
   vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => string>(() => "not-json") } });
   const result = getCorrectionTogglesSnapshot();
   expect(result).toStrictEqual({
-    formEnabled: true,
-    jockeyEnabled: true,
-    oddsPopularityStrength: 1,
-    sameDayJockeyEnabled: true,
-    trainerEnabled: true,
+    formEnabled: false,
+    jockeyEnabled: false,
+    oddsPopularityStrength: 0,
+    sameDayJockeyEnabled: false,
+    trainerEnabled: false,
   });
 });
 
-test("getCorrectionTogglesSnapshot returns all ON when localStorage returns non-object JSON", () => {
+test("getCorrectionTogglesSnapshot returns all OFF when localStorage returns non-object JSON", () => {
   vi.stubGlobal("window", { localStorage: { getItem: vi.fn<() => string>(() => '"string"') } });
   const result = getCorrectionTogglesSnapshot();
   expect(result).toStrictEqual({
-    formEnabled: true,
-    jockeyEnabled: true,
-    oddsPopularityStrength: 1,
-    sameDayJockeyEnabled: true,
-    trainerEnabled: true,
+    formEnabled: false,
+    jockeyEnabled: false,
+    oddsPopularityStrength: 0,
+    sameDayJockeyEnabled: false,
+    trainerEnabled: false,
   });
 });
 
@@ -489,7 +489,7 @@ test("CorrectionMasterCheckbox: indeterminate true when a flag is off but streng
   expect(el.indeterminate).toStrictEqual(true);
 });
 
-test("FinishPositionPredictionTable renders the strength slider with default value", () => {
+test("FinishPositionPredictionTable renders the strength slider at 0 (raw model) with no stored preference", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
     getItem: vi.fn<(key: string) => string | null>(() => null),
@@ -503,12 +503,12 @@ test("FinishPositionPredictionTable renders the strength slider with default val
     />,
   );
   const slider = getCheckboxByQuery("#correction-strength-slider");
-  expect(slider.value).toStrictEqual("1");
+  expect(slider.value).toStrictEqual("0");
   expect(slider.max).toStrictEqual("2");
   expect(slider.step).toStrictEqual("0.1");
 });
 
-test("FinishPositionPredictionTable slider change writes the new strength to localStorage", () => {
+test("FinishPositionPredictionTable slider change writes the new strength to localStorage, preserving the other default-off flags", () => {
   installMatchMediaMock(false);
   const mockSetItem = vi.fn<(key: string, value: string) => void>();
   vi.stubGlobal("localStorage", {
@@ -523,20 +523,20 @@ test("FinishPositionPredictionTable slider change writes the new strength to loc
     />,
   );
   const slider = getCheckboxByQuery("#correction-strength-slider");
-  fireEvent.change(slider, { target: { value: "0" } });
+  fireEvent.change(slider, { target: { value: "1.5" } });
   expect(mockSetItem).toHaveBeenCalledWith(
     "pc-keiba:correction-toggles",
     JSON.stringify({
-      formEnabled: true,
-      jockeyEnabled: true,
-      oddsPopularityStrength: 0,
-      sameDayJockeyEnabled: true,
-      trainerEnabled: true,
+      formEnabled: false,
+      jockeyEnabled: false,
+      oddsPopularityStrength: 1.5,
+      sameDayJockeyEnabled: false,
+      trainerEnabled: false,
     }),
   );
 });
 
-test("FinishPositionPredictionTable combined checkbox toggle writes formEnabled false", () => {
+test("FinishPositionPredictionTable combined checkbox starts unchecked (default off) and opting in writes formEnabled true", () => {
   installMatchMediaMock(false);
   const mockSetItem = vi.fn<(key: string, value: string) => void>();
   vi.stubGlobal("localStorage", {
@@ -551,15 +551,16 @@ test("FinishPositionPredictionTable combined checkbox toggle writes formEnabled 
     />,
   );
   const combined = getCheckboxByQuery("#correction-checkbox-formEnabled");
+  expect(combined.checked).toStrictEqual(false);
   fireEvent.click(combined);
   expect(mockSetItem).toHaveBeenCalledWith(
     "pc-keiba:correction-toggles",
     JSON.stringify({
-      formEnabled: false,
-      jockeyEnabled: true,
-      oddsPopularityStrength: 1,
-      sameDayJockeyEnabled: true,
-      trainerEnabled: true,
+      formEnabled: true,
+      jockeyEnabled: false,
+      oddsPopularityStrength: 0,
+      sameDayJockeyEnabled: false,
+      trainerEnabled: false,
     }),
   );
 });
@@ -603,7 +604,7 @@ test("FinishPositionPredictionTable removes a scratched horse from the rendered 
   expect(screen.getByText("ガンマ").textContent).toStrictEqual("ガンマ");
 });
 
-test("FinishPositionPredictionTable renders only non-scratched horses in predicted-rank order", () => {
+test("FinishPositionPredictionTable renders only non-scratched horses in predicted-rank order, following the model prediction rather than the (better) market odds of the loser", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
     getItem: vi.fn<(key: string) => string | null>(() => null),
@@ -613,14 +614,160 @@ test("FinishPositionPredictionTable renders only non-scratched horses in predict
     error: null,
     payload: buildRealtimePayload({ alpha: "", beta: "出走取消", gamma: "" }),
   });
+  const inputs: FinishPredictionBuildInputs = {
+    ...buildThreeRunnerInputs(),
+    modelPredictionFeatures: [
+      {
+        horseNumber: "1",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.2,
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "3",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.8,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
   render(
     <FinishPositionPredictionTable
       evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
-      inputs={buildThreeRunnerInputs()}
+      inputs={inputs}
       realtimeRequest={sampleRequest}
     />,
   );
-  expect(renderedHorseNames()).toStrictEqual(["ガンマ", "アルファ"]);
+  // ガンマ (umaban 3) has the best market odds/popularity of the field but the worse
+  // model prediction; アルファ (umaban 1) is the reverse. With corrections default off,
+  // the market signal must not move the ranking.
+  expect(renderedHorseNames()).toStrictEqual(["アルファ", "ガンマ"]);
+});
+
+test("FinishPositionPredictionTable regression guard (06-13 decided OFF, silently reverted ON by cd1e71ad same day, restored 07-11): default state ranks by the model alone, ignoring opposing market odds/popularity", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  // A prior test in this file leaves useRealtimeRacePayload's mock return value set via
+  // mockReturnValue, which vi.restoreAllMocks() in afterEach does not undo — reset it
+  // explicitly so this test does not inherit a stale scratched-horse payload.
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
+  const modelFavoredWorseMarketRunner: Runner = {
+    ...sampleRunner,
+    bamei: "モデル本命",
+    tanshoNinkijun: "02",
+    tanshoOdds: "9990",
+    umaban: "01",
+  };
+  const marketFavoredWorseModelRunner: Runner = {
+    ...sampleRunner,
+    bamei: "市場本命",
+    tanshoNinkijun: "01",
+    tanshoOdds: "0010",
+    umaban: "02",
+  };
+  const inputs: FinishPredictionBuildInputs = {
+    currentDistance: "1600",
+    currentKeibajoCode: "05",
+    currentRaceDate: "20260607",
+    currentSource: "jra",
+    modelPredictionFeatures: [
+      {
+        horseNumber: "1",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.45,
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.55,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+    results: [],
+    runners: [modelFavoredWorseMarketRunner, marketFavoredWorseModelRunner],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(renderedHorseNames()).toStrictEqual(["モデル本命", "市場本命"]);
+});
+
+test("FinishPositionPredictionTable regression guard: an explicit all-on stored preference still blends market odds into the ranking (opt-in keeps working)", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() =>
+      JSON.stringify({
+        formEnabled: true,
+        jockeyEnabled: true,
+        oddsPopularityStrength: 1,
+        sameDayJockeyEnabled: true,
+        trainerEnabled: true,
+      }),
+    ),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  // A prior test in this file leaves useRealtimeRacePayload's mock return value set via
+  // mockReturnValue, which vi.restoreAllMocks() in afterEach does not undo — reset it
+  // explicitly so this test does not inherit a stale scratched-horse payload.
+  vi.mocked(useRealtimeRacePayload).mockReturnValue({ error: null, payload: null });
+  const modelFavoredWorseMarketRunner: Runner = {
+    ...sampleRunner,
+    bamei: "モデル本命",
+    tanshoNinkijun: "02",
+    tanshoOdds: "9990",
+    umaban: "01",
+  };
+  const marketFavoredWorseModelRunner: Runner = {
+    ...sampleRunner,
+    bamei: "市場本命",
+    tanshoNinkijun: "01",
+    tanshoOdds: "0010",
+    umaban: "02",
+  };
+  const inputs: FinishPredictionBuildInputs = {
+    currentDistance: "1600",
+    currentKeibajoCode: "05",
+    currentRaceDate: "20260607",
+    currentSource: "jra",
+    modelPredictionFeatures: [
+      {
+        horseNumber: "1",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.45,
+        showProbability: null,
+        winProbability: null,
+      },
+      {
+        horseNumber: "2",
+        modelVersion: "lightgbm-test",
+        predictedFinishNorm: 0.55,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+    results: [],
+    runners: [modelFavoredWorseMarketRunner, marketFavoredWorseModelRunner],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(renderedHorseNames()).toStrictEqual(["市場本命", "モデル本命"]);
 });
 
 test("FinishPositionPredictionTable renders no prediction rows when every horse is scratched", () => {

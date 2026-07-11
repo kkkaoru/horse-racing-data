@@ -158,7 +158,20 @@ export const buildTogglesFromStored = (stored: Record<string, unknown>): Correct
 
 // Module-level cache: useSyncExternalStore requires getSnapshot to return the same
 // reference when the underlying value has not changed, to avoid infinite re-render loops.
-const ALL_ON_TOGGLES_CACHE: CorrectionToggleState = buildAllOnToggles();
+//
+// History (do not flip this back to buildAllOnToggles() without reading this): the
+// finish-position table used to re-blend the backend model's prediction with live
+// odds/popularity by default, which re-ranked results toward market popularity
+// (especially maiden races) and visibly changed the display after SSR hydration once
+// realtime odds arrived. Commit 4727b69b (2026-06-13 12:58 JST) fixed this by making
+// the correction default OFF for all races, so the table shows the raw model
+// prediction unless the user opts in. 1.5 hours later, commit cd1e71ad (2026-06-13
+// 14:26 JST) replaced that single checkbox with the 8 per-feature toggles below and
+// silently reverted the default to all-ON while doing so — the regression went
+// unnoticed for about four weeks. Restored 2026-07-11: the no-stored-preference
+// snapshot must be buildAllOffToggles(), not buildAllOnToggles(). See the "regression
+// guard" tests in finish-position-prediction-table.test.tsx for the tripwire.
+const DEFAULT_TOGGLES_CACHE: CorrectionToggleState = buildAllOffToggles();
 
 interface CorrectionTogglesCache {
   key: string | null;
@@ -167,7 +180,7 @@ interface CorrectionTogglesCache {
 
 const correctionTogglesCache: CorrectionTogglesCache = {
   key: null,
-  toggles: ALL_ON_TOGGLES_CACHE,
+  toggles: DEFAULT_TOGGLES_CACHE,
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -185,11 +198,11 @@ const subscribeCorrectionToggles = (onStoreChange: () => void): (() => void) => 
 
 export const getCorrectionTogglesSnapshot = (): CorrectionToggleState => {
   if (typeof window === "undefined" || typeof window.localStorage === "undefined") {
-    return ALL_ON_TOGGLES_CACHE;
+    return DEFAULT_TOGGLES_CACHE;
   }
   const stored = window.localStorage.getItem(CORRECTION_TOGGLES_STORAGE_KEY);
   if (stored === null) {
-    return ALL_ON_TOGGLES_CACHE;
+    return DEFAULT_TOGGLES_CACHE;
   }
   // Return cached reference if the raw stored string has not changed
   if (stored === correctionTogglesCache.key) {
@@ -198,18 +211,18 @@ export const getCorrectionTogglesSnapshot = (): CorrectionToggleState => {
   try {
     const parsed: unknown = JSON.parse(stored);
     if (!isRecord(parsed)) {
-      return ALL_ON_TOGGLES_CACHE;
+      return DEFAULT_TOGGLES_CACHE;
     }
     const next = buildTogglesFromStored(parsed);
     correctionTogglesCache.key = stored;
     correctionTogglesCache.toggles = next;
     return next;
   } catch {
-    return ALL_ON_TOGGLES_CACHE;
+    return DEFAULT_TOGGLES_CACHE;
   }
 };
 
-const getCorrectionTogglesServerSnapshot = (): CorrectionToggleState => ALL_ON_TOGGLES_CACHE;
+const getCorrectionTogglesServerSnapshot = (): CorrectionToggleState => DEFAULT_TOGGLES_CACHE;
 
 const isAllCorrectionsOn = (toggles: CorrectionToggleState): boolean =>
   ALL_CORRECTION_FLAG_KEYS.every((key) => toggles[key]) &&
