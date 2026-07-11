@@ -30,6 +30,7 @@ from .model_meta import (
     METADATA_FILE_NAME,
     R2_KEY_PREFIX,
 )
+from .race_id import parse_race_id
 
 CONFIG_FILE_NAME: Final[str] = "cell_routing.json"
 
@@ -132,6 +133,7 @@ def resolve_dimension(
     dimension: str,
     category: str,
     field_size: int | None = None,
+    card_max_race_bango: int | None = None,
 ) -> str | None:
     if dimension == "venue":
         raw = entry.get("keibajo_code")
@@ -194,6 +196,34 @@ def resolve_dimension(
         if grade_code is None:
             return None
         return derive_class(str(grade_code).strip())
+    if dimension == "is_final_race":
+        # A single race's own entries can never answer "is this the day's
+        # last race" -- that requires knowing every race_bango registered for
+        # the same (kaisai_nen, kaisai_tsukihi, keibajo_code) card, which
+        # lives outside this one race. ``card_max_race_bango`` is therefore a
+        # caller-supplied value (the highest *registered* race_bango on the
+        # card, not the highest one that has actually run -- see
+        # tmp/kochi-final/cell_design.md for why registered-card-max is the
+        # only choice that matches what serving can know before the race
+        # runs) rather than something derivable from ``entry`` alone, mirroring
+        # how ``field_size`` is threaded in over ``entry["shusso_tosu"]``
+        # above. No value supplied (card size unknown/not yet discovered) or
+        # an unparseable ``race_id`` both fail closed to None -- the condition
+        # simply never matches and routing falls through to the category
+        # default, never to a guess.
+        if card_max_race_bango is None:
+            return None
+        race_id = entry.get("race_id")
+        if race_id is None:
+            return None
+        try:
+            race_bango = parse_race_id(str(race_id)).race_bango
+        except ValueError:
+            return None
+        race_bango = race_bango.strip()
+        if not race_bango.isdigit():
+            return None
+        return "true" if int(race_bango) == card_max_race_bango else "false"
     raw = entry.get(dimension)
     return str(raw).strip() if raw is not None else None
 
@@ -203,9 +233,16 @@ def all_conditions_match(
     conditions: tuple[CellCondition, ...],
     category: str,
     field_size: int | None = None,
+    card_max_race_bango: int | None = None,
 ) -> bool:
     for condition in conditions:
-        value = resolve_dimension(entry, condition.dimension, category, field_size=field_size)
+        value = resolve_dimension(
+            entry,
+            condition.dimension,
+            category,
+            field_size=field_size,
+            card_max_race_bango=card_max_race_bango,
+        )
         if value is None or value not in condition.values:
             return False
     return True
@@ -223,7 +260,12 @@ class CellRouter:
     def routing_for(self, category: str) -> CategoryRouting:
         return self._routing[category]
 
-    def resolve_variant(self, category: str, entries: Sequence[Mapping[str, object]]) -> str:
+    def resolve_variant(
+        self,
+        category: str,
+        entries: Sequence[Mapping[str, object]],
+        card_max_race_bango: int | None = None,
+    ) -> str:
         if category not in self._routing:
             return VARIANT_SIM
         routing = self._routing[category]
@@ -235,8 +277,19 @@ class CellRouter:
         # feature-parquet column. See resolve_dimension's field_band branch
         # for why the entry's own "shusso_tosu" can never be trusted here.
         field_size = len(entries)
+        # card_max_race_bango cannot be derived from this race's own entries
+        # (see resolve_dimension's is_final_race branch) -- it is an optional
+        # caller-supplied value, threaded through the same way field_size is,
+        # for whichever caller has whole-card context. Omitting it (the
+        # default) fails every is_final_race condition closed to None.
         for rule in routing.rules:
-            if all_conditions_match(first, rule.conditions, category, field_size=field_size):
+            if all_conditions_match(
+                first,
+                rule.conditions,
+                category,
+                field_size=field_size,
+                card_max_race_bango=card_max_race_bango,
+            ):
                 return rule.variant
         return routing.default_variant
 

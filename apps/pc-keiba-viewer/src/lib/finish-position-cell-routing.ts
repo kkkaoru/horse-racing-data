@@ -62,17 +62,20 @@ interface ResolveDimensionParams {
   race: RaceDetail;
   dimension: string;
   category: string;
+  cardMaxRaceBango?: number | null;
 }
 
 interface AllConditionsMatchParams {
   race: RaceDetail;
   conditions: CellRoutingCondition[];
   category: string;
+  cardMaxRaceBango?: number | null;
 }
 
 export interface ResolveCellRoutingParams {
   race: RaceDetail;
   category: string;
+  cardMaxRaceBango?: number | null;
 }
 
 const SPRINT_MAX_KYORI = 1200;
@@ -213,9 +216,27 @@ const resolveClass = (gradeCode: string | null): string | null => {
   return trimmed === "" ? "unknown" : trimmed;
 };
 
+// A single race can never answer "is this the day's last race" from its own
+// columns -- that requires knowing every race_bango registered for the same
+// card, which lives outside this race. cardMaxRaceBango is therefore a
+// caller-supplied value (mirrors cell_router.py's resolve_dimension --
+// card_max_race_bango param, see tmp/kochi-final/cell_design.md for the
+// serve-time derivation this is designed for). No value supplied, or a
+// non-numeric raceBango, both fail closed to null: the condition simply
+// never matches rather than guessing.
+const resolveIsFinalRace = (
+  raceBango: string,
+  cardMaxRaceBango: number | null | undefined,
+): string | null => {
+  if (cardMaxRaceBango === null || cardMaxRaceBango === undefined) return null;
+  const parsed = parseIntOrNull(raceBango);
+  if (parsed === null) return null;
+  return parsed === cardMaxRaceBango ? "true" : "false";
+};
+
 const SPECIAL_DIMENSION_RESOLVERS = new Map<
   string,
-  (race: RaceDetail, category: string) => string | null
+  (race: RaceDetail, category: string, cardMaxRaceBango?: number | null) => string | null
 >([
   ["venue", (race) => trimmedOrNull(race.keibajoCode)],
   ["surface", (race, category) => resolveSurface(race, category)],
@@ -223,6 +244,10 @@ const SPECIAL_DIMENSION_RESOLVERS = new Map<
   ["field_band", (race) => resolveFieldBand(race.shussoTosu)],
   ["season", (race) => resolveSeason(race.kaisaiTsukihi)],
   ["class", (race) => resolveClass(race.gradeCode)],
+  [
+    "is_final_race",
+    (race, _category, cardMaxRaceBango) => resolveIsFinalRace(race.raceBango, cardMaxRaceBango),
+  ],
 ]);
 
 // Raw (non-derived) dimensions: any rule dimension not covered above reads
@@ -248,7 +273,7 @@ const RAW_DIMENSION_ACCESSORS = new Map<string, (race: RaceDetail) => string | n
 // the config mirror itself honest).
 export const resolveDimension = (params: ResolveDimensionParams): string | null => {
   const special = SPECIAL_DIMENSION_RESOLVERS.get(params.dimension);
-  if (special) return special(params.race, params.category);
+  if (special) return special(params.race, params.category, params.cardMaxRaceBango);
   const raw = RAW_DIMENSION_ACCESSORS.get(params.dimension);
   return raw ? raw(params.race) : null;
 };
@@ -256,6 +281,7 @@ export const resolveDimension = (params: ResolveDimensionParams): string | null 
 const allConditionsMatch = (params: AllConditionsMatchParams): boolean =>
   params.conditions.every((condition) => {
     const value = resolveDimension({
+      cardMaxRaceBango: params.cardMaxRaceBango,
       category: params.category,
       dimension: condition.dimension,
       race: params.race,
@@ -269,6 +295,7 @@ const findMatchingRule = (
 ): CellRoutingRule | undefined =>
   rules.find((rule) =>
     allConditionsMatch({
+      cardMaxRaceBango: params.cardMaxRaceBango,
       category: params.category,
       conditions: rule.conditions,
       race: params.race,
@@ -309,6 +336,7 @@ export const resolveFinishPositionCellRoutingModelVersion = (
   params: ResolveCellRoutingParams,
 ): string | null =>
   resolveCellRoutingModelVersionForConfig({
+    cardMaxRaceBango: params.cardMaxRaceBango,
     category: params.category,
     config: FINISH_POSITION_CELL_ROUTING_CONFIG,
     race: params.race,

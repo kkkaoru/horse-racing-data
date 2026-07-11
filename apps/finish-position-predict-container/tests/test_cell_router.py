@@ -296,6 +296,19 @@ def test_all_conditions_match_field_band_fails_without_field_size_or_entry_value
     assert all_conditions_match({}, conditions, "jra") is False
 
 
+def test_all_conditions_match_threads_card_max_race_bango_to_is_final_race() -> None:
+    conditions = (CellCondition(dimension="is_final_race", values=frozenset({"true"})),)
+    entry = {"race_id": "nar:2026:0712:54:10"}
+    assert all_conditions_match(entry, conditions, "nar", card_max_race_bango=10) is True
+    assert all_conditions_match(entry, conditions, "nar", card_max_race_bango=12) is False
+
+
+def test_all_conditions_match_is_final_race_fails_without_card_max_race_bango() -> None:
+    conditions = (CellCondition(dimension="is_final_race", values=frozenset({"true"})),)
+    entry = {"race_id": "nar:2026:0712:54:10"}
+    assert all_conditions_match(entry, conditions, "nar") is False
+
+
 def _jra_prior_corner_router() -> CellRouter:
     """Mirrors the real cell_routing.json shape for prior_corner_dirt_smallfield_005."""
     routing = CategoryRouting(
@@ -897,6 +910,48 @@ def testresolve_dimension_class_none() -> None:
     assert resolve_dimension({}, "class", "jra") is None
 
 
+def testresolve_dimension_is_final_race_true() -> None:
+    entry = {"race_id": "nar:2026:0712:54:10"}
+    assert resolve_dimension(entry, "is_final_race", "nar", card_max_race_bango=10) == "true"
+
+
+def testresolve_dimension_is_final_race_true_with_leading_zero() -> None:
+    # race_bango is zero-padded in the real race_id ("08" not "8"); int
+    # comparison must still resolve correctly against a plain-int card max.
+    entry = {"race_id": "nar:2026:0712:54:08"}
+    assert resolve_dimension(entry, "is_final_race", "nar", card_max_race_bango=8) == "true"
+
+
+def testresolve_dimension_is_final_race_false() -> None:
+    entry = {"race_id": "nar:2026:0712:54:05"}
+    assert resolve_dimension(entry, "is_final_race", "nar", card_max_race_bango=10) == "false"
+
+
+def testresolve_dimension_is_final_race_none_without_card_max() -> None:
+    # card_max_race_bango omitted (the default for every existing caller) --
+    # this fails closed to None rather than guessing from the entry alone,
+    # since a single race's own entries can never answer "is this the day's
+    # last race".
+    entry = {"race_id": "nar:2026:0712:54:10"}
+    assert resolve_dimension(entry, "is_final_race", "nar") is None
+
+
+def testresolve_dimension_is_final_race_none_without_race_id() -> None:
+    assert resolve_dimension({}, "is_final_race", "nar", card_max_race_bango=10) is None
+
+
+def testresolve_dimension_is_final_race_none_on_malformed_race_id() -> None:
+    # Wrong part count -- parse_race_id raises ValueError, caught and turned
+    # into the same fail-closed None as every other unresolvable dimension.
+    entry = {"race_id": "nar:2026:0712"}
+    assert resolve_dimension(entry, "is_final_race", "nar", card_max_race_bango=10) is None
+
+
+def testresolve_dimension_is_final_race_none_on_non_digit_race_bango() -> None:
+    entry = {"race_id": "nar:2026:0712:54:xx"}
+    assert resolve_dimension(entry, "is_final_race", "nar", card_max_race_bango=10) is None
+
+
 def testresolve_dimension_fallback_raw_column() -> None:
     assert resolve_dimension({"grade_code": "E"}, "grade_code", "ban-ei") == "E"
 
@@ -917,3 +972,63 @@ def testall_conditions_match_true() -> None:
 def testall_conditions_match_false_on_missing_dimension() -> None:
     conditions = (CellCondition(dimension="venue", values=frozenset({"03"})),)
     assert all_conditions_match({}, conditions, "jra") is False
+
+
+def _kochi_final_shaped_router() -> CellRouter:
+    """Mirrors the not-yet-live shape documented in tmp/kochi-final/cell_design.md
+    section 4 -- venue=54 AND is_final_race=true -- to prove resolve_variant
+    can thread card_max_race_bango end-to-end through a real multi-condition
+    rule, without this shape existing in the real cell_routing.json yet.
+    """
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(
+                model_version="iter12-nar-xgb-hpo-v8-clean188",
+                feature_count=188,
+                architecture="xgboost",
+            ),
+            "kochi_final": VariantSpec(
+                model_version="nar-cb-kochi-final-v1",
+                feature_count=50,
+                architecture="catboost",
+            ),
+        },
+        rules=(
+            CellRouteRule(
+                conditions=(
+                    CellCondition(dimension="venue", values=frozenset({"54"})),
+                    CellCondition(dimension="is_final_race", values=frozenset({"true"})),
+                ),
+                variant="kochi_final",
+            ),
+        ),
+    )
+    return CellRouter(routing={"nar": routing})
+
+
+def test_resolve_variant_kochi_final_rule_fires_with_card_max_race_bango() -> None:
+    router = _kochi_final_shaped_router()
+    entries = [{"keibajo_code": "54", "race_id": "nar:2026:0712:54:10"}]
+    assert router.resolve_variant("nar", entries, card_max_race_bango=10) == "kochi_final"
+
+
+def test_resolve_variant_kochi_final_rule_does_not_fire_for_non_final_race() -> None:
+    router = _kochi_final_shaped_router()
+    entries = [{"keibajo_code": "54", "race_id": "nar:2026:0712:54:05"}]
+    assert router.resolve_variant("nar", entries, card_max_race_bango=10) == "sim"
+
+
+def test_resolve_variant_kochi_final_rule_fails_closed_without_card_max_race_bango() -> None:
+    # The whole point of the fail-closed design: omitting card_max_race_bango
+    # (every caller that doesn't yet compute it, which is every caller today)
+    # must never accidentally route a race as "final" by guessing.
+    router = _kochi_final_shaped_router()
+    entries = [{"keibajo_code": "54", "race_id": "nar:2026:0712:54:10"}]
+    assert router.resolve_variant("nar", entries) == "sim"
+
+
+def test_resolve_variant_kochi_final_rule_does_not_fire_at_other_venues() -> None:
+    router = _kochi_final_shaped_router()
+    entries = [{"keibajo_code": "30", "race_id": "nar:2026:0712:30:10"}]
+    assert router.resolve_variant("nar", entries, card_max_race_bango=10) == "sim"

@@ -200,6 +200,56 @@ it("resolveDimension resolves class to the trimmed gradeCode when present", () =
   expect(value).toBe("E");
 });
 
+it("resolveDimension resolves is_final_race to true when raceBango matches cardMaxRaceBango", () => {
+  const race: RaceDetail = { ...BASE_RACE, raceBango: "10" };
+  const value = resolveDimension({
+    cardMaxRaceBango: 10,
+    category: "nar",
+    dimension: "is_final_race",
+    race,
+  });
+  expect(value).toBe("true");
+});
+
+it("resolveDimension resolves is_final_race to false when raceBango does not match cardMaxRaceBango", () => {
+  const race: RaceDetail = { ...BASE_RACE, raceBango: "05" };
+  const value = resolveDimension({
+    cardMaxRaceBango: 10,
+    category: "nar",
+    dimension: "is_final_race",
+    race,
+  });
+  expect(value).toBe("false");
+});
+
+it("resolveDimension resolves is_final_race to null when cardMaxRaceBango is undefined", () => {
+  const race: RaceDetail = { ...BASE_RACE, raceBango: "10" };
+  const value = resolveDimension({ category: "nar", dimension: "is_final_race", race });
+  expect(value).toBe(null);
+});
+
+it("resolveDimension resolves is_final_race to null when cardMaxRaceBango is null", () => {
+  const race: RaceDetail = { ...BASE_RACE, raceBango: "10" };
+  const value = resolveDimension({
+    cardMaxRaceBango: null,
+    category: "nar",
+    dimension: "is_final_race",
+    race,
+  });
+  expect(value).toBe(null);
+});
+
+it("resolveDimension resolves is_final_race to null when raceBango is not numeric", () => {
+  const race: RaceDetail = { ...BASE_RACE, raceBango: "xx" };
+  const value = resolveDimension({
+    cardMaxRaceBango: 10,
+    category: "nar",
+    dimension: "is_final_race",
+    race,
+  });
+  expect(value).toBe(null);
+});
+
 // --- resolveDimension: raw fallback dimensions ----------------------------
 
 it("resolveDimension resolves kyoso_joken_code from the raw column", () => {
@@ -335,6 +385,81 @@ it("resolveCellRoutingModelVersionForConfig returns null when a matched rule ref
     race,
   });
   expect(value).toBe(null);
+});
+
+// --- is_final_race threaded through resolveCellRoutingModelVersionForConfig
+// (mirrors tmp/kochi-final/cell_design.md section 4's not-yet-live rule
+// shape, proving cardMaxRaceBango threads end-to-end through a real
+// multi-condition AND rule without that shape existing in the real
+// cell_routing.json yet) --------------------------------------------------
+
+const KOCHI_FINAL_SHAPED_CONFIG: CellRoutingConfig = {
+  nar: {
+    default_variant: "sim",
+    rules: [
+      {
+        conditions: [
+          { dimension: "venue", values: ["54"] },
+          { dimension: "is_final_race", values: ["true"] },
+        ],
+        variant: "kochi_final",
+      },
+    ],
+    variants: {
+      kochi_final: {
+        architecture: "catboost",
+        feature_count: 50,
+        model_version: "nar-cb-kochi-final-v1",
+      },
+      sim: {
+        architecture: "xgboost",
+        feature_count: 188,
+        model_version: "iter12-nar-xgb-hpo-v8-clean188",
+      },
+    },
+  },
+};
+
+it("resolveCellRoutingModelVersionForConfig routes a Kochi final race to the kochi_final variant", () => {
+  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "54", raceBango: "10", source: "nar" };
+  const value = resolveCellRoutingModelVersionForConfig({
+    cardMaxRaceBango: 10,
+    category: "nar",
+    config: KOCHI_FINAL_SHAPED_CONFIG,
+    race,
+  });
+  expect(value).toBe("nar-cb-kochi-final-v1");
+});
+
+it("resolveCellRoutingModelVersionForConfig does not route a non-final Kochi race", () => {
+  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "54", raceBango: "05", source: "nar" };
+  const value = resolveCellRoutingModelVersionForConfig({
+    cardMaxRaceBango: 10,
+    category: "nar",
+    config: KOCHI_FINAL_SHAPED_CONFIG,
+    race,
+  });
+  expect(value).toBe(null);
+});
+
+it("resolveCellRoutingModelVersionForConfig fails closed without cardMaxRaceBango", () => {
+  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "54", raceBango: "10", source: "nar" };
+  const value = resolveCellRoutingModelVersionForConfig({
+    category: "nar",
+    config: KOCHI_FINAL_SHAPED_CONFIG,
+    race,
+  });
+  expect(value).toBe(null);
+});
+
+it("resolveFinishPositionCellRoutingModelVersion threads cardMaxRaceBango through to resolveDimension", () => {
+  const race: RaceDetail = { ...BASE_RACE, keibajoCode: "02", kyosoJokenCode: "703" };
+  const value = resolveFinishPositionCellRoutingModelVersion({
+    cardMaxRaceBango: 12,
+    category: "jra",
+    race,
+  });
+  expect(value).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
 });
 
 // --- getAllFinishPositionCellRoutingModelVersions --------------------------
