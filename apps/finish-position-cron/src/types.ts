@@ -125,6 +125,12 @@ export interface PredictQueueMessage {
   // Enables verbose diagnostic logs for this message and the downstream
   // Container /predict request. Absent/false keeps production logs quiet.
   debug?: boolean;
+  // Explicit operator bypass for the old-date guard (old-date-guard.ts):
+  // when true, an authenticated operator has deliberately re-triggered a
+  // historical/old-dated run (e.g. a manual backfill retrigger), so the
+  // queue consumer skips the runYmd staleness check entirely and dispatches
+  // to the Container as normal. Absent/false keeps the guard active.
+  force?: boolean;
 }
 
 export interface PredictRunState {

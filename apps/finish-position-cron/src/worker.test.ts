@@ -583,6 +583,37 @@ test("handleFetch omits skipDedup when body does not specify skipDedup", async (
   );
 });
 
+test("handleFetch passes force true when body specifies force true", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ force: true, runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+});
+
+test("handleFetch omits force when body specifies force as string true", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ force: "true", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.not.objectContaining({ force: expect.anything() }),
+  );
+});
+
+test("handleFetch omits force when body does not specify force", async () => {
+  await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.not.objectContaining({ force: expect.anything() }),
+  );
+});
+
 test("handleFetch omits per-race fields for the per-category path", async () => {
   await handleFetch(
     triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),

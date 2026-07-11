@@ -39,6 +39,7 @@ const KEIBAJO_CODE_FIELD = "keibajoCode";
 const RACE_BANGO_FIELD = "raceBango";
 const SKIP_DEDUP_FIELD = "skipDedup";
 const DEBUG_FIELD = "debug";
+const FORCE_FIELD = "force";
 const RUN_YMD_FIELD = "runYmd";
 const DEFAULT_MODE: PredictMode = "full";
 const RESCORE_MODE: PredictMode = "rescore";
@@ -174,6 +175,7 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
   const mode = resolveMode(body);
   const skipDedup = body[SKIP_DEDUP_FIELD] === true;
   const debug = resolveDebugFlag(body);
+  const force = body[FORCE_FIELD] === true;
   const category = resolveCategory(body);
   const keibajoCode = resolveRaceTargetField(body, KEIBAJO_CODE_FIELD);
   const raceBango = resolveRaceTargetField(body, RACE_BANGO_FIELD);
@@ -195,6 +197,7 @@ const handleTrigger = async (request: Request, env: Env): Promise<Response> => {
     runDate: dates.runDate,
     runYmd: dates.runYmd,
     ...(skipDedup ? { skipDedup: true } : {}),
+    ...(force ? { force: true } : {}),
   });
   console.log(
     `[predict-worker] trigger enqueue accepted runDate=${dates.runDate} runYmd=${dates.runYmd} category=${

@@ -8,6 +8,12 @@ import {
   type PredictProgressLine,
   type PredictResultLine,
 } from "./ndjson-stream";
+import { isOldDateRunYmd, OLD_DATE_THRESHOLD_DAYS } from "./old-date-guard";
+import {
+  buildOldDateSkipEventBindParams,
+  buildOldDateSkipEventInsertSql,
+  buildOldDateSkipEventRecord,
+} from "./old-date-skip-events";
 import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
@@ -33,6 +39,13 @@ const RESULT_SUCCESS_STATUS = "success";
 const FOCUSED_FULL_ACCEPTED_STATUS = "accepted";
 const FOCUSED_FULL_BUSY_STATUS = "busy";
 const FOCUSED_FULL_ALREADY_COMPLETE_STATUS = "already-complete";
+// Status written to the focused-full DO claim (predict-run-coordinator.ts)
+// when a message is skipped for carrying an old runYmd (old-date-guard.ts).
+// Not a TERMINAL_STATUSES entry there, so it does not itself block a future
+// claim -- enforcement never depends on this DO write; the guard
+// re-evaluates runYmd staleness independently on every message. This write
+// is purely observability/bookkeeping.
+const OLD_DATE_SKIP_STATUS = "skipped-old-date";
 // The container returns "busy" when another race in the same category holds its
 // single per-process pipeline slot. Re-enqueue a fresh copy (which resets the
 // message's retry attempt count) so the starved race keeps waiting for the
@@ -521,7 +534,57 @@ const processPerRaceRescore = (
   return Promise.resolve();
 };
 
+// Handles a message whose runYmd is too old to dispatch to the Container
+// (old-date-guard.ts). Writes a durable skip-event row and, for a focused
+// per-race full skipDedup message, marks the DO claim complete with
+// status=skipped-old-date so it stops being treated as in-flight. Both are
+// wrapped in one try/catch so a bookkeeping failure (D1 write or DO call)
+// never prevents the ack() -- an old message must never get stuck retrying
+// just because the audit write hiccuped -- but the failure is still logged.
+const handleOldDateSkip = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+): Promise<void> => {
+  const { category, keibajoCode, mode, raceBango, runYmd } = message.body;
+  try {
+    const record = buildOldDateSkipEventRecord({
+      category,
+      keibajoCode,
+      mode,
+      raceBango,
+      runYmd,
+      thresholdDays: OLD_DATE_THRESHOLD_DAYS,
+    });
+    await env.FINISH_POSITION_CRON_DB.prepare(buildOldDateSkipEventInsertSql())
+      .bind(...buildOldDateSkipEventBindParams(record))
+      .run();
+    if (isFocusedSkipDedupMessage(message.body)) {
+      await completeFocusedFullRace({
+        category,
+        env,
+        keibajoCode: message.body.keibajoCode,
+        raceBango: message.body.raceBango,
+        runYmd,
+        status: OLD_DATE_SKIP_STATUS,
+      });
+    }
+  } catch (err) {
+    console.error(
+      `Old-date skip bookkeeping failed ${describePredictMessage(message.body)}:`,
+      String(err),
+    );
+  }
+  message.ack();
+  console.warn(
+    `Skipping old-dated predict message ${describePredictMessage(
+      message.body,
+    )} thresholdDays=${OLD_DATE_THRESHOLD_DAYS}`,
+  );
+};
+
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
+  if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date()))
+    return handleOldDateSkip(message, env);
   debugLog(message.body, `[predict-queue] received ${describePredictMessage(message.body)}`);
   if (isPerRaceRescore(message)) return processPerRaceRescore(message, env);
   const { category, runYmd, daysAhead, mode, keibajoCode, raceBango, skipDedup } = message.body;

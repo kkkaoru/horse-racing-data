@@ -284,6 +284,66 @@ test("enqueuePredict attaches debug when debug is true", async () => {
   });
 });
 
+test("enqueuePredict attaches force when force is true", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    force: true,
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    force: true,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
+test("enqueuePredict omits force when force is false", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    force: false,
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
+test("enqueuePredict omits force when force is undefined", async () => {
+  await enqueuePredict({
+    category: "jra",
+    daysAhead: 2,
+    env: makeEnv(),
+    mode: "full",
+    runDate: "2026-06-03",
+    runYmd: "20260603",
+  });
+  expect(sendMock).toHaveBeenCalledWith({
+    category: "jra",
+    daysAhead: 2,
+    mode: "full",
+    runDate: "2026-06-03",
+    runDateIso: "2026-06-03",
+    runYmd: "20260603",
+  });
+});
+
 test("enqueuePredict omits skipDedup when skipDedup is false", async () => {
   await enqueuePredict({
     category: "jra",
