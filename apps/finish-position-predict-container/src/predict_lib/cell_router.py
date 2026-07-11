@@ -127,7 +127,12 @@ def derive_class(grade_code: str) -> str:
     return grade_code if grade_code else "unknown"
 
 
-def resolve_dimension(entry: Mapping[str, object], dimension: str, category: str) -> str | None:
+def resolve_dimension(
+    entry: Mapping[str, object],
+    dimension: str,
+    category: str,
+    field_size: int | None = None,
+) -> str | None:
     if dimension == "venue":
         raw = entry.get("keibajo_code")
         return str(raw).strip() if raw is not None else None
@@ -142,7 +147,19 @@ def resolve_dimension(entry: Mapping[str, object], dimension: str, category: str
             return None
         return derive_distance_band(int(float(str(kyori))))
     if dimension == "field_band":
-        shusso_tosu = entry.get("shusso_tosu")
+        # entry["shusso_tosu"] is unconditionally NULL on every row that
+        # passes through the near-miss layer (add-near-miss-features.py's
+        # append_features_sql intentionally re-emits it as
+        # ``cast(null as bigint)`` to reproduce a trained NAR CatBoost split
+        # -- confirmed 100% NULL, JRA and NAR alike, completed or upcoming,
+        # against real R2 feature parquets). field_band could therefore never
+        # resolve and every field_band-gated cell rule was structurally dead
+        # at serve. ``field_size`` -- the count of entries actually being
+        # scored for this race, passed in by resolve_variant as
+        # ``len(entries)`` -- is the declared-runner count with zero
+        # dependency on that (or any other) parquet column, so it is used in
+        # preference to the entry's own (poisoned) field whenever supplied.
+        shusso_tosu = field_size if field_size is not None else entry.get("shusso_tosu")
         if shusso_tosu is None:
             return None
         return derive_field_band(int(float(str(shusso_tosu))))
@@ -173,9 +190,10 @@ def all_conditions_match(
     entry: Mapping[str, object],
     conditions: tuple[CellCondition, ...],
     category: str,
+    field_size: int | None = None,
 ) -> bool:
     for condition in conditions:
-        value = resolve_dimension(entry, condition.dimension, category)
+        value = resolve_dimension(entry, condition.dimension, category, field_size=field_size)
         if value is None or value not in condition.values:
             return False
     return True
@@ -200,8 +218,13 @@ class CellRouter:
         if not entries:
             return routing.default_variant
         first = entries[0]
+        # len(entries) is the count of rows actually being scored for this
+        # race -- i.e. the real declared-runner count -- independent of any
+        # feature-parquet column. See resolve_dimension's field_band branch
+        # for why the entry's own "shusso_tosu" can never be trusted here.
+        field_size = len(entries)
         for rule in routing.rules:
-            if all_conditions_match(first, rule.conditions, category):
+            if all_conditions_match(first, rule.conditions, category, field_size=field_size):
                 return rule.variant
         return routing.default_variant
 

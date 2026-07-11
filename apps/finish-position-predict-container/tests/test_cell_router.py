@@ -165,16 +165,20 @@ def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
         routing.variants["prior_corner_dirt_smallfield_005"].feature_set_hash
         == "0b90ab1c7e19ef8d61c2b5419bd034bf277600c73b3f4a05e3b1ff1d99bbbb22"
     )
-    hit = {
-        "kyoso_joken_code": "005",
-        "track_code": "23",
-        "shusso_tosu": 10,
-    }
-    miss_field = {**hit, "shusso_tosu": 11}
-    miss_class = {**hit, "kyoso_joken_code": "703"}
-    assert router.resolve_variant("jra", [hit]) == "prior_corner_dirt_smallfield_005"
-    assert router.resolve_variant("jra", [miss_field]) == "sim"
-    assert router.resolve_variant("jra", [miss_class]) == "jockey_pedigree_703"
+    # field_band is derived from len(entries) -- the actual count of rows
+    # being scored -- not from any entry's own "shusso_tosu" (that column is
+    # unconditionally NULL on every row that passes through the near-miss
+    # layer, so it can never be trusted here; see resolve_dimension). None of
+    # these entries carry a "shusso_tosu" key at all, matching the real
+    # poisoned production shape.
+    hit_row = {"kyoso_joken_code": "005", "track_code": "23"}
+    hit_entries = [hit_row] * 10  # 10 declared runners -> field_band f_le10.
+    miss_field_entries = [hit_row] * 11  # 11 -> field_band f11_13, doesn't match.
+    miss_class_row = {**hit_row, "kyoso_joken_code": "703"}
+    miss_class_entries = [miss_class_row] * 10
+    assert router.resolve_variant("jra", hit_entries) == "prior_corner_dirt_smallfield_005"
+    assert router.resolve_variant("jra", miss_field_entries) == "sim"
+    assert router.resolve_variant("jra", miss_class_entries) == "jockey_pedigree_703"
 
 
 def test_load_cell_router_real_config_has_jra_hakodate_venue_routing() -> None:
@@ -278,6 +282,79 @@ def test_load_cell_router_custom_path(tmp_path: Path) -> None:
     assert router.has_routing("ban-ei") is True
     assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
     assert router.resolve_variant("ban-ei", [{"grade_code": "A"}]) == "sim"
+
+
+def test_all_conditions_match_threads_field_size_to_field_band() -> None:
+    conditions = (CellCondition(dimension="field_band", values=frozenset({"f_le10"})),)
+    # No "shusso_tosu" key on the entry at all -- matches the real poisoned
+    # production shape -- but field_size makes the condition resolvable.
+    assert all_conditions_match({}, conditions, "jra", field_size=8) is True
+
+
+def test_all_conditions_match_field_band_fails_without_field_size_or_entry_value() -> None:
+    conditions = (CellCondition(dimension="field_band", values=frozenset({"f_le10"})),)
+    assert all_conditions_match({}, conditions, "jra") is False
+
+
+def _jra_prior_corner_router() -> CellRouter:
+    """Mirrors the real cell_routing.json shape for prior_corner_dirt_smallfield_005."""
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(
+                model_version="jra-cb-v9-sim-2013-clean",
+                feature_count=250,
+                architecture="catboost",
+            ),
+            "jockey_pedigree_703": VariantSpec(
+                model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+                feature_count=269,
+                architecture="catboost",
+            ),
+            "prior_corner_dirt_smallfield_005": VariantSpec(
+                model_version="jra-cb-v10-prior-corner274-2013",
+                feature_count=274,
+                architecture="catboost",
+            ),
+        },
+        rules=(
+            CellRouteRule(
+                conditions=(
+                    CellCondition(dimension="kyoso_joken_code", values=frozenset({"703"})),
+                ),
+                variant="jockey_pedigree_703",
+            ),
+            CellRouteRule(
+                conditions=(
+                    CellCondition(dimension="surface", values=frozenset({"dirt"})),
+                    CellCondition(dimension="field_band", values=frozenset({"f_le10"})),
+                    CellCondition(dimension="kyoso_joken_code", values=frozenset({"005"})),
+                ),
+                variant="prior_corner_dirt_smallfield_005",
+            ),
+        ),
+    )
+    return CellRouter(routing={"jra": routing})
+
+
+def test_resolve_variant_prior_corner_smallfield_fires_via_entries_length() -> None:
+    """Regression for the real defect: 8 declared runners, dirt, kyoso_joken_code
+    005 -- exactly today's live-repro race -- with NO usable "shusso_tosu" on
+    any entry (the poisoned production shape). Before the fix this rule could
+    never match (field_band always resolved to None); resolve_variant now
+    derives field_band from len(entries) instead.
+    """
+    router = _jra_prior_corner_router()
+    entries = [
+        {"track_code": "20", "kyoso_joken_code": "005"} for _ in range(8)
+    ]  # track_code "2*" -> dirt (see derive_surface); no shusso_tosu key at all.
+    assert router.resolve_variant("jra", entries) == "prior_corner_dirt_smallfield_005"
+
+
+def test_resolve_variant_prior_corner_smallfield_does_not_fire_for_large_field() -> None:
+    router = _jra_prior_corner_router()
+    entries = [{"track_code": "20", "kyoso_joken_code": "005"} for _ in range(16)]
+    assert router.resolve_variant("jra", entries) == "sim"
 
 
 def test_load_cell_router_parses_optional_variant_feature_contract(tmp_path: Path) -> None:
@@ -756,6 +833,30 @@ def testresolve_dimension_field_band() -> None:
 
 def testresolve_dimension_field_band_none() -> None:
     assert resolve_dimension({}, "field_band", "jra") is None
+
+
+def testresolve_dimension_field_band_uses_field_size_when_provided() -> None:
+    # field_size (the actual count of rows being scored for the race) takes
+    # precedence over the entry's own "shusso_tosu" -- that column is
+    # unconditionally NULL on every row that passes through the near-miss
+    # layer (add-near-miss-features.py re-emits it as a bare
+    # ``cast(null as bigint)`` to reproduce a trained NAR CatBoost split), so
+    # trusting field_size instead is what makes field_band resolvable again.
+    entry = {"shusso_tosu": "99"}
+    assert resolve_dimension(entry, "field_band", "jra", field_size=8) == "f_le10"
+
+
+def testresolve_dimension_field_band_field_size_used_when_entry_has_no_shusso_tosu() -> None:
+    # Regression for the real defect: the entry carries no usable
+    # "shusso_tosu" at all (matches the poisoned production shape), but
+    # field_size alone is enough to resolve field_band correctly.
+    assert resolve_dimension({}, "field_band", "jra", field_size=12) == "f11_13"
+
+
+def testresolve_dimension_field_band_falls_back_to_entry_when_field_size_omitted() -> None:
+    # Backward compatibility: callers that don't pass field_size (direct unit
+    # tests, any other future caller) keep reading entry["shusso_tosu"].
+    assert resolve_dimension({"shusso_tosu": "16"}, "field_band", "jra") == "f16p"
 
 
 def testresolve_dimension_season_from_tsukihi() -> None:
