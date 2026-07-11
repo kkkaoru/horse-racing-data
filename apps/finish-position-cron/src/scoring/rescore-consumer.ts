@@ -13,6 +13,27 @@
 // Mirrors the Python predict_upcoming._score_one_race_etop2 + upsert_sql path.
 //
 // The Neon connection string is never logged (matching neon-warm.ts).
+//
+// STALE — DO NOT WIRE UP AS-IS (2026-07-11): this module has zero callers and
+// must stay that way until it is refreshed. It targets the CatBoost
+// iter20-jra-cb-2013-v8 + XGBoost xgb-jra-2013-v8 E-top2 override (writes
+// model_version="iter22-jra-etop2"), an architecture production retired on
+// 2026-06-26 in favour of the similarity-feature model jra-cb-v9-sim-2013 (see
+// predict_lib.model_meta.py: JRA_ETOP2_ENABLED = False, "sim_* CB model has
+// 263 features but the XGB override model expects 244"), which was itself
+// superseded on 2026-07-04 by the leak-free jra-cb-v9-sim-2013-clean. Neither
+// iter20-jra-cb-2013-v8 nor xgb-jra-2013-v8 nor iter22-jra-etop2 is in
+// predict_lib.model_meta.PRODUCTION_MODEL_VERSION_ALLOWLIST, and this module
+// has no equivalent allowlist / within-race-leak guard of its own. Current
+// production JRA per-race rescore instead routes through the existing
+// container held /predict mode=rescore path (see race-coordinator.ts +
+// queue-consumer.ts CONTAINER_PER_RACE_CATEGORIES), which shares
+// _score_and_flush_races / score_races with the full pass and so inherits the
+// current champion, cell routing, and allowlist automatically. Re-wiring this
+// module would require porting the current model + cell-routing variants here
+// first (rejected as a duplicate-implementation-drift risk — see the RS
+// flatbin categorical bug precedent) or, if ever revisited, a full model +
+// parity-fixture refresh plus a ported leak/allowlist guard.
 
 import { neon } from "@neondatabase/serverless";
 

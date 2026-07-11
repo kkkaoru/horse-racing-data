@@ -23,12 +23,14 @@
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
       "30 0 * * *", // JST 09:30 — feature build via Container (per-race parquets to R2)
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
-      // Per-race coordinator cron (every 5 min, JST 10:00-20:59): inspects
+      // Per-race coordinator cron (every 10 min, JST 10:00-20:59): inspects
       // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore
-      // message for each race within T-X of post time. SHADOW-SAFE: the per-race
-      // rescore consumer (task B) is not wired yet, so an enqueued message has
-      // no effect on production predictions — it only reads D1 + writes the
-      // queue, and never starts the container or touches predict / warm crons.
+      // message for each race within T-X of post time, for the categories
+      // listed in vars.RESCORE_CATEGORIES (JRA only as of 2026-07-11). The
+      // enqueued message is consumed by the existing container held /predict
+      // mode=rescore path — it never starts a new container class or touches
+      // the predict / warm crons, and mode=rescore shares the same model
+      // resolution + cell routing as the full pass (see race-coordinator.ts).
       "*/10 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator
       // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
       // disabled until PHASE 3 pilot confirms full-mode container viability.
@@ -90,10 +92,22 @@
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
     // Per-race coordinator gate. "1" = active — the coordinator cron enqueues
-    // per-race rescore messages for NAR/Ban-ei (container held /predict) and JRA
-    // (Worker-native rescoreJraRace). Flipped from "0" (shadow) after NAR full-path
-    // e2e verification on 2026-06-19.
-    "COORDINATOR_ENABLED": "0",
+    // per-race rescore messages for the categories in RESCORE_CATEGORIES below,
+    // routed to the existing container held /predict mode=rescore path (see
+    // race-coordinator.ts + queue-consumer.ts CONTAINER_PER_RACE_CATEGORIES).
+    // Flipped "0" -> "1" on 2026-07-11 scoped to JRA only via RESCORE_CATEGORIES
+    // (T-25 odds/weight refresh; NAR/Ban-ei held back — see RESCORE_CATEGORIES
+    // comment). Rollback: flip back to "0" (config-only, instant).
+    "COORDINATOR_ENABLED": "1",
+    // Comma-separated PredictCategory list scoping the per-race coordinator
+    // above. JRA-only: rescore for a JRA race shares the container's
+    // _score_and_flush_races / score_races with the full pass, so it inherits
+    // the current champion + cell routing + production model version
+    // allowlist automatically. NAR/Ban-ei rescore is intentionally excluded —
+    // their container rescore would compete with the single per-category
+    // container slot the morning full pass also uses; revisit after the
+    // day-base full-pass speedup lands.
+    "RESCORE_CATEGORIES": "jra",
     // Event-driven rescore from sync-realtime-data is disabled while the
     // per-race full path is the production ordering authority. Full generation
     // must not compete with post-weight rescore retries for Container capacity.

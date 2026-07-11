@@ -541,9 +541,10 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
   }
   if (shouldRunCoordinatorCron(event.cron)) {
     // Per-race timing layer: enqueue rescore messages for races within T-X of
-    // post time. Shadow-safe — the rescore consumer (task B) is not wired yet,
-    // so an enqueued message is a no-op for production predictions. Does not
-    // start the container or touch the predict / warm crons.
+    // post time, scoped to env.RESCORE_CATEGORIES (JRA only as of 2026-07-11).
+    // Routes to the existing container held /predict mode=rescore path — does
+    // not start a new container class or touch the predict / warm crons. A
+    // shadow no-op when env.COORDINATOR_ENABLED !== "1".
     await runRaceCoordinatorTick({
       env,
       leadMinutes: DEFAULT_RESCORE_LEAD_MINUTES,

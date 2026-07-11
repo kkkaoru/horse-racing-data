@@ -27,9 +27,16 @@ export interface Env {
   // Feature flag for the per-race rescore coordinator. "1" enables enqueueing;
   // any other value (including unset) keeps it in shadow — the cron still fires
   // but enqueues nothing, so deploying the coordinator does not change
-  // production predictions until the rescore consumer (task B) is wired and this
-  // flag is flipped. Optional so existing callers/tests need not set it.
+  // production predictions. Optional so existing callers/tests need not set it.
   COORDINATOR_ENABLED?: string;
+  // Comma-separated PredictCategory list gating which categories the per-race
+  // coordinator enqueues rescore for (e.g. "jra" or "jra,nar"). Unset/empty or
+  // a list with no recognized category falls back to JRA-only — NAR/Ban-ei
+  // rescore stays off the container per-race path so it does not contend with
+  // the morning full-pass container slot for those categories. See
+  // race-coordinator.ts resolveRescoreCategories. Optional so existing
+  // callers/tests need not set it.
+  RESCORE_CATEGORIES?: string;
   // Feature flag for event-driven per-race rescore requests from
   // sync-realtime-data. "1" enables the internal rescore endpoint; any other
   // value accepts the request as a no-op so full generation can drain first.

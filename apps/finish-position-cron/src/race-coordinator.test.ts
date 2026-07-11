@@ -13,6 +13,7 @@ import {
   isCoordinatorEnabled,
   isWithinRescoreWindow,
   planRescoreForCategory,
+  resolveRescoreCategories,
   runRaceCoordinatorTick,
   selectRacesWithinWindow,
   triggerWeightRebuildIfNeeded,
@@ -280,10 +281,21 @@ test("planRescoreForCategory skips out-of-window races without claiming or enque
   });
 });
 
-test("runRaceCoordinatorTick plans all three categories for the JST date", async () => {
+test("runRaceCoordinatorTick plans only the default JRA-only category for the JST date", async () => {
   stubD1Rows([]);
   const summaries = await runRaceCoordinatorTick({
     env: makeEnv(),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+  });
+  expect(summaries.map((s) => s.category)).toStrictEqual(["jra"]);
+  expect(prepareMock).toHaveBeenCalledTimes(1);
+});
+
+test("runRaceCoordinatorTick plans every category listed in RESCORE_CATEGORIES", async () => {
+  stubD1Rows([]);
+  const summaries = await runRaceCoordinatorTick({
+    env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
     leadMinutes: 25,
     now: new Date("2026-06-19T05:00:00.000Z"),
   });
@@ -298,11 +310,7 @@ test("runRaceCoordinatorTick uses the JST calendar date for each summary", async
     leadMinutes: 25,
     now: new Date("2026-06-19T16:00:00.000Z"),
   });
-  expect(summaries.map((summary) => summary.date)).toStrictEqual([
-    "2026-06-20",
-    "2026-06-20",
-    "2026-06-20",
-  ]);
+  expect(summaries.map((summary) => summary.date)).toStrictEqual(["2026-06-20"]);
 });
 
 test("isCoordinatorEnabled returns true when COORDINATOR_ENABLED is 1", () => {
@@ -335,6 +343,16 @@ test("runRaceCoordinatorTick is a shadow no-op when the coordinator is disabled"
       scanned: 0,
       withinWindow: 0,
     },
+  ]);
+});
+
+test("runRaceCoordinatorTick shadow no-op reflects RESCORE_CATEGORIES scope", async () => {
+  const summaries = await runRaceCoordinatorTick({
+    env: makeEnv({ COORDINATOR_ENABLED: undefined, RESCORE_CATEGORIES: "nar,ban-ei" }),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T05:00:00.000Z"),
+  });
+  expect(summaries).toStrictEqual([
     {
       alreadyClaimed: 0,
       category: "nar",
@@ -352,6 +370,45 @@ test("runRaceCoordinatorTick is a shadow no-op when the coordinator is disabled"
       withinWindow: 0,
     },
   ]);
+});
+
+test("resolveRescoreCategories defaults to JRA-only when RESCORE_CATEGORIES is unset", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: undefined }))).toStrictEqual([
+    "jra",
+  ]);
+});
+
+test("resolveRescoreCategories defaults to JRA-only when RESCORE_CATEGORIES is empty", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: "" }))).toStrictEqual(["jra"]);
+});
+
+test("resolveRescoreCategories parses a single category", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: "jra" }))).toStrictEqual(["jra"]);
+});
+
+test("resolveRescoreCategories parses multiple comma-separated categories", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: "jra,nar" }))).toStrictEqual([
+    "jra",
+    "nar",
+  ]);
+});
+
+test("resolveRescoreCategories trims whitespace around each token", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: " nar , ban-ei " }))).toStrictEqual(
+    ["nar", "ban-ei"],
+  );
+});
+
+test("resolveRescoreCategories drops unrecognized tokens", () => {
+  expect(
+    resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: "nar,not-a-category,ban-ei" })),
+  ).toStrictEqual(["nar", "ban-ei"]);
+});
+
+test("resolveRescoreCategories falls back to JRA-only when no token is recognized", () => {
+  expect(resolveRescoreCategories(makeEnv({ RESCORE_CATEGORIES: "not-a-category" }))).toStrictEqual(
+    ["jra"],
+  );
 });
 
 test("triggerWeightRebuildIfNeeded claims a synthetic WR race keyed by the JST half-hour slot in the DO", async () => {

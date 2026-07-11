@@ -7,9 +7,15 @@
 // within the [now, now + T-X] window and that has not already been enqueued.
 // This is the timing layer that lets each race be re-scored with the freshest
 // bataiju/odds just before post (bataiju lands ~T-30..50min, odds drift until
-// post). The per-race rescore consumer (task B) is what actually consumes the
-// message; until it is wired this coordinator is shadow-safe (enqueueing a
-// message has no production effect — see worker.ts gating).
+// post). The per-race rescore message is consumed by the existing container
+// held /predict mode=rescore path (queue-consumer.ts CONTAINER_PER_RACE_CATEGORIES),
+// the same path the container's full pass uses via
+// predict_upcoming._score_and_flush_races / score_races — so it inherits the
+// current champion model, cell routing, and the production model version
+// allowlist automatically. env.RESCORE_CATEGORIES scopes which categories are
+// enqueued (see resolveRescoreCategories below); when the coordinator is
+// disabled entirely (COORDINATOR_ENABLED !== "1") it is a shadow no-op — see
+// worker.ts gating.
 
 import { claimRescoreRace } from "./do-state";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
@@ -41,6 +47,15 @@ const HALF_HOUR_SLOT_PAD_WIDTH = 2;
 // live under the nar source with keibajo_code 83 (帯広), so the coordinator
 // must split the nar source by venue before enqueueing per-race container jobs.
 const BAN_EI_KEIBAJO_CODES = ["83"] as const;
+const RESCORE_CATEGORIES_SEPARATOR = ",";
+// Default (and misconfiguration-fallback) scope for env.RESCORE_CATEGORIES:
+// JRA per-race rescore routes to the container's existing mode=rescore path,
+// which shares _score_and_flush_races / score_races with the full pass so it
+// inherits the current champion, cell routing, and the production model
+// version allowlist automatically. NAR/Ban-ei rescore is intentionally held
+// back until the day-base full-pass speedup, so it does not contend with the
+// morning bulk run for those categories' single per-category container slot.
+const DEFAULT_RESCORE_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra"];
 interface CategoryRaceFilter {
   keibajoCodes: ReadonlyArray<string>;
   keibajoMode: "all" | "exclude" | "include";
@@ -65,6 +80,7 @@ const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter
   },
 };
 const ALL_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra", "nar", "ban-ei"];
+const ALL_CATEGORIES_SET = new Set<string>(ALL_CATEGORIES);
 
 interface RaceSourceRow {
   keibajo_code: string;
@@ -302,6 +318,23 @@ const buildShadowSummary = (category: PredictCategory, date: string): RaceCoordi
 export const isCoordinatorEnabled = (env: Env): boolean =>
   env.COORDINATOR_ENABLED === COORDINATOR_ENABLED_FLAG;
 
+const isPredictCategory = (value: string): value is PredictCategory =>
+  ALL_CATEGORIES_SET.has(value);
+
+// Resolve the comma-separated env.RESCORE_CATEGORIES list into the
+// PredictCategory values the coordinator should enqueue rescore for. Unknown
+// tokens are dropped; an unset var, an empty string, or a list with no
+// recognized category all fall back to DEFAULT_RESCORE_CATEGORIES so a
+// misconfigured var fails toward the verified JRA-only scope rather than
+// silently enqueueing nothing or reactivating NAR/Ban-ei contention.
+export const resolveRescoreCategories = (env: Env): PredictCategory[] => {
+  if (env.RESCORE_CATEGORIES === undefined) return [...DEFAULT_RESCORE_CATEGORIES];
+  const resolved = env.RESCORE_CATEGORIES.split(RESCORE_CATEGORIES_SEPARATOR)
+    .map((token) => token.trim())
+    .filter(isPredictCategory);
+  return resolved.length > 0 ? resolved : [...DEFAULT_RESCORE_CATEGORIES];
+};
+
 // Claim a synthetic WR race in the DO (strong consistency) and, when this is the
 // first claim of the half-hour slot for the category, enqueue a rescore-mode
 // build so the Container re-scores from the cached R2 parquet with the
@@ -337,14 +370,15 @@ export const runRaceCoordinatorTick = async (
   params: RaceCoordinatorTickParams,
 ): Promise<RaceCoordinatorSummary[]> => {
   const date = formatRunDateJst(params.now);
+  const categories = resolveRescoreCategories(params.env);
   // Shadow gate: when disabled, skip the D1 read + enqueue entirely so the cron
   // is a no-op for production. Reports empty per-category summaries.
   if (!isCoordinatorEnabled(params.env)) {
-    return ALL_CATEGORIES.map((category) => buildShadowSummary(category, date));
+    return categories.map((category) => buildShadowSummary(category, date));
   }
   const runYmd = formatRunYmdJst(params.now);
   const summaries = await Promise.all(
-    ALL_CATEGORIES.map((category) =>
+    categories.map((category) =>
       planRescoreForCategory({
         category,
         date,
