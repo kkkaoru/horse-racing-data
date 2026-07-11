@@ -95,10 +95,23 @@
     // per-race rescore messages for the categories in RESCORE_CATEGORIES below,
     // routed to the existing container held /predict mode=rescore path (see
     // race-coordinator.ts + queue-consumer.ts CONTAINER_PER_RACE_CATEGORIES).
-    // Flipped "0" -> "1" on 2026-07-11 scoped to JRA only via RESCORE_CATEGORIES
-    // (T-25 odds/weight refresh; NAR/Ban-ei held back — see RESCORE_CATEGORIES
-    // comment). Rollback: flip back to "0" (config-only, instant).
-    "COORDINATOR_ENABLED": "1",
+    // Flipped "0" -> "1" on 2026-07-11, then back to "0" the same day: the
+    // defect sweep (apps/pc-keiba-viewer/tmp/rc2-defect-sweep/
+    // sweepC-class3-r2-cache-inventory.txt) proved the R2 feature cache that
+    // mode=rescore depends on is NEVER written by the focused-full path
+    // (mode=full + keibajoCode + raceBango together, the request shape used
+    // for virtually every real per-race prediction today) — serve.py's
+    // is_focused_full_request branch returns via _focused_full_result_line
+    // before reaching the parquet_payload_fn / per_race_parquet_payload_fn
+    // upload block further down in iter_predict_chunks, so only 13 stale
+    // whole-day objects exist bucket-wide and zero per-race-keyed objects
+    // exist at all. Every rescore attempt would therefore CacheMissError and
+    // silently fall back to the full pipeline (~15-27 min), completing after
+    // post and overwriting the honest pre-race prediction row with a
+    // post-race-generated one. Re-enable only after the focused-full path is
+    // fixed to also populate the R2 cache. Rollback: flip back to "0"
+    // (config-only, instant) — this IS that rollback.
+    "COORDINATOR_ENABLED": "0",
     // Comma-separated PredictCategory list scoping the per-race coordinator
     // above. JRA-only: rescore for a JRA race shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
