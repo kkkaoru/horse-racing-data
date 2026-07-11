@@ -124,8 +124,15 @@
     },
     {
       "binding": "REALTIME_HOT_DB",
-      "database_name": "sync-realtime-data-hot",
-      "database_id": "946a0bb1-84c4-471b-9cb5-f984c4d83328",
+      // sync-realtime-data-hot's own D1 was migrated to the -v2 database
+      // (see apps/sync-realtime-data-hot/wrangler.jsonc); this viewer-side
+      // binding is unused by app code (odds reads go through the
+      // env.REALTIME_HOT service-Worker binding instead, see
+      // today-sibling-runner-merge.ts) but wrangler still validates every
+      // declared D1 binding at deploy time, so the stale id blocked deploys
+      // once the legacy database was dropped.
+      "database_name": "sync-realtime-data-hot-v2",
+      "database_id": "a90709cc-6dd3-4a10-9403-334888cb76f6",
       "remote": true,
     },
     {
