@@ -105,6 +105,18 @@ EXPERIMENT_RS_CHAMPION_EVAL: Final[str] = "running-style/champion-eval"
 # MLflow line chart. See cell_eval_runs.py's own module docstring.
 EXPERIMENT_FP_CELL_EVAL: Final[str] = "finish-position/cell-eval"
 EXPERIMENT_RS_CELL_EVAL: Final[str] = "running-style/cell-eval"
+# cf_serving_recorder.py's per-(date, category) CF-container serving-process
+# recorder lives here -- distinct from EXPERIMENT_FP_PRODUCTION_USAGE (which
+# answers "was this served, and was it accurate") and EXPERIMENT_FP_CELL_EVAL/
+# EXPERIMENT_FP_CHAMPION_EVAL (which answer "how accurate is the champion").
+# This experiment instead answers an infrastructure-facing question: "did the
+# CF container serve this day's card one race at a time, on schedule, without
+# partial/duplicate writes" -- routing mix (champion vs cell-routed variant vs
+# other), coverage against the local-replica race calendar, and anomaly
+# counts (late-relative-to-post-time races, Mac-batch-fallback burst
+# signature, partial/mixed-timestamp writes). See cf_serving_recorder.py's own
+# module docstring for the full data model.
+EXPERIMENT_FP_CF_SERVING: Final[str] = "finish-position/cf-serving"
 # One-shot/manual smoke-test runs (e.g. a throwaway CLI dry-run verifying the
 # log-training-run pipeline end-to-end) route here via that command's own
 # manifest "experiment" override -- kept isolated from every real per-task
@@ -126,6 +138,7 @@ ALL_EXPERIMENT_NAMES: Final[tuple[str, ...]] = (
     EXPERIMENT_RS_CHAMPION_EVAL,
     EXPERIMENT_FP_CELL_EVAL,
     EXPERIMENT_RS_CELL_EVAL,
+    EXPERIMENT_FP_CF_SERVING,
     EXPERIMENT_SMOKE_TESTS,
 )
 

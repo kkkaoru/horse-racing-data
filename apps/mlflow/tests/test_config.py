@@ -672,6 +672,11 @@ def test_smoke_tests_experiment_name_is_included_in_all_experiment_names() -> No
     assert config.EXPERIMENT_SMOKE_TESTS in config.ALL_EXPERIMENT_NAMES
 
 
+def test_cf_serving_experiment_name_is_included_in_all_experiment_names() -> None:
+    assert config.EXPERIMENT_FP_CF_SERVING == "finish-position/cf-serving"
+    assert config.EXPERIMENT_FP_CF_SERVING in config.ALL_EXPERIMENT_NAMES
+
+
 def test_clear_ambient_backend_uri_overrides_preset_generic_tracking_uri(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

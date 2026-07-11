@@ -661,6 +661,68 @@ def fetch_races_scheduled(conn: db.ConnectionLike, category: str, date_str: str)
     raise ValueError(f"unknown category: {category!r}")
 
 
+_JRA_POST_TIME_SQL: Final[str] = """
+    -- fetch_post_times: jra
+    SELECT keibajo_code, race_bango, hasso_jikoku FROM jvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s
+"""
+
+_NAR_POST_TIME_SQL: Final[str] = """
+    -- fetch_post_times: nar/banei (banei is a keibajo_code subset, filtered below)
+    SELECT keibajo_code, race_bango, hasso_jikoku FROM nvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s
+"""
+
+
+def fetch_post_times(
+    conn: db.ConnectionLike, category: str, date_str: str
+) -> dict[tuple[str, str], str]:
+    """Return `{(keibajo_code, race_bango): hasso_jikoku}` for every race in
+    the local replica's own race calendar for (category, date_str) --
+    `hasso_jikoku` is the scheduled post time as a 4-digit "HHMM" text value
+    (JVD's raw encoding, e.g. "1615" for 16:15), independent of whether
+    anything was ever served for that race.
+
+    Reads the SAME jvd_ra/nvd_ra tables `fetch_races_scheduled` already reads
+    its "races expected" COUNT from, but returns the actual keyed race list
+    (needed by a caller that must match individual races against served
+    predictions, not just compare a headline count) -- `fetch_races_scheduled`
+    itself cannot be reused for that: its own `jvd_ra` query does not even
+    select `keibajo_code` (JRA can race multiple venues the same day, so
+    `race_bango` alone is not a valid key -- see that function's own
+    docstring), and neither query selects `hasso_jikoku` at all.
+
+    `category="banei"` reads the exact same `nvd_ra` rows as `category="nar"`
+    (Ban-ei has no separately-exported table, see this module's own
+    docstring) and filters to Ban-ei's `keibajo_code` only, mirroring
+    `resolve_result_tables`'s own nar/banei table-sharing convention;
+    `category="nar"` filters the same rows to EXCLUDE Ban-ei's `keibajo_code`,
+    mirroring `fetch_races_scheduled`'s own nar arm.
+
+    A race whose `hasso_jikoku` is NULL/empty in the source table is silently
+    OMITTED from the returned dict (there is no post time to key it by) --
+    never represented as an empty-string value. Raises ValueError for any
+    other category string, mirroring `fetch_races_scheduled`'s own
+    convention.
+    """
+    if category == cells.CATEGORY_JRA:
+        cursor = conn.cursor()
+        cursor.execute(_JRA_POST_TIME_SQL, (date_str[:4], date_str[4:]))
+        rows = cursor.fetchall()
+        return {(str(r[0]), str(r[1])): str(r[2]) for r in rows if r[2]}
+    if category in (cells.CATEGORY_NAR, cells.CATEGORY_BANEI):
+        cursor = conn.cursor()
+        cursor.execute(_NAR_POST_TIME_SQL, (date_str[:4], date_str[4:]))
+        rows = cursor.fetchall()
+        is_banei = category == cells.CATEGORY_BANEI
+        return {
+            (str(r[0]), str(r[1])): str(r[2])
+            for r in rows
+            if r[2] and (str(r[0]) == BANEI_KEIBAJO_CODE) == is_banei
+        }
+    raise ValueError(f"unknown category: {category!r}")
+
+
 # ── Join / build functions (pure, no I/O) ───────────────────────────────────
 
 

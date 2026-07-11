@@ -285,6 +285,52 @@ def test_fetch_races_scheduled_unknown_category_raises_value_error() -> None:
         serve_eval.fetch_races_scheduled(mock_conn, "bogus", "20260614")
 
 
+# ── fetch_post_times ─────────────────────────────────────────────────────────
+
+
+def test_fetch_post_times_jra_keys_by_keibajo_and_race_bango() -> None:
+    mock_conn = _make_mock_conn([("05", "01", "1015"), ("05", "02", "1050")])
+    result = serve_eval.fetch_post_times(mock_conn, "jra", "20260614")
+
+    assert result == {("05", "01"): "1015", ("05", "02"): "1050"}
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, called_params = mock_cur.execute.call_args[0]
+    assert "jvd_ra" in called_sql
+    assert called_params == ("2026", "0614")
+
+
+def test_fetch_post_times_jra_omits_null_hasso_jikoku() -> None:
+    mock_conn = _make_mock_conn([("05", "01", "1015"), ("05", "02", None), ("05", "03", "")])
+    result = serve_eval.fetch_post_times(mock_conn, "jra", "20260614")
+    assert result == {("05", "01"): "1015"}
+
+
+def test_fetch_post_times_nar_excludes_banei_keibajo_code() -> None:
+    mock_conn = _make_mock_conn(
+        [("30", "01", "1200"), (serve_eval.BANEI_KEIBAJO_CODE, "01", "1800")]
+    )
+    result = serve_eval.fetch_post_times(mock_conn, "nar", "20260614")
+
+    assert result == {("30", "01"): "1200"}
+    mock_cur = mock_conn.cursor.return_value
+    called_sql, _ = mock_cur.execute.call_args[0]
+    assert "nvd_ra" in called_sql
+
+
+def test_fetch_post_times_banei_keeps_only_banei_keibajo_code() -> None:
+    mock_conn = _make_mock_conn(
+        [("30", "01", "1200"), (serve_eval.BANEI_KEIBAJO_CODE, "01", "1800")]
+    )
+    result = serve_eval.fetch_post_times(mock_conn, "banei", "20260614")
+    assert result == {(serve_eval.BANEI_KEIBAJO_CODE, "01"): "1800"}
+
+
+def test_fetch_post_times_unknown_category_raises_value_error() -> None:
+    mock_conn = _make_mock_conn([])
+    with pytest.raises(ValueError, match="unknown category"):
+        serve_eval.fetch_post_times(mock_conn, "bogus", "20260614")
+
+
 # ── resolve_result_tables / resolve_source ──────────────────────────────────
 
 

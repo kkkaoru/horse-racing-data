@@ -18,6 +18,19 @@
 #      before this call's own date/category loop starts. No flag needed
 #      here to opt in -- pass --no-repair-stale-running to disable it for a
 #      one-off manual invocation if ever needed.
+#   1b. `cf_serving_recorder` (a module, not a `cli` subcommand -- see that
+#      module's own docstring) over the SAME "yesterday -> today" JST
+#      window, for jra/nar/banei: records CF-container finish-position
+#      serving PROCESSING (routing mix, coverage against the local race
+#      calendar, late/missing/batch-burst/partial-write anomaly counts) into
+#      `finish-position/cf-serving` -- distinct from step 1's accuracy-
+#      focused production-usage sync. ONE cheap call per (date, category), a
+#      handful of Neon/local-replica queries with no heavy joins, so this
+#      command is also safe for a SEPARATE, more-frequent "monitoring
+#      sibling" cron to re-run intraday during race hours (each call
+#      REPLACES that day's snapshot in place -- see the module's own
+#      idempotency docstring); this script's once-daily 22:30 JST
+#      invocation is a baseline floor, not the only expected invocation.
 #   2. `eval-champion-cells` for all three categories (default trailing
 #      90-day window as of today), re-scoring each category's CURRENT
 #      champion model at cell granularity against whatever genuinely-served
@@ -70,10 +83,16 @@
 #   early or late fire.
 #
 # IDEMPOTENCY:
-#   All three underlying CLI commands are safe to re-run. sync-production is
+#   Every underlying command is safe to re-run. sync-production is
 #   gated by per-(date, category, model_version) sync_base_logged /
 #   sync_eval_logged tags, so re-logging the same range never duplicates
 #   base tracking and only retries evaluation while it's still unfilled.
+#   cf_serving_recorder is gated by a (date, category) cf_serving_key tag,
+#   but UNLIKE the tag-gated commands below it does NOT skip re-work when
+#   found -- every call REPLACES that run's metrics/table with today's
+#   current state (see that module's own docstring on update-in-place
+#   idempotency, the deliberate design choice for a value meant to be
+#   re-read many times through race hours).
 #   eval-champion-cells is gated by a (category, task, window_days,
 #   as_of_date) cell_eval_key tag, so a same-day re-run is a cheap no-op
 #   that reuses the existing run's summary instead of re-querying.
@@ -126,6 +145,10 @@ echo "--- backfill-finish-position --allow-missing-champion ---"
 
 echo "--- sync-production --date-from $YESTERDAY_JST --date-to $TODAY_JST --categories jra,nar,banei ---"
 "$UV_BIN" run python -m mlflow_tracking.cli sync-production \
+  --date-from "$YESTERDAY_JST" --date-to "$TODAY_JST" --categories jra,nar,banei
+
+echo "--- cf_serving_recorder --date-from $YESTERDAY_JST --date-to $TODAY_JST --categories jra,nar,banei ---"
+"$UV_BIN" run python -m mlflow_tracking.cf_serving_recorder \
   --date-from "$YESTERDAY_JST" --date-to "$TODAY_JST" --categories jra,nar,banei
 
 echo "--- eval-champion-cells --category jra,nar,banei ---"
