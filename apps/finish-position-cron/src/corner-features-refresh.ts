@@ -23,6 +23,15 @@
 // EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS, INSERT ... ON CONFLICT DO
 // UPDATE) -- no DELETE/TRUNCATE, matching this repo's no-data-delete
 // convention and the safety already verified for the source script.
+//
+// Freshness dependency: jvd_se/nvd_se on Neon are themselves populated via a
+// local-PG-to-Neon replica push, not written directly by JRA-VAN/NAR-VAN
+// ingestion. If that push stalls (e.g. the 2026-07-08 jvd_se settle-feed
+// incident), this refresh will read a Neon table that is behind the local
+// source until the push recovers -- no special handling needed here: the
+// next scheduled run after the push catches up will upsert the
+// now-available rows on its own, since every statement above is
+// idempotent/upsert-only.
 
 import { neon } from "@neondatabase/serverless";
 import type { Env } from "./types";
@@ -364,14 +373,20 @@ const CORNER_FEATURES_INDEX_STATEMENTS: readonly string[] = [
      where finish_norm is not null`,
 ];
 
-// Best-effort: every failure is caught and logged here, never propagated --
-// a stale/missing corner-features row degrades the completion check's
-// accuracy (the status quo before this refresh existed) but must never
-// block the day-base prewarm cron it runs alongside.
+// Best-effort, same contract as day-base-prewarm.ts's own fix for the
+// 2026-07-12 silent-failure incident: log an UNCONDITIONAL start line before
+// any work (including the date-window computation) so a throw before the
+// try block still leaves evidence in the logs, then wrap every fallible step
+// in one try/catch so a failure anywhere in the statement sequence is caught
+// and logged here, never propagated -- a stale/missing corner-features row
+// degrades the completion check's accuracy (the status quo before this
+// refresh existed) but must never block the day-base prewarm cron it runs
+// alongside.
 export const refreshCornerFeatures = async (params: RefreshCornerFeaturesParams): Promise<void> => {
   const { env, runYmd, daysAhead } = params;
-  const toDate = addDaysToYyyymmdd(runYmd, daysAhead);
+  console.log(`[corner-features-refresh] start runYmd=${runYmd} daysAhead=${daysAhead}`);
   try {
+    const toDate = addDaysToYyyymmdd(runYmd, daysAhead);
     const sql = neon(env.NEON_DATABASE_URL);
     await sql.query(CORNER_FEATURES_TABLE_DDL);
     for (const statement of CORNER_FEATURES_ALTER_STATEMENTS) {
@@ -384,7 +399,7 @@ export const refreshCornerFeatures = async (params: RefreshCornerFeaturesParams)
     console.log(`[corner-features-refresh] ok runYmd=${runYmd} toDate=${toDate}`);
   } catch (err) {
     console.error(
-      `[corner-features-refresh] failed runYmd=${runYmd} toDate=${toDate}: ${String(err)}`,
+      `[corner-features-refresh] failed runYmd=${runYmd} daysAhead=${daysAhead}: ${String(err)}`,
     );
   }
 };

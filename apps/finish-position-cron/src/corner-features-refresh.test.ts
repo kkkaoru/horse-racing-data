@@ -29,6 +29,20 @@ test("connects to Neon via env.NEON_DATABASE_URL", async () => {
   expect(neonMock).toHaveBeenCalledWith("postgres://example");
 });
 
+test("logs an unconditional start line before any work, so an uncaught throw still leaves evidence", async () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  neonMock.mockImplementationOnce(() => {
+    throw new Error("neon() constructor blew up");
+  });
+  await expect(
+    refreshCornerFeatures({ daysAhead: 2, env: makeEnv(), runYmd: "20260712" }),
+  ).resolves.toBeUndefined();
+  expect(logSpy).toHaveBeenCalledWith(
+    "[corner-features-refresh] start runYmd=20260712 daysAhead=2",
+  );
+  logSpy.mockRestore();
+});
+
 test("runs the table DDL first and the horse-history index last", async () => {
   await refreshCornerFeatures({ daysAhead: 2, env: makeEnv(), runYmd: "20260712" });
   expect(queryMock).toHaveBeenCalledTimes(EXPECTED_STATEMENT_COUNT);
@@ -79,7 +93,7 @@ test("swallows and logs a query failure instead of throwing", async () => {
     refreshCornerFeatures({ daysAhead: 2, env: makeEnv(), runYmd: "20260712" }),
   ).resolves.toBeUndefined();
   expect(consoleError).toHaveBeenCalledWith(
-    expect.stringContaining("failed runYmd=20260712 toDate=20260714: Error: neon unreachable"),
+    expect.stringContaining("failed runYmd=20260712 daysAhead=2: Error: neon unreachable"),
   );
   consoleError.mockRestore();
 });
