@@ -16,6 +16,7 @@ const {
   runDayBasePrewarmMock,
   resolveCardMaxRaceBangoForKochiMock,
   runCoverageSelfHealMock,
+  refreshCornerFeaturesMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -26,6 +27,7 @@ const {
   const claimRescoreRace = vi.fn(async () => ({ proceed: true }));
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => undefined);
+  const refreshCornerFeatures = vi.fn(async () => undefined);
   const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
   const runCoverageSelfHeal = vi.fn(async () => ({
     alreadyComplete: 0,
@@ -49,6 +51,7 @@ const {
     runDayBasePrewarmMock: runDayBasePrewarm,
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
     runCoverageSelfHealMock: runCoverageSelfHeal,
+    refreshCornerFeaturesMock: refreshCornerFeatures,
   };
 });
 
@@ -83,6 +86,10 @@ vi.mock("./do-state", () => ({
 
 vi.mock("./day-base-prewarm", () => ({
   runDayBasePrewarm: runDayBasePrewarmMock,
+}));
+
+vi.mock("./corner-features-refresh", () => ({
+  refreshCornerFeatures: refreshCornerFeaturesMock,
 }));
 
 // shouldRunCoverageSelfHealCron is a pure string comparison against the real
@@ -152,6 +159,7 @@ beforeEach(() => {
   claimRescoreRaceMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
   runDayBasePrewarmMock.mockClear();
+  refreshCornerFeaturesMock.mockClear();
   runCoverageSelfHealMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
@@ -363,6 +371,7 @@ test("handleScheduled coverage self-heal cron does not start container, warm, co
   expect(warmNeonMock).not.toHaveBeenCalled();
   expect(coordinatorTickMock).not.toHaveBeenCalled();
   expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
+  expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
   expect(enqueueMock).not.toHaveBeenCalled();
 });
 
@@ -377,6 +386,22 @@ test("handleScheduled dispatches the day-base prewarm for the feature-build cron
   expect(runDayBasePrewarmMock).toHaveBeenCalledWith(
     expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
   );
+});
+
+test("handleScheduled refreshes corner features before the day-base prewarm for the feature-build cron", async () => {
+  const callOrder: string[] = [];
+  refreshCornerFeaturesMock.mockImplementationOnce(async () => {
+    callOrder.push("refreshCornerFeatures");
+  });
+  runDayBasePrewarmMock.mockImplementationOnce(async () => {
+    callOrder.push("runDayBasePrewarm");
+  });
+  await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledTimes(1);
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
+  );
+  expect(callOrder).toStrictEqual(["refreshCornerFeatures", "runDayBasePrewarm"]);
 });
 
 test("handleScheduled feature-build cron does not enqueue a direct full-mode predict", async () => {

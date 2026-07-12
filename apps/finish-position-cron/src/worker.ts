@@ -3,6 +3,7 @@
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
+import { refreshCornerFeatures } from "./corner-features-refresh";
 import { runCoverageSelfHeal, shouldRunCoverageSelfHealCron } from "./coverage-self-heal";
 import {
   PREDICT_CRON,
@@ -585,18 +586,25 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     return;
   }
   if (shouldRunFeatureBuildCron(event.cron)) {
+    // §4.4 (docs/cf-only-serving-architecture.md): race_entry_corner_features
+    // has no refresh path of its own -- it is the expected-entrant source in
+    // isFocusedFullPredictionComplete's own SQL, so a stale/NULL row there
+    // degrades the completion check independent of anything else in this
+    // reliability wave. Runs BEFORE the day-base build (not after) so RACE_CHAIN
+    // and the coverage self-heal cron's completion checks never read a stale
+    // row for a race scheduled today or tomorrow. Best-effort: swallows its
+    // own failures internally and never blocks the day-base prewarm below.
+    const scheduledAt = new Date(event.scheduledTime);
+    const runYmd = getRunYmdJst(scheduledAt);
+    const daysAhead = Number(env.PREDICT_DAYS_AHEAD);
+    await refreshCornerFeatures({ daysAhead, env, runYmd });
     // Warms the per-category, per-day "day-base" feature parquet cache in the
     // Container (see day-base-prewarm.ts) so the day-stable feature layers are
     // built once per day instead of once per race. Production full per-race
     // runs are still triggered by sync-realtime-data after running-style
     // completes via POST /run with skipDedup=true; this cron only pre-builds
     // the cache those runs then reuse.
-    const scheduledAt = new Date(event.scheduledTime);
-    await runDayBasePrewarm({
-      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
-      env,
-      runYmd: getRunYmdJst(scheduledAt),
-    });
+    await runDayBasePrewarm({ daysAhead, env, runYmd });
     return;
   }
   if (shouldRunRescoreCron(event.cron)) {
