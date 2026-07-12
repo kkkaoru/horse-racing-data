@@ -14,6 +14,7 @@ import type { FeatureCategory, FeatureTarget } from "./build-finish-position-fea
 import {
   buildActivateModelSql,
   buildActiveModelsTableDdl,
+  buildAddFirstServedAtColumnSql,
   buildBatchInsertSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
@@ -241,6 +242,10 @@ const ensureTables = async (pool: Pool): Promise<void> => {
     pool.query(buildPredictionsTableDdl()),
     pool.query(buildActiveModelsTableDdl()),
   ]);
+  // ADD COLUMN IF NOT EXISTS, safe to re-run every invocation -- this is what
+  // actually reaches an already-existing production table (the CREATE TABLE
+  // IF NOT EXISTS calls above are no-ops there). See buildAddFirstServedAtColumnSql.
+  await pool.query(buildAddFirstServedAtColumnSql());
   await pool.query(buildPredictionsLookupIndexSql());
 };
 

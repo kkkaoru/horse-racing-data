@@ -71,6 +71,7 @@ export const buildPredictionsTableDdl = (): string => `
       class_code text,
       surface text,
       prediction_generated_at timestamptz not null default now(),
+      first_served_at timestamptz not null default now(),
       primary key (${PRIMARY_KEY_COLUMNS.join(", ")})
     )
   `;
@@ -86,6 +87,18 @@ export const buildActiveModelsTableDdl = (): string => `
 
 export const buildAddSubclassColumnSql = (): string =>
   `alter table ${ACTIVE_MODELS_TABLE} add column if not exists subclass text`;
+
+// MASTER-INVENTORY finding #13: ON CONFLICT DO UPDATE unconditionally sets
+// prediction_generated_at = now(), so a same-key re-score/backfill destroys
+// the true first-serve timestamp. first_served_at is the fix: deliberately
+// absent from both INSERT_COLUMNS and UPDATABLE_COLUMNS above, so it is set
+// once by this column's own DEFAULT now() on the row's original INSERT and
+// never touched again by any later ON CONFLICT DO UPDATE. This ALTER (like
+// buildAddSubclassColumnSql above) targets the table that already exists in
+// production -- buildPredictionsTableDdl's CREATE TABLE IF NOT EXISTS only
+// takes effect for a from-scratch table.
+export const buildAddFirstServedAtColumnSql = (): string =>
+  `alter table ${PREDICTIONS_TABLE} add column if not exists first_served_at timestamptz not null default now()`;
 
 export const buildDropLegacyPkSql = (): string =>
   `alter table ${ACTIVE_MODELS_TABLE} drop constraint if exists ${ACTIVE_MODELS_TABLE}_pkey`;

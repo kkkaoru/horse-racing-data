@@ -5,6 +5,7 @@ import {
   buildActivateModelSql,
   buildActiveModelsSubclassUniqueIndexSql,
   buildActiveModelsTableDdl,
+  buildAddFirstServedAtColumnSql,
   buildAddSubclassColumnSql,
   buildBatchInsertSql,
   buildDropLegacyPkSql,
@@ -92,6 +93,11 @@ test("buildPredictionsTableDdl declares numeric and integer fields", () => {
   expect(ddl).toContain("primary key (model_version, source, kaisai_nen");
 });
 
+test("buildPredictionsTableDdl declares first_served_at with its own default", () => {
+  const ddl = buildPredictionsTableDdl();
+  expect(ddl).toContain("first_served_at timestamptz not null default now()");
+});
+
 test("buildPredictionsTableDdl declares the five nullable subgroup columns", () => {
   const ddl = buildPredictionsTableDdl();
   expect(ddl).toContain("distance_band text,");
@@ -112,6 +118,14 @@ test("buildAddSubclassColumnSql adds the subclass column idempotently", () => {
   const sql = buildAddSubclassColumnSql();
   expect(sql).toContain("alter table finish_position_active_models");
   expect(sql).toContain("add column if not exists subclass text");
+});
+
+test("buildAddFirstServedAtColumnSql adds the first_served_at column idempotently", () => {
+  const sql = buildAddFirstServedAtColumnSql();
+  expect(sql).toContain("alter table race_finish_position_model_predictions");
+  expect(sql).toContain(
+    "add column if not exists first_served_at timestamptz not null default now()",
+  );
 });
 
 test("buildDropLegacyPkSql drops the legacy category-only primary key", () => {
@@ -151,6 +165,11 @@ test("buildBatchInsertSql includes the conflict clause", () => {
   );
   expect(sql).toContain("predicted_score = excluded.predicted_score");
   expect(sql).toContain("prediction_generated_at = now()");
+});
+
+test("buildBatchInsertSql never assigns first_served_at, so a re-score/backfill cannot overwrite it (finding #13)", () => {
+  const sql = buildBatchInsertSql(1);
+  expect(sql).not.toContain("first_served_at");
 });
 
 test("buildBatchInsertSql updates the subgroup columns on conflict", () => {

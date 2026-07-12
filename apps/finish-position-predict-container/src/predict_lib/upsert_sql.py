@@ -67,6 +67,19 @@ UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
     *PREDICTION_SUBGROUP_COLUMNS,
 )
 
+# MASTER-INVENTORY finding #13: two columns track prediction timing, and they
+# MUST stay asymmetric. ``prediction_generated_at`` is forced to ``now()`` in
+# every ``ON CONFLICT DO UPDATE`` below (see ``build_upsert_sql``) -- correct,
+# it tracks "most recently (re)generated". ``first_served_at`` is deliberately
+# absent from BOTH ``INSERT_COLUMNS`` and ``UPDATABLE_COLUMNS`` above: it is
+# populated once by the column's own ``DEFAULT now()`` (see
+# ``apps/pc-keiba-viewer/.../import-predictions-sql.ts``'s
+# ``buildAddFirstServedAtColumnSql`` / ``buildPredictionsTableDdl``) on a row's
+# original INSERT, and a same-key re-score/backfill's ON CONFLICT DO UPDATE
+# never touches it again -- so it stays a true "first ever served" timestamp.
+# Do NOT add ``first_served_at`` to either tuple above; doing so would silently
+# reintroduce the exact bug this finding fixed.
+
 DEFAULT_CHUNK_SIZE: Final[int] = 500
 
 
