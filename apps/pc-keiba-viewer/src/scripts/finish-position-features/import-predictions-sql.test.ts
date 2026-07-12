@@ -11,6 +11,7 @@ import {
   buildDropLegacyPkSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
+  buildSetFirstServedAtDefaultSql,
   INSERT_COLUMNS,
   PREDICTIONS_TABLE,
   PRIMARY_KEY_COLUMNS,
@@ -93,9 +94,9 @@ test("buildPredictionsTableDdl declares numeric and integer fields", () => {
   expect(ddl).toContain("primary key (model_version, source, kaisai_nen");
 });
 
-test("buildPredictionsTableDdl declares first_served_at with its own default", () => {
+test("buildPredictionsTableDdl declares first_served_at as bare nullable (no inline default)", () => {
   const ddl = buildPredictionsTableDdl();
-  expect(ddl).toContain("first_served_at timestamptz not null default now()");
+  expect(ddl).toContain("first_served_at timestamptz,");
 });
 
 test("buildPredictionsTableDdl declares the five nullable subgroup columns", () => {
@@ -120,12 +121,17 @@ test("buildAddSubclassColumnSql adds the subclass column idempotently", () => {
   expect(sql).toContain("add column if not exists subclass text");
 });
 
-test("buildAddFirstServedAtColumnSql adds the first_served_at column idempotently", () => {
+test("buildAddFirstServedAtColumnSql adds the bare nullable column idempotently (no volatile default -- metadata-only, no table rewrite)", () => {
   const sql = buildAddFirstServedAtColumnSql();
   expect(sql).toContain("alter table race_finish_position_model_predictions");
-  expect(sql).toContain(
-    "add column if not exists first_served_at timestamptz not null default now()",
-  );
+  expect(sql).toContain("add column if not exists first_served_at timestamptz");
+  expect(sql).not.toContain("default");
+});
+
+test("buildSetFirstServedAtDefaultSql sets the default in its own statement, applying only to future inserts", () => {
+  const sql = buildSetFirstServedAtDefaultSql();
+  expect(sql).toContain("alter table race_finish_position_model_predictions");
+  expect(sql).toContain("alter column first_served_at set default now()");
 });
 
 test("buildDropLegacyPkSql drops the legacy category-only primary key", () => {

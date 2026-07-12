@@ -71,7 +71,7 @@ export const buildPredictionsTableDdl = (): string => `
       class_code text,
       surface text,
       prediction_generated_at timestamptz not null default now(),
-      first_served_at timestamptz not null default now(),
+      first_served_at timestamptz,
       primary key (${PRIMARY_KEY_COLUMNS.join(", ")})
     )
   `;
@@ -91,14 +91,25 @@ export const buildAddSubclassColumnSql = (): string =>
 // MASTER-INVENTORY finding #13: ON CONFLICT DO UPDATE unconditionally sets
 // prediction_generated_at = now(), so a same-key re-score/backfill destroys
 // the true first-serve timestamp. first_served_at is the fix: deliberately
-// absent from both INSERT_COLUMNS and UPDATABLE_COLUMNS above, so it is set
-// once by this column's own DEFAULT now() on the row's original INSERT and
-// never touched again by any later ON CONFLICT DO UPDATE. This ALTER (like
-// buildAddSubclassColumnSql above) targets the table that already exists in
-// production -- buildPredictionsTableDdl's CREATE TABLE IF NOT EXISTS only
-// takes effect for a from-scratch table.
+// absent from both INSERT_COLUMNS and UPDATABLE_COLUMNS above, so once set it
+// is never touched again by any later ON CONFLICT DO UPDATE. This ALTER
+// (like buildAddSubclassColumnSql above) targets the table that already
+// exists in production -- buildPredictionsTableDdl's CREATE TABLE IF NOT
+// EXISTS only takes effect for a from-scratch table.
+//
+// Split into two statements deliberately: ADD COLUMN with a volatile DEFAULT
+// (default now()) in one step forces Postgres to rewrite every existing row
+// to materialise that default -- a long table-wide lock, dangerous against a
+// live-serving table. Adding the column bare (no default) is metadata-only
+// and instant; SET DEFAULT below only affects INSERTs from that point
+// forward. Existing rows keep first_served_at = NULL, which is the honest
+// answer ("first-serve time unknown for rows written before this fix"), not
+// a value to backfill.
 export const buildAddFirstServedAtColumnSql = (): string =>
-  `alter table ${PREDICTIONS_TABLE} add column if not exists first_served_at timestamptz not null default now()`;
+  `alter table ${PREDICTIONS_TABLE} add column if not exists first_served_at timestamptz`;
+
+export const buildSetFirstServedAtDefaultSql = (): string =>
+  `alter table ${PREDICTIONS_TABLE} alter column first_served_at set default now()`;
 
 export const buildDropLegacyPkSql = (): string =>
   `alter table ${ACTIVE_MODELS_TABLE} drop constraint if exists ${ACTIVE_MODELS_TABLE}_pkey`;

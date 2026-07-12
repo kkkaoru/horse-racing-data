@@ -18,6 +18,7 @@ import {
   buildBatchInsertSql,
   buildPredictionsLookupIndexSql,
   buildPredictionsTableDdl,
+  buildSetFirstServedAtDefaultSql,
   INSERT_COLUMNS,
 } from "./import-predictions-sql";
 
@@ -242,10 +243,14 @@ const ensureTables = async (pool: Pool): Promise<void> => {
     pool.query(buildPredictionsTableDdl()),
     pool.query(buildActiveModelsTableDdl()),
   ]);
-  // ADD COLUMN IF NOT EXISTS, safe to re-run every invocation -- this is what
-  // actually reaches an already-existing production table (the CREATE TABLE
-  // IF NOT EXISTS calls above are no-ops there). See buildAddFirstServedAtColumnSql.
+  // Two-step, no-rewrite column addition (safe to re-run every invocation) --
+  // this is what actually reaches an already-existing production table (the
+  // CREATE TABLE IF NOT EXISTS calls above are no-ops there). Must stay two
+  // separate statements: see buildAddFirstServedAtColumnSql's docstring for
+  // why combining ADD COLUMN with DEFAULT now() in one step would force a
+  // full-table rewrite against a live-serving table.
   await pool.query(buildAddFirstServedAtColumnSql());
+  await pool.query(buildSetFirstServedAtDefaultSql());
   await pool.query(buildPredictionsLookupIndexSql());
 };
 

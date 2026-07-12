@@ -74,11 +74,15 @@ UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
 # absent from BOTH ``INSERT_COLUMNS`` and ``UPDATABLE_COLUMNS`` above: it is
 # populated once by the column's own ``DEFAULT now()`` (see
 # ``apps/pc-keiba-viewer/.../import-predictions-sql.ts``'s
-# ``buildAddFirstServedAtColumnSql`` / ``buildPredictionsTableDdl``) on a row's
-# original INSERT, and a same-key re-score/backfill's ON CONFLICT DO UPDATE
-# never touches it again -- so it stays a true "first ever served" timestamp.
-# Do NOT add ``first_served_at`` to either tuple above; doing so would silently
-# reintroduce the exact bug this finding fixed.
+# ``buildSetFirstServedAtDefaultSql``) on a row's original INSERT, and a
+# same-key re-score/backfill's ON CONFLICT DO UPDATE never touches it again --
+# so it stays a true "first ever served" timestamp. The column was added to
+# the live table via a two-step no-rewrite ALTER (``buildAddFirstServedAtColumnSql``
+# then ``buildSetFirstServedAtDefaultSql``) with no backfill, so rows written
+# before that migration have ``first_served_at IS NULL`` -- an honest "unknown"
+# rather than a fabricated timestamp; callers reading this column must handle
+# that NULL case. Do NOT add ``first_served_at`` to either tuple above; doing
+# so would silently reintroduce the exact bug this finding fixed.
 
 DEFAULT_CHUNK_SIZE: Final[int] = 500
 
