@@ -78,6 +78,30 @@ test("runDayBasePrewarm dedupes categories from a mixed-category race list and d
   logSpy.mockRestore();
 });
 
+test("runDayBasePrewarm logs and does not throw when enumerateTodaysRaces rejects", async () => {
+  enumerateTodaysRacesMock.mockRejectedValue(new Error("D1 query failed"));
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await expect(
+    runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260712" }),
+  ).resolves.toBeUndefined();
+  expect(containerDoIdFromNameMock).not.toHaveBeenCalled();
+  expect(containerDoFetchMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] enumerate failed runYmd=20260712: Error: D1 query failed",
+  );
+  errorSpy.mockRestore();
+  logSpy.mockRestore();
+});
+
+test("runDayBasePrewarm logs a start line before enumerating, so an uncaught throw still leaves evidence", async () => {
+  enumerateTodaysRacesMock.mockResolvedValue([]);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await runDayBasePrewarm({ daysAhead: 2, env: makeEnv(), runYmd: "20260712" });
+  expect(logSpy).toHaveBeenCalledWith("[day-base-prewarm] start runYmd=20260712");
+  logSpy.mockRestore();
+});
+
 test("runDayBasePrewarm continues warming other categories when one category's DO fetch rejects", async () => {
   enumerateTodaysRacesMock.mockResolvedValue([
     { category: "jra", keibajoCode: "05", raceBango: "01" },

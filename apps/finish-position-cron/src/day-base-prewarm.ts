@@ -5,6 +5,17 @@
 // cache warm, not a hard dependency -- the container's per-race lazy fallback
 // (build the day-base synchronously when the cache is missing) is the actual
 // safety net.
+//
+// The WHOLE dispatch (runDayBasePrewarm), not just each per-category call,
+// must uphold this "never throws" contract -- 2026-07-12 incident: the
+// enumerateTodaysRaces D1 query at the top of runDayBasePrewarm was
+// unguarded, so when it failed the exception propagated all the way up
+// through worker.ts's handleScheduled uncaught, and because that failure
+// happened BEFORE this module's own first console.log call, the run left
+// ZERO "[day-base-prewarm]" log lines -- indistinguishable from "cron never
+// fired" from the log tail alone. Fixed by (a) logging an unconditional
+// "start" line before the query, and (b) wrapping the query in its own
+// try/catch that logs and returns rather than rethrows.
 
 import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
 import type { Env, PredictCategory } from "./types";
@@ -138,7 +149,24 @@ const distinctCategories = (races: readonly RaceEntry[]): PredictCategory[] => [
 
 export const runDayBasePrewarm = async (params: RunDayBasePrewarmParams): Promise<void> => {
   const { daysAhead, env, runYmd } = params;
-  const races = await enumerateTodaysRaces(env.REALTIME_DB, runYmd);
+  // Unconditional first line: if enumerateTodaysRaces below throws (a real
+  // 2026-07-12 incident -- the D1 query itself failed and the exception
+  // propagated uncaught through handleScheduled), this is the only evidence
+  // the cron fired at all. Logged BEFORE the query, not after, so it cannot
+  // be skipped by the same failure it exists to catch.
+  console.log(`[day-base-prewarm] start runYmd=${runYmd}`);
+  let races: readonly RaceEntry[];
+  try {
+    races = await enumerateTodaysRaces(env.REALTIME_DB, runYmd);
+  } catch (err) {
+    // Matches this module's own "never throws" contract (see file docstring)
+    // -- previously only prewarmCategory honored it; enumerateTodaysRaces
+    // itself was unguarded, so its failure propagated all the way up through
+    // handleScheduled uncaught instead of degrading to the per-race lazy
+    // fallback this cache warm is only ever a best-effort optimization for.
+    console.error(`[day-base-prewarm] enumerate failed runYmd=${runYmd}: ${String(err)}`);
+    return;
+  }
   const categories = distinctCategories(races);
   if (categories.length === 0) {
     console.log(`[day-base-prewarm] no races scheduled runYmd=${runYmd} -- skipping dispatch`);
