@@ -69,11 +69,46 @@ races landing in the same wall-clock minute -- real per-race container runs
 take ~27.5 minutes each, so genuine CF serving can never produce this
 pattern; only a batch write of many races in one transaction/script run
 can), and `partial_write_race_count` (`write_spread_seconds` above threshold).
+
+ROUTING-HONOR CHECK (2026-07-12, team-lead assignment): a SEPARATE question
+from "was a cell-routed variant served" (`variant_races` above, which only
+classifies an ALREADY-served model_version as champion/variant/other) --
+"did the race that cell_routing.json says should be cell-routed actually GET
+its routed variant, or did it silently fall back to the category default (or
+something else)?" This matters because a variant_pool load failure or a
+config/artifact mismatch at container startup could make a routing rule
+fire correctly in intent but never actually produce the expected write, and
+the existing `variant_races` counter cannot distinguish "no rule matched
+today" from "a rule matched but the container failed to honor it" -- both
+look like "no variant rows". Motivated by 07-11's ROUTING-MISSING 15/36 (a
+now-fixed old-batch-writer artifact, see `variant_ab.md`); this check is the
+recurrence-detection insurance policy the postmortem asked for.
+
+For every race with resolvable race-condition columns (kyori/shusso_tosu/
+track_code/kyoso_joken_code/grade_code from jvd_ra/nvd_ra) AND a category
+that actually has a cell_routing.json block (`predict_lib.cell_router.
+CellRouter.has_routing` -- NAR has none today, see the standing NAR-block
+precondition in `adoption_package.md` SS3b-ii, so NAR's routing-honor is
+always N/A, never a false "0% honored"), the EXPECTED model_version is
+recomputed by calling the REAL `predict_lib.cell_router.resolve_variant`
+(never a hand-reimplemented copy of the rule-matching logic -- see
+`_load_cell_router`'s own docstring for why re-deriving a parallel copy
+would risk silently drifting from what CF actually serves, defeating the
+whole point of this check) and compared against the SET of model_versions
+actually written for that race. `cf_routing_matched_races` (races where an
+expectation was computable at all) / `cf_routing_honored_races` (subset
+where the expected model_version was actually written) / `cf_routing_
+honor_rate` are logged as metrics; a `routing_honor_flag` tag ("true"/
+"false", always re-set on every call so it never goes stale after the
+underlying issue self-resolves) marks any call where honor rate < 100%, and
+`routing_dishonored_races` names the specific races. DETECTION ONLY -- this
+module never remediates, retries, or re-triggers anything.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 import tempfile
 from collections import Counter
@@ -81,7 +116,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal, Protocol, cast
 
 import pandas as pd
 import psycopg2
@@ -127,7 +162,111 @@ _RACE_TABLE_COLUMNS: Final[tuple[str, ...]] = (
     "post_time",
     "lead_minutes",
     "late_write",
+    "expected_model_version",
+    "routing_honored",
 )
+
+ROUTING_HONOR_FLAG_TAG: Final[str] = "routing_honor_flag"
+ROUTING_DISHONORED_RACES_TAG: Final[str] = "routing_dishonored_races"
+
+# apps/finish-position-predict-container/src -- added to sys.path (never
+# installed as a formal dependency) so _load_cell_router can import the
+# container's OWN predict_lib.cell_router module. See that function's own
+# docstring for why this must be the real container module, not a
+# hand-reimplemented copy of its rule-matching logic.
+_CONTAINER_SRC: Final[Path] = (
+    config.REPO_ROOT / "apps" / "finish-position-predict-container" / "src"
+)
+
+# mlflow_tracking's own canonical category spelling is "banei" (registry.
+# Category / cells.CATEGORY_BANEI); predict_lib.cell_router.py's
+# cell_routing.json is keyed by the container's on-disk directory spelling
+# "ban-ei" (see registry.DIRECTORY_CATEGORY_ALIASES, which already performs
+# the OPPOSITE "ban-ei" -> "banei" normalization for MLflow registry lookups
+# elsewhere in this package). This is the reverse mapping, needed only when
+# calling INTO the container's own router -- getting this backwards would
+# silently make has_routing("banei") always False even though Ban-ei DOES
+# have a live grade_code=E rule, turning routing-honor into a false N/A
+# rather than a real check.
+_CONTAINER_CATEGORY_BY_MLFLOW_CATEGORY: Final[dict[str, str]] = {"banei": "ban-ei"}
+
+
+def _container_category(category: str) -> str:
+    """Map an mlflow_tracking category to the container's own spelling."""
+    return _CONTAINER_CATEGORY_BY_MLFLOW_CATEGORY.get(category, category)
+
+
+class _VariantSpecLike(Protocol):
+    @property
+    def model_version(self) -> str: ...
+
+
+class _CategoryRoutingLike(Protocol):
+    """Declared via READ-ONLY `@property` (never a plain mutable attribute):
+    two independently-declared Protocols with a plain attribute member are
+    NOT always mutually assignable under basedpyright's invariance rules for
+    mutable Protocol members, even when the attribute's own type is
+    structurally identical elsewhere (e.g. the test suite's own hermetic
+    router-fixture Protocol) -- properties are covariant, which is all this
+    read-only facade ever needs, and resolves that friction on both ends."""
+
+    @property
+    def default_variant(self) -> str: ...
+    @property
+    def variants(self) -> Mapping[str, _VariantSpecLike]: ...
+
+
+class _CellRouterLike(Protocol):
+    """Structural facade over predict_lib.cell_router.CellRouter -- exists so
+    this module can call the REAL container router with full static typing
+    (no `# pyright: ignore`, no explicit `Any`) despite that module living
+    outside this package's own dependency graph. See `_load_cell_router`'s
+    docstring for the runtime side of this: the actual returned object is
+    accessed through `importlib.import_module` (typed `Any` per typeshed's
+    own `ModuleType.__getattr__` stub), so assigning it to this Protocol-typed
+    return is always accepted -- pyright never has to verify the real
+    `CellRouter` class structurally matches this Protocol.
+    """
+
+    def has_routing(self, category: str) -> bool: ...
+
+    def routing_for(self, category: str) -> _CategoryRoutingLike: ...
+
+    def resolve_variant(
+        self,
+        category: str,
+        entries: Sequence[Mapping[str, object]],
+        card_max_race_bango: int | None = None,
+    ) -> str: ...
+
+
+def _load_cell_router() -> _CellRouterLike:
+    """Load the REAL predict_lib.cell_router.CellRouter for the container's
+    own live cell_routing.json.
+
+    Routing-honor recomputation MUST reuse the container's actual
+    resolve_variant/all_conditions_match rule-matching, never a parallel
+    hand-copy of it -- a second implementation could silently drift from what
+    CF actually serves (a new dimension, a changed derivation), which would
+    make this check compare against the WRONG expectation and defeat its own
+    purpose. `apps/finish-position-predict-container/src` is added to
+    `sys.path` idempotently (checked before insert, so a repeated call within
+    one process -- e.g. across `record_cf_serving_day` re-runs -- never grows
+    `sys.path` unboundedly) and `predict_lib.cell_router` is imported via
+    `importlib.import_module`, never a static `from predict_lib import
+    cell_router` -- that sibling package is not a declared dependency of this
+    one, so a static import would be an unresolved-import error under
+    basedpyright/ty's strict settings. The routing config is (re-)read from
+    disk on every call (never cached at module scope) so this always reflects
+    whatever cell_routing.json is CURRENTLY deployed, including a rule that
+    lands mid-day between two recorder re-runs.
+    """
+    container_src = str(_CONTAINER_SRC)
+    if container_src not in sys.path:
+        sys.path.insert(0, container_src)
+    module = importlib.import_module("predict_lib.cell_router")
+    return module.load_cell_router()
+
 
 # Isolated per (date, category) so one bad pair never aborts the rest of a
 # range call -- mirrors sync_production.py's own `_ISOLATED_EXCEPTIONS` tuple
@@ -172,6 +311,10 @@ class CfServingDayResult:
     partial_write_race_count: int
     first_write: datetime | None
     last_write: datetime | None
+    routing_matched_races: int
+    routing_honored_races: int
+    routing_honor_rate: float | None
+    routing_dishonored_race_keys: tuple[str, ...]
 
 
 @dataclass
@@ -183,6 +326,24 @@ class CfServingRecordSummary:
     runs_reused: int = 0
     results: list[CfServingDayResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _RoutingHonorResult:
+    """Race-level routing-honor outcome for one (date, category) call. See
+    this module's own docstring, "ROUTING-HONOR CHECK" section, for the full
+    rationale. `dishonored_race_keys` is `f"{keibajo_code}:{race_bango}"`
+    strings, sorted, for direct use in a tag value."""
+
+    matched_races: int
+    honored_races: int
+    dishonored_race_keys: tuple[str, ...]
+
+    @property
+    def honor_rate(self) -> float | None:
+        if self.matched_races == 0:
+            return None
+        return 100.0 * self.honored_races / self.matched_races
 
 
 @dataclass(frozen=True)
@@ -416,6 +577,200 @@ def _build_race_rows(
     return race_rows
 
 
+_ROUTING_RACE_CONDITION_COLUMNS: Final[tuple[str, ...]] = (
+    "keibajo_code",
+    "race_bango",
+    "kyori",
+    "shusso_tosu",
+    "track_code",
+    "kyoso_joken_code",
+    "grade_code",
+)
+
+# A dedicated, narrow SELECT rather than reusing serve_eval.fetch_race_
+# metadata: that function is shared by cell_eval_runs.py/sync_production.py/
+# champion_cell_eval.py with its own pinned column set (kyori/shusso_tosu/
+# track_code/kyoso_joken_code only, no grade_code) and its own tests -- widening
+# it here would touch a function this module does not own the full blast
+# radius of. grade_code is required for the Ban-ei `grade_code=E` rule (see
+# cell_routing.json), so this module's own query adds it. Mirrors serve_eval.
+# fetch_race_metadata's own comment-marker convention (the FakeLocalCursor
+# test harness dispatches on these SQL comment substrings) and resolve_result_
+# tables for table selection -- that ~2-line category -> table lookup is a
+# trivial, non-business-logic mapping, reused directly rather than duplicated,
+# unlike the champion/variant classification predicate above.
+_JRA_ROUTING_CONDITIONS_SQL: Final[str] = f"""
+    -- fetch_routing_race_conditions: jra
+    SELECT {", ".join(_ROUTING_RACE_CONDITION_COLUMNS)} FROM jvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s
+"""
+
+_NAR_ROUTING_CONDITIONS_SQL: Final[str] = f"""
+    -- fetch_routing_race_conditions: nar/banei
+    SELECT {", ".join(_ROUTING_RACE_CONDITION_COLUMNS)} FROM nvd_ra
+    WHERE kaisai_nen = %s AND kaisai_tsukihi = %s
+"""
+
+
+def _fetch_routing_race_conditions(
+    conn: db.ConnectionLike, category: str, date_str: str
+) -> dict[tuple[str, str], dict[str, object]]:
+    """Return `{(keibajo_code, race_bango): {raw condition columns}}` for
+    every race in the local replica's own race calendar for (category,
+    date_str) -- the raw columns `predict_lib.cell_router.resolve_dimension`
+    itself reads (`keibajo_code`/`track_code`/`kyori`/`kyoso_joken_code`/
+    `grade_code`; `kaisai_tsukihi` is `date_str`'s own suffix, threaded in by
+    the caller rather than re-selected here).
+
+    `category="banei"` reads the same `nvd_ra` rows as `category="nar"` and
+    filters to Ban-ei's `keibajo_code`, mirroring `serve_eval.fetch_post_
+    times`'s own nar/banei table-sharing convention; `category="nar"` filters
+    to EXCLUDE it. NO ValueError branch for an unknown category (unlike the
+    public serve_eval.fetch_races_scheduled/fetch_post_times this mirrors) --
+    this is a PRIVATE helper only ever called from `record_cf_serving_day`
+    AFTER that function's own `category not in cells.CATEGORIES` guard has
+    already run, so a third category is provably unreachable here; mirrors
+    `_category_filtered_rows`'s own plain if/else (no raise) for the exact
+    same reason, rather than adding an untestable-from-the-public-surface
+    dead branch.
+    """
+    if category == cells.CATEGORY_JRA:
+        cursor = conn.cursor()
+        cursor.execute(_JRA_ROUTING_CONDITIONS_SQL, (date_str[:4], date_str[4:]))
+        rows = cursor.fetchall()
+    else:
+        cursor = conn.cursor()
+        cursor.execute(_NAR_ROUTING_CONDITIONS_SQL, (date_str[:4], date_str[4:]))
+        rows = cursor.fetchall()
+
+    is_banei = category == cells.CATEGORY_BANEI
+    result: dict[tuple[str, str], dict[str, object]] = {}
+    for raw_row in rows:
+        row: dict[str, object] = dict(zip(_ROUTING_RACE_CONDITION_COLUMNS, raw_row, strict=True))
+        keibajo_code = str(row["keibajo_code"])
+        if (
+            category != cells.CATEGORY_JRA
+            and (keibajo_code == serve_eval.BANEI_KEIBAJO_CODE) != is_banei
+        ):
+            continue
+        result[(keibajo_code, str(row["race_bango"]))] = row
+    return result
+
+
+def _expected_model_version(
+    category: str,
+    router: _CellRouterLike,
+    conditions: Mapping[str, object],
+    date_str: str,
+    field_size: int,
+) -> str | None:
+    """Return the model_version `predict_lib.cell_router.py` would route this
+    race to RIGHT NOW, or None when `category` has no cell_routing.json block
+    at all (routing-honor is not a meaningful concept for a blockless
+    category -- NAR today, see the standing NAR-block precondition in
+    `adoption_package.md` SS3b-ii: NAR serves via the iter40 blend + iter12
+    fallback in `model_meta`, not through `cell_router` variants).
+
+    `field_size` stands in for `len(entries)` at real serve time (the
+    declared-runner count `resolve_variant` uses for the `field_band`
+    dimension) -- the caller passes the ACTUAL served horse_count for this
+    race rather than jvd_ra/nvd_ra's own `shusso_tosu` column, since the
+    latter is the POST-RACE actual-starter count and can differ from the
+    predict-time declared count on a late-scratch race (see cell_router.py's
+    own `resolve_dimension` docstring on this exact distinction); using the
+    real served count is the closest available proxy to what serving itself
+    saw. `entries` is built with `field_size` COPIES of one synthetic row
+    (every dimension `resolve_dimension` reads is race-level, not
+    horse-level, so the copies are interchangeable) rather than a
+    single-element list, because `resolve_variant`'s `field_size = len(entries)`
+    would otherwise always compute 1, breaking every field_band-gated rule.
+
+    `category` is `_container_category`-mapped BEFORE every call into
+    `router` -- the container's own `CellRouter._routing` dict is keyed by
+    its on-disk spelling ("ban-ei"), not this package's canonical "banei"
+    (see `_container_category`'s own docstring); calling `router.has_routing`
+    with the wrong spelling would silently make Ban-ei's routing-honor a
+    false, permanent N/A despite it having a live `grade_code=E` rule.
+    """
+    container_category = _container_category(category)
+    if not router.has_routing(container_category):
+        return None
+    routing = router.routing_for(container_category)
+    entry: dict[str, object] = {
+        "keibajo_code": conditions.get("keibajo_code"),
+        "track_code": conditions.get("track_code"),
+        "kyori": conditions.get("kyori"),
+        "kaisai_tsukihi": date_str[4:],
+        "grade_code": conditions.get("grade_code"),
+        "kyoso_joken_code": conditions.get("kyoso_joken_code"),
+    }
+    entries = [entry] * max(field_size, 1)
+    variant_name = router.resolve_variant(container_category, entries)
+    variant_spec = routing.variants.get(variant_name)
+    return variant_spec.model_version if variant_spec is not None else None
+
+
+def _annotate_routing_honor(
+    race_rows: list[dict[str, object]],
+    category: str,
+    router: _CellRouterLike,
+    race_conditions: Mapping[tuple[str, str], Mapping[str, object]],
+    date_str: str,
+) -> _RoutingHonorResult:
+    """Mutate every row in `race_rows` with `expected_model_version` /
+    `routing_honored` (both None when not computable for that race -- no
+    routing table for `category`, or no race-condition row found), and
+    return the race-level (not row-level) rollup. A race can have MULTIPLE
+    rows (a dual-write incident, or a genuine champion+variant pair) --
+    `routing_honored` is computed PER ROW (does THIS row's model_version
+    match the expectation) while the returned `_RoutingHonorResult` is
+    computed PER RACE (did ANY row for this race match), matching this
+    module's own "one row per (race, model_version) group" table convention
+    while still giving an honest race-level pass/fail rollup.
+    """
+    per_race_served: dict[tuple[str, str], set[str]] = {}
+    per_race_field_size: dict[tuple[str, str], int] = {}
+    for row in race_rows:
+        race_id = (str(row["keibajo_code"]), str(row["race_bango"]))
+        per_race_served.setdefault(race_id, set()).add(str(row["model_version"]))
+        horse_count = cast(int, row["horse_count"])
+        per_race_field_size[race_id] = max(per_race_field_size.get(race_id, 0), horse_count)
+
+    expected_by_race: dict[tuple[str, str], str | None] = {}
+    for race_id in per_race_served:
+        conditions = race_conditions.get(race_id)
+        if conditions is None:
+            expected_by_race[race_id] = None
+            continue
+        expected_by_race[race_id] = _expected_model_version(
+            category, router, conditions, date_str, per_race_field_size[race_id]
+        )
+
+    matched = 0
+    honored = 0
+    dishonored: list[str] = []
+    for race_id, expected in expected_by_race.items():
+        if expected is None:
+            continue
+        matched += 1
+        if expected in per_race_served[race_id]:
+            honored += 1
+        else:
+            dishonored.append(f"{race_id[0]}:{race_id[1]}")
+
+    for row in race_rows:
+        race_id = (str(row["keibajo_code"]), str(row["race_bango"]))
+        expected = expected_by_race.get(race_id)
+        row["expected_model_version"] = expected
+        row["routing_honored"] = None if expected is None else expected == row["model_version"]
+
+    return _RoutingHonorResult(
+        matched_races=matched,
+        honored_races=honored,
+        dishonored_race_keys=tuple(sorted(dishonored)),
+    )
+
+
 def _floor_minute(value: datetime) -> datetime:
     return value.replace(second=0, microsecond=0)
 
@@ -529,8 +884,20 @@ def record_cf_serving_day(
     now: datetime | None = None,
     late_lead_minutes_threshold: float = DEFAULT_LATE_LEAD_MINUTES_THRESHOLD,
     partial_write_spread_seconds: float = DEFAULT_PARTIAL_WRITE_SPREAD_SECONDS,
+    cell_router: _CellRouterLike | None = None,
 ) -> CfServingDayResult:
     """Record one (date, category) day's CF-container serving processing.
+
+    `cell_router` mirrors `neon_conn`/`local_conn`'s own injection
+    convention: omitted (the real production path), it is resolved via
+    `_load_cell_router()` (a live cross-package import of the container's
+    actual, currently-deployed routing table); a caller may inject a
+    controlled fixture instead -- this is how the test suite exercises
+    routing-honor scenarios hermetically without depending on the
+    ever-changing real cell_routing.json, and without monkeypatching this
+    module's own private helper (this file already treats `neon_conn`/
+    `local_conn` as the injection seam, not monkeypatching -- `cell_router`
+    joins that same convention rather than starting a new one).
 
     Finds or creates the `cf_serving_key = "{date_str}:{category}"` run in
     `config.EXPERIMENT_FP_CF_SERVING`, computes every metric/table documented
@@ -588,6 +955,12 @@ def record_cf_serving_day(
             late_lead_minutes_threshold,
         )
 
+        router = cell_router if cell_router is not None else _load_cell_router()
+        race_conditions = _fetch_routing_race_conditions(local_conn, category, date_str)
+        routing_honor = _annotate_routing_honor(
+            race_rows, category, router, race_conditions, date_str
+        )
+
         race_ids = {(str(row["keibajo_code"]), str(row["race_bango"])) for row in race_rows}
         races_covered = len(race_ids)
         coverage_pct = 100.0 * races_covered / races_expected if races_expected > 0 else None
@@ -642,6 +1015,8 @@ def record_cf_serving_day(
             Metric("cf_batch_burst_minute_count", float(anomalies.batch_burst_minute_count), 0, 0),
             Metric("cf_batch_burst_race_count", float(anomalies.batch_burst_race_count), 0, 0),
             Metric("cf_partial_write_race_count", float(anomalies.partial_write_race_count), 0, 0),
+            Metric("cf_routing_matched_races", float(routing_honor.matched_races), 0, 0),
+            Metric("cf_routing_honored_races", float(routing_honor.honored_races), 0, 0),
         ]
         if coverage_pct is not None:
             metrics.append(Metric("cf_coverage_pct", coverage_pct, 0, 0))
@@ -649,7 +1024,27 @@ def record_cf_serving_day(
             metrics.append(Metric("cf_first_write_epoch_s", first_write.timestamp(), 0, 0))
         if last_write is not None:
             metrics.append(Metric("cf_last_write_epoch_s", last_write.timestamp(), 0, 0))
+        if routing_honor.honor_rate is not None:
+            metrics.append(Metric("cf_routing_honor_rate", routing_honor.honor_rate, 0, 0))
         log_batch_chunked(client, run_id, metrics=metrics)
+        # Always RE-SET (never only conditionally set-when-true) so a flag
+        # from an earlier partial-day call never lingers after the
+        # underlying issue self-resolves on a later re-run -- matches this
+        # module's own update-in-place idempotency discipline (see this
+        # module's docstring). Only set at all when matched_races > 0 --
+        # matches how cf_coverage_pct itself is entirely omitted rather than
+        # logged as a misleading 0/0 when there is nothing to compare.
+        if routing_honor.matched_races > 0:
+            client.set_tag(
+                run_id,
+                ROUTING_HONOR_FLAG_TAG,
+                "false" if routing_honor.honored_races < routing_honor.matched_races else "true",
+            )
+            client.set_tag(
+                run_id,
+                ROUTING_DISHONORED_RACES_TAG,
+                ",".join(routing_honor.dishonored_race_keys),
+            )
     except _ISOLATED_EXCEPTIONS:
         client.set_terminated(run_id, status="FAILED")
         raise
@@ -672,6 +1067,10 @@ def record_cf_serving_day(
         partial_write_race_count=anomalies.partial_write_race_count,
         first_write=first_write,
         last_write=last_write,
+        routing_matched_races=routing_honor.matched_races,
+        routing_honored_races=routing_honor.honored_races,
+        routing_honor_rate=routing_honor.honor_rate,
+        routing_dishonored_race_keys=routing_honor.dishonored_race_keys,
     )
 
 

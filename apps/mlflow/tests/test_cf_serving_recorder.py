@@ -22,8 +22,12 @@ the private read-back helper directly.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import importlib
+import sys
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from types import ModuleType
+from typing import Protocol
 
 import pandas as pd
 import psycopg2
@@ -101,6 +105,10 @@ class _FakeLocalCursor:
             self._pending = self._conn.race_calendar_rows.get(("jra", date_str), [])
         elif "fetch_races_scheduled: nar" in query:
             self._pending = self._conn.race_calendar_rows.get(("nar", date_str), [])
+        elif "fetch_routing_race_conditions: jra" in query:
+            self._pending = self._conn.routing_condition_rows.get(("jra", date_str), [])
+        elif "fetch_routing_race_conditions: nar/banei" in query:
+            self._pending = self._conn.routing_condition_rows.get(("nar_banei", date_str), [])
         elif "race_bango FROM nvd_ra" in query:
             self._pending = self._conn.race_calendar_rows.get(("banei", date_str), [])
         else:
@@ -113,6 +121,7 @@ class _FakeLocalCursor:
 class FakeLocalConnection:
     race_calendar_rows: dict[tuple[str, str], list[tuple[object, ...]]]
     post_time_rows: dict[tuple[str, str], list[tuple[object, ...]]]
+    routing_condition_rows: dict[tuple[str, str], list[tuple[object, ...]]]
     raise_for: frozenset[str]
     closed: bool
 
@@ -120,10 +129,12 @@ class FakeLocalConnection:
         self,
         race_calendar_rows: dict[tuple[str, str], list[tuple[object, ...]]] | None = None,
         post_time_rows: dict[tuple[str, str], list[tuple[object, ...]]] | None = None,
+        routing_condition_rows: dict[tuple[str, str], list[tuple[object, ...]]] | None = None,
         raise_for: frozenset[str] = frozenset(),
     ) -> None:
         self.race_calendar_rows = race_calendar_rows or {}
         self.post_time_rows = post_time_rows or {}
+        self.routing_condition_rows = routing_condition_rows or {}
         self.raise_for = raise_for
         self.closed = False
 
@@ -174,6 +185,121 @@ def _race_table(client: MlflowClient, run_id: str) -> pd.DataFrame:
     return pd.read_parquet(
         client.download_artifacts(run_id, cf_serving_recorder.RACE_TABLE_PARQUET_ARTIFACT)
     )
+
+
+def _routing_row(
+    keibajo_code: str,
+    race_bango: str,
+    *,
+    kyori: str = "1000",
+    shusso_tosu: str = "10",
+    track_code: str = "24",
+    kyoso_joken_code: str = "703",
+    grade_code: str = " ",
+) -> tuple[object, ...]:
+    """One row matching cf_serving_recorder._ROUTING_RACE_CONDITION_COLUMNS
+    exactly (keibajo_code, race_bango, kyori, shusso_tosu, track_code,
+    kyoso_joken_code, grade_code)."""
+    return (keibajo_code, race_bango, kyori, shusso_tosu, track_code, kyoso_joken_code, grade_code)
+
+
+# Recomputed independently from config.REPO_ROOT (public) rather than
+# reading cf_serving_recorder._CONTAINER_SRC (private) -- this file's own
+# module docstring establishes "never touch a `_`-prefixed helper directly",
+# and this small path constant is cheap enough to duplicate rather than
+# reach past that boundary for.
+_CONTAINER_SRC_FOR_TESTS: str = str(
+    config.REPO_ROOT / "apps" / "finish-position-predict-container" / "src"
+)
+
+
+# Mirrors cf_serving_recorder._VariantSpecLike/_CategoryRoutingLike/
+# _CellRouterLike EXACTLY, as OWN local copies (never importing those private
+# names -- basedpyright's reportPrivateUsage forbids that regardless of
+# whether the private name is only ever used for a type annotation).
+# Declared via READ-ONLY `@property` rather than plain attributes: two
+# independently-declared Protocols with a plain (read-write) attribute are
+# NOT always mutually assignable under basedpyright's invariance rules for
+# mutable Protocol members, even when the attribute's own type is
+# structurally identical -- properties are covariant, which is all a
+# read-only fixture like this one ever needs.
+class _RouterVariantSpec(Protocol):
+    @property
+    def model_version(self) -> str: ...
+
+
+class _RouterCategoryRouting(Protocol):
+    @property
+    def default_variant(self) -> str: ...
+    @property
+    def variants(self) -> Mapping[str, _RouterVariantSpec]: ...
+
+
+class _RouterLike(Protocol):
+    def has_routing(self, category: str) -> bool: ...
+
+    def routing_for(self, category: str) -> _RouterCategoryRouting: ...
+
+    def resolve_variant(
+        self,
+        category: str,
+        entries: Sequence[Mapping[str, object]],
+        card_max_race_bango: int | None = None,
+    ) -> str: ...
+
+
+def _real_cell_router_module() -> ModuleType:
+    """Import the REAL predict_lib.cell_router module the same way
+    cf_serving_recorder._load_cell_router does, so router fixtures below are
+    built from the actual dataclasses (CellRouter/CategoryRouting/
+    CellRouteRule/CellCondition/VariantSpec) rather than a hand-rolled copy
+    that could silently drift from the real shape. Typed `ModuleType`
+    (typeshed's own stub gives `ModuleType.__getattr__ -> Any`) rather than
+    `object`, so every dynamic attribute access below type-checks as `Any`
+    instead of failing `reportAttributeAccessIssue`."""
+    if _CONTAINER_SRC_FOR_TESTS not in sys.path:
+        sys.path.insert(0, _CONTAINER_SRC_FOR_TESTS)
+    return importlib.import_module("predict_lib.cell_router")
+
+
+def _make_router(
+    routing: dict[str, tuple[str, dict[str, str], list[tuple[list[tuple[str, list[str]]], str]]]],
+) -> _RouterLike:
+    """Build a REAL predict_lib.cell_router.CellRouter from a compact
+    `{category: (default_variant, {variant_name: model_version}, [([(dimension,
+    values)], variant_name)])}` spec, for injection via record_cf_serving_day's
+    `cell_router=` parameter (the same DI convention this file's own
+    `neon_conn`/`local_conn` fakes already use, never monkeypatching this
+    module's own private helper) -- keeps every new routing-honor test
+    hermetic (a controlled routing table, never the ever-changing real
+    cell_routing.json) while still exercising the REAL resolve_variant/
+    all_conditions_match rule-matching logic, per this module's own mandate
+    not to re-derive a parallel copy of it. The `# type: ignore`-free dynamic
+    attribute access below relies on this package's own basedpyright
+    settings (reportUnknownMemberType/reportUnknownVariableType = "none"),
+    the same tolerance cf_serving_recorder.py's own `_load_cell_router`
+    docstring documents -- no suppression comment is needed or added."""
+    cr = _real_cell_router_module()
+    category_routings: dict[str, object] = {}
+    for category, (default_variant, variants, rules) in routing.items():
+        variant_specs = {
+            name: cr.VariantSpec(model_version=mv, feature_count=1, architecture="catboost")
+            for name, mv in variants.items()
+        }
+        rule_objs = tuple(
+            cr.CellRouteRule(
+                conditions=tuple(
+                    cr.CellCondition(dimension=dim, values=frozenset(values))
+                    for dim, values in conditions
+                ),
+                variant=variant_name,
+            )
+            for conditions, variant_name in rules
+        )
+        category_routings[category] = cr.CategoryRouting(
+            default_variant=default_variant, variants=variant_specs, rules=rule_objs
+        )
+    return cr.CellRouter(category_routings)
 
 
 # ── record_cf_serving_day: basics ────────────────────────────────────────────
@@ -830,3 +956,343 @@ def test_main_default_categories(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cf_serving_recorder, "record_cf_serving_range", _fake_range)
     cf_serving_recorder.main(["--date-from", "20260614", "--date-to", "20260614"])
     assert captured["categories"] == ["jra", "nar", "banei"]
+
+
+# ── routing-honor check (2026-07-12, team-lead assignment) ──────────────────
+
+
+def test_record_cf_serving_day_routing_honor_all_matched(client: MlflowClient) -> None:
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14", "variant703": "iter14-variant"},
+                [([("kyoso_joken_code", ["703"])], "variant703")],
+            )
+        }
+    )
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14-variant", 1)]}
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", kyoso_joken_code="703")]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+    assert result.routing_honor_rate == pytest.approx(100.0)
+    assert result.routing_dishonored_race_keys == ()
+    run = client.get_run(result.run_id)
+    assert run.data.tags[cf_serving_recorder.ROUTING_HONOR_FLAG_TAG] == "true"
+    assert run.data.tags[cf_serving_recorder.ROUTING_DISHONORED_RACES_TAG] == ""
+    assert run.data.metrics["cf_routing_matched_races"] == 1.0
+    assert run.data.metrics["cf_routing_honored_races"] == 1.0
+    assert run.data.metrics["cf_routing_honor_rate"] == pytest.approx(100.0)
+    table = _race_table(client, result.run_id)
+    assert table.iloc[0]["expected_model_version"] == "iter14-variant"
+    assert bool(table.iloc[0]["routing_honored"]) is True
+
+
+def test_record_cf_serving_day_routing_honor_dishonored_flagged(client: MlflowClient) -> None:
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14", "variant703": "iter14-variant"},
+                [([("kyoso_joken_code", ["703"])], "variant703")],
+            )
+        }
+    )
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", kyoso_joken_code="703")]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 0
+    assert result.routing_honor_rate == pytest.approx(0.0)
+    assert result.routing_dishonored_race_keys == ("05:01",)
+    run = client.get_run(result.run_id)
+    assert run.data.tags[cf_serving_recorder.ROUTING_HONOR_FLAG_TAG] == "false"
+    assert run.data.tags[cf_serving_recorder.ROUTING_DISHONORED_RACES_TAG] == "05:01"
+    table = _race_table(client, result.run_id)
+    assert table.iloc[0]["expected_model_version"] == "iter14-variant"
+    assert bool(table.iloc[0]["routing_honored"]) is False
+
+
+def test_record_cf_serving_day_routing_honor_field_size_uses_horse_count(
+    client: MlflowClient,
+) -> None:
+    """A field_band-gated rule (dirt/f_le10/005) must resolve field_band from
+    the REAL served horse_count (16 here), never from the number of (race,
+    model_version) GROUPS (1 here, since all 16 horses share one
+    model_version) -- the latter would wrongly resolve field_band=f_le10 and
+    expect the small-field variant instead of the correct default."""
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14", "smallfield": "iter14-smallfield"},
+                [
+                    (
+                        [
+                            ("surface", ["dirt"]),
+                            ("field_band", ["f_le10"]),
+                            ("kyoso_joken_code", ["005"]),
+                        ],
+                        "smallfield",
+                    )
+                ],
+            )
+        }
+    )
+    rows = [_fp_row("05", "01", f"H{i}", "iter14", i + 1) for i in range(16)]
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): rows})
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", track_code="24", kyoso_joken_code="005")]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+
+
+def test_record_cf_serving_day_routing_honor_default_variant_matches(client: MlflowClient) -> None:
+    router = _make_router({"jra": ("sim", {"sim": "iter14"}, [])})
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={("jra", DATE_STR): [_routing_row("05", "01")]},
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+
+
+def test_record_cf_serving_day_routing_honor_no_routing_table_is_na(client: MlflowClient) -> None:
+    router = _make_router({})
+    neon = FakeNeonConnection(
+        fp_rows={("nar", DATE_STR): [_fp_row("30", "01", "H1", "nar-model", 1)]}
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("nar", DATE_STR): [("01",)]},
+        routing_condition_rows={("nar_banei", DATE_STR): [_routing_row("30", "01")]},
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "nar", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 0
+    assert result.routing_honored_races == 0
+    assert result.routing_honor_rate is None
+    run = client.get_run(result.run_id)
+    assert cf_serving_recorder.ROUTING_HONOR_FLAG_TAG not in run.data.tags
+
+
+def test_record_cf_serving_day_routing_honor_missing_conditions_not_computable(
+    client: MlflowClient,
+) -> None:
+    router = _make_router({"jra": ("sim", {"sim": "iter14"}, [])})
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={},
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 0
+    assert result.routing_honor_rate is None
+    table = _race_table(client, result.run_id)
+    assert bool(pd.isna(table.iloc[0]["expected_model_version"]))
+    assert bool(pd.isna(table.iloc[0]["routing_honored"]))
+
+
+def test_record_cf_serving_day_routing_honor_nar_excludes_banei_conditions(
+    client: MlflowClient,
+) -> None:
+    """The shared nar/banei routing-conditions query returns BOTH nar and
+    banei rows (mirrors fetch_post_times's own table-sharing convention) --
+    category="nar" must filter OUT the Ban-ei row, leaving only the genuine
+    nar race matched."""
+    router = _make_router({"nar": ("sim", {"sim": "nar-model"}, [])})
+    neon = FakeNeonConnection(
+        fp_rows={
+            ("nar", DATE_STR): [
+                _fp_row("30", "01", "H1", "nar-model", 1),
+                _fp_row(serve_eval.BANEI_KEIBAJO_CODE, "02", "H2", "banei-model", 1),
+            ]
+        }
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("nar", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("nar_banei", DATE_STR): [
+                _routing_row("30", "01"),
+                _routing_row(serve_eval.BANEI_KEIBAJO_CODE, "02"),
+            ]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "nar", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+
+
+def test_record_cf_serving_day_routing_honor_unknown_variant_name_not_computable(
+    client: MlflowClient,
+) -> None:
+    """A rule pointing at a variant name absent from `variants` (a malformed
+    cell_routing.json) must degrade to "not computable", never raise."""
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14"},
+                [([("kyoso_joken_code", ["703"])], "does_not_exist")],
+            )
+        }
+    )
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", kyoso_joken_code="703")]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 0
+    assert result.routing_honor_rate is None
+
+
+def test_record_cf_serving_day_routing_honor_banei_category_mapping(client: MlflowClient) -> None:
+    """Exercises BOTH the raw `grade_code` dimension AND the "banei" ->
+    "ban-ei" container-category mapping -- if the mapping were missing/wrong,
+    `has_routing("banei")` against a router keyed by "ban-ei" would read
+    False and this would wrongly read routing_matched_races == 0."""
+    router = _make_router(
+        {
+            "ban-ei": (
+                "sim",
+                {"sim": "banei-v9", "base": "banei-v8"},
+                [([("grade_code", ["E"])], "base")],
+            )
+        }
+    )
+    neon = FakeNeonConnection(
+        fp_rows={
+            ("nar", DATE_STR): [_fp_row(serve_eval.BANEI_KEIBAJO_CODE, "01", "H1", "banei-v8", 1)]
+        }
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("banei", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("nar_banei", DATE_STR): [
+                _routing_row(serve_eval.BANEI_KEIBAJO_CODE, "01", grade_code="E")
+            ]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "banei", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+
+
+def test_record_cf_serving_day_routing_honor_flag_clears_on_rerun(client: MlflowClient) -> None:
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14", "variant703": "iter14-variant"},
+                [([("kyoso_joken_code", ["703"])], "variant703")],
+            )
+        }
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", kyoso_joken_code="703")]
+        },
+    )
+    neon_bad = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]}
+    )
+    first = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon_bad, local_conn=local, cell_router=router
+    )
+    assert (
+        client.get_run(first.run_id).data.tags[cf_serving_recorder.ROUTING_HONOR_FLAG_TAG]
+        == "false"
+    )
+
+    rewritten_at = GEN_AT + timedelta(minutes=10)
+    neon_fixed = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14-variant", 1, rewritten_at)]}
+    )
+    second = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon_fixed, local_conn=local, cell_router=router
+    )
+    assert second.run_id == first.run_id
+    assert (
+        client.get_run(second.run_id).data.tags[cf_serving_recorder.ROUTING_HONOR_FLAG_TAG]
+        == "true"
+    )
+    assert (
+        client.get_run(second.run_id).data.tags[cf_serving_recorder.ROUTING_DISHONORED_RACES_TAG]
+        == ""
+    )
+
+
+def test_record_cf_serving_day_routing_honor_dual_row_honored_via_any_row(
+    client: MlflowClient,
+) -> None:
+    router = _make_router(
+        {
+            "jra": (
+                "sim",
+                {"sim": "iter14", "variant703": "iter14-variant"},
+                [([("kyoso_joken_code", ["703"])], "variant703")],
+            )
+        }
+    )
+    neon = FakeNeonConnection(
+        fp_rows={
+            ("jra", DATE_STR): [
+                _fp_row("05", "01", "H1", "iter14", 1),
+                _fp_row("05", "01", "H2", "iter14-variant", 1),
+            ]
+        }
+    )
+    local = FakeLocalConnection(
+        race_calendar_rows={("jra", DATE_STR): [("01",)]},
+        routing_condition_rows={
+            ("jra", DATE_STR): [_routing_row("05", "01", kyoso_joken_code="703")]
+        },
+    )
+    result = cf_serving_recorder.record_cf_serving_day(
+        client, "jra", DATE_STR, neon_conn=neon, local_conn=local, cell_router=router
+    )
+    assert result.routing_matched_races == 1
+    assert result.routing_honored_races == 1
+    table = _race_table(client, result.run_id)
+    assert len(table) == 2
+    assert sorted(bool(v) for v in table["routing_honored"].tolist()) == [False, True]
