@@ -13,6 +13,7 @@ the small helpers.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import http.server
 import json
@@ -33,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
 from predict_lib.cell_router import build_base_model_r2_key
+from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.model_meta import (
     METADATA_FILE_NAME,
     NAR_ETOP2_MODEL_VERSION,
@@ -46,6 +48,7 @@ from predict_lib.serve import (
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
+    build_focused_full_race_key,
     iter_predict_chunks,
     parse_predict_params,
 )
@@ -777,6 +780,95 @@ def test_threading_server_focused_full_busy_check_stays_fast_during_slow_pipelin
 
 
 # ---------------------------------------------------------------------------
+# GET /focused-full-cache route -- real socket, drives do_GET's actual
+# dispatch (not just make_handler_class's staticmethod binding) since this
+# session's own investigation found that "wiring compiles" and "wiring
+# actually runs end to end" can silently diverge (see FocusedFullCachePayload
+# / FocusedFullCachePopulateFn's docstrings for the incident this endpoint
+# exists to fix).
+# ---------------------------------------------------------------------------
+
+
+def _start_server_with_cache_store(
+    store: FocusedFullCacheStore | None,
+) -> tuple[http.server.ThreadingHTTPServer, threading.Thread, int]:
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        None,
+        None,
+        focused_full_cache_store=store,
+    )
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    httpd.daemon_threads = True
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, thread, port
+
+
+def test_focused_full_cache_route_returns_found_true_and_consumes_entry() -> None:
+    store = FocusedFullCacheStore()
+    store.put(
+        "jra:20260712:05:09",
+        FocusedFullCachePayload(
+            parquet_base64="YQ==",
+            parquet_key="feat-cache/jra/20260712/05/09/features.parquet",
+            per_race_parquets=None,
+        ),
+    )
+    httpd, thread, port = _start_server_with_cache_store(store)
+    try:
+        status, body = _get(
+            port,
+            "/focused-full-cache?category=jra&runDate=20260712&keibajoCode=05&raceBango=09",
+        )
+        assert status == 200
+        assert json.loads(body.decode()) == {
+            "found": True,
+            "parquetBase64": "YQ==",
+            "parquetKey": "feat-cache/jra/20260712/05/09/features.parquet",
+            "perRaceParquets": None,
+        }
+
+        # A second pickup for the same race must find nothing -- pop() consumes.
+        status_again, body_again = _get(
+            port,
+            "/focused-full-cache?category=jra&runDate=20260712&keibajoCode=05&raceBango=09",
+        )
+        assert status_again == 200
+        assert json.loads(body_again.decode()) == {"found": False}
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_focused_full_cache_route_400_on_invalid_query() -> None:
+    httpd, thread, port = _start_server_with_cache_store(FocusedFullCacheStore())
+    try:
+        status, body = _get(port, "/focused-full-cache?runDate=20260712")
+        assert status == 400
+        assert b"category" in body
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+def test_focused_full_cache_route_found_false_when_store_not_wired() -> None:
+    """A local/test run without a cache store injected must degrade to
+    found=false, never a 500 -- matches the endpoint's non-blocking contract."""
+    httpd, thread, port = _start_server_with_cache_store(None)
+    try:
+        status, body = _get(
+            port,
+            "/focused-full-cache?category=jra&runDate=20260712&keibajoCode=05&raceBango=09",
+        )
+        assert status == 200
+        assert json.loads(body.decode()) == {"found": False}
+    finally:
+        _stop_threading_server(httpd, thread)
+
+
+# ---------------------------------------------------------------------------
 # make_handler_class — /prewarm-day-base wiring
 # ---------------------------------------------------------------------------
 
@@ -853,6 +945,85 @@ def test_make_handler_class_prewarm_fn_not_bound_method() -> None:
     assert not inspect.ismethod(handler_cls.prewarm_fn), (
         "prewarm_fn must not be a bound method — staticmethod wrapping is required"
     )
+
+
+# ---------------------------------------------------------------------------
+# make_handler_class — focused-full cache wiring
+# ---------------------------------------------------------------------------
+
+
+def test_make_handler_class_focused_full_cache_populate_fn_callable_without_instance() -> None:
+    """focused_full_cache_populate_fn on the handler class must be callable as
+    a plain 1-arg function, mirroring the other optional-staticmethod fields."""
+    calls: list[PredictParams] = []
+
+    def _populate(params: PredictParams) -> None:
+        calls.append(params)
+
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        None,
+        None,
+        focused_full_cache_populate_fn=_populate,
+    )
+    populate_fn = handler_cls.focused_full_cache_populate_fn
+    assert populate_fn is not None
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="full",
+        keibajo_code="05",
+        race_bango="09",
+    )
+    populate_fn(params)
+    assert calls == [params]
+
+
+def test_make_handler_class_focused_full_cache_populate_fn_none_when_not_provided() -> None:
+    handler_cls = make_handler_class(
+        _fake_predict, _fake_parquet_payload, _fake_per_race_parquet_payload, None, None
+    )
+    assert handler_cls.focused_full_cache_populate_fn is None
+    assert handler_cls.focused_full_cache_store is None
+
+
+def test_make_handler_class_focused_full_cache_populate_fn_not_bound_method() -> None:
+    def _populate(_params: PredictParams) -> None:
+        return None
+
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        None,
+        None,
+        focused_full_cache_populate_fn=_populate,
+    )
+    import inspect
+
+    assert not inspect.ismethod(handler_cls.focused_full_cache_populate_fn), (
+        "focused_full_cache_populate_fn must not be a bound method -- "
+        "staticmethod wrapping is required"
+    )
+
+
+def test_make_handler_class_focused_full_cache_store_is_the_same_object() -> None:
+    """Unlike the callables, the store is a plain object reference and must
+    not be staticmethod-wrapped -- it needs no descriptor protection since
+    only functions get bound-method injection."""
+    store = FocusedFullCacheStore()
+    handler_cls = make_handler_class(
+        _fake_predict,
+        _fake_parquet_payload,
+        _fake_per_race_parquet_payload,
+        None,
+        None,
+        focused_full_cache_store=store,
+    )
+    assert handler_cls.focused_full_cache_store is store
 
 
 # ---------------------------------------------------------------------------
@@ -1195,9 +1366,7 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
 
     assert len(loaded) == 1, "only the non-default variant should be loaded"
-    assert "banei-cb-v8-window2011-wf-15y" in loaded[0], (
-        "the loaded variant must be the base model"
-    )
+    assert "banei-cb-v8-window2011-wf-15y" in loaded[0], "the loaded variant must be the base model"
     assert "banei-cb-v9-sim-2011" not in loaded[0], (
         "the default variant must be served by the fallback"
     )
@@ -1784,10 +1953,12 @@ def _build_real_full_predict_fn() -> Callable[..., int]:
     Drives the real per-category orchestration so the test exercises the actual
     ``keibajo:bango`` target_race construction and its forward to the pipeline.
     """
-    make_fn: Callable[..., tuple[Callable[..., int], object, object]] = vars(predict_upcoming)[
-        "_make_predict_fn"
-    ]
-    predict_fn, _payload_fn, _per_race_fn = make_fn(_DB_URL, Path("/models"), _DB_URL, None)
+    make_fn: Callable[..., tuple[Callable[..., int], object, object, object]] = vars(
+        predict_upcoming
+    )["_make_predict_fn"]
+    predict_fn, _payload_fn, _per_race_fn, _cache_populate_fn = make_fn(
+        _DB_URL, Path("/models"), _DB_URL, None
+    )
     return predict_fn
 
 
@@ -1845,6 +2016,117 @@ def test_full_predict_fn_target_race_none_without_scope() -> None:
 
     assert captured["target_race"] is None
     assert written == 0
+
+
+# ---------------------------------------------------------------------------
+# _make_predict_fn's focused-full cache populate closure (explicit-args,
+# NOT the _last_run-based path -- see FocusedFullCachePopulateFn's docstring
+# for why the two must stay independent).
+# ---------------------------------------------------------------------------
+
+
+def _build_real_predict_fn_and_cache_populate(
+    store: FocusedFullCacheStore | None,
+) -> tuple[Callable[..., int], Callable[[PredictParams], None]]:
+    make_fn: Callable[
+        ..., tuple[Callable[..., int], object, object, Callable[[PredictParams], None]]
+    ] = vars(predict_upcoming)["_make_predict_fn"]
+    predict_fn, _payload_fn, _per_race_fn, populate_fn = make_fn(
+        _DB_URL, Path("/models"), _DB_URL, None, store
+    )
+    return predict_fn, populate_fn
+
+
+def test_populate_focused_full_cache_noop_when_store_not_provided(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(None)
+    params = PredictParams(
+        category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
+    )
+    populate_fn(params)  # must not raise even though no run ever happened
+
+
+def test_populate_focused_full_cache_stores_payload_for_this_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    final_dir.mkdir()
+    (final_dir / "features.parquet").write_bytes(b"not-real-parquet-bytes")
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    params = PredictParams(
+        category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
+    )
+
+    populate_fn(params)
+
+    payload = store.pop(build_focused_full_race_key(params))
+    assert payload is not None
+    assert payload.parquet_base64 == base64.b64encode(b"not-real-parquet-bytes").decode("ascii")
+    assert payload.parquet_key == "feat-cache/jra/20260712/features.parquet"
+    # The dummy bytes are not real parquet, so the DuckDB race_id split fails
+    # and gracefully yields None -- a missing per-race cache must never fail
+    # the (already-successful) whole-day payload above.
+    assert payload.per_race_parquets is None
+
+
+def test_populate_focused_full_cache_stores_nothing_when_no_parquet_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    params = PredictParams(
+        category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
+    )
+
+    populate_fn(params)
+
+    assert store.pop(build_focused_full_race_key(params)) is None
+
+
+def test_populate_focused_full_cache_two_races_do_not_cross_contaminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the _last_run shared-state race this design avoids
+    by construction: two different (category, run_date) runs must each land
+    under their OWN race key with their OWN bytes, never swapped."""
+    import pipeline_runner
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    jra_dir = tmp_path / "feat-jra-v7-final"
+    jra_dir.mkdir()
+    (jra_dir / "features.parquet").write_bytes(b"jra-bytes")
+    nar_dir = tmp_path / "feat-nar-v7-final"
+    nar_dir.mkdir()
+    (nar_dir / "features.parquet").write_bytes(b"nar-bytes")
+
+    store = FocusedFullCacheStore()
+    _predict_fn, populate_fn = _build_real_predict_fn_and_cache_populate(store)
+    jra_params = PredictParams(
+        category="jra", run_date="20260712", days_ahead=0, keibajo_code="05", race_bango="09"
+    )
+    nar_params = PredictParams(
+        category="nar", run_date="20260712", days_ahead=0, keibajo_code="44", race_bango="02"
+    )
+
+    populate_fn(jra_params)
+    populate_fn(nar_params)
+
+    jra_payload = store.pop(build_focused_full_race_key(jra_params))
+    nar_payload = store.pop(build_focused_full_race_key(nar_params))
+    assert jra_payload is not None
+    assert nar_payload is not None
+    assert jra_payload.parquet_base64 == base64.b64encode(b"jra-bytes").decode("ascii")
+    assert nar_payload.parquet_base64 == base64.b64encode(b"nar-bytes").decode("ascii")
 
 
 def test_parse_predict_params_full_mode_keeps_race_scope() -> None:

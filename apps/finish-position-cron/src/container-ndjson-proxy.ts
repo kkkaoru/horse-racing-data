@@ -65,7 +65,11 @@ const buildParquetProxyEntries = (result: PredictResultLine): ParquetProxyEntry[
   return entries;
 };
 
-const proxyResultParquetsToR2 = async (
+// Exported for reuse by focused-full-cache-pickup.ts, which proxies a
+// synthetic PredictResultLine-shaped payload fetched from the container's
+// GET /focused-full-cache endpoint through the exact same R2-write path --
+// see that module for why a second, delayed proxy channel exists at all.
+export const proxyResultParquetsToR2 = async (
   result: PredictResultLine,
   env: R2ProxyEnv,
   debug: boolean,

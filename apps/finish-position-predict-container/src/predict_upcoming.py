@@ -72,6 +72,7 @@ from predict_lib.cell_router import (
 from predict_lib.conn_url import normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
+from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
     CATEGORIES,
@@ -109,6 +110,7 @@ from predict_lib.rescore import (
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
     CacheMissError,
+    FocusedFullCachePopulateFn,
     FocusedFullCompletionFn,
     ParquetPayloadFn,
     PerRaceParquetPayloadFn,
@@ -117,11 +119,14 @@ from predict_lib.serve import (
     PrewarmBuildFn,
     PrewarmParquetPayloadFn,
     R2Config,
+    build_focused_full_cache_response_body,
+    build_focused_full_race_key,
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     iter_predict_chunks,
     iter_prewarm_chunks,
+    parse_focused_full_cache_query,
     parse_predict_params,
     parse_prewarm_params,
     parse_request_path,
@@ -1169,8 +1174,11 @@ def _make_predict_fn(
     models_dir: Path,
     source_url: str,
     r2: R2Config | None,
-) -> tuple[PredictCategoryFn, ParquetPayloadFn, PerRaceParquetPayloadFn]:
-    """Build the full-pipeline ``predict_fn`` + the two parquet payload adapters.
+    focused_full_cache_store: FocusedFullCacheStore | None = None,
+) -> tuple[
+    PredictCategoryFn, ParquetPayloadFn, PerRaceParquetPayloadFn, FocusedFullCachePopulateFn
+]:
+    """Build the full-pipeline ``predict_fn`` + the parquet payload adapters.
 
     Returns a tuple of:
     - ``predict_fn``: the prediction callable passed to ``iter_predict_chunks``.
@@ -1185,14 +1193,26 @@ def _make_predict_fn(
       ``{"parquetBase64", "parquetKey"}`` dicts so the Worker DO can also seed a
       per-race R2 object, letting a Stage-2 rescore hit a single race even when
       the whole-day parquet upload was skipped.
+    - ``focused_full_cache_populate_fn``: the
+      :data:`predict_lib.serve.FocusedFullCachePopulateFn` injected into
+      ``iter_predict_chunks`` for the detached focused-full path (see that
+      type's docstring for why this exists at all). Computes the SAME payload
+      shape as the two functions above but from *params* directly, not from
+      ``_last_run`` — see ``_build_parquet_payload``/``_build_per_race_payloads``
+      below.
 
-    All three functions share a thread-safe ``_last_run`` state box (guarded by
-    ``_last_run_lock``, a lock private to THIS factory call) so the payload fns
-    can retrieve category/run_date after the predict thread completes.
-    ``predict_fn`` itself is additionally serialized process-wide by
-    ``predict_lib.serve._PIPELINE_EXEC_LOCK`` (every call funnels through
-    ``_run_predict_fn``), so this lock only needs to protect ``_last_run``'s own
-    read/write, not re-derive that broader guarantee.
+    ``parquet_payload_fn`` / ``per_race_parquet_payload_fn`` share a
+    thread-safe ``_last_run`` state box (guarded by ``_last_run_lock``, a lock
+    private to THIS factory call) so they can retrieve category/run_date after
+    the predict thread completes — this is safe for the synchronous
+    request/response path they serve (the read happens moments after the
+    matching write, and ``predict_lib.serve._PIPELINE_EXEC_LOCK`` serializes
+    every pipeline call process-wide). ``focused_full_cache_populate_fn``
+    deliberately does NOT use ``_last_run``: it runs inside a *detached*
+    background thread with no such tight coupling to a live response, so it
+    takes ``category``/``run_date`` explicitly from the ``PredictParams`` the
+    caller already has — see that function's own docstring for the race this
+    avoids.
     """
     _last_run: list[tuple[str, str]] = []
     _last_run_lock = threading.Lock()
@@ -1241,14 +1261,17 @@ def _make_predict_fn(
                 return None
             return _last_run[-1]
 
-    def _parquet_payload() -> tuple[str, str] | None:
-        """Return ``(parquet_base64, parquet_key)`` for the last successful run."""
+    def _build_parquet_payload(category_str: str, run_date: str) -> tuple[str, str] | None:
+        """Read the built feature parquet for *category_str*/*run_date* from the
+        local tmp directory and return ``(parquet_base64, parquet_key)``.
+
+        Pure function of its explicit arguments (no ``_last_run`` read) so it
+        can be shared safely by both the ``_last_run``-based zero-arg
+        ``_parquet_payload`` (below) and the explicit-args focused-full cache
+        populate path.
+        """
         from pipeline_runner import WORK_DIR  # bundled in image
 
-        snapshot = _last_run_snapshot()
-        if snapshot is None:
-            return None
-        category_str, run_date = snapshot
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
@@ -1267,21 +1290,25 @@ def _make_predict_fn(
         )
         return encoded, parquet_key
 
-    def _per_race_parquet_payloads() -> list[dict[str, str]] | None:
-        """Split the whole-day parquet by ``race_id`` into per-race payloads.
-
-        Reads the same parquet directory as :func:`_parquet_payload`, groups its
-        rows by ``race_id`` with DuckDB, writes each group to a temp parquet,
-        base64-encodes it, and pairs it with the per-race R2 key. Returns ``None``
-        (non-blocking) when there is no last run, no parquet on disk, or the split
-        fails for any reason — a missing per-race cache must never fail predictions.
-        """
-        from pipeline_runner import WORK_DIR  # bundled in image
-
+    def _parquet_payload() -> tuple[str, str] | None:
+        """Return ``(parquet_base64, parquet_key)`` for the last successful run."""
         snapshot = _last_run_snapshot()
         if snapshot is None:
             return None
         category_str, run_date = snapshot
+        return _build_parquet_payload(category_str, run_date)
+
+    def _build_per_race_payloads(category_str: str, run_date: str) -> list[dict[str, str]] | None:
+        """Split the whole-day parquet for *category_str*/*run_date* by
+        ``race_id`` into per-race payloads.
+
+        Same explicit-args / no-shared-state shape as
+        :func:`_build_parquet_payload`, for the same reason. Returns ``None``
+        (non-blocking) when there is no parquet on disk or the split fails for
+        any reason — a missing per-race cache must never fail predictions.
+        """
+        from pipeline_runner import WORK_DIR  # bundled in image
+
         final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
         parquet_files = list(final_dir.rglob("*.parquet"))
         if not parquet_files:
@@ -1299,7 +1326,42 @@ def _make_predict_fn(
             )
             return None
 
-    return _predict, _parquet_payload, _per_race_parquet_payloads
+    def _per_race_parquet_payloads() -> list[dict[str, str]] | None:
+        """Split the last successful run's whole-day parquet by ``race_id``."""
+        snapshot = _last_run_snapshot()
+        if snapshot is None:
+            return None
+        category_str, run_date = snapshot
+        return _build_per_race_payloads(category_str, run_date)
+
+    def _populate_focused_full_cache(params: PredictParams) -> None:
+        """Explicit-args cache populate for the detached focused-full path.
+
+        Deliberately does not read ``_last_run`` -- *params* already carries
+        the exact ``(category, run_date)`` this run was for, so there is no
+        shared-state read to race against a subsequent request's write. See
+        :data:`predict_lib.serve.FocusedFullCachePopulateFn` for the calling
+        contract (best-effort, called before the slot is released).
+        """
+        if focused_full_cache_store is None:
+            return
+        category_str = params.category
+        run_date = params.run_date
+        payload = _build_parquet_payload(category_str, run_date)
+        per_race = _build_per_race_payloads(category_str, run_date)
+        if payload is None and per_race is None:
+            return
+        race_key = build_focused_full_race_key(params)
+        focused_full_cache_store.put(
+            race_key,
+            FocusedFullCachePayload(
+                parquet_base64=payload[0] if payload is not None else None,
+                parquet_key=payload[1] if payload is not None else None,
+                per_race_parquets=per_race,
+            ),
+        )
+
+    return _predict, _parquet_payload, _per_race_parquet_payloads, _populate_focused_full_cache
 
 
 def _make_prewarm_fn(database_url: str) -> PrewarmBuildFn:
@@ -1754,6 +1816,9 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
     per_race_parquet_payload_fn: PerRaceParquetPayloadFn  # injected by make_handler_class
     rescore_factory: RescoreFactory | None  # injected by make_handler_class
     focused_full_completion_fn: FocusedFullCompletionFn | None  # injected by make_handler_class
+    # injected by make_handler_class
+    focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None
+    focused_full_cache_store: FocusedFullCacheStore | None  # injected by make_handler_class
     prewarm_fn: PrewarmBuildFn | None  # injected by make_handler_class
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None  # injected by make_handler_class
 
@@ -1810,6 +1875,7 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 parquet_payload_fn=self.parquet_payload_fn,
                 per_race_parquet_payload_fn=effective_per_race_fn,
                 focused_full_completion_fn=self.focused_full_completion_fn,
+                focused_full_cache_populate_fn=self.focused_full_cache_populate_fn,
             ):
                 # HTTP/1.1 chunked encoding: hex length + CRLF + data + CRLF
                 size_line = f"{len(chunk):X}\r\n".encode()
@@ -1829,6 +1895,31 @@ class _PredictHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.flush()
             except OSError:
                 pass
+            return
+
+        if path == "/focused-full-cache":
+            cache_result = parse_focused_full_cache_query(query)
+            if isinstance(cache_result, str):
+                # Validation error — return 400 before writing any body.
+                error_body = cache_result.encode()
+                self.send_response(400)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(error_body)))
+                self.end_headers()
+                self.wfile.write(error_body)
+                return
+
+            payload = (
+                self.focused_full_cache_store.pop(build_focused_full_race_key(cache_result))
+                if self.focused_full_cache_store is not None
+                else None
+            )
+            body = build_focused_full_cache_response_body(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
 
         if path == "/prewarm-day-base":
@@ -1895,6 +1986,8 @@ def make_handler_class(
     focused_full_completion_fn: FocusedFullCompletionFn | None,
     prewarm_fn: PrewarmBuildFn | None = None,
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
+    focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
+    focused_full_cache_store: FocusedFullCacheStore | None = None,
 ) -> type[_PredictHandler]:
     """Return a ``_PredictHandler`` subclass with bound callables.
 
@@ -1909,6 +2002,10 @@ def make_handler_class(
     optional-``staticmethod`` pattern -- ``None`` when the day-base prewarm
     endpoint is not wired (e.g. a local run without R2 configured), in which
     case ``do_GET`` 404s ``/prewarm-day-base`` instead of erroring.
+    ``focused_full_cache_populate_fn`` is the same optional-``staticmethod``
+    pattern; ``focused_full_cache_store`` is a plain object reference (not a
+    callable), so it needs no ``staticmethod`` wrapping -- both are ``None``
+    when the ``GET /focused-full-cache`` pickup endpoint is not wired.
     """
     _predict: PredictCategoryFn = predict_fn
     _parquet_payload: ParquetPayloadFn = parquet_payload_fn
@@ -1917,6 +2014,8 @@ def make_handler_class(
     _completion: FocusedFullCompletionFn | None = focused_full_completion_fn
     _prewarm: PrewarmBuildFn | None = prewarm_fn
     _prewarm_parquet_payload: PrewarmParquetPayloadFn | None = prewarm_parquet_payload_fn
+    _cache_populate: FocusedFullCachePopulateFn | None = focused_full_cache_populate_fn
+    _cache_store: FocusedFullCacheStore | None = focused_full_cache_store
 
     @final
     class _BoundHandler(_PredictHandler):
@@ -1929,6 +2028,10 @@ def make_handler_class(
         prewarm_parquet_payload_fn = (
             staticmethod(_prewarm_parquet_payload) if _prewarm_parquet_payload is not None else None
         )
+        focused_full_cache_populate_fn = (
+            staticmethod(_cache_populate) if _cache_populate is not None else None
+        )
+        focused_full_cache_store = _cache_store
 
     return _BoundHandler
 
@@ -1942,6 +2045,8 @@ def serve_http(
     focused_full_completion_fn: FocusedFullCompletionFn | None = None,
     prewarm_fn: PrewarmBuildFn | None = None,
     prewarm_parquet_payload_fn: PrewarmParquetPayloadFn | None = None,
+    focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
+    focused_full_cache_store: FocusedFullCacheStore | None = None,
 ) -> None:
     """Start the blocking HTTP server on *port*.
 
@@ -1973,6 +2078,8 @@ def serve_http(
         focused_full_completion_fn,
         prewarm_fn,
         prewarm_parquet_payload_fn,
+        focused_full_cache_populate_fn,
+        focused_full_cache_store,
     )
     httpd = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
     httpd.daemon_threads = True
@@ -2010,8 +2117,9 @@ def main() -> int:
             print(f"[predict-serve] bootstrap failed: {bootstrap_error}", file=sys.stderr)
             return 1
         r2 = _load_r2_config()
-        predict_fn, parquet_payload_fn, per_race_payload_fn = _make_predict_fn(
-            database_url, models_dir, source_url, r2
+        focused_full_cache_store = FocusedFullCacheStore()
+        predict_fn, parquet_payload_fn, per_race_payload_fn, cache_populate_fn = _make_predict_fn(
+            database_url, models_dir, source_url, r2, focused_full_cache_store
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
         focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
@@ -2025,6 +2133,8 @@ def main() -> int:
             focused_full_completion_fn,
             prewarm_fn,
             _prewarm_parquet_payload,
+            cache_populate_fn,
+            focused_full_cache_store,
         )
         return 0  # unreachable but satisfies the return type
 

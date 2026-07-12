@@ -78,6 +78,8 @@ from pathlib import Path
 from typing import Final, Literal, final
 from urllib.parse import parse_qs, urlparse
 
+from .focused_full_cache import FocusedFullCachePayload
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -347,6 +349,73 @@ def parse_prewarm_params(query_string: str) -> PrewarmParams | str:
             return f"invalid daysAhead: {days_ahead}; must be non-negative"
 
     return PrewarmParams(category=category, run_date=run_date, days_ahead=days_ahead)
+
+
+def parse_focused_full_cache_query(query_string: str) -> PredictParams | str:
+    """Parse ``?category=...&runDate=...&keibajoCode=...&raceBango=...`` for the
+    ``GET /focused-full-cache`` pickup endpoint.
+
+    Returns a :class:`PredictParams` on success (reused purely as a carrier for
+    the four identity fields :func:`build_focused_full_race_key` reads --
+    ``mode``/``daysAhead`` are irrelevant here and left at their defaults) or a
+    human-readable error string on validation failure, mirroring
+    :func:`parse_predict_params`'s style. Unlike ``/predict``, ``keibajoCode``
+    and ``raceBango`` are REQUIRED (this endpoint only ever addresses one
+    already-completed focused-full race, never a whole category).
+    """
+    qs = parse_qs(query_string, keep_blank_values=True)
+
+    category = _first_qs(qs, "category")
+    if category is None:
+        return "missing required parameter: category"
+    if category not in SUPPORTED_CATEGORIES:
+        return f"invalid category: {category!r}; must be one of jra, nar, ban-ei"
+
+    run_date = _first_qs(qs, "runDate")
+    if run_date is None:
+        return "missing required parameter: runDate"
+    if not DATE_PATTERN.match(run_date):
+        return f"invalid runDate: {run_date!r}; must be YYYYMMDD"
+
+    keibajo_code = _first_qs(qs, "keibajoCode")
+    if not keibajo_code:
+        return "missing required parameter: keibajoCode"
+
+    race_bango = _first_qs(qs, "raceBango")
+    if not race_bango:
+        return "missing required parameter: raceBango"
+
+    return PredictParams(
+        category=category,
+        run_date=run_date,
+        days_ahead=0,
+        keibajo_code=keibajo_code,
+        race_bango=race_bango,
+    )
+
+
+def build_focused_full_cache_response_body(payload: FocusedFullCachePayload | None) -> bytes:
+    """Return the JSON body for ``GET /focused-full-cache``.
+
+    ``{"found": false}`` when *payload* is ``None`` -- no cache entry (never
+    populated, already consumed by an earlier pickup, container recycled, or
+    TTL-expired; all degrade to "no cache for this race today", never an
+    error). Otherwise ``{"found": true, "parquetBase64", "parquetKey",
+    "perRaceParquets"}`` -- the same field names the Worker's
+    ``container-ndjson-proxy.ts`` already parses off a normal result line, so
+    the identical R2-proxy logic can consume either shape.
+    """
+    body: dict[str, object] = (
+        {"found": False}
+        if payload is None
+        else {
+            "found": True,
+            "parquetBase64": payload.parquet_base64,
+            "parquetKey": payload.parquet_key,
+            "perRaceParquets": payload.per_race_parquets,
+        }
+    )
+    return json.dumps(body).encode("utf-8")
 
 
 def _optional_scope_value(raw: str | None) -> str | None:
@@ -898,6 +967,32 @@ serve.py stays I/O-free and unit-testable; the real Neon query lives in
 predict_upcoming.py. Must not raise (a raising fn is treated as 'not complete').
 """
 
+FocusedFullCachePopulateFn = Callable[[PredictParams], None]
+"""Computes and stores the R2 feat-cache payload for one completed focused-full
+run, keyed by :func:`build_focused_full_race_key`.
+
+Called once, inside the detached focused-full thread, immediately after the
+guarded pipeline call succeeds -- BEFORE the slot is released (see
+:func:`iter_predict_chunks`'s focused-full branch). By that point there is no
+live HTTP response left to embed ``parquetBase64``/``parquetKey`` into (the
+generator already yielded ``accepted`` and returned), so the real
+implementation (``predict_upcoming.py``) must derive the payload directly from
+*params* -- never from any shared "last run" state, which would be racy across
+requests -- and hand it to a bounded in-process store
+(``predict_lib.focused_full_cache.FocusedFullCacheStore``) for a later HTTP
+request to retrieve.
+
+Population happens strictly before ``release_fn``: the per-process pipeline
+lock plus the single focused-full slot together guarantee no other pipeline
+run can complete during this window, so there is no possibility of storing a
+different race's payload under this race's key.
+
+Must not raise -- any exception is caught by the caller and logged, never
+propagated, matching the non-blocking convention of :data:`ParquetPayloadFn`.
+A missed or failed populate degrades to "no cache entry for this race" and
+must never fail the underlying prediction run.
+"""
+
 _FOCUSED_FULL_LOCK: Final[threading.Lock] = threading.Lock()
 """Guards ``_FOCUSED_FULL_IN_FLIGHT`` across concurrent HTTP requests.
 
@@ -1063,6 +1158,7 @@ def iter_predict_chunks(
     focused_full_claim_fn: FocusedFullClaimFn | None = None,
     focused_full_release_fn: FocusedFullReleaseFn | None = None,
     focused_full_completion_fn: FocusedFullCompletionFn | None = None,
+    focused_full_cache_populate_fn: FocusedFullCachePopulateFn | None = None,
     time_fn: TimeFn = time.monotonic,
     sleep_fn: SleepFn = time.sleep,
     progress_interval_s: float = PROGRESS_INTERVAL_S,
@@ -1180,6 +1276,14 @@ def iter_predict_chunks(
                              ``None`` (the default) or a raising callable both
                              behave as "not complete" -- a genuine prediction
                              is never blocked by a completion-check failure.
+        focused_full_cache_populate_fn: Optional callable invoked once, inside
+                             the detached thread, right after a claimed
+                             focused-full pipeline succeeds and before the
+                             slot is released. See
+                             :data:`FocusedFullCachePopulateFn` for why this
+                             exists and its non-blocking contract. Not called
+                             on pipeline error, and not called for non-focused
+                             requests.
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
@@ -1259,9 +1363,24 @@ def iter_predict_chunks(
 
         unguarded_first_call = first_call
 
+        def _populate_cache_best_effort() -> None:
+            if focused_full_cache_populate_fn is None:
+                return
+            try:
+                focused_full_cache_populate_fn(params)
+            except BaseException as cache_err:
+                print(
+                    f"[focused-full] cache populate failed race={focused_race_key}: "
+                    f"{type(cache_err).__name__}: {cache_err}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
         def _call_focused_and_release() -> int:
             try:
-                return unguarded_first_call()
+                result = unguarded_first_call()
+                _populate_cache_best_effort()
+                return result
             finally:
                 release_fn(focused_race_key)
 

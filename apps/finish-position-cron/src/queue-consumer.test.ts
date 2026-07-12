@@ -309,7 +309,14 @@ test("acks focused full skipDedup messages without container when Neon already h
       runYmd: "20260701",
     }),
   );
-  expect(stubFetchMock).not.toHaveBeenCalled();
+  // No full /predict re-run -- but exactly ONE fetch to the container's
+  // GET /focused-full-cache pickup endpoint, since Neon completion means a
+  // prior detached focused-full run may have left an unpicked R2 payload.
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const pickupRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(pickupRequest.url).toBe(
+    "http://do/focused-full-cache?category=nar&runDate=20260701&keibajoCode=50&raceBango=12",
+  );
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(sendMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledTimes(1);

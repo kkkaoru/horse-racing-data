@@ -3,6 +3,8 @@
 // DO stub's fetch, track state.
 
 import { claimFocusedFullRace, claimRun, completeFocusedFullRace, completeRun } from "./do-state";
+import { isFocusedFullPredictionComplete } from "./focused-full-completion";
+import { pickUpFocusedFullCache } from "./focused-full-cache-pickup";
 import {
   parseNdjsonStream,
   type PredictProgressLine,
@@ -18,7 +20,6 @@ import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
-import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
 import type { Env, PredictQueueMessage } from "./types";
 
@@ -275,6 +276,21 @@ const ackIfFocusedFullAlreadyComplete = async (
       raceBango,
       runYmd,
       status: "success",
+    });
+    // Neon confirms the race is done, but the detached pipeline that produced
+    // it never had a live HTTP response to embed its R2 feat-cache payload
+    // into (see focused-full-cache-pickup.ts's module docstring). This is the
+    // one point in the redelivery flow that observes completion without ever
+    // re-fetching the container, so it is also the only place a pickup can
+    // happen. Errors are swallowed inside pickUpFocusedFullCache -- a missed
+    // pickup must never block the ack below.
+    await pickUpFocusedFullCache({
+      category,
+      debug: message.body.debug,
+      env,
+      keibajoCode,
+      raceBango,
+      runYmd,
     });
     debugLog(
       message.body,

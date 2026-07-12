@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from predict_lib.focused_full_cache import FocusedFullCachePayload
 from predict_lib.serve import (
     FOCUSED_FULL_ACCEPTED_STATUS,
     FOCUSED_FULL_ALREADY_COMPLETE_STATUS,
@@ -45,6 +46,7 @@ from predict_lib.serve import (
     R2Config,
     SleepFn,
     TimeFn,
+    build_focused_full_cache_response_body,
     build_focused_full_race_key,
     build_prewarm_result_line,
     build_progress_line,
@@ -56,6 +58,7 @@ from predict_lib.serve import (
     iter_predict_chunks,
     iter_prewarm_chunks,
     mask_error_message,
+    parse_focused_full_cache_query,
     parse_predict_params,
     parse_prewarm_params,
     parse_request_path,
@@ -1992,6 +1995,114 @@ def test_iter_predict_chunks_focused_full_release_called_even_on_predict_error()
     assert released.wait(timeout=2.0), "release_fn must run even after predict_fn raises"
 
 
+def test_iter_predict_chunks_focused_full_cache_populate_called_before_release() -> None:
+    """A successful claimed run calls focused_full_cache_populate_fn with the
+    request's own params, and does so BEFORE release_fn -- see
+    FocusedFullCachePopulateFn's docstring for why ordering matters (no other
+    pipeline run can start and overwrite shared state while the slot is
+    still held)."""
+    order: list[str] = []
+    populated_with: list[PredictParams] = []
+    released = threading.Event()
+
+    def _populate(params: PredictParams) -> None:
+        order.append("populate")
+        populated_with.append(params)
+
+    def _release(_key: str) -> None:
+        order.append("release")
+        released.set()
+
+    params = _make_focused_full_params(keibajo_code="55", race_bango="03")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            focused_full_claim_fn=lambda _key: FOCUSED_FULL_SLOT_CLAIMED,
+            focused_full_release_fn=_release,
+            focused_full_cache_populate_fn=_populate,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+
+    assert released.wait(timeout=2.0), "release_fn was never called"
+    assert order == ["populate", "release"]
+    assert populated_with == [params]
+
+
+def test_iter_predict_chunks_focused_full_cache_populate_not_called_on_predict_error() -> None:
+    """A failed pipeline run must never populate the cache -- there is no
+    successful parquet to cache, and populating one anyway would seed a
+    stale/wrong object under this race's key."""
+    populate_calls: list[PredictParams] = []
+    released = threading.Event()
+
+    def _populate(params: PredictParams) -> None:
+        populate_calls.append(params)
+
+    def _release(_key: str) -> None:
+        released.set()
+
+    def _predict_raises(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        raise RuntimeError("focused pipeline failed")
+
+    params = _make_focused_full_params(keibajo_code="56", race_bango="04")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict_raises,
+            focused_full_claim_fn=lambda _key: FOCUSED_FULL_SLOT_CLAIMED,
+            focused_full_release_fn=_release,
+            focused_full_cache_populate_fn=_populate,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+
+    assert released.wait(timeout=2.0), "release_fn must still run after predict_fn raises"
+    assert populate_calls == []
+
+
+def test_iter_predict_chunks_focused_full_cache_populate_error_does_not_fail_run() -> None:
+    """A raising focused_full_cache_populate_fn must be swallowed -- a cache
+    populate failure must never fail (or even be visible in) the underlying
+    prediction run, matching ParquetPayloadFn's non-blocking convention."""
+    released = threading.Event()
+
+    def _populate_raises(_params: PredictParams) -> None:
+        raise RuntimeError("cache populate blew up")
+
+    def _release(_key: str) -> None:
+        released.set()
+
+    params = _make_focused_full_params(keibajo_code="57", race_bango="05")
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _mock_predict_ok,
+            focused_full_claim_fn=lambda _key: FOCUSED_FULL_SLOT_CLAIMED,
+            focused_full_release_fn=_release,
+            focused_full_cache_populate_fn=_populate_raises,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
+
+    assert released.wait(timeout=2.0), "release_fn must still run after populate_fn raises"
+
+
 def test_iter_predict_chunks_focused_full_default_guard_single_slot_enforced() -> None:
     """End-to-end exercise of the REAL module-level single-process guard (no
     focused_full_claim_fn / focused_full_release_fn injected -- i.e. the
@@ -2586,6 +2697,83 @@ def test_parse_prewarm_params_empty_query_string() -> None:
     result = parse_prewarm_params("")
     assert isinstance(result, str)
     assert "category" in result
+
+
+# ---------------------------------------------------------------------------
+# parse_focused_full_cache_query
+# ---------------------------------------------------------------------------
+
+
+def test_parse_focused_full_cache_query_success() -> None:
+    result = parse_focused_full_cache_query(
+        "category=jra&runDate=20260712&keibajoCode=05&raceBango=09"
+    )
+    assert isinstance(result, PredictParams)
+    assert result.category == "jra"
+    assert result.run_date == "20260712"
+    assert result.keibajo_code == "05"
+    assert result.race_bango == "09"
+
+
+def test_parse_focused_full_cache_query_missing_category() -> None:
+    result = parse_focused_full_cache_query("runDate=20260712&keibajoCode=05&raceBango=09")
+    assert result == "missing required parameter: category"
+
+
+def test_parse_focused_full_cache_query_invalid_category() -> None:
+    result = parse_focused_full_cache_query(
+        "category=nope&runDate=20260712&keibajoCode=05&raceBango=09"
+    )
+    assert isinstance(result, str)
+    assert "invalid category" in result
+
+
+def test_parse_focused_full_cache_query_missing_run_date() -> None:
+    result = parse_focused_full_cache_query("category=jra&keibajoCode=05&raceBango=09")
+    assert result == "missing required parameter: runDate"
+
+
+def test_parse_focused_full_cache_query_invalid_run_date() -> None:
+    result = parse_focused_full_cache_query(
+        "category=jra&runDate=notadate&keibajoCode=05&raceBango=09"
+    )
+    assert isinstance(result, str)
+    assert "invalid runDate" in result
+
+
+def test_parse_focused_full_cache_query_missing_keibajo_code() -> None:
+    result = parse_focused_full_cache_query("category=jra&runDate=20260712&raceBango=09")
+    assert result == "missing required parameter: keibajoCode"
+
+
+def test_parse_focused_full_cache_query_missing_race_bango() -> None:
+    result = parse_focused_full_cache_query("category=jra&runDate=20260712&keibajoCode=05")
+    assert result == "missing required parameter: raceBango"
+
+
+# ---------------------------------------------------------------------------
+# build_focused_full_cache_response_body
+# ---------------------------------------------------------------------------
+
+
+def test_build_focused_full_cache_response_body_not_found() -> None:
+    body = build_focused_full_cache_response_body(None)
+    assert json.loads(body.decode()) == {"found": False}
+
+
+def test_build_focused_full_cache_response_body_found() -> None:
+    payload = FocusedFullCachePayload(
+        parquet_base64="YmFzZTY0",
+        parquet_key="feat-cache/jra/20260712/05/09/features.parquet",
+        per_race_parquets=[{"parquetBase64": "cGVy", "parquetKey": "per-race-key"}],
+    )
+    body = build_focused_full_cache_response_body(payload)
+    assert json.loads(body.decode()) == {
+        "found": True,
+        "parquetBase64": "YmFzZTY0",
+        "parquetKey": "feat-cache/jra/20260712/05/09/features.parquet",
+        "perRaceParquets": [{"parquetBase64": "cGVy", "parquetKey": "per-race-key"}],
+    }
 
 
 # ---------------------------------------------------------------------------
