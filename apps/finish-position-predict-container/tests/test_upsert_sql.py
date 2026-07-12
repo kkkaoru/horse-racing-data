@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from predict_lib.upsert_sql import (
     INSERT_COLUMNS,
+    PREDICTION_AUDIT_COLUMNS,
     PREDICTION_SUBGROUP_COLUMNS,
     PRIMARY_KEY_COLUMNS,
     UPDATABLE_COLUMNS,
@@ -21,7 +22,16 @@ from predict_lib.upsert_sql import (
 
 
 def test_insert_columns_count() -> None:
-    assert len(INSERT_COLUMNS) == 18
+    assert len(INSERT_COLUMNS) == 22
+
+
+def test_audit_columns() -> None:
+    assert PREDICTION_AUDIT_COLUMNS == (
+        "odds_score",
+        "tansho_odds",
+        "futan_juryo",
+        "weight_diff_from_avg",
+    )
 
 
 def test_subgroup_columns_exclude_venue() -> None:
@@ -44,6 +54,19 @@ def test_insert_columns_end_with_subgroup_columns() -> None:
     )
 
 
+def test_insert_columns_carry_audit_columns_before_subgroup_columns() -> None:
+    assert INSERT_COLUMNS[-9:-5] == (
+        "odds_score",
+        "tansho_odds",
+        "futan_juryo",
+        "weight_diff_from_avg",
+    )
+
+
+def test_audit_columns_not_in_primary_key() -> None:
+    assert all(column not in PRIMARY_KEY_COLUMNS for column in PREDICTION_AUDIT_COLUMNS)
+
+
 def test_updatable_columns_include_subgroup_columns() -> None:
     assert UPDATABLE_COLUMNS == (
         "umaban",
@@ -52,6 +75,10 @@ def test_updatable_columns_include_subgroup_columns() -> None:
         "predicted_top1_prob",
         "predicted_top3_prob",
         "predicted_finish_position",
+        "odds_score",
+        "tansho_odds",
+        "futan_juryo",
+        "weight_diff_from_avg",
         "distance_band",
         "field_size_band",
         "season_band",
@@ -78,20 +105,28 @@ def test_primary_key_columns() -> None:
 
 def test_build_upsert_sql_single_row_uses_psycopg_placeholders() -> None:
     sql = build_upsert_sql(1)
-    # 18 INSERT columns (13 prediction + 5 subgroup), all bound with psycopg3 %s.
-    assert sql.count("%s") == 18
+    # 22 INSERT columns (13 prediction + 4 audit + 5 subgroup), bound with psycopg3 %s.
+    assert sql.count("%s") == 22
     assert "$1" not in sql
 
 
 def test_build_upsert_sql_multi_row_placeholder_count() -> None:
     sql = build_upsert_sql(3)
-    assert sql.count("%s") == 54
+    assert sql.count("%s") == 66
 
 
 def test_build_upsert_sql_sets_subgroup_columns_on_conflict() -> None:
     sql = build_upsert_sql(1)
     assert "distance_band = excluded.distance_band" in sql
     assert "surface = excluded.surface" in sql
+
+
+def test_build_upsert_sql_sets_audit_columns_on_conflict() -> None:
+    sql = build_upsert_sql(1)
+    assert "odds_score = excluded.odds_score" in sql
+    assert "tansho_odds = excluded.tansho_odds" in sql
+    assert "futan_juryo = excluded.futan_juryo" in sql
+    assert "weight_diff_from_avg = excluded.weight_diff_from_avg" in sql
 
 
 def test_build_upsert_sql_has_on_conflict_do_update() -> None:

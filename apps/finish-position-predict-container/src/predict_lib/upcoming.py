@@ -10,13 +10,26 @@ Each row also carries the race's subgroup metadata (``subgroup.classify_all``):
 the dimensions are constant across a race so they are classified once from the
 race's representative entry plus the parsed ``race_id`` and the persisted subset
 (``upsert_sql.PREDICTION_SUBGROUP_COLUMNS``) is appended to every horse's row in that order.
+
+MASTER-INVENTORY finding #12: each row also carries
+``upsert_sql.PREDICTION_AUDIT_COLUMNS`` (``odds_score`` / ``tansho_odds`` /
+``futan_juryo`` / ``weight_diff_from_avg``), read directly from the horse's
+own scored ``entries`` mapping -- the same feature values already computed
+for the model (``late_binding.apply_late_binding_to_entry`` for the first
+three, an existing base feature for ``futan_juryo``), not a new computation.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from typing import Final
 
-from .late_binding import coerce_optional_int
+from .late_binding import (
+    ODDS_SCORE_FIELD,
+    TANSHO_ODDS_FIELD,
+    WEIGHT_DIFF_FROM_AVG_FIELD,
+    coerce_optional_int,
+)
 from .model_meta import Category, model_version_for
 from .race_id import RaceIdParts, parse_race_id
 from .rank import RankedHorse, ScoredHorse, rank_within_race
@@ -28,6 +41,8 @@ UMABAN_FIELD: str = "umaban"
 KYORI_FIELD: str = "kyori"
 SHUSSO_TOSU_FIELD: str = "shusso_tosu"
 TRACK_CODE_FIELD: str = "track_code"
+FUTAN_JURYO_FIELD: str = "futan_juryo"
+_EMPTY_AUDIT_VALUES: Final[tuple[None, None, None, None]] = (None, None, None, None)
 # Per-category race-class column carrying the subgroup ``class_code`` value.
 # Mirrors ``predict_upcoming.CLASS_CODE_FIELD_BY_CATEGORY``: JRA reads the numeric
 # ``kyoso_joken_code``, NAR reads the derived ``nar_subclass``. Ban-ei has no
@@ -93,6 +108,33 @@ def _subgroup_values(
     return [classified[column] for column in PREDICTION_SUBGROUP_COLUMNS]
 
 
+def _audit_values_by_ketto(
+    entries: Sequence[Mapping[str, object]] | None,
+) -> dict[str, tuple[object, object, object, object]]:
+    """Return ``ketto_toroku_bango -> (odds_score, tansho_odds, futan_juryo,
+    weight_diff_from_avg)`` for every entry, or an empty dict when ``entries``
+    is ``None`` (legacy callers that have not been updated to pass entries).
+
+    ``_to_scored_horse`` narrows each entry down to just the ranking-relevant
+    fields (:class:`ScoredHorse` never carries feature columns), so this is a
+    SEPARATE lookup keyed by ``ketto_toroku_bango`` rather than a field added
+    to :class:`RankedHorse` -- avoids touching the ranking data structures
+    (and every other caller of ``rank_within_race``) for a purely additive
+    audit column (MASTER-INVENTORY finding #12).
+    """
+    if entries is None:
+        return {}
+    return {
+        str(entry[KETTO_FIELD]): (
+            entry.get(ODDS_SCORE_FIELD),
+            entry.get(TANSHO_ODDS_FIELD),
+            entry.get(FUTAN_JURYO_FIELD),
+            entry.get(WEIGHT_DIFF_FROM_AVG_FIELD),
+        )
+        for entry in entries
+    }
+
+
 def _to_scored_horse(entry: Mapping[str, object], score: float) -> ScoredHorse:
     """Build a ``ScoredHorse`` from an entry mapping and its raw score."""
     return ScoredHorse(
@@ -125,9 +167,7 @@ def rank_race_entries(
     if len(entries) != len(scores):
         message = f"entries ({len(entries)}) and scores ({len(scores)}) length mismatch"
         raise ValueError(message)
-    scored = [
-        _to_scored_horse(entry, score) for entry, score in zip(entries, scores, strict=True)
-    ]
+    scored = [_to_scored_horse(entry, score) for entry, score in zip(entries, scores, strict=True)]
     return rank_within_race(scored)
 
 
@@ -137,6 +177,7 @@ def build_prediction_rows(
     ranked: Sequence[RankedHorse],
     model_version: str | None = None,
     race_entry: Mapping[str, object] | None = None,
+    entries: Sequence[Mapping[str, object]] | None = None,
 ) -> list[list[object]]:
     """Flatten ranked horses into UPSERT value tuples for one race.
 
@@ -156,12 +197,20 @@ def build_prediction_rows(
     ``upsert_sql.PREDICTION_SUBGROUP_COLUMNS`` of each row are populated. ``None`` leaves the
     entry-derived dimensions ``None`` (season still classifies from the
     ``race_id``).
+
+    ``entries`` (optional, MASTER-INVENTORY finding #12) is the SAME sequence
+    passed to :func:`rank_race_entries` for this race -- when supplied, each
+    row's ``upsert_sql.PREDICTION_AUDIT_COLUMNS`` are read from the matching
+    horse's own entry by ``ketto_toroku_bango``. ``None`` (the default) leaves
+    all four audit columns ``None``, so existing callers that have not been
+    updated to pass entries keep their current behaviour unchanged.
     """
     parts: RaceIdParts = parse_race_id(race_id)
-    resolved_model_version = model_version if model_version is not None else model_version_for(
-        category
+    resolved_model_version = (
+        model_version if model_version is not None else model_version_for(category)
     )
     subgroup_values = _subgroup_values(category, parts, race_entry)
+    audit_by_ketto = _audit_values_by_ketto(entries)
     return [
         [
             resolved_model_version,
@@ -177,6 +226,7 @@ def build_prediction_rows(
             None,
             None,
             None,
+            *audit_by_ketto.get(horse.ketto_toroku_bango, _EMPTY_AUDIT_VALUES),
             *subgroup_values,
         ]
         for horse in ranked

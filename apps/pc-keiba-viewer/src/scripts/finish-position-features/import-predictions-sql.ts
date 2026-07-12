@@ -29,6 +29,20 @@ const SUBGROUP_COLUMNS: string[] = [
   "surface",
 ];
 
+// MASTER-INVENTORY finding #12: the served prediction row never persisted the
+// feature values it was scored from, blocking any later serve-time-value
+// audit. Nullable, additive, and normal-update semantics (unlike
+// first_served_at below) -- a re-score legitimately reflects a new set of
+// odds/weight inputs, so these are overwritten on every ON CONFLICT DO
+// UPDATE, same as the other prediction-output columns. Mirrors the Python
+// container path's predict_lib.upsert_sql.PREDICTION_AUDIT_COLUMNS.
+const AUDIT_COLUMNS: string[] = [
+  "odds_score",
+  "tansho_odds",
+  "futan_juryo",
+  "weight_diff_from_avg",
+];
+
 const INSERT_COLUMNS = [
   ...PRIMARY_KEY_COLUMNS,
   "umaban",
@@ -37,6 +51,7 @@ const INSERT_COLUMNS = [
   "predicted_top1_prob",
   "predicted_top3_prob",
   "predicted_finish_position",
+  ...AUDIT_COLUMNS,
   ...SUBGROUP_COLUMNS,
 ];
 
@@ -47,6 +62,7 @@ const UPDATABLE_COLUMNS = [
   "predicted_top1_prob",
   "predicted_top3_prob",
   "predicted_finish_position",
+  ...AUDIT_COLUMNS,
   ...SUBGROUP_COLUMNS,
 ];
 
@@ -65,6 +81,10 @@ export const buildPredictionsTableDdl = (): string => `
       predicted_top1_prob numeric,
       predicted_top3_prob numeric,
       predicted_finish_position numeric,
+      odds_score numeric,
+      tansho_odds numeric,
+      futan_juryo numeric,
+      weight_diff_from_avg numeric,
       distance_band text,
       field_size_band text,
       season_band text,
@@ -87,6 +107,19 @@ export const buildActiveModelsTableDdl = (): string => `
 
 export const buildAddSubclassColumnSql = (): string =>
   `alter table ${ACTIVE_MODELS_TABLE} add column if not exists subclass text`;
+
+// MASTER-INVENTORY finding #12: ADD COLUMN IF NOT EXISTS with no DEFAULT
+// clause is metadata-only in Postgres regardless of version (there is no
+// existing-row value to materialise) -- unlike buildAddFirstServedAtColumnSql
+// below, these four never need a two-step split. Safe to re-run every
+// invocation; targets the table that already exists in production the same
+// way buildAddSubclassColumnSql does.
+export const buildAddAuditColumnsSql = (): string =>
+  `alter table ${PREDICTIONS_TABLE}
+     add column if not exists odds_score numeric,
+     add column if not exists tansho_odds numeric,
+     add column if not exists futan_juryo numeric,
+     add column if not exists weight_diff_from_avg numeric`;
 
 // MASTER-INVENTORY finding #13: ON CONFLICT DO UPDATE unconditionally sets
 // prediction_generated_at = now(), so a same-key re-score/backfill destroys

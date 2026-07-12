@@ -46,6 +46,22 @@ PREDICTION_SUBGROUP_COLUMNS: Final[tuple[str, ...]] = (
     "surface",
 )
 
+# MASTER-INVENTORY finding #12: the served prediction row never persisted the
+# feature values it was scored from, blocking any later serve-time-value
+# audit. These four are read from the horse's own scored entry (the same
+# feature row already computed for the model, not a new computation) --
+# see ``upcoming.build_prediction_rows``'s ``entries`` parameter. Nullable,
+# additive, and normal-update semantics (unlike ``first_served_at``): a
+# re-score legitimately reflects a new set of odds/weight inputs, so these
+# SHOULD be overwritten on every ON CONFLICT DO UPDATE, same as the other
+# prediction-output columns below.
+PREDICTION_AUDIT_COLUMNS: Final[tuple[str, ...]] = (
+    "odds_score",
+    "tansho_odds",
+    "futan_juryo",
+    "weight_diff_from_avg",
+)
+
 INSERT_COLUMNS: Final[tuple[str, ...]] = (
     *PRIMARY_KEY_COLUMNS,
     "umaban",
@@ -54,6 +70,7 @@ INSERT_COLUMNS: Final[tuple[str, ...]] = (
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    *PREDICTION_AUDIT_COLUMNS,
     *PREDICTION_SUBGROUP_COLUMNS,
 )
 
@@ -64,6 +81,7 @@ UPDATABLE_COLUMNS: Final[tuple[str, ...]] = (
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    *PREDICTION_AUDIT_COLUMNS,
     *PREDICTION_SUBGROUP_COLUMNS,
 )
 

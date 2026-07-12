@@ -14,6 +14,7 @@ import type { FeatureCategory, FeatureTarget } from "./build-finish-position-fea
 import {
   buildActivateModelSql,
   buildActiveModelsTableDdl,
+  buildAddAuditColumnsSql,
   buildAddFirstServedAtColumnSql,
   buildBatchInsertSql,
   buildPredictionsLookupIndexSql,
@@ -243,12 +244,14 @@ const ensureTables = async (pool: Pool): Promise<void> => {
     pool.query(buildPredictionsTableDdl()),
     pool.query(buildActiveModelsTableDdl()),
   ]);
-  // Two-step, no-rewrite column addition (safe to re-run every invocation) --
-  // this is what actually reaches an already-existing production table (the
-  // CREATE TABLE IF NOT EXISTS calls above are no-ops there). Must stay two
-  // separate statements: see buildAddFirstServedAtColumnSql's docstring for
-  // why combining ADD COLUMN with DEFAULT now() in one step would force a
-  // full-table rewrite against a live-serving table.
+  // Column additions below are safe to re-run every invocation -- this is
+  // what actually reaches an already-existing production table (the CREATE
+  // TABLE IF NOT EXISTS calls above are no-ops there).
+  await pool.query(buildAddAuditColumnsSql());
+  // Two-step, no-rewrite: must stay two separate statements. See
+  // buildAddFirstServedAtColumnSql's docstring for why combining ADD COLUMN
+  // with DEFAULT now() in one step would force a full-table rewrite against
+  // a live-serving table.
   await pool.query(buildAddFirstServedAtColumnSql());
   await pool.query(buildSetFirstServedAtDefaultSql());
   await pool.query(buildPredictionsLookupIndexSql());

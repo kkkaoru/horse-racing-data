@@ -378,7 +378,12 @@ def _score_one_race_etop2(
 
     ranked = rank_race_entries(entries, override_scores)
     return build_prediction_rows(
-        race_id, "jra", ranked, JRA_ETOP2_MODEL_VERSION, _representative_entry(entries)
+        race_id,
+        "jra",
+        ranked,
+        JRA_ETOP2_MODEL_VERSION,
+        _representative_entry(entries),
+        entries=entries,
     )
 
 
@@ -419,7 +424,12 @@ def score_one_race_nar_etop2(
 
     ranked = rank_race_entries(entries, override_scores)
     return build_prediction_rows(
-        race_id, "nar", ranked, NAR_ETOP2_MODEL_VERSION, _representative_entry(entries)
+        race_id,
+        "nar",
+        ranked,
+        NAR_ETOP2_MODEL_VERSION,
+        _representative_entry(entries),
+        entries=entries,
     )
 
 
@@ -738,7 +748,12 @@ def _score_one_race_direct(
     scores = score_matrix(booster, matrix)
     ranked = rank_race_entries(entries, scores)
     return build_prediction_rows(
-        race_id, category, ranked, model_version, _representative_entry(entries)
+        race_id,
+        category,
+        ranked,
+        model_version,
+        _representative_entry(entries),
+        entries=entries,
     )
 
 
@@ -830,7 +845,12 @@ def _score_one_race_nar_blend(
             model_version = model_version_for("nar")
     ranked = rank_race_entries(entries, scores)
     return build_prediction_rows(
-        race_id, "nar", ranked, model_version, _representative_entry(entries)
+        race_id,
+        "nar",
+        ranked,
+        model_version,
+        _representative_entry(entries),
+        entries=entries,
     )
 
 

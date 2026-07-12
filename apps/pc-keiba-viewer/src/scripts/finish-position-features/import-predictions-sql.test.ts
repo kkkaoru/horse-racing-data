@@ -5,6 +5,7 @@ import {
   buildActivateModelSql,
   buildActiveModelsSubclassUniqueIndexSql,
   buildActiveModelsTableDdl,
+  buildAddAuditColumnsSql,
   buildAddFirstServedAtColumnSql,
   buildAddSubclassColumnSql,
   buildBatchInsertSql,
@@ -38,11 +39,11 @@ test("PRIMARY_KEY_COLUMNS lists the seven identifier columns", () => {
   ]);
 });
 
-test("INSERT_COLUMNS contains 18 fields", () => {
-  expect(INSERT_COLUMNS.length).toBe(18);
+test("INSERT_COLUMNS contains 22 fields", () => {
+  expect(INSERT_COLUMNS.length).toBe(22);
 });
 
-test("INSERT_COLUMNS lists the primary key, prediction and subgroup columns in order", () => {
+test("INSERT_COLUMNS lists the primary key, prediction, audit and subgroup columns in order", () => {
   expect(INSERT_COLUMNS).toStrictEqual([
     "model_version",
     "source",
@@ -57,6 +58,10 @@ test("INSERT_COLUMNS lists the primary key, prediction and subgroup columns in o
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    "odds_score",
+    "tansho_odds",
+    "futan_juryo",
+    "weight_diff_from_avg",
     "distance_band",
     "field_size_band",
     "season_band",
@@ -65,7 +70,7 @@ test("INSERT_COLUMNS lists the primary key, prediction and subgroup columns in o
   ]);
 });
 
-test("UPDATABLE_COLUMNS lists the mutable prediction and subgroup columns", () => {
+test("UPDATABLE_COLUMNS lists the mutable prediction, audit and subgroup columns", () => {
   expect(UPDATABLE_COLUMNS).toStrictEqual([
     "umaban",
     "predicted_score",
@@ -73,6 +78,10 @@ test("UPDATABLE_COLUMNS lists the mutable prediction and subgroup columns", () =
     "predicted_top1_prob",
     "predicted_top3_prob",
     "predicted_finish_position",
+    "odds_score",
+    "tansho_odds",
+    "futan_juryo",
+    "weight_diff_from_avg",
     "distance_band",
     "field_size_band",
     "season_band",
@@ -99,6 +108,14 @@ test("buildPredictionsTableDdl declares first_served_at as bare nullable (no inl
   expect(ddl).toContain("first_served_at timestamptz,");
 });
 
+test("buildPredictionsTableDdl declares the four nullable audit columns", () => {
+  const ddl = buildPredictionsTableDdl();
+  expect(ddl).toContain("odds_score numeric,");
+  expect(ddl).toContain("tansho_odds numeric,");
+  expect(ddl).toContain("futan_juryo numeric,");
+  expect(ddl).toContain("weight_diff_from_avg numeric,");
+});
+
 test("buildPredictionsTableDdl declares the five nullable subgroup columns", () => {
   const ddl = buildPredictionsTableDdl();
   expect(ddl).toContain("distance_band text,");
@@ -119,6 +136,16 @@ test("buildAddSubclassColumnSql adds the subclass column idempotently", () => {
   const sql = buildAddSubclassColumnSql();
   expect(sql).toContain("alter table finish_position_active_models");
   expect(sql).toContain("add column if not exists subclass text");
+});
+
+test("buildAddAuditColumnsSql adds all four audit columns idempotently, no default (metadata-only)", () => {
+  const sql = buildAddAuditColumnsSql();
+  expect(sql).toContain("alter table race_finish_position_model_predictions");
+  expect(sql).toContain("add column if not exists odds_score numeric");
+  expect(sql).toContain("add column if not exists tansho_odds numeric");
+  expect(sql).toContain("add column if not exists futan_juryo numeric");
+  expect(sql).toContain("add column if not exists weight_diff_from_avg numeric");
+  expect(sql).not.toContain("default");
 });
 
 test("buildAddFirstServedAtColumnSql adds the bare nullable column idempotently (no volatile default -- metadata-only, no table rewrite)", () => {
@@ -157,10 +184,10 @@ test("buildPredictionsLookupIndexSql covers the race tuple", () => {
 test("buildBatchInsertSql produces one placeholder block per row", () => {
   const sql = buildBatchInsertSql(2);
   expect(sql).toContain(
-    "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18",
+    "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22",
   );
   expect(sql).toContain(
-    "$19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36",
+    "$23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44",
   );
 });
 
@@ -176,6 +203,14 @@ test("buildBatchInsertSql includes the conflict clause", () => {
 test("buildBatchInsertSql never assigns first_served_at, so a re-score/backfill cannot overwrite it (finding #13)", () => {
   const sql = buildBatchInsertSql(1);
   expect(sql).not.toContain("first_served_at");
+});
+
+test("buildBatchInsertSql updates the audit columns on conflict (finding #12)", () => {
+  const sql = buildBatchInsertSql(1);
+  expect(sql).toContain("odds_score = excluded.odds_score");
+  expect(sql).toContain("tansho_odds = excluded.tansho_odds");
+  expect(sql).toContain("futan_juryo = excluded.futan_juryo");
+  expect(sql).toContain("weight_diff_from_avg = excluded.weight_diff_from_avg");
 });
 
 test("buildBatchInsertSql updates the subgroup columns on conflict", () => {
