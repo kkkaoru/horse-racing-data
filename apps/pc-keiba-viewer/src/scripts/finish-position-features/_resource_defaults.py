@@ -23,6 +23,12 @@ head-to-head の pairwise 集計 (pair_history + current_pair_aggregates の mul
 hash join) は CF container でメモリ limit を超えて spill する可能性がある。
 
 CLI 引数 --threads / --memory-limit が与えられればそちらを優先。
+
+env cap (2026-07-12): PIPELINE_MAX_MEMORY_GB / PIPELINE_MAX_THREADS を設定すると、
+上記の自動検出値に対する上限 (MIN-cap) として働く — 未設定なら挙動は完全に不変。
+大容量 Mac (48 GiB) では pressure 未検出時に自動検出が ~24 GiB/16 threads まで
+達し得るため (プロジェクト方針の 6 GiB/4 threads を保証しない)、Mac 側の
+launchd/wrapper スクリプトからこの env を設定することで方針を強制できる。
 """
 from __future__ import annotations
 
@@ -53,6 +59,34 @@ SPILL_TEMP_DIR = "/tmp/duckdb-spill"
 # spill 上限: standard-4 の ephemeral ストレージは ~50 GiB と想定。
 # pair_history (NAR/JRA 全期間) の spill は高くても ~10-20 GiB 程度。
 SPILL_MAX_SIZE = "30GB"
+
+# Optional hard ceilings (2026-07-12, r0711 memory-incident follow-up): on a
+# large-RAM Mac (e.g. 48 GiB), the auto-detect logic above can resolve toward
+# ~24 GiB / 16 threads absent live memory pressure (see default_threads's own
+# docstring) -- it only self-throttles when it OBSERVES pressure at call
+# time, which is not the same guarantee as the project's standing "DuckDB
+# max 6 GiB / 4 threads on Mac" policy (memory: feedback_memory_budget_
+# kernel_panic). These two env vars let an operator/wrapper script IMPOSE
+# that policy as a hard MIN-cap -- they can only LOWER the auto-detected
+# value, never raise it, so leaving them unset (the default everywhere,
+# including the CF container) reproduces today's exact behavior byte-for-
+# byte. The CF container's own cgroup-based detection already yields 6 GiB/
+# 4 threads on standard-4 without needing either var set.
+PIPELINE_MAX_MEMORY_GB_ENV = "PIPELINE_MAX_MEMORY_GB"
+PIPELINE_MAX_THREADS_ENV = "PIPELINE_MAX_THREADS"
+
+
+def _env_positive_int(name: str) -> int | None:
+    """Parse `name` from the environment as a positive int, or None when
+    unset/blank/non-numeric/non-positive -- never raises."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _detect_total_memory_bytes() -> int | None:
@@ -144,41 +178,44 @@ def _detect_macos_pressure_bytes() -> tuple[int, int] | None:
     return available_pages * page_size, compressor_pages * page_size
 
 
-def default_memory_limit() -> str:
+def _auto_memory_limit_gb() -> int:
+    """The auto-detected memory_limit in GB, BEFORE the optional
+    PIPELINE_MAX_MEMORY_GB ceiling below is applied."""
     total = _detect_total_memory_bytes()
     if total is None:
-        return f"{FALLBACK_MEMORY_GB}GB"
+        return FALLBACK_MEMORY_GB
     capacity_gb = max(int((total / (1024**3)) * DEFAULT_MEM_FRACTION), 1)
     pressure = _detect_macos_pressure_bytes()
     if pressure is None:
-        return f"{max(capacity_gb, FALLBACK_MEMORY_GB)}GB"
+        return max(capacity_gb, FALLBACK_MEMORY_GB)
     available_bytes, compressor_bytes = pressure
     available_gb = max(1, int(available_bytes / (1024**3)))
     compressor_ratio = compressor_bytes / total if total > 0 else 0
     if compressor_ratio > 0.08:
-        return f"{max(1, min(capacity_gb, available_gb // 3))}GB"
+        return max(1, min(capacity_gb, available_gb // 3))
     if compressor_ratio > 0.05:
-        return f"{max(2, min(capacity_gb, available_gb // 2))}GB"
-    return f"{max(1, min(max(capacity_gb, FALLBACK_MEMORY_GB), max(1, available_gb - 2)))}GB"
+        return max(2, min(capacity_gb, available_gb // 2))
+    return max(1, min(max(capacity_gb, FALLBACK_MEMORY_GB), max(1, available_gb - 2)))
 
 
-def default_threads() -> int:
-    """Return the DuckDB thread count, capped by memory budget.
+def default_memory_limit() -> str:
+    """Return the DuckDB `memory_limit` string (e.g. "6GB").
 
-    DuckDB's parallel hash join / aggregate operators allocate per-thread
-    intermediate buffers. On memory-constrained environments (e.g. CF container
-    standard-4 = 12 GiB → 6 GiB memory_limit) using all CPUs (12 in Colima)
-    causes the peak to exceed the limit even with disk spill because each
-    thread's active partition must fit in memory before it can spill.
-
-    Cap: floor(memory_limit_gb / GB_PER_THREAD), then shrink further from
-    current macOS load / available memory / compressor pressure when available.
-    On Mac (48 GiB → 24 GiB limit): 24 / 1.5 = 16 threads ≥ cpu_count → no cap.
-    On CF standard-4 (12 GiB → 6 GiB limit): 6 / 1.5 = 4 threads → capped.
+    Applies the optional PIPELINE_MAX_MEMORY_GB env-var ceiling (see that
+    constant's own comment) as a final MIN-cap over the auto-detected value
+    -- unset (the default), this returns exactly what the pre-2026-07-12
+    auto-detect logic always returned.
     """
+    auto_gb = _auto_memory_limit_gb()
+    cap_gb = _env_positive_int(PIPELINE_MAX_MEMORY_GB_ENV)
+    resolved_gb = auto_gb if cap_gb is None else min(auto_gb, cap_gb)
+    return f"{resolved_gb}GB"
+
+
+def _auto_threads(mem_cap: int) -> int:
+    """The auto-detected thread count, BEFORE the optional
+    PIPELINE_MAX_THREADS ceiling below is applied."""
     cpu = os.cpu_count() or FALLBACK_THREADS
-    mem_gb = int(default_memory_limit().rstrip("GB"))
-    mem_cap = max(int(mem_gb / GB_PER_THREAD), 1)
     try:
         load_1m = max(float(os.getloadavg()[0]), 0.0)
     except (AttributeError, OSError):
@@ -195,6 +232,36 @@ def default_threads() -> int:
         if available_ratio < 0.25 or compressor_ratio > 0.05 or load_1m >= cpu * 0.65:
             return min(2, headroom, mem_cap)
     return max(min(cpu, headroom, mem_cap), 1)
+
+
+def default_threads() -> int:
+    """Return the DuckDB thread count, capped by memory budget.
+
+    DuckDB's parallel hash join / aggregate operators allocate per-thread
+    intermediate buffers. On memory-constrained environments (e.g. CF container
+    standard-4 = 12 GiB → 6 GiB memory_limit) using all CPUs (12 in Colima)
+    causes the peak to exceed the limit even with disk spill because each
+    thread's active partition must fit in memory before it can spill.
+
+    Cap: floor(memory_limit_gb / GB_PER_THREAD), then shrink further from
+    current macOS load / available memory / compressor pressure when available.
+    On Mac (48 GiB → 24 GiB limit): 24 / 1.5 = 16 threads ≥ cpu_count → no cap.
+    On CF standard-4 (12 GiB → 6 GiB limit): 6 / 1.5 = 4 threads → capped.
+
+    Finally applies the optional PIPELINE_MAX_THREADS env-var ceiling (see
+    that constant's own comment) as a MIN-cap over the result above --
+    unset (the default), this returns exactly what the pre-2026-07-12
+    auto-detect logic always returned. Note PIPELINE_MAX_MEMORY_GB alone
+    already indirectly caps this too (via `mem_gb` above, itself already
+    ceilinged by default_memory_limit()) -- PIPELINE_MAX_THREADS exists for
+    the independent case (e.g. wanting fewer threads without a lower memory
+    ceiling).
+    """
+    mem_gb = int(default_memory_limit().rstrip("GB"))
+    mem_cap = max(int(mem_gb / GB_PER_THREAD), 1)
+    auto = _auto_threads(mem_cap)
+    thread_cap = _env_positive_int(PIPELINE_MAX_THREADS_ENV)
+    return auto if thread_cap is None else min(auto, thread_cap)
 
 
 def add_resource_args(parser: argparse.ArgumentParser) -> None:
