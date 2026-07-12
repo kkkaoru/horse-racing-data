@@ -131,13 +131,10 @@
     // Event-driven rescore from sync-realtime-data is disabled while the
     // per-race full path is the production ordering authority. Full generation
     // must not compete with post-weight rescore retries for Container capacity.
-    // TEMPORARY 2026-07-12 evening: supervised regeneration of tonight's races
-    // (ban-ei 83-08+, nar/Kochi 54-06+) so they pick up the sim_umaban_zone_
-    // win_rate serve fix without waiting for tomorrow's card. Full generation
-    // has completed for the night and the container is idle, so the capacity-
-    // contention concern above does not apply in this window. Restore to "0"
-    // after 54-10 (tonight's final race, ~21:00) — see task #29.
-    "RESCORE_ENABLED": "1",
+    // Was flipped "1" for a supervised window on 2026-07-12 evening (task #29,
+    // ban-ei 83-08+ / nar Kochi 54-06+ picking up the sim_umaban_zone_win_rate
+    // serve fix) and restored here once that window's races had posted.
+    "RESCORE_ENABLED": "0",
     // R2 bucket for the cached feature parquet GET in the container rescore path.
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
