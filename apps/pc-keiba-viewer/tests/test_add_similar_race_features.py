@@ -665,6 +665,111 @@ def test_stage_target_entities_focused_filters_to_target_races() -> None:
     assert "tr.race_bango = rec.race_bango" in body
 
 
+# ── stage_target_entities (VALUE regression -- serve-time null shusso_tosu) ────
+#
+# MASTER-INVENTORY sim_umaban_zone_win_rate finding: race_entry_corner_features
+# .shusso_tosu is structurally NULL for upcoming/unconfirmed races (populated
+# only once a race settles), so umaban_zone -- and therefore every serving
+# row's sim_umaban_zone_win_rate -- was unconditionally NULL at serve time.
+# The SQL-shape tests above only ever assert on the QUERY STRING, never on
+# real execution output, which is exactly how this regression slipped through
+# undetected. These tests run stage_target_entities against a real in-memory
+# DuckDB connection and assert on the resulting VALUES.
+
+
+def _seed_minimal_pg_schema_null_shusso_tosu(con: duckdb.DuckDBPyConnection) -> None:
+    """One target race, 3 horses, shusso_tosu NULL on every row (the exact
+    upcoming/unconfirmed-race shape that reproduced the bug)."""
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20260712','2026','0712','05','11','horse_1', 1, cast(null as int),
+              'J01', 'T01', 'O01'),
+            ('jra','20260712','2026','0712','05','11','horse_2', 2, cast(null as int),
+              'J02', 'T02', 'O02'),
+            ('jra','20260712','2026','0712','05','11','horse_3', 3, cast(null as int),
+              'J03', 'T03', 'O03')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                ketto_toroku_bango, umaban, shusso_tosu,
+                kishumei_ryakusho, chokyoshimei_ryakusho, banushimei)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as
+        select cast(null as varchar) as ketto_toroku_bango,
+               cast(null as varchar) as ketto_joho_01b,
+               cast(null as varchar) as ketto_joho_05b
+        where false
+        """
+    )
+
+
+def test_stage_target_entities_umaban_zone_non_null_when_shusso_tosu_null() -> None:
+    """Regression: a serving row with NULL shusso_tosu must still get a
+    non-NULL umaban_zone, falling back to the field size counted directly
+    from race_entry_corner_features (same shape as
+    finish_position_features_duckdb.py's shusso_tosu workaround)."""
+    con = duckdb.connect(":memory:")
+    _seed_minimal_pg_schema_null_shusso_tosu(con)
+    subject.stage_target_entities(con, "20000101", "jra")
+    rows = con.execute(
+        "select ketto_toroku_bango, umaban_zone from target_entities order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    by_horse = dict(rows)
+    assert by_horse["horse_1"] is not None
+    assert by_horse["horse_2"] is not None
+    assert by_horse["horse_3"] is not None
+    # field size falls back to 3 (count(*) over the race partition); umaban
+    # 1/2/3 of 3 lands in zones 0/1/2 respectively.
+    assert by_horse["horse_1"] == 0
+    assert by_horse["horse_2"] == 1
+    assert by_horse["horse_3"] == 2
+
+
+def test_stage_target_entities_umaban_zone_still_uses_real_shusso_tosu_when_present() -> None:
+    """A settled race with a real (non-zero) shusso_tosu must use that value,
+    not the count(*) fallback -- e.g. a scratch after the field size was
+    fixed would otherwise silently shrink the effective field."""
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20260712','2026','0712','05','11','horse_1', 1, 8, 'J01', 'T01', 'O01'),
+            ('jra','20260712','2026','0712','05','11','horse_2', 8, 8, 'J02', 'T02', 'O02')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                ketto_toroku_bango, umaban, shusso_tosu,
+                kishumei_ryakusho, chokyoshimei_ryakusho, banushimei)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as
+        select cast(null as varchar) as ketto_toroku_bango,
+               cast(null as varchar) as ketto_joho_01b,
+               cast(null as varchar) as ketto_joho_05b
+        where false
+        """
+    )
+    subject.stage_target_entities(con, "20000101", "jra")
+    rows = con.execute(
+        "select ketto_toroku_bango, umaban_zone from target_entities order by ketto_toroku_bango"
+    ).fetchall()
+    con.close()
+    by_horse = dict(rows)
+    # Only 2 rows are seeded (a scratch), but shusso_tosu=8 is real and must
+    # win over count(*)=2 -- zones computed against a field of 8, not 2.
+    assert by_horse["horse_1"] == 0
+    assert by_horse["horse_2"] == 2
+
+
 # ── append_features_sql ────────────────────────────────────────────────────────
 
 

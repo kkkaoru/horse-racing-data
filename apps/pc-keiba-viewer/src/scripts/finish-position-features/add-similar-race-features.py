@@ -869,27 +869,49 @@ def stage_target_entities(
     con.execute(
         f"""
         create or replace temp table target_entities as
+        with target_raw as (
+          select
+            rec.source, rec.kaisai_nen, rec.kaisai_tsukihi, rec.keibajo_code, rec.race_bango,
+            rec.ketto_toroku_bango,
+            nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
+            nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
+            nullif(trim(rec.banushimei), '') as banushimei,
+            nullif(trim(um.ketto_joho_01b), '') as sire,
+            nullif(trim(um.ketto_joho_05b), '') as damsire,
+            rec.umaban,
+            -- race_entry_corner_features.shusso_tosu is structurally NULL for
+            -- upcoming/unconfirmed races (populated only once a race settles),
+            -- so umaban_zone -- and every serving row's sim_umaban_zone_win_rate
+            -- -- was unconditionally NULL at serve time. Same fallback shape as
+            -- finish_position_features_duckdb.py's shusso_tosu workaround:
+            -- fall back to the field size counted directly from this table.
+            coalesce(
+              nullif(rec.shusso_tosu, 0),
+              count(*) over (
+                partition by rec.source, rec.kaisai_nen, rec.kaisai_tsukihi,
+                  rec.keibajo_code, rec.race_bango
+              )
+            ) as effective_shusso_tosu
+          from pg.race_entry_corner_features rec
+          left join {se_table} um
+            on um.ketto_toroku_bango = rec.ketto_toroku_bango
+          where rec.source = '{source_value}'
+            and rec.race_date >= '{from_date}'
+            and {keibajo_predicate}
+            {target_filter}
+        )
         select
-          rec.source, rec.kaisai_nen, rec.kaisai_tsukihi, rec.keibajo_code, rec.race_bango,
-          rec.ketto_toroku_bango,
-          nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
-          nullif(trim(rec.chokyoshimei_ryakusho), '') as chokyoshimei_ryakusho,
-          nullif(trim(rec.banushimei), '') as banushimei,
-          nullif(trim(um.ketto_joho_01b), '') as sire,
-          nullif(trim(um.ketto_joho_05b), '') as damsire,
+          source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
+          kishumei_ryakusho, chokyoshimei_ryakusho, banushimei, sire, damsire,
           case
-            when rec.umaban is null or rec.shusso_tosu is null or rec.shusso_tosu < 1 then null
-            when cast(rec.umaban as double) <= cast(rec.shusso_tosu as double) / 3.0 then 0
-            when cast(rec.umaban as double) <= 2.0 * cast(rec.shusso_tosu as double) / 3.0 then 1
+            when umaban is null or effective_shusso_tosu is null or effective_shusso_tosu < 1
+              then null
+            when cast(umaban as double) <= cast(effective_shusso_tosu as double) / 3.0 then 0
+            when cast(umaban as double) <= 2.0 * cast(effective_shusso_tosu as double) / 3.0
+              then 1
             else 2
           end as umaban_zone
-        from pg.race_entry_corner_features rec
-        left join {se_table} um
-          on um.ketto_toroku_bango = rec.ketto_toroku_bango
-        where rec.source = '{source_value}'
-          and rec.race_date >= '{from_date}'
-          and {keibajo_predicate}
-          {target_filter}
+        from target_raw
         """
     )
     con.execute(
