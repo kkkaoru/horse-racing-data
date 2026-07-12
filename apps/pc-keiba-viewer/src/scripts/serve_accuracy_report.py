@@ -995,6 +995,29 @@ def validate_date_arg(date_str: str) -> None:
         raise ValueError(f"Invalid date: {date_str!r}") from exc
 
 
+def warn_if_local_pg_default(pg_url: str) -> None:
+    """Print a staleness warning to stderr when the local PG mirror default
+    is in effect (MASTER-INVENTORY finding #15).
+
+    The local mirror has been proven (serving-tax ledger) to silently lag
+    Neon by as much as ~5 weeks for NAR predictions during a replica-push
+    outage, and this script previously gave no signal that it might be
+    reading stale data. This is an interim fix: it only makes the connection
+    target loud, it does not change the default or add env-var/dotenv
+    resolution (that is a separate, deliberately deferred task -- see
+    MASTER-INVENTORY #15 review notes).
+    """
+    if pg_url != DEFAULT_PG_URL:
+        return
+    print(
+        "WARNING: serve_accuracy_report is reading the LOCAL PG mirror "
+        f"({DEFAULT_PG_URL}), not Neon. This mirror can silently lag Neon by "
+        "weeks (MASTER-INVENTORY finding #15). Pass --pg-url "
+        "<neon-connection-string> for authoritative served predictions.",
+        file=sys.stderr,
+    )
+
+
 def run(
     date_str: str,
     category: str,
@@ -1004,6 +1027,7 @@ def run(
 ) -> int:
     """Run the harness. Returns exit code (0=success, 1=no data)."""
     validate_date_arg(date_str)
+    warn_if_local_pg_default(pg_url)
 
     conn: ConnectionLike = cast(ConnectionLike, psycopg.connect(pg_url))
     try:

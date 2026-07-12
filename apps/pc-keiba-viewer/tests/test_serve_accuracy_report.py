@@ -1119,6 +1119,26 @@ def test_query_rs_metrics_jst_display_converts_utc_to_jst() -> None:
     assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
 
 
+# ── warn_if_local_pg_default (MASTER-INVENTORY #15) ────────────────────────────
+
+
+def test_warn_if_local_pg_default_warns_on_the_local_mirror(capsys: CaptureFixture[str]) -> None:
+    subject.warn_if_local_pg_default(subject.DEFAULT_PG_URL)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "WARNING" in captured.err
+    assert "LOCAL PG mirror" in captured.err
+    assert "--pg-url" in captured.err
+
+
+def test_warn_if_local_pg_default_silent_when_pg_url_overridden(
+    capsys: CaptureFixture[str],
+) -> None:
+    subject.warn_if_local_pg_default("postgresql://neon-host/db")
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
 # ── run() integration (mocked) ────────────────────────────────────────────────
 
 
@@ -1134,6 +1154,32 @@ def test_run_returns_1_when_no_data(capsys: CaptureFixture[str]) -> None:
     assert code == 1
     captured = capsys.readouterr()
     assert "No served predictions" in captured.out
+
+
+def test_run_warns_when_pg_url_matches_the_local_default(capsys: CaptureFixture[str]) -> None:
+    with (
+        patch("serve_accuracy_report.query_finish_position_metrics", return_value=None),
+        patch("serve_accuracy_report.query_running_style_metrics", return_value=None),
+        patch("serve_accuracy_report.psycopg") as mock_psycopg,
+    ):
+        mock_conn = MagicMock()
+        mock_psycopg.connect.return_value = mock_conn
+        subject.run("20260614", "jra", subject.DEFAULT_PG_URL)
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+
+
+def test_run_does_not_warn_when_pg_url_is_explicit(capsys: CaptureFixture[str]) -> None:
+    with (
+        patch("serve_accuracy_report.query_finish_position_metrics", return_value=None),
+        patch("serve_accuracy_report.query_running_style_metrics", return_value=None),
+        patch("serve_accuracy_report.psycopg") as mock_psycopg,
+    ):
+        mock_conn = MagicMock()
+        mock_psycopg.connect.return_value = mock_conn
+        subject.run("20260614", "jra", "postgresql://neon-host/db")
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
 def test_run_returns_0_with_data(capsys: CaptureFixture[str]) -> None:
