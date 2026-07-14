@@ -130,6 +130,21 @@ it("rejects invalid or incomplete feature-name contracts", async () => {
   ).rejects.toThrow("missing requested model features");
 });
 
+it("allows field features that inference derives after Catalog loading", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(
+      catalogReturning({
+        featureNames: ["f1"],
+        generation: "raw-iceberg-v1",
+        rows: [validFeatureRow()],
+      }),
+      RACE,
+      ["f1", "field_nige_pressure", "self_speed_index_vs_field_top"],
+    ),
+  ).resolves.toHaveLength(1);
+});
+
 it("rejects invalid rows and cross-race contamination", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   await expect(

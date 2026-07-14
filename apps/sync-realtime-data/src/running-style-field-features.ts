@@ -40,6 +40,29 @@ export interface HorseFieldRow extends FieldFeatures {
   self_speed_index_vs_field_top: number | null;
 }
 
+export const RUNNING_STYLE_DERIVED_FIELD_FEATURE_NAMES: ReadonlySet<string> = new Set([
+  "field_nige_pressure",
+  "field_senkou_pressure",
+  "field_sashi_pressure",
+  "field_oikomi_pressure",
+  "field_pace_index",
+  "field_nige_candidate_count",
+  "field_max_past_corner_1_norm",
+  "field_min_past_corner_1_norm",
+  "field_spread_past_corner_1_norm",
+  "field_has_pure_nige_horse",
+  "field_avg_speed_index",
+  "field_top_speed_index",
+  "field_avg_past_first_3f",
+  "field_avg_past_kohan_3f",
+  "field_avg_career_win_rate",
+  "self_nige_rate_minus_field_avg",
+  "self_speed_index_vs_field_top",
+]);
+
+export const isRunningStyleDerivedFieldFeature = (name: string): boolean =>
+  RUNNING_STYLE_DERIVED_FIELD_FEATURE_NAMES.has(name);
+
 const PACE_NIGE_WEIGHT = 2.0;
 const PACE_SENKOU_WEIGHT = 1.0;
 const PURE_NIGE_THRESHOLD = 0.7;

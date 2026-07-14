@@ -2,6 +2,7 @@
 // catalog Worker exclusively from local-PostgreSQL-sourced raw Iceberg tables.
 
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
+import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 import type { CatalogServiceBinding } from "./types";
 
@@ -127,7 +128,8 @@ export const fetchRunningStyleFeaturesFromCatalog = async (
   ) {
     throw new Error("catalog running-style response has invalid featureNames");
   }
-  if (!featureNames.every((name) => responseFeatureNames.includes(name))) {
+  const rawFeatureNames = featureNames.filter((name) => !isRunningStyleDerivedFieldFeature(name));
+  if (!rawFeatureNames.every((name) => responseFeatureNames.includes(name))) {
     throw new Error("catalog running-style response is missing requested model features");
   }
   if (!Array.isArray(payload.rows)) {

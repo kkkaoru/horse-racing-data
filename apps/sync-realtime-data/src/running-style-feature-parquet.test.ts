@@ -99,6 +99,14 @@ it("validateFeatureCoverage returns zero counts when all features present", () =
   expect(result).toStrictEqual({ missingCells: 0, missingFeatureNames: [] });
 });
 
+it("validateFeatureCoverage excludes features derived from race peers at inference", () => {
+  const result = validateFeatureCoverage(
+    [ROW],
+    ["career_win_rate", "field_nige_pressure", "self_speed_index_vs_field_top"],
+  );
+  expect(result).toStrictEqual({ missingCells: 0, missingFeatureNames: [] });
+});
+
 it("deserializeRunningStyleFeatureParquet leaves physically missing model columns absent", async () => {
   const bytes = await serializeRunningStyleFeatureParquet([ROW], ["career_win_rate"]);
   const buffer = new ArrayBuffer(bytes.byteLength);

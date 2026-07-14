@@ -8,6 +8,7 @@ import { Writable } from "node:stream";
 import { ParquetReader, ParquetSchema, ParquetWriter } from "@dsnp/parquetjs";
 
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
+import { isRunningStyleDerivedFieldFeature } from "./running-style-field-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 
 const METADATA_COLUMNS = [
@@ -227,12 +228,13 @@ export const validateFeatureCoverage = (
   rows: ReadonlyArray<RaceHorseFeatureRow>,
   featureNames: ReadonlyArray<string>,
 ): { missingCells: number; missingFeatureNames: string[] } => {
-  const missingFeatureNames = featureNames.filter((name) =>
+  const rawFeatureNames = featureNames.filter((name) => !isRunningStyleDerivedFieldFeature(name));
+  const missingFeatureNames = rawFeatureNames.filter((name) =>
     rows.every((row) => !(name in row.perHorseFeatures)),
   );
   const missingCells = rows.reduce(
     (count, row) =>
-      count + featureNames.filter((name) => row.perHorseFeatures[name] === undefined).length,
+      count + rawFeatureNames.filter((name) => row.perHorseFeatures[name] === undefined).length,
     0,
   );
   return { missingCells, missingFeatureNames };
