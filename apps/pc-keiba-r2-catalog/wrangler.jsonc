@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pc-keiba-r2-catalog",
+  "main": "src/index.ts",
+  "account_id": "78109ec18c7c85b194b19fb32e3bb149",
+  "compatibility_date": "2026-07-14",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+  "vars": {
+    "R2_SQL_ACCOUNT_ID": "78109ec18c7c85b194b19fb32e3bb149",
+    "R2_SQL_BUCKET_NAME": "pc-keiba-r2-catalog",
+    "R2_SQL_NAMESPACE": "pc_keiba",
+    "CACHE_TTL_SECONDS": "60",
+    "KV_TTL_SECONDS": "600",
+  },
+  // R2_SQL_TOKEN and ADMIN_TOKEN must be configured with `wrangler secret put`.
+  "kv_namespaces": [
+    {
+      "binding": "CATALOG_KV",
+      "id": "357d43e67aa24dcd87e883e3b241d901",
+    },
+  ],
+}
