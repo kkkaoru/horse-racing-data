@@ -52,13 +52,10 @@ cd "$REPO_ROOT"
 # Constants.
 IMAGE_TAG="finish-position-predict-local:split2"
 DOCKERFILE_PATH="apps/finish-position-predict-container/Dockerfile"
-# Host is host.docker.internal (not 127.0.0.1) because local PG was migrated
-# from Docker Compose (inside Colima VM) to Apple Container CLI (outside Colima
-# VM) in commits ac8626f4 / 0fe46d1c / 8887fb52. With Apple-CLI PG bound on the
-# Mac host, the Colima VM's 127.0.0.1 loopback no longer reaches it, so the
-# predict container needs host.docker.internal to traverse Colima → Mac host.
-# Caller may still override via the SOURCE_DATABASE_URL env (see pre-flight 5).
-SOURCE_DATABASE_URL_DEFAULT="postgresql://horse_racing:horse_racing@host.docker.internal:15432/horse_racing"
+# Heavy prediction reads use the Iceberg tables synchronized from local PG to
+# R2 Data Catalog. PostgreSQL is an ingestion source only, not a batch runtime
+# fallback. The container rejects non-Catalog source schemes.
+SOURCE_DATABASE_URL_DEFAULT="r2-catalog://pc-keiba"
 NEON_ENV_FILE="apps/local-postgresql/.env.replica"
 D1_BINDING_NAME="sync-realtime-data"
 WRANGLER_CONFIG="apps/sync-realtime-data/wrangler.jsonc"
@@ -507,7 +504,7 @@ else
   log "WARN: could not parse host from NEON_DATABASE_URL — skipping DNS prewarm"
 fi
 
-# Pre-flight 7: SOURCE_DATABASE_URL — env override > default local Colima PG.
+# Pre-flight 7: SOURCE_DATABASE_URL — env override > R2 Catalog default.
 SRC="${SOURCE_DATABASE_URL:-$SOURCE_DATABASE_URL_DEFAULT}"
 log "SOURCE_DATABASE_URL=$(printf '%s' "$SRC" | mask)"
 
@@ -550,11 +547,8 @@ else
   fi
 fi
 
-# Pre-flight 10: optional R2 credentials so the container's add-pacestyle layer
-# can read the per-day running-style Parquet directly from
-# pc-keiba-features-archive instead of ATTACHing to Neon. Source the repo-root
-# .env if it exists; un-quote single-quoted values. Falls back to PG when any
-# of the three keys are unset / empty so RS_SOURCE=auto still works.
+# Pre-flight 10: R2 credentials for Catalog source reads and the existing
+# running-style R2 object. Source the repo-root .env without logging secrets.
 ROOT_ENV_FILE="$REPO_ROOT/.env"
 if [ -f "$ROOT_ENV_FILE" ]; then
   # shellcheck disable=SC2046
@@ -567,19 +561,21 @@ R2_ACCOUNT_ID="${R2_ACCOUNT_ID:-}"
 R2_ACCESS_KEY_ID="${R2_ACCESS_KEY_ID:-}"
 R2_SECRET_ACCESS_KEY="${R2_SECRET_ACCESS_KEY:-}"
 R2_BUCKET="${R2_BUCKET:-pc-keiba-features-archive}"
+R2_CATALOG_TOKEN="${R2_CATALOG_TOKEN:-${CLOUDFLARE_DEBUG_TOKEN:-}}"
+R2_CATALOG_URI="${R2_CATALOG_URI:-https://catalog.cloudflarestorage.com/78109ec18c7c85b194b19fb32e3bb149/pc-keiba-r2-catalog}"
+R2_CATALOG_WAREHOUSE="${R2_CATALOG_WAREHOUSE:-78109ec18c7c85b194b19fb32e3bb149_pc-keiba-r2-catalog}"
+if [ "$SRC" = "r2-catalog://pc-keiba" ] && [ -z "$R2_CATALOG_TOKEN" ]; then
+  fail "R2_CATALOG_TOKEN (or CLOUDFLARE_DEBUG_TOKEN) is required for Catalog reads"
+fi
 if [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_ACCESS_KEY_ID" ] && [ -n "$R2_SECRET_ACCESS_KEY" ]; then
-  RS_SOURCE="${RS_SOURCE:-auto}"
+  RS_SOURCE="${RS_SOURCE:-r2}"
   log "R2 credentials detected — RS_SOURCE=$RS_SOURCE R2_BUCKET=$R2_BUCKET"
 else
-  RS_SOURCE="pg"
-  log "R2 credentials missing — forcing RS_SOURCE=pg (Neon ATTACH fallback)"
+  fail "R2 object credentials are required; PostgreSQL running-style fallback is disabled"
 fi
 
-# Run the prediction container. --network=host keeps the Colima VM's networking
-# stack shared with the container; the SOURCE_DATABASE_URL default targets
-# host.docker.internal:15432 (the Mac host) because local PG now runs under
-# Apple Container CLI on the host (post-migration commits ac8626f4 / 0fe46d1c /
-# 8887fb52). --rm so the container is removed after exit.
+# Run the prediction container. --network=host provides outbound access to R2
+# Catalog and Neon. --rm removes the container after exit.
 #
 # NAR_TRANSFORMER_BLEND_ENABLED default (2026-07-11): commit 2e6c8c4c
 # (2026-07-03) enabled the NAR Set-Transformer blend here with default "1",
@@ -611,6 +607,9 @@ else
     -e R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
     -e R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
     -e R2_BUCKET="$R2_BUCKET" \
+    -e R2_CATALOG_TOKEN="$R2_CATALOG_TOKEN" \
+    -e R2_CATALOG_URI="$R2_CATALOG_URI" \
+    -e R2_CATALOG_WAREHOUSE="$R2_CATALOG_WAREHOUSE" \
     -e PREDICT_SERVE_MODE="" \
     ${PREDICT_CATEGORIES:+-e PREDICT_CATEGORIES="$PREDICT_CATEGORIES"} \
     "$IMAGE_TAG"

@@ -44,6 +44,37 @@ test("buildPredictStartOptions passes the Neon secret as an env var", () => {
   expect(options.envVars.NEON_DATABASE_URL).toBe("postgres://secret-host/db");
 });
 
+test("buildPredictStartOptions keeps Neon as output and passes Catalog as feature source", () => {
+  const options = buildPredictStartOptions({
+    category: "nar",
+    env: makeEnv({
+      NEON_DATABASE_URL: "postgres://write-output/db",
+      R2_CATALOG_TOKEN: "catalog-token",
+      R2_CATALOG_URI: "https://catalog.example.test/bucket",
+      R2_CATALOG_WAREHOUSE: "account_bucket",
+      SOURCE_DATABASE_URL: "r2-catalog://pc-keiba",
+    }),
+    runDate: "2026-07-15",
+    runYmd: "20260715",
+  });
+  expect(options.envVars).toMatchObject({
+    NEON_DATABASE_URL: "postgres://write-output/db",
+    R2_CATALOG_TOKEN: "catalog-token",
+    R2_CATALOG_URI: "https://catalog.example.test/bucket",
+    R2_CATALOG_WAREHOUSE: "account_bucket",
+    SOURCE_DATABASE_URL: "r2-catalog://pc-keiba",
+  });
+});
+
+test("buildPredictStartOptions fails closed with an empty Catalog source", () => {
+  const options = buildPredictStartOptions({
+    env: makeEnv({ SOURCE_DATABASE_URL: undefined }),
+    runDate: "2026-07-15",
+    runYmd: "20260715",
+  });
+  expect(options.envVars.SOURCE_DATABASE_URL).toBe("");
+});
+
 test("buildPredictStartOptions passes the run window env vars", () => {
   const options = buildPredictStartOptions({
     env: makeEnv({ PREDICT_DAYS_AHEAD: "3" }),

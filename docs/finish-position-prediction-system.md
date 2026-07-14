@@ -1,6 +1,6 @@
 # 着順・脚質予測システム 仕様書
 
-最終更新: 2026-07-08
+最終更新: 2026-07-15
 
 本書は、競馬の着順予測システム（finish position prediction system）と、その前段で着順特徴量を供給する脚質予測システム（running-style prediction system）の全体仕様を記述する。学習基盤・特徴量パイプライン・本番推論基盤（Cloudflare Worker / Cloudflare Container）・評価方法・アンチパターンを網羅する。
 
@@ -14,6 +14,11 @@
 - **本番生成の authority は Cloudflare 側**である。Cloudflare Cron / Queue / Worker / Container が feature generation → running-style generation → finish-position full generation をレース単位で実行する。
 - **ローカル常駐プロセスは本番構成要素ではない**。手元の scheduler、shell wrapper、Docker process、trainer process を本番 trigger / fallback / ordering dependency にしてはならない。
 - **本番の着順予測は Cloudflare Container 上でレース単位（per-race）で実行**する。
+- **重い読み込みの正本は R2 Data Catalog** とする。local PostgreSQL は raw
+  Iceberg table の唯一の転送元であり、本番 batch の読み込み先ではない。
+  Neon / Hyperdrive は `pc-keiba-viewer` の軽量表示と予測結果 projection に限定する。
+- 既存の加工済み特徴量 Parquet、D1 feature row、Neon は Catalog の seed / repair /
+  fallback に使用しない。Catalog 障害時は feature generation を失敗させる。
 - **本番の脚質予測は `sync-realtime-data` Worker 上でレース単位（per-race）で実行**し、完了後に `FINISH_POSITION_PREDICT_QUEUE` へ focused per-race full message を enqueue する。service binding / API は queue binding が無い環境の fallback に限る。
 - 対象は 3 カテゴリ。各カテゴリは独立したモデル・学習窓・アーキテクチャを持つ。
   - **JRA（中央競馬）**
@@ -204,14 +209,15 @@ JRA / NAR の deployed model が 4 つの **within-race leak 列**（`target_cor
 
 ## 3. 特徴量パイプライン（DuckDB feature builder）
 
-特徴量は DuckDB ベースの builder が PostgreSQL から構築する。本番 Container は Neon / production PostgreSQL を読む。local PG は local 学習・検証・artifact 生成・明示的な operator repair 用であり、本番 feature generation の依存先ではない。
+特徴量は DuckDB ベースの builder が raw Iceberg table から構築する。本番 Container は R2 Data Catalog を read-only attach し、加工済み特徴量 table や Neon を入力にしない。raw Iceberg の唯一の転送元は local PostgreSQL である。local PG の直接参照はオフライン学習・検証に限定し、本番 batch の fallback にはしない。
 
 - メインビルダー: `apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py`
-- DuckDB の postgres extension 経由で PostgreSQL を読む（Container 内は native libpq、Hyperdrive 不要）。
+- 本番は DuckDB の Iceberg extension で Catalog を読む。Catalog 障害時は fail-closed とし、PostgreSQL / Hyperdrive / D1 へ切り替えない。
 
 ```mermaid
 flowchart LR
-    PG[("PostgreSQL<br/>production Neon<br/>local PG = training/repair only")]
+    PG[("local PostgreSQL<br/>raw transfer authority")]
+    CAT[("R2 Data Catalog<br/>raw Iceberg tables")]
     subgraph DUCK["DuckDB feature builder"]
         BASE["base build<br/>se / um / ra テーブル走査"]
         L1["class features"]
@@ -226,7 +232,8 @@ flowchart LR
     end
     PARQUET["per-race Parquet<br/>（R2）"]
 
-    PG -->|"postgres extension"| BASE
+    PG -->|"raw-only publication"| CAT
+    CAT -->|"Iceberg read-only attach"| BASE
     L8 --> PARQUET
 ```
 
@@ -236,12 +243,9 @@ Container のレース単位予測のため、`--target-race keibajo_code:race_b
 
 履歴 join は `h.race_date < t.race_date` を用いるため、対象レースが未確定（未走）の段階でも window が計算可能で、対象レースの結果が leak しない（`finish_position_features_duckdb.py:219`）。
 
-### 3.2 エンティティフィルタ（Neon max_stack_depth 対策）
+### 3.2 Catalog scan の限定
 
-- **se / um テーブル（馬単位）**: `postgres_query()` を用い、`ketto_toroku_bango`（血統登録番号）による horse-level の `IN` フィルタを push down する（`finish_position_features_duckdb.py:441`, `:490`）。
-- **ra テーブル（レース単位）**: エンティティフィルタを掛けない。compound tuple の `IN` は Neon の `max_stack_depth` を超過するため。
-
-この非対称性は意図的であり、Neon のスタック制約を回避しつつ馬単位の履歴走査を限定する設計である。
+対象日・source・会場・レース番号を Iceberg partition / column predicate として適用する。Container の builder SQL は `pg.*` view を参照するが、production の `pg` schema は raw Catalog table からその場で合成される互換 view であり、PostgreSQL接続ではない。加工済み `race_entry_corner_features` の Catalog table は作成・参照しない。
 
 ### 3.3 レイヤチェーンと特徴量数
 
@@ -257,9 +261,9 @@ similar-race 特徴量（`sim_*`、19 列）は JRA / Ban-ei で ADOPT（v9-sim�
 
 ### 3.4 脚質予測の特徴量契約
 
-脚質予測の per-race feature builder は `apps/sync-realtime-data/src/running-style-feature-sql.ts` / `running-style-feature-parquet.ts` が担う。基本方針は着順特徴量と揃え、`race_entry_corner_features` と過去履歴から馬・騎手・距離・コーナー・ペース・馬体重などを構築する。ただし target は脚質専用の `target_running_style_class`（`corner1_norm` 由来）であり、実際に scoring へ渡す列は選択された LightGBM model の `feature_names` に従う。
+脚質予測の per-race feature builder は `pc-keiba-r2-catalog` Worker の固定 R2 SQL が担う。raw `jvd_*` / `nvd_*` Iceberg table から馬・騎手・距離・コーナー・ペース・馬体重などを構築し、加工済み特徴量 table は入力にしない。ただし target は脚質専用の `target_running_style_class`（`corner1_norm` 由来）であり、実際に scoring へ渡す列は選択された LightGBM model の `feature_names` に従う。
 
-脚質 feature Parquet は `running-style/features-parquet/{source}/{YYYYMMDD}/{raceKey}.parquet` に置く。Worker は R2 を先に読み、miss の場合だけ PostgreSQL / Hyperdrive から再構築する。
+脚質 feature Parquet は Catalog 世代を含む versioned key に置く。cache miss 時は Catalog Worker から再構築し、PostgreSQL / Hyperdrive / D1 / 旧Parquetへ fallback しない。
 
 routing と後段着順生成のため、脚質 feature rows は以下の metadata を必ず保持する。
 
@@ -305,7 +309,7 @@ flowchart LR
     PLAN["running-style-cron<br/>planRunningStylePredictionsForDate"]
     Q["RUNNING_STYLE_JOBS"]
     H["running-style-queue<br/>handleRunningStylePredictionJob"]
-    FEAT["R2 feature Parquet<br/>or PostgreSQL rebuild"]
+    FEAT["pc-keiba-r2-catalog<br/>raw R2 SQL"]
     MODEL["R2 RUNNING_STYLE_MODELS<br/>flatbin LightGBM + optional calibrators"]
     D1RS[("D1<br/>race_running_styles")]
     NEONRS[("Neon<br/>race_running_style_model_predictions")]
@@ -325,7 +329,7 @@ flowchart LR
     H -.->|"queue binding absent"| FPF
 ```
 
-`planRunningStylePredictionsForDate()` は D1 の race list と既存 prediction count を見て未完了 race を enqueue する。planner 自体が corner feature の存在を hard gate するのではなく、queue handler が feature Parquet を R2 から読み、miss 時に PostgreSQL / Hyperdrive から再構築する。calibrator は R2 にあれば適用し、読めない場合は uncalibrated prediction に fallback する。
+`planRunningStylePredictionsForDate()` は bounded な race list と既存 prediction count を見て未完了 race を enqueue する。queue handler は versioned feature Parquet を読み、miss 時は Catalog Worker の raw R2 SQL から再構築する。Catalog 取得失敗は job failure とし、PostgreSQL / Hyperdrive / D1 feature row へ fallback しない。calibrator は R2 にあれば適用し、読めない場合は uncalibrated prediction に fallback する。
 
 ### 4.3 出力
 

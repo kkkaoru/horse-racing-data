@@ -120,6 +120,14 @@ PREDICT_DEBUG_LOGS_ENV: Final[str] = "PREDICT_DEBUG_LOGS"
 R2_FEAT_CACHE_PREFIX: Final[str] = "feat-cache"
 """R2 object key prefix for feature-parquet cache objects."""
 
+R2_RAW_CATALOG_GENERATION: Final[str] = "catalog-v1"
+"""Cache generation built exclusively from the production raw Iceberg Catalog.
+
+The prior unversioned keys may contain feature rows derived from Neon. Keeping
+the source generation in every runtime cache key makes those objects impossible
+to load through the current day-base or rescore paths.
+"""
+
 FOCUSED_FULL_ACCEPTED_STATUS: Final[str] = "accepted"
 """``build_result_line`` ``status`` value for a focused per-race ``mode=full``
 request whose same-race pipeline is already in flight.
@@ -616,7 +624,7 @@ class R2Config:
 def build_r2_feat_cache_key(category: str, run_date: str) -> str:
     """Return the R2 object key for a category+date feature-parquet cache.
 
-    Key format: ``feat-cache/{category}/{runDate}/features.parquet``
+    Key format: ``feat-cache/catalog-v1/{category}/{runDate}/features.parquet``
 
     This matches the per-race R2 Parquet layout used elsewhere in the repo
     (``feedback_r2_parquet_over_d1``).  The key is deterministic so repeated
@@ -626,7 +634,9 @@ def build_r2_feat_cache_key(category: str, run_date: str) -> str:
         category: One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
         run_date: YYYYMMDD string (e.g. ``"20260619"``).
     """
-    return f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/features.parquet"
+    return (
+        f"{R2_FEAT_CACHE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/features.parquet"
+    )
 
 
 def build_r2_per_race_feat_cache_key(
@@ -634,10 +644,12 @@ def build_r2_per_race_feat_cache_key(
 ) -> str:
     """Return the R2 object key for a per-race feature-parquet cache.
 
-    Key format: ``feat-cache/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet``
+    Key format: ``feat-cache/catalog-v1/{category}/{runDate}/``
+    ``{keibajoCode}/{raceBango}/features.parquet``
     """
     return (
-        f"{R2_FEAT_CACHE_PREFIX}/{category}/{run_date}/{keibajo_code}/{race_bango}/features.parquet"
+        f"{R2_FEAT_CACHE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/"
+        f"{keibajo_code}/{race_bango}/features.parquet"
     )
 
 
@@ -659,7 +671,7 @@ corrupting the feature vector without raising."""
 def build_r2_day_base_key(category: str, run_date: str) -> str:
     """Return the R2 object key for a category+day day-base feature-parquet cache.
 
-    Key format: ``feat-daybase/{category}/{runDate}/features.parquet``
+    Key format: ``feat-daybase/catalog-v1/{category}/{runDate}/features.parquet``
 
     This is the whole-day DAY_CHAIN-only cache object written once per
     category+day (see ``pipeline_runner.build_day_base``) and read by every
@@ -671,7 +683,9 @@ def build_r2_day_base_key(category: str, run_date: str) -> str:
         category: One of ``"jra"``, ``"nar"``, ``"ban-ei"``.
         run_date: YYYYMMDD string (e.g. ``"20260712"``).
     """
-    return f"{R2_DAY_BASE_PREFIX}/{category}/{run_date}/features.parquet"
+    return (
+        f"{R2_DAY_BASE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/features.parquet"
+    )
 
 
 # ---------------------------------------------------------------------------

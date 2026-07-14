@@ -1,7 +1,7 @@
 {
   "include": ["src", "tests"],
   "exclude": ["**/node_modules", "**/tmp", "**/__pycache__"],
-  "extraPaths": ["src"],
+  "extraPaths": ["src", "../pc-keiba-viewer/src/scripts/finish-position-features"],
   "pythonVersion": "3.12",
   "typeCheckingMode": "strict",
   "reportAny": "none",

@@ -48,6 +48,7 @@ from predict_lib.serve import (
     PerRaceParquetPayloadFn,
     PredictCategoryFn,
     PredictParams,
+    R2Config,
     build_focused_full_race_key,
     iter_predict_chunks,
     parse_predict_params,
@@ -67,6 +68,7 @@ _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
 _BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
 _MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
 _PREWARM_PARQUET_PAYLOAD_ATTR = "_prewarm_parquet_payload"
+_ENSURE_CACHED_PARQUET_ATTR = "_ensure_cached_parquet"
 _load_model_metadata = cast(
     Callable[[Path, Category], Sequence[str]],
     getattr(predict_upcoming, _LOAD_MODEL_METADATA_ATTR),
@@ -86,6 +88,10 @@ _make_prewarm_fn = cast(
 _prewarm_parquet_payload = cast(
     Callable[[str, str, Path], tuple[str, str] | None],
     getattr(predict_upcoming, _PREWARM_PARQUET_PAYLOAD_ATTR),
+)
+_ensure_cached_parquet = cast(
+    Callable[[Path, str, str, R2Config | None], None],
+    getattr(predict_upcoming, _ENSURE_CACHED_PARQUET_ATTR),
 )
 
 # ---------------------------------------------------------------------------
@@ -1070,7 +1076,25 @@ def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) ->
     import base64
 
     assert base64.b64decode(encoded) == b"PARQUET-DATA"
-    assert key == "feat-daybase/jra/20260712/features.parquet"
+    assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+
+
+def test_ensure_cached_parquet_fetches_only_catalog_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    captured_keys: list[str] = []
+
+    def fake_r2_get_parquet(_r2: R2Config, object_key: str, _dest: Path) -> bool:
+        captured_keys.append(object_key)
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_r2_get_parquet)
+
+    _ensure_cached_parquet(final_dir, "jra", "20260712", r2)
+
+    assert captured_keys == ["feat-cache/catalog-v1/jra/20260712/features.parquet"]
 
 
 def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) -> None:
@@ -2068,7 +2092,7 @@ def test_populate_focused_full_cache_stores_payload_for_this_race(
     payload = store.pop(build_focused_full_race_key(params))
     assert payload is not None
     assert payload.parquet_base64 == base64.b64encode(b"not-real-parquet-bytes").decode("ascii")
-    assert payload.parquet_key == "feat-cache/jra/20260712/features.parquet"
+    assert payload.parquet_key == "feat-cache/catalog-v1/jra/20260712/features.parquet"
     # The dummy bytes are not real parquet, so the DuckDB race_id split fails
     # and gracefully yields None -- a missing per-race cache must never fail
     # the (already-successful) whole-day payload above.

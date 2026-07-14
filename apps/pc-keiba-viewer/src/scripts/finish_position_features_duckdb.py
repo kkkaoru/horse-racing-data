@@ -11,6 +11,7 @@ Run with:
     --category jra --from-date 20160101 --to-date 20251231 \
     --output-dir tmp/finish-position-features-parquet
 """
+
 from __future__ import annotations
 
 import argparse
@@ -26,13 +27,17 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import TextIO, TypedDict, final
+from typing import Protocol, TextIO, TypedDict, final
 
 import duckdb
 
 DEFAULT_OUTPUT_DIR = Path("tmp/finish-position-features-parquet")
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@localhost:5432/horse_racing"
 sys.path.insert(0, str(Path(__file__).parent / "finish-position-features"))
+
+
+class DuckDBConnectionLike(Protocol):
+    def execute(self, query: str) -> object: ...
 
 
 def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
@@ -401,10 +406,12 @@ def category_expression(category: str) -> str:
     return "case when source='jra' then 'jra' when keibajo_code='83' then 'ban-ei' else 'nar' end"
 
 
-def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
-    con.execute("INSTALL postgres")
-    con.execute("LOAD postgres")
-    con.execute(f"ATTACH '{pg_url}' AS pg (TYPE postgres, READ_ONLY)")
+def install_and_attach_pg(con: DuckDBConnectionLike, pg_url: str) -> None:
+    from _catalog_attach import attach_source_catalog
+
+    attach_source_catalog(con, pg_url)
+    if pg_url.startswith("r2-catalog://"):
+        return
     for stmt in (
         "SET pg_experimental_filter_pushdown = true",
         "SET pg_use_binary_copy = true",
@@ -460,7 +467,9 @@ def signed_zogen_sa_sql(fugo_expr: str, sa_expr: str) -> str:
     )
 
 
-def _rec_select_from_corner_features(history_start: str, to_date: str, entity_filter: str = "") -> str:
+def _rec_select_from_corner_features(
+    history_start: str, to_date: str, entity_filter: str = ""
+) -> str:
     """Build rec SELECT from race_entry_corner_features (no bataiju enrichment).
 
     bataiju lookup is done separately via stage_se_table / weight_cte to avoid
@@ -469,7 +478,7 @@ def _rec_select_from_corner_features(history_start: str, to_date: str, entity_fi
     where_clause = f"race_date between '{history_start}' and '{to_date}'{entity_filter}"
     if entity_filter:
         from_source = (
-            f"postgres_query('pg', $PQ$"
+            f"("
             f" SELECT source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
             f" ketto_toroku_bango, umaban, kishumei_ryakusho, chokyoshimei_ryakusho,"
             f" kyori, track_code, grade_code, kyoso_joken_code, shusso_tosu,"
@@ -477,8 +486,8 @@ def _rec_select_from_corner_features(history_start: str, to_date: str, entity_fi
             f" corner1_norm, corner2_norm, corner3_norm, corner4_norm,"
             f" babajotai_code_shiba, babajotai_code_dirt,"
             f" tansho_ninkijun, tansho_odds, seibetsu_code, barei"
-            f" FROM race_entry_corner_features WHERE {where_clause}"
-            f" $PQ$)"
+            f" FROM pg.race_entry_corner_features WHERE {where_clause}"
+            f")"
         )
     else:
         from_source = "pg.race_entry_corner_features"
@@ -509,7 +518,9 @@ def _rec_select_from_corner_features(history_start: str, to_date: str, entity_fi
     """
 
 
-def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str = "") -> str:
+def _rec_select_from_ban_ei(
+    history_start: str, to_date: str, entity_filter: str = ""
+) -> str:
     where_clause = (
         f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
         f" and se.kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'"
@@ -518,7 +529,7 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str
     )
     if entity_filter:
         from_source = (
-            f"postgres_query('pg', $PQ$"
+            f"("
             f" SELECT 'nar' as source,"
             f" se.kaisai_nen || se.kaisai_tsukihi as race_date,"
             f" se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code, se.race_bango,"
@@ -531,13 +542,13 @@ def _rec_select_from_ban_ei(history_start: str, to_date: str, entity_filter: str
             f" ra.babajotai_code_shiba, ra.babajotai_code_dirt,"
             f" se.tansho_ninkijun, se.tansho_odds,"
             f" se.bataiju, se.seibetsu_code, se.barei"
-            f" FROM nvd_se se JOIN nvd_ra ra"
+            f" FROM pg.nvd_se se JOIN pg.nvd_ra ra"
             f" ON ra.kaisai_nen = se.kaisai_nen"
             f" AND ra.kaisai_tsukihi = se.kaisai_tsukihi"
             f" AND ra.keibajo_code = se.keibajo_code"
             f" AND ra.race_bango = se.race_bango"
             f" WHERE {where_clause}"
-            f" $PQ$)"
+            f")"
         )
         return f"""
     select
@@ -761,9 +772,15 @@ def upcoming_target_union_sql(
             f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'",
             target_race,
         )
-    jra_sql = upcoming_target_union_sql(CATEGORY_JRA, target_from, target_to, target_race)
-    nar_sql = upcoming_target_union_sql(CATEGORY_NAR, target_from, target_to, target_race)
-    ban_ei_sql = upcoming_target_union_sql(CATEGORY_BAN_EI, target_from, target_to, target_race)
+    jra_sql = upcoming_target_union_sql(
+        CATEGORY_JRA, target_from, target_to, target_race
+    )
+    nar_sql = upcoming_target_union_sql(
+        CATEGORY_NAR, target_from, target_to, target_race
+    )
+    ban_ei_sql = upcoming_target_union_sql(
+        CATEGORY_BAN_EI, target_from, target_to, target_race
+    )
     return f"{jra_sql}\nunion all\n{nar_sql}\nunion all\n{ban_ei_sql}"
 
 
@@ -778,13 +795,17 @@ def build_rec_select_sql(
     if category == CATEGORY_BAN_EI:
         base = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
     else:
-        corner_sql = _rec_select_from_corner_features(history_start, to_date, entity_filter)
+        corner_sql = _rec_select_from_corner_features(
+            history_start, to_date, entity_filter
+        )
         ban_ei_sql = _rec_select_from_ban_ei(history_start, to_date, entity_filter)
         base = f"{corner_sql}\nunion all\n{ban_ei_sql}"
     if upcoming_window is None:
         return base
     target_from, target_to = upcoming_window
-    upcoming_sql = upcoming_target_union_sql(category, target_from, target_to, target_race)
+    upcoming_sql = upcoming_target_union_sql(
+        category, target_from, target_to, target_race
+    )
     # The direct source rows (priority 1) overlap the corner-feature / ban-ei
     # rows (priority 0) on the target window. Keep the corner-feature row when it
     # exists (it carries corner_* signals); fall back to the direct source row
@@ -812,7 +833,9 @@ def build_target_race_entities_sql(
     target_race: tuple[str, str],
 ) -> str:
     if upcoming_window is not None:
-        target_select = upcoming_target_union_sql(category, target_from, target_to, target_race)
+        target_select = upcoming_target_union_sql(
+            category, target_from, target_to, target_race
+        )
     else:
         target_select = build_rec_select_sql(
             category,
@@ -861,7 +884,9 @@ def stage_target_race_entities(
     )
 
 
-def _distinct_non_empty_values(con: duckdb.DuckDBPyConnection, table: str, column: str) -> list[str]:
+def _distinct_non_empty_values(
+    con: duckdb.DuckDBPyConnection, table: str, column: str
+) -> list[str]:
     rows = con.execute(
         f"""
         select distinct cast({column} as varchar) as value
@@ -894,8 +919,12 @@ def _build_rec_entity_filter_from_target_race_entities(
     return f" and ({' or '.join(filters)})"
 
 
-def _build_horse_filter_from_target_race_entities(con: duckdb.DuckDBPyConnection) -> str:
-    values = _distinct_non_empty_values(con, "target_race_entities", "ketto_toroku_bango")
+def _build_horse_filter_from_target_race_entities(
+    con: duckdb.DuckDBPyConnection,
+) -> str:
+    values = _distinct_non_empty_values(
+        con, "target_race_entities", "ketto_toroku_bango"
+    )
     if not values:
         return " and false"
     return f" and {_in_filter('ketto_toroku_bango', values)}"
@@ -942,10 +971,18 @@ def stage_rec_table(
     )
     log_event("source.rec.indexes", "start", 0.0)
     started = perf_counter()
-    con.execute("create index rec_horse_date on rec (source, ketto_toroku_bango, race_date)")
-    con.execute("create index rec_jockey_date on rec (source, kishumei_ryakusho, race_date)")
-    con.execute("create index rec_trainer_date on rec (source, chokyoshimei_ryakusho, race_date)")
-    con.execute("create index rec_keibajo_date on rec (source, keibajo_code, race_date)")
+    con.execute(
+        "create index rec_horse_date on rec (source, ketto_toroku_bango, race_date)"
+    )
+    con.execute(
+        "create index rec_jockey_date on rec (source, kishumei_ryakusho, race_date)"
+    )
+    con.execute(
+        "create index rec_trainer_date on rec (source, chokyoshimei_ryakusho, race_date)"
+    )
+    con.execute(
+        "create index rec_keibajo_date on rec (source, keibajo_code, race_date)"
+    )
     log_event("source.rec.indexes", "done", perf_counter() - started)
 
 
@@ -969,11 +1006,11 @@ def stage_se_table(
     )
     if entity_filter:
         from_source = (
-            f"postgres_query('pg', $PQ$"
+            f"("
             f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
             f" ketto_toroku_bango, bataiju, zogen_sa, zogen_fugo"
-            f" FROM {pg_table} WHERE {where_clause}"
-            f" $PQ$)"
+            f" FROM pg.{pg_table} WHERE {where_clause}"
+            f")"
         )
     else:
         from_source = f"pg.{pg_table}"
@@ -1011,10 +1048,10 @@ def stage_um_table(
     if entity_filter:
         where_clause = f"true{entity_filter}"
         from_source = (
-            f"postgres_query('pg', $PQ$"
+            f"("
             f" SELECT ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b"
-            f" FROM {pg_table} WHERE {where_clause}"
-            f" $PQ$)"
+            f" FROM pg.{pg_table} WHERE {where_clause}"
+            f")"
         )
         run_staged_sql(
             con,
@@ -1057,11 +1094,11 @@ def stage_ra_table(
     )
     if entity_filter:
         from_source = (
-            f"postgres_query('pg', $PQ$"
+            f"("
             f" SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,"
             f" tenko_code, kyoso_joken_meisho"
-            f" FROM {pg_table} WHERE {where_clause}"
-            f" $PQ$)"
+            f" FROM pg.{pg_table} WHERE {where_clause}"
+            f")"
         )
     else:
         from_source = f"pg.{pg_table}"
@@ -1156,7 +1193,9 @@ def create_empty_realtime_odds_stub(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def _log_source_config(category: str, history_start: str, from_date: str, to_date: str) -> None:
+def _log_source_config(
+    category: str, history_start: str, from_date: str, to_date: str
+) -> None:
     emit_log_line(
         json.dumps(
             {
@@ -1248,25 +1287,47 @@ def stage_source_tables(
         race_filter = target_race_table_filter_sql(target_race)
     nar_keibajo_filter = BAN_EI_KEIBAJO_CODE if category == CATEGORY_BAN_EI else None
     stage_se_table(
-        con, "source.nar_se", "nar_se", "nvd_se", history_start, to_date, nar_keibajo_filter,
+        con,
+        "source.nar_se",
+        "nar_se",
+        "nvd_se",
+        history_start,
+        to_date,
+        nar_keibajo_filter,
         entity_filter=horse_filter,
     )
     stage_um_table(con, "source.nar_um", "nar_um", "nvd_um", entity_filter=horse_filter)
     stage_um_table(con, "source.nar_nu", "nar_nu", "nvd_nu", entity_filter=horse_filter)
     stage_ra_table(
-        con, "source.nar_ra", "nar_ra", "nvd_ra", from_date, to_date, nar_keibajo_filter,
+        con,
+        "source.nar_ra",
+        "nar_ra",
+        "nvd_ra",
+        from_date,
+        to_date,
+        nar_keibajo_filter,
         entity_filter=race_filter,
     )
     if category == CATEGORY_BAN_EI:
         _stage_empty_jra_stubs(con)
         return
     stage_se_table(
-        con, "source.jra_se", "jra_se", "jvd_se", history_start, to_date,
+        con,
+        "source.jra_se",
+        "jra_se",
+        "jvd_se",
+        history_start,
+        to_date,
         entity_filter=horse_filter,
     )
     stage_um_table(con, "source.jra_um", "jra_um", "jvd_um", entity_filter=horse_filter)
     stage_ra_table(
-        con, "source.jra_ra", "jra_ra", "jvd_ra", from_date, to_date,
+        con,
+        "source.jra_ra",
+        "jra_ra",
+        "jvd_ra",
+        from_date,
+        to_date,
         entity_filter=race_filter,
     )
 
@@ -1337,9 +1398,7 @@ def build_target_table(
     con.execute(
         "create index target_horse_idx on target (source, ketto_toroku_bango, race_date)"
     )
-    con.execute(
-        "create index target_jockey_idx on target (source, kishumei_ryakusho)"
-    )
+    con.execute("create index target_jockey_idx on target (source, kishumei_ryakusho)")
     con.execute(
         "create index target_trainer_idx on target (source, chokyoshimei_ryakusho)"
     )
@@ -1791,7 +1850,10 @@ PEDIGREE_JOIN_SPECS: tuple[PedigreeJoinSpec, ...] = (
         "key_alias": "sire",
         "bucket_alias": "kyori_band",
         "target_bucket": "kyori_band",
-        "val_columns": ("sire_distance_win_rate_val", "sire_avg_finish_at_distance_val"),
+        "val_columns": (
+            "sire_distance_win_rate_val",
+            "sire_avg_finish_at_distance_val",
+        ),
     },
     {
         "table": "sire_track_stats",
@@ -2219,7 +2281,9 @@ def legacy_five_cte(target_filter: str = "true", category: str = CATEGORY_JRA) -
     # Select empirical training medians by category.  Ban-ei shares NAR medians
     # as both are NAR-feed races with similar odds distributions.
     popularity_median = (
-        POPULARITY_SCORE_MEDIAN_JRA if category == CATEGORY_JRA else POPULARITY_SCORE_MEDIAN_NAR
+        POPULARITY_SCORE_MEDIAN_JRA
+        if category == CATEGORY_JRA
+        else POPULARITY_SCORE_MEDIAN_NAR
     )
     odds_median = (
         ODDS_SCORE_MEDIAN_JRA if category == CATEGORY_JRA else ODDS_SCORE_MEDIAN_NAR
@@ -2277,7 +2341,9 @@ def materialize_pedigree_stats(
     run_staged_sql(con, "pedigree.target_months", target_months_sql())
     run_staged_sql(con, "pedigree.rec_um", pedigree_rec_um_sql(category))
     for spec in PEDIGREE_STAT_SPECS:
-        run_staged_sql(con, f"pedigree.{spec['table']}", pedigree_monthly_stat_sql(spec))
+        run_staged_sql(
+            con, f"pedigree.{spec['table']}", pedigree_monthly_stat_sql(spec)
+        )
         con.execute(pedigree_stats_index_sql(spec))
     run_staged_sql(
         con,
@@ -2299,12 +2365,16 @@ def materialize_race_context(con: duckdb.DuckDBPyConnection) -> None:
         cte_text,
         "race_field_aggregates",
     )
-    materialize_temp_table(con, "race_top3_speed", "race_top3_speed", cte_text, "race_top3_speed")
+    materialize_temp_table(
+        con, "race_top3_speed", "race_top3_speed", cte_text, "race_top3_speed"
+    )
 
 
 def materialize_legacy_features(con: duckdb.DuckDBPyConnection) -> None:
     cte_text = legacy_five_cte()
-    materialize_temp_table(con, "legacy_features", "legacy_features", cte_text, "legacy_features")
+    materialize_temp_table(
+        con, "legacy_features", "legacy_features", cte_text, "legacy_features"
+    )
 
 
 def venue_weather_empty_agg_sql() -> str:
@@ -2325,7 +2395,9 @@ def venue_weather_empty_agg_sql() -> str:
     """
 
 
-def venue_weather_files_for_years(venue_weather_dir: Path, years: list[int]) -> list[tuple[int, Path]]:
+def venue_weather_files_for_years(
+    venue_weather_dir: Path, years: list[int]
+) -> list[tuple[int, Path]]:
     """Return (year, path) for each build year that has a venue_weather_YYYY.duckdb."""
     found: list[tuple[int, Path]] = []
     for year in years:
@@ -2366,7 +2438,8 @@ def materialize_venue_weather(
             f"temperature, precipitation, wind_speed, wind_gusts from {alias}.venue_weather"
         )
     con.execute(
-        "create or replace temp table venue_weather_raw as " + " union all ".join(union_parts)
+        "create or replace temp table venue_weather_raw as "
+        + " union all ".join(union_parts)
     )
     for alias in aliases:
         con.execute(f"detach {alias}")
@@ -2654,7 +2727,9 @@ def base_features_select_sql(category: str) -> str:
     """
 
 
-RACE_PARTITION_COLUMNS = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+RACE_PARTITION_COLUMNS = (
+    "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
+)
 
 
 def assemble_final_select_from_temp_tables(category: str) -> str:
@@ -2780,7 +2855,9 @@ def directory_only_contains_partitions(output_dir: Path) -> bool:
     return True
 
 
-def prepare_output_dir(output_dir: Path, keep_existing: bool, force_clean: bool) -> None:
+def prepare_output_dir(
+    output_dir: Path, keep_existing: bool, force_clean: bool
+) -> None:
     if keep_existing or not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
         return
@@ -2812,7 +2889,9 @@ def write_parquet(
         "select distinct race_year from target order by race_year"
     ).fetchall()
     threads_row = con.execute("select current_setting('threads')").fetchone()
-    original_threads = int(threads_row[0]) if threads_row is not None else DEFAULT_THREADS
+    original_threads = (
+        int(threads_row[0]) if threads_row is not None else DEFAULT_THREADS
+    )
     con.execute("set threads = 1")
     for row in year_rows:
         year = int(row[0])
@@ -2861,12 +2940,16 @@ def emit_log_line(line: str) -> None:
         _log_file.flush()
 
 
-def log_event(stage: str, status: str, elapsed_seconds: float, rows: int | None = None) -> None:
+def log_event(
+    stage: str, status: str, elapsed_seconds: float, rows: int | None = None
+) -> None:
     payload: dict[str, object] = {
         "stage": stage,
         "status": status,
         "elapsed_seconds": round(elapsed_seconds, 2),
-        "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "timestamp": datetime.now(timezone.utc)
+        .astimezone()
+        .isoformat(timespec="seconds"),
     }
     if rows is not None:
         payload["rows"] = rows
@@ -2974,8 +3057,12 @@ class Heartbeat:
             "stage": self.stage,
             "substage": self.substage,
             "stage_elapsed_seconds": round(perf_counter() - self.stage_started_at, 1),
-            "overall_elapsed_seconds": round(perf_counter() - self.overall_started_at, 1),
-            "timestamp": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "overall_elapsed_seconds": round(
+                perf_counter() - self.overall_started_at, 1
+            ),
+            "timestamp": datetime.now(timezone.utc)
+            .astimezone()
+            .isoformat(timespec="seconds"),
         }
         payload.update(stats)
         emit_log_line(json.dumps(payload, ensure_ascii=False))
@@ -2983,7 +3070,9 @@ class Heartbeat:
 
 
 def get_target_years(con: duckdb.DuckDBPyConnection) -> list[int]:
-    rows = con.execute("select distinct race_year from target order by race_year").fetchall()
+    rows = con.execute(
+        "select distinct race_year from target order by race_year"
+    ).fetchall()
     return [int(row[0]) for row in rows]
 
 
@@ -3107,7 +3196,9 @@ HORSE_HISTORY_BASE_FROM = """
 """
 
 
-def materialize_horse_history_base(con: duckdb.DuckDBPyConnection, target_filter: str) -> int:
+def materialize_horse_history_base(
+    con: duckdb.DuckDBPyConnection, target_filter: str
+) -> int:
     from_clause = HORSE_HISTORY_BASE_FROM.format(years=HISTORY_LOOKBACK_YEARS)
     con.execute(
         f"""
@@ -3207,8 +3298,16 @@ def materialize_target_current_bataiju(con: duckdb.DuckDBPyConnection) -> int:
 
 def build_per_year_specs(category: str) -> list[DerivedStageSpec]:
     return [
-        {"name": "horse_career", "cte_builder": lambda _: horse_career_cte(), "final_cte": "horse_career"},
-        {"name": "recent_form", "cte_builder": lambda _: recent_form_cte(), "final_cte": "recent_form"},
+        {
+            "name": "horse_career",
+            "cte_builder": lambda _: horse_career_cte(),
+            "final_cte": "horse_career",
+        },
+        {
+            "name": "recent_form",
+            "cte_builder": lambda _: recent_form_cte(),
+            "final_cte": "recent_form",
+        },
         {
             "name": "legacy_features",
             "cte_builder": lambda tf, cat=category: legacy_five_cte(tf, cat),
@@ -3241,11 +3340,18 @@ def stage_horse_history_derived(
         year_filter = f"t.kaisai_nen = '{year:04d}'"
         base_start = perf_counter()
         base_rows = materialize_horse_history_base(con, year_filter)
-        log_event(f"horse_history_base.year{year}", "done", perf_counter() - base_start, base_rows)
+        log_event(
+            f"horse_history_base.year{year}",
+            "done",
+            perf_counter() - base_start,
+            base_rows,
+        )
         for spec in per_year_specs:
             stage_start = perf_counter()
             execute_derived_stage(con, spec, year_filter, idx == 0)
-            log_event(f"{spec['name']}.year{year}", "done", perf_counter() - stage_start)
+            log_event(
+                f"{spec['name']}.year{year}", "done", perf_counter() - stage_start
+            )
     for spec in per_year_specs:
         row_result = con.execute(f"select count(*) from {spec['final_cte']}").fetchone()
         rows = int(row_result[0]) if row_result is not None else 0
@@ -3289,7 +3395,15 @@ def stage_source(
     log_event("source.stage", "start", 0.0)
     started = perf_counter()
     install_and_attach_pg(con, pg_url)
-    stage_source_tables(con, from_date, to_date, category, upcoming_window, realtime_odds_path, target_race)
+    stage_source_tables(
+        con,
+        from_date,
+        to_date,
+        category,
+        upcoming_window,
+        realtime_odds_path,
+        target_race,
+    )
     log_event("source.stage", "done", perf_counter() - started)
 
 
@@ -3310,7 +3424,9 @@ def stage_target(
     return target_rows
 
 
-def _shrink_se_table_to_target_horses(con: duckdb.DuckDBPyConnection, table: str) -> int:
+def _shrink_se_table_to_target_horses(
+    con: duckdb.DuckDBPyConnection, table: str
+) -> int:
     """Replace ``table`` with its target-horse subset, then index it.
 
     Works whether ``table`` is a temp table (fresh run) or a parquet-backed view
@@ -3375,12 +3491,24 @@ def stage_partner_features(
 ) -> None:
     heartbeat.set_stage("jockey_career")
     materialize_temp_table_by_year(
-        con, "jockey_career", "jockey_career", jockey_cte, "jockey_career", years, heartbeat,
+        con,
+        "jockey_career",
+        "jockey_career",
+        jockey_cte,
+        "jockey_career",
+        years,
+        heartbeat,
         batch_size=PARTNER_CAREER_YEAR_BATCH_SIZE,
     )
     heartbeat.set_stage("trainer_career")
     materialize_temp_table_by_year(
-        con, "trainer_career", "trainer_career", trainer_cte, "trainer_career", years, heartbeat,
+        con,
+        "trainer_career",
+        "trainer_career",
+        trainer_cte,
+        "trainer_career",
+        years,
+        heartbeat,
         batch_size=PARTNER_CAREER_YEAR_BATCH_SIZE,
     )
 
@@ -3395,7 +3523,11 @@ def stage_track_bias(
     del years
     heartbeat.set_stage("track_bias")
     materialize_temp_table(
-        con, "track_bias", "track_bias", track_bias_cte("true"), "track_bias",
+        con,
+        "track_bias",
+        "track_bias",
+        track_bias_cte("true"),
+        "track_bias",
     )
 
 
@@ -3465,7 +3597,10 @@ def spill_temp_tables_to_disk(
 
     Called progressively after each stage so peak memory stays low instead of
     accumulating every temp table until a single end-of-run spill."""
-    spill_dir = Path(temp_dir.as_posix() if temp_dir is not None else "/tmp/duckdb-spill") / "table_spill"
+    spill_dir = (
+        Path(temp_dir.as_posix() if temp_dir is not None else "/tmp/duckdb-spill")
+        / "table_spill"
+    )
     spill_dir.mkdir(parents=True, exist_ok=True)
     for spill_table in tables:
         parquet_path = (spill_dir / f"{spill_table}.parquet").as_posix()
@@ -3640,7 +3775,9 @@ class CheckpointManifest:
             del self.stages[stage_name]
             self.save(temp_dir)
 
-    def is_stage_valid(self, stage_name: str, current_hash: str, spill_dir: Path) -> bool:
+    def is_stage_valid(
+        self, stage_name: str, current_hash: str, spill_dir: Path
+    ) -> bool:
         checkpoint = self.stages.get(stage_name)
         if checkpoint is None:
             return False
@@ -3667,7 +3804,9 @@ def _stage_sql_fingerprint(
         return build_target_fingerprint(category)
     if stage_name == CHECKPOINT_HORSE_HISTORY:
         parts = [HORSE_HISTORY_BASE_SELECT, HORSE_HISTORY_BASE_FROM]
-        parts.extend(spec["cte_builder"]("true") for spec in build_per_year_specs(category))
+        parts.extend(
+            spec["cte_builder"]("true") for spec in build_per_year_specs(category)
+        )
         return "\n".join(parts)
     if stage_name == CHECKPOINT_PARTNER:
         return jockey_cte() + trainer_cte()
@@ -3694,7 +3833,9 @@ def _stage_sql_fingerprint(
 
 def build_target_fingerprint(category: str) -> str:
     """SQL fingerprint for the TARGET stage (build_target_table parameters)."""
-    return category_source_filter(category, "rec") + "||" + category_expression(category)
+    return (
+        category_source_filter(category, "rec") + "||" + category_expression(category)
+    )
 
 
 def target_race_hash_extra(target_race: tuple[str, str] | None) -> str:
@@ -3747,7 +3888,9 @@ def restore_stage_from_spill(
     for table in checkpoint.tables:
         parquet_path = spill_dir / table
         if not parquet_path.exists():
-            log_event(f"checkpoint.restore.{stage_name}", "miss", perf_counter() - started)
+            log_event(
+                f"checkpoint.restore.{stage_name}", "miss", perf_counter() - started
+            )
             return False
         view_name = parquet_path.stem
         try:
@@ -3756,7 +3899,9 @@ def restore_stage_from_spill(
                 f"select * from read_parquet('{parquet_path.as_posix()}')"
             )
         except duckdb.Error:
-            log_event(f"checkpoint.restore.{stage_name}", "error", perf_counter() - started)
+            log_event(
+                f"checkpoint.restore.{stage_name}", "error", perf_counter() - started
+            )
             return False
     log_event(f"checkpoint.restore.{stage_name}", "done", perf_counter() - started)
     return True
@@ -3767,7 +3912,9 @@ def spilled_table_files(spill_dir: Path, tables: tuple[str, ...]) -> list[str]:
     return [f"{table}.parquet" for table in tables]
 
 
-def spilled_row_counts(con: duckdb.DuckDBPyConnection, tables: tuple[str, ...]) -> dict[str, int]:
+def spilled_row_counts(
+    con: duckdb.DuckDBPyConnection, tables: tuple[str, ...]
+) -> dict[str, int]:
     """Row count of each (already-spilled, view-backed) table for the manifest."""
     counts: dict[str, int] = {}
     for table in tables:
@@ -3955,7 +4102,9 @@ def build_empty_result(output_dir: Path, elapsed: float) -> BuildResult:
     }
 
 
-def resolve_upcoming_window(args: argparse.Namespace, from_date: str, to_date: str) -> tuple[str, str] | None:
+def resolve_upcoming_window(
+    args: argparse.Namespace, from_date: str, to_date: str
+) -> tuple[str, str] | None:
     """Window used to also pull target rows straight from the source tables.
 
     Only active in ``--target-date`` mode; otherwise None so the historical
@@ -3991,12 +4140,24 @@ def run_stage_source(
         return years
     controller.cascade_invalidate_from(CHECKPOINT_SOURCE)
     stage_source(
-        con, pg_url, from_date, to_date, args.category, upcoming_window, args.realtime_odds,
+        con,
+        pg_url,
+        from_date,
+        to_date,
+        args.category,
+        upcoming_window,
+        args.realtime_odds,
         target_race=getattr(args, "target_race", None),
     )
     controller.spill_and_record(con, CHECKPOINT_SOURCE, [])
     heartbeat.set_stage("target.build")
-    stage_target(con, args.category, from_date, to_date, target_race=getattr(args, "target_race", None))
+    stage_target(
+        con,
+        args.category,
+        from_date,
+        to_date,
+        target_race=getattr(args, "target_race", None),
+    )
     years = get_target_years(con)
     # SOURCE / TARGET hashes are computed with years=[] because ``years`` is
     # derived FROM target — it is an output, not an input, so it must not feed
@@ -4018,7 +4179,13 @@ def run_stage_horse_history(
         return
     controller.cascade_invalidate_from(CHECKPOINT_HORSE_HISTORY)
     stage_horse_history_derived(con, years, heartbeat, category)
-    for t in ("horse_history_base", "se_lookup", "target_current_bataiju", "jra_se", "nar_se"):
+    for t in (
+        "horse_history_base",
+        "se_lookup",
+        "target_current_bataiju",
+        "jra_se",
+        "nar_se",
+    ):
         drop_view_or_table(con, t)
     if controller.active:
         controller.spill_and_record(con, CHECKPOINT_HORSE_HISTORY, years)
@@ -4138,16 +4305,29 @@ def run(args: argparse.Namespace) -> BuildResult:
     try:
         configure_duckdb_session(con, args.threads, args.memory_limit, args.temp_dir)
         years = run_stage_source(
-            con, args, controller, heartbeat, pg_url, from_date, to_date, upcoming_window
+            con,
+            args,
+            controller,
+            heartbeat,
+            pg_url,
+            from_date,
+            to_date,
+            upcoming_window,
         )
         log_event("target.years", "done", 0.0, len(years))
         if not years:
-            prepare_output_dir(args.output_dir, args.keep_existing_output, args.force_clean_output)
+            prepare_output_dir(
+                args.output_dir, args.keep_existing_output, args.force_clean_output
+            )
             log_event("run", "skip", perf_counter() - overall_started, 0)
             return build_empty_result(args.output_dir, perf_counter() - overall_started)
-        run_stage_horse_history(con, controller, heartbeat, years, args.category, args.temp_dir)
+        run_stage_horse_history(
+            con, controller, heartbeat, years, args.category, args.temp_dir
+        )
         run_stage_partner(con, controller, heartbeat, years, args.temp_dir)
-        run_stage_pedigree(con, controller, heartbeat, years, args.category, args.temp_dir)
+        run_stage_pedigree(
+            con, controller, heartbeat, years, args.category, args.temp_dir
+        )
         run_stage_race_context(con, controller, heartbeat, years, args.temp_dir)
         run_stage_track_bias(con, controller, heartbeat, years, args.temp_dir)
         run_stage_weather(

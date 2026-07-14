@@ -19,8 +19,9 @@ export interface Env {
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
-  // Optional read/source connection for the heavy DuckDB feature build. When
-  // unset, the container falls back to NEON_DATABASE_URL.
+  // Read/source connection for the heavy DuckDB feature build. Production sets
+  // r2-catalog://pc-keiba; an unset value is forwarded empty and the container
+  // fails closed instead of falling back to Neon.
   SOURCE_DATABASE_URL?: string;
   PREDICT_DAYS_AHEAD: string;
   TRIGGER_TOKEN: string;
@@ -73,6 +74,13 @@ export interface Env {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET?: string;
+  // Read-only Cloudflare Iceberg REST Catalog credentials for the heavy
+  // feature-build source. The token is a Worker secret; URI/warehouse are
+  // plain vars. Web display and prediction output can still use Neon, but the
+  // batch input path must resolve through this catalog.
+  R2_CATALOG_TOKEN?: string;
+  R2_CATALOG_URI?: string;
+  R2_CATALOG_WAREHOUSE?: string;
   // venue-weather Worker base URL forwarded into the container env so the Python
   // prediction path can fetch venue weather data over HTTP. Plain var; optional
   // so existing callers/tests need not set it.

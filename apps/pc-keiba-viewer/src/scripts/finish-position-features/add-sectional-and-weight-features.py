@@ -29,6 +29,8 @@ from pathlib import Path
 
 import duckdb
 
+from _catalog_attach import attach_source_catalog
+
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 SAME_DISTANCE_TOLERANCE = 200
 RECENT_WINDOW_SIZE = 5
@@ -60,9 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
-    con.execute("install postgres")
-    con.execute("load postgres")
-    con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
+    attach_source_catalog(con, pg_url)
 
 
 def stage_history(

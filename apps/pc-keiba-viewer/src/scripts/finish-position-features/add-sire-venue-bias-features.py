@@ -40,6 +40,8 @@ from pathlib import Path
 
 import duckdb
 
+from _catalog_attach import attach_source_catalog
+
 from _resource_defaults import add_resource_args, apply_to_connection
 from pedigree_staging import stage_horse_pedigree
 
@@ -80,9 +82,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
-    con.execute("install postgres")
-    con.execute("load postgres")
-    con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
+    attach_source_catalog(con, pg_url)
 
 
 def _category_predicates(category: str) -> tuple[str, str]:

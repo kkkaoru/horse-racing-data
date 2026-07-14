@@ -53,6 +53,8 @@ from typing import Protocol, cast
 
 import duckdb
 
+from _catalog_attach import attach_source_catalog
+
 from _resource_defaults import add_resource_args, apply_to_connection
 
 
@@ -122,9 +124,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def install_and_attach_pg(con: _DuckDBConnectionLike, pg_url: str) -> None:
-    con.execute("install postgres")
-    con.execute("load postgres")
-    con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
+    attach_source_catalog(con, pg_url)
 
 
 def surface_sql(track_code_col: str) -> str:

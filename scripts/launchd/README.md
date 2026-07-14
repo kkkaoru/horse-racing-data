@@ -58,15 +58,10 @@ architecture` and skips the exec instead of running
   to restore the old behavior for an explicit emergency/manual run only —
   never as a standing default.
 - **`com.kkkaoru.win5-overlay` (Sat/Sun 09:00 JST, lives in
-  `apps/pc-keiba-viewer/scripts/`) — NOT disabled tonight.** It generates
-  WIN5 overlay predictions and is currently the only refresher for
-  `race_entry_corner_features`; disabling it would break that dependency,
-  and 2026-07-12's corner-feature rows are already built. As of 2026-07-11
-  it is confirmed **not installed** under `~/Library/LaunchAgents/` on this
-  Mac (only the reference plist in the repo exists), so it poses no live
-  risk tonight — but it remains the one documented Mac-resident
-  production-adjacent job. Migrate it once the corner-features refresh is
-  decoupled from it (reliability-wave item 21); until then, do not disable.
+  `apps/pc-keiba-viewer/scripts/`) is not a feature-data authority.** The
+  production feature source is raw R2 Catalog data published only from local
+  PostgreSQL. The plist was not installed under `~/Library/LaunchAgents/` as
+  of 2026-07-11 and must not be introduced as a production dependency.
 
 ## Historical launchd rationale
 
@@ -81,15 +76,11 @@ Worker / Container and `sync-realtime-data` coordination.
 - `finish-position-predict-daily.sh` — wrapper script that runs the legacy
   local Docker pipeline (`finish-position-predict-local:split2`) once. Reads
   `NEON_DATABASE_URL` from `apps/local-postgresql/.env.replica`,
-  defaults `SOURCE_DATABASE_URL` to `postgresql://horse_racing:horse_racing@host.docker.internal:15432/horse_racing`,
-  and computes `RUN_DATE` as **today in JST** (`date -u -v+9H +%Y%m%d`).
-  The host is `host.docker.internal` (not `127.0.0.1`) because local PG was
-  migrated from Docker Compose to **Apple Container CLI** (commits `ac8626f4`,
-  `0fe46d1c`, `8887fb52`). PG no longer runs inside the Colima VM, so the
-  predict container — which still runs under Colima / Docker with
-  `--network=host` — must reach the Mac host loopback via the
-  `host.docker.internal` alias instead of the in-VM `127.0.0.1`. Callers can
-  still override via the `SOURCE_DATABASE_URL` env var.
+  defaults `SOURCE_DATABASE_URL` to `r2-catalog://pc-keiba`, and computes
+  `RUN_DATE` as **today in JST** (`date -u -v+9H +%Y%m%d`). Catalog credentials
+  are loaded from the ignored root `.env`. Missing Catalog or R2 object
+  credentials stop the run; the wrapper does not fall back to local PG or Neon
+  for heavy feature reads. Neon remains the prediction-result output only.
 
 ## Install
 
@@ -229,20 +220,10 @@ Per tick:
      and finish-position checks below: even when it re-kicks, the downstream
      prediction checks still proceed so partial predictions still go through.
      The next hourly tick re-evaluates.
-   - **Corner-features prerequisite (before running-style only).** Query Neon
-     `race_entry_corner_features` for a count restricted to the target
-     (kaisai_nen, kaisai_tsukihi). If 0, run the `dev:build-corner-features`
-     bun script in `pc-keiba-viewer` for that one date across
-     `--source-scope all` with `DATABASE_URL_NEON` set to `NEON_DATABASE_URL`.
-     The bun script's INSERT uses an UPSERT on the composite key (source,
-     kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-     ketto_toroku_bango), so re-running on the same date is a fast UPSERT,
-     not a duplicate insert. If rows are already present the build is skipped
-     entirely. If the build fails the running-style kick is skipped for that
-     target (finish-position still proceeds since it uses a different code
-     path). In DRY_RUN, only the planned bun command is logged; pass
-     `FORCE_NO_CORNER_FEATURES=1` to simulate a missing-features state and
-     exercise the build path.
+   - **Feature prerequisite.** Current production jobs read raw Iceberg tables
+     through `pc-keiba-r2-catalog`. They do not query or rebuild Neon
+     `race_entry_corner_features`. A Catalog read failure stops the job; the
+     guard must not repair it from Neon, D1, or an older feature Parquet.
    - Else query Neon for
      `COUNT(DISTINCT (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango))`
      in each predictions table for that JST date. If `actual < expected`,

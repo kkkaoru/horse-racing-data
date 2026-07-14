@@ -6,7 +6,29 @@ from pathlib import Path
 
 import pytest
 
+import _catalog_attach as catalog_attach
 import finish_position_features_duckdb as subject
+
+
+class RecordingConnection:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def execute(self, query: str) -> None:
+        self.statements.append(query)
+
+
+def test_install_and_attach_catalog_skips_postgres_only_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = RecordingConnection()
+    monkeypatch.setattr(
+        catalog_attach,
+        "attach_source_catalog",
+        lambda con, url: con.execute(f"attached {url}"),
+    )
+    subject.install_and_attach_pg(connection, "r2-catalog://pc-keiba")
+    assert connection.statements == ["attached r2-catalog://pc-keiba"]
 
 
 def test_parse_args_defaults():
@@ -3960,7 +3982,7 @@ def test_build_horse_filter_from_target_race_entities_uses_target_horses_only() 
 # ---------------------------------------------------------------------------
 
 
-def test_stage_se_table_uses_postgres_query_when_entity_filter_set(
+def test_stage_se_table_uses_catalog_view_when_entity_filter_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import duckdb
@@ -3988,7 +4010,8 @@ def test_stage_se_table_uses_postgres_query_when_entity_filter_set(
         entity_filter=" and ketto_toroku_bango in ('2020100001')",
     )
     con.close()
-    assert any("postgres_query" in sql for sql in captured_sql)
+    assert any("pg.nvd_se" in sql for sql in captured_sql)
+    assert not any("postgres_query" in sql for sql in captured_sql)
 
 
 def test_stage_se_table_uses_pg_dot_when_no_entity_filter(
@@ -4026,7 +4049,7 @@ def test_stage_se_table_uses_pg_dot_when_no_entity_filter(
 # ---------------------------------------------------------------------------
 
 
-def test_stage_um_table_uses_postgres_query_when_entity_filter_set(
+def test_stage_um_table_uses_catalog_view_when_entity_filter_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import duckdb
@@ -4046,7 +4069,8 @@ def test_stage_um_table_uses_postgres_query_when_entity_filter_set(
         entity_filter=" and ketto_toroku_bango in ('2020100001')",
     )
     con.close()
-    assert any("postgres_query" in sql for sql in captured_sql)
+    assert any("pg.nvd_um" in sql for sql in captured_sql)
+    assert not any("postgres_query" in sql for sql in captured_sql)
 
 
 def test_stage_um_table_uses_pg_dot_when_no_entity_filter(
@@ -4077,7 +4101,7 @@ def test_stage_um_table_uses_pg_dot_when_no_entity_filter(
 # ---------------------------------------------------------------------------
 
 
-def test_stage_ra_table_uses_postgres_query_when_entity_filter_set(
+def test_stage_ra_table_uses_catalog_view_when_entity_filter_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import duckdb
@@ -4099,7 +4123,8 @@ def test_stage_ra_table_uses_postgres_query_when_entity_filter_set(
         entity_filter=" and (keibajo_code, race_bango, kaisai_nen, kaisai_tsukihi) in (('83', '01', '2026', '0628'))",
     )
     con.close()
-    assert any("postgres_query" in sql for sql in captured_sql)
+    assert any("pg.nvd_ra" in sql for sql in captured_sql)
+    assert not any("postgres_query" in sql for sql in captured_sql)
 
 
 # ---------------------------------------------------------------------------
@@ -4240,14 +4265,14 @@ def test_stage_source_tables_passes_empty_filter_when_target_race_none(
 # ---------------------------------------------------------------------------
 
 
-def test_rec_select_from_corner_features_uses_postgres_query_with_entity_filter() -> None:
+def test_rec_select_from_corner_features_uses_catalog_view_with_entity_filter() -> None:
     sql = subject._rec_select_from_corner_features(
         "20060101",
         "20260628",
         entity_filter=" and ketto_toroku_bango in ('2020100001')",
     )
-    assert "postgres_query" in sql
-    assert "race_entry_corner_features" in sql
+    assert "postgres_query" not in sql
+    assert "pg.race_entry_corner_features" in sql
     assert "ketto_toroku_bango in ('2020100001')" in sql
 
 
@@ -4262,15 +4287,15 @@ def test_rec_select_from_corner_features_uses_pg_dot_without_entity_filter() -> 
 # ---------------------------------------------------------------------------
 
 
-def test_rec_select_from_ban_ei_uses_postgres_query_with_entity_filter() -> None:
+def test_rec_select_from_ban_ei_uses_catalog_views_with_entity_filter() -> None:
     sql = subject._rec_select_from_ban_ei(
         "20060101",
         "20260628",
         entity_filter=" and ketto_toroku_bango in ('2020100001')",
     )
-    assert "postgres_query" in sql
-    assert "nvd_se" in sql
-    assert "nvd_ra" in sql
+    assert "postgres_query" not in sql
+    assert "pg.nvd_se" in sql
+    assert "pg.nvd_ra" in sql
     assert "ketto_toroku_bango in ('2020100001')" in sql
 
 

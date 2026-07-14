@@ -53,6 +53,8 @@ from typing import Protocol
 
 import duckdb
 
+from _catalog_attach import attach_source_catalog
+
 
 class _DuckDBConnectionLike(Protocol):
     def execute(self, query: str) -> object: ...
@@ -115,10 +117,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def install_and_attach_pg(con: _DuckDBConnectionLike, pg_url: str) -> None:
-    """Install + load the postgres extension and attach the warehouse DB."""
-    con.execute("install postgres")
-    con.execute("load postgres")
-    con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
+    """Attach the configured warehouse source under the ``pg`` alias."""
+    attach_source_catalog(con, pg_url)
 
 
 def keibajo_filter_sql(category: str) -> str:

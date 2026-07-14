@@ -48,7 +48,6 @@ _reset_category_work_dirs = cast(
 )
 
 
-
 def test_mask_pg_url_redacts_userinfo():
     masked = mask_pg_url("postgresql://user:secret@host/db")
     assert masked == "postgresql://<redacted>@host/db"
@@ -289,33 +288,19 @@ def test_fetch_venue_weather_dir_is_importable_from_weather_fetcher():
 
 
 def test_query_upcoming_race_keys_filters_to_target_race(monkeypatch: pytest.MonkeyPatch):
-    import db_driver
     import realtime_odds_fetcher
     import weather_fetcher
 
     captured_sql = ""
-    connection_closed = False
+    captured_params: list[object] = []
     captured_race_keys: list[tuple[str, str]] | None = None
     captured_target_race: str | None = None
 
-    class FakeCursor:
-        def execute(self, sql: str) -> None:
-            nonlocal captured_sql
-            captured_sql = sql
-
-        def fetchall(self) -> list[tuple[str, str]]:
-            return [("44", "08")]
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            nonlocal connection_closed
-            connection_closed = True
-
-    def fake_connect_postgres(_url: str) -> FakeConn:
-        return FakeConn()
+    def fake_query_source_rows(_url: str, sql: str, params: list[object]) -> list[tuple[str, str]]:
+        nonlocal captured_sql, captured_params
+        captured_sql = sql
+        captured_params = params
+        return [("44", "08")]
 
     def fake_fetch_realtime_odds_parquet(
         category: str,
@@ -353,7 +338,7 @@ def test_query_upcoming_race_keys_filters_to_target_race(monkeypatch: pytest.Mon
         captured_target_race = target_race
         return False
 
-    monkeypatch.setattr(db_driver, "connect_postgres", fake_connect_postgres)
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
     monkeypatch.setattr(
         realtime_odds_fetcher,
         "fetch_realtime_odds_parquet",
@@ -373,9 +358,9 @@ def test_query_upcoming_race_keys_filters_to_target_race(monkeypatch: pytest.Mon
     assert rows == {}
     assert captured_race_keys == [("44", "08")]
     assert captured_target_race == "44:08"
-    assert "and keibajo_code = '44'" in captured_sql
-    assert "and race_bango = '08'" in captured_sql
-    assert connection_closed is True
+    assert "and keibajo_code = ?" in captured_sql
+    assert "and race_bango = ?" in captured_sql
+    assert captured_params == ["20260629", "20260629", "44", "08"]
 
 
 def test_build_pipeline_logs_layer_elapsed_seconds(
@@ -885,9 +870,7 @@ def test_build_day_base_signature_accepts_realtime_and_weather():
 # ---------------------------------------------------------------------------
 
 
-def test_ensure_day_base_local_disk_hit_skips_r2(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_ensure_day_base_local_disk_hit_skips_r2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     final_dir = _day_base_dir("jra", "20260712") / "final"
@@ -906,19 +889,24 @@ def test_ensure_day_base_local_disk_hit_skips_r2(
     assert called == []
 
 
-def test_ensure_day_base_r2_hit_when_local_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_ensure_day_base_r2_hit_when_local_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from predict_lib.serve import R2Config
 
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
-    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", lambda *args, **kwargs: True)
+    captured_keys: list[str] = []
+
+    def fake_r2_get_parquet(_r2: R2Config, object_key: str, _dest: Path) -> bool:
+        captured_keys.append(object_key)
+        return True
+
+    monkeypatch.setattr(pipeline_runner, "r2_get_parquet", fake_r2_get_parquet)
 
     result = pipeline_runner.ensure_day_base("nar", "20260712", 0, "postgresql://u:p@h/db", r2)
 
     assert result == _day_base_dir("nar", "20260712") / "final"
+    assert captured_keys == ["feat-daybase/catalog-v1/nar/20260712/features.parquet"]
 
 
 def test_ensure_day_base_r2_miss_returns_none(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -982,8 +970,6 @@ def _write_day_base_parquet(day_base_dir: Path, rows: list[tuple[str, str]]) -> 
 def test_day_base_covers_entry_list_true_when_all_current_horses_present(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(
         day_base_dir,
@@ -994,24 +980,14 @@ def test_day_base_covers_entry_list_true_when_all_current_horses_present(
         ],
     )
 
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            pass
-
-        def fetchall(self) -> list[tuple[str]]:
-            return [("H1",), ("H2",)]
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H1",), ("H2",)],
+    )
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
     )
 
     assert result is True
@@ -1020,29 +996,17 @@ def test_day_base_covers_entry_list_true_when_all_current_horses_present(
 def test_day_base_covers_entry_list_false_when_current_horse_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
 
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            pass
-
-        def fetchall(self) -> list[tuple[str]]:
-            return [("H1",), ("H2",)]  # H2 scratched-in / late add, not in day-base
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H1",), ("H2",)],
+    )
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
     )
 
     assert result is False
@@ -1054,8 +1018,6 @@ def test_day_base_covers_entry_list_only_matches_target_race_rows(
     """A horse present elsewhere in the day-base but NOT under the target
     race's own keibajo/bango must not count as coverage — proves the SQL
     filter is scoped to the target race, not the whole day-base."""
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(
         day_base_dir,
@@ -1065,24 +1027,14 @@ def test_day_base_covers_entry_list_only_matches_target_race_rows(
         ],
     )
 
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            pass
-
-        def fetchall(self) -> list[tuple[str]]:
-            return [("H9",)]
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H9",)],
+    )
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
     )
 
     assert result is False
@@ -1091,49 +1043,35 @@ def test_day_base_covers_entry_list_only_matches_target_race_rows(
 def test_day_base_covers_entry_list_false_when_no_current_entrants(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
 
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            pass
-
-        def fetchall(self) -> list[tuple[str]]:
-            return []
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [],
+    )
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
     )
 
     assert result is False
 
 
-def test_day_base_covers_entry_list_false_on_pg_exception(
+def test_day_base_covers_entry_list_false_on_source_exception(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(day_base_dir, [("jra:2026:0712:05:11", "H1")])
 
-    def raiser(_url: str) -> None:
+    def raiser(_url: str, _sql: str, _params: tuple[object, ...]) -> None:
         raise RuntimeError("connect boom")
 
-    monkeypatch.setattr(db_driver, "connect_postgres", raiser)
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", raiser)
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "jra", "05:11", "postgresql://u:p@h/db"
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
     )
 
     assert result is False
@@ -1144,35 +1082,28 @@ def test_day_base_covers_entry_list_false_on_pg_exception(
 def test_day_base_covers_entry_list_uses_nvd_se_for_nar(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    import db_driver
-
     day_base_dir = tmp_path / "daybase"
     _write_day_base_parquet(day_base_dir, [("nar:2026:0712:30:03", "H1")])
 
     captured_sql: list[str] = []
+    captured_params: list[tuple[object, ...]] = []
 
-    class FakeCursor:
-        def execute(self, sql: str, params: tuple[object, ...] | None = None) -> None:
-            captured_sql.append(sql)
+    def fake_query_source_rows(
+        _url: str, sql: str, _params: tuple[object, ...]
+    ) -> list[tuple[str]]:
+        captured_sql.append(sql)
+        captured_params.append(_params)
+        return [("H1",)]
 
-        def fetchall(self) -> list[tuple[str]]:
-            return [("H1",)]
-
-    class FakeConn:
-        def cursor(self) -> FakeCursor:
-            return FakeCursor()
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(db_driver, "connect_postgres", lambda _url: FakeConn())
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
 
     result = pipeline_runner.day_base_covers_entry_list(
-        day_base_dir, "nar", "30:03", "postgresql://u:p@h/db"
+        day_base_dir, "nar", "20260712", "30:03", "postgresql://u:p@h/db"
     )
 
     assert result is True
     assert any("nvd_se" in sql for sql in captured_sql)
+    assert captured_params == [("2026", "0712", "30", "03")]
 
 
 # ---------------------------------------------------------------------------

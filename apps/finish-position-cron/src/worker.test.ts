@@ -388,20 +388,10 @@ test("handleScheduled dispatches the day-base prewarm for the feature-build cron
   );
 });
 
-test("handleScheduled refreshes corner features before the day-base prewarm for the feature-build cron", async () => {
-  const callOrder: string[] = [];
-  refreshCornerFeaturesMock.mockImplementationOnce(async () => {
-    callOrder.push("refreshCornerFeatures");
-  });
-  runDayBasePrewarmMock.mockImplementationOnce(async () => {
-    callOrder.push("runDayBasePrewarm");
-  });
+test("handleScheduled does not refresh corner features on the feature-build cron", async () => {
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
-  expect(refreshCornerFeaturesMock).toHaveBeenCalledTimes(1);
-  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
-    expect.objectContaining({ daysAhead: 2, runYmd: "20260603" }),
-  );
-  expect(callOrder).toStrictEqual(["refreshCornerFeatures", "runDayBasePrewarm"]);
+  expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
+  expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
 });
 
 test("handleScheduled feature-build cron does not enqueue a direct full-mode predict", async () => {

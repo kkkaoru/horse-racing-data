@@ -4,7 +4,7 @@ Deploy-time I/O glue (not unit-tested; verified per DEPLOY.md). It reuses the
 unchanged repo feature pipeline that already produced the training parquet:
 
   1. ``finish_position_features_duckdb.py`` builds the base feature parquet from
-     Postgres in ``--target-date`` mode for the requested category over
+     the raw Iceberg Catalog in ``--target-date`` mode for the requested category over
      [target_date, target_date + days_ahead]. That mode emits feature rows for
      the day's races INCLUDING UPCOMING ones (``finish_position`` still NULL):
      historical aggregates are computed from prior races only
@@ -380,6 +380,33 @@ def _log_pipeline_progress(message: str) -> None:
         print(f"[pipeline] {message}", file=sys.stderr, flush=True)
 
 
+def _query_source_rows(
+    database_url: str,
+    sql: str,
+    params: Sequence[object] = (),
+) -> list[tuple[object, ...]]:
+    """Run a read-only query against the configured feature source.
+
+    Production passes ``r2-catalog://pc-keiba``. The shared feature-pipeline
+    adapter attaches the Cloudflare Iceberg REST catalog as ``pg``, preserving
+    the existing ``pg.<table>`` SQL contract without opening Postgres. The
+    Postgres branch remains available for offline training and parity checks.
+    """
+    import duckdb
+
+    layer_dir = str(LAYER_DIR)
+    if layer_dir not in sys.path:
+        sys.path.insert(0, layer_dir)
+    from _catalog_attach import attach_source_catalog
+
+    connection = duckdb.connect(":memory:")
+    try:
+        attach_source_catalog(connection, database_url)
+        return connection.execute(sql, list(params)).fetchall()
+    finally:
+        connection.close()
+
+
 def _query_upcoming_race_keys(
     database_url: str,
     target_date: str,
@@ -387,7 +414,7 @@ def _query_upcoming_race_keys(
     category: Category,
     target_race: str | None = None,
 ) -> list[tuple[str, str]]:
-    """Query (keibajo_code, race_bango) for upcoming races from Neon.
+    """Query upcoming race keys from the configured Iceberg feature source.
 
     Used to drive the per-race realtime-odds fetch so only races that will be
     predicted receive a GET request. Returns an empty list on any error so the
@@ -399,8 +426,6 @@ def _query_upcoming_race_keys(
     the same tables so the race set is consistent.
     """
     from datetime import UTC, datetime, timedelta
-
-    from db_driver import connect_postgres
 
     try:
         from_dt = datetime.strptime(target_date, "%Y%m%d").replace(tzinfo=UTC)
@@ -417,28 +442,24 @@ def _query_upcoming_race_keys(
             se_table = "nvd_se"
             keibajo_filter = "keibajo_code = '83'"
         target_race_filter = ""
+        params: list[object] = [target_from, target_to]
         if target_race is not None:
             keibajo_code, race_bango = target_race.split(":", 1)
-            target_race_filter = (
-                f"and keibajo_code = '{keibajo_code}' and race_bango = '{race_bango}'"
-            )
+            target_race_filter = "and keibajo_code = ? and race_bango = ?"
+            params.extend((keibajo_code, race_bango))
 
         sql = f"""
             select distinct keibajo_code, race_bango
-            from {se_table}
+            from pg.{se_table}
             where kaisai_nen between '{target_from[:4]}' and '{target_to[:4]}'
-              and (kaisai_nen || kaisai_tsukihi) between '{target_from}' and '{target_to}'
+              and (kaisai_nen || kaisai_tsukihi) between ? and ?
               and {keibajo_filter}
               {target_race_filter}
               and ketto_toroku_bango is not null
               and (kakutei_chakujun is null or trim(kakutei_chakujun) in ('', '00'))
             order by keibajo_code, race_bango
         """
-        conn = connect_postgres(database_url)
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        conn.close()
+        rows = _query_source_rows(database_url, sql, params)
         return [(str(r[0]).strip(), str(r[1]).strip()) for r in rows if r[0] and r[1]]
     except Exception as exc:
         print(
@@ -1004,6 +1025,7 @@ def ensure_day_base(
 def day_base_covers_entry_list(
     day_base_dir: Path,
     category: Category,
+    target_date: str,
     target_race: str,
     database_url: str,
 ) -> bool:
@@ -1030,25 +1052,20 @@ def day_base_covers_entry_list(
     try:
         import duckdb
 
-        from db_driver import connect_postgres
-
         keibajo_code, race_bango = target_race.split(":", 1)
         se_table = "jvd_se" if category == "jra" else "nvd_se"
-        conn = connect_postgres(database_url)
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                f"""
-                select distinct ketto_toroku_bango
-                from {se_table}
-                where keibajo_code = %s and race_bango = %s
-                  and ketto_toroku_bango is not null
-                """,
-                (keibajo_code, race_bango),
-            )
-            current_horses = {str(row[0]).strip() for row in cursor.fetchall() if row[0]}
-        finally:
-            conn.close()
+        source_rows = _query_source_rows(
+            database_url,
+            f"""
+            select distinct ketto_toroku_bango
+            from pg.{se_table}
+            where kaisai_nen = ? and kaisai_tsukihi = ?
+              and keibajo_code = ? and race_bango = ?
+              and ketto_toroku_bango is not null
+            """,
+            (target_date[:4], target_date[4:], keibajo_code, race_bango),
+        )
+        current_horses = {str(row[0]).strip() for row in source_rows if row[0]}
         if not current_horses:
             return False
         glob_path = str(day_base_dir / "**" / "*.parquet")
@@ -1228,7 +1245,9 @@ def build_upcoming_feature_rows_split(
             day_base_dir = build_day_base(category, target_date, days_ahead, database_url)
         if day_base_dir is None:
             return None
-        if not day_base_covers_entry_list(day_base_dir, category, target_race, database_url):
+        if not day_base_covers_entry_list(
+            day_base_dir, category, target_date, target_race, database_url
+        ):
             return None
         final_dir = _final_parquet_dir(category)
         built = build_pipeline_from_day_base(

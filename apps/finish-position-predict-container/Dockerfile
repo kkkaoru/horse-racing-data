@@ -40,15 +40,17 @@ RUN uv pip install --system \
     "pyarrow>=17.0.0" \
     "xgboost>=3.2.0"
 
-# Pre-install the DuckDB postgres extension into the image so every per-race
-# layer subprocess's runtime `install postgres; load postgres` call (see
+# Pre-install the DuckDB source extensions into the image so every per-race
+# layer subprocess's runtime extension load hits a warm local cache. Production
+# prediction reads the Cloudflare Iceberg REST catalog; postgres remains only
+# for offline training/parity runs.
+#
+# The source attach adapter lives in the copied finish-position-features tree.
+# It loads iceberg + httpfs for r2-catalog:// sources and postgres otherwise.
+# See
 # apps/pc-keiba-viewer/src/scripts/finish-position-features/add-similar-race-features.py
-# and sibling layer scripts) hits a warm local cache instead of a cold network
-# fetch on every fresh Cloudflare Containers cold start. DuckDB's INSTALL is a
-# no-op / fast local check when already present, so this is purely an avoidable-
-# latency fix with no behavioral change. See finish-position-cron queue timeout
-# investigation, 2026-07-02.
-RUN python3 -c "import duckdb; duckdb.connect().execute('INSTALL postgres')"
+# and sibling layer scripts.
+RUN python3 -c "import duckdb; connection=duckdb.connect(); connection.execute('INSTALL iceberg'); connection.execute('INSTALL httpfs'); connection.execute('INSTALL postgres')"
 
 # The container's own predict entrypoint + pure helpers.
 COPY apps/finish-position-predict-container/src /app/src
@@ -85,7 +87,7 @@ COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 # PER_CLASS_ROUTING.md.
 COPY apps/finish-position-predict-container/models /models
 
-ENV PYTHONPATH=/app/src:/app/pipeline
+ENV PYTHONPATH=/app/src:/app/pipeline:/app/pipeline/finish-position-features
 
 # HTTP server mode is the default so CF Containers can probe port 8080 and the
 # queue-consumer held-fetch pattern works (container serves /predict + /ping).

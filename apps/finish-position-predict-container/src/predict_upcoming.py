@@ -4,17 +4,17 @@
 This is the heavy orchestration that the Cloudflare Cron Trigger Worker starts
 as a batch container job. It is intentionally thin — every decision lives in the
 unit-tested ``predict_lib`` package — and it is excluded from the coverage gate
-because it only wires together real I/O (Neon Postgres over TCP, R2 over HTTPS,
-DuckDB subprocess feature build, native CatBoost/XGBoost). That integration is
+because it only wires together real I/O (R2 Catalog and models over HTTPS,
+Neon result writes, DuckDB subprocess feature build, native CatBoost/XGBoost). That integration is
 verified at deploy time per ``DEPLOY.md``, not by unit tests.
 
 Flow per category (jra / nar / ban-ei):
   1. List UPCOMING races (today .. today + PREDICT_DAYS_AHEAD, finish_position
-     NULL) from Neon via ``NEON_DATABASE_URL``.
+     NULL) from the raw Iceberg Catalog via ``SOURCE_DATABASE_URL``.
   2. Build the v8 feature parquet (JRA=241 / NAR=192 / Ban-ei=111) by running
      the repo feature pipeline (DuckDB base build + the v7 layer scripts + the
      v8 pacestyle / course-numerical layers per
-     ``predict_lib.pipeline_args.LAYER_CHAIN``) against the same Postgres.
+     ``predict_lib.pipeline_args.LAYER_CHAIN``) against the same Catalog.
   3. Load the production model from R2 ``finish-position/{category}/{modelVersion}/``.
   4. Score, rank within race, and UPSERT into
      ``race_finish_position_model_predictions`` under the v8 ``model_version``
@@ -160,13 +160,9 @@ Kept short (vs. the retrying ``connect_postgres_with_retry`` used for the
 prediction UPSERT) because a completion-check failure is swallowed and
 treated as "not complete" -- a slow/unreachable Neon must never delay
 launching a genuine prediction pipeline."""
-# Optional override: source URL for the DuckDB feature-build subprocess. When
-# set, feature building (which sustains a long-running ATTACH against Postgres
-# and is sensitive to Neon's compute idle timeout) uses this URL instead of
-# ``NEON_DATABASE_URL``. The predictions UPSERT + audit always use
-# ``NEON_DATABASE_URL`` so today's predictions land in the canonical store.
-# Typical local-Docker setup: feature build against the local logical replica
-# (no SSL idle eviction); predictions UPSERT to Neon.
+# Required source URL for the DuckDB feature-build subprocess. Production uses
+# ``r2-catalog://pc-keiba`` and never falls back to Neon or local PostgreSQL.
+# Prediction UPSERT and audit writes continue to use ``NEON_DATABASE_URL``.
 SOURCE_DATABASE_URL_ENV: str = "SOURCE_DATABASE_URL"
 RUN_DATE_ENV: str = "RUN_DATE"
 DAYS_AHEAD_ENV: str = "PREDICT_DAYS_AHEAD"
@@ -2130,7 +2126,7 @@ def main() -> int:
     if _is_serve_mode(sys.argv):
         try:
             database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
-            source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV), database_url)
+            source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV))
             models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))
         except BaseException as bootstrap_error:
             traceback.print_exc()
@@ -2162,7 +2158,7 @@ def main() -> int:
     _start_liveness_thread(LIVENESS_PORT)
     try:
         database_url = normalise_database_url(_require_env(NEON_DATABASE_URL_ENV))
-        source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV), database_url)
+        source_url = resolve_source_url(os.environ.get(SOURCE_DATABASE_URL_ENV))
         run_date = _require_env(RUN_DATE_ENV)
         days_ahead = int(os.environ.get(DAYS_AHEAD_ENV, str(DEFAULT_DAYS_AHEAD)))
         models_dir = Path(os.environ.get(MODELS_DIR_ENV, "/models"))

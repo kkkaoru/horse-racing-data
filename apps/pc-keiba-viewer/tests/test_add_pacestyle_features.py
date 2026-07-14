@@ -69,53 +69,7 @@ def test_parse_args_rejects_invalid_category(tmp_path: Path) -> None:
         )
 
 
-def test_parse_args_rs_source_default_is_auto(tmp_path: Path) -> None:
-    args = subject.parse_args(
-        [
-            "--input-dir",
-            str(tmp_path / "in"),
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--category",
-            "jra",
-        ]
-    )
-    assert args.rs_source == "auto"
-
-
-def test_parse_args_rs_source_accepts_r2(tmp_path: Path) -> None:
-    args = subject.parse_args(
-        [
-            "--input-dir",
-            str(tmp_path / "in"),
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--category",
-            "jra",
-            "--rs-source",
-            "r2",
-        ]
-    )
-    assert args.rs_source == "r2"
-
-
-def test_parse_args_rs_source_accepts_pg(tmp_path: Path) -> None:
-    args = subject.parse_args(
-        [
-            "--input-dir",
-            str(tmp_path / "in"),
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--category",
-            "jra",
-            "--rs-source",
-            "pg",
-        ]
-    )
-    assert args.rs_source == "pg"
-
-
-def test_parse_args_rs_source_rejects_invalid_value(tmp_path: Path) -> None:
+def test_parse_args_rejects_removed_rs_source_option(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         subject.parse_args(
             [
@@ -126,12 +80,12 @@ def test_parse_args_rs_source_rejects_invalid_value(tmp_path: Path) -> None:
                 "--category",
                 "jra",
                 "--rs-source",
-                "neon",
+                "auto",
             ]
         )
 
 
-def test_parse_args_run_date_default_is_none(tmp_path: Path) -> None:
+def test_parse_args_accepts_raw_catalog_prediction_run_date(tmp_path: Path) -> None:
     args = subject.parse_args(
         [
             "--input-dir",
@@ -139,26 +93,12 @@ def test_parse_args_run_date_default_is_none(tmp_path: Path) -> None:
             "--output-dir",
             str(tmp_path / "out"),
             "--category",
-            "nar",
-        ]
-    )
-    assert args.run_date is None
-
-
-def test_parse_args_run_date_accepts_yyyymmdd(tmp_path: Path) -> None:
-    args = subject.parse_args(
-        [
-            "--input-dir",
-            str(tmp_path / "in"),
-            "--output-dir",
-            str(tmp_path / "out"),
-            "--category",
-            "nar",
+            "jra",
             "--run-date",
-            "20260607",
+            "20260715",
         ]
     )
-    assert args.run_date == "20260607"
+    assert args.run_date == "20260715"
 
 
 def test_parse_args_target_race_accepts_focused_scope(tmp_path: Path) -> None:
@@ -202,8 +142,13 @@ def test_build_version_filter_sql_from_pairs_empty_returns_false() -> None:
 
 
 def test_build_version_filter_sql_from_pairs_builds_or_clauses() -> None:
-    sql = subject.build_version_filter_sql_from_pairs({2026: "jra-running-style-lgbm-prod-v3"})
-    assert sql == "(kaisai_nen = '2026' and model_version = 'jra-running-style-lgbm-prod-v3')"
+    sql = subject.build_version_filter_sql_from_pairs(
+        {2026: "jra-running-style-lgbm-prod-v3"}
+    )
+    assert (
+        sql
+        == "(kaisai_nen = '2026' and model_version = 'jra-running-style-lgbm-prod-v3')"
+    )
 
 
 def test_preferred_version_has_rows_true_when_row_found() -> None:
@@ -249,7 +194,9 @@ def test_resolve_version_pref_keeps_preferred_when_rows_exist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     con = MagicMock()
-    monkeypatch.setattr(subject, "_preferred_version_has_rows", lambda c, cat, year, ver: True)
+    monkeypatch.setattr(
+        subject, "_preferred_version_has_rows", lambda c, cat, year, ver: True
+    )
     monkeypatch.setattr(
         subject,
         "_latest_available_model_version",
@@ -286,8 +233,12 @@ def test_resolve_version_pref_keeps_preferred_when_no_pg_rows_at_all(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     con = MagicMock()
-    monkeypatch.setattr(subject, "_preferred_version_has_rows", lambda c, cat, year, ver: False)
-    monkeypatch.setattr(subject, "_latest_available_model_version", lambda c, cat, year: None)
+    monkeypatch.setattr(
+        subject, "_preferred_version_has_rows", lambda c, cat, year, ver: False
+    )
+    monkeypatch.setattr(
+        subject, "_latest_available_model_version", lambda c, cat, year: None
+    )
     resolved = subject.resolve_version_pref(con, "nar")
     assert resolved == subject.RS_VERSION_PREF["nar"]
     captured = capsys.readouterr()
@@ -357,124 +308,6 @@ def test_rs_version_pref_keys_cover_both_categories() -> None:
     assert 2026 in subject.RS_VERSION_PREF["nar"]
 
 
-def test_rs_source_choices_constants_are_exposed() -> None:
-    assert subject.RS_SOURCE_CHOICES == ("r2", "pg", "auto")
-    assert subject.R2_BUCKET_DEFAULT == "pc-keiba-features-archive"
-    assert subject.R2_PREDICTIONS_PREFIX == "running-style/predictions/by-day"
-
-
-def test_setup_r2_duckdb_secret_installs_and_loads_httpfs(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("R2_ACCOUNT_ID", "acc123")
-    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key456")
-    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "sec789")
-    con = MagicMock()
-    subject.setup_r2_duckdb_secret(con)
-    first_call_sql = con.execute.call_args_list[0].args[0]
-    assert first_call_sql == "install httpfs; load httpfs;"
-
-
-def test_setup_r2_duckdb_secret_uses_endpoint_template(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("R2_ACCOUNT_ID", "acc123")
-    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key456")
-    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "sec789")
-    con = MagicMock()
-    subject.setup_r2_duckdb_secret(con)
-    secret_sql = con.execute.call_args_list[1].args[0]
-    assert "ENDPOINT 'acc123.r2.cloudflarestorage.com'" in secret_sql
-    assert "KEY_ID 'key456'" in secret_sql
-    assert "SECRET 'sec789'" in secret_sql
-    assert "REGION 'auto'" in secret_sql
-    assert "URL_STYLE 'path'" in secret_sql
-    assert "TYPE S3" in secret_sql
-    assert "create or replace secret r2_secret" in secret_sql
-
-
-def test_setup_r2_duckdb_secret_raises_when_account_id_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("R2_ACCOUNT_ID", raising=False)
-    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key456")
-    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "sec789")
-    con = MagicMock()
-    with pytest.raises(KeyError):
-        subject.setup_r2_duckdb_secret(con)
-
-
-def _table_info_with_cell_columns() -> MagicMock:
-    table_info_call = MagicMock()
-    table_info_call.fetchall.return_value = [
-        (0, "cell_model_key"),
-        (1, "cell_variant_id"),
-    ]
-    return table_info_call
-
-
-def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_jra() -> None:
-    con = MagicMock()
-    con.execute.side_effect = [
-        MagicMock(),
-        _table_info_with_cell_columns(),
-        MagicMock(),
-        MagicMock(),
-    ]
-    subject.stage_rs_predictions_from_r2(con, "jra", "20260607", "pc-keiba-features-archive")
-    raw_sql = con.execute.call_args_list[0].args[0]
-    create_sql = con.execute.call_args_list[2].args[0]
-    assert (
-        "s3://pc-keiba-features-archive/running-style/predictions/by-day/"
-        "2026/06/07/jra/*.parquet"
-    ) in raw_sql
-    assert "'jra:' || kaisai_nen || ':' || kaisai_tsukihi" in create_sql
-    assert "from rs_preds_raw" in create_sql
-    assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
-    assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
-    assert "rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi" in create_sql
-    assert "as rs_predicted_corner_front_score" in create_sql
-    assert "row_number() over" in create_sql
-    assert "partition by race_id" in create_sql
-    assert (
-        "order by rs_predicted_corner_front_score asc, rs_p_nige desc, "
-        "ketto_toroku_bango asc"
-    ) in create_sql
-
-
-def test_stage_rs_predictions_from_r2_selects_cell_provenance_for_nar() -> None:
-    con = MagicMock()
-    con.execute.side_effect = [
-        MagicMock(),
-        _table_info_with_cell_columns(),
-        MagicMock(),
-        MagicMock(),
-    ]
-    subject.stage_rs_predictions_from_r2(con, "nar", "20240115", "other-bucket")
-    raw_sql = con.execute.call_args_list[0].args[0]
-    create_sql = con.execute.call_args_list[2].args[0]
-    assert (
-        "s3://other-bucket/running-style/predictions/by-day/2024/01/15/nar/*.parquet"
-    ) in raw_sql
-    assert "'nar:' || kaisai_nen || ':' || kaisai_tsukihi" in create_sql
-    assert "from rs_preds_raw" in create_sql
-    assert "cast(cell_model_key as varchar) as rs_cell_model_key" in create_sql
-    assert "cast(cell_variant_id as varchar) as rs_cell_variant_id" in create_sql
-
-
-def test_stage_rs_predictions_from_r2_creates_index() -> None:
-    con = MagicMock()
-    con.execute.side_effect = [
-        MagicMock(),
-        _table_info_with_cell_columns(),
-        MagicMock(),
-        MagicMock(),
-    ]
-    subject.stage_rs_predictions_from_r2(con, "jra", "20260607", "pc-keiba-features-archive")
-    index_sql = con.execute.call_args_list[3].args[0]
-    assert index_sql == "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
-
-
 def test_target_race_ids_filter_sql_false_is_empty() -> None:
     assert subject.target_race_ids_filter_sql(False) == ""
 
@@ -485,30 +318,14 @@ def test_target_race_ids_filter_sql_true_uses_staged_ids() -> None:
     assert "'jra:' || kaisai_nen" in sql
 
 
-def test_stage_rs_predictions_from_r2_focused_filters_to_target_race_ids() -> None:
-    con = MagicMock()
-    con.execute.side_effect = [
-        MagicMock(),
-        _table_info_with_cell_columns(),
-        MagicMock(),
-        MagicMock(),
-    ]
-    subject.stage_rs_predictions_from_r2(
-        con, "jra", "20260607", "pc-keiba-features-archive", focused_target=True
-    )
-    create_sql = con.execute.call_args_list[2].args[0]
-    assert "where true" in create_sql
-    assert "target_race_ids" in create_sql
-
-
-def test_stage_rs_predictions_from_pg_uses_pg_attach_table(
+def test_stage_rs_predictions_from_catalog_uses_attached_raw_table(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     con = MagicMock()
     monkeypatch.setattr(
         subject, "resolve_version_pref", lambda c, cat: subject.RS_VERSION_PREF[cat]
     )
-    subject.stage_rs_predictions_from_pg(con, "jra")
+    subject.stage_rs_predictions_from_catalog(con, "jra")
     create_sql = con.execute.call_args_list[0].args[0]
     assert "from pg.race_running_style_model_predictions" in create_sql
     assert "where source = 'jra'" in create_sql
@@ -522,278 +339,110 @@ def test_stage_rs_predictions_from_pg_uses_pg_attach_table(
         "order by rs_predicted_corner_front_score asc, rs_p_nige desc, "
         "ketto_toroku_bango asc"
     ) in create_sql
+    assert "read_parquet" not in create_sql
+    assert "daily_race_entries" not in create_sql
+    assert "features-archive" not in create_sql
 
 
-def test_stage_rs_predictions_from_pg_focused_filters_to_target_race_ids(
+def test_stage_rs_predictions_from_catalog_focused_filters_to_target_race_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     con = MagicMock()
     monkeypatch.setattr(
         subject, "resolve_version_pref", lambda c, cat: subject.RS_VERSION_PREF[cat]
     )
-    subject.stage_rs_predictions_from_pg(con, "nar", focused_target=True)
+    subject.stage_rs_predictions_from_catalog(con, "nar", focused_target=True)
     create_sql = con.execute.call_args_list[0].args[0]
     assert "where source = 'nar'" in create_sql
     assert "target_race_ids" in create_sql
 
 
-def test_stage_rs_predictions_from_pg_uses_resolved_version_pref_not_raw_table(
+def test_stage_rs_predictions_from_catalog_uses_resolved_version_pref(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """stage_rs_predictions_from_pg must filter on resolve_version_pref's
-    output, not the raw RS_VERSION_PREF table directly — otherwise a stale
-    hardcoded string bypasses the fallback entirely."""
+    """Catalog staging must use the version resolved from that same catalog."""
     con = MagicMock()
     monkeypatch.setattr(
         subject,
         "resolve_version_pref",
-        lambda c, cat: {2099: "fallback-only-version"},
+        lambda c, cat: {2099: "catalog-version"},
     )
-    subject.stage_rs_predictions_from_pg(con, "jra")
+    subject.stage_rs_predictions_from_catalog(con, "jra")
     create_sql = con.execute.call_args_list[0].args[0]
     assert "kaisai_nen = '2099'" in create_sql
-    assert "model_version = 'fallback-only-version'" in create_sql
+    assert "model_version = 'catalog-version'" in create_sql
     assert "jra-running-style-lgbm-prod-v3" not in create_sql
 
 
-def test_stage_rs_predictions_pg_mode_skips_r2_and_attaches_pg(
+def test_stage_rs_predictions_reads_only_versioned_r2_output_in_production(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    install_calls: list[str] = []
-    con = MagicMock()
-
-    def fake_install(c: object, url: str) -> None:
-        install_calls.append(url)
-
-    def fake_r2_setup(c: object) -> None:
-        install_calls.append("R2_SETUP_CALLED")
-
-    monkeypatch.setattr(subject, "install_and_attach_pg", fake_install)
-    monkeypatch.setattr(subject, "setup_r2_duckdb_secret", fake_r2_setup)
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_pg",
-        lambda c, cat, focused=False: install_calls.append(f"pg:{cat}"),
-    )
-    args = argparse.Namespace(
-        rs_source="pg",
-        run_date=None,
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert install_calls == ["postgresql://x", "pg:jra"]
-
-
-def test_stage_rs_predictions_pg_mode_forwards_focused_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[tuple[str, bool]] = []
-    con = MagicMock()
-    monkeypatch.setattr(subject, "install_and_attach_pg", lambda c, url: None)
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_pg",
-        lambda c, cat, focused=False: captured.append((cat, focused)),
-    )
-    args = argparse.Namespace(
-        rs_source="pg",
-        run_date=None,
-        category="nar",
-        pg_url="postgresql://x",
-        target_race="44:08",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert captured == [("nar", True)]
-
-
-def test_stage_rs_predictions_r2_mode_calls_setup_and_from_r2(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("R2_BUCKET", raising=False)
-    order: list[str] = []
+    calls: list[object] = []
     con = MagicMock()
     monkeypatch.setattr(
         subject,
         "setup_r2_duckdb_secret",
-        lambda c: order.append("setup"),
+        lambda c: calls.append("secret"),
     )
     monkeypatch.setattr(
         subject,
         "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk, focused=False: order.append(f"r2:{cat}:{rd}:{bk}"),
-    )
-    monkeypatch.setattr(
-        subject,
-        "install_and_attach_pg",
-        lambda c, url: order.append("pg_attach"),
-    )
-    args = argparse.Namespace(
-        rs_source="r2",
-        run_date="20260607",
-        category="nar",
-        pg_url="postgresql://x",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert order == ["setup", "r2:nar:20260607:pc-keiba-features-archive"]
-
-
-def test_stage_rs_predictions_r2_mode_uses_custom_bucket_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("R2_BUCKET", "alt-bucket")
-    captured: list[str] = []
-    con = MagicMock()
-    monkeypatch.setattr(subject, "setup_r2_duckdb_secret", lambda c: None)
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk, focused=False: captured.append(bk),
-    )
-    args = argparse.Namespace(
-        rs_source="r2",
-        run_date="20260607",
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert captured == ["alt-bucket"]
-
-
-def test_stage_rs_predictions_r2_mode_raises_when_run_date_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    con = MagicMock()
-    monkeypatch.setattr(
-        subject,
-        "setup_r2_duckdb_secret",
-        lambda c: None,
-    )
-    args = argparse.Namespace(
-        rs_source="r2",
-        run_date=None,
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    with pytest.raises(ValueError):
-        subject.stage_rs_predictions(con, args)
-
-
-def test_stage_rs_predictions_r2_strict_propagates_setup_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    con = MagicMock()
-
-    def boom(c: object) -> None:
-        raise KeyError("R2_ACCOUNT_ID")
-
-    monkeypatch.setattr(subject, "setup_r2_duckdb_secret", boom)
-    monkeypatch.setattr(
-        subject,
-        "install_and_attach_pg",
-        lambda c, url: pytest.fail("PG must NOT be touched in r2 strict mode"),
-    )
-    args = argparse.Namespace(
-        rs_source="r2",
-        run_date="20260607",
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    with pytest.raises(KeyError):
-        subject.stage_rs_predictions(con, args)
-
-
-def test_stage_rs_predictions_auto_falls_back_to_pg_when_setup_raises(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    order: list[str] = []
-    con = MagicMock()
-
-    def boom(c: object) -> None:
-        raise KeyError("R2_ACCOUNT_ID")
-
-    monkeypatch.setattr(subject, "setup_r2_duckdb_secret", boom)
-    monkeypatch.setattr(
-        subject,
-        "install_and_attach_pg",
-        lambda c, url: order.append(f"pg_attach:{url}"),
-    )
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_pg",
-        lambda c, cat, focused=False: order.append(f"pg:{cat}"),
-    )
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk, focused=False: pytest.fail(
-            "r2 loader must NOT run after setup raised"
+        lambda c, cat, date, bucket, focused=False: calls.append(
+            ("r2", cat, date, bucket, focused)
         ),
     )
     args = argparse.Namespace(
-        rs_source="auto",
-        run_date="20260607",
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert order == ["pg_attach:postgresql://x", "pg:jra"]
-
-
-def test_stage_rs_predictions_auto_falls_back_to_pg_when_run_date_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    order: list[str] = []
-    con = MagicMock()
-    monkeypatch.setattr(
-        subject,
-        "setup_r2_duckdb_secret",
-        lambda c: pytest.fail("setup must NOT run when run_date is missing"),
-    )
-    monkeypatch.setattr(
-        subject,
-        "install_and_attach_pg",
-        lambda c, url: order.append("pg_attach"),
-    )
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_pg",
-        lambda c, cat, focused=False: order.append(f"pg:{cat}"),
-    )
-    args = argparse.Namespace(
-        rs_source="auto",
-        run_date=None,
         category="nar",
-        pg_url="postgresql://x",
+        pg_url="r2-catalog://",
+        run_date="20260715",
+        target_race="44:08",
     )
     subject.stage_rs_predictions(con, args)
-    assert order == ["pg_attach", "pg:nar"]
+    assert calls == [
+        "secret",
+        ("r2", "nar", "20260715", "pc-keiba-features-archive", True),
+    ]
 
 
-def test_stage_rs_predictions_auto_uses_r2_when_setup_succeeds(
+def test_stage_rs_predictions_rejects_catalog_without_generation_date() -> None:
+    args = argparse.Namespace(
+        category="jra",
+        pg_url="r2-catalog://",
+    )
+    with pytest.raises(ValueError, match="--run-date"):
+        subject.stage_rs_predictions(MagicMock(), args)
+
+
+def test_setup_r2_duckdb_secret_uses_required_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    order: list[str] = []
+    monkeypatch.setenv("R2_ACCOUNT_ID", "account")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
     con = MagicMock()
-    monkeypatch.setattr(subject, "setup_r2_duckdb_secret", lambda c: order.append("setup"))
-    monkeypatch.setattr(
-        subject,
-        "stage_rs_predictions_from_r2",
-        lambda c, cat, rd, bk, focused=False: order.append(f"r2:{cat}:{rd}"),
+    subject.setup_r2_duckdb_secret(con)
+    assert con.execute.call_args_list[0].args[0] == "install httpfs; load httpfs;"
+    secret_sql = con.execute.call_args_list[1].args[0]
+    assert "endpoint 'account.r2.cloudflarestorage.com'" in secret_sql
+    assert "key_id 'key'" in secret_sql
+
+
+def test_stage_rs_predictions_from_r2_uses_raw_catalog_generation() -> None:
+    con = MagicMock()
+    subject.stage_rs_predictions_from_r2(
+        con,
+        "jra",
+        "20260715",
+        "archive",
+        focused_target=True,
     )
-    monkeypatch.setattr(
-        subject,
-        "install_and_attach_pg",
-        lambda c, url: pytest.fail("PG must NOT be touched when R2 succeeds"),
-    )
-    args = argparse.Namespace(
-        rs_source="auto",
-        run_date="20260607",
-        category="jra",
-        pg_url="postgresql://x",
-    )
-    subject.stage_rs_predictions(con, args)
-    assert order == ["setup", "r2:jra:20260607"]
+    create_sql = con.execute.call_args_list[0].args[0]
+    assert (
+        "s3://archive/running-style/predictions/by-day/raw-iceberg-v1/"
+        "2026/07/15/jra/*.parquet"
+    ) in create_sql
+    assert "target_race_ids" in create_sql
+    assert "race_running_style_model_predictions" not in create_sql
 
 
 def test_install_and_attach_pg_runs_install_load_attach_in_order() -> None:
@@ -841,7 +490,6 @@ def test_main_invokes_stage_rs_predictions_with_args(
 
     def fake_stage(c: object, a: argparse.Namespace) -> None:
         seen["category"] = a.category
-        seen["rs_source"] = a.rs_source
         seen["run_date"] = a.run_date
 
     monkeypatch.setattr(subject, "stage_rs_predictions", fake_stage)
@@ -861,15 +509,12 @@ def test_main_invokes_stage_rs_predictions_with_args(
             str(tmp_path / "out"),
             "--category",
             "jra",
-            "--rs-source",
-            "auto",
             "--run-date",
             "20260607",
         ],
     )
     subject.main()
     assert seen["category"] == "jra"
-    assert seen["rs_source"] == "auto"
     assert seen["run_date"] == "20260607"
     assert seen["wrote"] is True
 
@@ -887,6 +532,7 @@ def test_stage_target_race_ids_extracts_input_race_ids(tmp_path: Path) -> None:
 # SQL correctness: rs_confidence_entropy / cross-terms must be NULL for
 # horses with no RS prediction (LEFT JOIN miss), not 0.
 # ---------------------------------------------------------------------------
+
 
 def _base_parquet(tmp_path: Path) -> str:
     """Write a minimal base parquet and return the file glob string."""
@@ -939,19 +585,21 @@ def _base_parquet(tmp_path: Path) -> str:
 
 def _rs_preds_df() -> pl.DataFrame:
     """RS predictions only for horse 'a' — horse 'b' is unscored."""
-    return pl.DataFrame({
-        "race_id": ["jra:2024:0101:01:1"],
-        "ketto_toroku_bango": ["a"],
-        "rs_p_nige": [0.6],
-        "rs_p_senkou": [0.2],
-        "rs_p_sashi": [0.1],
-        "rs_p_oikomi": [0.1],
-        "rs_predicted_class": ["nige"],
-        "rs_predicted_corner_front_score": [0.7],
-        "rs_predicted_corner_rank": [1],
-        "model_version": ["v1.0"],
-        "race_date": ["20240101"],
-    })
+    return pl.DataFrame(
+        {
+            "race_id": ["jra:2024:0101:01:1"],
+            "ketto_toroku_bango": ["a"],
+            "rs_p_nige": [0.6],
+            "rs_p_senkou": [0.2],
+            "rs_p_sashi": [0.1],
+            "rs_p_oikomi": [0.1],
+            "rs_predicted_class": ["nige"],
+            "rs_predicted_corner_front_score": [0.7],
+            "rs_predicted_corner_rank": [1],
+            "model_version": ["v1.0"],
+            "race_date": ["20240101"],
+        }
+    )
 
 
 def test_append_features_sql_uses_case_when_for_rs_columns():
@@ -962,7 +610,9 @@ def test_append_features_sql_uses_case_when_for_rs_columns():
     )
 
 
-def test_append_features_sql_rs_confidence_entropy_null_for_unscored_horse(tmp_path: Path):
+def test_append_features_sql_rs_confidence_entropy_null_for_unscored_horse(
+    tmp_path: Path,
+):
     """Horse with no RS prediction must get NULL rs_confidence_entropy, not 0."""
     input_glob = _base_parquet(tmp_path)
     con = duckdb.connect()
@@ -973,7 +623,9 @@ def test_append_features_sql_rs_confidence_entropy_null_for_unscored_horse(tmp_p
     horse_a = result.filter(pl.col("ketto_toroku_bango") == "a").row(0, named=True)
     horse_b = result.filter(pl.col("ketto_toroku_bango") == "b").row(0, named=True)
 
-    assert horse_a["rs_confidence_entropy"] is not None, "scored horse must have non-NULL entropy"
+    assert horse_a["rs_confidence_entropy"] is not None, (
+        "scored horse must have non-NULL entropy"
+    )
     assert horse_b["rs_confidence_entropy"] is None, (
         "unscored horse must have NULL entropy, not 0 (0 would falsely imply max confidence)"
     )
@@ -984,17 +636,19 @@ def test_append_features_sql_corner_rank_pct_values(tmp_path: Path):
     con = duckdb.connect()
     con.register(
         "rs_preds",
-        pl.DataFrame({
-            "race_id": ["jra:2024:0101:01:1", "jra:2024:0101:01:1"],
-            "ketto_toroku_bango": ["a", "b"],
-            "rs_p_nige": [0.6, 0.1],
-            "rs_p_senkou": [0.2, 0.4],
-            "rs_p_sashi": [0.1, 0.3],
-            "rs_p_oikomi": [0.1, 0.2],
-            "rs_predicted_class": [0, 1],
-            "rs_predicted_corner_front_score": [0.7, 1.6],
-            "rs_predicted_corner_rank": [1, 2],
-        }),
+        pl.DataFrame(
+            {
+                "race_id": ["jra:2024:0101:01:1", "jra:2024:0101:01:1"],
+                "ketto_toroku_bango": ["a", "b"],
+                "rs_p_nige": [0.6, 0.1],
+                "rs_p_senkou": [0.2, 0.4],
+                "rs_p_sashi": [0.1, 0.3],
+                "rs_p_oikomi": [0.1, 0.2],
+                "rs_predicted_class": [0, 1],
+                "rs_predicted_corner_front_score": [0.7, 1.6],
+                "rs_predicted_corner_rank": [1, 2],
+            }
+        ),
     )
     result = con.execute(subject.append_features_sql(input_glob, "jra")).pl()
 

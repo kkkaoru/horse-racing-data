@@ -707,17 +707,17 @@ def test_predict_params_scope_stored_correctly() -> None:
 
 def test_build_r2_feat_cache_key_format() -> None:
     key = build_r2_feat_cache_key("jra", "20260619")
-    assert key == "feat-cache/jra/20260619/features.parquet"
+    assert key == "feat-cache/catalog-v1/jra/20260619/features.parquet"
 
 
 def test_build_r2_feat_cache_key_nar() -> None:
     key = build_r2_feat_cache_key("nar", "20260101")
-    assert key == "feat-cache/nar/20260101/features.parquet"
+    assert key == "feat-cache/catalog-v1/nar/20260101/features.parquet"
 
 
 def test_build_r2_feat_cache_key_banei() -> None:
     key = build_r2_feat_cache_key("ban-ei", "20260619")
-    assert key == "feat-cache/ban-ei/20260619/features.parquet"
+    assert key == "feat-cache/catalog-v1/ban-ei/20260619/features.parquet"
 
 
 def test_build_r2_feat_cache_key_deterministic() -> None:
@@ -734,17 +734,17 @@ def test_build_r2_feat_cache_key_deterministic() -> None:
 
 def test_build_r2_per_race_feat_cache_key_format() -> None:
     key = build_r2_per_race_feat_cache_key("jra", "20260619", "05", "09")
-    assert key == "feat-cache/jra/20260619/05/09/features.parquet"
+    assert key == "feat-cache/catalog-v1/jra/20260619/05/09/features.parquet"
 
 
 def test_build_r2_per_race_feat_cache_key_nar() -> None:
     key = build_r2_per_race_feat_cache_key("nar", "20260101", "30", "11")
-    assert key == "feat-cache/nar/20260101/30/11/features.parquet"
+    assert key == "feat-cache/catalog-v1/nar/20260101/30/11/features.parquet"
 
 
 def test_build_r2_per_race_feat_cache_key_banei() -> None:
     key = build_r2_per_race_feat_cache_key("ban-ei", "20260619", "83", "01")
-    assert key == "feat-cache/ban-ei/20260619/83/01/features.parquet"
+    assert key == "feat-cache/catalog-v1/ban-ei/20260619/83/01/features.parquet"
 
 
 def test_build_r2_per_race_feat_cache_key_deterministic() -> None:
@@ -761,17 +761,17 @@ def test_build_r2_per_race_feat_cache_key_deterministic() -> None:
 
 def test_build_r2_day_base_key_format() -> None:
     key = build_r2_day_base_key("jra", "20260712")
-    assert key == "feat-daybase/jra/20260712/features.parquet"
+    assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
 
 
 def test_build_r2_day_base_key_nar() -> None:
     key = build_r2_day_base_key("nar", "20260101")
-    assert key == "feat-daybase/nar/20260101/features.parquet"
+    assert key == "feat-daybase/catalog-v1/nar/20260101/features.parquet"
 
 
 def test_build_r2_day_base_key_banei() -> None:
     key = build_r2_day_base_key("ban-ei", "20260712")
-    assert key == "feat-daybase/ban-ei/20260712/features.parquet"
+    assert key == "feat-daybase/catalog-v1/ban-ei/20260712/features.parquet"
 
 
 def test_build_r2_day_base_key_deterministic() -> None:

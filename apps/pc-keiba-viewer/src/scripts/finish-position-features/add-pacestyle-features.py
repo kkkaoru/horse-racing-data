@@ -36,6 +36,7 @@ leakage. The pressure-derived columns are pure SELECTs from existing race-
 internal columns already present in the input parquet (no PG read needed for
 those two).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,28 +47,16 @@ from pathlib import Path
 
 import duckdb
 
+from _catalog_attach import attach_source_catalog
+
 from _resource_defaults import add_resource_args, apply_to_connection
 
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
-
-# --rs-source selects where running-style probability rows come from. ``r2``
-# reads the per-day Parquet that the sync-realtime-data Worker writes to R2 (key
-# = ``running-style/predictions/by-day/{YYYY}/{MM}/{DD}/{source}/{model_version}.parquet``)
-# under ``pc-keiba-features-archive``. ``pg`` keeps the legacy Neon ATTACH path.
-# ``auto`` tries R2 first, then falls back to PG when the R2 setup raises (e.g.
-# missing token, missing run-date, empty prefix) so the daily container can
-# still finish even before the R2 token is provisioned.
-RS_SOURCE_CHOICES = ("r2", "pg", "auto")
 R2_BUCKET_DEFAULT = "pc-keiba-features-archive"
-R2_PREDICTIONS_PREFIX = "running-style/predictions/by-day"
-
-
-def ensure_rs_pred_cell_columns(con: duckdb.DuckDBPyConnection, table_name: str) -> None:
-    columns = {str(row[1]) for row in con.execute(f"pragma table_info('{table_name}')").fetchall()}
-    if "cell_model_key" not in columns:
-        con.execute(f"alter table {table_name} add column cell_model_key varchar")
-    if "cell_variant_id" not in columns:
-        con.execute(f"alter table {table_name} add column cell_variant_id varchar")
+RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1"
+R2_PREDICTIONS_PREFIX = (
+    f"running-style/predictions/by-day/{RUNNING_STYLE_CATALOG_GENERATION}"
+)
 
 
 # Best available running-style model_version per year, per category. Used to
@@ -76,16 +65,13 @@ def ensure_rs_pred_cell_columns(con: duckdb.DuckDBPyConnection, table_name: str)
 # RS_VERSION_PREF — the 2026 production model wins for 2026 rows, the late-2024
 # ensemble wins for 2024/2025.
 #
-# This table is a starting preference, not the sole source of truth: the live
-# PG staging path (stage_rs_predictions_from_pg) resolves each entry through
-# resolve_version_pref(), which falls back to whatever model_version PG
-# actually has the most recent race date for when the preferred string
-# matches zero rows. That fallback exists because this table went stale
+# This table is a starting preference, not the sole source of truth: the catalog
+# staging path resolves each entry through resolve_version_pref(), selecting the
+# model_version with the most recent race date when the preferred string matches
+# zero rows. This resolution exists because this table went stale
 # 2026-05-24 (production moved prod-v1.5 -> prod-v3 for 2026 without this
 # table being updated) and silently zeroed every rs_p_* feature for the rest
-# of 2026 until discovered 2026-07-11 — updating the string here again is
-# expected to keep happening as the champion line changes; the fallback is
-# what prevents the next change from repeating the same silent failure.
+# of 2026 until discovered 2026-07-11.
 RS_VERSION_PREF: dict[str, dict[int, str]] = {
     "jra": {
         2024: "jra-running-style-ens-lgbm-trans-v1.3",
@@ -117,23 +103,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--from-date", type=str, default="20100101")
     parser.add_argument(
-        "--rs-source",
-        choices=RS_SOURCE_CHOICES,
-        default="auto",
-        help=(
-            "Where to read race_running_style probabilities from. "
-            "r2 = pc-keiba-features-archive Parquet; pg = Neon ATTACH (legacy); "
-            "auto = R2 first, fall back to PG on any R2 error."
-        ),
-    )
-    parser.add_argument(
         "--run-date",
         type=str,
         default=None,
-        help=(
-            "Target run date (YYYYMMDD) for rs-source=r2/auto. Selects which "
-            "per-day Parquet shard to glob. Required when rs-source=r2."
-        ),
+        help="YYYYMMDD shard for raw-catalog-generated running-style predictions",
     )
     parser.add_argument(
         "--target-race",
@@ -141,7 +114,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "Focused production mode keibajo_code:race_bango. The input parquet "
-            "is already race-scoped; this switches PG/R2 staging to those race IDs."
+            "is already race-scoped; this switches catalog staging to those race IDs."
         ),
     )
     add_resource_args(parser)
@@ -149,9 +122,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def install_and_attach_pg(con: duckdb.DuckDBPyConnection, pg_url: str) -> None:
-    con.execute("install postgres")
-    con.execute("load postgres")
-    con.execute(f"attach '{pg_url}' as pg (type postgres, read_only)")
+    attach_source_catalog(con, pg_url)
 
 
 def build_version_filter_sql_from_pairs(pairs: dict[int, str]) -> str:
@@ -172,24 +143,14 @@ def build_version_filter_sql_from_pairs(pairs: dict[int, str]) -> str:
 
 
 def build_version_filter_sql(category: str) -> str:
-    """Static preference-only SQL fragment (no PG lookups).
-
-    Reads straight from the hardcoded ``RS_VERSION_PREF`` table. Kept for
-    ``--rs-source=r2`` (which never attaches PG, so cannot resolve against
-    live data) and as a preference-table preview. The live PG staging path
-    (``stage_rs_predictions_from_pg``) uses ``resolve_version_pref`` +
-    ``build_version_filter_sql_from_pairs`` instead, so a stale hardcoded
-    version cannot silently zero every rs_p_* column the way it did for all
-    of 2026 (RS_VERSION_PREF pinned to prod-v1.5 while production moved to
-    prod-v3 on 2026-05-24 — discovered 2026-07-11).
-    """
+    """Return a static preference-only SQL fragment without catalog lookups."""
     return build_version_filter_sql_from_pairs(RS_VERSION_PREF.get(category, {}))
 
 
 def _preferred_version_has_rows(
     con: duckdb.DuckDBPyConnection, category: str, year: int, version: str
 ) -> bool:
-    """True when >=1 PG row exists for this (category, year, model_version)."""
+    """Return whether the attached catalog has this model version."""
     row = con.execute(
         f"""
         select 1
@@ -206,7 +167,7 @@ def _latest_available_model_version(
 ) -> str | None:
     """Model_version with the most recent kaisai_tsukihi for (category, year).
 
-    ``None`` when PG has no rows at all for that (category, year) — e.g. a
+    ``None`` when the catalog has no rows for that (category, year) — e.g. a
     future year the champion has not scored yet. Ties (two model_versions
     sharing the same latest race date, such as a same-day champion flip
     plus rollback) break on model_version string descending, so the result
@@ -225,21 +186,23 @@ def _latest_available_model_version(
     return str(row[0]) if row is not None else None
 
 
-def resolve_version_pref(con: duckdb.DuckDBPyConnection, category: str) -> dict[int, str]:
-    """Resolve ``RS_VERSION_PREF`` against what PG actually holds, per year.
+def resolve_version_pref(
+    con: duckdb.DuckDBPyConnection, category: str
+) -> dict[int, str]:
+    """Resolve ``RS_VERSION_PREF`` against the attached catalog, per year.
 
     ``RS_VERSION_PREF`` is a hardcoded per-year preference that goes stale
     whenever the champion RS model_version changes without this dict being
     updated in the same commit — exactly what happened 2026-05-24, when
     production moved from ``{jra,nar}-running-style-lgbm-prod-v1.5`` to
     ``prod-v3`` and this dict kept pinning v1.5, silently zeroing every
-    rs_p_* column for the whole 2026 PG-fallback path until this fix
+    rs_p_* column for the whole 2026 catalog path until this fix
     (discovered 2026-07-11).
 
     A preferred version that still has >=1 row is kept as-is (one cheap
     existence check, no behavior change from before). A preferred version
-    with zero rows falls back to whichever model_version actually has the
-    most recent race date for that (category, year) — self-healing across
+    with zero rows selects whichever model_version has the most recent race
+    date for that (category, year) — self-healing across
     future champion changes instead of needing another hardcoded-string
     fix. Years with no PG rows at all for the category keep the original
     preference (harmless no-op: the filter clause matches nothing either
@@ -251,15 +214,15 @@ def resolve_version_pref(con: duckdb.DuckDBPyConnection, category: str) -> dict[
         if _preferred_version_has_rows(con, category, year, preferred_version):
             resolved[year] = preferred_version
             continue
-        fallback = _latest_available_model_version(con, category, year)
-        if fallback is None:
+        available_version = _latest_available_model_version(con, category, year)
+        if available_version is None:
             resolved[year] = preferred_version
             continue
-        resolved[year] = fallback
+        resolved[year] = available_version
         print(
             f"[add-pacestyle-features] RS_VERSION_PREF stale for {category} {year}: "
-            f"preferred {preferred_version!r} has 0 rows, falling back to "
-            f"most-recent {fallback!r}",
+            f"preferred {preferred_version!r} has 0 rows, using most-recent "
+            f"{available_version!r}",
             file=sys.stderr,
         )
     return resolved
@@ -291,7 +254,7 @@ def target_race_ids_filter_sql(focused_target: bool) -> str:
     return ""
 
 
-def stage_rs_predictions_from_pg(
+def stage_rs_predictions_from_catalog(
     con: duckdb.DuckDBPyConnection, category: str, focused_target: bool = False
 ) -> None:
     """Build a ``rs_preds`` temp keyed by (race_id, ketto_toroku_bango).
@@ -301,13 +264,14 @@ def stage_rs_predictions_from_pg(
 
     Only the best model_version per (category, year) is loaded; rows from other
     model_versions are filtered out so each (race, horse) maps to exactly one
-    probability vector. The best version is resolved against live PG data
+    probability vector. The best version is resolved against catalog data
     (``resolve_version_pref``) rather than read verbatim off the hardcoded
     ``RS_VERSION_PREF`` table, so a stale preference for the current year
-    falls back to whatever model_version PG actually has instead of
-    matching zero rows.
+    selects the latest available catalog model_version instead of matching zero rows.
     """
-    version_filter = build_version_filter_sql_from_pairs(resolve_version_pref(con, category))
+    version_filter = build_version_filter_sql_from_pairs(
+        resolve_version_pref(con, category)
+    )
     target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
     con.execute(
         f"""
@@ -345,18 +309,10 @@ def stage_rs_predictions_from_pg(
         from rs_scored
         """
     )
-    con.execute(
-        "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
-    )
+    con.execute("create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)")
 
 
 def setup_r2_duckdb_secret(con: duckdb.DuckDBPyConnection) -> None:
-    """Install httpfs and register an R2-backed S3 secret on ``con``.
-
-    Reads ``R2_ACCOUNT_ID`` / ``R2_ACCESS_KEY_ID`` / ``R2_SECRET_ACCESS_KEY``
-    from the environment — KeyError propagates so ``--rs-source=auto`` can fall
-    back to PG when the token is not provisioned yet.
-    """
     account_id = os.environ["R2_ACCOUNT_ID"]
     key_id = os.environ["R2_ACCESS_KEY_ID"]
     secret = os.environ["R2_SECRET_ACCESS_KEY"]
@@ -364,12 +320,12 @@ def setup_r2_duckdb_secret(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         f"""
         create or replace secret r2_secret (
-          TYPE S3,
-          KEY_ID '{key_id}',
-          SECRET '{secret}',
-          ENDPOINT '{account_id}.r2.cloudflarestorage.com',
-          REGION 'auto',
-          URL_STYLE 'path'
+          type s3,
+          key_id '{key_id}',
+          secret '{secret}',
+          endpoint '{account_id}.r2.cloudflarestorage.com',
+          region 'auto',
+          url_style 'path'
         )
         """
     )
@@ -382,26 +338,13 @@ def stage_rs_predictions_from_r2(
     bucket: str,
     focused_target: bool = False,
 ) -> None:
-    """Build the ``rs_preds`` temp from the per-day R2 Parquet shard.
-
-    Glob layout matches the Worker output:
-      ``s3://{bucket}/running-style/predictions/by-day/{YYYY}/{MM}/{DD}/{category}/*.parquet``
-
-    The wildcard accepts whichever ``model_version.parquet`` the Worker wrote;
-    the v3 production model collapses to one file per (date, category).
-    """
     yyyy = run_date_ymd[:4]
     mm = run_date_ymd[4:6]
     dd = run_date_ymd[6:8]
     glob = (
-        f"s3://{bucket}/{R2_PREDICTIONS_PREFIX}/"
-        f"{yyyy}/{mm}/{dd}/{category}/*.parquet"
+        f"s3://{bucket}/{R2_PREDICTIONS_PREFIX}/{yyyy}/{mm}/{dd}/{category}/*.parquet"
     )
     target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
-    con.execute(
-        f"create or replace temp table rs_preds_raw as select * from read_parquet('{glob}')"
-    )
-    ensure_rs_pred_cell_columns(con, "rs_preds_raw")
     con.execute(
         f"""
         create or replace temp table rs_preds as
@@ -417,29 +360,25 @@ def stage_rs_predictions_from_r2(
             cast(predicted_class as integer) as rs_predicted_class,
             cast(cell_model_key as varchar) as rs_cell_model_key,
             cast(cell_variant_id as varchar) as rs_cell_variant_id
-          from rs_preds_raw
-          where true
-            {target_filter}
+          from read_parquet('{glob}')
+          where true {target_filter}
         ),
         rs_scored as (
-          select
-            *,
+          select *,
             rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi
               as rs_predicted_corner_front_score
           from rs_source
         )
-        select
-          *,
+        select *,
           row_number() over (
             partition by race_id
-            order by rs_predicted_corner_front_score asc, rs_p_nige desc, ketto_toroku_bango asc
+            order by rs_predicted_corner_front_score asc,
+              rs_p_nige desc, ketto_toroku_bango asc
           ) as rs_predicted_corner_rank
         from rs_scored
         """
     )
-    con.execute(
-        "create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)"
-    )
+    con.execute("create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)")
 
 
 def append_features_sql(input_glob: str, category: str) -> str:
@@ -514,7 +453,9 @@ def append_features_sql(input_glob: str, category: str) -> str:
     """
 
 
-def write_partitioned(con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path) -> None:
+def write_partitioned(
+    con: duckdb.DuckDBPyConnection, sql: str, output_dir: Path
+) -> None:
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -528,30 +469,23 @@ def stage_rs_predictions(
     con: duckdb.DuckDBPyConnection,
     args: argparse.Namespace,
 ) -> None:
-    """Dispatch to the R2 or PG rs_preds loader based on ``args.rs_source``.
-
-    For ``r2`` any failure propagates. For ``auto`` R2 is attempted first and any
-    Exception falls back to the legacy PG path so an unprovisioned R2 token does
-    not block today's predictions. For ``pg`` the R2 path is never touched.
-    """
-    bucket = os.environ.get("R2_BUCKET", R2_BUCKET_DEFAULT)
+    """Load only the requested raw-Catalog generation in production."""
     focused_target = getattr(args, "target_race", None) is not None
-    if args.rs_source in ("r2", "auto"):
-        try:
-            if not args.run_date:
-                raise ValueError(
-                    "--run-date YYYYMMDD is required when --rs-source=r2 or auto"
-                )
-            setup_r2_duckdb_secret(con)
-            stage_rs_predictions_from_r2(
-                con, args.category, args.run_date, bucket, focused_target
-            )
-            return
-        except Exception:
-            if args.rs_source == "r2":
-                raise
+    run_date = getattr(args, "run_date", None)
+    if run_date is not None:
+        setup_r2_duckdb_secret(con)
+        stage_rs_predictions_from_r2(
+            con,
+            args.category,
+            run_date,
+            os.environ.get("R2_BUCKET", R2_BUCKET_DEFAULT),
+            focused_target,
+        )
+        return
+    if args.pg_url.startswith("r2-catalog://"):
+        raise ValueError("--run-date YYYYMMDD is required for Catalog production")
     install_and_attach_pg(con, args.pg_url)
-    stage_rs_predictions_from_pg(con, args.category, focused_target)
+    stage_rs_predictions_from_catalog(con, args.category, focused_target)
 
 
 def main() -> None:
@@ -564,7 +498,9 @@ def main() -> None:
     if args.target_race is not None:
         stage_target_race_ids(con, input_glob, args.category)
     stage_rs_predictions(con, args)
-    write_partitioned(con, append_features_sql(input_glob, args.category), args.output_dir)
+    write_partitioned(
+        con, append_features_sql(input_glob, args.category), args.output_dir
+    )
     con.close()
 
 

@@ -98,6 +98,11 @@
   ],
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
+    // Heavy prediction reads use the dedicated Iceberg catalog. Neon remains
+    // only for lightweight viewer reads and prediction-result projection.
+    "SOURCE_DATABASE_URL": "r2-catalog://pc-keiba",
+    "R2_CATALOG_URI": "https://catalog.cloudflarestorage.com/78109ec18c7c85b194b19fb32e3bb149/pc-keiba-r2-catalog",
+    "R2_CATALOG_WAREHOUSE": "78109ec18c7c85b194b19fb32e3bb149_pc-keiba-r2-catalog",
     // Per-race coordinator gate. "1" = active — the coordinator cron enqueues
     // per-race rescore messages for the categories in RESCORE_CATEGORIES below,
     // routed to the existing container held /predict mode=rescore path (see

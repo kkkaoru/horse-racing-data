@@ -17,7 +17,6 @@ const categoryEnvVars = (input: BuildStartOptionsInput): Record<string, string> 
         MODELS_DIR: "/models",
         PREDICT_SERVE_MODE: "http",
         RS_SOURCE: "pg",
-        SOURCE_DATABASE_URL: input.env.NEON_DATABASE_URL,
         category: input.category,
       }
     : {};
@@ -32,8 +31,12 @@ export const buildPredictStartOptions = (input: BuildStartOptionsInput): Predict
   envVars: {
     NEON_DATABASE_URL: input.env.NEON_DATABASE_URL,
     PREDICT_DAYS_AHEAD: input.env.PREDICT_DAYS_AHEAD,
+    R2_CATALOG_TOKEN: input.env.R2_CATALOG_TOKEN ?? "",
+    R2_CATALOG_URI: input.env.R2_CATALOG_URI ?? "",
+    R2_CATALOG_WAREHOUSE: input.env.R2_CATALOG_WAREHOUSE ?? "",
     RUN_DATE: input.runYmd,
     RUN_DATE_ISO: input.runDate,
+    SOURCE_DATABASE_URL: input.env.SOURCE_DATABASE_URL ?? "",
     ...categoryEnvVars(input),
   },
 });

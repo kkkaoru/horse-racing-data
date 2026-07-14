@@ -40,15 +40,16 @@ def normalise_database_url(raw: str) -> str:
     return _strip_matching_wrapping_quote(stripped).strip()
 
 
-def resolve_source_url(raw: str | None, default_url: str) -> str:
-    """Resolve the SOURCE_DATABASE_URL with NEON_DATABASE_URL as fallback.
+def resolve_source_url(raw: str | None) -> str:
+    """Require the feature source independently from the Neon output URL.
 
-    The feature-build subprocess reads SOURCE; predictions UPSERT goes to NEON.
-    When SOURCE is unset / empty / whitespace-only, fall back to ``default_url``
-    so existing deployments (single NEON URL) keep working unchanged. When
-    SOURCE is provided, it is run through ``normalise_database_url`` to strip
-    accidental wrapping quotes the same way the NEON URL is.
+    Production uses ``r2-catalog://pc-keiba``. Missing configuration is fatal:
+    silently falling back to Neon would reintroduce heavy batch reads through
+    Hyperdrive and defeat the storage boundary.
     """
     if not raw or not raw.strip():
-        return default_url
-    return normalise_database_url(raw)
+        raise ValueError("SOURCE_DATABASE_URL is required for feature reads")
+    source_url = normalise_database_url(raw)
+    if not source_url.startswith("r2-catalog://"):
+        raise ValueError("SOURCE_DATABASE_URL must use r2-catalog:// in batch runtime")
+    return source_url
