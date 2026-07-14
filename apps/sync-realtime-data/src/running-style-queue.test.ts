@@ -1,5 +1,6 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { RaceRunningStyleRow, RunningStyleInferenceStateDetail } from "./running-style-d1";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const finishPositionPoolMock = vi.hoisted(() => ({
@@ -53,6 +54,15 @@ vi.mock("./running-style-model-binary", () => ({
 vi.mock("./running-style-neon", () => ({
   upsertRunningStylePredictionsToNeon: vi.fn(async () => 2),
 }));
+vi.mock("./running-style-parquet-export", () => ({
+  exportRunningStyleParquetForDay: vi.fn(async () => ({
+    bytesWritten: 100,
+    fileCount: 1,
+    keys: ["running-style.parquet"],
+    rowCount: 100,
+    skipped: false,
+  })),
+}));
 vi.mock("./storage", () => ({
   getLatestRaceEntries: vi.fn(),
 }));
@@ -67,6 +77,37 @@ const JOB: RunningStylePredictionJob = {
   source: "jra",
   type: "generate-running-style-predictions",
 };
+
+const STYLE_ROW: RaceRunningStyleRow = {
+  bamei: "test",
+  category: "jra",
+  horseNumber: 1,
+  kaisaiNen: "2026",
+  kettoTorokuBango: "horse-1",
+  modelVersion: "v7-lineage",
+  pNige: 0.25,
+  pOikomi: 0.25,
+  pSashi: 0.25,
+  pSenkou: 0.25,
+  predictedAt: "2026-05-12T11:00:00+09:00",
+  predictedCornerFrontScore: 1.5,
+  predictedCornerRank: 1,
+  predictedLabel: "senkou",
+  raceKey: "jra:20260512:08:01",
+};
+
+const completedState = (expectedHorseCount: number): RunningStyleInferenceStateDetail => ({
+  attemptedAt: "2026-05-12T11:00:00+09:00",
+  cellModelKey: null,
+  cellVariantId: null,
+  completedAt: "2026-05-12T11:01:00+09:00",
+  expectedHorseCount,
+  featuresR2Key: "features.parquet",
+  modelVersion: "v7-lineage",
+  raceKey: "jra:20260512:08:01",
+  status: "completed",
+  writtenHorseCount: expectedHorseCount,
+});
 
 const CELL_ROUTING_JSON = JSON.stringify({
   jra: {
@@ -289,14 +330,8 @@ it("skips finish-position full trigger on completed short-circuit when Neon writ
     async (_input) => new Response("queued", { status: 202 }),
   );
   vi.spyOn(console, "log").mockImplementation(() => {});
-  vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
-    expectedHorseCount: 3,
-    featuresR2Key: "features.parquet",
-    modelVersion: "v7-lineage",
-    status: "completed",
-    writtenHorseCount: 3,
-  } as never);
-  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}, {}, {}] as never);
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(3));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW, STYLE_ROW]);
   vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(2);
 
   const summary = await handleRunningStylePredictionJob(
@@ -313,6 +348,123 @@ it("skips finish-position full trigger on completed short-circuit when Neon writ
   expect(vi.mocked(console.log).mock.calls[0]?.[0]).toBe(
     "finish-position trigger skipped for jra:20260512:08:01: Neon written count 2 is below expected horse count 3",
   );
+});
+
+it("exports the completed day to R2 before triggering finish-position", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(3));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW, STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(3);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.parquetExportedRows).toBe(100);
+  expect(summary?.parquetExportError).toBeUndefined();
+  expect(exportRunningStyleParquetForDay).toHaveBeenCalledWith({
+    dateYmd: "20260512",
+    env: expect.anything(),
+    source: "jra",
+  });
+});
+
+it("does not trigger finish-position when the same-day R2 export is skipped", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(3));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW, STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(3);
+  vi.mocked(exportRunningStyleParquetForDay).mockResolvedValueOnce({
+    bytesWritten: 0,
+    fileCount: 0,
+    keys: [],
+    rowCount: 0,
+    skipped: true,
+    skippedReason: "archive binding unavailable",
+  });
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.parquetExportedRows).toBe(0);
+  expect(summary?.parquetExportError).toBe("archive binding unavailable");
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "R2 Parquet export failed: archive binding unavailable",
+  );
+});
+
+it("uses a deterministic R2 export error when a skipped result has no reason", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(1));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(1);
+  vi.mocked(exportRunningStyleParquetForDay).mockResolvedValueOnce({
+    bytesWritten: 0,
+    fileCount: 0,
+    keys: [],
+    rowCount: 0,
+    skipped: true,
+  });
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.parquetExportError).toBe("running-style Parquet export was skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "R2 Parquet export failed: running-style Parquet export was skipped",
+  );
+});
+
+it("does not trigger finish-position when the same-day R2 export is incomplete", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(3));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW, STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(3);
+  vi.mocked(exportRunningStyleParquetForDay).mockResolvedValueOnce({
+    bytesWritten: 100,
+    fileCount: 1,
+    keys: ["running-style.parquet"],
+    rowCount: 2,
+    skipped: false,
+  });
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.parquetExportedRows).toBe(2);
+  expect(summary?.finishPositionTriggerMode).toBe("skipped");
+  expect(summary?.finishPositionTriggerError).toBe(
+    "R2 Parquet export row count 2 is below expected horse count 3",
+  );
+});
+
+it("captures same-day R2 export failures without falling back to Neon reads", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const { exportRunningStyleParquetForDay } = await import("./running-style-parquet-export");
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(1));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(1);
+  vi.mocked(exportRunningStyleParquetForDay).mockRejectedValueOnce(new Error("R2 write failed"));
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.parquetExportedRows).toBe(0);
+  expect(summary?.parquetExportError).toBe("R2 write failed");
+  expect(summary?.finishPositionTriggerError).toBe("R2 Parquet export failed: R2 write failed");
 });
 
 it("completes the job from an R2 hit and returns the success summary", async () => {

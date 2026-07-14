@@ -43,6 +43,7 @@ import {
   type RunningStyleCellRoutingConfig,
 } from "./running-style-cell-router";
 import { upsertRunningStylePredictionsToNeon } from "./running-style-neon";
+import { exportRunningStyleParquetForDay } from "./running-style-parquet-export";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 import { getLatestRaceEntries } from "./storage";
 import type { Env, RunningStylePredictionJob } from "./types";
@@ -84,6 +85,8 @@ export interface RunningStylePredictionJobSummary {
   modelVersion: string;
   neonError?: string;
   neonWrittenCount?: number;
+  parquetExportError?: string;
+  parquetExportedRows?: number;
   skipped?: boolean;
   writtenCount: number;
 }
@@ -93,6 +96,8 @@ interface CacheAndSyncRunningStylesResult {
   cacheWritten: boolean;
   neonError?: string;
   neonWrittenCount: number;
+  parquetExportError?: string;
+  parquetExportedRows: number;
 }
 
 interface FinishPositionTriggerResult {
@@ -119,6 +124,25 @@ const upsertRunningStylesToNeonWithRetry = async (
     }
   }
   throw lastError;
+};
+
+const exportRunningStylesToR2 = async (
+  env: Env,
+  job: RunningStylePredictionJob,
+): Promise<number | string> => {
+  try {
+    const result = await exportRunningStyleParquetForDay({
+      dateYmd: buildFinishPositionRunYmd(job),
+      env,
+      source: job.source,
+    });
+    if (result.skipped) {
+      return result.skippedReason ?? "running-style Parquet export was skipped";
+    }
+    return result.rowCount;
+  } catch (error) {
+    return formatError(error);
+  }
 };
 
 const runningStyleCellRoutingConfig = (env: Env): RunningStyleCellRoutingConfig => {
@@ -264,6 +288,12 @@ const finishPositionTriggerSkipReason = (
   if (cacheResult.neonWrittenCount < expectedHorseCount) {
     return `Neon written count ${cacheResult.neonWrittenCount} is below expected horse count ${expectedHorseCount}`;
   }
+  if (cacheResult.parquetExportError !== undefined) {
+    return `R2 Parquet export failed: ${cacheResult.parquetExportError}`;
+  }
+  if (cacheResult.parquetExportedRows < expectedHorseCount) {
+    return `R2 Parquet export row count ${cacheResult.parquetExportedRows} is below expected horse count ${expectedHorseCount}`;
+  }
   return null;
 };
 
@@ -300,10 +330,10 @@ const cacheAndSyncCompletedRunningStyles = async (
       },
     );
     if (rows.length === 0) {
-      return { cacheWritten: false, neonWrittenCount: 0 };
+      return { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
     }
     await upsertRaceRunningStyles(env.REALTIME_DB, rows);
-    const [cacheWritten, neonResult] = await Promise.all([
+    const [cacheWritten, neonResult, parquetExportResult] = await Promise.all([
       putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
         console.error("Running-style cache write failed:", formatError(error));
         return false;
@@ -312,18 +342,23 @@ const cacheAndSyncCompletedRunningStyles = async (
         console.error("Running-style Neon write failed:", formatError(error));
         return formatError(error);
       }),
+      exportRunningStylesToR2(env, job),
     ]);
     const neonFailed = typeof neonResult === "string";
+    const parquetExportFailed = typeof parquetExportResult === "string";
     return {
       cacheWritten,
       neonError: neonFailed ? neonResult : undefined,
       neonWrittenCount: neonFailed ? 0 : neonResult,
+      parquetExportError: parquetExportFailed ? parquetExportResult : undefined,
+      parquetExportedRows: parquetExportFailed ? 0 : parquetExportResult,
     };
   } catch (error) {
     return {
       cacheError: formatError(error),
       cacheWritten: false,
       neonWrittenCount: 0,
+      parquetExportedRows: 0,
     };
   }
 };
@@ -444,7 +479,7 @@ export const handleRunningStylePredictionJob = async (
     const cacheResult =
       summary.writtenCount >= expectedHorseCount
         ? await cacheAndSyncCompletedRunningStyles(env, job)
-        : { cacheWritten: false, neonWrittenCount: 0 };
+        : { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
     const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
       env,
       job,
