@@ -889,6 +889,30 @@ def test_ensure_day_base_local_disk_hit_skips_r2(monkeypatch: pytest.MonkeyPatch
     assert called == []
 
 
+def test_ensure_day_base_catalog_source_rejects_existing_local_and_r2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from predict_lib.serve import R2Config
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    final_dir = _day_base_dir("jra", "20260712") / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "features.parquet").write_bytes(b"UNTRUSTED")
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+    r2_calls: list[bool] = []
+    monkeypatch.setattr(
+        pipeline_runner,
+        "r2_get_parquet",
+        lambda *args, **kwargs: r2_calls.append(True) or True,
+    )
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", r2)
+
+    assert result is None
+    assert r2_calls == []
+
+
 def test_ensure_day_base_r2_hit_when_local_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from predict_lib.serve import R2Config
 

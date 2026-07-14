@@ -47,6 +47,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import IO, Final
 
+from predict_lib.conn_url import is_catalog_source_url
 from predict_lib.model_meta import Category
 from predict_lib.pipeline_args import (
     build_base_argv,
@@ -990,18 +991,23 @@ def ensure_day_base(
     mirroring ``weather_fetcher.fetch_venue_weather_dir``'s
     fetch/materialize/fallback shape:
 
-    1. Local disk fast path -- if this container process already built (or
+    1. Catalog source trust boundary -- production ``r2-catalog://`` reads
+       never accept an existing processed local/R2 day-base. Return ``None``
+       so the caller rebuilds from current raw Catalog data.
+    2. Offline local disk fast path -- if this container process already built (or
        downloaded) the day-base for this category+day, return it immediately.
        This is the common case for the 2nd+ race of the day served by the same
        long-lived container process.
-    2. R2 fast path -- when ``r2_config`` is provided, GET
+    3. Offline R2 fast path -- when ``r2_config`` is provided, GET
        ``build_r2_day_base_key(category, target_date)`` (the prewarm job's
        upload target) into the local day-base dir and return it on success.
-    3. Otherwise return ``None`` -- the caller decides whether to build the
+    4. Otherwise return ``None`` -- the caller decides whether to build the
        day-base synchronously via :func:`build_day_base` or fall back to the
        full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
        function itself never blocks on a multi-minute build.
     """
+    if is_catalog_source_url(database_url):
+        return None
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
     if has_parquet_output(final_dir):

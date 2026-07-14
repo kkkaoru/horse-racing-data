@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from predict_lib.conn_url import normalise_database_url, resolve_source_url
+from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
 
 
 def test_clean_url_unchanged() -> None:
@@ -127,3 +127,15 @@ def test_resolve_source_url_strips_surrounding_whitespace_on_provided_value() ->
 
 def test_resolve_source_url_accepts_catalog_scheme() -> None:
     assert resolve_source_url(" r2-catalog://pc-keiba ") == "r2-catalog://pc-keiba"
+
+
+def test_is_catalog_source_url_accepts_normalised_catalog_url() -> None:
+    assert is_catalog_source_url("r2-catalog://pc-keiba") is True
+
+
+def test_is_catalog_source_url_normalises_wrapping_quotes() -> None:
+    assert is_catalog_source_url(" 'r2-catalog://pc-keiba' ") is True
+
+
+def test_is_catalog_source_url_rejects_offline_postgres_url() -> None:
+    assert is_catalog_source_url("postgresql://u:p@h/db") is False

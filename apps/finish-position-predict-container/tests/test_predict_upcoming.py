@@ -67,6 +67,7 @@ _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
 _BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
 _MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
+_MAKE_RESCORE_FN_ATTR = "_make_rescore_fn"
 _PREWARM_PARQUET_PAYLOAD_ATTR = "_prewarm_parquet_payload"
 _ENSURE_CACHED_PARQUET_ATTR = "_ensure_cached_parquet"
 _load_model_metadata = cast(
@@ -84,6 +85,13 @@ _build_feature_rows = cast(
 _make_prewarm_fn = cast(
     Callable[[str], Callable[[str, str, int], Path | None]],
     getattr(predict_upcoming, _MAKE_PREWARM_FN_ATTR),
+)
+_make_rescore_fn = cast(
+    Callable[
+        [str, Path, str, R2Config | None, RaceScope],
+        tuple[PredictCategoryFn, PerRaceParquetPayloadFn],
+    ],
+    getattr(predict_upcoming, _MAKE_RESCORE_FN_ATTR),
 )
 _prewarm_parquet_payload = cast(
     Callable[[str, str, Path], tuple[str, str] | None],
@@ -1095,6 +1103,55 @@ def test_ensure_cached_parquet_fetches_only_catalog_generation(
     _ensure_cached_parquet(final_dir, "jra", "20260712", r2)
 
     assert captured_keys == ["feat-cache/catalog-v1/jra/20260712/features.parquet"]
+
+
+def test_catalog_rescore_forces_full_fallback_without_reading_processed_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_reads: list[bool] = []
+    full_calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_ensure_cached_parquet",
+        lambda *args, **kwargs: cache_reads.append(True),
+    )
+    rescore_fn, _per_race_payload_fn = _make_rescore_fn(
+        "postgresql://neon-output/db",
+        tmp_path,
+        "r2-catalog://pc-keiba",
+        R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
+        RaceScope(keibajo_code="05", race_bango="11"),
+    )
+
+    def full_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        full_calls.append(
+            (category, run_date, days_ahead, keibajo_code, race_bango, card_max_race_bango)
+        )
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260712",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="11",
+        card_max_race_bango=12,
+    )
+    chunks = list(iter_predict_chunks(params, full_predict, rescore_fn=rescore_fn))
+    parsed = [json.loads(chunk.decode()) for chunk in chunks]
+
+    assert cache_reads == []
+    assert full_calls == [("jra", "20260712", 0, "05", "11", 12)]
+    assert any(item.get("stage") == "rescore-fallback-to-full" for item in parsed)
+    assert parsed[-1]["status"] == "success"
 
 
 def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) -> None:

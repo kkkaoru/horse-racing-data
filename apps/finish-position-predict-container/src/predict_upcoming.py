@@ -69,7 +69,7 @@ from predict_lib.cell_router import (
     derive_card_max_race_bango_by_card,
     load_cell_router,
 )
-from predict_lib.conn_url import normalise_database_url, resolve_source_url
+from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
@@ -1542,7 +1542,8 @@ def _make_rescore_fn(
 ) -> tuple[PredictCategoryFn, PerRaceParquetPayloadFn]:
     """Build the rescore-path ``rescore_fn`` + per-race parquet payload fn.
 
-    The rescore path (Stage 2 of the per-race rebuild):
+    For an offline non-Catalog source, the rescore path (Stage 2 of the
+    per-race rebuild):
     1. Ensures the pre-built feature parquet from a prior ``mode=full`` run is
        available locally (downloads from R2 when configured, else raises
        :class:`CacheMissError` so the full pipeline runs).
@@ -1561,10 +1562,12 @@ def _make_rescore_fn(
     refreshed parquet by ``race_id`` so :func:`iter_predict_chunks` can embed the
     per-race payloads in the result line for both full and rescore modes.
 
-    ``source_url`` is unused on this path (no Neon feature scan) but kept in the
-    signature for parity with :func:`_make_predict_fn`.
+    Production ``r2-catalog://`` sources do not enter that cache path. The
+    returned function raises :class:`CacheMissError` before inspecting local
+    disk or R2, which makes :func:`iter_predict_chunks` run the raw Catalog full
+    build. A caller without that fallback fails closed.
     """
-    del source_url  # no Neon feature scan on the rescore path
+    catalog_source = is_catalog_source_url(source_url)
     _last: list[tuple[str, str]] = []
 
     def _rescore(
@@ -1587,6 +1590,11 @@ def _make_rescore_fn(
         # rescore shape, where self-derivation from a single-race ``scoped`` map
         # would be wrong -- see score_races' docstring).
         del days_ahead, keibajo_code, race_bango
+        if catalog_source:
+            raise CacheMissError(
+                "processed feature cache is disabled for r2-catalog source; "
+                "raw Catalog rebuild required"
+            )
         from pipeline_runner import WORK_DIR  # bundled in image
         from predict_lib.model_meta import resolve_category
 

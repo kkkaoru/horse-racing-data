@@ -1,26 +1,59 @@
-// Run with bun. Tests for focused full completion guard.
+// Run with bun. Tests for the raw-Catalog-backed focused full completion guard.
 
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
 
-const { neonMock, queryMock } = vi.hoisted(() => {
-  const query = vi.fn(async () => [{ actual_rows: 12, complete: true, expected_rows: 12 }]);
-  return { neonMock: vi.fn(() => ({ query })), queryMock: query };
+const buildCatalogRows = (count = 12): Record<string, unknown>[] =>
+  Array.from({ length: count }, (_, index) => ({
+    grade_code: null,
+    ketto_toroku_bango: `horse-${String(index + 1).padStart(2, "0")}`,
+    kyoso_joken_code: null,
+    shusso_tosu: count,
+    track_code: null,
+  }));
+
+const { catalogFetchMock, neonMock, queryMock } = vi.hoisted(() => {
+  const query = vi.fn(
+    async (_query: string, _params: readonly unknown[]): Promise<unknown> => [{ actual_rows: 12 }],
+  );
+  const catalogFetch = vi.fn(
+    async (_request: Request): Promise<Response> =>
+      Response.json({
+        rows: Array.from({ length: 12 }, (_, index) => ({
+          grade_code: null,
+          ketto_toroku_bango: `horse-${String(index + 1).padStart(2, "0")}`,
+          kyoso_joken_code: null,
+          shusso_tosu: 12,
+          track_code: null,
+        })),
+      }),
+  );
+  return { catalogFetchMock: catalogFetch, neonMock: vi.fn(() => ({ query })), queryMock: query };
 });
 
 vi.mock("@neondatabase/serverless", () => ({ neon: neonMock }));
 
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
 
-const makeEnv = (): Env => ({ NEON_DATABASE_URL: "postgres://example" }) as Env;
+const makeEnv = (): Env =>
+  Object.assign(Object.create(null), {
+    NEON_DATABASE_URL: "postgres://example",
+    PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
+  });
+
+const setCatalogRows = (rows: readonly Record<string, unknown>[]): void => {
+  catalogFetchMock.mockImplementation(async () => Response.json({ rows }));
+};
 
 beforeEach(() => {
+  catalogFetchMock.mockReset();
+  queryMock.mockReset();
+  setCatalogRows(buildCatalogRows());
+  queryMock.mockResolvedValue([{ actual_rows: 12 }]);
   neonMock.mockClear();
-  queryMock.mockClear();
-  queryMock.mockResolvedValue([{ actual_rows: 12, complete: true, expected_rows: 12 }]);
 });
 
-test("isFocusedFullPredictionComplete returns true when actual rows cover expected rows", async () => {
+test("uses raw Catalog entries and only queries Neon prediction output", async () => {
   await expect(
     isFocusedFullPredictionComplete({
       category: "nar",
@@ -30,62 +63,88 @@ test("isFocusedFullPredictionComplete returns true when actual rows cover expect
       runYmd: "20260701",
     }),
   ).resolves.toBe(true);
+
+  const request = catalogFetchMock.mock.calls[0]?.[0];
+  expect(request?.url).toBe(
+    "https://pc-keiba-r2-catalog.internal/v1/race-features?date=20260701&source=nar&keibajoCode=50&raceBango=12",
+  );
   expect(neonMock).toHaveBeenCalledWith("postgres://example");
-  expect(queryMock).toHaveBeenCalledWith(expect.stringContaining("race_entry_corner_features"), [
-    "nar",
-    "2026",
-    "0701",
-    "50",
-    "12",
-    "nar",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
+  expect(queryMock).toHaveBeenCalledWith(
+    expect.not.stringContaining("race_entry_corner_features"),
+    [
+      "nar",
+      "2026",
+      "0701",
+      "50",
+      "12",
+      "iter40-nar-settransformer-blend-v1",
+      buildCatalogRows().map((row) => row.ketto_toroku_bango),
+    ],
+  );
 });
 
-test("isFocusedFullPredictionComplete checks NAR transformer rows by default", async () => {
-  await expect(
-    isFocusedFullPredictionComplete({
-      category: "nar",
-      env: makeEnv(),
-      keibajoCode: "45",
-      raceBango: "03",
-      runYmd: "20260710",
-    }),
-  ).resolves.toBe(true);
-  expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("else $7"), [
-    "nar",
-    "2026",
-    "0710",
-    "45",
-    "03",
-    "nar",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
+test("uses the NAR base model when transformer blending is disabled", async () => {
+  await isFocusedFullPredictionComplete({
+    category: "nar",
+    env: { ...makeEnv(), NAR_TRANSFORMER_BLEND_ENABLED: "off" },
+    keibajoCode: "45",
+    raceBango: "03",
+    runYmd: "20260710",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-clean188");
 });
 
-test("isFocusedFullPredictionComplete checks NAR clean188 rows when transformer is disabled", async () => {
-  await expect(
-    isFocusedFullPredictionComplete({
-      category: "nar",
-      env: { ...makeEnv(), NAR_TRANSFORMER_BLEND_ENABLED: "off" },
-      keibajoCode: "45",
-      raceBango: "03",
-      runYmd: "20260710",
-    }),
-  ).resolves.toBe(true);
-  expect(queryMock).toHaveBeenLastCalledWith(expect.any(String), [
-    "nar",
-    "2026",
-    "0710",
-    "45",
-    "03",
-    "nar",
-    "iter12-nar-xgb-hpo-v8-clean188",
+test("routes JRA 703 and prior-corner races from raw Catalog fields", async () => {
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyoso_joken_code: "703",
+    },
   ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "02",
+    runYmd: "20260621",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyoso_joken_code: "005",
+      shusso_tosu: 10,
+      track_code: "2A",
+    },
+  ]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "10",
+    raceBango: "06",
+    runYmd: "20260705",
+  });
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013");
 });
 
-test("isFocusedFullPredictionComplete returns false when expected rows are absent", async () => {
-  queryMock.mockResolvedValue([{ actual_rows: 0, complete: true, expected_rows: 0 }]);
+test("routes ban-ei grade E through the ban-ei Catalog filter", async () => {
+  setCatalogRows([{ ...buildCatalogRows(1)[0], grade_code: "E" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "ban-ei",
+    env: makeEnv(),
+    keibajoCode: "83",
+    raceBango: "01",
+    runYmd: "20260701",
+  });
+  expect(catalogFetchMock.mock.calls[0]?.[0]?.url).toContain("source=ban-ei");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("banei-cb-v8-window2011-wf-15y");
+});
+
+test("returns false without querying Neon when raw Catalog has no entries", async () => {
+  setCatalogRows([]);
   await expect(
     isFocusedFullPredictionComplete({
       category: "jra",
@@ -95,119 +154,42 @@ test("isFocusedFullPredictionComplete returns false when expected rows are absen
       runYmd: "20260628",
     }),
   ).resolves.toBe(false);
+  expect(queryMock).not.toHaveBeenCalled();
 });
 
-test("isFocusedFullPredictionComplete returns false when no single model covers expected rows", async () => {
-  queryMock.mockResolvedValue([
-    {
-      actual_rows: "12" as unknown as number,
-      complete: false,
-      expected_rows: "12" as unknown as number,
-    },
-  ]);
+test("deduplicates raw Catalog horses before comparing prediction count", async () => {
+  const row = {
+    grade_code: null,
+    ketto_toroku_bango: "horse-01",
+    kyoso_joken_code: null,
+    shusso_tosu: 1,
+    track_code: null,
+  };
+  setCatalogRows([row, row]);
+  queryMock.mockResolvedValue([{ actual_rows: "1" }]);
   await expect(
     isFocusedFullPredictionComplete({
-      category: "ban-ei",
+      category: "jra",
       env: makeEnv(),
-      keibajoCode: "65",
-      raceBango: "01",
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260628",
+    }),
+  ).resolves.toBe(true);
+});
+
+test("returns false when prediction output is incomplete or malformed", async () => {
+  queryMock.mockResolvedValue([{ actual_rows: 11 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "12",
       runYmd: "20260701",
     }),
   ).resolves.toBe(false);
-  expect(queryMock).toHaveBeenCalledWith(expect.any(String), [
-    "nar",
-    "2026",
-    "0701",
-    "65",
-    "01",
-    "ban-ei",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
-});
 
-test("isFocusedFullPredictionComplete checks the current routed model version", async () => {
-  await expect(
-    isFocusedFullPredictionComplete({
-      category: "jra",
-      env: makeEnv(),
-      keibajoCode: "02",
-      raceBango: "02",
-      runYmd: "20260621",
-    }),
-  ).resolves.toBe(true);
-  expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("kyoso_joken_code"), [
-    "jra",
-    "2026",
-    "0621",
-    "02",
-    "02",
-    "jra",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
-  expect(queryMock).toHaveBeenLastCalledWith(
-    expect.stringContaining("jra-cb-v9-sim-2013-clean-jockey-pedigree269"),
-    ["jra", "2026", "0621", "02", "02", "jra", "iter40-nar-settransformer-blend-v1"],
-  );
-  expect(queryMock).toHaveBeenLastCalledWith(
-    expect.stringContaining("p.model_version = expected_model.expected_model_version"),
-    ["jra", "2026", "0621", "02", "02", "jra", "iter40-nar-settransformer-blend-v1"],
-  );
-});
-
-test("isFocusedFullPredictionComplete checks the JRA prior-corner routed model version", async () => {
-  await expect(
-    isFocusedFullPredictionComplete({
-      category: "jra",
-      env: makeEnv(),
-      keibajoCode: "10",
-      raceBango: "06",
-      runYmd: "20260705",
-    }),
-  ).resolves.toBe(true);
-  expect(queryMock).toHaveBeenLastCalledWith(
-    expect.stringContaining("jra-cb-v10-prior-corner274-2013"),
-    ["jra", "2026", "0705", "10", "06", "jra", "iter40-nar-settransformer-blend-v1"],
-  );
-  expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("track_code"), [
-    "jra",
-    "2026",
-    "0705",
-    "10",
-    "06",
-    "jra",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
-  expect(queryMock).toHaveBeenLastCalledWith(expect.stringContaining("shusso_tosu"), [
-    "jra",
-    "2026",
-    "0705",
-    "10",
-    "06",
-    "jra",
-    "iter40-nar-settransformer-blend-v1",
-  ]);
-});
-
-test("isFocusedFullPredictionComplete accepts Postgres text true booleans", async () => {
-  queryMock.mockResolvedValue([
-    {
-      actual_rows: "12" as unknown as number,
-      complete: "t" as unknown as boolean,
-      expected_rows: "12" as unknown as number,
-    },
-  ]);
-  await expect(
-    isFocusedFullPredictionComplete({
-      category: "jra",
-      env: makeEnv(),
-      keibajoCode: "05",
-      raceBango: "11",
-      runYmd: "20260628",
-    }),
-  ).resolves.toBe(true);
-});
-
-test("isFocusedFullPredictionComplete returns false when Neon returns no rows", async () => {
   queryMock.mockResolvedValue([]);
   await expect(
     isFocusedFullPredictionComplete({
@@ -218,4 +200,41 @@ test("isFocusedFullPredictionComplete returns false when Neon returns no rows", 
       runYmd: "20260701",
     }),
   ).resolves.toBe(false);
+});
+
+test("fails closed when Catalog returns an HTTP or schema error", async () => {
+  catalogFetchMock.mockResolvedValue(new Response("unavailable", { status: 503 }));
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260701",
+    }),
+  ).rejects.toThrow("HTTP 503");
+
+  catalogFetchMock.mockResolvedValue(Response.json({ rows: "invalid" }));
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260701",
+    }),
+  ).rejects.toThrow("invalid rows");
+});
+
+test("rejects malformed raw Catalog entries", async () => {
+  setCatalogRows([{ ketto_toroku_bango: null }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260628",
+    }),
+  ).rejects.toThrow("invalid entry");
 });

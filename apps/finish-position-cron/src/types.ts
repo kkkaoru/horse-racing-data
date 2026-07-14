@@ -9,6 +9,10 @@ export type PredictCategory = "jra" | "nar" | "ban-ei";
 // "rescore" = read cached features from R2 + latest odds + re-score only (no 21y Neon scan).
 export type PredictMode = "full" | "rescore";
 
+export interface CatalogServiceBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
 export interface Env {
   FINISH_POSITION_PREDICT_CONTAINER: DurableObjectNamespace<Container<Env>>;
   FINISH_POSITION_CRON_DB: D1Database;
@@ -19,6 +23,7 @@ export interface Env {
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
+  PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
   // Read/source connection for the heavy DuckDB feature build. Production sets
   // r2-catalog://pc-keiba; an unset value is forwarded empty and the container
   // fails closed instead of falling back to Neon.

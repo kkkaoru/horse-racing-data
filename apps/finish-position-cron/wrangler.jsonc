@@ -240,4 +240,10 @@
       "bucket_name": "pc-keiba-features-archive",
     },
   ],
+  "services": [
+    {
+      "binding": "PC_KEIBA_R2_CATALOG",
+      "service": "pc-keiba-r2-catalog",
+    },
+  ],
 }

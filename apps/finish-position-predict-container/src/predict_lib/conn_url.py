@@ -40,6 +40,11 @@ def normalise_database_url(raw: str) -> str:
     return _strip_matching_wrapping_quote(stripped).strip()
 
 
+def is_catalog_source_url(raw: str) -> bool:
+    """Return whether ``raw`` selects the production Iceberg Catalog source."""
+    return normalise_database_url(raw).startswith("r2-catalog://")
+
+
 def resolve_source_url(raw: str | None) -> str:
     """Require the feature source independently from the Neon output URL.
 
@@ -50,6 +55,6 @@ def resolve_source_url(raw: str | None) -> str:
     if not raw or not raw.strip():
         raise ValueError("SOURCE_DATABASE_URL is required for feature reads")
     source_url = normalise_database_url(raw)
-    if not source_url.startswith("r2-catalog://"):
+    if not is_catalog_source_url(source_url):
         raise ValueError("SOURCE_DATABASE_URL must use r2-catalog:// in batch runtime")
     return source_url
