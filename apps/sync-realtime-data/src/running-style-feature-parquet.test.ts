@@ -59,7 +59,7 @@ it("buildRunningStyleFeatureParquetKey builds the per-race parquet key", () => {
       raceBango: "01",
       source: "jra",
     }),
-  ).toBe("running-style/features-parquet/jra/20260512/jra:20260512:08:01.parquet");
+  ).toBe("running-style/features-parquet/raw-iceberg-v1/jra/20260512/jra:20260512:08:01.parquet");
 });
 
 it("runningStyleParquetVerificationKey builds the verification key", () => {

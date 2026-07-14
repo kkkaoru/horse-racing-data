@@ -3,18 +3,16 @@
 
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import {
+  fetchRunningStyleFeaturesFromCatalog,
+  RUNNING_STYLE_CATALOG_GENERATION,
+} from "./running-style-catalog-client";
+import {
   loadRunningStyleFeatureParquet,
   putRunningStyleFeatureParquet,
   runningStyleParquetVerificationKey,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
-import {
-  buildRunningStyleFeaturesForRaceFromD1Target,
-  buildRunningStyleFeaturesForRaceFromPostgres,
-} from "./running-style-feature-sql";
-import { listDailyRaceEntriesForRace } from "./daily-feature-build";
 import { runRunningStyleInferenceRowsWithFlatModel } from "./running-style-inference";
-import { getFinishPositionPool } from "./finish-position-lite-pool";
 import {
   buildRunningStyleFlatModelKey,
   loadFlatLightGBMModelFromR2,
@@ -62,12 +60,14 @@ export const parseRunningStylePostgresVerificationParams = (
   if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5] || !match[6]) {
     return null;
   }
+  const source = match[1];
+  if (source !== "jra" && source !== "nar") return null;
   return {
     kaisaiNen: match[2],
     kaisaiTsukihi: `${match[3]}${match[4]}`,
     keibajoCode: match[5],
     raceBango: match[6],
-    source: match[1] as RunningStyleRaceParams["source"],
+    source,
   };
 };
 
@@ -81,40 +81,31 @@ export const runRunningStyleWorkerPostgresVerification = async (
   const modelKey = buildRunningStyleFlatModelKey(params.source);
   const model = await loadFlatLightGBMModelFromR2(env.RUNNING_STYLE_MODELS, modelKey);
   const calibrators = await tryLoadCalibrators(env.RUNNING_STYLE_MODELS, params.source);
-  const pool = getFinishPositionPool(env);
-  // Prefer the D1 daily-target path (mirrors the production queue): today's
-  // races have D1 race-day entries before they land in nvd_se, so building from
-  // Postgres alone would return zero rows. Fall back to Postgres only when D1
-  // has no entries (historical-race verification use case).
-  const dailyTargetRows = await listDailyRaceEntriesForRace(env.REALTIME_DB, params);
-  const built =
-    dailyTargetRows.length > 0
-      ? await buildRunningStyleFeaturesForRaceFromD1Target(
-          pool,
-          params,
-          model.header.feature_names,
-          dailyTargetRows,
-        )
-      : await buildRunningStyleFeaturesForRaceFromPostgres(
-          pool,
-          params,
-          model.header.feature_names,
-        );
-  const coverage = validateFeatureCoverage(built.rows, model.header.feature_names);
+  const featureBuildStarted = performance.now();
+  const builtRows = await fetchRunningStyleFeaturesFromCatalog(
+    env.PC_KEIBA_R2_CATALOG,
+    params,
+    model.header.feature_names,
+  );
+  if (builtRows.length === 0) {
+    throw new Error(`no running-style feature rows found for race ${raceKey}`);
+  }
+  const featureBuildMs = Math.round(performance.now() - featureBuildStarted);
+  const coverage = validateFeatureCoverage(builtRows, model.header.feature_names);
   if (coverage.missingFeatureNames.length > 0) {
     throw new Error(
-      `PostgreSQL feature build missing model features: ${coverage.missingFeatureNames.join(", ")}`,
+      `catalog feature build missing model features: ${coverage.missingFeatureNames.join(", ")}`,
     );
   }
   const parquetKey = runningStyleParquetVerificationKey(
     params.source,
     raceDate,
-    `${raceKey}.postgres`,
+    `${raceKey}.${RUNNING_STYLE_CATALOG_GENERATION}`,
   );
   const parquetBytes = await putRunningStyleFeatureParquet(
     env.RUNNING_STYLE_MODELS,
     parquetKey,
-    built.rows,
+    builtRows,
     model.header.feature_names,
   );
   const rows = await loadRunningStyleFeatureParquet(
@@ -129,9 +120,9 @@ export const runRunningStyleWorkerPostgresVerification = async (
     rows,
   });
   return {
-    featureBuildMs: built.elapsedMs,
+    featureBuildMs,
     featureCount: model.header.feature_names.length,
-    inputFeaturesKey: "postgres",
+    inputFeaturesKey: RUNNING_STYLE_CATALOG_GENERATION,
     missingCells: coverage.missingCells,
     missingFeatureNames: coverage.missingFeatureNames,
     modelKey,

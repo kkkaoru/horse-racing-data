@@ -1,6 +1,6 @@
 // Run with bun. Progress helpers for per-date running-style batch runs.
 
-import { getFinishPositionPool } from "./finish-position-lite-pool";
+import { fetchRunningStyleFeatureCountsFromCatalog } from "./running-style-catalog-client";
 import {
   getRunningStyleInferenceState,
   listRaceRunningStyleCounts,
@@ -42,27 +42,6 @@ export interface RunningStyleDateProgressSummary {
   parquetReady: number;
   scanned: number;
 }
-
-const listFeatureCountsByDate = async (env: Env, date: string): Promise<Map<string, number>> => {
-  const pool = getFinishPositionPool(env);
-  const featureResult = await pool.query<{ count: string; race_key: string }>(
-    `
-      select
-        source || ':' || kaisai_nen || kaisai_tsukihi || ':' ||
-          lpad(keibajo_code::text, 2, '0') || ':' ||
-          lpad(race_bango::text, 2, '0') as race_key,
-        count(*)::text as count
-      from race_entry_corner_features
-      where source in ('jra', 'nar')
-        and race_date = $1
-      group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-    `,
-    [date],
-  );
-  const counts = new Map<string, number>();
-  featureResult.rows.forEach((row) => counts.set(row.race_key, Number(row.count)));
-  return counts;
-};
 
 export const isRunningStyleDateProgressRowComplete = (row: RunningStyleDateProgressRow): boolean =>
   row.featuresReady &&
@@ -126,7 +105,10 @@ export const collectRunningStyleDateProgress = async (
   if (registeredRaces.length === 0) {
     return [];
   }
-  const featureCounts = await listFeatureCountsByDate(env, date);
+  const featureCounts = await fetchRunningStyleFeatureCountsFromCatalog(
+    env.PC_KEIBA_R2_CATALOG,
+    date,
+  );
   const raceKeys = registeredRaces.map((row) =>
     buildRunningStyleRaceKey({
       kaisaiNen: row.kaisai_nen,

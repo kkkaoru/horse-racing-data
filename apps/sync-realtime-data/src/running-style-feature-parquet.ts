@@ -101,6 +101,11 @@ const toStringOrNull = (value: unknown): string | null => {
   return value;
 };
 
+const toRunningStyleSource = (value: unknown): "jra" | "nar" => {
+  if (value === "jra" || value === "nar") return value;
+  throw new Error("Parquet row has invalid running-style source");
+};
+
 const toParquetRow = (
   row: RaceHorseFeatureRow,
   featureNames: ReadonlyArray<string>,
@@ -158,7 +163,7 @@ const fromParquetRow = (
     raceBango: String(row.raceBango),
     raceKey: String(row.raceKey),
     shussoTosu: toNumberOrNull(row.shussoTosu),
-    source: String(row.source),
+    source: toRunningStyleSource(row.source),
     trackCode: toStringOrNull(row.trackCode),
     umaban: Number(row.umaban),
   };
@@ -240,6 +245,6 @@ export const runningStyleParquetVerificationKey = (
 ): string => `running-style/verification/features-parquet/${source}/${raceDate}/${raceKey}.parquet`;
 
 export const buildRunningStyleFeatureParquetKey = (params: RunningStyleRaceParams): string =>
-  `running-style/features-parquet/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${buildRunningStyleRaceKey(params)}.parquet`;
+  `running-style/features-parquet/raw-iceberg-v1/${params.source}/${params.kaisaiNen}${params.kaisaiTsukihi}/${buildRunningStyleRaceKey(params)}.parquet`;
 
 export const metadataColumns = METADATA_COLUMNS;

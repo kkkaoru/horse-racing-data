@@ -3,8 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RunningStyleDateProgressRow } from "./running-style-date-progress";
 import type { Env } from "./types";
 
-vi.mock("./finish-position-lite-pool", () => ({
-  getFinishPositionPool: vi.fn(),
+vi.mock("./running-style-catalog-client", () => ({
+  fetchRunningStyleFeatureCountsFromCatalog: vi.fn(),
 }));
 vi.mock("./running-style-d1", () => ({
   getRunningStyleInferenceState: vi.fn(),
@@ -154,7 +154,8 @@ it("collectRunningStyleDateProgress returns empty array when no registered races
 it("collectRunningStyleDateProgress falls back to featureCounts when latestEntries is null", async () => {
   const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
-  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { fetchRunningStyleFeatureCountsFromCatalog } =
+    await import("./running-style-catalog-client");
   const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
     await import("./running-style-d1");
   const { isViewerRunningStyleRaceCacheReady } = await import("./viewer-running-style-cache-probe");
@@ -172,10 +173,9 @@ it("collectRunningStyleDateProgress falls back to featureCounts when latestEntri
     ],
     source: "d1",
   });
-  const query = vi.fn(async () => ({
-    rows: [{ count: "7", race_key: "jra:20260512:08:02" }],
-  }));
-  vi.mocked(getFinishPositionPool).mockReturnValue({ query } as never);
+  vi.mocked(fetchRunningStyleFeatureCountsFromCatalog).mockResolvedValue(
+    new Map([["jra:20260512:08:02", 7]]),
+  );
   vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map());
   vi.mocked(getLatestRaceEntries).mockResolvedValue(null);
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
@@ -197,7 +197,8 @@ it("collectRunningStyleDateProgress falls back to featureCounts when latestEntri
 it("collectRunningStyleDateProgress defaults expectedHorses to 0 when no feature count and no entries", async () => {
   const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
-  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { fetchRunningStyleFeatureCountsFromCatalog } =
+    await import("./running-style-catalog-client");
   const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
     await import("./running-style-d1");
   const { isViewerRunningStyleRaceCacheReady } = await import("./viewer-running-style-cache-probe");
@@ -215,8 +216,7 @@ it("collectRunningStyleDateProgress defaults expectedHorses to 0 when no feature
     ],
     source: "d1",
   });
-  const query = vi.fn(async () => ({ rows: [] }));
-  vi.mocked(getFinishPositionPool).mockReturnValue({ query } as never);
+  vi.mocked(fetchRunningStyleFeatureCountsFromCatalog).mockResolvedValue(new Map());
   vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map());
   vi.mocked(getLatestRaceEntries).mockResolvedValue(null);
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
@@ -244,7 +244,8 @@ it("collectRunningStyleDateProgress defaults expectedHorses to 0 when no feature
 it("collectRunningStyleDateProgress builds one row per registered race", async () => {
   const { collectRunningStyleDateProgress } = await import("./running-style-date-progress");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
-  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const { fetchRunningStyleFeatureCountsFromCatalog } =
+    await import("./running-style-catalog-client");
   const { listRaceRunningStyleCounts, getRunningStyleInferenceState } =
     await import("./running-style-d1");
   const { evaluateRunningStyleCacheCoverage } = await import("./running-style-entry-coverage");
@@ -263,8 +264,9 @@ it("collectRunningStyleDateProgress builds one row per registered race", async (
     ],
     source: "d1",
   });
-  const query = vi.fn(async () => ({ rows: [{ count: "5", race_key: "jra:20260512:08:01" }] }));
-  vi.mocked(getFinishPositionPool).mockReturnValue({ query } as never);
+  vi.mocked(fetchRunningStyleFeatureCountsFromCatalog).mockResolvedValue(
+    new Map([["jra:20260512:08:01", 5]]),
+  );
   vi.mocked(listRaceRunningStyleCounts).mockResolvedValue(new Map([["jra:20260512:08:01", 5]]));
   vi.mocked(getLatestRaceEntries).mockResolvedValue({
     fetchedAt: "x",

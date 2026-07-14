@@ -1168,7 +1168,11 @@ const rowToFeaturePayload = (
   Object.entries(PEER_INPUT_COLUMNS).forEach(([featureName, peerName]) => {
     peerInputs[peerName] = perHorseFeatures[featureName] ?? null;
   });
-  const source = toRequiredString(row.source);
+  const sourceValue = toRequiredString(row.source);
+  if (sourceValue !== "jra" && sourceValue !== "nar") {
+    throw new Error("running-style SQL row has invalid source");
+  }
+  const source = sourceValue;
   const kaisaiNen = toRequiredString(row.kaisai_nen);
   const kaisaiTsukihi = toRequiredString(row.kaisai_tsukihi);
   const keibajoCode = normalizeKeibajoCode(toRequiredString(row.keibajo_code));

@@ -68,7 +68,6 @@ vi.mock("./daily-feature-build", () => ({
   DAILY_FEATURE_BUILD_CRON: "0 19 * * *",
   runDailyFeatureBuildForEnv: vi.fn(async () => ({})),
   listDailyRaceEntriesForRace: vi.fn(async () => []),
-  probeDailyRaceEntriesFreshness: vi.fn(async () => ({ latestUpdatedAt: null, rowCount: 1 })),
 }));
 vi.mock("./win5-queue", () => ({ handleWin5PredictionJob: vi.fn() }));
 vi.mock("./win5-cron", () => ({
@@ -300,8 +299,15 @@ it("scheduled prewarm path logs discover-urls error when upsertDiscoveredUrls th
   );
 });
 
-it("scheduled triggers prewarm path for the prewarm cron", async () => {
+it("scheduled prewarm path fails closed when Catalog materialize rejects", async () => {
   const { default: worker } = await import("./worker");
+  const { materializeRunningStyleFeatureParquetsForDate } =
+    await import("./running-style-feature-materialize");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
+  const { logFetch } = await import("./storage");
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockRejectedValueOnce(
+    new Error("Catalog unavailable"),
+  );
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -313,6 +319,15 @@ it("scheduled triggers prewarm path for the prewarm cron", async () => {
     ctx,
   );
   await flushWaits(waits);
+  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "error",
+    null,
+    "Catalog unavailable",
+    undefined,
+  );
 });
 
 it("scheduled prewarm path logs materialize-running-style-features ok on success", async () => {
@@ -352,6 +367,7 @@ it("scheduled prewarm path logs materialize-running-style-features error when a 
   const { default: worker } = await import("./worker");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { logFetch } = await import("./storage");
   vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
     date: "20260513",
@@ -371,6 +387,7 @@ it("scheduled prewarm path logs materialize-running-style-features error when a 
     ctx,
   );
   await flushWaits(waits);
+  expect(planRunningStylePredictionsForDate).not.toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "materialize-running-style-features",
@@ -385,18 +402,29 @@ it("scheduled prewarm path logs materialize-running-style-features error when a 
       mode: "prewarm",
     }),
   );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "plan-running-style-predictions",
+    "error",
+    null,
+    "boom",
+    undefined,
+  );
 });
 
-it("scheduled prewarm path skips materialize when D1 daily_race_entries is empty", async () => {
+it("scheduled prewarm path materializes from Catalog without D1 readiness", async () => {
   const { default: worker } = await import("./worker");
+  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
   const { materializeRunningStyleFeatureParquetsForDate } =
     await import("./running-style-feature-materialize");
-  const { probeDailyRaceEntriesFreshness } = await import("./daily-feature-build");
   const { logFetch } = await import("./storage");
-  vi.mocked(probeDailyRaceEntriesFreshness).mockResolvedValueOnce({
-    latestUpdatedAt: null,
-    rowCount: 0,
+  vi.mocked(materializeRunningStyleFeatureParquetsForDate).mockResolvedValueOnce({
+    date: "20260513",
+    materialized: 2,
+    scanned: 2,
+    skipped: 0,
   });
+  const env = buildEnv();
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -404,22 +432,21 @@ it("scheduled prewarm path skips materialize when D1 daily_race_entries is empty
       scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
       noRetry: () => {},
     } as unknown as ScheduledController,
-    buildEnv(),
+    env,
     ctx,
   );
   await flushWaits(waits);
-  expect(materializeRunningStyleFeatureParquetsForDate).not.toHaveBeenCalled();
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
+  expect(materializeRunningStyleFeatureParquetsForDate).toHaveBeenCalledWith(env, "20260513");
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "materialize-running-style-features",
-    "skipped",
+    "ok",
     null,
     JSON.stringify({
       date: "20260513",
-      materialized: 0,
-      materializeError:
-        "build-daily-features produced 0 D1 rows for 20260513; deferring materialize to next cron tick",
-      scanned: 0,
+      materialized: 2,
+      scanned: 2,
       skipped: 0,
       mode: "prewarm",
     }),
@@ -491,10 +518,10 @@ it("scheduled defaults to handleJob via getCronJob for unknown cron", async () =
   await flushWaits(waits);
 });
 
-it("scheduled multi-day-prep cron fans out feature build to next 1-3 JST dates", async () => {
+it("scheduled multi-day-prep cron plans next 1-3 JST dates without the legacy feature build", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockResolvedValue({} as never);
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -506,67 +533,15 @@ it("scheduled multi-day-prep cron fans out feature build to next 1-3 JST dates",
     ctx,
   );
   await flushWaits(waits);
-  const calls = vi.mocked(runDailyFeatureBuildForEnv).mock.calls;
-  const fromDates = calls.map(([, options]) => options?.fromDate);
-  expect(fromDates).toStrictEqual(["20260513", "20260514", "20260515"]);
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
+  const dates = vi.mocked(planRunningStylePredictionsForDate).mock.calls.map(([, date]) => date);
+  expect(dates).toStrictEqual(["20260513", "20260514", "20260515"]);
 });
 
-it("scheduled multi-day-prep cron logs build-daily-features error when runDailyFeatureBuildForEnv throws", async () => {
+it("scheduled today-backfill cron plans today without the legacy feature build", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  const { logFetch } = await import("./storage");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("build boom"));
-  const { ctx, waits } = buildCtx();
-  await worker.scheduled(
-    {
-      cron: "5 11 * * *",
-      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
-      noRetry: () => {},
-    } as unknown as ScheduledController,
-    buildEnv(),
-    ctx,
-  );
-  await flushWaits(waits);
-  expect(logFetch).toHaveBeenCalledWith(
-    expect.anything(),
-    "build-daily-features",
-    "error",
-    null,
-    "build boom",
-    undefined,
-  );
-});
-
-it("scheduled multi-day-prep cron stringifies non-Error rejection from runDailyFeatureBuildForEnv", async () => {
-  const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  const { logFetch } = await import("./storage");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce("raw-string-build-error");
-  const { ctx, waits } = buildCtx();
-  await worker.scheduled(
-    {
-      cron: "5 11 * * *",
-      scheduledTime: Date.parse("2026-05-12T11:05:00.000Z"),
-      noRetry: () => {},
-    } as unknown as ScheduledController,
-    buildEnv(),
-    ctx,
-  );
-  await flushWaits(waits);
-  expect(logFetch).toHaveBeenCalledWith(
-    expect.anything(),
-    "build-daily-features",
-    "error",
-    null,
-    "raw-string-build-error",
-    undefined,
-  );
-});
-
-it("scheduled today-backfill cron builds features for today only", async () => {
-  const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockResolvedValue({} as never);
+  const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -578,15 +553,18 @@ it("scheduled today-backfill cron builds features for today only", async () => {
     ctx,
   );
   await flushWaits(waits);
-  const calls = vi.mocked(runDailyFeatureBuildForEnv).mock.calls;
-  const fromDates = calls.map(([, options]) => options?.fromDate);
-  expect(fromDates).toStrictEqual(["20260512"]);
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
+  expect(planRunningStylePredictionsForDate).toHaveBeenCalledWith(
+    expect.anything(),
+    "20260512",
+    new Date("2026-05-12T00:10:00.000Z"),
+  );
 });
 
-it("queue acks a message after successful handleJob", async () => {
+it("queue acks a disabled build-daily-features message without running the legacy builder", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockResolvedValueOnce({} as never);
+  const { logFetch } = await import("./storage");
   const ack = vi.fn();
   const retry = vi.fn();
   const message = {
@@ -597,82 +575,25 @@ it("queue acks a message after successful handleJob", async () => {
   await worker.queue(
     { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
     buildEnv(),
+  );
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "build-daily-features",
+    "disabled",
+    null,
+    "Catalog service owns realtime feature builds",
   );
   expect(ack).toHaveBeenCalledTimes(1);
   expect(retry).not.toHaveBeenCalled();
 });
 
-it("queue retries a failing non-fetch-odds message", async () => {
+it("scheduled disables the legacy daily-feature-build cron without enqueueing", async () => {
   const { default: worker } = await import("./worker");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("boom"));
-  const ack = vi.fn();
-  const retry = vi.fn();
-  const message = {
-    ack,
-    body: { date: "20260512", type: "build-daily-features" } satisfies Job,
-    retry,
-  };
-  await worker.queue(
-    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
-    buildEnv(),
-  );
-  expect(retry).toHaveBeenCalledTimes(1);
-  expect(ack).not.toHaveBeenCalled();
-});
-
-it("scheduled enqueues a build-daily-features job for the daily-feature-build cron", async () => {
-  const { default: worker } = await import("./worker");
-  const env = buildEnv();
-  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
-  const { ctx, waits } = buildCtx();
-  await worker.scheduled(
-    {
-      cron: "0 19 * * *",
-      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
-      noRetry: () => {},
-    } as unknown as ScheduledController,
-    env,
-    ctx,
-  );
-  await flushWaits(waits);
-  expect(sendSpy).toHaveBeenCalledWith({
-    date: "20260512",
-    sourceScope: "all",
-    type: "build-daily-features",
-  });
-});
-
-it("scheduled logs queued status when daily-feature-build cron enqueue succeeds", async () => {
-  const { default: worker } = await import("./worker");
-  const { logFetch } = await import("./storage");
-  const env = buildEnv();
-  const { ctx, waits } = buildCtx();
-  await worker.scheduled(
-    {
-      cron: "0 19 * * *",
-      scheduledTime: Date.parse("2026-05-12T03:00:00.000Z"),
-      noRetry: () => {},
-    } as unknown as ScheduledController,
-    env,
-    ctx,
-  );
-  await flushWaits(waits);
-  expect(logFetch).toHaveBeenCalledWith(
-    expect.anything(),
-    "build-daily-features",
-    "queued",
-    null,
-    JSON.stringify({ date: "20260512", sourceScope: "all" }),
-  );
-});
-
-it("scheduled logs error when daily-feature-build cron enqueue rejects", async () => {
-  const { default: worker } = await import("./worker");
   const { logFetch } = await import("./storage");
   const env = buildEnv();
   const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
-  sendSpy.mockRejectedValueOnce(new Error("queue boom"));
   const { ctx, waits } = buildCtx();
   await worker.scheduled(
     {
@@ -684,13 +605,14 @@ it("scheduled logs error when daily-feature-build cron enqueue rejects", async (
     ctx,
   );
   await flushWaits(waits);
+  expect(sendSpy).not.toHaveBeenCalled();
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "build-daily-features",
-    "error",
+    "disabled",
     null,
-    "queue boom",
-    undefined,
+    "Catalog service owns realtime feature builds",
   );
 });
 
@@ -894,15 +816,20 @@ it("scheduled result-poll cron logs plan-premium-paddock error when paddock plan
 });
 it("queue retries with long delay when handleJob throws a D1 overload error", async () => {
   const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(
+  const { handleWin5PredictionJob } = await import("./win5-queue");
+  vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(
     new Error("D1_ERROR: D1 DB is overloaded. Please try again later."),
   );
   const ack = vi.fn();
   const retry = vi.fn();
   const message = {
     ack,
-    body: { date: "20260512", type: "build-daily-features" } satisfies Job,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      predictedAt: "2026-05-12T03:00:00.000Z",
+      type: "generate-win5-predictions",
+    } satisfies Job,
     retry,
   };
   await worker.queue(
@@ -918,13 +845,18 @@ it("queue retries with long delay when handleJob throws a D1 overload error", as
 
 it("queue retries with standard delay when handleJob throws a non-overload error", async () => {
   const { default: worker } = await import("./worker");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("unrelated boom"));
+  const { handleWin5PredictionJob } = await import("./win5-queue");
+  vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(new Error("unrelated boom"));
   const ack = vi.fn();
   const retry = vi.fn();
   const message = {
     ack,
-    body: { date: "20260512", type: "build-daily-features" } satisfies Job,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      predictedAt: "2026-05-12T03:00:00.000Z",
+      type: "generate-win5-predictions",
+    } satisfies Job,
     retry,
   };
   await worker.queue(

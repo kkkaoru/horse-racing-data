@@ -119,6 +119,10 @@ export interface HyperdriveBinding {
   connectionString: string;
 }
 
+export interface CatalogServiceBinding {
+  fetch(request: Request): Promise<Response>;
+}
+
 interface FinishPositionPredictQueueMessage {
   category: "ban-ei" | "jra" | "nar";
   daysAhead: number;
@@ -143,6 +147,7 @@ export interface Env {
   HORSE_WEIGHT_DO: DurableObjectNamespace;
   RACE_TREND_DAILY_TRACK_DO: DurableObjectNamespace;
   PC_KEIBA_VIEWER?: { fetch: typeof fetch };
+  PC_KEIBA_R2_CATALOG: CatalogServiceBinding;
   ODDS_DO_TTL_SECONDS?: string;
   PREMIUM_PADDOCK_CACHE: DurableObjectNamespace;
   PREMIUM_PADDOCK_DO_TTL_SECONDS?: string;

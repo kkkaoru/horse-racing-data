@@ -1,13 +1,13 @@
 // Run with bun. Queue consumer for per-race running-style inference.
-// The Worker reads the per-race feature Parquet from R2 first and only rebuilds
-// it from PostgreSQL on a miss, then writes flatbin model predictions to D1
+// The Worker reads the raw-Iceberg-derived per-race feature Parquet from R2 and
+// rebuilds it through the catalog Worker on a miss, then writes predictions to D1
 // and mirrors them to the Neon race_running_style_model_predictions table so
 // the viewer can read predictions without a separate sync step.
 
 import { markFinishPositionFeaturesCached } from "./finish-position-d1";
 import { formatError } from "./format-error";
 import { putFinishPositionInputsCache } from "./finish-position-inputs-cache";
-import { getFinishPositionPool, getFinishPositionWritePool } from "./finish-position-lite-pool";
+import { getFinishPositionWritePool } from "./finish-position-lite-pool";
 import {
   filterRunningStyleFeatureRowsByActiveEntries,
   resolveRunningStyleExpectedHorseCount,
@@ -371,7 +371,6 @@ export const handleRunningStylePredictionJob = async (
   }
   await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
-    const pool = getFinishPositionPool(env);
     const routingConfig = runningStyleCellRoutingConfig(env);
     const latestEntries = await getLatestRaceEntries(
       env.REALTIME_DB,
@@ -384,7 +383,6 @@ export const handleRunningStylePredictionJob = async (
     let loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
       env,
       featureNames,
-      pool,
       race: job,
     });
     const routeFromRows = resolveRouteFromRows(job, loadOrBuild.rows, routingConfig);
@@ -395,7 +393,6 @@ export const handleRunningStylePredictionJob = async (
       loadOrBuild = await loadOrBuildRunningStyleFeatureParquet({
         env,
         featureNames,
-        pool,
         race: job,
       });
     }

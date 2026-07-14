@@ -3,10 +3,8 @@
 // race_running_styles already has all runners, and queues per-race Worker
 // jobs for missing predictions.
 
-import type { Pool } from "pg";
-
 import { formatError } from "./format-error";
-import { getFinishPositionPool } from "./finish-position-lite-pool";
+import { fetchRunningStyleFeatureCountsFromCatalog } from "./running-style-catalog-client";
 import {
   listRaceRunningStyleCounts,
   listRaceRunningStylesForRace,
@@ -20,7 +18,6 @@ import {
   exportRunningStyleParquetForDay,
   type ExportRunningStyleParquetResult,
 } from "./running-style-parquet-export";
-import { listRaceRunningStylePredictionCountsByDate } from "./running-style-neon";
 import { putViewerRunningStyleRaceCache } from "./viewer-running-style-cache";
 import {
   buildRunningStyleRaceKey,
@@ -54,11 +51,6 @@ export interface RegisteredRaceRow {
   kaisai_tsukihi: string;
   keibajo_code: string;
   race_bango: string;
-}
-
-interface FeatureCountRow {
-  race_key: string;
-  count: string;
 }
 
 export interface RunningStylePlanRace extends RunningStylePendingRace {
@@ -133,26 +125,6 @@ const toRunningStylePendingRace = (
   };
 };
 
-const listFeatureCountsByDate = async (pool: Pool, date: string): Promise<Map<string, number>> => {
-  const featureResult = await pool.query<FeatureCountRow>(
-    `
-      select
-        source || ':' || kaisai_nen || kaisai_tsukihi || ':' ||
-          lpad(keibajo_code::text, 2, '0') || ':' ||
-          lpad(race_bango::text, 2, '0') as race_key,
-        count(*)::text as count
-      from race_entry_corner_features
-      where source in ('jra', 'nar')
-        and race_date = $1
-      group by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-    `,
-    [date],
-  );
-  const counts = new Map<string, number>();
-  featureResult.rows.forEach((row) => counts.set(row.race_key, Number(row.count)));
-  return counts;
-};
-
 const isActiveState = (state: RunningStyleInferenceStateDetail | undefined, now: Date): boolean => {
   if (state === undefined || !ACTIVE_STATUSES.has(state.status)) return false;
   if (state.attemptedAt === null) return true;
@@ -193,7 +165,6 @@ const selectCompletedRacesNeedingRunningStyleMirror = (
   registeredRaces: ReadonlyArray<RegisteredRaceRow>,
   states: ReadonlyMap<string, RunningStyleInferenceStateDetail>,
   predictionCounts: ReadonlyMap<string, number>,
-  neonCounts: ReadonlyMap<string, ReadonlyMap<string, number>>,
 ): RunningStylePlanRace[] => {
   const needed: RunningStylePlanRace[] = [];
   registeredRaces.forEach((row) => {
@@ -201,9 +172,6 @@ const selectCompletedRacesNeedingRunningStyleMirror = (
     const state = states.get(raceKey);
     if (state === undefined || !isRunningStyleStateCompleted(state)) return;
     const expectedHorseCount = state.expectedHorseCount ?? 0;
-    const modelVersion = state.modelVersion;
-    const neonCount = modelVersion === null ? 0 : (neonCounts.get(raceKey)?.get(modelVersion) ?? 0);
-    if (neonCount >= expectedHorseCount) return;
     needed.push({
       ...toRunningStylePendingRace(row, expectedHorseCount),
       existingHorseCount: predictionCounts.get(raceKey) ?? 0,
@@ -326,19 +294,10 @@ export const planRunningStylePredictionsForDate = async (
     listRaceRunningStyleCounts(env.REALTIME_DB, raceKeys, { bypassCache: true }),
     listRunningStyleInferenceStates(env.REALTIME_DB, raceKeys),
   ]);
-  const pool = getFinishPositionPool(env);
-  const hasCompletedRace = registeredRaces.some((row) =>
-    isRunningStyleStateCompleted(states.get(toRunningStyleRaceKey(row))),
-  );
-  const neonCounts =
-    hasCompletedRace && registeredRaces.length > 0
-      ? await listRaceRunningStylePredictionCountsByDate(pool, date)
-      : new Map<string, Map<string, number>>();
   const mirrorNeeded = selectCompletedRacesNeedingRunningStyleMirror(
     registeredRaces,
     states,
     predictionCounts,
-    neonCounts,
   );
   const predictedAt = now.toISOString();
   if (allRegisteredRacesCompleted(registeredRaces, states)) {
@@ -356,7 +315,10 @@ export const planRunningStylePredictionsForDate = async (
       scanned: registeredRaces.length,
     };
   }
-  const featureCounts = await listFeatureCountsByDate(pool, date);
+  const featureCounts = await fetchRunningStyleFeatureCountsFromCatalog(
+    env.PC_KEIBA_R2_CATALOG,
+    date,
+  );
   const expectedHorseCounts = await listRunningStyleExpectedHorseCounts(
     env.REALTIME_DB,
     raceKeys,

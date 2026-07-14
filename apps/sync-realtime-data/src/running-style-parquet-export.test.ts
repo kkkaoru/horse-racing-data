@@ -39,7 +39,9 @@ it("buildRunningStyleDayParquetKey composes the per-day per-source per-model key
       modelVersion: "jra-running-style-lgbm-prod-v3",
       source: "jra",
     }),
-  ).toBe("running-style/predictions/by-day/2026/06/07/jra/jra-running-style-lgbm-prod-v3.parquet");
+  ).toBe(
+    "running-style/predictions/by-day/raw-iceberg-v1/2026/06/07/jra/jra-running-style-lgbm-prod-v3.parquet",
+  );
 });
 
 it("buildRunningStyleDayParquetKey supports the nar source variant", () => {
@@ -49,7 +51,9 @@ it("buildRunningStyleDayParquetKey supports the nar source variant", () => {
       modelVersion: "nar-running-style-lgbm-prod-v3",
       source: "nar",
     }),
-  ).toBe("running-style/predictions/by-day/2026/01/01/nar/nar-running-style-lgbm-prod-v3.parquet");
+  ).toBe(
+    "running-style/predictions/by-day/raw-iceberg-v1/2026/01/01/nar/nar-running-style-lgbm-prod-v3.parquet",
+  );
 });
 
 it("serializeRunningStylePredictionParquet emits non-empty Parquet bytes", async () => {
@@ -166,8 +170,8 @@ it("exportRunningStyleParquetForDay groups rows by model_version and puts one R2
   expect(put).toHaveBeenCalledTimes(2);
   const putKeys = put.mock.calls.map((call) => call[0] as string).sort();
   expect(putKeys).toStrictEqual([
-    "running-style/predictions/by-day/2026/06/07/jra/v3.parquet",
-    "running-style/predictions/by-day/2026/06/07/jra/v4-experiment.parquet",
+    "running-style/predictions/by-day/raw-iceberg-v1/2026/06/07/jra/v3.parquet",
+    "running-style/predictions/by-day/raw-iceberg-v1/2026/06/07/jra/v4-experiment.parquet",
   ]);
   expect(
     (put.mock.calls[0]![2] as { httpMetadata: { contentType: string } }).httpMetadata.contentType,

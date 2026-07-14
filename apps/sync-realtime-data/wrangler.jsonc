@@ -155,6 +155,10 @@
       "service": "sync-realtime-data-features",
     },
     {
+      "binding": "PC_KEIBA_R2_CATALOG",
+      "service": "pc-keiba-r2-catalog",
+    },
+    {
       // Event-driven per-race rescore trigger: after a fetch-weights job writes
       // weights to D1, this worker POSTs to finish-position-cron's
       // /api/internal/rescore-race so the race is re-scored with fresh weights

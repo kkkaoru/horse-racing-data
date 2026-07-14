@@ -227,7 +227,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it("handleJob delegates build-daily-features to runDailyFeatureBuildForEnv and logs ok", async () => {
+it("handleJob disables build-daily-features without running the legacy builder", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
   const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
@@ -235,13 +235,13 @@ it("handleJob delegates build-daily-features to runDailyFeatureBuildForEnv and l
     date: "20260512",
     type: "build-daily-features",
   });
-  expect(runDailyFeatureBuildForEnv).toHaveBeenCalledTimes(1);
+  expect(runDailyFeatureBuildForEnv).not.toHaveBeenCalled();
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "build-daily-features",
-    "ok",
+    "disabled",
     null,
-    expect.any(String),
+    "Catalog service owns realtime feature builds",
   );
 });
 
@@ -383,14 +383,19 @@ it("handleJob delegates generate-running-style-predictions to handleRunningStyle
 it("handleJob logs an error and rethrows when the dispatched action throws", async () => {
   const { handleJob } = await import("./worker");
   const { logFetch } = await import("./storage");
-  const { runDailyFeatureBuildForEnv } = await import("./daily-feature-build");
-  vi.mocked(runDailyFeatureBuildForEnv).mockRejectedValueOnce(new Error("boom"));
+  const { handleWin5PredictionJob } = await import("./win5-queue");
+  vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(new Error("boom"));
   await expect(
-    handleJob(buildEnv(), { date: "20260512", type: "build-daily-features" }),
+    handleJob(buildEnv(), {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      predictedAt: "2026-05-12T03:00:00.000Z",
+      type: "generate-win5-predictions",
+    }),
   ).rejects.toThrow("boom");
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
-    "build-daily-features",
+    "generate-win5-predictions",
     "error",
     null,
     "boom",

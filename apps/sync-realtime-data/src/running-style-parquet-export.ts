@@ -4,7 +4,7 @@
 // going back to Neon Postgres, removing the Hyperdrive round-trip cost.
 //
 // Object layout (one Parquet per model_version per day per source):
-//   running-style/predictions/by-day/{YYYY}/{MM}/{DD}/{source}/{model_version}.parquet
+//   running-style/predictions/by-day/raw-iceberg-v1/{YYYY}/{MM}/{DD}/{source}/{model_version}.parquet
 //
 // Schema (DuckDB-compatible). predicted_at is encoded as a UTF8 ISO timestamp
 // string because @dsnp/parquetjs lacks a stable TIMESTAMP encoder under the
@@ -15,6 +15,7 @@ import { Writable } from "node:stream";
 
 import { ParquetSchema, ParquetWriter } from "@dsnp/parquetjs";
 
+import { RUNNING_STYLE_CATALOG_GENERATION } from "./running-style-catalog-client";
 import type { RunningStyleClassLabel } from "./running-style-lightgbm-tree";
 import type { Env } from "./types";
 
@@ -135,7 +136,7 @@ export const buildRunningStyleDayParquetKey = (params: {
   const year = params.dateYmd.slice(0, RACE_KEY_DATE_SLICE_YEAR_END);
   const month = params.dateYmd.slice(RACE_KEY_DATE_SLICE_YEAR_END, RACE_KEY_DATE_SLICE_MONTH_END);
   const day = params.dateYmd.slice(RACE_KEY_DATE_SLICE_MONTH_END, RACE_KEY_DATE_SLICE_DAY_END);
-  return `running-style/predictions/by-day/${year}/${month}/${day}/${params.source}/${params.modelVersion}.parquet`;
+  return `running-style/predictions/by-day/${RUNNING_STYLE_CATALOG_GENERATION}/${year}/${month}/${day}/${params.source}/${params.modelVersion}.parquet`;
 };
 
 const labelToClassIndex = (label: RunningStyleClassLabel): number =>

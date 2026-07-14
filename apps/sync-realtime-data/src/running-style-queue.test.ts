@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env, RunningStylePredictionJob } from "./types";
 
 const finishPositionPoolMock = vi.hoisted(() => ({
-  readPool: { pool: "read" },
   writePool: { pool: "write" },
 }));
 
@@ -14,7 +13,6 @@ vi.mock("./finish-position-inputs-cache", () => ({
   putFinishPositionInputsCache: vi.fn(async () => true),
 }));
 vi.mock("./finish-position-lite-pool", () => ({
-  getFinishPositionPool: vi.fn(() => finishPositionPoolMock.readPool),
   getFinishPositionWritePool: vi.fn(() => finishPositionPoolMock.writePool),
 }));
 vi.mock("./running-style-expected-horses", () => ({
@@ -329,8 +327,7 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
   const { markFinishPositionFeaturesCached } = await import("./finish-position-d1");
   const { putFinishPositionInputsCache } = await import("./finish-position-inputs-cache");
-  const { getFinishPositionPool, getFinishPositionWritePool } =
-    await import("./finish-position-lite-pool");
+  const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
   const { markRunningStyleInferenceCompleted } = await import("./running-style-d1");
   const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
@@ -383,11 +380,7 @@ it("completes the job from an R2 hit and returns the success summary", async () 
   expect(listRaceRunningStylesForRace).toHaveBeenCalledWith({}, "jra:20260512:08:01", {
     bypassCache: true,
   });
-  expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
   expect(getFinishPositionWritePool).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(loadOrBuildRunningStyleFeatureParquet).mock.calls[0]?.[0]?.pool).toBe(
-    finishPositionPoolMock.readPool,
-  );
   expect(vi.mocked(upsertRunningStylePredictionsToNeon).mock.calls[0]?.[0]).toBe(
     finishPositionPoolMock.writePool,
   );

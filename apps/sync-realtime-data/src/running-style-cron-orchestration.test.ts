@@ -14,6 +14,9 @@ const queueMetricsOk = async (): Promise<QueueMetrics> => ({
 vi.mock("./finish-position-lite-pool", () => ({
   getFinishPositionPool: vi.fn(() => ({ query: vi.fn(async () => ({ rows: [] })) })),
 }));
+vi.mock("./running-style-catalog-client", () => ({
+  fetchRunningStyleFeatureCountsFromCatalog: vi.fn(async () => new Map()),
+}));
 vi.mock("./running-style-d1", () => ({
   listRaceRunningStyleCounts: vi.fn(async () => new Map()),
   listRaceRunningStylesForRace: vi.fn(async () => []),
@@ -370,12 +373,10 @@ it("runRunningStyleCronTick captures plan error as planError on summary", async 
   expect(summary.planError).toBe("boom");
 });
 
-it("planRunningStylePredictionsForDate skips enqueueing when every completed race has a Neon mirror", async () => {
+it("planRunningStylePredictionsForDate retries the small Neon write without reading Neon", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { listRunningStyleInferenceStates } = await import("./running-style-d1");
-  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
-  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
       {
@@ -407,19 +408,14 @@ it("planRunningStylePredictionsForDate skips enqueueing when every completed rac
       ],
     ]),
   );
-  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(
-    new Map([["jra:20260512:08:01", new Map([["v7", 16]])]]),
-  );
   const summary = await planRunningStylePredictionsForDate(
     buildEnv(),
     "20260512",
     new Date("2026-05-12T12:00:00.000Z"),
   );
-  expect(summary.completed).toBe(1);
-  expect(summary.enqueued).toBe(0);
+  expect(summary.completed).toBe(0);
+  expect(summary.enqueued).toBe(1);
   expect(summary.scanned).toBe(1);
-  expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
-  expect(listRaceRunningStylePredictionCountsByDate).toHaveBeenCalledTimes(1);
 });
 
 it("planRunningStylePredictionsForDate requeues completed races when Neon mirror is missing", async () => {
@@ -540,12 +536,12 @@ it("planRunningStylePredictionsForDate requeues completed races when Neon mirror
   expect(send).toHaveBeenCalledTimes(1);
 });
 
-it("planRunningStylePredictionsForDate still queries Neon when only some races are completed", async () => {
+it("planRunningStylePredictionsForDate uses Catalog counts when only some races are completed", async () => {
   const { planRunningStylePredictionsForDate } = await import("./running-style-cron");
   const { listRunningStyleRacesByDate } = await import("./running-style-race-list");
   const { listRunningStyleInferenceStates } = await import("./running-style-d1");
-  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
-  const { listRaceRunningStylePredictionCountsByDate } = await import("./running-style-neon");
+  const { fetchRunningStyleFeatureCountsFromCatalog } =
+    await import("./running-style-catalog-client");
   vi.mocked(listRunningStyleRacesByDate).mockResolvedValue({
     races: [
       {
@@ -584,8 +580,11 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
       ],
     ]),
   );
-  vi.mocked(listRaceRunningStylePredictionCountsByDate).mockResolvedValue(
-    new Map([["jra:20260512:08:01", new Map([["v7", 16]])]]),
+  vi.mocked(fetchRunningStyleFeatureCountsFromCatalog).mockResolvedValue(
+    new Map([
+      ["jra:20260512:08:01", 16],
+      ["jra:20260512:08:02", 16],
+    ]),
   );
   const metrics = vi.fn(queueMetricsOk);
   const send = vi.fn(queueSendOk);
@@ -595,7 +594,7 @@ it("planRunningStylePredictionsForDate still queries Neon when only some races a
     "20260512",
     new Date("2026-05-12T12:00:00.000Z"),
   );
-  expect(summary.completed).toBe(1);
-  expect(summary.enqueued).toBe(1);
-  expect(getFinishPositionPool).toHaveBeenCalledTimes(1);
+  expect(summary.completed).toBe(0);
+  expect(summary.enqueued).toBe(2);
+  expect(fetchRunningStyleFeatureCountsFromCatalog).toHaveBeenCalledTimes(1);
 });

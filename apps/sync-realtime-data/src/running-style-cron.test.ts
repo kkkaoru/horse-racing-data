@@ -22,6 +22,15 @@ const RACE: RegisteredRaceRow = {
   source: "nar",
 };
 
+const buildCatalogBinding = (): Env["PC_KEIBA_R2_CATALOG"] => ({
+  fetch: vi.fn(
+    async () =>
+      new Response(JSON.stringify({ rows: [RACE] }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+  ),
+});
+
 const buildDbWithRegisteredRaces = (races: RegisteredRaceRow[]): D1Database =>
   ({
     prepare: vi.fn(() => ({
@@ -50,6 +59,7 @@ test("formatTomorrowYYYYMMDDInJst returns the next JST date", () => {
 test("runRunningStyleCronTick does not touch Postgres or enqueue when disabled", async () => {
   const send = vi.fn();
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     REALTIME_DB: buildDbWithRegisteredRaces([RACE]),
     REALTIME_JOBS: { send, sendBatch: vi.fn() },
     RUNNING_STYLE_D1_WRITE_ENABLED: "0",
@@ -248,6 +258,7 @@ test("resolveRunningStyleCronDates exits sweep window at JST hour 6", () => {
 test("runRunningStyleCronTick scans yesterday + today inside the sweep window", async () => {
   const send = vi.fn();
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     REALTIME_DB: buildDbWithRegisteredRaces([RACE]),
     REALTIME_JOBS: { send, sendBatch: vi.fn() },
     RUNNING_STYLE_D1_WRITE_ENABLED: "0",
@@ -261,6 +272,7 @@ test("runRunningStyleCronTick scans yesterday + today inside the sweep window", 
 test("runRunningStyleCronTick scans only today outside the sweep window", async () => {
   const send = vi.fn();
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     REALTIME_DB: buildDbWithRegisteredRaces([RACE]),
     REALTIME_JOBS: { send, sendBatch: vi.fn() },
     RUNNING_STYLE_D1_WRITE_ENABLED: "0",
@@ -273,6 +285,7 @@ test("runRunningStyleCronTick scans only today outside the sweep window", async 
 
 test("runRunningStyleCronTick captures planError when planRunningStylePredictionsForDate throws", async () => {
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     REALTIME_DB: {
       prepare: vi.fn(() => {
         throw new Error("d1 boom");
@@ -287,6 +300,7 @@ test("runRunningStyleCronTick captures planError when planRunningStylePrediction
 
 test("runRunningStyleCronTick aggregates planError + refreshError across two dates", async () => {
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     REALTIME_DB: {
       prepare: vi.fn(() => {
         throw new Error("multi-day boom");
@@ -309,6 +323,7 @@ test("runRunningStyleCronTick records parquetExport summary when FEATURES_ARCHIV
   const bind = vi.fn(() => ({ all }));
   const prepare = vi.fn(() => ({ all, bind }));
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     FEATURES_ARCHIVE: { put } as unknown as R2Bucket,
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch: vi.fn() },
@@ -327,6 +342,7 @@ test("runRunningStyleCronTick omits parquetExport when inference flag disabled",
   const bind = vi.fn(() => ({ all }));
   const prepare = vi.fn(() => ({ all, bind }));
   const env = {
+    PC_KEIBA_R2_CATALOG: buildCatalogBinding(),
     FEATURES_ARCHIVE: { put } as unknown as R2Bucket,
     REALTIME_DB: { prepare } as unknown as D1Database,
     REALTIME_JOBS: { send, sendBatch: vi.fn() },

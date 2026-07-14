@@ -8,7 +8,7 @@ import type { CompactLightGBMModel } from "./running-style-lightgbm-tree";
 
 export interface RaceHorseFeatureRow {
   raceKey: string;
-  source: string;
+  source: "jra" | "nar";
   kaisaiNen: string;
   kaisaiTsukihi: string;
   keibajoCode: string;

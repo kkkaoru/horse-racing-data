@@ -135,11 +135,7 @@ import {
 } from "./running-style-cron";
 import { materializeRunningStyleFeatureParquetsForDate } from "./running-style-feature-materialize";
 import { handleRunningStylePredictionJob } from "./running-style-queue";
-import {
-  DAILY_FEATURE_BUILD_CRON,
-  probeDailyRaceEntriesFreshness,
-  runDailyFeatureBuildForEnv,
-} from "./daily-feature-build";
+import { DAILY_FEATURE_BUILD_CRON } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
 import {
@@ -826,9 +822,9 @@ const JRA_PREMIUM_LINK_CRONS = new Set(["0 4 * * 5", "0 4 * * 6"]);
 const JRA_PREMIUM_DATA_CRONS = new Set(["0 5 * * 5", "0 5 * * 6"]);
 // 03:30 JST (= 18:30 UTC) — off-peak slot for D1 retention sweeps.
 const D1_RETENTION_CRON = "30 18 * * *";
-// 20:05 JST (= 11:05 UTC) — nightly prep for next 1-3 days (features + running-style).
+// 20:05 JST (= 11:05 UTC) — nightly prep for next 1-3 days.
 export const MULTI_DAY_PREP_CRON = "5 11 * * *";
-// 09:10 JST (= 00:10 UTC) — morning fallback for today (features + running-style).
+// 09:10 JST (= 00:10 UTC) — morning fallback for today.
 export const TODAY_BACKFILL_CRON = "10 0 * * *";
 const MULTI_DAY_PREP_OFFSET_DAYS: readonly number[] = [1, 2, 3];
 export const getCronJob = (cron: string, now = new Date()): Job => {
@@ -2007,33 +2003,6 @@ const tryEnsureDiscoveredUrlsAreCurrent = async (env: Env, targetDate: string): 
   }
 };
 
-const tryBuildDailyFeaturesForDate = async (env: Env, targetDate: string, mode: string) => {
-  try {
-    const result = await runDailyFeatureBuildForEnv(env, {
-      fromDate: targetDate,
-      toDate: targetDate,
-    });
-    await logFetch(
-      env.REALTIME_DB,
-      "build-daily-features",
-      "ok",
-      null,
-      JSON.stringify({ ...result, mode }),
-    );
-    return result;
-  } catch (error) {
-    await logFetch(
-      env.REALTIME_DB,
-      "build-daily-features",
-      "error",
-      null,
-      formatError(error),
-      env.DETAIL_SECTION_CACHE_KV,
-    );
-    return null;
-  }
-};
-
 const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string) => {
   try {
     const result = await upsertDiscoveredUrls(env, targetDate, { sleep: defaultDiscoverSleep });
@@ -2058,37 +2027,8 @@ const tryDiscoverUrlsForDate = async (env: Env, targetDate: string, mode: string
   }
 };
 
-// Skip materialize when build-daily-features did not (yet) populate D1.
-// 2026-06-04 incident: keibajo 30 (門別) races never materialized because
-// prewarm fired ahead of the PG → D1 replication for that venue. Returning a
-// zero-row summary lets the running-style-cron */10 tick pick the work up on
-// the next pass without poisoning the materialize log with a per-race error.
-interface MaterializeSkipResult {
-  date: string;
-  materialized: number;
-  materializeError: string;
-  scanned: number;
-  skipped: number;
-}
-
-const buildSkippedMaterializeResult = (
-  targetDate: string,
-  rowCount: number,
-): MaterializeSkipResult => ({
-  date: targetDate,
-  materialized: 0,
-  materializeError: `build-daily-features produced ${rowCount} D1 rows for ${targetDate}; deferring materialize to next cron tick`,
-  scanned: 0,
-  skipped: 0,
-});
-
-const runMaterializeWhenReady = async (env: Env, targetDate: string) => {
-  const probe = await probeDailyRaceEntriesFreshness(env.REALTIME_DB, targetDate, targetDate);
-  if (probe.rowCount > 0) {
-    return materializeRunningStyleFeatureParquetsForDate(env, targetDate);
-  }
-  return buildSkippedMaterializeResult(targetDate, probe.rowCount);
-};
+const runMaterializeWhenReady = async (env: Env, targetDate: string) =>
+  materializeRunningStyleFeatureParquetsForDate(env, targetDate);
 
 const resolveMaterializeLogStatus = (result: {
   materializeError?: string;
@@ -2106,11 +2046,6 @@ const prewarmRunningStylePredictionsForDate = async (
   ctx?: ExecutionContext,
 ) => {
   const discoveryResult = await tryDiscoverUrlsForDate(env, targetDate, "running-style-prewarm");
-  const featureResult = await tryBuildDailyFeaturesForDate(
-    env,
-    targetDate,
-    "running-style-prewarm",
-  );
   const materializeResult = await runMaterializeWhenReady(env, targetDate);
   await logFetch(
     env.REALTIME_DB,
@@ -2119,6 +2054,9 @@ const prewarmRunningStylePredictionsForDate = async (
     null,
     JSON.stringify({ ...materializeResult, mode: "prewarm" }),
   );
+  if (materializeResult.materializeError !== undefined) {
+    throw new Error(materializeResult.materializeError);
+  }
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
   const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
@@ -2132,7 +2070,6 @@ const prewarmRunningStylePredictionsForDate = async (
     cacheRefresh: cacheRefreshResult,
     date: targetDate,
     discovery: discoveryResult,
-    features: featureResult,
     materialize: materializeResult,
     runningStyle: runningStyleResult,
   };
@@ -2146,7 +2083,6 @@ const prewarmRaceDataForDate = async (
   mode = "scheduled-prep",
 ) => {
   const discoveryResult = await tryDiscoverUrlsForDate(env, targetDate, mode);
-  const featureResult = await tryBuildDailyFeaturesForDate(env, targetDate, mode);
   const runningStyleResult = await planRunningStylePredictionsForDate(env, targetDate, now);
   const cacheRefreshResult = await refreshViewerRunningStyleCachesForDate(env, targetDate, ctx);
   await logFetch(
@@ -2165,7 +2101,6 @@ const prewarmRaceDataForDate = async (
     cacheRefresh: cacheRefreshResult,
     date: targetDate,
     discovery: discoveryResult,
-    features: featureResult,
     runningStyle: runningStyleResult,
   };
 };
@@ -4687,13 +4622,13 @@ export const handleJob = async (env: Env, job: Job): Promise<void> => {
       return;
     }
     if (job.type === "build-daily-features") {
-      const result = await runDailyFeatureBuildForEnv(env, {
-        forceRefresh: job.forceRefresh ?? false,
-        fromDate: job.date,
-        sourceScope: job.sourceScope ?? "all",
-        toDate: job.date,
-      });
-      await logFetch(env.REALTIME_DB, job.type, "ok", null, JSON.stringify(result));
+      await logFetch(
+        env.REALTIME_DB,
+        job.type,
+        "disabled",
+        null,
+        "Catalog service owns realtime feature builds",
+      );
       return;
     }
     await handleFetchWeightsOrUnknown(env, job);
@@ -5253,32 +5188,14 @@ export default {
       return;
     }
     if (controller.cron === DAILY_FEATURE_BUILD_CRON) {
-      // Enqueue rather than run inline. The queue consumer caps concurrency
-      // and the new freshness guard short-circuits when daily_race_entries
-      // is already populated within the last hour, so back-to-back hourly
-      // ticks no longer pile direct D1 writes from the cron handler.
-      const targetDate = getTodayJst(scheduledAt);
       ctx.waitUntil(
-        enqueueJobs(env, [{ date: targetDate, sourceScope: "all", type: "build-daily-features" }])
-          .then(() =>
-            logFetch(
-              env.REALTIME_DB,
-              "build-daily-features",
-              "queued",
-              null,
-              JSON.stringify({ date: targetDate, sourceScope: "all" }),
-            ),
-          )
-          .catch((error: unknown) =>
-            logFetch(
-              env.REALTIME_DB,
-              "build-daily-features",
-              "error",
-              null,
-              formatError(error),
-              env.DETAIL_SECTION_CACHE_KV,
-            ),
-          ),
+        logFetch(
+          env.REALTIME_DB,
+          "build-daily-features",
+          "disabled",
+          null,
+          "Catalog service owns realtime feature builds",
+        ),
       );
       return;
     }
