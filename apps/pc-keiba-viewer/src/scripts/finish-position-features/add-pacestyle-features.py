@@ -331,6 +331,29 @@ def setup_r2_duckdb_secret(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+def create_empty_rs_predictions(con: duckdb.DuckDBPyConnection) -> None:
+    """Create the typed empty relation used when no same-day R2 shard exists."""
+    con.execute(
+        """
+        create or replace temp table rs_preds as
+        select
+          cast(null as varchar) as race_id,
+          cast(null as varchar) as ketto_toroku_bango,
+          cast(null as double) as rs_p_nige,
+          cast(null as double) as rs_p_senkou,
+          cast(null as double) as rs_p_sashi,
+          cast(null as double) as rs_p_oikomi,
+          cast(null as integer) as rs_predicted_class,
+          cast(null as varchar) as rs_cell_model_key,
+          cast(null as varchar) as rs_cell_variant_id,
+          cast(null as double) as rs_predicted_corner_front_score,
+          cast(null as bigint) as rs_predicted_corner_rank
+        where false
+        """
+    )
+    con.execute("create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)")
+
+
 def stage_rs_predictions_from_r2(
     con: duckdb.DuckDBPyConnection,
     category: str,
@@ -345,39 +368,45 @@ def stage_rs_predictions_from_r2(
         f"s3://{bucket}/{R2_PREDICTIONS_PREFIX}/{yyyy}/{mm}/{dd}/{category}/*.parquet"
     )
     target_filter = target_race_ids_filter_sql(focused_target).format(category=category)
-    con.execute(
-        f"""
-        create or replace temp table rs_preds as
-        with rs_source as (
-          select
-            '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
-              || ':' || keibajo_code || ':' || race_bango as race_id,
-            ketto_toroku_bango,
-            cast(p_nige as double) as rs_p_nige,
-            cast(p_senkou as double) as rs_p_senkou,
-            cast(p_sashi as double) as rs_p_sashi,
-            cast(p_oikomi as double) as rs_p_oikomi,
-            cast(predicted_class as integer) as rs_predicted_class,
-            cast(cell_model_key as varchar) as rs_cell_model_key,
-            cast(cell_variant_id as varchar) as rs_cell_variant_id
-          from read_parquet('{glob}')
-          where true {target_filter}
-        ),
-        rs_scored as (
-          select *,
-            rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi
-              as rs_predicted_corner_front_score
-          from rs_source
+    try:
+        con.execute(
+            f"""
+            create or replace temp table rs_preds as
+            with rs_source as (
+              select
+                '{category}:' || kaisai_nen || ':' || kaisai_tsukihi
+                  || ':' || keibajo_code || ':' || race_bango as race_id,
+                ketto_toroku_bango,
+                cast(p_nige as double) as rs_p_nige,
+                cast(p_senkou as double) as rs_p_senkou,
+                cast(p_sashi as double) as rs_p_sashi,
+                cast(p_oikomi as double) as rs_p_oikomi,
+                cast(predicted_class as integer) as rs_predicted_class,
+                cast(cell_model_key as varchar) as rs_cell_model_key,
+                cast(cell_variant_id as varchar) as rs_cell_variant_id
+              from read_parquet('{glob}')
+              where true {target_filter}
+            ),
+            rs_scored as (
+              select *,
+                rs_p_senkou + 2 * rs_p_sashi + 3 * rs_p_oikomi
+                  as rs_predicted_corner_front_score
+              from rs_source
+            )
+            select *,
+              row_number() over (
+                partition by race_id
+                order by rs_predicted_corner_front_score asc,
+                  rs_p_nige desc, ketto_toroku_bango asc
+              ) as rs_predicted_corner_rank
+            from rs_scored
+            """
         )
-        select *,
-          row_number() over (
-            partition by race_id
-            order by rs_predicted_corner_front_score asc,
-              rs_p_nige desc, ketto_toroku_bango asc
-          ) as rs_predicted_corner_rank
-        from rs_scored
-        """
-    )
+    except duckdb.IOException as error:
+        if "No files found that match" not in str(error):
+            raise
+        create_empty_rs_predictions(con)
+        return
     con.execute("create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)")
 
 

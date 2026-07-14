@@ -445,6 +445,31 @@ def test_stage_rs_predictions_from_r2_uses_raw_catalog_generation() -> None:
     assert "race_running_style_model_predictions" not in create_sql
 
 
+def test_stage_rs_predictions_from_r2_creates_empty_relation_when_shard_missing() -> None:
+    con = MagicMock()
+    con.execute.side_effect = [
+        duckdb.IOException(
+            'IO Error: No files found that match the pattern "s3://archive/missing/*.parquet"'
+        ),
+        None,
+        None,
+    ]
+
+    subject.stage_rs_predictions_from_r2(con, "jra", "20260715", "archive")
+
+    assert con.execute.call_count == 3
+    assert "where false" in con.execute.call_args_list[1].args[0]
+    assert "create index rs_preds_idx" in con.execute.call_args_list[2].args[0]
+
+
+def test_stage_rs_predictions_from_r2_reraises_other_io_errors() -> None:
+    con = MagicMock()
+    con.execute.side_effect = duckdb.IOException("HTTP 503 from R2")
+
+    with pytest.raises(duckdb.IOException, match="HTTP 503 from R2"):
+        subject.stage_rs_predictions_from_r2(con, "jra", "20260715", "archive")
+
+
 def test_install_and_attach_pg_runs_install_load_attach_in_order() -> None:
     con = MagicMock()
     subject.install_and_attach_pg(con, "postgresql://user:pass@host:5432/db")
