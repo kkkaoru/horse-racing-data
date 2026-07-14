@@ -1,4 +1,4 @@
-// Run with bun. Normalise raw Postgres rows into DailyRaceEntryRow shape.
+// Run with bun. Normalise catalog rows into DailyRaceEntryRow shape.
 
 import type { DailyRaceEntryRow } from "../types";
 

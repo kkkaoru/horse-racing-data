@@ -13,7 +13,8 @@
 // table (Phase 0 plan rule 3). Race-key discovery goes through the old
 // Worker endpoint POST /api/internal/list-race-keys-by-date-from-hyperdrive
 // (queries realtime_race_sources over Hyperdrive). The new worker then
-// re-builds features for each race and writes Parquet bytes to R2.
+// re-builds each race through PC_KEIBA_R2_CATALOG and writes Parquet bytes to
+// R2.
 //
 // Night-window guard: only runs during JST 23, 00, 01, 02, 03, 04. The guard
 // is re-checked at the start of every race iteration so a long run that

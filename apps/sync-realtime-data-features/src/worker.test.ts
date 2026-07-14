@@ -10,7 +10,6 @@ vi.mock("./admin-predict-for-day", () => ({
 }));
 vi.mock("./features/build", () => ({
   buildRaceFeatures: vi.fn(async () => []),
-  fetchAllRaceFeatures: vi.fn(async () => []),
 }));
 vi.mock("./features/parquet", () => ({
   encodeRaceFeaturesParquet: vi.fn(async () => new Uint8Array([1, 2, 3])),
@@ -375,7 +374,7 @@ it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async
   );
   expect(response.status).toBe(200);
   expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
-    "features/by-race/2026/05/29/nar/30/08.parquet",
+    "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet",
     new Uint8Array([1, 2, 3]),
   );
   const body = (await response.json()) as {
@@ -386,7 +385,7 @@ it("accepts recompute request, builds Parquet, PUTs to R2, and writes KV", async
   };
   expect(body.raceKey).toBe("nar:20260529:30:08");
   expect(body.rowCount).toBe(0);
-  expect(body.r2Key).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  expect(body.r2Key).toBe("features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet");
   expect(typeof body.builtAt).toBe("string");
 });
 
@@ -413,7 +412,7 @@ it("accepts recompute request for Ban'ei (keibajoCode=83) and forwards the raw j
   expect(callArg.kaisaiTsukihi).toBe("0530");
   expect(callArg.raceBango).toBe("01");
   expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
-    "features/by-race/2026/05/30/nar/83/01.parquet",
+    "features/catalog-v1/by-race/2026/05/30/nar/83/01.parquet",
     new Uint8Array([1, 2, 3]),
   );
 });
@@ -437,7 +436,7 @@ it("accepts recompute request with raceKey-only body by parsing the 5-part strin
   expect(callArg.raceBango).toBe("01");
   expect(callArg.source).toBe("nar");
   expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
-    "features/by-race/2026/05/29/nar/42/01.parquet",
+    "features/catalog-v1/by-race/2026/05/29/nar/42/01.parquet",
     new Uint8Array([1, 2, 3]),
   );
 });
@@ -445,7 +444,7 @@ it("accepts recompute request with raceKey-only body by parsing the 5-part strin
 it("handleRecomputeRequest returns 500 JSON when buildAndPersistRaceFeatures throws", async () => {
   const env = buildEnv();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(buildRaceFeatures).mockRejectedValueOnce(new Error("hyperdrive socket dead"));
+  vi.mocked(buildRaceFeatures).mockRejectedValueOnce(new Error("catalog request failed"));
   const response = await handleRecomputeRequest(
     env,
     new Request("https://x/api/internal/recompute-and-build-parquet", {
@@ -463,7 +462,7 @@ it("handleRecomputeRequest returns 500 JSON when buildAndPersistRaceFeatures thr
   );
   expect(response.status).toBe(500);
   await expect(response.json()).resolves.toStrictEqual({
-    error: "hyperdrive socket dead",
+    error: "catalog request failed",
     raceKey: "nar:20260529:30:08",
   });
 });
@@ -907,7 +906,7 @@ it("predict-for-day returns 200 with skip-aware result envelope", async () => {
 it("predict-for-day returns 500 when runPredictionsForDay throws", async () => {
   const env = buildEnv();
   vi.spyOn(console, "error").mockImplementation(() => {});
-  vi.mocked(runPredictionsForDay).mockRejectedValueOnce(new Error("hyperdrive dead"));
+  vi.mocked(runPredictionsForDay).mockRejectedValueOnce(new Error("catalog unavailable"));
   const response = await handlePredictForDayRequest(
     env,
     new Request("https://x/api/internal/predict-for-day", {
@@ -918,7 +917,7 @@ it("predict-for-day returns 500 when runPredictionsForDay throws", async () => {
   );
   expect(response.status).toBe(500);
   await expect(response.json()).resolves.toStrictEqual({
-    error: "hyperdrive dead",
+    error: "catalog unavailable",
     targetYmd: "20260531",
   });
 });
@@ -993,15 +992,17 @@ it("buildAndPersistRaceFeatures writes build-state KV and latest features KV", a
     raceBango: "08",
   });
   expect(result.rowCount).toBe(0);
-  expect(result.r2Key).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  expect(result.r2Key).toBe("features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet");
   expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
-    "features:build-state:nar:20260529:30:08",
+    "features:build-state:catalog-v1:nar:20260529:30:08",
     expect.any(String),
     { expirationTtl: 86_400 },
   );
-  expect(env.FEATURES_KV.put).toHaveBeenCalledWith("features:latest:nar:20260529:30:08", "[]", {
-    expirationTtl: 600,
-  });
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:latest:catalog-v1:nar:20260529:30:08",
+    "[]",
+    { expirationTtl: 600 },
+  );
 });
 
 it("buildAndPersistRaceFeatures counts only rows with a resolved finish_position into rankedRowCount", async () => {
@@ -1020,12 +1021,12 @@ it("buildAndPersistRaceFeatures counts only rows with a resolved finish_position
     source: "nar",
   });
   expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
-    "features:build-state:nar:2026:0529:30:08",
+    "features:build-state:catalog-v1:nar:2026:0529:30:08",
     expect.stringContaining('"rankedRowCount":2'),
     { expirationTtl: 86_400 },
   );
   expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
-    "features:build-state:nar:2026:0529:30:08",
+    "features:build-state:catalog-v1:nar:2026:0529:30:08",
     expect.stringContaining('"rowCount":3'),
     { expirationTtl: 86_400 },
   );
@@ -1090,7 +1091,7 @@ it("runScheduledFeaturesPlan skips outside polling window", async () => {
   });
 });
 
-it("runScheduledFeaturesPlan runs inside polling window with empty hyperdrive result", async () => {
+it("runScheduledFeaturesPlan runs inside polling window with empty catalog result", async () => {
   const env = buildEnv();
   await expect(
     runScheduledFeaturesPlan(env, new Date("2026-05-29T03:00:00Z")),
@@ -1523,7 +1524,7 @@ it("runScheduledFeaturesPlan skips a past14 candidate whose build was recorded a
   ]);
   const env = buildEnv({
     FEATURES_KV: buildKeyedKv({
-      "features:build-state:nar:2026:0528:30:08": JSON.stringify({
+      "features:build-state:catalog-v1:nar:2026:0528:30:08": JSON.stringify({
         lastBuiltAt: "2026-05-29T01:00:00.000Z",
         rankedRowCount: 14,
         rowCount: 14,
@@ -1565,7 +1566,7 @@ it("runScheduledFeaturesPlan still rebuilds a past14 candidate whose build was r
   ]);
   const env = buildEnv({
     FEATURES_KV: buildKeyedKv({
-      "features:build-state:nar:2026:0528:30:08": JSON.stringify({
+      "features:build-state:catalog-v1:nar:2026:0528:30:08": JSON.stringify({
         lastBuiltAt: "2026-05-28T08:41:00.000Z",
         rowCount: 14,
       }),
@@ -1855,12 +1856,14 @@ it("handleQueue dispatches build-race-features job by building Parquet and PUT t
   await handleQueue({ messages: [message] } as unknown as MessageBatch<Job>, env);
   expect(message.ack).toHaveBeenCalled();
   expect(env.FEATURES_ARCHIVE.put).toHaveBeenCalledWith(
-    "features/by-race/2026/05/29/nar/30/08.parquet",
+    "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet",
     new Uint8Array([1, 2, 3]),
   );
-  expect(env.FEATURES_KV.put).toHaveBeenCalledWith("features:build-state:r", expect.any(String), {
-    expirationTtl: 86_400,
-  });
+  expect(env.FEATURES_KV.put).toHaveBeenCalledWith(
+    "features:build-state:catalog-v1:r",
+    expect.any(String),
+    { expirationTtl: 86_400 },
+  );
 });
 
 it("handleQueue records success outcome after build-race-features job", async () => {
@@ -1881,7 +1884,7 @@ it("handleQueue records success outcome after build-race-features job", async ()
 
 it("handleQueue records failure outcome and rethrows when build-race-features throws", async () => {
   const env = buildEnv();
-  vi.mocked(buildRaceFeatures).mockRejectedValueOnce(new Error("hyperdrive down"));
+  vi.mocked(buildRaceFeatures).mockRejectedValueOnce(new Error("catalog down"));
   const message = buildMessage({
     type: "build-race-features",
     raceKey: "r",
@@ -1893,7 +1896,7 @@ it("handleQueue records failure outcome and rethrows when build-race-features th
   });
   await expect(
     handleQueue({ messages: [message] } as unknown as MessageBatch<Job>, env),
-  ).rejects.toThrow("hyperdrive down");
+  ).rejects.toThrow("catalog down");
   expect(recordRecomputeOutcome).toHaveBeenCalledWith(env, false);
 });
 

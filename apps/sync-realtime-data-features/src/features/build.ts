@@ -1,55 +1,32 @@
-// Run with bun. Per-race feature build that reads ONLY from Hyperdrive (Postgres).
-// The old legacy D1 `daily_race_entries` read is forbidden by Phase 0 rule 3.
+// Run with bun. Per-race features derived by pc-keiba-r2-catalog from Iceberg raw tables.
+// Catalog failure is fatal: feature archives and PostgreSQL are never input fallbacks.
 
-import type { Pool } from "pg";
-
-import { buildDailyFeatureSelectSql, type DailyFeatureBuildSourceScope } from "./build-sql";
-import { normaliseDailyRaceEntryRow } from "./normalise";
-import { getFeaturesPool } from "./postgres-pool";
+import { fetchCatalogRows, isRecord } from "../catalog-client";
 import type { DailyRaceEntryRow, Env, RaceJobKey } from "../types";
+import { normaliseDailyRaceEntryRow } from "./normalise";
 
-const BAN_EI_KEIBAJO_CODE = "83";
+const RACE_FEATURES_URL = "https://pc-keiba-r2-catalog/v1/race-features";
 
-interface BuildRaceFeaturesContext {
-  pool?: Pool;
-}
-
-export const fetchAllRaceFeatures = async (
-  pool: Pool,
-  options: { fromDate: string; toDate?: string; sourceScope?: "all" | "ban-ei" | "jra" | "nar" },
-): Promise<DailyRaceEntryRow[]> => {
-  const sql = buildDailyFeatureSelectSql(options);
-  const result = await pool.query<Record<string, unknown>>(sql);
-  return result.rows.map(normaliseDailyRaceEntryRow);
+const buildRaceFeaturesUrl = (job: RaceJobKey): URL => {
+  const url = new URL(RACE_FEATURES_URL);
+  url.searchParams.set("date", `${job.kaisaiNen}${job.kaisaiTsukihi}`);
+  url.searchParams.set("source", job.source);
+  url.searchParams.set("keibajoCode", job.keibajoCode.padStart(2, "0"));
+  url.searchParams.set("raceBango", job.raceBango.padStart(2, "0"));
+  return url;
 };
 
-const filterRowsByRace = (rows: DailyRaceEntryRow[], job: RaceJobKey): DailyRaceEntryRow[] =>
-  rows.filter(
-    (row) =>
-      row.source === job.source &&
-      row.kaisai_nen === job.kaisaiNen &&
-      row.kaisai_tsukihi === job.kaisaiTsukihi &&
-      row.keibajo_code === job.keibajoCode.padStart(2, "0") &&
-      row.race_bango === job.raceBango.padStart(2, "0"),
-  );
-
-// Ban'ei (Obihiro, keibajo_code=83) is stored under source="nar" in jvd/nvd tables
-// but must be selected via the dedicated "ban-ei" scope so build-sql includes it
-// instead of filtering it out via the `<> '83'` clause used for plain "nar".
-const resolveScope = (job: RaceJobKey): DailyFeatureBuildSourceScope =>
-  job.source === "nar" && job.keibajoCode === BAN_EI_KEIBAJO_CODE ? "ban-ei" : job.source;
+const toDailyRaceEntryRow = (value: unknown): DailyRaceEntryRow => {
+  if (!isRecord(value)) {
+    throw new Error("PC_KEIBA_R2_CATALOG /v1/race-features returned an invalid row");
+  }
+  return normaliseDailyRaceEntryRow(value);
+};
 
 export const buildRaceFeatures = async (
   job: RaceJobKey,
-  env: Env,
-  context: BuildRaceFeaturesContext = {},
+  env: Pick<Env, "PC_KEIBA_R2_CATALOG">,
 ): Promise<DailyRaceEntryRow[]> => {
-  const date = `${job.kaisaiNen}${job.kaisaiTsukihi}`;
-  const pool = context.pool ?? getFeaturesPool(env);
-  const rows = await fetchAllRaceFeatures(pool, {
-    fromDate: date,
-    toDate: date,
-    sourceScope: resolveScope(job),
-  });
-  return filterRowsByRace(rows, job);
+  const rows = await fetchCatalogRows(env.PC_KEIBA_R2_CATALOG, buildRaceFeaturesUrl(job));
+  return rows.map(toDailyRaceEntryRow);
 };

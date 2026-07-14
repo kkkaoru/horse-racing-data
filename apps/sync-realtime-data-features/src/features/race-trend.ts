@@ -14,7 +14,7 @@ import type { DailyRaceEntryRow, Env } from "../types";
 const YMD_PATTERN = /^\d{8}$/u;
 const KEIBAJO_PAD_WIDTH = 2;
 const RACE_BANGO_PAD_WIDTH = 2;
-const R2_PREFIX = "features/by-race";
+const R2_PREFIX = "features/catalog-v1/by-race";
 const FEATURES_KV_BIND_NAME = "FEATURES_KV";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -27,7 +27,7 @@ export interface RaceTrendQueryParams {
 }
 
 export const buildRaceTrendCacheKey = (params: RaceTrendQueryParams): string =>
-  `race-trend:${params.source}:${params.keibajoCode}:${params.raceBango}:${params.from}:${params.to}`;
+  `race-trend:catalog-v1:${params.source}:${params.keibajoCode}:${params.raceBango}:${params.from}:${params.to}`;
 
 export const buildRaceTrendPrefix = (input: {
   source: "jra" | "nar";

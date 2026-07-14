@@ -4,7 +4,7 @@
 import { raceDayEndJstMs } from "../time";
 import type { Env } from "../types";
 
-const BUILD_STATE_KV_KEY_PREFIX = "features:build-state";
+const BUILD_STATE_KV_KEY_PREFIX = "features:build-state:catalog-v1";
 const DEFAULT_BUILD_STATE_TTL_SECONDS = 86_400;
 
 export interface BuildStateRecord {

@@ -92,8 +92,8 @@ export type Job =
       date: string;
     };
 
-export interface HyperdriveBinding {
-  connectionString: string;
+export interface CatalogServiceBinding {
+  fetch(request: Request): Promise<Response>;
 }
 
 export interface FinishPositionPredictionEntry {
@@ -166,7 +166,7 @@ export interface Env {
   MODELS: R2Bucket;
   REALTIME_OLD?: { fetch: typeof fetch };
   REALTIME_OLD_ADMIN_TOKEN?: string;
-  HYPERDRIVE?: HyperdriveBinding;
+  PC_KEIBA_R2_CATALOG: CatalogServiceBinding;
   FEATURES_BUILD_LOCK_TTL_SECONDS?: string;
   FEATURES_RACE_LIST_KV_TTL_SECONDS?: string;
   FEATURES_ENQUEUE_LOCK_TTL_SECONDS?: string;

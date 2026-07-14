@@ -87,7 +87,7 @@ it("seedFeaturesRecompute builds every race returned by list endpoint", async ()
     if (url.endsWith("/api/internal/recompute-and-build-parquet")) {
       return buildResponse(200, {
         builtAt: "now",
-        r2Key: "features/by-race/2026/05/29/nar/30/08.parquet",
+        r2Key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet",
         raceKey: "nar:2026:0529:30:08",
         rowCount: 14,
       });

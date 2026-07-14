@@ -24,6 +24,7 @@ it("returns null when KV miss", async () => {
   const { env, kv } = buildEnv();
   kv.get.mockResolvedValueOnce(null);
   await expect(readLatestFeaturesFromKv(env, "r")).resolves.toBeNull();
+  expect(kv.get).toHaveBeenCalledWith("features:latest:catalog-v1:r");
 });
 
 it("returns parsed rows when KV hit", async () => {
@@ -35,7 +36,7 @@ it("returns parsed rows when KV hit", async () => {
 it("writes rows with default TTL when env unset", async () => {
   const { env, kv } = buildEnv();
   await writeLatestFeaturesToKv(env, "r", []);
-  expect(kv.put).toHaveBeenCalledWith("features:latest:r", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("features:latest:catalog-v1:r", "[]", {
     expirationTtl: 600,
   });
 });
@@ -43,7 +44,7 @@ it("writes rows with default TTL when env unset", async () => {
 it("writes rows with TTL from env when valid", async () => {
   const { env, kv } = buildEnv("120");
   await writeLatestFeaturesToKv(env, "r", []);
-  expect(kv.put).toHaveBeenCalledWith("features:latest:r", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("features:latest:catalog-v1:r", "[]", {
     expirationTtl: 120,
   });
 });
@@ -51,7 +52,7 @@ it("writes rows with TTL from env when valid", async () => {
 it("falls back to default TTL when env value is non-numeric", async () => {
   const { env, kv } = buildEnv("x");
   await writeLatestFeaturesToKv(env, "r", []);
-  expect(kv.put).toHaveBeenCalledWith("features:latest:r", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("features:latest:catalog-v1:r", "[]", {
     expirationTtl: 600,
   });
 });
@@ -59,7 +60,7 @@ it("falls back to default TTL when env value is non-numeric", async () => {
 it("falls back to default TTL when env value is zero", async () => {
   const { env, kv } = buildEnv("0");
   await writeLatestFeaturesToKv(env, "r", []);
-  expect(kv.put).toHaveBeenCalledWith("features:latest:r", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("features:latest:catalog-v1:r", "[]", {
     expirationTtl: 600,
   });
 });

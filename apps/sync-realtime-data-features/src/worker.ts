@@ -185,7 +185,7 @@ const toRaceJobKeyFromBody = (body: RecomputeRequestBody): RaceJobKey | null => 
   return tryParseRaceKey(body.raceKey);
 };
 
-// Reads Hyperdrive (Postgres) via buildRaceFeatures, encodes Parquet bytes,
+// Reads the per-race catalog endpoint via buildRaceFeatures, encodes Parquet bytes,
 // PUTs to R2, then mirrors the build into KV (state + latest features).
 // Legacy D1 daily_race_entries is NEVER touched (Phase 0 rule 3).
 export const buildAndPersistRaceFeatures = async (
@@ -318,7 +318,7 @@ export const handlePredictFinishPositionRequest = async (
   }
 };
 
-// Enumerates all of today's race_keys from Hyperdrive and enqueues
+// Enumerates all of today's race_keys from the catalog and enqueues
 // predict-running-style + predict-finish-position jobs for each via the
 // existing REALTIME_FEATURES_JOBS queue producer. Force-recovery / backfill
 // endpoint for the admin "predict for day" workflow.

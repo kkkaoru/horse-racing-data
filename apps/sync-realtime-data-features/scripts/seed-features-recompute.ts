@@ -10,8 +10,8 @@
 // through the legacy Worker endpoint
 // POST /api/internal/list-race-keys-by-date-from-hyperdrive which queries
 // `realtime_race_sources` over Hyperdrive (Postgres). The new worker then
-// re-builds the features for each race using Hyperdrive directly and writes
-// the Parquet bytes to R2.
+// re-builds each race through PC_KEIBA_R2_CATALOG and writes the Parquet bytes
+// to R2.
 
 const DEFAULT_SEED_DAYS = 30;
 const DEFAULT_PER_RACE_SLEEP_MS = 500;

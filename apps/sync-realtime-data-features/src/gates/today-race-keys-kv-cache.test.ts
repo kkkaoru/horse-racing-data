@@ -61,13 +61,13 @@ it("getTodayRaceKeysFromKv requests the per-source key", async () => {
   const { env, kv } = buildEnv({});
   kv.get.mockResolvedValueOnce(null);
   await getTodayRaceKeysFromKv(env, "nar", "20260529");
-  expect(kv.get).toHaveBeenCalledWith("race-keys:v1:nar:20260529");
+  expect(kv.get).toHaveBeenCalledWith("race-keys:catalog-v1:nar:20260529");
 });
 
 it("putTodayRaceKeysToKv writes with default 1800s TTL when env var unset", async () => {
   const { env, kv } = buildEnv({});
   await putTodayRaceKeysToKv(env, "jra", "20260529", []);
-  expect(kv.put).toHaveBeenCalledWith("race-keys:v1:jra:20260529", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("race-keys:catalog-v1:jra:20260529", "[]", {
     expirationTtl: 1800,
   });
 });
@@ -75,7 +75,7 @@ it("putTodayRaceKeysToKv writes with default 1800s TTL when env var unset", asyn
 it("putTodayRaceKeysToKv honors env-supplied TTL when numeric", async () => {
   const { env, kv } = buildEnv({ ttl: "600" });
   await putTodayRaceKeysToKv(env, "nar", "20260529", []);
-  expect(kv.put).toHaveBeenCalledWith("race-keys:v1:nar:20260529", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("race-keys:catalog-v1:nar:20260529", "[]", {
     expirationTtl: 600,
   });
 });
@@ -83,7 +83,7 @@ it("putTodayRaceKeysToKv honors env-supplied TTL when numeric", async () => {
 it("putTodayRaceKeysToKv falls back to default TTL when env value is non-numeric", async () => {
   const { env, kv } = buildEnv({ ttl: "not-a-number" });
   await putTodayRaceKeysToKv(env, "jra", "20260529", []);
-  expect(kv.put).toHaveBeenCalledWith("race-keys:v1:jra:20260529", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("race-keys:catalog-v1:jra:20260529", "[]", {
     expirationTtl: 1800,
   });
 });
@@ -91,7 +91,7 @@ it("putTodayRaceKeysToKv falls back to default TTL when env value is non-numeric
 it("putTodayRaceKeysToKv falls back to default TTL when env value is zero", async () => {
   const { env, kv } = buildEnv({ ttl: "0" });
   await putTodayRaceKeysToKv(env, "nar", "20260529", []);
-  expect(kv.put).toHaveBeenCalledWith("race-keys:v1:nar:20260529", "[]", {
+  expect(kv.put).toHaveBeenCalledWith("race-keys:catalog-v1:nar:20260529", "[]", {
     expirationTtl: 1800,
   });
 });
@@ -110,7 +110,7 @@ it("putTodayRaceKeysToKv serialises the race key array", async () => {
   ];
   await putTodayRaceKeysToKv(env, "nar", "20260529", list);
   expect(kv.put).toHaveBeenCalledWith(
-    "race-keys:v1:nar:20260529",
+    "race-keys:catalog-v1:nar:20260529",
     '[{"kaisaiNen":"2026","kaisaiTsukihi":"0529","keibajoCode":"30","raceBango":"08","raceKey":"nar:2026:0529:30:08","source":"nar"}]',
     { expirationTtl: 1800 },
   );

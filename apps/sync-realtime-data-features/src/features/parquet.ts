@@ -1,6 +1,6 @@
 // Run with bun. Parquet encode (via @dsnp/parquetjs) + decode (via hyparquet).
-// Schema mirrors all 45 DailyRaceEntryRow fields so the per-race file is the
-// canonical source of truth (no D1 daily_race_entries dependency).
+// Schema mirrors all 45 DailyRaceEntryRow fields. The per-race file is a
+// versioned Catalog-derived output for downstream inference, not source data.
 
 import { ParquetSchema, ParquetWriter } from "@dsnp/parquetjs";
 import { parquetReadObjects } from "hyparquet";

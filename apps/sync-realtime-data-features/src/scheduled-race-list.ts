@@ -1,15 +1,13 @@
-// Run with bun. Hyperdrive-direct read of today's race_key list for the
-// scheduled handler. Replaces the legacy `REALTIME_OLD.fetch` path that
-// hit the old D1-backed worker endpoint
-// `/api/internal/list-race-keys-by-date-from-hyperdrive`.
-// daily_race_entries SELECT is forbidden by Phase 0 rule 3.
+// Run with bun. Catalog read of race keys for scheduled prediction and feature jobs.
 
-import type { Pool } from "pg";
-
-import { getFeaturesPool } from "./features/postgres-pool";
-import { getTodayRaceKeysFromKv, putTodayRaceKeysToKv } from "./gates/today-race-keys-kv-cache";
+import { fetchCatalogRows, isRecord } from "./catalog-client";
+import {
+  getTodayRaceKeysFromKv,
+  putTodayRaceKeysToKv,
+  type TodayRaceKeysKvEnv,
+} from "./gates/today-race-keys-kv-cache";
 import { computeTomorrowJst } from "./time";
-import type { Env, RaceJobKey } from "./types";
+import type { CatalogServiceBinding, Env, RaceJobKey } from "./types";
 
 export type TodayRaceKeySource = "jra" | "nar";
 
@@ -23,73 +21,58 @@ export interface TodayRaceKey {
 }
 
 export interface ListTodayRaceKeysContext {
-  pool?: Pool;
+  catalog?: CatalogServiceBinding;
 }
 
-interface SourcedRaceKeyRow {
+export type ScheduledRaceListEnv = Pick<Env, "PC_KEIBA_R2_CATALOG"> & TodayRaceKeysKvEnv;
+
+interface CatalogRaceKeyRow {
   [key: string]: unknown;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  raceKey: string;
   source: TodayRaceKeySource;
-  kaisai_nen: string;
-  kaisai_tsukihi: string;
-  keibajo_code: string;
-  race_bango: string;
 }
 
-const KEIBAJO_CODE_PAD_WIDTH = 2;
-const RACE_BANGO_PAD_WIDTH = 2;
-
-const SELECT_RACE_KEYS_SQL = `
-  select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-  from jvd_ra
-  where kaisai_nen = $1 and kaisai_tsukihi = $2
-  union all
-  select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-  from nvd_ra
-  where kaisai_nen = $1 and kaisai_tsukihi = $2
-  order by source, keibajo_code, race_bango
-`;
+const RACE_KEYS_URL = "https://pc-keiba-r2-catalog/v1/race-keys";
 
 const isTodayRaceKeySource = (value: unknown): value is TodayRaceKeySource =>
   value === "jra" || value === "nar";
 
-const normaliseCode = (value: string, width: number): string => value.padStart(width, "0");
-
-const buildRaceKey = (row: SourcedRaceKeyRow): string =>
-  `${row.source}:${row.kaisai_nen}:${row.kaisai_tsukihi}:${normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH)}:${normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH)}`;
-
-const toTodayRaceKey = (row: SourcedRaceKeyRow): TodayRaceKey => ({
-  kaisaiNen: row.kaisai_nen,
-  kaisaiTsukihi: row.kaisai_tsukihi,
-  keibajoCode: normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH),
-  raceBango: normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH),
-  raceKey: buildRaceKey(row),
+const toTodayRaceKey = (row: CatalogRaceKeyRow): TodayRaceKey => ({
+  kaisaiNen: row.kaisaiNen,
+  kaisaiTsukihi: row.kaisaiTsukihi,
+  keibajoCode: row.keibajoCode,
+  raceBango: row.raceBango,
+  raceKey: row.raceKey,
   source: row.source,
 });
 
-const isCompleteRow = (row: Record<string, unknown>): row is SourcedRaceKeyRow =>
+const isCompleteRow = (row: unknown): row is CatalogRaceKeyRow =>
+  isRecord(row) &&
   isTodayRaceKeySource(row.source) &&
-  typeof row.kaisai_nen === "string" &&
-  typeof row.kaisai_tsukihi === "string" &&
-  typeof row.keibajo_code === "string" &&
-  typeof row.race_bango === "string";
+  typeof row.kaisaiNen === "string" &&
+  typeof row.kaisaiTsukihi === "string" &&
+  typeof row.keibajoCode === "string" &&
+  typeof row.raceBango === "string" &&
+  typeof row.raceKey === "string";
 
-const splitTodayYyyymmdd = (yyyymmdd: string): { kaisaiNen: string; kaisaiTsukihi: string } => ({
-  kaisaiNen: yyyymmdd.slice(0, 4),
-  kaisaiTsukihi: yyyymmdd.slice(4, 8),
-});
+const buildRaceKeysUrl = (yyyymmdd: string): URL => {
+  const url = new URL(RACE_KEYS_URL);
+  url.searchParams.set("date", yyyymmdd);
+  return url;
+};
 
-export const listTodayRaceKeysFromHyperdrive = async (
-  env: Env,
+export const listTodayRaceKeysFromCatalog = async (
+  env: Pick<Env, "PC_KEIBA_R2_CATALOG">,
   yyyymmdd: string,
   context: ListTodayRaceKeysContext = {},
 ): Promise<TodayRaceKey[]> => {
-  const pool = context.pool ?? getFeaturesPool(env);
-  const { kaisaiNen, kaisaiTsukihi } = splitTodayYyyymmdd(yyyymmdd);
-  const result = await pool.query<Record<string, unknown>>(SELECT_RACE_KEYS_SQL, [
-    kaisaiNen,
-    kaisaiTsukihi,
-  ]);
-  return result.rows.filter(isCompleteRow).map(toTodayRaceKey);
+  const catalog = context.catalog ?? env.PC_KEIBA_R2_CATALOG;
+  const rows = await fetchCatalogRows(catalog, buildRaceKeysUrl(yyyymmdd));
+  return rows.filter(isCompleteRow).map(toTodayRaceKey);
 };
 
 const partitionByCachedSource = (
@@ -100,13 +83,13 @@ const partitionByCachedSource = (
 });
 
 interface ListTodayRaceKeysWithKvCacheArgs {
-  env: Env;
+  env: ScheduledRaceListEnv;
   yyyymmdd: string;
   context: ListTodayRaceKeysContext;
 }
 
 interface ListTomorrowRaceKeysWithKvCacheArgs {
-  env: Env;
+  env: ScheduledRaceListEnv;
   now: Date;
   context: ListTodayRaceKeysContext;
 }
@@ -114,7 +97,7 @@ interface ListTomorrowRaceKeysWithKvCacheArgs {
 const fetchAndCacheTodayRaceKeys = async (
   args: ListTodayRaceKeysWithKvCacheArgs,
 ): Promise<TodayRaceKey[]> => {
-  const fresh = await listTodayRaceKeysFromHyperdrive(args.env, args.yyyymmdd, args.context);
+  const fresh = await listTodayRaceKeysFromCatalog(args.env, args.yyyymmdd, args.context);
   const partitioned = partitionByCachedSource(fresh);
   await Promise.all([
     putTodayRaceKeysToKv(args.env, "jra", args.yyyymmdd, partitioned.jra),
@@ -123,13 +106,9 @@ const fetchAndCacheTodayRaceKeys = async (
   return fresh;
 };
 
-// KV-cached variant of listTodayRaceKeysFromHyperdrive. Reads the per-source
-// `race-keys:v1:{source}:{yyyymmdd}` entries first; only when at least one
-// is missing does it fall through to Hyperdrive. The single UNION query is
-// then partitioned and written back into KV so the next tick can short-circuit.
-// On Hyperdrive failure we log + return an empty list so the */10 cron tick
-// no-ops cleanly and the next tick retries; the put-side is gated on a
-// successful query so the cache is never poisoned with empty values.
+// Reads per-source KV entries first. A miss performs one catalog request and
+// populates both entries. Failed catalog requests are not cached and retry on
+// the next scheduled tick.
 export const listTodayRaceKeysWithKvCache = async (
   args: ListTodayRaceKeysWithKvCacheArgs,
 ): Promise<TodayRaceKey[]> => {
@@ -143,7 +122,7 @@ export const listTodayRaceKeysWithKvCache = async (
   try {
     return await fetchAndCacheTodayRaceKeys(args);
   } catch (error) {
-    console.error("[features] listTodayRaceKeysWithKvCache hyperdrive failure", error);
+    console.error("[features] listTodayRaceKeysWithKvCache catalog failure", error);
     return [];
   }
 };
@@ -168,14 +147,11 @@ export const toRaceJobKeyFromTodayRaceKey = (entry: TodayRaceKey): RaceJobKey =>
   source: entry.source,
 });
 
-// Tomorrow's race lister — same SQL as today, but with kaisaiNen / kaisaiTsukihi
-// computed from `now` shifted by +1 JST day. Used for Phase F auto-seed so the
-// scheduled worker can preheat next-day Parquet without any Mac CLI.
-export const listTomorrowRaceKeysFromHyperdrive = async (
-  env: Env,
+export const listTomorrowRaceKeysFromCatalog = async (
+  env: Pick<Env, "PC_KEIBA_R2_CATALOG">,
   now: Date,
   context: ListTodayRaceKeysContext = {},
 ): Promise<TodayRaceKey[]> => {
   const tomorrowJst = computeTomorrowJst(now);
-  return listTodayRaceKeysFromHyperdrive(env, tomorrowJst, context);
+  return listTodayRaceKeysFromCatalog(env, tomorrowJst, context);
 };

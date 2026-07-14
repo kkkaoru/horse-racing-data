@@ -20,14 +20,13 @@
     "FEATURES_R2_LIST_CACHE_TTL_SECONDS": "600",
     "FEATURES_PARQUET_BYTES_CACHE_TTL_SECONDS": "300",
     "FEATURES_LATEST_KV_TTL_SECONDS": "600",
-    // 30-min TTL for the today/tomorrow race-key list KV cache. Matches the hot
-    // worker's expected-race-count TTL choice. After the JST ~08:30 local-PG ->
-    // Neon sync completes, race_key sets are immutable for the rest of the day,
-    // so a 30-min cache delay is safe for the features build path.
+    // 30-min TTL for the today/tomorrow race-key list KV cache. After the local-PG
+    // raw-table partition is published to Iceberg, race_key sets are immutable
+    // for the rest of the day, so this cache delay is safe.
     "FEATURES_TODAY_RACE_KEYS_KV_TTL_SECONDS": "1800",
   },
   // */10 * * * * — Phase F adaptive auto-seed. Each tick lists today + tomorrow
-  // races from Hyperdrive, computes past-14 venue-day targets, then enqueues up
+  // races from the R2 catalog, computes past-14 venue-day targets, then enqueues up
   // to batchSize build-race-features jobs (adaptive on recompute success rate)
   // plus the today inference jobs. Gate 3 (enqueue lock KV) dedupes within 60s
   // and build-state KV freshness suppresses recently built races. Outside JST
@@ -63,6 +62,10 @@
       "binding": "REALTIME_OLD",
       "service": "sync-realtime-data",
     },
+    {
+      "binding": "PC_KEIBA_R2_CATALOG",
+      "service": "pc-keiba-r2-catalog",
+    },
   ],
   "d1_databases": [
     {
@@ -85,12 +88,6 @@
     {
       "binding": "MODELS",
       "bucket_name": "pc-keiba-finish-position-models",
-    },
-  ],
-  "hyperdrive": [
-    {
-      "binding": "HYPERDRIVE",
-      "id": "3c70beb7abda4e31a1d7ef8197806b02",
     },
   ],
   "routes": [

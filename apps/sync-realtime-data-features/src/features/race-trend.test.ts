@@ -124,19 +124,19 @@ it("buildRaceTrendCacheKey returns colon-delimited stable key", () => {
       from: "20260516",
       to: "20260529",
     }),
-  ).toBe("race-trend:nar:30:08:20260516:20260529");
+  ).toBe("race-trend:catalog-v1:nar:30:08:20260516:20260529");
 });
 
 it("buildRaceTrendPrefix splits ymd into year/month/day", () => {
   expect(buildRaceTrendPrefix({ source: "jra", ymd: "20260529", keibajoCode: "5" })).toBe(
-    "features/by-race/2026/05/29/jra/05/",
+    "features/catalog-v1/by-race/2026/05/29/jra/05/",
   );
 });
 
 it("buildRaceParquetKey zero-pads raceBango", () => {
   expect(
     buildRaceParquetKey({ source: "nar", ymd: "20260529", keibajoCode: "30", raceBango: "8" }),
-  ).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  ).toBe("features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet");
 });
 
 it("expandDateRange returns single date when from equals to", () => {
@@ -268,9 +268,9 @@ it("buildRaceTrendPayload returns aggregate from R2 list hit + Parquet fetch", a
   const archiveGet = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new Uint8Array([1, 2]).buffer,
   });
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const env = buildEnv({ archiveGet, archiveList });
   vi.stubGlobal("caches", buildCaches());
   vi.mocked(decodeRaceFeaturesParquet).mockResolvedValueOnce([
@@ -294,9 +294,9 @@ it("buildRaceTrendPayload returns aggregate from R2 list hit + Parquet fetch", a
 });
 
 it("buildRaceTrendPayload reuses KV list cache on second call", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new Uint8Array([1, 2]).buffer,
   });
@@ -321,9 +321,9 @@ it("buildRaceTrendPayload reuses KV list cache on second call", async () => {
 });
 
 it("buildRaceTrendPayload reuses Cache API parquet bytes on second call", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new Uint8Array([7, 8, 9]).buffer,
   });
@@ -346,9 +346,9 @@ it("buildRaceTrendPayload reuses Cache API parquet bytes on second call", async 
 });
 
 it("buildRaceTrendPayload falls back to live list when FEATURES_KV unbound", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new Uint8Array([1, 2]).buffer,
   });
@@ -373,9 +373,9 @@ it("buildRaceTrendPayload falls back to live list when FEATURES_KV unbound", asy
 });
 
 it("buildRaceTrendPayload returns zero rows when target parquet missing from list", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/05.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/05.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue(null);
   const env = buildEnv({ archiveGet, archiveList });
   vi.stubGlobal("caches", buildCaches());
@@ -391,9 +391,9 @@ it("buildRaceTrendPayload returns zero rows when target parquet missing from lis
 });
 
 it("buildRaceTrendPayload returns zero rows when R2 get yields null", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue(null);
   const env = buildEnv({ archiveGet, archiveList });
   vi.stubGlobal("caches", buildCaches());
@@ -408,9 +408,9 @@ it("buildRaceTrendPayload returns zero rows when R2 get yields null", async () =
 });
 
 it("buildRaceTrendPayload assigns race_date from kaisai_nen + kaisai_tsukihi", async () => {
-  const archiveList = vi
-    .fn()
-    .mockResolvedValue({ objects: [{ key: "features/by-race/2026/05/29/nar/30/08.parquet" }] });
+  const archiveList = vi.fn().mockResolvedValue({
+    objects: [{ key: "features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet" }],
+  });
   const archiveGet = vi.fn().mockResolvedValue({
     arrayBuffer: async () => new Uint8Array([1]).buffer,
   });

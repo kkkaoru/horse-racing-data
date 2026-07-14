@@ -2,7 +2,7 @@
 
 import type { DailyRaceEntryRow, Env } from "../types";
 
-const LATEST_KV_KEY_PREFIX = "features:latest";
+const LATEST_KV_KEY_PREFIX = "features:latest:catalog-v1";
 const DEFAULT_LATEST_KV_TTL_SECONDS = 600;
 
 const buildLatestKvKey = (raceKey: string): string => `${LATEST_KV_KEY_PREFIX}:${raceKey}`;

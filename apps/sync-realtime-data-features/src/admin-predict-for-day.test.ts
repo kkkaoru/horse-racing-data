@@ -19,7 +19,6 @@ const buildEnv = (sendMock: ReturnType<typeof vi.fn>): Env =>
     REALTIME_FEATURES_JOBS: { send: sendMock } as unknown as Queue,
     FEATURES_KV: {} as unknown as KVNamespace,
     FEATURES_ARCHIVE: {} as unknown as R2Bucket,
-    HYPERDRIVE: { connectionString: "postgres://test" },
   }) as unknown as Env;
 
 const buildEnvWithInferenceState = (args: {
@@ -47,7 +46,6 @@ const buildEnvWithInferenceState = (args: {
     REALTIME_FEATURES_JOBS: { send: args.sendMock } as unknown as Queue,
     FEATURES_KV: {} as unknown as KVNamespace,
     FEATURES_ARCHIVE: {} as unknown as R2Bucket,
-    HYPERDRIVE: { connectionString: "postgres://test" },
   } as unknown as Env;
 };
 
@@ -220,7 +218,7 @@ it("runPredictionsForDay returns empty result when no races match the source fil
   });
 });
 
-it("runPredictionsForDay returns empty result when Hyperdrive returns no races", async () => {
+it("runPredictionsForDay returns empty result when catalog returns no races", async () => {
   vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnv(send);
@@ -348,7 +346,6 @@ it("runPredictionsForDay skipCompleted=false (default) ignores inference_state a
     REALTIME_FEATURES_JOBS: { send } as unknown as Queue,
     FEATURES_KV: {} as unknown as KVNamespace,
     FEATURES_ARCHIVE: {} as unknown as R2Bucket,
-    HYPERDRIVE: { connectionString: "postgres://test" },
   } as unknown as Env;
   const result = await runPredictionsForDay(env, { source: "all", targetYmd: "20260531" });
   expect(prepare).toHaveBeenCalledTimes(0);
@@ -361,7 +358,7 @@ it("runPredictionsForDay skipCompleted=false (default) ignores inference_state a
   expect(result.skippedReasons).toStrictEqual([]);
 });
 
-it("runPredictionsForDay skipCompleted=true with empty Hyperdrive returns empty result", async () => {
+it("runPredictionsForDay skipCompleted=true with empty catalog returns empty result", async () => {
   vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([]);
   const send = vi.fn().mockResolvedValue(undefined);
   const env = buildEnvWithInferenceState({
@@ -393,7 +390,6 @@ it("runPredictionsForDay skipCompleted=true handles undefined results from D1 .a
     REALTIME_FEATURES_JOBS: { send } as unknown as Queue,
     FEATURES_KV: {} as unknown as KVNamespace,
     FEATURES_ARCHIVE: {} as unknown as R2Bucket,
-    HYPERDRIVE: { connectionString: "postgres://test" },
   } as unknown as Env;
   const result = await runPredictionsForDay(env, {
     skipCompleted: true,
@@ -414,7 +410,6 @@ it("runPredictionsForDay skipCompleted=true with invalid targetYmd length skips 
     REALTIME_FEATURES_JOBS: { send } as unknown as Queue,
     FEATURES_KV: {} as unknown as KVNamespace,
     FEATURES_ARCHIVE: {} as unknown as R2Bucket,
-    HYPERDRIVE: { connectionString: "postgres://test" },
   } as unknown as Env;
   const result = await runPredictionsForDay(env, {
     skipCompleted: true,

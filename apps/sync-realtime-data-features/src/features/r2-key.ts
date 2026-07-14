@@ -8,7 +8,7 @@ export interface RaceParquetKeyInput {
   raceBango: string;
 }
 
-const R2_PREFIX = "features/by-race";
+const R2_PREFIX = "features/catalog-v1/by-race";
 
 export const buildRaceParquetR2Key = (input: RaceParquetKeyInput): string => {
   const year = input.kaisaiNen;

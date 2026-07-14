@@ -12,7 +12,7 @@ it("builds nested key path", () => {
       keibajoCode: "30",
       raceBango: "08",
     }),
-  ).toBe("features/by-race/2026/05/29/nar/30/08.parquet");
+  ).toBe("features/catalog-v1/by-race/2026/05/29/nar/30/08.parquet");
 });
 
 it("zero-pads single-digit keibajoCode", () => {
@@ -24,7 +24,7 @@ it("zero-pads single-digit keibajoCode", () => {
       keibajoCode: "5",
       raceBango: "1",
     }),
-  ).toBe("features/by-race/2026/05/29/jra/05/01.parquet");
+  ).toBe("features/catalog-v1/by-race/2026/05/29/jra/05/01.parquet");
 });
 
 it("builds prefix path", () => {
@@ -35,5 +35,5 @@ it("builds prefix path", () => {
       kaisaiTsukihi: "0529",
       keibajoCode: "30",
     }),
-  ).toBe("features/by-race/2026/05/29/nar/30/");
+  ).toBe("features/catalog-v1/by-race/2026/05/29/nar/30/");
 });

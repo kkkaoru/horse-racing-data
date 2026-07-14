@@ -1,5 +1,5 @@
 // Run with bun. Pure orchestration helper for admin "predict for day" workflow.
-// Enumerates today's race_keys from Hyperdrive and enqueues
+// Enumerates today's race_keys from the catalog and enqueues
 // predict-running-style + predict-finish-position jobs for each via the
 // existing REALTIME_FEATURES_JOBS queue producer. Deliberately enqueues
 // (does NOT directly invoke handlers) so the queue's max_concurrency=4

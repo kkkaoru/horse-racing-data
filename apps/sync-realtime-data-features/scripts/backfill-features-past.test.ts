@@ -126,7 +126,7 @@ it("backfillFeaturesPast resumes from KV value and walks one day older", async (
     if (url.endsWith("/api/internal/recompute-and-build-parquet")) {
       return buildResponse(200, {
         builtAt: "now",
-        r2Key: "features/by-race/2026/04/19/nar/30/08.parquet",
+        r2Key: "features/catalog-v1/by-race/2026/04/19/nar/30/08.parquet",
         raceKey: "nar:2026:0419:30:08",
         rowCount: 12,
       });

@@ -18,10 +18,8 @@ export default defineConfig({
         "src/types.ts",
         "src/index.ts",
         "src/features/parquet.ts",
-        "src/features/build.ts",
         "src/running-style/inference.ts",
         "src/finish-position/inference.ts",
-        "src/features/postgres-pool.ts",
       ],
       thresholds: {
         lines: COVERAGE_THRESHOLD,

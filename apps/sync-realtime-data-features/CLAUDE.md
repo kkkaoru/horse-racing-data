@@ -5,16 +5,24 @@
 旧 `sync-realtime-data` から分離した **特徴量 (daily features) + 脚質予測 + 着順予測 専用** Worker。 旧 D1 (`sync-realtime-data`) に対する CPU pressure を切り離し、 features 本体は per-race R2 Parquet (`pc-keiba-features-archive`) に保存する。
 
 - **管理対象**:
-  - R2 Parquet: `features/by-race/{YYYY}/{MM}/{DD}/{source}/{keibajoCode}/{raceBango}.parquet` (新 R2 bucket `pc-keiba-features-archive`)
+  - R2 Parquet: `features/catalog-v1/by-race/{YYYY}/{MM}/{DD}/{source}/{keibajoCode}/{raceBango}.parquet` (新 R2 bucket `pc-keiba-features-archive`)
   - 新 D1 (`sync-realtime-data-features-db`): `race_running_styles`, `race_finish_position_predictions`, `running_style_inference_state`, `finish_position_inference_state`
 - **管理外**: `realtime_race_sources` / `daily_race_entries` / odds 系 — それぞれ旧 worker / hot worker 側
 
 ## 重要制約
 
-1. **旧 D1 `daily_race_entries` への SELECT は禁止** (Phase 0 方針 3) — 計算は Hyperdrive (Postgres) 直 read のみで完結する
+1. **旧 D1 `daily_race_entries` / Hyperdrive / local PG / Neon への直接 read は禁止** — 特徴量と race-key は `PC_KEIBA_R2_CATALOG` Service Binding のみから取得する
 2. **`DailyRaceEntryRow` (47 列相当) を縮小しない** — Parquet schema は旧 `daily_race_entries` の全列を保持
 3. **`v8 ignore` / `oxlint disable` / `eslint disable` の新規追加禁止** (CLAUDE.md root 方針)
 4. **しきい値 95% を下げない**
+
+### Catalog data lineage
+
+- Catalog への唯一の転送元は local PostgreSQL の raw tables。経路は `local PG raw tables -> Iceberg Catalog` に限定する。
+- 特徴量 Parquet、`FEATURES_ARCHIVE`、Neon、加工済み `daily_race_entries` を Catalog の seed・補完・fallback・正本として使わない。
+- この Worker の feature build は Catalog raw tables からクエリ時に導出された `/v1/race-features` の結果だけを入力にする。Catalog 障害時は失敗させ、別データソースへ fallback しない。
+- `FEATURES_ARCHIVE` は build 結果の保存先と後段推論の入力であり、Catalog や feature build の入力ソースではない。
+- R2 object key、build-state KV、latest-features KV、race-key KV は `catalog-v1` namespace を使い、旧世代の Parquet / completed state / cache を再利用しない。
 
 ## 不要 D1 アクセス抑制 (Gate 1-7)
 
@@ -39,7 +47,6 @@
 
 - `src/types.ts` / `src/index.ts` (型定義 / barrel)
 - `src/features/parquet.ts` (`@dsnp/parquetjs` + `hyparquet` の薄ラッパで、 Node stream に依存しており Workers env では真の実行パスをテスト不可)
-- `src/features/build.ts` / `src/features/postgres-pool.ts` (Hyperdrive (pg Pool) 起動が必要で worker-only)
 - `src/running-style/inference.ts` / `src/finish-position/inference.ts` (skeleton — 次 Phase で実装される LightGBM 推論 logic を入れる時に coverage を上げる)
 
 ### コードを追加・変更したときに必ずやること

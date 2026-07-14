@@ -27,6 +27,7 @@ it("returns null when KV miss", async () => {
   const { env, kv } = buildEnv();
   kv.get.mockResolvedValueOnce(null);
   await expect(getBuildStateFromKv(env, "r")).resolves.toBeNull();
+  expect(kv.get).toHaveBeenCalledWith("features:build-state:catalog-v1:r");
 });
 
 it("returns parsed record when KV hit", async () => {
@@ -44,7 +45,7 @@ it("writes record with TTL", async () => {
   const { env, kv } = buildEnv();
   await putBuildStateToKv(env, "r", { lastBuiltAt: "now", rowCount: 1 });
   expect(kv.put).toHaveBeenCalledWith(
-    "features:build-state:r",
+    "features:build-state:catalog-v1:r",
     '{"lastBuiltAt":"now","rowCount":1}',
     { expirationTtl: 86_400 },
   );
