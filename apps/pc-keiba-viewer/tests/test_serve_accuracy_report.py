@@ -1222,6 +1222,31 @@ def test_select_serving_row_treats_unknown_gen_at_as_least_preferred() -> None:
     assert result == ("05", "01", "h1", 1, 1, "v1", known, 1200, 16, None)
 
 
+def test_select_serving_row_works_with_running_style_row_shape() -> None:
+    """select_serving_row is generic (see its docstring): it only inspects
+    the (gen_at, row) wrapper tuple, never the row's internal layout, so it
+    must work unchanged for an RsRow-shaped tuple too, not just FpRow --
+    this is what dedup_running_style_rows_per_horse relies on to reuse it."""
+    post_time = datetime(2026, 7, 11, 10, 50, 0, tzinfo=subject.JST)
+    genuine_gen_at = datetime(2026, 7, 11, 10, 30, 0, tzinfo=subject.JST)
+    backfill_gen_at = datetime(2026, 7, 12, 14, 51, 0, tzinfo=subject.JST)
+    genuine_rs_row = (
+        "02", "03", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+        "jra-running-style-lgbm-prod-v3", genuine_gen_at, "01", 16, "1050",
+    )
+    backfill_rs_row = (
+        "02", "03", "h1", "oikomi", 3, 0.05, 0.1, 0.15, 0.7,
+        "jra-running-style-lgbm-prod-v3-rescore", backfill_gen_at, "01", 16, "1050",
+    )
+    result = subject.select_serving_row(
+        [(backfill_gen_at, backfill_rs_row), (genuine_gen_at, genuine_rs_row)], post_time,
+    )
+    assert result == (
+        "02", "03", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+        "jra-running-style-lgbm-prod-v3", genuine_gen_at, "01", 16, "1050",
+    )
+
+
 # ── dedup_prediction_rows_per_horse ─────────────────────────────────────────────
 
 
@@ -1286,6 +1311,77 @@ def test_dedup_groups_independently_per_horse() -> None:
     ]
 
 
+# ── dedup_running_style_rows_per_horse ──────────────────────────────────────────
+
+
+def test_dedup_running_style_single_row_per_horse_is_a_noop() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [
+        ("05", "01", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02, "iter14", gen_at, "01", 16, None),
+        ("05", "01", "h2", "senkou", 1, 0.1, 0.7, 0.15, 0.05, "iter14", gen_at, "08", 16, None),
+    ]
+    result = subject.dedup_running_style_rows_per_horse(rows, "2026", "0614")
+    assert result == [
+        ("05", "01", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02, "iter14", gen_at, "01", 16, None),
+        ("05", "01", "h2", "senkou", 1, 0.1, 0.7, 0.15, 0.05, "iter14", gen_at, "08", 16, None),
+    ]
+
+
+def test_dedup_running_style_picks_genuine_row_over_cluster_b_backfill() -> None:
+    """RS-side backfill regression test (this is the RS counterpart of
+    test_dedup_picks_genuine_row_over_cluster_b_backfill): two rows for the
+    same horse (same keibajo/race/ketto, different model_version -- a
+    cell-routing reroute to a different model_version is a different
+    primary key on race_running_style_model_predictions, exactly like the FP
+    table -- see dedup_running_style_rows_per_horse's docstring), the
+    genuine one generated before the race's post time, a garbage/backfill
+    row generated a day later. The old
+    ``DISTINCT ON (...) ORDER BY ... prediction_generated_at DESC`` picked
+    whichever row was written last; the fix must pick the genuine
+    (earlier, pre-post-time) row instead."""
+    post_time_hhmm = "0950"
+    genuine_gen_at = datetime(2026, 7, 11, 9, 30, 0, tzinfo=subject.JST)  # before 09:50 post time
+    garbage_gen_at = datetime(2026, 7, 12, 14, 51, 45, tzinfo=subject.JST)  # next day, backfill
+    rows = [
+        (
+            "02", "01", "2024101292", "nige", 0, 0.85, 0.08, 0.05, 0.02,
+            "jra-running-style-lgbm-prod-v3", genuine_gen_at, "01", 16, post_time_hhmm,
+        ),
+        (
+            "02", "01", "2024101292", "oikomi", 3, 0.02, 0.08, 0.15, 0.75,
+            "jra-running-style-lgbm-prod-v3-rescore", garbage_gen_at, "01", 16, post_time_hhmm,
+        ),
+    ]
+    result = subject.dedup_running_style_rows_per_horse(rows, "2026", "0711")
+    assert result == [
+        (
+            "02", "01", "2024101292", "nige", 0, 0.85, 0.08, 0.05, 0.02,
+            "jra-running-style-lgbm-prod-v3", genuine_gen_at, "01", 16, post_time_hhmm,
+        ),
+    ]
+
+
+def test_dedup_running_style_groups_independently_per_horse() -> None:
+    """Two horses in the same race, each with their own two-row history --
+    dedup must resolve each horse independently, not cross-contaminate."""
+    post_time = "1050"
+    old_h1 = datetime(2026, 7, 11, 10, 30, 0, tzinfo=subject.JST)
+    new_h1 = datetime(2026, 7, 12, 0, 0, 0, tzinfo=subject.JST)
+    old_h2 = datetime(2026, 7, 11, 10, 20, 0, tzinfo=subject.JST)
+    new_h2 = datetime(2026, 7, 12, 0, 0, 0, tzinfo=subject.JST)
+    rows = [
+        ("02", "03", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02, "v1", old_h1, "01", 16, post_time),
+        ("02", "03", "h1", "oikomi", 3, 0.02, 0.08, 0.15, 0.75, "v2", new_h1, "01", 16, post_time),
+        ("02", "03", "h2", "senkou", 1, 0.1, 0.7, 0.15, 0.05, "v1", old_h2, "08", 16, post_time),
+        ("02", "03", "h2", "oikomi", 3, 0.02, 0.08, 0.15, 0.75, "v2", new_h2, "08", 16, post_time),
+    ]
+    result = subject.dedup_running_style_rows_per_horse(rows, "2026", "0711")
+    assert result == [
+        ("02", "03", "h1", "nige", 0, 0.9, 0.05, 0.03, 0.02, "v1", old_h1, "01", 16, post_time),
+        ("02", "03", "h2", "senkou", 1, 0.1, 0.7, 0.15, 0.05, "v1", old_h2, "08", 16, post_time),
+    ]
+
+
 # ── query_running_style_metrics (mocked) ──────────────────────────────────────
 
 
@@ -1298,12 +1394,15 @@ def test_query_rs_metrics_no_rows_returns_none() -> None:
 def test_query_rs_metrics_straight_track_excluded() -> None:
     """Horses on straight tracks (corner_1='00') should be excluded."""
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    # All have corner_1='00' = straight track → all filtered out
+    # All have corner_1='00' = straight track → all filtered out. Each row is
+    # for a distinct horse (horse1/horse2), so the trailing hasso_jikoku
+    # field (dedup key input) is irrelevant here -- dedup is a no-op either
+    # way since there is exactly one candidate per horse.
     rows = [
         ("05", "01", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
-         "jra-running-style-lgbm-prod-v3", gen_at, "00", 16),
+         "jra-running-style-lgbm-prod-v3", gen_at, "00", 16, None),
         ("05", "01", "horse2", "senkou", 1, 0.1, 0.7, 0.15, 0.05,
-         "jra-running-style-lgbm-prod-v3", gen_at, "00", 16),
+         "jra-running-style-lgbm-prod-v3", gen_at, "00", 16, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
@@ -1315,11 +1414,12 @@ def test_query_rs_metrics_with_corner_data() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
     # horse1: predicted nige (class 0), corner_1='01', shusso_tosu=16 → norm=0 → actual nige ✓
     # horse2: predicted senkou (class 1), corner_1='08', shusso_tosu=16 → norm≈0.467 → actual sashi ✗
+    # One row per horse → dedup is a no-op regardless of hasso_jikoku (None).
     rows = [
         ("05", "02", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
-         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16),
+         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16, None),
         ("05", "02", "horse2", "senkou", 1, 0.1, 0.7, 0.15, 0.05,
-         "jra-running-style-lgbm-prod-v3", gen_at, "08", 16),
+         "jra-running-style-lgbm-prod-v3", gen_at, "08", 16, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
@@ -1334,7 +1434,7 @@ def test_query_rs_metrics_nar_category() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
     rows = [
         ("30", "01", "horseA", "senkou", 1, 0.05, 0.8, 0.1, 0.05,
-         "nar-running-style-lgbm-prod-v3", gen_at, "02", 10),
+         "nar-running-style-lgbm-prod-v3", gen_at, "02", 10, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_running_style_metrics(mock_conn, "20260614", "nar")
@@ -1346,12 +1446,77 @@ def test_query_rs_metrics_jst_display_converts_utc_to_jst() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
     rows = [
         ("05", "01", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
-         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16),
+         "jra-running-style-lgbm-prod-v3", gen_at, "01", 16, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
     assert result is not None
     assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
+
+
+def test_query_rs_metrics_sql_selects_hasso_jikoku_no_distinct_on() -> None:
+    """SQL must surface each race's post time (hasso_jikoku) so Python-side
+    dedup (dedup_running_style_rows_per_horse / select_serving_row) can run
+    -- and must NOT collapse rows itself anymore. A prior version used
+    ``DISTINCT ON (...) ORDER BY ... prediction_generated_at DESC``, which
+    silently preferred a later backfill/rescore row over an earlier genuine
+    one (see dedup_running_style_rows_per_horse's docstring)."""
+    mock_cur = MagicMock()
+    mock_cur.fetchall.return_value = []
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cur
+    subject.query_running_style_metrics(mock_conn, "20260614", "jra")
+    sql_call = mock_cur.execute.call_args[0][0]
+    assert "ra.hasso_jikoku" in sql_call
+    assert "DISTINCT ON" not in sql_call
+
+
+def test_query_rs_metrics_picks_genuine_row_over_cluster_b_backfill() -> None:
+    """End-to-end regression test mirroring
+    test_query_fp_metrics_picks_genuine_row_over_cluster_b_backfill: a horse
+    with two live RS prediction rows (a cell-routing reroute to a different
+    model_version is a different primary key on
+    race_running_style_model_predictions, exactly like the FP table -- see
+    dedup_running_style_rows_per_horse's docstring). The genuine row was
+    generated before that race's post time; the backfill/rescore row the
+    next day was not. The fix must still pick the genuine row's predicted
+    class, not silently prefer the later write."""
+    post_time_hhmm = "1050"
+    genuine_gen_at = datetime(2026, 7, 11, 10, 30, 0, tzinfo=subject.JST)  # before 10:50 post time
+    backfill_gen_at = datetime(2026, 7, 12, 14, 51, 0, tzinfo=subject.JST)  # next day
+    # horse1: corner_1='01', shusso_tosu=16 → norm=0 → actual class = nige (0)
+    rows = [
+        ("02", "03", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+         "jra-running-style-lgbm-prod-v3", genuine_gen_at, "01", 16, post_time_hhmm),
+        ("02", "03", "horse1", "oikomi", 3, 0.05, 0.1, 0.15, 0.7,
+         "jra-running-style-lgbm-prod-v3-rescore", backfill_gen_at, "01", 16, post_time_hhmm),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_running_style_metrics(mock_conn, "20260711", "jra")
+    assert result is not None
+    assert result.total_horses == 1
+    # Genuine row predicted nige (class 0) == actual (nige) → correct.
+    # If DESC had won, the backfill row's oikomi (class 3) prediction would
+    # have been scored against actual nige (0) → wrong.
+    assert result.overall_accuracy == pytest.approx(1.0)
+    assert result.model_version == "jra-running-style-lgbm-prod-v3"
+
+
+def test_query_rs_metrics_handles_unknown_gen_at_defensively() -> None:
+    """prediction_generated_at is NOT NULL in the schema, but RsRow keeps it
+    Optional defensively, mirroring FpRow (see
+    test_query_fp_metrics_handles_unknown_gen_at_defensively); a served row
+    with gen_at=None must not crash the era/JST-display max()-over-empty-list
+    guard."""
+    rows = [
+        ("05", "01", "horse1", "nige", 0, 0.9, 0.05, 0.03, 0.02,
+         "jra-running-style-lgbm-prod-v3", None, "01", 16, None),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_running_style_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.era == "UNKNOWN"
+    assert result.prediction_generated_at_jst == ""
 
 
 # ── warn_if_local_pg_default (MASTER-INVENTORY #15) ────────────────────────────

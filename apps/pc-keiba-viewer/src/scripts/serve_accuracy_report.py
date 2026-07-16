@@ -35,7 +35,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final, NotRequired, Protocol, TypedDict, cast
+from typing import Final, NotRequired, Protocol, TypedDict, TypeVar, cast
 
 import psycopg
 
@@ -223,8 +223,20 @@ class RunningStyleMetrics:
 FpRow = tuple[str, str, str, int, int, str, datetime | None, int, int, str | None]
 
 # (keibajo, race_bango, ketto, predicted_label, predicted_class,
-#  p_nige, p_senkou, p_sashi, p_oikomi, model_version, gen_at, corner_1, shusso_tosu)
-RsRow = tuple[str, str, str, str, int, float, float, float, float, str, datetime | None, str, int]
+#  p_nige, p_senkou, p_sashi, p_oikomi, model_version, gen_at, corner_1,
+#  shusso_tosu, hasso_jikoku)
+#
+# NOT deduped to one row per horse at the SQL level -- mirrors FpRow above: a
+# horse can have multiple live RS prediction rows for the same date (a
+# cell-routing reroute to a different model_version is a different primary
+# key on race_running_style_model_predictions, exactly like
+# race_finish_position_model_predictions is for FpRow -- see
+# dedup_running_style_rows_per_horse's docstring), so
+# query_running_style_metrics fetches every candidate row and dedups in
+# Python.
+RsRow = tuple[
+    str, str, str, str, int, float, float, float, float, str, datetime | None, str, int, str | None,
+]
 
 # ── I/O Protocol ─────────────────────────────────────────────────────────────
 
@@ -476,12 +488,27 @@ def parse_post_time_jst(
         return None
 
 
+_ServedRow = TypeVar("_ServedRow")
+
+
 def select_serving_row(
-    candidates: Sequence[tuple[datetime | None, FpRow]],
+    candidates: Sequence[tuple[datetime | None, _ServedRow]],
     post_time: datetime | None,
-) -> FpRow:
+) -> _ServedRow:
     """Pick the one prediction row to treat as "the served prediction" for a
     single horse, out of possibly-several rows written for it over time.
+
+    Generic over the row payload (``_ServedRow``): the selection logic below
+    only ever looks at the ``datetime | None`` half of each ``(gen_at, row)``
+    candidate tuple, never at the row's internal column layout, so it works
+    identically for both FpRow (race_finish_position_model_predictions,
+    plumbed via dedup_prediction_rows_per_horse) and RsRow
+    (race_running_style_model_predictions, plumbed via
+    dedup_running_style_rows_per_horse) -- both tables share the same UPSERT
+    key shape (see below) and are therefore vulnerable to the same class of
+    bug, just with the timestamp living at a different tuple index in each
+    row shape (handled by each table-specific dedup_*_rows_per_horse caller,
+    not by this function).
 
     Background: ``race_finish_position_model_predictions`` UPSERTs on
     (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code,
@@ -495,7 +522,13 @@ def select_serving_row(
     already-existing genuine same-day predictions for many JRA races.
     ``feature_guard.py`` (commit 57a4cd7f) now fail-closes this class of
     write going forward, but the historical Cluster B rows are still sitting
-    in Neon.
+    in Neon. ``race_running_style_model_predictions`` UPSERTs on the exact
+    same key shape (model_version, source, kaisai_nen, kaisai_tsukihi,
+    keibajo_code, race_bango, ketto_toroku_bango -- see
+    running-style-neon.ts's ``on conflict``), so it is structurally exposed
+    to the identical failure mode even though (verified against Neon
+    2026-07-17) it was not hit by this particular Cluster B burst -- see
+    dedup_running_style_rows_per_horse's docstring for that verification.
 
     ``ORDER BY prediction_generated_at DESC`` (the old behaviour: pick the
     most-recently WRITTEN row) is wrong -- it silently prefers a later
@@ -538,7 +571,7 @@ def select_serving_row(
     Cluster B (generated the next day) is not, so the ideal tier applies
     directly and both tiers agree.
     """
-    def sort_key(candidate: tuple[datetime | None, FpRow]) -> tuple[int, float]:
+    def sort_key(candidate: tuple[datetime | None, _ServedRow]) -> tuple[int, float]:
         gen_at, _row = candidate
         if gen_at is None:
             return (2, 0.0)
@@ -574,6 +607,78 @@ def dedup_prediction_rows_per_horse(
         post_time = parse_post_time_jst(kaisai_nen, kaisai_tsukihi, hasso_jikoku)
         # index 6 = prediction_generated_at, see the FpRow comment above.
         candidates = [(row[6], row) for row in horse_rows]
+        served_rows.append(select_serving_row(candidates, post_time))
+    return served_rows
+
+
+def dedup_running_style_rows_per_horse(
+    rows: Sequence[RsRow],
+    kaisai_nen: str,
+    kaisai_tsukihi: str,
+) -> list[RsRow]:
+    """RS counterpart of dedup_prediction_rows_per_horse -- same POLICY
+    (prefer the most recent row generated before the race's post time,
+    falling back to the oldest row overall -- see select_serving_row's
+    docstring for the full rationale), applied to
+    ``race_running_style_model_predictions`` instead of
+    ``race_finish_position_model_predictions``.
+
+    Written as a small parallel implementation rather than a direct call to
+    dedup_prediction_rows_per_horse, because RsRow lays its columns out
+    differently from FpRow (RS rows additionally carry the 4-class
+    probability vector p_nige/p_senkou/p_sashi/p_oikomi FpRow does not have):
+    prediction_generated_at sits at index 10 here, not 6, and hasso_jikoku at
+    index 13, not 9. Hardcoding a *different* pair of indices behind the same
+    function name would be more confusing than a second small function, and
+    parameterizing dedup_prediction_rows_per_horse with index/accessor
+    arguments would add a layer of indirection for two four-line call sites.
+    select_serving_row itself -- the part that actually implements the
+    ordering policy -- IS reused unchanged (see its docstring): it only ever
+    inspects the ``(gen_at, row)`` wrapper tuple, never a row's internal
+    layout, so it is naturally generic across both row shapes.
+
+    Verified empirically against Neon (2026-07-17) that this table has no
+    equivalent of FpRow's ``first_served_at`` at all (not merely NULL --
+    ``information_schema.columns`` confirms the column does not exist on
+    ``race_running_style_model_predictions``), so there is no candidate
+    signal to weigh against hasso_jikoku here, unlike the FP case.
+    hasso_jikoku itself was verified 100% populated for every JRA/NAR race
+    that has an RS prediction, both across the 2026-07-01..07-17 window
+    (144/144 JRA races, 787/787 NAR races) and all-time (7044/7044 JRA,
+    28020/28020 NAR) -- so, exactly as for FP, it is a safe, reliably
+    populated ordering signal for this table too.
+
+    Unlike FP, a direct live analogue of the 2026-07-12 Cluster B incident
+    was NOT found for this table: querying every (keibajo_code, race_bango,
+    ketto_toroku_bango) group with more than one row across all of 2026-07-01
+    through 2026-07-17 (JRA and NAR) returned zero groups. Duplicate rows do
+    exist at scale in this table overall (137,715 JRA / 276,283 NAR
+    horse-groups, all time), but they trace to a single 2026-05-17 bulk
+    multi-model-version historical backfill (five model_versions, e.g.
+    jra-running-style-lgbm-v1.0 through -ens-lgbm-trans-v1.3, each covering
+    the same ~137,715-row 2024-2026 historical race set within hours of each
+    other) -- a model-development artifact, not a live per-race serving
+    collision, and unrelated to the finish-position-predict-container
+    pipeline that produced Cluster B (RS predictions are written by the
+    separate sync-realtime-data running-style-queue.ts pipeline -- see
+    finish-position-prediction-system.md §4.2). This function still applies
+    the same defensive policy as FP going forward: the two tables share an
+    identical UPSERT key shape (see select_serving_row's docstring), so a
+    cell-routing reroute or a future backfill burst can silently duplicate a
+    live RS row exactly the way it did for FP, whether or not it has
+    happened yet.
+    """
+    candidates_by_horse: dict[tuple[str, str, str], list[RsRow]] = {}
+    for row in rows:
+        keibajo, race_bango, ketto = row[0], row[1], row[2]
+        candidates_by_horse.setdefault((keibajo, race_bango, ketto), []).append(row)
+
+    served_rows: list[RsRow] = []
+    for horse_rows in candidates_by_horse.values():
+        hasso_jikoku = horse_rows[0][13]
+        post_time = parse_post_time_jst(kaisai_nen, kaisai_tsukihi, hasso_jikoku)
+        # index 10 = prediction_generated_at, see the RsRow comment above.
+        candidates = [(row[10], row) for row in horse_rows]
         served_rows.append(select_serving_row(candidates, post_time))
     return served_rows
 
@@ -736,7 +841,34 @@ def query_running_style_metrics(
     date_str: str,
     category: str,
 ) -> RunningStyleMetrics | None:
-    """Query running-style serve predictions and derive actual labels from corner data."""
+    """Query running-style serve predictions and derive actual labels from corner data.
+
+    A horse can have multiple live RS prediction rows for the same date (a
+    cell-routing reroute to a different model_version is a different primary
+    key on race_running_style_model_predictions, exactly like
+    race_finish_position_model_predictions is for FpRow -- see
+    dedup_running_style_rows_per_horse's docstring). This function fetches
+    every candidate row per horse -- SQL does NOT dedup -- and picks
+    exactly one via dedup_running_style_rows_per_horse / select_serving_row:
+    prefer the most recent row generated before the race's post time
+    (jvd_ra/nvd_ra ``hasso_jikoku``), falling back to the oldest row overall
+    when post time is unknown or every candidate postdates it. This is the RS
+    counterpart of query_finish_position_metrics's identical policy; see
+    dedup_running_style_rows_per_horse's docstring for the RS-specific
+    empirical verification (no first_served_at column exists on this table
+    at all, hasso_jikoku verified 100% populated, no live Cluster-B-style
+    duplicate found for this table in the 2026-07-11/07-12 incident window)
+    and select_serving_row's docstring for the full selection-order
+    rationale.
+
+    The naive ``DISTINCT ON (...) ORDER BY ... prediction_generated_at DESC``
+    this replaced (pick the most-recently WRITTEN row) is wrong for the same
+    reason it was wrong for finish-position: it would silently prefer a
+    later backfill/rescore row over an earlier genuine prediction whenever a
+    race gets backfilled/rescored after the fact -- see
+    docs/probes/jra-269-serve-defect-2026-07-17.md §6's "残リスク" note,
+    which names this exact function's dedup as an unaddressed follow-up.
+    """
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]
     result_table = "jvd_se" if category == "jra" else "nvd_se"
@@ -744,19 +876,19 @@ def query_running_style_metrics(
 
     cur = conn.cursor()
 
-    # Get latest RS model predictions for the date joined with corner data
+    # Step 1: fetch every candidate RS prediction row per horse (NOT deduped
+    # -- see the docstring above) together with its race's post time; dedup
+    # happens in Python via dedup_running_style_rows_per_horse below.
     cur.execute(
         f"""
-        WITH latest_rs AS (
-            SELECT DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)
-                keibajo_code, race_bango, ketto_toroku_bango, umaban,
+        WITH served_rs AS (
+            SELECT
+                keibajo_code, race_bango, ketto_toroku_bango,
                 predicted_label, predicted_class,
                 p_nige, p_senkou, p_sashi, p_oikomi,
                 model_version, prediction_generated_at
             FROM race_running_style_model_predictions
             WHERE source = %s AND kaisai_nen = %s AND kaisai_tsukihi = %s
-            ORDER BY keibajo_code, race_bango, ketto_toroku_bango,
-                     prediction_generated_at DESC
         )
         SELECT
             rs.keibajo_code, rs.race_bango, rs.ketto_toroku_bango,
@@ -764,8 +896,9 @@ def query_running_style_metrics(
             rs.p_nige, rs.p_senkou, rs.p_sashi, rs.p_oikomi,
             rs.model_version, rs.prediction_generated_at,
             se.corner_1,
-            ra.shusso_tosu
-        FROM latest_rs rs
+            ra.shusso_tosu,
+            ra.hasso_jikoku
+        FROM served_rs rs
         JOIN {result_table} se ON
             se.kaisai_nen = %s AND se.kaisai_tsukihi = %s AND
             se.keibajo_code = rs.keibajo_code AND
@@ -776,7 +909,7 @@ def query_running_style_metrics(
             ra.kaisai_nen = %s AND ra.kaisai_tsukihi = %s AND
             ra.keibajo_code = rs.keibajo_code AND
             ra.race_bango = rs.race_bango
-        ORDER BY rs.keibajo_code, rs.race_bango, rs.ketto_toroku_bango
+        ORDER BY rs.keibajo_code, rs.race_bango, rs.ketto_toroku_bango, rs.prediction_generated_at
         """,
         (
             category, kaisai_nen, kaisai_tsukihi,
@@ -789,13 +922,15 @@ def query_running_style_metrics(
     if not rs_rows:
         return None
 
+    served_rows = dedup_running_style_rows_per_horse(rs_rows, kaisai_nen, kaisai_tsukihi)
+
     pred_labels: list[int] = []
     actual_labels: list[int] = []
     gen_ats: list[datetime] = []
     model_versions: list[str] = []
 
-    for row in rs_rows:
-        _, _, _, _, predicted_class, _, _, _, _, model_ver, gen_at, corner1_raw, tosu = row
+    for row in served_rows:
+        _, _, _, _, predicted_class, _, _, _, _, model_ver, gen_at, corner1_raw, tosu, _hasso = row
         c1_norm = compute_corner1_norm(str(corner1_raw), int(tosu) if tosu else 0)
         actual_cls = classify_running_style(c1_norm)
         if actual_cls is None:
@@ -819,7 +954,7 @@ def query_running_style_metrics(
 
     gen_jst = ""
     if latest_gen:
-        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
+        jst_dt = latest_gen.astimezone(JST)
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
     model_version = model_versions[0] if model_versions else ""
