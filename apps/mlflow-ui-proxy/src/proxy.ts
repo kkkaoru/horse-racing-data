@@ -1,5 +1,9 @@
 // Run with bun.
-import type { Env } from "./types";
+import type { MlflowContainerNamespace } from "./types";
+
+export interface ProxyEnv {
+  MLFLOW_CONTAINER: MlflowContainerNamespace;
+}
 
 // `RequestInit` in @cloudflare/workers-types has no `duplex` field because
 // the Workers runtime (workerd) never required it, but the Node/undici fetch
@@ -38,6 +42,8 @@ const BAD_GATEWAY_STATUS = 502;
 const BAD_GATEWAY_BODY = "Bad Gateway: unable to reach MLflow origin";
 const PROXIED_BY_HEADER_NAME = "X-Proxied-By";
 const PROXIED_BY_HEADER_VALUE = "mlflow-ui-proxy";
+const MLFLOW_CONTAINER_NAME = "primary";
+const CONTAINER_ORIGIN = "http://mlflow-container";
 
 const shouldForwardHeader = (name: string): boolean => {
   const lowerName = name.toLowerCase();
@@ -49,9 +55,9 @@ const copyForwardableHeaders = (source: Headers): Headers => {
   return new Headers(entries);
 };
 
-const buildUpstreamUrl = (requestUrl: string, origin: string): string => {
+const buildUpstreamUrl = (requestUrl: string): string => {
   const parsed = new URL(requestUrl);
-  return new URL(parsed.pathname + parsed.search, origin).toString();
+  return new URL(parsed.pathname + parsed.search, CONTAINER_ORIGIN).toString();
 };
 
 const buildUpstreamInit = (request: Request, headers: Headers): UpstreamRequestInit => {
@@ -63,8 +69,8 @@ const buildUpstreamInit = (request: Request, headers: Headers): UpstreamRequestI
   return { method: request.method, headers, body: request.body, duplex: "half" };
 };
 
-export const buildUpstreamRequest = (request: Request, origin: string): Request => {
-  const url = buildUpstreamUrl(request.url, origin);
+export const buildUpstreamRequest = (request: Request): Request => {
+  const url = buildUpstreamUrl(request.url);
   const headers = copyForwardableHeaders(request.headers);
   return new Request(url, buildUpstreamInit(request, headers));
 };
@@ -82,12 +88,14 @@ const buildUpstreamResponse = (upstreamResponse: Response): Response => {
 const buildBadGatewayResponse = (): Response =>
   new Response(BAD_GATEWAY_BODY, { status: BAD_GATEWAY_STATUS });
 
-export const proxyRequest = async (request: Request, env: Env): Promise<Response> => {
-  const upstreamRequest = buildUpstreamRequest(request, env.MLFLOW_ORIGIN);
+export const proxyRequest = async (request: Request, env: ProxyEnv): Promise<Response> => {
+  const upstreamRequest = buildUpstreamRequest(request);
+  const container = env.MLFLOW_CONTAINER.getByName(MLFLOW_CONTAINER_NAME);
   try {
-    const upstreamResponse = await fetch(upstreamRequest);
+    const upstreamResponse = await container.fetch(upstreamRequest);
     return buildUpstreamResponse(upstreamResponse);
-  } catch {
+  } catch (error) {
+    console.error(`[mlflow-proxy] container fetch failed: ${String(error)}`);
     return buildBadGatewayResponse();
   }
 };

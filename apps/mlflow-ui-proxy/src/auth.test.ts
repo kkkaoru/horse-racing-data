@@ -2,10 +2,9 @@
 import { expect, it } from "vitest";
 
 import { isAuthorized, parseBasicAuth, timingSafeEqualBytes, unauthorizedResponse } from "./auth";
-import type { Env } from "./types";
+import type { AuthEnv } from "./auth";
 
-const TEST_ENV: Env = {
-  MLFLOW_ORIGIN: "https://mlflow-origin.test",
+const TEST_ENV: AuthEnv = {
   MLFLOW_UI_USERNAME: "operator",
   MLFLOW_UI_PASSWORD: "s3cret",
 };

@@ -5,19 +5,42 @@
   "account_id": "78109ec18c7c85b194b19fb32e3bb149",
   "compatibility_date": "2026-05-10",
   "compatibility_flags": ["nodejs_compat"],
-  // No custom domain route: this Worker is intentionally left on its
-  // workers.dev subdomain to minimize blast radius for an auth-gated proxy.
   "workers_dev": true,
   "observability": {
     "enabled": true,
     "head_sampling_rate": 0.1,
   },
-  "vars": {
-    // Cloudflare Tunnel hostname fronting the local `mlflow server`
-    // (127.0.0.1:5252). Tunnel name "mlflow-ui", see
-    // ~/.cloudflared/config.yml on the Mac running the tunnel.
-    // MLFLOW_UI_USERNAME / MLFLOW_UI_PASSWORD are NOT set here: they are
-    // secrets, set out-of-band via `wrangler secret put`.
-    "MLFLOW_ORIGIN": "https://mlf-f76dd2.kkk4oru.com",
+  "triggers": {
+    "crons": [
+      "*/10 17-23 * * *", // JST 02:00-08:59
+      "*/10 0-12 * * *", // JST 09:00-21:59
+    ],
   },
+  "vars": {
+    "HORSE_RACING_MLFLOW_R2_BUCKET": "mlflow-artifacts",
+    "HORSE_RACING_MLFLOW_R2_PREFIX": "mlflow",
+  },
+  "containers": [
+    {
+      "class_name": "MlflowContainer",
+      "image": "./Dockerfile",
+      "image_build_context": "../..",
+      "instance_type": "standard-1",
+      "max_instances": 1,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "MlflowContainer",
+        "name": "MLFLOW_CONTAINER",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["MlflowContainer"],
+    },
+  ],
 }

@@ -808,51 +808,21 @@ bunx oxlint . --no-error-on-unmatched-pattern      # oxlint
 bunx oxfmt --check package.json pyproject.toml README.md
 ```
 
-## Daily automation (LaunchAgent)
+## Production automation (Cloudflare)
 
-A Mac launchd LaunchAgent (`com.horse-racing.mlflow-production-sync`) runs
-`sync-production`, then `eval-champion-cells`, then `eval-cells` once daily
-at **22:30 JST** (same-day racing has finished and results have typically
-already mirrored into the local PostgreSQL replica by then). `eval-cells` is
-the third step: it scores every model_version that served enough volume
-that window (not just the champion) at cell granularity, appending one
-metric point to each (category, cell, model_version)'s own persistent run —
-this is what makes a single cell's accuracy trend visible as a line chart in
-the UI, day over day. All three commands are idempotent, so a delayed
-launchd catch-up fire (e.g. after the Mac was asleep at 22:30) is harmless to
-re-run.
+`apps/mlflow-ui-proxy` owns the production MLflow UI and prediction-usage
+sync. Its Cloudflare Cron invokes `sync-production-preview` in the bound
+Cloudflare Container every 10 minutes during JST 02:00-21:59. Each run reads
+the current JST date through two days ahead from racing Neon and writes the
+production-usage runs directly to the MLflow Neon backend.
 
-Source files live in this repo at `apps/mlflow/scripts/launchd/`:
+This preview path is intentionally Neon-only. It records production
+prediction availability, run tags, and volume metrics without local
+PostgreSQL, result joins, traces, or artifacts. The full `sync-production`,
+`eval-champion-cells`, and `eval-cells` commands remain available for
+result-based evaluation, but the legacy
+`com.horse-racing.mlflow-production-sync` Mac LaunchAgent is not a production
+automation path and must remain unloaded.
 
-- `mlflow-production-sync-daily.sh` — the wrapper script that runs both CLI
-  subcommands.
-- `com.horse-racing.mlflow-production-sync.plist` — the LaunchAgent
-  definition (a version-controlled copy; the installed copy lives under
-  `~/Library/LaunchAgents/`, outside git).
-
-No secrets live in either file — the CLI's own `main()` loads
-`apps/mlflow/.env.local` then a repo-root `.env` allow-listed fallback before
-parsing arguments (see the "SECRETS" note in the plist header comment).
-
-```sh
-# Install (copies nothing -- launchctl reads directly from wherever you point it,
-# but the convention in this repo is to also keep a copy under ~/Library/LaunchAgents/
-# so `launchctl list` and Finder both show a consistent, discoverable location):
-cp apps/mlflow/scripts/launchd/com.horse-racing.mlflow-production-sync.plist \
-   ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
-launchctl bootstrap gui/$(id -u) \
-  ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
-
-# Verify loaded:
-launchctl print gui/$(id -u)/com.horse-racing.mlflow-production-sync
-
-# Trigger a manual run right now (does not wait for 22:30 JST):
-launchctl kickstart -k gui/$(id -u)/com.horse-racing.mlflow-production-sync
-
-# Logs:
-tail -f ~/Library/Logs/mlflow-production-sync.log
-
-# Stop / uninstall:
-launchctl bootout gui/$(id -u)/com.horse-racing.mlflow-production-sync
-rm ~/Library/LaunchAgents/com.horse-racing.mlflow-production-sync.plist
-```
+Cloudflare deployment and Secret requirements are documented in
+`apps/mlflow-ui-proxy/README.md`.

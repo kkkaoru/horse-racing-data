@@ -13,6 +13,10 @@
 !apps/finish-position-predict-container/src
 !apps/finish-position-predict-container/models
 
+# Re-include the MLflow package used by the Cloudflare MLflow Container.
+!apps/mlflow/pyproject.toml
+!apps/mlflow/src
+
 # Re-include the reused viewer feature-pipeline scripts.
 !apps/pc-keiba-viewer/src/scripts/finish_position_features_duckdb.py
 !apps/pc-keiba-viewer/src/scripts/finish-position-features

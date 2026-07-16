@@ -273,18 +273,11 @@ flowchart LR
 
 ---
 
-## 14. 日次 LaunchAgent 自動化
+## 14. Cloudflare 自動同期
 
-§11 の `sync-production` と §12 の `eval-champion-cells` は、これまで手動 CLI 実行を前提としていたが、Mac launchd LaunchAgent `com.horse-racing.mlflow-production-sync` により**毎日 22:30 JST** に自動実行される。同日のレース(JRA/NAR/Ban-ei)がその時刻までに終了しており、結果が local PostgreSQL replica に一通りミラーされている見込みの時間帯を選んでいる — ただし結果がまだ最終化していなくても実行自体は無駄にならない: `sync-production` はその日の production-usage 行をそのまま記録し、評価(`sync_eval_logged`)は翌日以降の呼び出し(前日+当日のオーバーラップ範囲を毎日カバーする設計、§11 参照)が結果確定後に埋める。
+本番予測の使用実績は `apps/mlflow-ui-proxy` の Cloudflare Cron が 10 分ごと(JST 02:00-21:59)に Container RPC を呼び、`sync-production-preview` を実行して racing Neon から当日から 2 日先までを MLflow Neon に同期する。UI 自体も同じ Cloudflare Container 上の `mlflow server` で稼働し、Mac の launchd / ローカル MLflow server / Cloudflare Tunnel には依存しない。preview は本番生成データを早期表示するための Neon-only 経路であり、local PostgreSQL の確定着順、artifact、trace、`sync_base_logged` は更新しない。
 
-このジョブが実行する内容は §11 / §12 で説明したコマンドそのものであり、本節ではそれらの意味を繰り返さない。実行順は次のとおり:
-
-1. `sync-production --date-from <前日 JST> --date-to <当日 JST> --categories jra,nar,banei`
-2. `eval-champion-cells --category jra,nar,banei`(既定 90 日 trailing window)
-
-- **ソースファイルの場所**: `apps/mlflow/scripts/launchd/`(`mlflow-production-sync-daily.sh` と `com.horse-racing.mlflow-production-sync.plist` の 2 ファイル、いずれも git 管理下)。
-- **インストールは手動操作**: このパッケージが自動でインストールすることはない。`launchctl bootstrap` によるインストール手順は `apps/mlflow/README.md` の「Daily automation (LaunchAgent)」節に記載している。
-- 両コマンドとも idempotent なため、launchd の「Mac がスリープ中に予定時刻を逃した場合は次回起床時に発火する」catch-up 挙動により遅延・重複して発火しても安全に再実行できる。
+`sync-production-preview` は `(date, category, model_version)` の `sync_key` を使って同じ run を再利用するため、Cron の重複実行は idempotent である。Mac 用の旧 `com.horse-racing.mlflow-production-sync` LaunchAgent は本番同期経路ではなく、Cloudflare デプロイ確認後に停止する。
 
 ---
 

@@ -3,15 +3,44 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 from mlflow import MlflowClient
+from mlflow.store.jobs.sqlalchemy_store import SqlAlchemyJobStore
+from mlflow.store.model_registry.sqlalchemy_store import (
+    SqlAlchemyStore as ModelRegistrySqlAlchemyStore,
+)
+from mlflow.store.tracking.sqlalchemy_store import SqlAlchemyStore as TrackingSqlAlchemyStore
+from sqlalchemy.engine import Engine
 
 from mlflow_tracking import config
 
 WriteJsonFixture = Callable[[Path, object], None]
+SQLALCHEMY_STORE_CLASSES = (
+    TrackingSqlAlchemyStore,
+    ModelRegistrySqlAlchemyStore,
+    SqlAlchemyJobStore,
+)
+
+
+def _dispose_cached_sqlalchemy_engines() -> None:
+    for store_class in SQLALCHEMY_STORE_CLASSES:
+        engine_map = getattr(store_class, "_engine_map", {})
+        if not isinstance(engine_map, dict):
+            continue
+        for engine in engine_map.values():
+            if isinstance(engine, Engine):
+                engine.dispose()
+        engine_map.clear()
+
+
+@pytest.fixture(autouse=True)
+def dispose_cached_sqlalchemy_engines() -> Iterator[None]:
+    """Release MLflow's per-URI engine cache before pytest exhausts macOS FDs."""
+    yield
+    _dispose_cached_sqlalchemy_engines()
 
 
 def clear_ambient_backend_uri(monkeypatch: pytest.MonkeyPatch) -> None:

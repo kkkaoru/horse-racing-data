@@ -1,9 +1,12 @@
 // Run with bun.
-import type { Env } from "./types";
-
 export interface BasicAuthCredentials {
   username: string;
   password: string;
+}
+
+export interface AuthEnv {
+  MLFLOW_UI_USERNAME: string;
+  MLFLOW_UI_PASSWORD: string;
 }
 
 interface HmacAlgorithmParams {
@@ -84,7 +87,7 @@ const digestsMatch = async (
   return timingSafeEqualBytes(providedDigest, expectedDigest);
 };
 
-export const isAuthorized = async (request: Request, env: Env): Promise<boolean> => {
+export const isAuthorized = async (request: Request, env: AuthEnv): Promise<boolean> => {
   const provided = parseBasicAuth(request.headers.get(AUTHORIZATION_HEADER_NAME));
   if (provided === null) {
     return false;

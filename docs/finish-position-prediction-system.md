@@ -1412,7 +1412,7 @@ flowchart TB
 
 上記に加えて以下も MLflow を利用する。
 
-- **production-usage 日次 sync**（`sync-production`、Neon の `race_finish_position_model_predictions` / `race_running_style_model_predictions` を read-only で参照）— Mac launchd LaunchAgent `com.horse-racing.mlflow-production-sync` により毎日 **22:30 JST** 自動実行。
+- **production-usage preview sync**（`sync-production-preview`、Neon の `race_finish_position_model_predictions` / `race_running_style_model_predictions` を read-only で参照）— `mlflow-ui-proxy` の Cloudflare Cron + Container により 10 分ごと（JST 02:00-21:59）に当日から 2 日先まで自動実行。
 - **champion cell 単位評価**（`eval-champion-cells`）— finish-position は 6 次元（venue/class_code/distance_band/season_band/surface/field_size_band）、running-style は 4 次元（season_band/field_size_band を除く）で、genuinely-served 予測（後述 §12.4）を trailing 90 日窓で評価する。
 - **timeline 系列**（`backfill_serve_timeline.py` / `timeline.py`）— 本番精度の時系列を MLflow UI 上でグラフ化するための過去 backfill + 日次追記。
 - **Model Registry** — registered model 名は `{jra,nar,banei}-finish-position` / `{jra,nar,banei}-running-style` の計 6 種。alias は `champion`（現行参照） / `challenger`（staged）の 2 種のみ。**2026-07-08 時点で champion alias が確認されているのは 5 種のみ**（jra/nar/banei-finish-position + jra/nar-running-style、banei-running-style は未確認）。**champion alias は「参照記録」であり本番の serving pointer ではない**点に注意 — 実際に本番が読むモデルの決定は従来どおり `model_meta.json` / Neon `finish_position_active_models` / `cell_routing.json` / R2 `latest.flatbin` が正で、MLflow Registry はそれを事後追跡するだけである。
@@ -1449,7 +1449,7 @@ flowchart LR
 | `HORSE_RACING_MLFLOW_ENABLED`     | 有効（`0` で無効化）           | 学習 hook（`mlflow_hook.py`）の on/off                                                                |
 | `HORSE_RACING_MLFLOW_BACKEND_URI` | 未設定時 sqlite フォールバック | Neon Postgres の `mlflow` database（`NEON_PRIMARY_URL` と同一 project/branch・別 database）への接続先 |
 
-env 解決は 3 層（優先順）: 明示的な環境変数 > `apps/mlflow/.env.local` > リポジトリルート `.env` の許可リストキー（`HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix + `CLOUDFLARE_ACCOUNT_ID` のみ、他の秘密情報には触れない）。閲覧経路は local `127.0.0.1:5252`（`mlflow-ui`）または Cloudflare Worker 経由（`apps/mlflow-ui-proxy`、HTTP Basic 認証必須、tunnel 経由。MLflow server 自体は認証機能を持たないためこの Worker が唯一の認証ゲート）。
+env 解決は 3 層（優先順）: 明示的な環境変数 > `apps/mlflow/.env.local` > リポジトリルート `.env` の許可リストキー（`HORSE_RACING_MLFLOW_` / `MLFLOW_` / `R2_` prefix + `CLOUDFLARE_ACCOUNT_ID` のみ、他の秘密情報には触れない）。本番の閲覧経路は Cloudflare Worker + Container（`apps/mlflow-ui-proxy`、HTTP Basic 認証必須）であり、MLflow server 自体は認証機能を持たないため Worker が唯一の公開認証ゲートになる。Mac のローカル server や Tunnel は本番経路に含まれない。
 
 ### 12.4 運用注意
 

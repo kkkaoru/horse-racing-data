@@ -13,6 +13,9 @@
     "tsc": "tsc --noEmit",
     "check": "bun run tsc && bun run lint && bun run format:check && bun run test:coverage"
   },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
