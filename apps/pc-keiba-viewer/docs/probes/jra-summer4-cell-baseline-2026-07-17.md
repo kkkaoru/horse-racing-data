@@ -303,6 +303,56 @@ scoped) and legacy versions seen dominating \_other* (non-summer) JRA venues'
   parallel path, just out of this campaign's scope) are excluded rather than
   silently blended in.
 
+### 4.1a Query used (verbatim, for reproducibility)
+
+```sql
+WITH served AS (
+    SELECT DISTINCT ON (p.keibajo_code, p.race_bango, p.kaisai_tsukihi, p.ketto_toroku_bango)
+        p.keibajo_code, p.race_bango, p.kaisai_tsukihi, p.ketto_toroku_bango,
+        p.predicted_rank, p.model_version, p.prediction_generated_at,
+        p.distance_band, p.season_band, p.class_code, p.surface
+    FROM race_finish_position_model_predictions p
+    WHERE p.source = 'jra' AND p.kaisai_nen = '2026' AND p.keibajo_code IN ('02','03','10')
+      AND p.model_version IN ('jra-cb-v9-sim-2013-clean',
+                               'jra-cb-v9-sim-2013-clean-jockey-pedigree269',
+                               'jra-cb-v10-prior-corner274-2013')
+    -- EARLIEST per horse (pre-race row), NOT DESC/latest -- see §4.1's backfill-contamination trap.
+    ORDER BY p.keibajo_code, p.race_bango, p.kaisai_tsukihi, p.ketto_toroku_bango,
+             p.prediction_generated_at ASC
+),
+ra AS (
+    -- summer-meet-only kai filter: venue 02 unfiltered (single kai so far),
+    -- venue 03/10 restricted to kai='02' (excludes the earlier spring/winter meet).
+    SELECT keibajo_code, race_bango, kaisai_tsukihi, kaisai_kai
+    FROM jvd_ra
+    WHERE kaisai_nen = '2026' AND keibajo_code IN ('02','03','10')
+      AND ((keibajo_code = '02')
+        OR (keibajo_code = '03' AND kaisai_kai = '02')
+        OR (keibajo_code = '10' AND kaisai_kai = '02'))
+),
+se AS (
+    -- jvd placeholder guard: unsettled kakutei_chakujun is the non-NULL string
+    -- '00', not SQL NULL -- see memory reference_jvd_placeholder_semantics.
+    SELECT keibajo_code, race_bango, kaisai_tsukihi, ketto_toroku_bango,
+        CAST(kakutei_chakujun AS int) AS finish_position,
+        CAST(tansho_ninkijun AS int) AS tansho_ninkijun
+    FROM jvd_se
+    WHERE kaisai_nen = '2026' AND keibajo_code IN ('02','03','10')
+      AND trim(kakutei_chakujun) ~ '^[0-9]+$' AND CAST(kakutei_chakujun AS int) > 0
+)
+SELECT s.keibajo_code, s.race_bango, s.kaisai_tsukihi, s.ketto_toroku_bango,
+       s.predicted_rank, s.model_version, s.distance_band, s.season_band,
+       s.class_code, s.surface, se.finish_position, se.tansho_ninkijun
+FROM served s
+JOIN ra ON ra.keibajo_code = s.keibajo_code AND ra.race_bango = s.race_bango
+       AND ra.kaisai_tsukihi = s.kaisai_tsukihi
+JOIN se ON se.keibajo_code = s.keibajo_code AND se.race_bango = s.race_bango
+       AND se.kaisai_tsukihi = s.kaisai_tsukihi AND se.ketto_toroku_bango = s.ketto_toroku_bango
+```
+
+Full script (adds per-race-hit aggregation, market baseline, paired bootstrap
+on top of this query): `tmp/candidate-jra-summer4-cell-baseline-2026-07-17/serve_2026_eval.py`.
+
 ### 4.2 Coverage gap (separate from the accuracy finding below)
 
 Within the correctly-scoped summer-meet window, a large share of races never
@@ -319,6 +369,19 @@ timing of this snapshot vs daily cron, etc.) was not investigated — flagged
 as a fact worth someone's attention, not diagnosed.
 
 ### 4.3 Accuracy by model_version × venue (earliest-per-horse, champion family only)
+
+> **⚠️ serve defect 疑い (調査中) — all `-jockey-pedigree269` and
+> `jra-cb-v10-prior-corner274-2013` rows in this table**. As of this writing
+> (2026-07-17) these numbers should **not** be read as "the routed variants
+> are bad models" — a dedicated agent (`serve-defect-269`) is diagnosing a
+> live serving defect (see §4.3's correction below and §5). The plain
+> `jra-cb-v9-sim-2013-clean` rows are **also** contaminated for
+> Fukushima/Kokura (blended with the same degraded write-cluster) but
+> Hakodate's champion row (41.67%, n=12) happens to be 100% from a
+> confirmed-healthy write-cluster and can be read as **a proxy for the
+> genuine current capability at that venue** — not proof the champion is
+> unaffected everywhere. Do not use any number in this table as an
+> adoption/rejection input until the defect is resolved.
 
 | model_version                               | Venue | n   | Model top1 | Market top1 | Delta         |
 | ------------------------------------------- | ----- | --- | ---------- | ----------- | ------------- |
