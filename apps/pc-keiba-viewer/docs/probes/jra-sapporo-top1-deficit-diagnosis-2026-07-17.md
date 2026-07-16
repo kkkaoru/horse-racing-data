@@ -1,5 +1,18 @@
 # Sapporo top1 deficit — mechanism diagnosis (2026-07-17)
 
+- **STATUS: CLOSED (same day, 2026-07-17)**. §7.1 proposed a pre-registered
+  JRA-wide scale-up of the `connections`-family lead as a precondition
+  before any lever. That follow-up ran the same day (team-lead approved,
+  §10) and triggered the pre-registered criterion (b): Sapporo ranks only
+  **3rd of 10 JRA venues** on the connections rescue rate, two better-
+  powered venues (Nakayama n=141, Chukyo n=70, both larger buckets than
+  Sapporo's own n=64) show an even stronger version of the same pattern,
+  and a multiple-comparison-aware permutation test finds Sapporo's rate
+  **not** distinguishable from chance across 10 venues (p=0.7448). The
+  Sapporo thread is formally closed as **"market edge, not fillable —
+  accepted deficit."** §1-§9 below are kept exactly as originally written
+  (they remain the accurate primary-finding record); §10 is the append-only
+  follow-up and final word.
 - **Date**: 2026-07-17
 - **Category**: JRA finish-position — mechanism diagnosis, not a lever-development
   probe. Task: explain _why_ the champion (`jra-cb-v9-sim-2013-clean` spec,
@@ -395,6 +408,11 @@ both of them from Fukushima/Kokura.
 
 ## Verdict
 
+**UPDATE (§10, same day): Hypothesis B was tested at scale and did not
+survive — see §10 for the full result. Final verdict is unconditional: NOT
+fillable, accepted deficit.** The paragraph below is kept as originally
+written for the record.
+
 **Predominantly NOT fillable with the current pre-race, per-horse feature
 paradigm.** The weight of evidence (§5.2's favorite-strength-parity result
 especially) points to Sapporo's market carrying real information the
@@ -421,6 +439,10 @@ proposal offered, heavily gated; a second is explicitly declined with
 reasons rather than manufactured to fill a quota.**
 
 ### 7.1 Proposed (gated): scale the connections-family "model-alone-missed"
+
+**RESOLVED same day — see §10.** Team-lead approved and this exact
+follow-up was run; result: criterion (b) (formal close), not criterion (a).
+Kept below as originally written for the record.
 
 diagnostic before considering any lever
 
@@ -558,6 +580,169 @@ JRA全体パターンかを判定してから初めてレバー化を検討す�
 意図的に見送り(理由: n不足、同日REJECT前例との設計類似、隣接レバー
 クラスの広範なREJECT履歴)。
 
+**追記 (同日 §10)**: §7.1 の前提条件検証を実行した結果、connections
+家族の救済率は札幌固有ではなくJRA全体で見られるパターンと判明(札幌は
+10場中3位、より大標本の2場(中山n=141・中京n=70)がむしろ札幌より高い
+救済率を示す)。多重比較を考慮した permutation test は p=0.7448 — 偶然
+の範囲内。事前登録基準 (b) が成立し、Sapporo thread は
+「market edge, not fillable — accepted deficit」として正式クローズ。
+
+---
+
+## 10. Follow-up: JRA-wide scale-up of the connections-family lead (resolves §7.1, formal close)
+
+- **Date**: 2026-07-17, same day. **Approved by team-lead** with the
+  pre-registered decision criteria stated verbatim below (set before this
+  follow-up ran, per team-lead's explicit instruction).
+- **Pre-registered criteria**: (a) Sapporo's `connections` rescue rate
+  falls outside the pooled other-9-venue distribution (e.g. its 95% CI)
+  **and** is 3-seed stable → report "Sapporo-specific, worth probe design"
+  (do not design the probe in this doc — next stage). (b) otherwise →
+  formally close the Sapporo thread as "market edge, not fillable —
+  accepted deficit."
+
+### 10.1 Method
+
+Reused (imported, not forked) the identical 2026-07-04 family-decomposition
+pipeline (`tmp/candidate-nonconform-decomp/{families.py,run_decomposition.py}`)
+used by §4's own sub-analysis — same 8-family LightGBM fit on the frozen
+JRA-wide 2015-2022 train population (385,170 rows), same hyperparameters
+(`num_leaves=15`, up to 300 trees, early-stopping on a 2022 internal
+validation slice, `min_child_samples=100`, `RNG_SEED=42`) — but this time
+scored **all 10 JRA venues'** 2023-2025 eval population (141,304 rows,
+37,943→clean-winner-filtered races), not just Sapporo+Hakodate. Champion
+picks reused the same 9 cached CatBoost artifacts (predict-only, 3 seed ×
+3 fold), scored against the full JRA-wide eval population this time. Single
+DuckDB load (union of `families.py`'s columns and the champion's armB
+250-feature set — 41 armB-only + 19 family-only columns, confirmed by
+direct diff before writing the loader) avoided a second expensive store
+scan. `model_alone_missed_total_race_seed_rows = 800` across all 10 venues
+(seed-pooled), which sums exactly across venues (64+23+42+59+135+141+70+
+128+77+61=800) — an internal consistency check that passed.
+
+### 10.2 Result: Sapporo ranks 3rd of 10, and the two better-powered venues rank higher
+
+Connections-family rescue rate (pooled 3-seed, on each venue's own
+model-alone-missed subset), all 10 JRA venues:
+
+| Rank | Venue          | n (model-alone-missed, seed-pooled) | connections rescue rate |
+| ---- | -------------- | ----------------------------------- | ----------------------- |
+| 1    | 07 Chukyo      | 70                                  | 54.286%                 |
+| 2    | 06 Nakayama    | 141                                 | 51.773%                 |
+| 3    | **01 Sapporo** | **64**                              | **45.312%**             |
+| 4    | 04 Niigata     | 59                                  | 38.983%                 |
+| 5    | 05 Tokyo       | 135                                 | 37.037%                 |
+| 6    | 03 Fukushima   | 42                                  | 33.333%                 |
+| 7    | 10 Kokura      | 61                                  | 32.787%                 |
+| 8    | 09 Hanshin     | 77                                  | 29.870%                 |
+| 9    | 08 Kyoto       | 128                                 | 24.219%                 |
+| 10   | 02 Hakodate    | 23                                  | 21.739%                 |
+
+**The two venues ranking above Sapporo are not small-n flukes** —
+Nakayama's bucket (n=141) is more than double Sapporo's own (n=64), and
+Chukyo's (n=70) is comparably sized. Both show the same qualitative shape
+Sapporo does (connections clearly separated from the runner-up family
+within that venue's own 8-family table: Chukyo's connections 54.3% vs its
+own runner-up career_ability 30.0% — a 24pp gap, even wider than Sapporo's
+own 45.3% vs 29.7% gap). This is direct evidence that "connections
+separates cleanly from the pack on the model-alone-missed cut" is not
+unique to Sapporo's course geometry — it recurs, sometimes more strongly,
+at large mainland venues with no short-run-to-first-corner profile.
+
+**Formal outlier check** (as specified in the pre-registered criteria):
+Sapporo's point estimate (45.312%, CI [32.812, 57.812]) does sit above the
+pooled other-9-venues rate's upper CI bound (37.636%, CI [34.239, 41.168])
+— the naive flag technically reads `true`. **This naive comparison is
+misleading here and is superseded by the multiple-comparison-aware test**
+(exactly the concern team-lead's brief flagged): pooling all 9 other
+venues into one average dilutes the two venues (06, 07) that are
+_themselves_ elevated above Sapporo, understating how much venue-to-venue
+spread exists under ordinary sampling variation alone.
+
+**Permutation test (the primary, pre-specified test)**: shuffled the
+connections-agreement outcome across all 800 model-alone-missed race-seed
+rows 5,000 times, each time re-partitioning into 10 groups of the
+_observed_ bucket sizes (preserving Sapporo's own n=64 and every other
+venue's own n), and asked how often the single highest-rate group among
+the 10 reshuffled groups reaches or exceeds Sapporo's actual observed rate.
+**Result: p=0.7448** — under pure chance, with no venue-specific effect at
+all, a rate at least as extreme as Sapporo's would appear at _some_ venue
+74.5% of the time. This is not remotely a significant result; Sapporo's
+rate is fully consistent with sampling noise across 10 venues.
+
+### 10.3 3-seed stability: still holds for Sapporo's own ranking, doesn't rescue the cross-venue claim
+
+Sapporo's `connections` remains its own single best family in this
+independent retrain too (45.312% vs its own runner-up `career_ability`
+29.688% — the shape is consistent with §4.2's original within-Sapporo
+finding). But the pre-registered criteria required **both** (a)
+out-of-distribution **and** (b) 3-seed-stable — Sapporo's own internal
+seed-stability was never in question; what fails is the cross-venue
+comparison, and that failure is decisive regardless of within-venue
+stability.
+
+**Retrain-instability caveat, reported for full honesty**: this
+independent retrain's Sapporo connections rescue rate (45.312%, n=64) is
+~5pp lower than §4.2's original figure (50.0%, same n=64, same
+bucket) — both figures use the identical train population, identical
+hyperparameters, and identical `RNG_SEED=42`, so the difference is
+LightGBM's own multithreaded floating-point nondeterminism (the same
+caveat §4/§8 already flagged for the family-attack sub-analysis). This
+matters for the final verdict only in that it's one more reason not to
+have trusted a single retrain's point estimate as strongly as a
+"Sapporo-specific mechanism" claim would require — the venue-ranking
+result (§10.2) is the more decisive piece of evidence either way.
+
+### 10.4 Cross-reference: is this compatible with H5/07-04's "connections is JRA-wide mid-tier"?
+
+`docs/probes/jra-nonconforming-signal-decomposition-2026-07-04.md` found
+`connections` a middling family (S2 winner-top3 retention ratio **0.324**,
+rank **5th of 7** non-market families — verified directly against that
+doc's own `agg_metrics.csv`: `winner_top3_rate` 71.93%→23.28%
+conforming→S2, 23.28/71.93=0.3238) on a **different, broader** metric: how
+well the family ranks the actual winner on _any_ upset race (s1/s2,
+market-favorite-lost), unconditional on whether the champion model itself
+also missed. Today's §10 metric is a **much narrower, rarer** conditioning:
+specifically the races where the _full 250-feature champion_ uniquely
+missed while the _raw market favorite_ won (800 races JRA-wide across all
+2023-2025, seed-pooled — roughly 2% of the full eval population). These
+are not contradictory: a family can be unremarkable on the broad
+upset-ranking question while still being the family whose own top1 pick
+most often happens to land on the winner in this narrower slice. Today's
+finding **adds** a new, genuine JRA-wide empirical fact (`connections`
+tends to be the best "champion-miss rescuer" specifically on this narrow
+cut, at multiple venues) — it does not overturn the 07-04 finding, and it
+does not, per §10.2's ranking and permutation test, support a
+Sapporo-specific version of that fact. Pursuing _why_ `connections`
+behaves this way JRA-wide is a genuinely interesting question but is
+explicitly **out of scope** for this doc (which exists to diagnose
+Sapporo specifically, not to re-open the JRA-wide family-decomposition
+question) — noted here only so a future session doesn't have to
+re-discover it from scratch.
+
+### 10.5 Final verdict (supersedes §6/§7's original wording)
+
+**Criterion (b) triggered. The Sapporo top1 deficit is formally closed as:
+market/informational edge, not fillable with the current pre-race feature
+paradigm, accepted deficit.** No further diagnostic follow-up is
+recommended by this probe. The `connections`-family thread from §4.2/§7.1
+is resolved (tested, did not survive JRA-wide scaling) and should **not**
+be re-opened at Sapporo specifically without genuinely new evidence (a new
+external data source, e.g. paddock/intraday market data — §5.1 already
+established none exists for historical years). The one standing, durable,
+JRA-wide-generalizable observation from this work (not Sapporo-specific,
+noted for whoever next touches family-decomposition work) is §10.4's
+finding that `connections` tends to lead the "would the champion have been
+saved by this family" question on the model-alone-missed cut broadly
+across JRA, most cleanly at Chukyo/Nakayama — a candidate lead for a
+**JRA-wide** (not venue-conditional) investigation, entirely separate from
+this doc's scope.
+
+**DO-NOT-RETEST**: the Sapporo-specific `connections`-family rescue-rate
+hypothesis (§4.2, §7.1, §10) — tested at adequate power (n=800 JRA-wide,
+permutation-tested, cross-venue-ranked) and closed. Re-opening requires new
+external evidence, not a re-slice of the existing 2023-2025 WF population.
+
 ---
 
 ## Artifacts
@@ -574,10 +759,19 @@ JRA全体パターンかを判定してから初めてレバー化を検討す�
   `family_refit_check.json` (retrain-vs-cache verification),
   `step3_aggregate.csv`, `step4_diagnostic.csv`,
   `step4_cross_seed_stability.csv`, `summary.json`
+- `apps/pc-keiba-viewer/tmp/candidate-sapporo-jrawide-scaleup-2026-07-17/` —
+  §10 follow-up: `jra_wide_family_scale.py` (full script),
+  `run.log`, `family_info_jrawide.json` (this retrain's single-best-columns,
+  matches the cached ones exactly), `jrawide_model_alone_missed.parquet`
+  (full 10-venue race×seed pick/category table),
+  `venue_family_rescue_table.csv` (all 8 families × 10 venues + per-seed
+  connections stability), `connections_outlier_check.json` (the §10.2
+  ranking, pooled-CI comparison, and permutation test, verbatim source for
+  every number in §10)
 - Reused unchanged: `tmp/candidate-masked-lever-retest/models/base/**`,
   `tmp/candidate-leak-clean-retrain/jra_v9sim_feature_sets.json`,
   `tmp/candidate-eval-jra/augmented/**`,
-  `tmp/candidate-nonconform-decomp/families.py`
+  `tmp/candidate-nonconform-decomp/{families.py,run_decomposition.py}`
 - Local PG (`postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing`,
   read-only) — `jvd_o1` snapshot-availability check (§5.1)
 - Precedents read and cited: `docs/probes/jra-summer4-cell-baseline-2026-07-17.md`,
