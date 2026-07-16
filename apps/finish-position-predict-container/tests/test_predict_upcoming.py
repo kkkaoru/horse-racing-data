@@ -101,6 +101,11 @@ _ensure_cached_parquet = cast(
     Callable[[Path, str, str, R2Config | None], None],
     getattr(predict_upcoming, _ENSURE_CACHED_PARQUET_ATTR),
 )
+_VARIANT_BOOSTER_FEATURE_ORDER_MATCHES_ATTR = "_variant_booster_feature_order_matches"
+_variant_booster_feature_order_matches = cast(
+    Callable[[BoosterLike, Architecture, Sequence[str]], bool],
+    getattr(predict_upcoming, _VARIANT_BOOSTER_FEATURE_ORDER_MATCHES_ATTR),
+)
 
 # ---------------------------------------------------------------------------
 # Minimal stub connection
@@ -1191,6 +1196,26 @@ class _ScoreByUmaban:
         return list(self._scores)
 
 
+@final
+class _ScoreByUmabanWithFeatureNames:
+    """``_ScoreByUmaban`` plus a CatBoost-style ``feature_names_`` attribute.
+
+    Mirrors what a real CatBoost booster exposes after training: the exact
+    positional column order it was fit on. Used to exercise
+    ``_variant_booster_feature_order_matches`` / ``score_races``'s cell-routing
+    variant order-check against a booster whose own trained order may or may
+    not agree with the variant's ``metadata.json``.
+    """
+
+    def __init__(self, scores: list[float], feature_names_: list[str]) -> None:
+        self._scores = scores
+        self.feature_names_ = feature_names_
+
+    def predict(self, matrix: object) -> list[float]:
+        del matrix
+        return list(self._scores)
+
+
 _NAR_RACE_ID: str = "nar:20260620:30:02:11"
 
 
@@ -1537,6 +1562,112 @@ def test_score_races_rejects_cell_variant_within_race_leak_metadata(
         pytest.raises(ValueError, match="within-race leak columns"),
     ):
         score_races({"ban-ei:20260620:65:01:01": _banei_entries()}, "ban-ei", tmp_path, ["feat"])
+
+
+def test_variant_booster_feature_order_matches_no_feature_names_attr_is_a_match() -> None:
+    """A booster with no ``feature_names_`` (e.g. XGBoost) is never order-checked."""
+    booster = _ScoreByUmaban([0.1])
+    assert _variant_booster_feature_order_matches(booster, "catboost", ["a", "b"]) is True
+
+
+def test_variant_booster_feature_order_matches_exact_order_is_a_match() -> None:
+    booster = _ScoreByUmabanWithFeatureNames([0.1], ["a", "b", "c"])
+    assert _variant_booster_feature_order_matches(booster, "catboost", ["a", "b", "c"]) is True
+
+
+def test_variant_booster_feature_order_matches_permuted_order_is_a_mismatch() -> None:
+    booster = _ScoreByUmabanWithFeatureNames([0.1], ["b", "a", "c"])
+    assert _variant_booster_feature_order_matches(booster, "catboost", ["a", "b", "c"]) is False
+
+
+def _banei_entries_two_features() -> list[dict[str, object]]:
+    """Three Ban-ei entries (umaban 1/2/3) fully populated on two columns.
+
+    Distinct from :func:`_banei_entries` (single ``feat`` column) so the
+    feature-order-mismatch tests below can exercise a real two-column
+    permutation without tripping ``feature_guard.is_degenerate_feature_matrix``
+    on an unrelated missing-column count.
+    """
+    return [
+        {"ketto_toroku_bango": "B1", "umaban": 1, "a": 0.1, "b": 1.1},
+        {"ketto_toroku_bango": "B2", "umaban": 2, "a": 0.2, "b": 1.2},
+        {"ketto_toroku_bango": "B3", "umaban": 3, "a": 0.3, "b": 1.3},
+    ]
+
+
+def test_score_races_rejects_variant_with_feature_order_mismatch(tmp_path: Path) -> None:
+    """A CatBoost variant whose own trained order disagrees with metadata.json
+
+    (``_feature_set_hash`` alone cannot catch this -- it is order-independent
+    by design) must not be scored: the race falls back to the category default
+    instead of silently scoring against a permuted matrix.
+    """
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["a", "b"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 2, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])  # ranks umaban 1 first
+    # The baked booster's OWN trained order ("b", "a") disagrees with the
+    # metadata.json order ("a", "b") written above.
+    mismatched_variant_booster = _ScoreByUmabanWithFeatureNames([0.1, 0.9, 0.3], ["b", "a"])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming._load_booster_by_arch", return_value=mismatched_variant_booster),
+    ):
+        scored = score_races(
+            {"ban-ei:20260620:65:01:01": _banei_entries_two_features()},
+            "ban-ei",
+            tmp_path,
+            ["a", "b"],
+        )
+
+    rows = scored[0]
+    assert all(row[0] == "banei-cb-v9-sim-2011" for row in rows), (
+        "an order-mismatched variant must fall back to the category default"
+    )
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 1, "the fallback booster (not the mismatched variant) must have scored"
+
+
+def test_score_races_accepts_variant_with_matching_feature_order(tmp_path: Path) -> None:
+    """A CatBoost variant whose trained order matches metadata.json loads normally."""
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y", ["a", "b"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y", 2, "catboost"),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="cell")
+    fallback = _ScoreByUmaban([0.9, 0.1, 0.1])
+    matching_variant_booster = _ScoreByUmabanWithFeatureNames([0.1, 0.9, 0.3], ["a", "b"])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch("predict_upcoming._load_booster_by_arch", return_value=matching_variant_booster),
+    ):
+        scored = score_races(
+            {"ban-ei:20260620:65:01:01": _banei_entries_two_features()},
+            "ban-ei",
+            tmp_path,
+            ["a", "b"],
+        )
+
+    rows = scored[0]
+    assert all(row[0] == "banei-cb-v8-window2011-wf-15y" for row in rows), (
+        "an order-matched variant must be used, not the fallback"
+    )
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank[1] == 2, "the matched variant booster must have driven the ranking"
 
 
 def test_score_races_rejects_unallowed_nar_cell_variant(tmp_path: Path) -> None:

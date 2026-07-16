@@ -63,6 +63,7 @@ from predict_lib.audit import (
     build_audit_record,
     build_audit_table_ddl,
 )
+from predict_lib.booster_pool import PoolBooster
 from predict_lib.cell_router import (
     build_base_model_r2_key,
     card_max_race_bango_for_race_id,
@@ -71,7 +72,9 @@ from predict_lib.cell_router import (
 )
 from predict_lib.conn_url import is_catalog_source_url, normalise_database_url, resolve_source_url
 from predict_lib.dedupe import dedupe_batch
+from predict_lib.ensemble_routing import catboost_model_feature_names, member_feature_order_matches
 from predict_lib.etop2_override import apply_etop2_scores, is_etop2_override_active
+from predict_lib.feature_guard import is_degenerate_feature_matrix
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.late_binding import OddsSnapshot
 from predict_lib.model_meta import (
@@ -551,6 +554,34 @@ def _validate_variant_feature_contract(
             )
 
 
+def _variant_booster_feature_order_matches(
+    booster: BoosterLike,
+    architecture: Architecture,
+    metadata_feature_names: Sequence[str],
+) -> bool:
+    """Cross-check a cell-routing variant's booster against its metadata.json order.
+
+    ``_feature_set_hash`` (used by :func:`_validate_variant_feature_contract`) is
+    deliberately ORDER-INDEPENDENT -- it sorts before hashing, matching the local
+    feature-SELECTION policy it was built for -- so it can never catch a variant
+    whose ``metadata.json`` carries the right SET of feature names in the WRONG
+    order relative to what the booster was actually trained on. CatBoost / XGBoost
+    score positionally, so a silent order drift there would score every entry
+    against permuted columns while still "succeeding" (no exception, a smooth,
+    plausible-looking but wrong score). This reuses the SAME order-check already
+    applied to per-class ensemble members (:func:`predict_lib.ensemble_routing.
+    member_feature_order_matches`) so cell-routing variants get the identical
+    guarantee. Returns True (no-op pass) for XGBoost, mirroring
+    ``catboost_model_feature_names``'s own empty-tuple-is-a-match contract for
+    boosters that do not expose a trained column order.
+    """
+    record = PoolBooster(
+        booster=booster, architecture=architecture, feature_names=tuple(metadata_feature_names)
+    )
+    booster_names = catboost_model_feature_names(record)
+    return member_feature_order_matches(booster_names, metadata_feature_names)
+
+
 @dataclass(frozen=True)
 class VariantModel:
     """A loaded cell-routing variant: its booster plus its feature contract.
@@ -634,6 +665,15 @@ def score_races(
                 vspec.feature_names,
                 vspec.feature_set_hash,
             )
+            if not _variant_booster_feature_order_matches(booster, arch, fnames):
+                print(
+                    f"[cell-routing] variant={vname} category={category} "
+                    f"version={vspec.model_version} feature-order-mismatch: "
+                    "booster's own trained column order disagrees with "
+                    "metadata.json -> not loaded, races fall back to category default",
+                    file=sys.stderr,
+                )
+                continue
             variant_pool[vname] = VariantModel(
                 booster=booster,
                 feature_names=fnames,
@@ -740,6 +780,14 @@ def _score_one_race_direct(
     architecture: Architecture,
     model_version: str,
 ) -> list[list[object]]:
+    if is_degenerate_feature_matrix(entries, feature_names):
+        print(
+            f"[feature-guard] race_id={race_id} category={category} "
+            f"model_version={model_version} rejected: feature matrix mostly missing "
+            "-> skipping write (self-heal will retry)",
+            file=sys.stderr,
+        )
+        return []
     matrix = build_feature_matrix(entries, feature_names, architecture)
     scores = score_matrix(booster, matrix)
     ranked = rank_race_entries(entries, scores)
@@ -821,6 +869,14 @@ def _score_one_race_nar_blend(
     under the category-global model_version (auditable); blended rows write
     NAR_TRANSFORMER_MODEL_VERSION.
     """
+    if is_degenerate_feature_matrix(entries, feature_names):
+        print(
+            f"[feature-guard] race_id={race_id} category=nar "
+            "rejected: feature matrix mostly missing -> skipping write "
+            "(self-heal will retry)",
+            file=sys.stderr,
+        )
+        return []
     matrix = build_feature_matrix(entries, feature_names, "xgboost")
     base_scores = score_matrix(fallback_booster, matrix)
     scores: Sequence[float] = base_scores
