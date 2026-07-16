@@ -1,7 +1,33 @@
 // Run with bun. Tests for the raw-Catalog-backed focused full completion guard.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, expect, test, vi } from "vitest";
 import type { Env } from "./types";
+
+interface CellRoutingRuleCondition {
+  dimension: string;
+  values: string[];
+}
+
+interface CellRoutingRule {
+  conditions: CellRoutingRuleCondition[];
+  variant: string;
+}
+
+interface CellRoutingVariant {
+  model_version: string;
+}
+
+interface CellRoutingCategoryConfig {
+  default_variant: string;
+  variants: Record<string, CellRoutingVariant>;
+  rules: CellRoutingRule[];
+}
+
+interface CellRoutingConfig {
+  jra: CellRoutingCategoryConfig;
+}
 
 const buildCatalogRows = (count = 12): Record<string, unknown>[] =>
   Array.from({ length: count }, (_, index) => ({
@@ -296,4 +322,39 @@ test("rejects malformed raw Catalog entries", async () => {
       runYmd: "20260628",
     }),
   ).rejects.toThrow("invalid entry");
+});
+
+// --- parity against the container's real cell_routing.json ----------------
+
+// Intentional exception to "mock all file I/O in tests": this test's entire
+// purpose is to catch drift between expectedModelVersion()'s hand-written JRA
+// rule branches (703, prior-corner-005, venue==02) and the container's real
+// cell_routing.json, so it must read the real file. This is exactly the class
+// of bug this suite's venue==02 tests above were added to fix (the rule
+// survived a full rewrite of this file unnoticed) -- mirrors the same
+// pattern already established in
+// apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.test.ts.
+test("expectedModelVersion covers every JRA rule in the real cell_routing.json (parity guard)", () => {
+  const containerConfigPath = resolve(
+    process.cwd(),
+    "../finish-position-predict-container/src/predict_lib/cell_routing.json",
+  );
+  const containerConfig: CellRoutingConfig = JSON.parse(
+    readFileSync(containerConfigPath, "utf-8"),
+  ) as CellRoutingConfig;
+  const jraRules = containerConfig.jra.rules;
+  // The rule COUNT is the parity contract: a new rule added to
+  // cell_routing.json without a matching branch in expectedModelVersion()
+  // fails silently exactly like the venue==02 gap this test guards against.
+  // A failure here means: add the matching branch above FIRST, then update
+  // this expectation to the new count.
+  expect(jraRules).toHaveLength(3);
+  const ruleModelVersions = jraRules.map(
+    (rule) => containerConfig.jra.variants[rule.variant]?.model_version,
+  );
+  expect(ruleModelVersions).toStrictEqual([
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269", // rule 1: kyoso_joken_code=703
+    "jra-cb-v10-prior-corner274-2013", // rule 2: dirt + f_le10 + kyoso_joken_code=005
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269", // rule 3: venue=02
+  ]);
 });
