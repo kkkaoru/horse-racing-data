@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +46,11 @@ import mlflow_hook
 # 09:30 fix went live on 2026-06-11 JST = 2026-06-11 00:30:00 UTC (commit fe871a6)
 ERA_POSTFIX_CUTOFF_JST: Final[datetime] = datetime(2026, 6, 11, 0, 30, 0,
                                                     tzinfo=timezone.utc)
+
+# JST (UTC+9, no DST in Japan) -- reused for JST display conversion and for
+# parsing jvd_ra/nvd_ra's hasso_jikoku (post time, JST wall-clock) in
+# parse_post_time_jst.
+JST: Final[timezone] = timezone(timedelta(hours=9))
 
 # Running-style class thresholds (must match running-style-feature-sql.ts)
 RS_SENKOU_THRESHOLD: Final[float] = 0.3
@@ -207,9 +213,14 @@ class RunningStyleMetrics:
 
 # ── Row type aliases ─────────────────────────────────────────────────────────
 
-# (keibajo_code, race_bango, predicted_rank, actual_rank, model_version, gen_at,
-#  kyori, shusso_tosu)
-FpRow = tuple[str, str, int, int, str, datetime | None, int, int]
+# (keibajo_code, race_bango, ketto_toroku_bango, predicted_rank, actual_rank,
+#  model_version, prediction_generated_at, kyori, shusso_tosu, hasso_jikoku)
+#
+# NOT deduped to one row per horse at the SQL level -- a horse can have
+# multiple live rows for the same date (see select_serving_row's docstring),
+# so query_finish_position_metrics fetches every candidate row and dedups in
+# Python via dedup_prediction_rows_per_horse.
+FpRow = tuple[str, str, str, int, int, str, datetime | None, int, int, str | None]
 
 # (keibajo, race_bango, ketto, predicted_label, predicted_class,
 #  p_nige, p_senkou, p_sashi, p_oikomi, model_version, gen_at, corner_1, shusso_tosu)
@@ -432,6 +443,141 @@ def compute_macro_f1(per_class: list[RunningStyleClassMetrics]) -> float | None:
     return sum(f1_values) / len(f1_values)
 
 
+def parse_post_time_jst(
+    kaisai_nen: str,
+    kaisai_tsukihi: str,
+    hasso_jikoku: str | None,
+) -> datetime | None:
+    """Parse jvd_ra/nvd_ra's ``hasso_jikoku`` (発走時刻, JST wall-clock ``HHMM``)
+    into an aware JST datetime for one race's post time.
+
+    Returns None when the value cannot be used as a serve-time cutoff:
+    missing/blank, the jvd ``'0000'`` not-yet-determined placeholder (the same
+    ``'00'``-family trap already documented for kakutei_chakujun/shusso_tosu
+    -- see this repo's jvd-placeholder-semantics reference doc), out-of-range
+    digits, or an otherwise invalid calendar date. Callers must treat None as
+    "post time unknown for this race" and fall back to ASC (oldest-first)
+    dedup -- see select_serving_row.
+    """
+    if not hasso_jikoku:
+        return None
+    hhmm = hasso_jikoku.strip()
+    if len(hhmm) != 4 or not hhmm.isdigit() or hhmm == "0000":
+        return None
+    hour, minute = int(hhmm[:2]), int(hhmm[2:])
+    if hour > 23 or minute > 59:
+        return None
+    try:
+        return datetime(
+            int(kaisai_nen), int(kaisai_tsukihi[:2]), int(kaisai_tsukihi[2:]),
+            hour, minute, tzinfo=JST,
+        )
+    except ValueError:
+        return None
+
+
+def select_serving_row(
+    candidates: Sequence[tuple[datetime | None, FpRow]],
+    post_time: datetime | None,
+) -> FpRow:
+    """Pick the one prediction row to treat as "the served prediction" for a
+    single horse, out of possibly-several rows written for it over time.
+
+    Background: ``race_finish_position_model_predictions`` UPSERTs on
+    (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+    race_bango, ketto_toroku_bango) -- a re-route to a *different*
+    model_version (e.g. a cell-routing change) is a *different* primary key,
+    so it does not overwrite the old row; both stay live. On 2026-07-12 a
+    batch process wrote degenerate/near-random predictions (collapsed
+    within-race score stddev, consistent with scoring on missing/zero-filled
+    features -- root-caused in
+    docs/probes/jra-269-serve-defect-2026-07-17.md as "Cluster B") on top of
+    already-existing genuine same-day predictions for many JRA races.
+    ``feature_guard.py`` (commit 57a4cd7f) now fail-closes this class of
+    write going forward, but the historical Cluster B rows are still sitting
+    in Neon.
+
+    ``ORDER BY prediction_generated_at DESC`` (the old behaviour: pick the
+    most-recently WRITTEN row) is wrong -- it silently prefers a later
+    garbage rescore over an earlier genuine prediction.
+
+    Selection order:
+
+      1. Ideal: among rows generated strictly before the race's actual post
+         time (``post_time``), take the most recent one -- closest to the
+         true final pre-race serve state, while never picking a row that can
+         only be a post-hoc rescore.
+      2. Fallback: if no candidate was generated before post_time (post_time
+         itself is unknown/unparseable for this race, OR every candidate
+         happens to postdate it -- e.g. a whole day's card backfilled at
+         once after some of that day's races had already gone off), fall
+         back to the OLDEST row overall (ASC). The oldest write is closest
+         to a genuine, once-only original attempt and least likely to be a
+         compounding re-score.
+
+    Why not ``first_served_at`` (added in commit 44aa212e specifically so a
+    re-score's UPSERT can never clobber the true first-serve timestamp,
+    unlike prediction_generated_at): verified empirically against Neon
+    (2026-07-17) that it is 100% NULL for every row in the 2026-07-11/07-12
+    incident window (1234/1234 rows, across both the genuine and garbage
+    clusters) -- its ``DEFAULT now()`` only went live 2026-07-12 16:37 JST,
+    *after* both clusters were already written, so it cannot distinguish
+    them for this incident (or any row predating that migration).
+    ``hasso_jikoku`` was verified 100% populated for the same affected races
+    (and for NAR's nvd_ra over the same window), which is why it -- not
+    first_served_at -- drives the ordering here.
+
+    Verified against the concrete incident: for jra:2026:0711:02:01 (hasso_
+    jikoku=0950 JST), both the genuine row (model_version=jra-cb-v9-sim-2013-
+    clean, generated 2026-07-11 10:47 JST) and the Cluster B garbage row
+    (jra-cb-v9-sim-2013-clean-jockey-pedigree269, generated 2026-07-12 14:51
+    JST) postdate that race's 09:50 JST post time, so neither is "ideal" --
+    the ASC fallback still correctly prefers the earlier (genuine) row over
+    the later (garbage) one. For jra:2026:0711:02:03 (hasso_jikoku=1050
+    JST), the genuine row (generated 10:47 JST) IS before post time while
+    Cluster B (generated the next day) is not, so the ideal tier applies
+    directly and both tiers agree.
+    """
+    def sort_key(candidate: tuple[datetime | None, FpRow]) -> tuple[int, float]:
+        gen_at, _row = candidate
+        if gen_at is None:
+            return (2, 0.0)
+        if post_time is not None and gen_at < post_time:
+            return (0, -gen_at.timestamp())
+        return (1, gen_at.timestamp())
+
+    return min(candidates, key=sort_key)[1]
+
+
+def dedup_prediction_rows_per_horse(
+    rows: Sequence[FpRow],
+    kaisai_nen: str,
+    kaisai_tsukihi: str,
+) -> list[FpRow]:
+    """Collapse the possibly-multiple prediction rows per horse down to one.
+
+    ``rows`` may contain several entries for the same (keibajo_code,
+    race_bango, ketto_toroku_bango) horse -- one per model_version /
+    re-score write (see select_serving_row's docstring for why). Groups
+    candidates by horse, resolves each race's post time once (hasso_jikoku
+    is a race-level attribute shared by every horse in that race), and
+    applies select_serving_row per horse.
+    """
+    candidates_by_horse: dict[tuple[str, str, str], list[FpRow]] = {}
+    for row in rows:
+        keibajo, race_bango, ketto = row[0], row[1], row[2]
+        candidates_by_horse.setdefault((keibajo, race_bango, ketto), []).append(row)
+
+    served_rows: list[FpRow] = []
+    for horse_rows in candidates_by_horse.values():
+        hasso_jikoku = horse_rows[0][9]
+        post_time = parse_post_time_jst(kaisai_nen, kaisai_tsukihi, hasso_jikoku)
+        # index 6 = prediction_generated_at, see the FpRow comment above.
+        candidates = [(row[6], row) for row in horse_rows]
+        served_rows.append(select_serving_row(candidates, post_time))
+    return served_rows
+
+
 # ── Database queries ──────────────────────────────────────────────────────────
 
 
@@ -442,8 +588,25 @@ def query_finish_position_metrics(
 ) -> FinishPositionMetrics | None:
     """Query served predictions and results for a date, return metrics.
 
-    Uses DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango) to pick the
-    latest-generated prediction per horse per race (handles multiple model versions / re-runs).
+    A horse can have multiple live prediction rows for the same date (a
+    cell-routing reroute to a different model_version, or a re-score UPSERT
+    under the same model_version -- each is its own primary key or its own
+    UPSERT event, see dedup_prediction_rows_per_horse). This function fetches
+    every candidate row per horse -- SQL does NOT dedup -- and picks exactly
+    one via dedup_prediction_rows_per_horse / select_serving_row: prefer the
+    most recent row generated before the race's post time (jvd_ra/nvd_ra
+    ``hasso_jikoku``), falling back to the oldest row overall when post time
+    is unknown or every candidate postdates it. See select_serving_row's
+    docstring for the full selection-order rationale, why ``first_served_at``
+    was considered and rejected (verified 100% NULL for the incident window
+    that motivated this fix), and the concrete race-level verification.
+
+    The naive ``ORDER BY prediction_generated_at DESC`` this replaced (pick
+    the most-recently WRITTEN row) is wrong: it silently prefers a later
+    garbage rescore over an earlier genuine prediction whenever a race gets
+    backfilled/rescored after the fact -- see
+    docs/probes/jra-269-serve-defect-2026-07-17.md's "Cluster B" incident
+    (2026-07-12).
     """
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]
@@ -454,16 +617,17 @@ def query_finish_position_metrics(
 
     cur = conn.cursor()
 
-    # Step 1: Get all served predictions per race (latest prediction per horse)
+    # Step 1: fetch every candidate prediction row per horse (NOT deduped --
+    # see the docstring above) together with its race's post time; dedup
+    # happens in Python via dedup_prediction_rows_per_horse below.
     cur.execute(
         f"""
         WITH served AS (
-            SELECT DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)
+            SELECT
                 keibajo_code, race_bango, ketto_toroku_bango, predicted_rank,
                 model_version, prediction_generated_at
             FROM race_finish_position_model_predictions
             WHERE source = %s AND kaisai_nen = %s AND kaisai_tsukihi = %s
-            ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC
         ),
         results AS (
             SELECT keibajo_code, race_bango, ketto_toroku_bango,
@@ -475,11 +639,12 @@ def query_finish_position_metrics(
               AND CAST(kakutei_chakujun AS int) > 0
         )
         SELECT
-            s.keibajo_code, s.race_bango,
+            s.keibajo_code, s.race_bango, s.ketto_toroku_bango,
             s.predicted_rank, r.actual_rank,
             s.model_version, s.prediction_generated_at,
             CAST(ra.kyori AS int) as kyori,
-            CAST(ra.shusso_tosu AS int) as shusso_tosu
+            CAST(ra.shusso_tosu AS int) as shusso_tosu,
+            ra.hasso_jikoku
         FROM served s
         JOIN results r ON
             s.keibajo_code = r.keibajo_code AND
@@ -489,7 +654,7 @@ def query_finish_position_metrics(
             ra.kaisai_nen = %s AND ra.kaisai_tsukihi = %s AND
             ra.keibajo_code = s.keibajo_code AND
             ra.race_bango = s.race_bango
-        ORDER BY s.keibajo_code, s.race_bango, s.predicted_rank
+        ORDER BY s.keibajo_code, s.race_bango, s.ketto_toroku_bango, s.prediction_generated_at
         """,
         (
             category, kaisai_nen, kaisai_tsukihi,
@@ -502,11 +667,13 @@ def query_finish_position_metrics(
     if not rows:
         return None
 
+    served_rows = dedup_prediction_rows_per_horse(rows, kaisai_nen, kaisai_tsukihi)
+
     # Group by race
     races_dict: dict[tuple[str, str], list[tuple[int, int]]] = {}
     race_dims: dict[tuple[str, str], tuple[str, int, int]] = {}
     gen_ats: list[datetime] = []
-    for keibajo, race_bango, pred_rank, actual_rank, _model_ver, gen_at, kyori, tosu in rows:
+    for keibajo, race_bango, _ketto, pred_rank, actual_rank, _model_ver, gen_at, kyori, tosu, _hasso in served_rows:
         key = (keibajo, race_bango)
         if key not in races_dict:
             races_dict[key] = []
@@ -538,12 +705,13 @@ def query_finish_position_metrics(
     # JST display
     gen_jst = ""
     if latest_gen:
-        jst_dt = latest_gen.astimezone(timezone(timedelta(hours=9)))
+        jst_dt = latest_gen.astimezone(JST)
         gen_jst = jst_dt.strftime("%Y-%m-%d %H:%M:%S JST")
 
-    # Count model versions
+    # Count model versions (post-dedup: one tally per horse actually served)
     model_version_counts: dict[str, int] = {}
-    for _, _, _, _, mv, _, _, _ in rows:
+    for served_row in served_rows:
+        mv = served_row[5]
         model_version_counts[mv] = model_version_counts.get(mv, 0) + 1
 
     return FinishPositionMetrics(
@@ -551,7 +719,7 @@ def query_finish_position_metrics(
         category=category,
         era=era,
         races=len(race_rows),
-        horses=len(rows),
+        horses=len(served_rows),
         top1_hits=top1,
         place2_hits=place2,
         place3_hits=place3,

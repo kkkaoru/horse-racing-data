@@ -962,12 +962,15 @@ def test_query_fp_metrics_no_rows_returns_none() -> None:
 
 def test_query_fp_metrics_basic_result() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    # (keibajo, race_bango, pred_rank, actual_rank, model_version, gen_at, kyori, tosu)
+    # (keibajo, race_bango, ketto, pred_rank, actual_rank, model_version,
+    #  gen_at, kyori, tosu, hasso_jikoku) -- one row per horse, so dedup is a
+    # no-op regardless of hasso_jikoku (set to None here, deliberately not
+    # under test).
     rows = [
-        ("05", "01", 1, 1, "iter14", gen_at, 1200, 16),
-        ("05", "01", 2, 3, "iter14", gen_at, 1200, 16),
-        ("05", "02", 1, 4, "iter14", gen_at, 2000, 16),
-        ("05", "02", 2, 1, "iter14", gen_at, 2000, 16),
+        ("05", "01", "h1", 1, 1, "iter14", gen_at, 1200, 16, None),
+        ("05", "01", "h2", 2, 3, "iter14", gen_at, 1200, 16, None),
+        ("05", "02", "h3", 1, 4, "iter14", gen_at, 2000, 16, None),
+        ("05", "02", "h4", 2, 1, "iter14", gen_at, 2000, 16, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
@@ -982,7 +985,7 @@ def test_query_fp_metrics_basic_result() -> None:
 def test_query_fp_metrics_degraded_era() -> None:
     gen_at = datetime(2026, 6, 5, 20, 27, 0, tzinfo=timezone.utc)
     rows = [
-        ("05", "01", 1, 5, "iter14", gen_at, 1600, 12),
+        ("05", "01", "h1", 1, 5, "iter14", gen_at, 1600, 12, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260606", "jra")
@@ -994,7 +997,7 @@ def test_query_fp_metrics_degraded_era() -> None:
 
 def test_query_fp_metrics_nar_category() -> None:
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    rows = [("30", "01", 1, 1, "iter12", gen_at, 1400, 10)]
+    rows = [("30", "01", "h1", 1, 1, "iter12", gen_at, 1400, 10, None)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "nar")
     assert result is not None
@@ -1002,15 +1005,23 @@ def test_query_fp_metrics_nar_category() -> None:
     assert result.top1_hits == 1
 
 
-def test_query_fp_metrics_sql_uses_per_horse_distinct_on() -> None:
+def test_query_fp_metrics_sql_selects_ketto_and_hasso_jikoku_no_distinct_on() -> None:
+    """SQL must surface per-horse identity (ketto_toroku_bango) and each
+    race's post time (hasso_jikoku) so Python-side dedup
+    (dedup_prediction_rows_per_horse / select_serving_row) can run -- and
+    must NOT collapse rows itself anymore. A prior version used ``DISTINCT
+    ON (...) ORDER BY ... prediction_generated_at DESC``, which silently
+    preferred a later backfill/rescore row over an earlier genuine one (see
+    select_serving_row's docstring for the 2026-07-12 incident this fixed)."""
     mock_cur = MagicMock()
     mock_cur.fetchall.return_value = []
     mock_conn = MagicMock()
     mock_conn.cursor.return_value = mock_cur
     subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
     sql_call = mock_cur.execute.call_args[0][0]
-    assert "DISTINCT ON (keibajo_code, race_bango, ketto_toroku_bango)" in sql_call
-    assert "ORDER BY keibajo_code, race_bango, ketto_toroku_bango, prediction_generated_at DESC" in sql_call
+    assert "s.ketto_toroku_bango" in sql_call
+    assert "ra.hasso_jikoku" in sql_call
+    assert "DISTINCT ON" not in sql_call
 
 
 def test_query_fp_metrics_populates_subgroups() -> None:
@@ -1018,8 +1029,8 @@ def test_query_fp_metrics_populates_subgroups() -> None:
     # race 01: sprint (1200), small (8), venue 05, pred1 wins
     # race 02: long (2400), large (16), venue 05, pred1 finishes 4th (miss)
     rows = [
-        ("05", "01", 1, 1, "iter14", gen_at, 1200, 8),
-        ("05", "02", 1, 4, "iter14", gen_at, 2400, 16),
+        ("05", "01", "h1", 1, 1, "iter14", gen_at, 1200, 8, None),
+        ("05", "02", "h2", 1, 4, "iter14", gen_at, 2400, 16, None),
     ]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
@@ -1044,11 +1055,235 @@ def test_query_fp_metrics_populates_subgroups() -> None:
 def test_query_fp_metrics_jst_display_converts_utc_to_jst() -> None:
     # UTC 00:30 = JST 09:30; the displayed string must show 09:30 JST
     gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
-    rows = [("05", "01", 1, 1, "iter14", gen_at, 1600, 16)]
+    rows = [("05", "01", "h1", 1, 1, "iter14", gen_at, 1600, 16, None)]
     mock_conn = _make_mock_conn(rows)
     result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
     assert result is not None
     assert result.prediction_generated_at_jst == "2026-06-14 09:30:00 JST"
+
+
+def test_query_fp_metrics_picks_genuine_row_over_cluster_b_backfill() -> None:
+    """End-to-end regression test for the 2026-07-12 incident
+    (docs/probes/jra-269-serve-defect-2026-07-17.md): a race whose
+    already-served genuine prediction was rescored the next day with
+    degenerate/near-random "Cluster B" garbage under a DIFFERENT
+    model_version (a cell-routing reroute writes a new primary key, it does
+    not overwrite the old row) -- so the old SQL-side ``DISTINCT ON (...)
+    ORDER BY ... prediction_generated_at DESC`` silently preferred the later
+    garbage row. Mirrors the real jra:2026:0711:02:01 race verified against
+    Neon on 2026-07-17 (hasso_jikoku=0950 JST): genuine row generated
+    2026-07-11 01:47 UTC (10:47 JST) predicted this horse to win (and it
+    did), Cluster B garbage generated 2026-07-12 05:51 UTC (14:51 JST, the
+    next day) predicted it 5th. The fix must count this as a top1 hit."""
+    genuine_gen_at = datetime(2026, 7, 11, 1, 47, 52, tzinfo=timezone.utc)
+    garbage_gen_at = datetime(2026, 7, 12, 5, 51, 45, tzinfo=timezone.utc)
+    # (keibajo, race_bango, ketto, pred_rank, actual_rank, model_version,
+    #  gen_at, kyori, shusso_tosu, hasso_jikoku)
+    rows = [
+        (
+            "02", "01", "2024101292", 1, 1, "jra-cb-v9-sim-2013-clean",
+            genuine_gen_at, 1200, 16, "0950",
+        ),
+        (
+            "02", "01", "2024101292", 5, 1, "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+            garbage_gen_at, 1200, 16, "0950",
+        ),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260711", "jra")
+    assert result is not None
+    assert result.races == 1
+    assert result.horses == 1
+    assert result.top1_hits == 1
+    assert result.model_version_counts == {"jra-cb-v9-sim-2013-clean": 1}
+
+
+def test_query_fp_metrics_handles_unknown_gen_at_defensively() -> None:
+    """prediction_generated_at is NOT NULL in the schema, but FpRow keeps it
+    Optional defensively; a served row with gen_at=None must not crash the
+    era/JST-display max()-over-empty-list guard."""
+    rows = [("05", "01", "h1", 1, 1, "iter14", None, 1200, 16, None)]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_finish_position_metrics(mock_conn, "20260614", "jra")
+    assert result is not None
+    assert result.era == "UNKNOWN"
+    assert result.prediction_generated_at_jst == ""
+
+
+# ── parse_post_time_jst ─────────────────────────────────────────────────────────
+
+
+def test_parse_post_time_jst_none_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", None) is None
+
+
+def test_parse_post_time_jst_empty_string_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", "") is None
+
+
+def test_parse_post_time_jst_placeholder_0000_returns_none() -> None:
+    # jvd '0000' = not-yet-determined placeholder (same '00'-family trap as
+    # kakutei_chakujun/shusso_tosu), not literal midnight.
+    assert subject.parse_post_time_jst("2026", "0711", "0000") is None
+
+
+def test_parse_post_time_jst_wrong_length_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", "950") is None
+
+
+def test_parse_post_time_jst_non_digit_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", "12ab") is None
+
+
+def test_parse_post_time_jst_hour_out_of_range_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", "2401") is None
+
+
+def test_parse_post_time_jst_minute_out_of_range_returns_none() -> None:
+    assert subject.parse_post_time_jst("2026", "0711", "0960") is None
+
+
+def test_parse_post_time_jst_invalid_calendar_date_returns_none() -> None:
+    # 2026-02-30 does not exist -- datetime() raises ValueError, caught.
+    assert subject.parse_post_time_jst("2026", "0230", "0950") is None
+
+
+def test_parse_post_time_jst_valid_returns_aware_jst_datetime() -> None:
+    # Real value verified against Neon: jra:2026:0711:02:01 hasso_jikoku=0950.
+    result = subject.parse_post_time_jst("2026", "0711", "0950")
+    assert result == datetime(2026, 7, 11, 9, 50, 0, tzinfo=subject.JST)
+
+
+# ── select_serving_row ──────────────────────────────────────────────────────────
+
+
+def test_select_serving_row_single_candidate_returns_it() -> None:
+    gen_at = datetime(2026, 7, 11, 1, 47, 52, tzinfo=timezone.utc)
+    row = ("02", "01", "h1", 1, 1, "champion", gen_at, 1200, 16, "0950")
+    result = subject.select_serving_row([(gen_at, row)], None)
+    assert result == ("02", "01", "h1", 1, 1, "champion", gen_at, 1200, 16, "0950")
+
+
+def test_select_serving_row_prefers_most_recent_before_post_time() -> None:
+    """Tier 1 (ideal): two rows both before post time -- most recent (still
+    pre-race) wins. Mirrors jra:2026:0711:02:03 (genuine row generated 10:47
+    JST, before that race's 10:50 JST post time)."""
+    post_time = datetime(2026, 7, 11, 10, 50, 0, tzinfo=subject.JST)
+    earlier = datetime(2026, 7, 11, 10, 30, 0, tzinfo=subject.JST)
+    later_but_before_post = datetime(2026, 7, 11, 10, 47, 0, tzinfo=subject.JST)
+    earlier_row = ("02", "03", "h1", 5, 1, "stale-draft", earlier, 1200, 16, "1050")
+    later_row = ("02", "03", "h1", 1, 1, "champion", later_but_before_post, 1200, 16, "1050")
+    result = subject.select_serving_row(
+        [(earlier, earlier_row), (later_but_before_post, later_row)], post_time,
+    )
+    assert result == (
+        "02", "03", "h1", 1, 1, "champion", later_but_before_post, 1200, 16, "1050",
+    )
+
+
+def test_select_serving_row_falls_back_to_oldest_when_all_rows_postdate_post_time() -> None:
+    """Tier 2 (fallback despite a KNOWN post time): the real 2026-07-12
+    incident shape -- genuine row + Cluster B garbage, both generated after
+    that race's post time (jra:2026:0711:02:01: post time 09:50 JST, genuine
+    row 10:47 JST, Cluster B garbage row generated the next day). ASC
+    (oldest) must still pick the genuine row, not the later garbage one."""
+    post_time = datetime(2026, 7, 11, 9, 50, 0, tzinfo=subject.JST)
+    genuine_gen_at = datetime(2026, 7, 11, 10, 47, 52, tzinfo=subject.JST)
+    garbage_gen_at = datetime(2026, 7, 12, 14, 51, 45, tzinfo=subject.JST)
+    genuine_row = (
+        "02", "01", "h1", 2, 1, "jra-cb-v9-sim-2013-clean", genuine_gen_at, 1200, 16, "0950",
+    )
+    garbage_row = (
+        "02", "01", "h1", 3, 1, "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+        garbage_gen_at, 1200, 16, "0950",
+    )
+    result = subject.select_serving_row(
+        [(garbage_gen_at, garbage_row), (genuine_gen_at, genuine_row)], post_time,
+    )
+    assert result == (
+        "02", "01", "h1", 2, 1, "jra-cb-v9-sim-2013-clean", genuine_gen_at, 1200, 16, "0950",
+    )
+
+
+def test_select_serving_row_falls_back_to_oldest_when_post_time_unknown() -> None:
+    older = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+    newer = datetime(2026, 6, 2, 0, 0, 0, tzinfo=timezone.utc)
+    older_row = ("05", "01", "h1", 1, 1, "v1", older, 1200, 16, None)
+    newer_row = ("05", "01", "h1", 4, 1, "v2", newer, 1200, 16, None)
+    result = subject.select_serving_row([(newer, newer_row), (older, older_row)], None)
+    assert result == ("05", "01", "h1", 1, 1, "v1", older, 1200, 16, None)
+
+
+def test_select_serving_row_treats_unknown_gen_at_as_least_preferred() -> None:
+    known = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+    known_row = ("05", "01", "h1", 1, 1, "v1", known, 1200, 16, None)
+    unknown_row = ("05", "01", "h1", 2, 1, "v2", None, 1200, 16, None)
+    result = subject.select_serving_row([(None, unknown_row), (known, known_row)], None)
+    assert result == ("05", "01", "h1", 1, 1, "v1", known, 1200, 16, None)
+
+
+# ── dedup_prediction_rows_per_horse ─────────────────────────────────────────────
+
+
+def test_dedup_single_row_per_horse_is_a_noop() -> None:
+    gen_at = datetime(2026, 6, 14, 0, 30, 0, tzinfo=timezone.utc)
+    rows = [
+        ("05", "01", "h1", 1, 1, "iter14", gen_at, 1200, 16, None),
+        ("05", "01", "h2", 2, 3, "iter14", gen_at, 1200, 16, None),
+    ]
+    result = subject.dedup_prediction_rows_per_horse(rows, "2026", "0614")
+    assert result == [
+        ("05", "01", "h1", 1, 1, "iter14", gen_at, 1200, 16, None),
+        ("05", "01", "h2", 2, 3, "iter14", gen_at, 1200, 16, None),
+    ]
+
+
+def test_dedup_picks_genuine_row_over_cluster_b_backfill() -> None:
+    """Direct regression test for the real incident (jra:2026:0711:02:01):
+    two rows for the same horse (same keibajo/race/ketto, different
+    model_version), genuine one written first, Cluster B garbage written a
+    day later. The old ``ORDER BY prediction_generated_at DESC`` picked the
+    garbage row; the fix must pick the genuine one."""
+    genuine_gen_at = datetime(2026, 7, 11, 10, 47, 52, tzinfo=subject.JST)
+    garbage_gen_at = datetime(2026, 7, 12, 14, 51, 45, tzinfo=subject.JST)
+    rows = [
+        (
+            "02", "01", "2024101292", 2, 1, "jra-cb-v9-sim-2013-clean",
+            genuine_gen_at, 1200, 16, "0950",
+        ),
+        (
+            "02", "01", "2024101292", 3, 1, "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+            garbage_gen_at, 1200, 16, "0950",
+        ),
+    ]
+    result = subject.dedup_prediction_rows_per_horse(rows, "2026", "0711")
+    assert result == [
+        (
+            "02", "01", "2024101292", 2, 1, "jra-cb-v9-sim-2013-clean",
+            genuine_gen_at, 1200, 16, "0950",
+        ),
+    ]
+
+
+def test_dedup_groups_independently_per_horse() -> None:
+    """Two horses in the same race, each with their own two-row history --
+    dedup must resolve each horse independently, not cross-contaminate."""
+    post_time = "1050"
+    old_h1 = datetime(2026, 7, 11, 10, 30, 0, tzinfo=subject.JST)
+    new_h1 = datetime(2026, 7, 12, 0, 0, 0, tzinfo=subject.JST)
+    old_h2 = datetime(2026, 7, 11, 10, 20, 0, tzinfo=subject.JST)
+    new_h2 = datetime(2026, 7, 12, 0, 0, 0, tzinfo=subject.JST)
+    rows = [
+        ("02", "03", "h1", 1, 1, "v1", old_h1, 1200, 16, post_time),
+        ("02", "03", "h1", 2, 1, "v2", new_h1, 1200, 16, post_time),
+        ("02", "03", "h2", 5, 2, "v1", old_h2, 1200, 16, post_time),
+        ("02", "03", "h2", 6, 2, "v2", new_h2, 1200, 16, post_time),
+    ]
+    result = subject.dedup_prediction_rows_per_horse(rows, "2026", "0711")
+    assert result == [
+        ("02", "03", "h1", 1, 1, "v1", old_h1, 1200, 16, post_time),
+        ("02", "03", "h2", 5, 2, "v1", old_h2, 1200, 16, post_time),
+    ]
 
 
 # ── query_running_style_metrics (mocked) ──────────────────────────────────────
