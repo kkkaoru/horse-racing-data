@@ -119,6 +119,54 @@
 - Cluster A / B の切り分けは `prediction_generated_at` の書込クラスタ (`date_trunc('minute', ...)` で group化) から機械的に検出した。07-11 は 2 つの明確なクラスタ (01:47 UTC 21件、05:51-05:52 UTC 22+14件) に完全分離し、時間的に重複しない。
 - MLflow backend (`HORSE_RACING_MLFLOW_BACKEND_URI`) に `finish-position/production-usage` experiment で該当日の "serving as data" ログが 2026-07-12 13:31-14:22 JST (Cluster B の書込から約 7〜8 時間後) に記録されているのを確認したが、これは `cf_serving_recorder.py` による**事後の読み取り専用集計ログ**であり、Cluster B 自体の書き込み元を特定するものではない (`fp_races_live=15, fp_races_backfilled=0` のようなタグが付いているが、この分類ヒューリスティックが「同一暦日に書かれたか」以上の判定をしているかは未検証)。
 
+## 7. 追加検証 (team-lead 指示、独立手法によるクロス確認 — 2026-07-17 追記)
+
+並行 agent (summer-baseline) から「`jockey-pedigree269` の 2026 serve が top1 0/29」という重大疑いが team-lead 経由で共有され、専任診断 agent (serve-defect-269) が根本原因調査を担当することになった。以下は本監査が既に持つデータに対し、team-lead 指定の独立手法 (ASC per-horse dedup、優勝馬 predicted_rank 分布、viewer priority-tier のコード読解) を適用したクロス確認であり、根本原因の特定はスコープ外 (serve-defect-269 の担当) として深追いしない。
+
+### 7.1 per-horse ASC (最古書込優先) dedup による model_version 別精度
+
+race×horse ごとに、その組に存在する全 model_version 行の中から `prediction_generated_at` が最古の 1 行を採用 (同一レースで複数 model_version が競合する場合に「最初に生成された予測」を選ぶ手法。1412 組中 285 組が複数 model_version 競合)。この最古行自身の model_version で group化した。
+
+| model_version (ASC選出)                                           | races | top1      | place2 | place3 |
+| ----------------------------------------------------------------- | ----- | --------- | ------ | ------ |
+| `jra-cb-v9-sim-2013-clean` (champion)                             | 51    | 19.61%    | 29.41% | 39.22% |
+| `jra-cb-v9-sim-2013-clean-jockey-pedigree269`                     | 22    | **0.00%** | 9.09%  | 27.27% |
+| `jra-cb-v10-prior-corner274-2013`                                 | 1     | 0.00%     | 0.00%  | 0.00%  |
+| `win5-xgb-v7-lineage-v1-rs-overlay-20260627` (参考、対象外タスク) | 36    | 22.22%    | 25.00% | 30.56% |
+
+**269 は独立手法 (ASC dedup, n=22, 対象は venue 02/03/10 の 06-01〜07-12 のみ) でも top1=0.00% と、並行 agent の報告 (0/29、恐らく全 JRA venue・全 2026 スコープ) と方向性が一致し、独立に再現確認できた。** 274 は n=1 のため結論不可 (母数不足、監視継続を推奨するのみ)。
+
+champion (n=51) をさらに書込クラスタで分解すると (§2 Defect A の Cluster A/B 定義を再利用):
+
+| bucket                                      | races | top1                          |
+| ------------------------------------------- | ----- | ----------------------------- |
+| Cluster A (Mac batch, 2026-07-11 10:47 JST) | 21    | 42.86% (健全)                 |
+| それ以外 (実質 2026-07-12 一括書込)         | 30    | 3.33% (Defect A と同一の劣化) |
+
+champion default 自体も「どの書込クラスタか」で精度が全く異なる。ただし **269 は「他クラスタと競合しない単独最古書込」に限定した ASC dedup (n=22) でも 0.00%** であり、champion の劣化 bucket (3.33%) よりさらに悪い — Defect A (2026-07-12 一括書込全体の入力劣化) だけでは 269 の 0% を完全には説明しきれず、269 固有の追加劣化要因がある可能性を否定できない。**この切り分け自体は serve-defect-269 の根本原因分析に委ねる。**
+
+### 7.2 優勝馬の predicted_rank 分布 (一様 = 特徴ズレ、末尾偏り = 順位反転 signature)
+
+model_version の生行全件 (dedup なし) で、実際の優勝馬 (`kakutei_chakujun='01'`) が何位と予測されていたかを集計した。
+
+| model_version         | n races | avg field size | 優勝馬 predicted_rank 平均 | 一様乱択期待値 | 下位半分入り       |
+| --------------------- | ------- | -------------- | -------------------------- | -------------- | ------------------ |
+| `jockey-pedigree269`  | 42      | 13.8           | 6.36                       | 7.40           | 35.7% (15/42)      |
+| `prior-corner274`     | 2       | 8.5            | 3.50                       | 4.75           | 50.0% (1/2、n僅少) |
+| champion (混合、参考) | 51      | 12.9           | 4.94                       | 6.93           | 35.3% (18/51)      |
+
+**269 の分布は「一様 (feature drift/無情報化)」でも「末尾偏り (順位反転)」でもない。** 優勝馬の predicted_rank 平均 (6.36) は一様乱択期待値 (7.40) より明確に良く、下位半分入りの割合 (35.7%) も乱択期待の 50% を下回る — 弱いながら方向として正しいシグナルは残っている。にもかかわらず predicted_rank=1 の的中率が (§7.1 の ASC dedup 単独評価で) 0% なのは、§2 Defect A で確認済みの「レース内 score 標準偏差が健全時の 1/11 に潰れている」現象と整合する解釈が成り立つ: 弱いが正しい方向のシグナルは残存するが、上位候補間の score 差が数値的にほぼゼロまで圧縮されているため「誰を1位予測にするか」という最終選択だけが実質ノイズで決まる。**順位反転バグよりも、入力特徴量の減衰/圧縮 (欠損値のデフォルト埋め等) による signal attenuation が疑わしいという解釈を、独立指標 (score 分散 + rank 分布) の双方から補強する。** 断定はしない — あくまで serve-defect-269 への仮説提供。
+
+### 7.3 venue02 routing 生存期間の viewer 実効果 (ユーザー影響の定量化)
+
+`apps/pc-keiba-viewer/src/db/queries.ts::getFinishPositionLambdarankPredictions` (~2919行) の priority CTE を直接読解した。`priority=0` tier (`cellVariantModelVersion` = `resolveFinishPositionDisplayPriorityModelVersion` が返す cell-routing 表示優先候補) は、**その model_version の行が 1 行でも存在すれば無条件で最優先 select される** (他 tier の recency とは無関係、`union all` で priority 整数を付けて後段で `order by priority, recency desc limit 1` する構造をコードで確認)。
+
+venue02 ルール (`cell_routing.json` rule 3) が本番投入された 2026-07-11 以降、本監査で確認できる函館開催日は 07-11・07-12 の 2 日 (計 24 レース) のみだが、**この 24 レース全てで `jockey-pedigree269` 行が存在する (Defect A の一括書込由来)**。priority-0 の無条件優先ロジックにより、**この 24/24 レース (100%) で viewer が実際に表示するのは 269 の壊れた予測であり、07-11 に限り同時に存在する健全な champion default 行 (Cluster A, top1=42.86%) は 1 レースも表示されない**。ユーザー視点では、07-11・07-12 の函館全レースで「自信ありげだが実質ランダムな」予測が表示され続けていたことになる。
+
+### 7.4 2026-07-12 backfill/rescore 発生の記録 (時刻・件数のみ、深追いなし)
+
+既報 (§2 Defect A) の通り、2026-07-12 05:51:45〜05:52:32 UTC (14:51-14:52 JST) の約 47 秒間に、対象 3 場 (函館/福島/小倉) 72 レース分の予測行が生成された。同時間帯に 07-11 分 (22+14=36 行グループ) と 07-12 分 (36 行グループ) の両方が書き込まれている。根本原因・生成元スクリプトの特定は serve-defect-269 の担当範囲のため、本監査ではこれ以上追跡しない。
+
 ---
 
 **このドキュメントのみを commit する。他の untracked/modified ファイル (apps/mlflow, apps/sync-realtime-data, 他 probe doc 等) には一切触れていない。**
