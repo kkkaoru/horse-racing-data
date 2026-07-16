@@ -33,6 +33,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .ruff_cache/
+*.egg-info/
 
 # Grunt intermediate storage (https://gruntjs.com/creating-plugins#storing-task-files)
 .grunt
