@@ -1,4 +1,8 @@
-# jockey-pedigree269 serve 精度 0% 疑惑 — 緊急診断 (2026-07-17)
+# JRA finish-position serving incident — root cause 記録 (2026-07-17)
+
+_旧題「jockey-pedigree269 serve 精度 0% 疑惑」。§7 以降で team-lead 指示の
+インシデント全体 (deploy 状態確認・preflight・確定 defect 修理・269 名誉回復)
+を追記。ファイル名は既存の相互参照を壊さないため据え置き。_
 
 - **担当**: serve-defect-269 (専任診断 agent)、team-lead 指示
 - **第一報**: 並行 agent (summer-baseline) が `jra-cb-v9-sim-2013-clean-jockey-pedigree269`
@@ -283,3 +287,147 @@ apps/finish-position-predict-container:
   している。本修理は将来の再発を防ぐのみで、既存の劣化行を訂正しない。
   viewer priority-0 機構によりこれらが引き続き優先表示される問題
   (並行監査 Defect B) は本 doc の対象外。
+
+## 7. 追加調査 (2026-07-17 team-lead 優先度再編後)
+
+team-lead から live-audit の完全監査 (b58a2851) + addendum (b126fcfd) 受領後、
+優先度を4項目に再編する指示を受けた。以下その対応。
+
+### 7.1 ★最優先: 現行 deploy が「修正後」pipeline か — 確認済み、修正済みと判定
+
+`wrangler deployments list` / `wrangler containers list` (両方 read-only 参照)
+で確認:
+
+- `finish-position-cron` の**現行アクティブ deploy** (100%): 作成
+  `2026-07-14T19:23:54.313Z`。
+- Container (`finish-position-cron-finishpositionpredictcontainer`, STATE=active):
+  LAST MODIFIED `2026-07-14T19:29:38.672999936Z`。
+- `DEPLOY.md` により、この2つは**同一の `wrangler deploy` 呼び出し**で生成される
+  (Docker image を repo root build context からビルド+push、Worker も同時
+  deploy) — Worker と Container は常に同じ commit 断面から一体 deploy される。
+- 該当 deploy 直前に着地した finish-position 関連 commit 5件、全て deploy
+  timestamp (19:23:54Z) より前:
+  - `11caa696` refactor(prediction): build features from raw R2 catalog — 17:48:50Z
+  - `e6111ca6` **fix(prediction): reject processed feature caches** — 18:21:11Z
+  - `e617d945` fix(running-style): validate only raw catalog features — 18:35:35Z
+  - `daaa9885` fix(running-style): publish day output before prediction — 19:22:02Z
+  - `468a4f0e` fix(prediction): tolerate missing running-style shard — 19:22:21Z
+
+  **結論: これら5件は現行アクティブ deploy に含まれている。**
+
+- `e6111ca6` の中身を確認したところ、これが Cluster B 根本原因の**構造的な
+  修理そのものである可能性が高い**: `pipeline_runner.ensure_day_base()` が
+  production `r2-catalog://` ソースに対しては**無条件に** `None` を返す
+  (=ローカルディスク/R2 の「processed (加工済み) day-base キャッシュ」を
+  一切信頼しない) よう変更され、`predict_upcoming._make_rescore_fn()` も
+  catalog ソースでは **常に** `CacheMissError` を即座に raise して raw
+  Catalog からの再構築を強制するよう変更されている。これは「confidently
+  wrong な予測を生む古い/劣化したキャッシュされた feature を静かに再利用
+  する」という、本 doc §1-§2 で観測した signature (score stddev 崩壊) と
+  機構的に正確に一致する fail-closed 修正であり、commit メッセージの
+  「reject processed feature caches」というタイトルとも整合する。
+- **注意点 (未解決の不確実性)**: `wrangler secret list` で
+  `DAY_BASE_SPLIT_ENABLED` が **secret として存在する**ことを確認した
+  (`is_day_base_split_enabled()` の設計通り、redeploy 不要で切替可能な
+  運用形態)。値は read 不可能なため、「JRA が allowlist に入っているか」
+  は最終的に断定できない — §1-§2 で「wrangler.jsonc に未設定=dormant」と
+  書いた結論は「commit された設定ファイルには存在しない」という限定付きの
+  正しさであり、secret 経由での有効化は排除できない。ただし
+  `build_upcoming_feature_rows_split` 自体は §1-§2 で確認した通り
+  ANY gap で `None` を返し全 LAYER_CHAIN にフォールバックする fail-closed
+  設計であるため、たとえ有効でも Cluster B 型の症状を生む可能性は低いと
+  評価する。
+- **本番 admin trigger による実地 smoke test** (`POST
+/api/admin/run-focused-full-race`, `Authorization: Bearer
+$FINISH_POSITION_CRON_TRIGGER_TOKEN`, ブラウザ UA 付与、正規 additive
+  write): 1回目 (2026-07-12 venue02 R01, 既存の劣化 269 行がある対象) は
+  container 側の `focused_full_completion_fn` 相当の「既に complete」判定
+  (行数が一致するため、値の健全性を見ずに skip) に阻まれ `status:
+"already-complete"` で実行されず。2回目、実際に**行が一切存在しない**
+  完全欠落レース (2026-06-13 venue02 R01、確定済) を選び直して再実行し、
+  `status: "accepted"`(=スロット確保・バックグラウンドで実行開始) を確認
+  した。focused-full は detached background thread で実行され HTTP
+  応答はレース完了を待たないため (§2 Defect A 分析と同じ設計)、Neon
+  read-only ポーリングで結果を待機中 — **本 doc commit 時点でこの smoke
+  test の最終結果 (score stddev / model_version) は未確定**。team-lead へ
+  結果が判明次第、追って報告する。
+
+### 7.2 確定 code defect の修理 — 完了 (commit `7807e6cd`)
+
+`apps/finish-position-cron/src/focused-full-completion.ts` の
+`expectedModelVersion()` は、07-15 の raw-Catalog 化リライト
+(`e6111ca6`) を経てもなお venue=="02" ルールを実装していなかった
+(703-joken と prior-corner-005 のみ)。cell_routing.json の実ルール
+(venue=="02" → jockey-pedigree269、優先度は703/prior-corner-005より低い
+第3ルール) と同じ first-match-wins 順序で venue フォールバックを追加。
+新規4テスト (venue02単独→269、無padding "2"→269と同一扱い、
+prior-corner-005がvenueフォールバックに優先、非venue02は無変更) を追加。
+package coverage 99.63/96.75/100/99.77 (全指標95%超)、tsc/oxlint clean、
+605 tests pass。**deploy 未実行 — orchestrator への報告のみ (本節)。**
+
+### 7.3 23秒 sweep の書込主特定 — 未確定 (静的解析の限界)
+
+`coverage-self-heal.ts` は当日 (`runYmd=today`) のレースしか対象にしない
+ため、Cluster B に混在する 07-11 付レースの説明にはならないことを確認
+(cron 自体は 07-12 04:26 JST 配線、対象 07-12 のみのはず)。
+`COORDINATOR_ENABLED` (mode=rescore) は Cluster B の時刻まで無効のまま
+だったことも再確認 (§1-§2 参照)。§7.1 の通り `e6111ca6` が構造的に
+この症状を防ぐ設計に変わっているため、**「誰が書いたか」の特定より
+「同じ症状が再発しない設計になったか」を優先し、後者は code review で
+確認済みと判断する。** 発生源の完全特定は諦め、本節はこれ以上追跡しない
+(並行監査と同じ結論)。
+
+### 7.4 269 の名誉回復判定 + 「追加要因」仮説の検証
+
+**team-lead 追加仮説 (269 固有の追加劣化要因: 19 jockey/pedigree cell
+特徴が本番 per-race SQL に実装されていない疑い) を検証した。**
+
+- 269 の `metadata.json` (`models/finish-position/jra/jra-cb-v9-sim-2013-clean-jockey-pedigree269/metadata.json`,
+  リポジトリに baked 済み) の `additional_features` (19列) を直接確認:
+  `jk_venue_nichime_*` (jockey×venue×meeting-day EB rate/rank 系9列) +
+  `gsire_dist_surface_*` / `sire_class_surface_*` / `keito_dist_surface_*`
+  (grandsire/sire/血統系統 EB rate/rank 系10列)。`routing_intent`:
+  "cell-routing candidate for JRA kyoso_joken_code/class_label 703"
+  (venue02 ルールは元々の学習意図とは別に後付けされたものと判明 —
+  並行監査 §3 の「venue単体のADOPT根拠は703cell」という指摘と整合)。
+- 実装元スクリプト `apps/pc-keiba-viewer/src/scripts/finish-position-features/add-jra-jockey-pedigree-cell-features.py`
+  を発見。`pipeline_args.py` の `LAYER_CHAIN["jra"]` (全17層の最後) と
+  `RACE_CHAIN["jra"]` (day-base split 有効時の per-race 層) **両方に登録
+  済み**。コード内コメントで「SAME-DAY-CUMULATIVE 設計 (本日の先行レースを
+  自身の live query で都度合算) につき永久に per-race 実行必須、DAY_CHAIN
+  へ絶対に移してはならない」と明記 — 意図的な設計。
+- このスクリプトが参照する生テーブルは `pg.jvd_bt` / `pg.jvd_hn` /
+  `pg.jvd_ra` / `pg.jvd_se` / `pg.jvd_um` の5つのみで、**全て
+  `_catalog_attach.py` の `_RAW_CATALOG_TABLES` に含まれる** — raw R2
+  Catalog 経由でも欠落するテーブル依存は無い。`attach_source_catalog()`
+  は `r2-catalog://` prefix を見て postgres 直結と R2 Iceberg Catalog
+  経由を透過的に切り替える設計 (`pg.*` エイリアスは両方で同一に見える)
+  であることをコードで確認した。`R2_CATALOG_WAREHOUSE` /
+  `R2_CATALOG_URI` (wrangler.jsonc vars) / `R2_CATALOG_TOKEN`
+  (wrangler secret) の3変数も全て本番 Worker に設定済みであることを
+  `wrangler secret list` で確認 (値は不可視だが存在は確認)。
+- **本番データからの再検証**: Neon に現存する 269 行は**全て 07-07/07-08
+  backfill (2件) と 07-12 Cluster B (残り) のみ**であり、これは
+  `11caa696`/`e6111ca6` (07-15 deploy) より**すべて前**の書込である。
+  つまり現在 Neon にある 269 行は**どれも raw-Catalog 化後のパイプラインを
+  一度も経由していない** — 「269 固有の追加劣化要因」を現行コードに対して
+  実データで判定すること自体が構造的に不可能。§7.1 の smoke test
+  (venue02, 269 ルート) が判明すればこれが唯一の実測手掛かりになる。
+- **並行監査の「no competing rows」ASC-dedup subset (n=22, 0.00%) と
+  本 doc §1.3 の「同クラスタ全数比較」(n=40, 10.00%、champion 3.33%
+  より良い) の食い違いを再検証・解消した**: 269 の 43 レースを「同一
+  race+horse に champion 等の別 model_version 行が競合するか」で二分
+  したところ、競合あり (n=20、07-11 函館 Cluster A の shadow 行を持つ
+  レース群) は top1=20.00% (4/20)、競合なし (n=23、並行監査の
+  n=22 とほぼ一致) は top1=4.35% (1/23) だった。**この差は n=20/23 の
+  小標本ノイズの範囲内**(5 hit を 43 レースに再配分する二項分布で
+  十分説明可能) であり、269 固有の追加欠陥を支持する強い証拠ではない
+  — 本 doc §1.3 (n=40 vs n=30、同クラスタ・同手法) の方がサンプルサイズ
+  で優り、そちらを一次エビデンスとして採用する。
+- **結論**: 「269 固有の追加劣化要因」仮説は、(a) 実装コードの構造的検証
+  (スクリプト実在・LAYER/RACE_CHAIN 登録済・raw-Catalog 対応済) と
+  (b) 既存データでの差分再検証 (小標本ノイズで説明可能) の両方から
+  **支持されない**。ただし (a) は「動くはず」の静的証明であって「動いた」
+  実測ではなく、Neon の全 269 行が raw-Catalog 化以前のものである以上、
+  §7.1 の smoke test 結果が出るまでは「269 は健全」と断定もしない —
+  **evaluated-but-inconclusive、smoke test 待ち**として記録する。
