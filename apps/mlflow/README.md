@@ -14,10 +14,20 @@ replicates (by hand, not by import) the boundary rules defined in
 - `src/mlflow_tracking/config.py` — tracking URI / data dir / R2 artifact-store
   environment resolution.
 - `src/mlflow_tracking/cells.py` — canonical CELL key/metric schema and column
-  normalization.
+  normalization. Also carries `NON_METRIC_DIMENSION_COLUMNS`: a small list of
+  known dimension-only columns from OTHER (non-canonical) ingested schemas
+  — e.g. `condition_key`/`grade_code`/`race_name`/`kyori` from the
+  running-style bucket-history schema — that would otherwise slip past
+  `logging_api.select_headline_metrics`'s numeric-dtype auto-discovery (an
+  all-NULL label column is still numeric dtype when it round-trips through a
+  JSON export, and a raw un-banded value like race distance is genuinely
+  numeric even when populated) and get folded in as a fabricated headline
+  metric.
 - `src/mlflow_tracking/logging_api.py` — run/metric logging helpers built on
   `mlflow.MlflowClient` (chunked `log_batch`, cell-table logging, headline
-  metric selection).
+  metric selection: every numeric `cell_df` column not in
+  `cells.CELL_KEY_COLUMNS` / `cells.NON_METRIC_DIMENSION_COLUMNS` / the
+  weight column is treated as a metric candidate).
 - `src/mlflow_tracking/registry.py` — registered-model naming, version
   registration by URI reference, and champion/challenger alias management.
 - `src/mlflow_tracking/backfill_finish_position.py` — backfills the registry
@@ -161,6 +171,11 @@ uv run python -m mlflow_tracking.cli backfill-running-style [/path/to/artifacts]
 # "unspecified" rather than guessing, since RS eval numbers exist in both a
 # true out-of-sample regime and a misleadingly high leaky self-consistency
 # regime (docs/finish-position-accuracy/history/rs-model-audit.md).
+# ingest-trial-registry is idempotent per (category, model_version) group
+# (or (category, trial_id) for rows with no model_version yet): re-running it
+# against the same .duckdb file finds and reuses the existing run(s) via a
+# `trial_key` tag search instead of creating fresh duplicates -- safe to
+# re-run after a partial failure or as part of a retry loop.
 uv run python -m mlflow_tracking.cli ingest-trial-registry trial_registry_jra.duckdb
 uv run python -m mlflow_tracking.cli ingest-serve-accuracy serve_accuracy.json --eval-regime serve
 uv run python -m mlflow_tracking.cli log-eval cell_report.parquet --eval-regime oos --experiment finish-position/wf-eval
@@ -201,10 +216,14 @@ uv run python -m mlflow_tracking.cli export-active-models --output active_models
 # same pass eval metrics are computed -- see "MLflow traces" below.
 # --no-traces skips trace/assessment emission for this call only (base
 # tracking and eval metrics/tables are unaffected). --partial-coverage-threshold
-# configures the coverage-ratio gap check below (default 80.0).
+# configures the coverage-ratio gap check below (default 80.0). Also runs a
+# startup self-heal sweep by default -- see "Self-heal sweep" below --
+# force-terminating any sync_base_logged=true run abandoned (stuck RUNNING)
+# for more than --stale-running-hours (default 6.0); pass
+# --no-repair-stale-running to skip it for this call.
 uv run python -m mlflow_tracking.cli sync-production \
   --date-from 20260701 --date-to 20260708 --categories jra,nar,banei \
-  --partial-coverage-threshold 80.0
+  --partial-coverage-threshold 80.0 --stale-running-hours 6.0
 
 # One-time (but safely re-runnable) historical backfill: emit MLflow traces
 # for every already-evaluated (date, category, model_version) run in BOTH
@@ -308,6 +327,20 @@ mutually-exclusive gap types (a `gap_type` tag on the marker run):
   something else DID (running-style served for jra/nar, or the local race
   calendar shows races happened for banei). Real incident: 2026-07-04, JRA
   had 12 running-style predictions logged and zero finish-position rows.
+
+  ⚠️ **Both-pipelines-dark fallback (2026-07-11)**: the jra/nar branch above
+  normally compares FP against running-style's own `races_observed` for that
+  same day. On a day RS _itself_ observed zero races too (real examples: JRA
+  2026-06-13, 06-14, 06-20, 06-21, 06-28 — `races_live == 0` for BOTH
+  pipelines simultaneously), that proxy has nothing to compare against, so
+  the check used to silently never fire. It now falls back, in exactly that
+  case, to the SAME race-calendar oracle banei uses (`fp_races_scheduled`,
+  see `partial_coverage` below — reused directly, no extra query) — still
+  tagged `gap_source=race_calendar` instead of `running_style` on the days
+  this fallback is what fired, and still selecting `no_rows` vs
+  `backfill_only` the same way as before. A day where the calendar itself
+  is _also_ empty (genuinely no races scheduled) correctly reports no gap.
+
 - **`backfill_only`** — finish-position rows exist, but every one of them is
   a delayed backfill re-prediction (`prediction_generated_at` days after the
   race), never a genuinely LIVE serve.
@@ -354,6 +387,36 @@ from the currently-registered champion model_version OR a cell-routed
 variant of it (`f"{champion_label}-<routing-scope>"`) — e.g. a rollback left
 production silently serving a superseded, unrelated challenger build for
 weeks.
+
+### Self-heal sweep for interrupted `sync-production` invocations
+
+Real incident (2026-07-11): an interrupted `sync-production` process (killed
+mid-loop — e.g. the Mac slept or the process was force-quit) left 18 runs in
+the two production-usage experiments tagged `sync_base_logged=true` but stuck
+`status=RUNNING` forever, hiding 54% of one experiment's volume from any
+`status=FINISHED` filter/dashboard query. Every run this module creates is
+normally left `FINISHED` at the end of its own model_version-group iteration
+— a process killed between the `sync_base_logged=true` tag write and that
+`set_terminated` call a few lines later never reaches it.
+
+Every `sync-production` call now runs a startup self-heal sweep (before any
+date/category is visited) that finds every run in
+`finish-position/production-usage` (always) and `running-style/production-usage`
+(only when `--categories` includes jra or nar this call) matching
+`status=RUNNING AND tags.sync_base_logged='true'`, and force-terminates
+FINISHED any whose `start_time` is older than `--stale-running-hours` (default
+**6.0** hours). The threshold exists so a run still genuinely in progress is
+never touched — 6 hours is comfortably longer than any real sync pass ever
+legitimately takes, while still catching an abandoned run well within the
+next day's scheduled cron fire. This is a pure hygiene fix for downstream
+`status=FINISHED` consumers: the module's own idempotency machinery
+(`sync_key` tag search) already finds a run regardless of its status, so a
+stuck-RUNNING run was never a correctness bug for re-syncing, only for
+anything reading run status elsewhere.
+
+Pass `--no-repair-stale-running` to skip the sweep entirely for a one-off
+call. `summary.stale_running_healed` (printed as `stale running runs healed:
+N`) counts how many runs this call force-terminated.
 
 ### ⚠️ `export-cell-routing` is a synthesis, not a reproduction — always diff before baking
 
@@ -475,6 +538,24 @@ duplicate traces/assessments. Proven both by hermetic tests
 (`tests/test_trace_emit.py`, `tests/test_backfill_traces.py`,
 `tests/test_sync_production.py`) and by a real double-run against the live
 store (see this feature's own verification notes).
+
+**Assessment-completeness healing (2026-07-11)**: a real production audit
+found two traces whose spans were written successfully but whose
+assessments were left incomplete — one RS trace with ZERO assessments
+logged, one FP trace missing `top3_box_score` despite that assessment being
+UNCONDITIONAL — root-caused to a transient store error striking between
+`log_spans` and one of the several `log_assessment` calls that follow it.
+Because the existence-only idempotency check above treats "a trace exists"
+as done, the normal emit path never revisits (or retries) a partially-written
+trace. `backfill-traces` now ALSO verifies, for every trace it encounters
+(not just newly-emitting ones), that the trace's actual assessment names
+match the expected set (`trace_emit.fp_expected_assessment_names`/
+`rs_expected_assessment_names`, respecting the same place4/5/6 small-field
+exclusion emission itself uses) and tops up ONLY the missing names —
+duplicating an already-present assessment is impossible by construction
+(the top-up is always `expected - existing`). See
+`trace_emit.py`'s own "ASSESSMENT-COMPLETENESS HEALING" docstring section
+for the full design.
 
 **Volume/retention — a conscious deferral, not an oversight**: an
 archival/retention scheduler for traces is deliberately NOT built here.

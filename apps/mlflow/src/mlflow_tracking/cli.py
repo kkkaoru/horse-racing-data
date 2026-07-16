@@ -29,6 +29,7 @@ from mlflow_tracking import (
     refresh_eval_metrics,
     registry,
     sync_production,
+    sync_production_preview,
     timeline,
     training_run,
 )
@@ -295,6 +296,8 @@ def cmd_sync_production(args: argparse.Namespace) -> int:
         categories=categories,
         emit_traces=not args.no_traces,
         partial_coverage_threshold=args.partial_coverage_threshold,
+        repair_stale_running=not args.no_repair_stale_running,
+        stale_running_hours=args.stale_running_hours,
     )
     print(
         f"dates processed: {summary.dates_processed}\n"
@@ -309,7 +312,28 @@ def cmd_sync_production(args: argparse.Namespace) -> int:
         f"serving gaps detected: {summary.serving_gaps_detected}\n"
         f"champion gaps detected: {summary.champion_gaps_detected}\n"
         f"traces created: {summary.traces_created}\n"
-        f"traces already existed (idempotent no-op): {summary.traces_already_existed}"
+        f"traces already existed (idempotent no-op): {summary.traces_already_existed}\n"
+        f"stale running runs healed: {summary.stale_running_healed}"
+    )
+    for error in summary.errors:
+        print(f"error: {error}", file=sys.stderr)
+    return 1 if summary.errors else 0
+
+
+def cmd_sync_production_preview(args: argparse.Namespace) -> int:
+    client = build_client()
+    summary = sync_production_preview.sync_production_preview_range(
+        client,
+        args.date_from,
+        args.date_to,
+        categories=_parse_categories(args.categories),
+    )
+    print(
+        f"dates processed: {summary.dates_processed}\n"
+        f"fp runs created: {summary.fp_runs_created}\n"
+        f"fp runs updated: {summary.fp_runs_updated}\n"
+        f"rs runs created: {summary.rs_runs_created}\n"
+        f"rs runs updated: {summary.rs_runs_updated}"
     )
     for error in summary.errors:
         print(f"error: {error}", file=sys.stderr)
@@ -359,9 +383,13 @@ def cmd_backfill_traces(args: argparse.Namespace) -> int:
         f"fp runs scanned: {summary.fp_runs_scanned}\n"
         f"fp traces created: {summary.fp_traces_created}\n"
         f"fp traces already existed (idempotent no-op): {summary.fp_traces_already_existed}\n"
+        f"fp traces healed (assessment completeness top-up): {summary.fp_traces_healed}\n"
+        f"fp assessments healed: {summary.fp_assessments_healed}\n"
         f"rs runs scanned: {summary.rs_runs_scanned}\n"
         f"rs traces created: {summary.rs_traces_created}\n"
-        f"rs traces already existed (idempotent no-op): {summary.rs_traces_already_existed}"
+        f"rs traces already existed (idempotent no-op): {summary.rs_traces_already_existed}\n"
+        f"rs traces healed (assessment completeness top-up): {summary.rs_traces_healed}\n"
+        f"rs assessments healed: {summary.rs_assessments_healed}"
     )
     for error in summary.errors:
         print(f"error: {error}", file=sys.stderr)
@@ -645,7 +673,40 @@ def build_parser() -> argparse.ArgumentParser:
         "partial finish-position serving day (races_live > 0) is flagged as a "
         f"partial_coverage gap (default: {sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD})",
     )
+    sync_production_parser.add_argument(
+        "--no-repair-stale-running",
+        action="store_true",
+        help="Skip the startup self-heal sweep that force-terminates abandoned "
+        "sync_base_logged=true runs still stuck status=RUNNING (see sync_production.py's "
+        "module docstring) -- default: the sweep runs every call",
+    )
+    sync_production_parser.add_argument(
+        "--stale-running-hours",
+        type=float,
+        default=sync_production.DEFAULT_STALE_RUNNING_HOURS,
+        help="Age threshold (hours) for the stale-RUNNING self-heal sweep: a "
+        "sync_base_logged=true run still status=RUNNING with a start_time older than this "
+        f"many hours is force-terminated FINISHED (default: "
+        f"{sync_production.DEFAULT_STALE_RUNNING_HOURS})",
+    )
     sync_production_parser.set_defaults(func=cmd_sync_production)
+
+    sync_production_preview_parser = subparsers.add_parser(
+        "sync-production-preview",
+        help="Cloudflare-safe Neon-only preview sync for production prediction runs and metrics",
+    )
+    sync_production_preview_parser.add_argument(
+        "--date-from", required=True, help="Start date (YYYYMMDD), inclusive"
+    )
+    sync_production_preview_parser.add_argument(
+        "--date-to", required=True, help="End date (YYYYMMDD), inclusive"
+    )
+    sync_production_preview_parser.add_argument(
+        "--categories",
+        default="jra,nar,banei",
+        help="Comma-separated categories to sync (default: jra,nar,banei)",
+    )
+    sync_production_preview_parser.set_defaults(func=cmd_sync_production_preview)
 
     subparsers.add_parser(
         "refresh-eval-metrics",

@@ -189,6 +189,131 @@ def test_ingest_trial_registry_skips_run_for_group_with_no_populated_metrics_or_
     assert len(all_runs) == 1
 
 
+# ── trial_key idempotency ───────────────────────────────────────────────────
+
+
+def test_ingest_trial_registry_is_idempotent_for_identical_data(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """A repeated ingest of the SAME trial_registry_{category}.duckdb file
+    (the verified real duplicate pattern predating this fix -- see
+    TRIAL_KEY_TAG's own module-level comment) must reuse the same run, not
+    create a second one."""
+    duckdb_path = tmp_path / "trial_registry_jra.duckdb"
+    _build_trial_registry_duckdb(
+        duckdb_path,
+        [
+            {
+                "trial_id": "t1",
+                "category": "jra",
+                "top1_accuracy": 0.4,
+                "verdict": "ADOPT",
+                "model_version": "v1",
+            }
+        ],
+    )
+    first_run_ids = ingest_eval.ingest_trial_registry(client, duckdb_path)
+    second_run_ids = ingest_eval.ingest_trial_registry(client, duckdb_path)
+    assert first_run_ids == second_run_ids
+
+    run = client.get_run(first_run_ids[0])
+    trial_key = run.data.tags[ingest_eval.TRIAL_KEY_TAG]
+    assert trial_key == "jra:v1"
+    matches = client.search_runs(
+        [run.info.experiment_id],
+        filter_string=f"tags.{ingest_eval.TRIAL_KEY_TAG} = '{trial_key}'",
+    )
+    assert len(matches) == 1
+
+
+def test_ingest_trial_registry_reuses_run_and_updates_in_place_for_same_key(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """Two duckdb files sharing the same (category, model_version) trial_key
+    but differing in a metric value still reuse the same run (update-in-
+    place), mirroring `ingest_serve_accuracy`'s own reused-run semantics: the
+    run ends up reflecting the LATEST call's data."""
+    first_path = tmp_path / "trial_registry_jra_v1.duckdb"
+    _build_trial_registry_duckdb(
+        first_path,
+        [{"trial_id": "t1", "category": "jra", "top1_accuracy": 0.4, "model_version": "v1"}],
+    )
+    first_run_ids = ingest_eval.ingest_trial_registry(client, first_path)
+
+    second_path = tmp_path / "trial_registry_jra_v1_corrected.duckdb"
+    _build_trial_registry_duckdb(
+        second_path,
+        [{"trial_id": "t1", "category": "jra", "top1_accuracy": 0.5, "model_version": "v1"}],
+    )
+    second_run_ids = ingest_eval.ingest_trial_registry(client, second_path)
+
+    assert first_run_ids == second_run_ids
+    run = client.get_run(second_run_ids[0])
+    assert run.data.metrics["top1_accuracy"] == 0.5
+
+
+def test_ingest_trial_registry_different_model_versions_get_different_runs(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """Two genuinely different trial registries (different model_version)
+    for the SAME category must each get their own run -- the trial_key must
+    discriminate correctly rather than merging them."""
+    first_path = tmp_path / "trial_registry_jra_a.duckdb"
+    _build_trial_registry_duckdb(
+        first_path,
+        [{"trial_id": "t1", "category": "jra", "top1_accuracy": 0.4, "model_version": "v1"}],
+    )
+    second_path = tmp_path / "trial_registry_jra_b.duckdb"
+    _build_trial_registry_duckdb(
+        second_path,
+        [{"trial_id": "t2", "category": "jra", "top1_accuracy": 0.5, "model_version": "v2"}],
+    )
+    first_run_ids = ingest_eval.ingest_trial_registry(client, first_path)
+    second_run_ids = ingest_eval.ingest_trial_registry(client, second_path)
+    assert set(first_run_ids).isdisjoint(second_run_ids)
+
+
+def test_ingest_trial_registry_category_disambiguates_fallback_trial_id_collision(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """Two DIFFERENT categories sharing the exact same fallback trial_id (no
+    model_version) land in the SAME shared `finish-position/wf-eval`
+    experiment (TRIAL_REGISTRY_EXPERIMENT is not category-specific) -- they
+    must NOT collide onto the same run. See TRIAL_KEY_TAG's own comment for
+    why `category` is folded into the key precisely to prevent this."""
+    jra_path = tmp_path / "trial_registry_jra.duckdb"
+    _build_trial_registry_duckdb(
+        jra_path, [{"trial_id": "1", "category": "jra", "top1_accuracy": 0.4}]
+    )
+    nar_path = tmp_path / "trial_registry_nar.duckdb"
+    _build_trial_registry_duckdb(
+        nar_path, [{"trial_id": "1", "category": "nar", "top1_accuracy": 0.6}]
+    )
+    jra_run_ids = ingest_eval.ingest_trial_registry(client, jra_path)
+    nar_run_ids = ingest_eval.ingest_trial_registry(client, nar_path)
+    assert set(jra_run_ids).isdisjoint(nar_run_ids)
+    jra_run = client.get_run(jra_run_ids[0])
+    nar_run = client.get_run(nar_run_ids[0])
+    assert jra_run.data.tags[ingest_eval.TRIAL_KEY_TAG] == "jra:trial:1"
+    assert nar_run.data.tags[ingest_eval.TRIAL_KEY_TAG] == "nar:trial:1"
+
+
+def test_ingest_trial_registry_trial_key_falls_back_to_unspecified_category(
+    client: MlflowClient, tmp_path: Path
+) -> None:
+    """A group with no populated `category` tag on any of its records still
+    gets a stable (if coarse) trial_key via the "unspecified" fallback,
+    mirroring `_serve_accuracy_model_version_identity`'s own "unspecified"
+    fallback for an unidentifiable payload."""
+    duckdb_path = tmp_path / "trial_registry_no_category.duckdb"
+    _build_trial_registry_duckdb(
+        duckdb_path, [{"trial_id": "x1", "top1_accuracy": 0.4, "model_version": "v9"}]
+    )
+    run_ids = ingest_eval.ingest_trial_registry(client, duckdb_path)
+    run = client.get_run(run_ids[0])
+    assert run.data.tags[ingest_eval.TRIAL_KEY_TAG] == "unspecified:v9"
+
+
 def test_ingest_serve_accuracy_logs_finish_position_and_running_style(
     client: MlflowClient, tmp_path: Path, write_json: WriteJsonFixture
 ) -> None:

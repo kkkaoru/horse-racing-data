@@ -12,7 +12,7 @@ and intended here.
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,8 +21,10 @@ import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Run, Trace
 from mlflow.exceptions import MlflowException
+from mlflow.store.entities.paged_list import PagedList
 
 from mlflow_tracking import config, db, registry, serve_eval, sync_production, timeline, trace_emit
+from mlflow_tracking.logging_api import get_or_create_experiment
 
 GEN_AT: datetime = datetime(2026, 6, 14, 3, 0, 0, tzinfo=UTC)
 DATE_STR: str = "20260614"
@@ -1245,6 +1247,137 @@ def test_banei_serving_gap_marker_not_duplicated_on_repeated_calls(client: Mlflo
         [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:banei'"
     )
     assert len(matches) == 1
+
+
+# ── Both-pipelines-dark fallback (jra/nar, 2026-07-11) ──────────────────────
+#
+# Regression coverage for a residual blind spot: the pre-existing jra/nar
+# no_rows/backfill_only check compares FP against running-style's OWN
+# races_observed as its "expected races" proxy. On a day RS *itself* also
+# observed zero races (real examples: JRA 2026-06-13, 06-14, 06-20, 06-21,
+# 06-28), that proxy has nothing to compare FP against, so the check never
+# fired even though races may genuinely have been scheduled that day.
+# `_resolve_expected_races` now falls back, in exactly that case, to the same
+# race-calendar oracle banei uses.
+
+
+def test_both_dark_gap_detected_via_race_calendar_oracle(client: MlflowClient) -> None:
+    """FP and RS both observed zero races this call, but the race calendar
+    shows races WERE scheduled -- the fallback oracle must fire a `no_rows`
+    gap tagged `gap_source=race_calendar` (not `running_style`, since RS
+    itself had nothing to offer)."""
+    neon = FakeNeonConnection()  # no fp_rows, no rs_rows -- both fully dark
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(3)]})
+
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    matches = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )
+    assert len(matches) == 1
+    gap_run = matches[0]
+    assert gap_run.data.tags["gap_type"] == "no_rows"
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
+    assert gap_run.data.metrics["expected_races"] == 3.0
+    assert gap_run.data.metrics["fp_races_scheduled"] == 3.0
+    assert gap_run.data.metrics["fp_races_observed"] == 0.0
+    assert gap_run.data.metrics["fp_races_live"] == 0.0
+    # The RS-vs-FP backward-compat metric must NOT be logged for this
+    # fallback path -- it is only meaningful when gap_source=running_style.
+    assert "rs_races_observed" not in gap_run.data.metrics
+
+
+def test_both_dark_no_gap_when_race_calendar_also_empty(
+    client: MlflowClient, recwarn: pytest.WarningsRecorder
+) -> None:
+    """FP, RS, AND the race calendar are all empty -- genuinely no races that
+    day, not a gap. Explicit regression test for the fallback's own "0 stays
+    0, not a fabricated gap" behavior (distinct from
+    test_no_serving_gap_when_both_fp_and_rs_empty, which never configures
+    race_calendar_rows at all -- this makes the fallback's own zero-count
+    path explicit)."""
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): []})
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+    assert summary.serving_gaps_detected == 0
+    assert not any("serving gap" in str(w.message) for w in recwarn.list)
+
+
+def test_both_dark_backfill_only_gap_type_via_race_calendar_oracle(
+    client: MlflowClient,
+) -> None:
+    """FP has rows, but every one is backfill-only (nothing genuinely LIVE),
+    AND RS itself observed zero races -- the fallback must still correctly
+    select `backfill_only` (not `no_rows`), off `fp_races_observed > 0`,
+    exactly like the pre-existing RS-vs-FP path does."""
+    neon = FakeNeonConnection(
+        fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1, _BACKFILL_GEN_AT)]}
+    )
+    local = FakeLocalConnection(race_calendar_rows={("jra", DATE_STR): [() for _ in range(2)]})
+
+    with pytest.warns(UserWarning, match="jra"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("jra",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    gap_run = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:jra'"
+    )[0]
+    assert gap_run.data.tags["gap_type"] == "backfill_only"
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
+    assert gap_run.data.metrics["fp_races_observed"] == 1.0
+    assert gap_run.data.metrics["fp_races_backfilled"] == 1.0
+
+
+def test_both_dark_fallback_reached_for_nar_too(client: MlflowClient) -> None:
+    """The fallback applies uniformly to both RS_CATEGORIES members, not just
+    jra -- nar reaches the exact same code path."""
+    neon = FakeNeonConnection()
+    local = FakeLocalConnection(race_calendar_rows={("nar", DATE_STR): [() for _ in range(1)]})
+
+    with pytest.warns(UserWarning, match="nar"):
+        summary = sync_production.sync_production_range(
+            client,
+            DATE_STR,
+            DATE_STR,
+            categories=("nar",),
+            neon_connect=lambda: neon,
+            local_connect=lambda: local,
+        )
+
+    assert summary.serving_gaps_detected == 1
+    experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert experiment is not None
+    gap_run = client.search_runs(
+        [experiment.experiment_id], filter_string=f"tags.serving_gap_key = '{DATE_STR}:nar'"
+    )[0]
+    assert gap_run.data.tags["gap_source"] == "race_calendar"
 
 
 # ── Backfill-vs-live distinction ────────────────────────────────────────────
@@ -2605,3 +2738,237 @@ def test_non_genuine_backfill_rows_are_excluded(client: MlflowClient) -> None:
     )
     assert summary.fp_runs_created == 0
     assert client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE) is not None
+
+
+# ── Self-heal sweep for interrupted invocations (2026-07-11) ────────────────
+#
+# Real incident: an interrupted `sync-production` process left 18 runs
+# tagged `sync_base_logged=true` stuck `status=RUNNING` forever. Tests below
+# use `categories=()` for several cases specifically so `sync_production_
+# range`'s date/category loop body never executes at all (nothing to sync),
+# which keeps a monkeypatched `client.search_runs` scoped to EXACTLY the
+# self-heal sweep's own calls -- every other `client.search_runs` call site
+# in this module (`_find_sync_run`/`_find_serving_gap_run`/
+# `_find_champion_gap_run`) only ever runs inside that per-(date, category)
+# loop body.
+
+
+def _stale_candidate_run(
+    client: MlflowClient, experiment_id: str, *, start_time_ms: int, status: str = "RUNNING"
+) -> Run:
+    """Create a run tagged `sync_base_logged=true` at `start_time_ms` --
+    exactly the run family `_heal_stale_running_runs` targets -- optionally
+    terminated to `status` (default: left RUNNING)."""
+    run = client.create_run(
+        experiment_id,
+        start_time=start_time_ms,
+        tags={sync_production.SYNC_BASE_LOGGED_TAG: sync_production.TRUE_STR},
+    )
+    if status != "RUNNING":
+        client.set_terminated(run.info.run_id, status=status)
+    return client.get_run(run.info.run_id)
+
+
+def _hours_ago_ms(hours: float) -> int:
+    return int((datetime.now(UTC) - timedelta(hours=hours)).timestamp() * 1000)
+
+
+def test_stale_running_sweep_terminates_only_running_and_old(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fake `search_runs` returns a MIX of RUNNING-and-old, RUNNING-and-
+    recent, and FINISHED runs -- as if the real filter's own `status=RUNNING`
+    clause were somehow bypassed -- proving `_heal_stale_running_runs`
+    re-checks `run.info.status` itself (never touching the already-FINISHED
+    run) AND `run.info.start_time` (never touching the still-fresh RUNNING
+    run), not just trusting the search filter string alone."""
+    experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    run_old = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(10))
+    run_recent = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(1))
+    run_finished = _stale_candidate_run(
+        client, experiment_id, start_time_ms=_hours_ago_ms(10), status="FINISHED"
+    )
+
+    fixed_page = PagedList([run_old, run_recent, run_finished], None)
+    monkeypatch.setattr(client, "search_runs", lambda *args, **kwargs: fixed_page)
+
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=(),
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+
+    assert summary.stale_running_healed == 1
+    assert client.get_run(run_old.info.run_id).info.status == "FINISHED"
+    assert client.get_run(run_recent.info.run_id).info.status == "RUNNING"
+    assert client.get_run(run_finished.info.run_id).info.status == "FINISHED"
+
+
+def test_stale_running_sweep_paginates_across_multiple_pages(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_heal_stale_running_runs` must follow `page_token` until exhausted --
+    simulated via 2 real stale runs split across 2 fake pages (mirrors
+    test_backfill_traces.py's own precedent for the identical idiom)."""
+    experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    run_a = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(10))
+    run_b = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(20))
+
+    call_tokens: list[str | None] = []
+
+    def fake_search_runs(
+        experiment_ids: list[str],
+        filter_string: str = "",
+        run_view_type: int = 1,
+        max_results: int = 1000,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+    ) -> PagedList[Run]:
+        call_tokens.append(page_token)
+        if page_token is None:
+            return PagedList([run_a], "page-2-token")
+        return PagedList([run_b], None)
+
+    monkeypatch.setattr(client, "search_runs", fake_search_runs)
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=(),
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+
+    assert call_tokens == [None, "page-2-token"]
+    assert summary.stale_running_healed == 2
+    assert client.get_run(run_a.info.run_id).info.status == "FINISHED"
+    assert client.get_run(run_b.info.run_id).info.status == "FINISHED"
+
+
+def test_stale_running_sweep_real_filter_heals_both_experiments(client: MlflowClient) -> None:
+    """End-to-end, via the REAL (unmonkeypatched) MLflow search filter: one
+    abandoned run in EACH production-usage experiment is healed by a single
+    `categories=("jra",)` call (jra is RS-eligible, so both experiments are
+    swept)."""
+    fp_experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    rs_experiment_id = get_or_create_experiment(client, config.EXPERIMENT_RS_PRODUCTION_USAGE)
+    fp_abandoned = _stale_candidate_run(client, fp_experiment_id, start_time_ms=_hours_ago_ms(10))
+    rs_abandoned = _stale_candidate_run(client, rs_experiment_id, start_time_ms=_hours_ago_ms(10))
+
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+
+    assert summary.stale_running_healed == 2
+    assert client.get_run(fp_abandoned.info.run_id).info.status == "FINISHED"
+    assert client.get_run(rs_abandoned.info.run_id).info.status == "FINISHED"
+
+
+def test_stale_running_sweep_does_not_create_rs_experiment_for_banei_only(
+    client: MlflowClient,
+) -> None:
+    """category="banei" is FP-eligible but not RS-eligible -- the self-heal
+    sweep must never touch (let alone create) the RS production-usage
+    experiment for a banei-only call, mirroring this module's other
+    `RS_CATEGORIES`-gated invariants."""
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("banei",),
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+    assert summary.stale_running_healed == 0
+    assert client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE) is None
+
+
+def test_stale_running_sweep_skipped_when_repair_disabled(client: MlflowClient) -> None:
+    """`repair_stale_running=False` must skip the sweep entirely, leaving an
+    otherwise-eligible abandoned run untouched."""
+    experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    abandoned = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(10))
+
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        repair_stale_running=False,
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+
+    assert summary.stale_running_healed == 0
+    assert client.get_run(abandoned.info.run_id).info.status == "RUNNING"
+
+
+def test_stale_running_hours_configurable_threshold(client: MlflowClient) -> None:
+    """The SAME 3-hour-old abandoned run is untouched under the default 6.0h
+    threshold but healed under a lowered 2.0h threshold -- confirms
+    --stale-running-hours genuinely changes the outcome."""
+    experiment_id = get_or_create_experiment(client, config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    borderline = _stale_candidate_run(client, experiment_id, start_time_ms=_hours_ago_ms(3))
+
+    lenient = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=(),
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+    assert lenient.stale_running_healed == 0
+    assert client.get_run(borderline.info.run_id).info.status == "RUNNING"
+
+    strict = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=(),
+        stale_running_hours=2.0,
+        neon_connect=lambda: FakeNeonConnection(),
+        local_connect=lambda: FakeLocalConnection(),
+    )
+    assert strict.stale_running_healed == 1
+    assert client.get_run(borderline.info.run_id).info.status == "FINISHED"
+
+
+def test_stale_running_sweep_failure_is_isolated_and_recorded(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient failure while healing EITHER side (FP or RS) must be
+    isolated exactly like every other failure point in this function --
+    recorded in `summary.errors`, never raised, and must not prevent the
+    rest of this call's (date, category) sync from proceeding."""
+
+    def _boom(*args: object, **kwargs: object) -> int:
+        raise MlflowException("boom stale-running heal")
+
+    monkeypatch.setattr(sync_production, "_heal_stale_running_runs", _boom)
+
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection()
+    summary = sync_production.sync_production_range(
+        client,
+        DATE_STR,
+        DATE_STR,
+        categories=("jra",),
+        neon_connect=lambda: neon,
+        local_connect=lambda: local,
+    )
+
+    assert summary.stale_running_healed == 0
+    assert summary.fp_runs_created == 1
+    assert len(summary.errors) == 2
+    assert any("stale-running-heal:finish-position" in e for e in summary.errors)
+    assert any("stale-running-heal:running-style" in e for e in summary.errors)
+    assert all("boom stale-running heal" in e for e in summary.errors)

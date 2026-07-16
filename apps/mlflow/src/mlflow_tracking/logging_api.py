@@ -163,8 +163,13 @@ def select_headline_metrics(
     """Reduce a per-cell metrics table to headline run metrics.
 
     Metric-set agnostic: every numeric column that is not part of the
-    canonical CELL dimensional key (``cells.CELL_KEY_COLUMNS``) and is not
-    the weight column itself is treated as a metric candidate, so
+    canonical CELL dimensional key (``cells.CELL_KEY_COLUMNS``), not a known
+    non-canonical dimension-only column from another ingested schema
+    (``cells.NON_METRIC_DIMENSION_COLUMNS`` -- see that constant's own
+    comment for why a dimension column can still reach here numeric-dtype,
+    e.g. an all-NULL label column that round-trips through JSON as float64
+    NaN, or a populated-but-still-dimensional column like race distance),
+    and is not the weight column itself is treated as a metric candidate, so
     finish-position (top1/place2/...), running-style
     (accuracy/macro_f1/...), and any future metric family are all summarized
     without hardcoding a metric name list. Emits an overall race-count-
@@ -174,7 +179,9 @@ def select_headline_metrics(
     here — it stays intact in the logged table/parquet artifacts.
     """
     result: dict[str, float] = {}
-    excluded_columns = set(cells.CELL_KEY_COLUMNS) | {weight_column}
+    excluded_columns = (
+        set(cells.CELL_KEY_COLUMNS) | set(cells.NON_METRIC_DIMENSION_COLUMNS) | {weight_column}
+    )
     available_metrics = [
         column
         for column in cell_df.columns

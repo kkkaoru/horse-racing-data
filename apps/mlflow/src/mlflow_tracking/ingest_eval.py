@@ -89,6 +89,42 @@ SERVE_KEY_TAG: Final[str] = "serve_key"
 # reuse is only attempted when a caller explicitly opts in via `--run-key`.
 RUN_KEY_TAG: Final[str] = "run_key"
 
+# Idempotency tag for `ingest_trial_registry`, mirroring `SERVE_KEY_TAG`'s /
+# `RUN_KEY_TAG`'s tag-search idiom (and, underneath both, `sync_production.
+# _find_sync_run` / `timeline._find_timeline_run`'s same pattern): a repeated
+# ingest of the SAME `trial_registry_{category}.duckdb` file must reuse the
+# same run(s) instead of creating fresh duplicates every time -- a prior
+# audit found historical byte-identical duplicate run pairs in the real store
+# from before `ingest_serve_accuracy` got its own equivalent fix.
+#
+# `trial_key = "{category}:{group_key}"`, where `group_key` is the EXACT
+# per-run grouping key `_group_trial_rows` already computes (a `model_version`
+# string, or its `"trial:{trial_id}"` fallback when `model_version` is
+# absent), and `category` is the same semicolon-joined sorted set of
+# `category` tag values `_log_trial_group` already derives for every other
+# `TRIAL_TAG_COLUMNS` entry, falling back to the literal "unspecified" when no
+# record in the group populates one -- mirroring `_serve_accuracy_model_
+# version_identity`'s own "unspecified" fallback for an unidentifiable
+# payload.
+#
+# `category` is included even though `group_key` alone might look sufficient,
+# for a concrete structural reason, not just caution: `TRIAL_REGISTRY_
+# EXPERIMENT` (`finish-position/wf-eval`) is ONE shared experiment across
+# EVERY category -- a jra registry and a nar registry both land their runs
+# there -- and the `"trial:{trial_id}"` fallback's `trial_id` is very plausibly
+# a per-file local identifier (e.g. restarting from "1" in every separate
+# `trial_registry_{category}.duckdb`), so two DIFFERENT categories'
+# exploratory (no-model_version) trials could otherwise collide on the exact
+# same fallback `group_key` within that one shared experiment and incorrectly
+# reuse each other's run.
+#
+# `(model_version, eval_regime)` was considered (per this task's own initial
+# brief) but rejected: `ingest_trial_registry` takes no `eval_regime`
+# parameter and the `trials` table has no such column -- unlike `ingest_
+# serve_accuracy`'s REQUIRED `eval_regime` argument, there is nothing here to
+# compose it from.
+TRIAL_KEY_TAG: Final[str] = "trial_key"
+
 # Best-effort key list for the job_trace `races` Feedback on `ingest_serve_
 # accuracy` (see trace_emit.job_trace) -- neither `FP_SERVE_METRIC_KEYS` nor
 # `RS_SERVE_METRIC_KEYS` above includes a race/horse COUNT field, so this
@@ -127,6 +163,18 @@ def _group_trial_rows(
     return groups
 
 
+def _find_trial_run(client: MlflowClient, experiment_id: str, trial_key: str) -> str | None:
+    """Find the run tagged with `trial_key`, mirroring `_find_serve_run`'s /
+    `_find_run_by_key`'s / `sync_production._find_sync_run`'s / `timeline.
+    _find_timeline_run`'s exact tag-search idiom."""
+    matches = client.search_runs(
+        [experiment_id],
+        filter_string=f"tags.{TRIAL_KEY_TAG} = '{trial_key}'",
+        max_results=1,
+    )
+    return matches[0].info.run_id if matches else None
+
+
 def _log_trial_group(
     client: MlflowClient,
     experiment_id: str,
@@ -136,7 +184,7 @@ def _log_trial_group(
     """Log one trial-group run, or return None without creating a run when
     `records` yields zero metrics.
 
-    `metric_items`/`tag_items` are computed FIRST, before any
+    `metric_items`/`tag_items` are computed FIRST, before any run lookup or
     `client.create_run` call, specifically so that check is possible: this
     function never logs an artifact (no `log_json_artifact`/`log_table` call
     exists here), so a group where none of `TRIAL_METRIC_COLUMNS` are
@@ -145,6 +193,22 @@ def _log_trial_group(
     wf-eval run named "v1" with nothing logged on it). `tag_items` alone
     being non-empty does not save a group -- tags with no metrics are still
     not worth a run -- so only `metric_items` gates creation.
+
+    Idempotent by `trial_key = "{category}:{run_name}"` (see `TRIAL_KEY_TAG`'s
+    own comment for the full rationale -- `run_name` here IS `_group_trial_
+    rows`'s `group_key`). A repeated ingest of the same underlying trial-
+    registry data reuses the existing run instead of creating a duplicate.
+    Like `ingest_serve_accuracy`'s reused-run semantics (verified against its
+    actual behavior, not assumed) and UNLIKE `champion_cell_eval.py`'s pure
+    skip-on-match (which exists there specifically because `log_table`'s
+    APPEND semantics would double rows on a re-log -- not a concern here,
+    since this function never calls `log_table`/`log_json_artifact` at all):
+    every metric/tag below is UNCONDITIONALLY re-logged on a reused run.
+    `log_batch_chunked`'s metrics are keyed by (name, step) so re-logging
+    identical values is a no-op in effect, and tag writes simply overwrite,
+    so a later re-ingest with genuinely corrected numbers for the same
+    trial_key also has its LATEST data win rather than being silently
+    dropped.
     """
     metric_items: list[Metric] = []
     tag_values: dict[str, set[str]] = {}
@@ -160,8 +224,15 @@ def _log_trial_group(
     if not metric_items:
         return None
 
-    run = client.create_run(experiment_id, run_name=run_name)
-    run_id = run.info.run_id
+    category_values = tag_values.get("category")
+    category_component = ";".join(sorted(category_values)) if category_values else "unspecified"
+    trial_key = f"{category_component}:{run_name}"
+
+    run_id = _find_trial_run(client, experiment_id, trial_key)
+    if run_id is None:
+        run = client.create_run(experiment_id, run_name=run_name, tags={TRIAL_KEY_TAG: trial_key})
+        run_id = run.info.run_id
+
     tag_items = [
         RunTag(column, values.pop() if len(values) == 1 else ";".join(sorted(values)))
         for column, values in tag_values.items()
@@ -186,6 +257,12 @@ def ingest_trial_registry(
     group's `None` result is filtered out here so this function's own
     `list[str]` return type stays honest (no `None` entries for callers to
     trip over).
+
+    Idempotent per group by `trial_key` (see `TRIAL_KEY_TAG`'s module-level
+    comment and `_log_trial_group`'s own docstring for the full key
+    derivation and reused-run update-in-place semantics): re-ingesting the
+    identical `.duckdb` file reuses the same run(s) instead of creating fresh
+    duplicates every time.
     """
     con = duckdb.connect(str(duckdb_path), read_only=True)
     try:

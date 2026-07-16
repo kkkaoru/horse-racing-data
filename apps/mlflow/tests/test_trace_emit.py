@@ -19,10 +19,11 @@ from datetime import UTC, datetime
 import mlflow
 import pytest
 from mlflow import MlflowClient
-from mlflow.entities import Assessment
+from mlflow.entities import Assessment, Trace
 from mlflow.entities.span import SpanType
 from mlflow.entities.trace_state import TraceState
 from mlflow.exceptions import MlflowException
+from mlflow.store.entities.paged_list import PagedList
 
 from mlflow_tracking import serve_eval, trace_emit
 
@@ -884,3 +885,360 @@ def test_job_trace_never_calls_mlflow_set_tracking_uri(
         with t.step("resolve-champion"):
             pass
         t.feedback("runs_created", 1.0)
+
+
+# ── ASSESSMENT-COMPLETENESS HEALING ─────────────────────────────────────────
+#
+# Reproduces the real 2026-07-11 production incident directly: a trace whose
+# spans were logged successfully but whose assessments were left partial (FP)
+# or entirely empty (RS) by a transient store error between `log_spans` and
+# one of the `log_assessment` calls that follow it. `tracing_client.
+# delete_assessment` is used to simulate that exact after-the-fact state (a
+# real assessment id deleted from an otherwise-complete trace), rather than
+# reaching into this module's own private machinery.
+
+
+def _assessment_names(trace: Trace) -> list[str]:
+    return [a.name for a in trace.info.assessments]
+
+
+def test_fp_expected_assessment_names_full_field() -> None:
+    eval_row = _fp_eval_row(place4_hit=0, place5_hit=1, place6_hit=0)
+    assert trace_emit.fp_expected_assessment_names(eval_row) == {
+        "place1_hit",
+        "place2_hit",
+        "place3_hit",
+        "place4_hit",
+        "place5_hit",
+        "place6_hit",
+        trace_emit.TOP3_BOX_ASSESSMENT_NAME,
+    }
+
+
+def test_fp_expected_assessment_names_small_field_excludes_456() -> None:
+    eval_row = _fp_eval_row(place4_hit=None, place5_hit=None, place6_hit=None)
+    assert trace_emit.fp_expected_assessment_names(eval_row) == {
+        "place1_hit",
+        "place2_hit",
+        "place3_hit",
+        trace_emit.TOP3_BOX_ASSESSMENT_NAME,
+    }
+
+
+def test_rs_expected_assessment_names_is_the_fixed_singleton() -> None:
+    assert trace_emit.rs_expected_assessment_names() == {
+        trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME
+    }
+
+
+def test_fp_missing_assessment_names_empty_when_all_present() -> None:
+    eval_row = _fp_eval_row()
+    expected = trace_emit.fp_expected_assessment_names(eval_row)
+    assert trace_emit.fp_missing_assessment_names(eval_row, expected) == frozenset()
+
+
+def test_fp_missing_assessment_names_returns_the_gap() -> None:
+    eval_row = _fp_eval_row()
+    missing = trace_emit.fp_missing_assessment_names(eval_row, {"place1_hit", "place2_hit"})
+    assert missing == {
+        "place3_hit",
+        "place4_hit",
+        "place5_hit",
+        "place6_hit",
+        trace_emit.TOP3_BOX_ASSESSMENT_NAME,
+    }
+
+
+def test_fp_missing_assessment_names_small_field_never_flags_excluded_ranks() -> None:
+    """A small-field race whose trace already has exactly its (smaller)
+    expected set must show NO gap -- place4/5/6 are legitimately absent from
+    `existing_names` too, never flagged as "missing"."""
+    eval_row = _fp_eval_row(place4_hit=None, place5_hit=None, place6_hit=None)
+    existing = {"place1_hit", "place2_hit", "place3_hit", trace_emit.TOP3_BOX_ASSESSMENT_NAME}
+    assert trace_emit.fp_missing_assessment_names(eval_row, existing) == frozenset()
+
+
+def test_rs_missing_assessment_names() -> None:
+    assert trace_emit.rs_missing_assessment_names(set()) == {
+        trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME
+    }
+    assert (
+        trace_emit.rs_missing_assessment_names(
+            {trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME}
+        )
+        == frozenset()
+    )
+
+
+# ── heal_fp_race_traces ──────────────────────────────────────────────────────
+
+
+def test_heal_fp_race_traces_no_op_when_already_complete(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    eval_row = _fp_eval_row()
+    trace_id = trace_emit.emit_fp_race_trace(
+        tracing_client, experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_checked == 1
+    assert summary.traces_healed == 0
+    assert summary.assessments_added == 0
+    assert summary.errors == []
+
+    names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert len(names) == len(set(names)) == 7  # no duplicates created
+
+
+def test_heal_fp_race_traces_tops_up_missing_top3_box_score(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    """Reproduces the real FP incident directly: top3_box_score (an
+    UNCONDITIONAL assessment) missing from an otherwise-complete trace."""
+    eval_row = _fp_eval_row()
+    trace_id = trace_emit.emit_fp_race_trace(
+        tracing_client, experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+    trace = tracing_client.get_trace(trace_id)
+    top3_assessment = next(
+        a for a in trace.info.assessments if a.name == trace_emit.TOP3_BOX_ASSESSMENT_NAME
+    )
+    assert top3_assessment.assessment_id is not None
+    tracing_client.delete_assessment(trace_id, top3_assessment.assessment_id)
+    assert trace_emit.TOP3_BOX_ASSESSMENT_NAME not in _assessment_names(
+        tracing_client.get_trace(trace_id)
+    )
+
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_healed == 1
+    assert summary.assessments_added == 1
+    assert summary.errors == []
+
+    healed_names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert healed_names.count(trace_emit.TOP3_BOX_ASSESSMENT_NAME) == 1
+    # The still-present rank assessments were never re-logged (no duplicates).
+    assert healed_names.count("place1_hit") == 1
+    assert set(healed_names) == trace_emit.fp_expected_assessment_names(eval_row)
+
+
+def test_heal_fp_race_traces_tops_up_a_single_missing_rank_only(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    """The reverse of the top3-only case: a single missing rank assessment
+    while top3_box_score is already present -- must top up ONLY that rank,
+    never re-logging top3_box_score."""
+    eval_row = _fp_eval_row()
+    trace_id = trace_emit.emit_fp_race_trace(
+        tracing_client, experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+    trace = tracing_client.get_trace(trace_id)
+    place2_assessment = next(a for a in trace.info.assessments if a.name == "place2_hit")
+    assert place2_assessment.assessment_id is not None
+    tracing_client.delete_assessment(trace_id, place2_assessment.assessment_id)
+
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_healed == 1
+    assert summary.assessments_added == 1
+
+    healed_names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert healed_names.count("place2_hit") == 1
+    assert healed_names.count(trace_emit.TOP3_BOX_ASSESSMENT_NAME) == 1
+    assert set(healed_names) == trace_emit.fp_expected_assessment_names(eval_row)
+
+
+def test_heal_fp_race_traces_from_zero_assessments(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    eval_row = _fp_eval_row()
+    trace_id = trace_emit.emit_fp_race_trace(
+        tracing_client, experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+    trace = tracing_client.get_trace(trace_id)
+    for assessment in list(trace.info.assessments):
+        assert assessment.assessment_id is not None
+        tracing_client.delete_assessment(trace_id, assessment.assessment_id)
+    assert tracing_client.get_trace(trace_id).info.assessments == []
+
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_healed == 1
+    assert summary.assessments_added == 7
+
+    healed_names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert set(healed_names) == trace_emit.fp_expected_assessment_names(eval_row)
+
+
+def test_heal_fp_race_traces_small_field_never_flags_excluded_ranks_as_missing(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    eval_row = _fp_eval_row(place4_hit=None, place5_hit=None, place6_hit=None)
+    trace_id = trace_emit.emit_fp_race_trace(
+        tracing_client, experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_healed == 0
+    assert summary.assessments_added == 0
+    names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert "place4_hit" not in names
+    assert "place5_hit" not in names
+    assert "place6_hit" not in names
+
+
+def test_heal_fp_race_traces_skips_race_with_no_trace_at_all(
+    tracing_client: trace_emit.TracingClient, experiment_id: str
+) -> None:
+    """A race whose OWN trace creation never happened (a different failure,
+    already surfaced elsewhere) is silently skipped, not an error."""
+    eval_row = _fp_eval_row()
+    summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, [eval_row])
+    assert summary.traces_checked == 1
+    assert summary.traces_healed == 0
+    assert summary.errors == []
+
+
+def test_heal_fp_race_traces_isolates_one_bad_race_from_the_rest(
+    tracing_client: trace_emit.TracingClient, experiment_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    eval_row_ok = _fp_eval_row(venue="05", race_bango="01")
+    eval_row_bad = _fp_eval_row(venue="05", race_bango="02")
+    for row in (eval_row_ok, eval_row_bad):
+        trace_id = trace_emit.emit_fp_race_trace(
+            tracing_client, experiment_id, row, generated_at=GEN_AT
+        )
+        assert trace_id is not None
+        top3 = next(
+            a
+            for a in tracing_client.get_trace(trace_id).info.assessments
+            if a.name == trace_emit.TOP3_BOX_ASSESSMENT_NAME
+        )
+        assert top3.assessment_id is not None
+        tracing_client.delete_assessment(trace_id, top3.assessment_id)
+
+    # heal_fp_race_traces visits eval_rows in list order, one search_traces
+    # lookup each -- fail only the SECOND lookup (eval_row_bad's own), so the
+    # first (eval_row_ok) must have already healed successfully by then.
+    real_search_traces = tracing_client.search_traces
+    call_count = 0
+
+    def _flaky_search_traces(
+        *,
+        experiment_ids: list[str] | None = None,
+        filter_string: str | None = None,
+        max_results: int = 100,
+        order_by: list[str] | None = None,
+        page_token: str | None = None,
+        run_id: str | None = None,
+        include_spans: bool = True,
+        model_id: str | None = None,
+        locations: list[str] | None = None,
+    ) -> PagedList[Trace]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise MlflowException("boom heal search")
+        return real_search_traces(
+            experiment_ids=experiment_ids,
+            filter_string=filter_string,
+            max_results=max_results,
+            order_by=order_by,
+            page_token=page_token,
+            run_id=run_id,
+            include_spans=include_spans,
+            model_id=model_id,
+            locations=locations,
+        )
+
+    monkeypatch.setattr(tracing_client, "search_traces", _flaky_search_traces)
+    summary = trace_emit.heal_fp_race_traces(
+        tracing_client, experiment_id, [eval_row_ok, eval_row_bad]
+    )
+    assert summary.traces_checked == 2
+    assert summary.traces_healed == 1
+    assert summary.assessments_added == 1
+    assert len(summary.errors) == 1
+    assert "boom heal search" in summary.errors[0]
+
+
+# ── heal_rs_horse_traces ─────────────────────────────────────────────────────
+
+
+def test_heal_rs_horse_traces_no_op_when_already_complete(
+    tracing_client: trace_emit.TracingClient, rs_experiment_id: str
+) -> None:
+    eval_row = _rs_eval_row()
+    trace_id = trace_emit.emit_rs_horse_trace(
+        tracing_client, rs_experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+
+    summary = trace_emit.heal_rs_horse_traces(tracing_client, rs_experiment_id, [eval_row])
+    assert summary.traces_checked == 1
+    assert summary.traces_healed == 0
+    assert summary.assessments_added == 0
+
+    names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert names == [trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME]
+
+
+def test_heal_rs_horse_traces_tops_up_from_zero_assessments(
+    tracing_client: trace_emit.TracingClient, rs_experiment_id: str
+) -> None:
+    """Reproduces the real 2026-07-11 production incident directly: an RS
+    trace with ZERO assessments logged at all."""
+    eval_row = _rs_eval_row()
+    trace_id = trace_emit.emit_rs_horse_trace(
+        tracing_client, rs_experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+    trace = tracing_client.get_trace(trace_id)
+    for assessment in list(trace.info.assessments):
+        assert assessment.assessment_id is not None
+        tracing_client.delete_assessment(trace_id, assessment.assessment_id)
+    assert tracing_client.get_trace(trace_id).info.assessments == []
+
+    summary = trace_emit.heal_rs_horse_traces(tracing_client, rs_experiment_id, [eval_row])
+    assert summary.traces_healed == 1
+    assert summary.assessments_added == 1
+    assert summary.errors == []
+
+    healed_names = _assessment_names(tracing_client.get_trace(trace_id))
+    assert healed_names == [trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME]
+
+
+def test_heal_rs_horse_traces_skips_horse_with_no_trace_at_all(
+    tracing_client: trace_emit.TracingClient, rs_experiment_id: str
+) -> None:
+    eval_row = _rs_eval_row()
+    summary = trace_emit.heal_rs_horse_traces(tracing_client, rs_experiment_id, [eval_row])
+    assert summary.traces_checked == 1
+    assert summary.traces_healed == 0
+    assert summary.errors == []
+
+
+def test_heal_rs_horse_traces_isolates_one_bad_horse_from_the_rest(
+    tracing_client: trace_emit.TracingClient, rs_experiment_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    eval_row = _rs_eval_row()
+    trace_id = trace_emit.emit_rs_horse_trace(
+        tracing_client, rs_experiment_id, eval_row, generated_at=GEN_AT
+    )
+    assert trace_id is not None
+    trace = tracing_client.get_trace(trace_id)
+    only_assessment = trace.info.assessments[0]
+    assert only_assessment.assessment_id is not None
+    tracing_client.delete_assessment(trace_id, only_assessment.assessment_id)
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise MlflowException("boom rs heal search")
+
+    monkeypatch.setattr(tracing_client, "search_traces", _boom)
+    summary = trace_emit.heal_rs_horse_traces(tracing_client, rs_experiment_id, [eval_row])
+    assert summary.traces_healed == 0
+    assert len(summary.errors) == 1
+    assert "boom rs heal search" in summary.errors[0]

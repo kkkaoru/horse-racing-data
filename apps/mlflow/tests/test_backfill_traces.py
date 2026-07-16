@@ -666,3 +666,196 @@ def test_trace_emission_errors_are_folded_into_summary(
     assert summary.fp_traces_created == 0
     assert len(summary.errors) == 1
     assert "synthetic trace-emit failure" in summary.errors[0]
+
+
+# ── Assessment-completeness healing (2026-07-11) ────────────────────────────
+#
+# Reproduces the real production incident this feature exists to fix: a
+# trace whose spans were written successfully but whose assessments were
+# left partial/empty by a transient store error between `log_spans` and one
+# of the `log_assessment` calls that follow it. `tracing_client.
+# delete_assessment` simulates that exact after-the-fact state.
+
+
+def test_backfill_heals_a_previously_incomplete_fp_trace(client: MlflowClient) -> None:
+    """Mirrors the real FP incident: top3_box_score (UNCONDITIONAL) missing
+    from an otherwise-complete trace. A first backfill call creates the
+    trace complete; simulate the defect by deleting one assessment
+    afterwards, then confirm the NEXT backfill call (the normal re-run any
+    cron/backfill invocation already performs) tops it back up without
+    duplicating the still-present assessments or creating a new trace."""
+    _make_legacy_fp_run(client)
+    neon_rows = {("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]}
+    # A full (>= 6 starter) field so place4_hit/place5_hit/place6_hit are all
+    # populated (not small-field-excluded) -- this integration test wants the
+    # FULL 7-assessment expected set; the small-field exclusion itself is
+    # covered directly in test_trace_emit.py.
+    local_rows = {
+        DATE_STR: [
+            _result_row("05", "01", "H1", "1"),
+            _result_row("05", "01", "H2", "2"),
+            _result_row("05", "01", "H3", "3"),
+            _result_row("05", "01", "H4", "4"),
+            _result_row("05", "01", "H5", "5"),
+            _result_row("05", "01", "H6", "6"),
+        ]
+    }
+
+    first = backfill_traces.backfill_traces(
+        client,
+        neon_connect=lambda: FakeNeonConnection(fp_rows=neon_rows),
+        local_connect=lambda: FakeLocalConnection(result_rows=local_rows),
+    )
+    assert first.fp_traces_created == 1
+    assert first.fp_traces_healed == 0
+    assert first.fp_assessments_healed == 0
+
+    fp_experiment = client.get_experiment_by_name(config.EXPERIMENT_FP_PRODUCTION_USAGE)
+    assert fp_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[fp_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(traces) == 1
+    trace_id = traces[0].info.trace_id
+    top3_assessment = next(
+        a
+        for a in traces[0].info.assessments
+        if a.name == trace_emit.TOP3_BOX_ASSESSMENT_NAME
+    )
+    assert top3_assessment.assessment_id is not None
+    tracing_client.delete_assessment(trace_id, top3_assessment.assessment_id)
+    broken = tracing_client.get_trace(trace_id)
+    assert trace_emit.TOP3_BOX_ASSESSMENT_NAME not in {a.name for a in broken.info.assessments}
+
+    second = backfill_traces.backfill_traces(
+        client,
+        neon_connect=lambda: FakeNeonConnection(fp_rows=neon_rows),
+        local_connect=lambda: FakeLocalConnection(result_rows=local_rows),
+    )
+    assert second.fp_traces_created == 0
+    assert second.fp_traces_already_existed == 1
+    assert second.fp_traces_healed == 1
+    assert second.fp_assessments_healed == 1
+    assert second.errors == []
+
+    healed_traces = tracing_client.search_traces(
+        experiment_ids=[fp_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(healed_traces) == 1  # still exactly one trace -- never duplicated
+    healed_names = [a.name for a in healed_traces[0].info.assessments]
+    assert healed_names.count(trace_emit.TOP3_BOX_ASSESSMENT_NAME) == 1
+    assert healed_names.count("place1_hit") == 1  # untouched assessment, not re-logged
+    assert set(healed_names) == {
+        "place1_hit",
+        "place2_hit",
+        "place3_hit",
+        "place4_hit",
+        "place5_hit",
+        "place6_hit",
+        trace_emit.TOP3_BOX_ASSESSMENT_NAME,
+    }
+
+    # A third call, once already complete, must be a true no-op for healing.
+    third = backfill_traces.backfill_traces(
+        client,
+        neon_connect=lambda: FakeNeonConnection(fp_rows=neon_rows),
+        local_connect=lambda: FakeLocalConnection(result_rows=local_rows),
+    )
+    assert third.fp_traces_healed == 0
+    assert third.fp_assessments_healed == 0
+
+
+def test_backfill_heals_a_previously_incomplete_rs_trace(client: MlflowClient) -> None:
+    """Mirrors the real RS incident directly: a trace with ZERO assessments
+    logged at all."""
+    _make_legacy_rs_run(client)
+    neon_rows = {("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    local_result_rows = {DATE_STR: [_result_row("05", "01", "H1", "5", "05")]}
+    local_meta_rows = {DATE_STR: [_meta_row("05", "01")]}
+
+    first = backfill_traces.backfill_traces(
+        client,
+        neon_connect=lambda: FakeNeonConnection(rs_rows=neon_rows),
+        local_connect=lambda: FakeLocalConnection(
+            result_rows=local_result_rows, meta_rows=local_meta_rows
+        ),
+    )
+    assert first.rs_traces_created == 1
+    assert first.rs_traces_healed == 0
+
+    rs_experiment = client.get_experiment_by_name(config.EXPERIMENT_RS_PRODUCTION_USAGE)
+    assert rs_experiment is not None
+    tracing_client = trace_emit.build_tracing_client(client)
+    traces = tracing_client.search_traces(
+        experiment_ids=[rs_experiment.experiment_id], include_spans=False, max_results=10
+    )
+    assert len(traces) == 1
+    trace_id = traces[0].info.trace_id
+    for assessment in list(traces[0].info.assessments):
+        assert assessment.assessment_id is not None
+        tracing_client.delete_assessment(trace_id, assessment.assessment_id)
+    assert tracing_client.get_trace(trace_id).info.assessments == []
+
+    second = backfill_traces.backfill_traces(
+        client,
+        neon_connect=lambda: FakeNeonConnection(rs_rows=neon_rows),
+        local_connect=lambda: FakeLocalConnection(
+            result_rows=local_result_rows, meta_rows=local_meta_rows
+        ),
+    )
+    assert second.rs_traces_created == 0
+    assert second.rs_traces_already_existed == 1
+    assert second.rs_traces_healed == 1
+    assert second.rs_assessments_healed == 1
+    assert second.errors == []
+
+    healed_names = {
+        a.name for a in tracing_client.get_trace(trace_id).info.assessments
+    }
+    assert healed_names == {trace_emit.RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME}
+
+
+def test_backfill_fp_heal_errors_are_folded_into_summary(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_legacy_fp_run(client)
+    neon = FakeNeonConnection(fp_rows={("jra", DATE_STR): [_fp_row("05", "01", "H1", "iter14", 1)]})
+    local = FakeLocalConnection(result_rows={DATE_STR: [_result_row("05", "01", "H1", "1")]})
+
+    def _boom_heal(*args: object, **kwargs: object) -> trace_emit.TraceHealSummary:
+        return trace_emit.TraceHealSummary(errors=["synthetic heal failure"])
+
+    monkeypatch.setattr(trace_emit, "heal_fp_race_traces", _boom_heal)
+    summary = backfill_traces.backfill_traces(
+        client, neon_connect=lambda: neon, local_connect=lambda: local
+    )
+    assert summary.fp_traces_created == 1
+    assert summary.fp_traces_healed == 0
+    assert len(summary.errors) == 1
+    assert "heal: synthetic heal failure" in summary.errors[0]
+
+
+def test_backfill_rs_heal_errors_are_folded_into_summary(
+    client: MlflowClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_legacy_rs_run(client)
+    neon = FakeNeonConnection(
+        rs_rows={("jra", DATE_STR): [_rs_row("05", "01", "H1", "rs-v3", serve_eval.RS_CLASS_SASHI)]}
+    )
+    local = FakeLocalConnection(
+        result_rows={DATE_STR: [_result_row("05", "01", "H1", "5", "05")]},
+        meta_rows={DATE_STR: [_meta_row("05", "01")]},
+    )
+
+    def _boom_heal(*args: object, **kwargs: object) -> trace_emit.TraceHealSummary:
+        return trace_emit.TraceHealSummary(errors=["synthetic rs heal failure"])
+
+    monkeypatch.setattr(trace_emit, "heal_rs_horse_traces", _boom_heal)
+    summary = backfill_traces.backfill_traces(
+        client, neon_connect=lambda: neon, local_connect=lambda: local
+    )
+    assert summary.rs_traces_created == 1
+    assert summary.rs_traces_healed == 0
+    assert len(summary.errors) == 1
+    assert "heal: synthetic rs heal failure" in summary.errors[0]

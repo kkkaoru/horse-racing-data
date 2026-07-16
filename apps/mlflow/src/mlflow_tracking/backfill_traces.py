@@ -47,6 +47,26 @@ are considered -- useful for chunking a very large backfill into smaller,
 independently-resumable invocations (see this module's own module-level
 docstring section on volume/duration expectations in README.md). Omitted
 (the default): every run ever found, no date restriction.
+
+★ Assessment-completeness healing (2026-07-11, see `trace_emit.py`'s own
+"ASSESSMENT-COMPLETENESS HEALING" docstring section for the full defect and
+design rationale): a real production audit found two traces whose SPANS were
+written successfully but whose assessments were left incomplete by a
+transient store error between `log_spans` and one of the several
+`log_assessment` calls that follow it -- one RS trace with ZERO assessments,
+one FP trace missing `top3_box_score` despite that assessment being
+UNCONDITIONAL. Because `emit_fp_race_trace`/`emit_rs_horse_trace`'s own
+idempotency check only asks "does a trace exist for this business key" (never
+"is it COMPLETE"), a partially-written trace is never revisited by the normal
+emit path again. `_backfill_fp_traces`/`_backfill_rs_traces` below therefore
+call `trace_emit.heal_fp_race_traces`/`heal_rs_horse_traces` immediately after
+their existing `emit_fp_race_traces`/`emit_rs_horse_traces` call, for EVERY
+run's `eval_rows` -- not just newly-emitting ones -- so this module verifies
+assessment completeness for every trace it encounters on every call, the same
+way it already re-verifies trace EXISTENCE for every call. A fully-complete
+trace costs one extra `search_traces` round-trip and zero writes (the same
+kind of "fine trade" this module's own docstring above already accepts for
+the existence check); an incomplete one gets topped up, never duplicated.
 """
 
 from __future__ import annotations
@@ -87,18 +107,33 @@ class BackfillTracesSummary:
     `rs_traces_already_existed` sum `trace_emit.TraceEmitSummary`'s own
     fields (see that dataclass's docstring) across every run this call
     processed -- `*_already_existed` is the NORMAL, expected count on any
-    re-run of this same backfill, not an error. `errors` folds in both
-    this module's own query/lookup failures (isolated per (date, category)
-    group or per run) and any per-race/per-horse trace-emission failure
-    `trace_emit` itself already isolated (see its own docstring).
+    re-run of this same backfill, not an error. `fp_traces_healed`/
+    `rs_traces_healed` and `fp_assessments_healed`/`rs_assessments_healed`
+    sum `trace_emit.TraceHealSummary`'s own `traces_healed`/
+    `assessments_added` fields (see that dataclass's docstring, and
+    `trace_emit.py`'s own "ASSESSMENT-COMPLETENESS HEALING" section) across
+    every run this call processed -- `*_healed` stays 0 on the overwhelming
+    majority of calls (every trace already complete), and is NOT the same
+    thing as `*_traces_created`/`*_traces_already_existed` (a trace can be
+    "already existed" from the emit pass's own perspective AND STILL get
+    healed this same call, if it was left incomplete by an earlier partial
+    write). `errors` folds in this module's own query/lookup failures
+    (isolated per (date, category) group or per run), any per-race/per-horse
+    trace-emission failure `trace_emit` itself already isolated (see its own
+    docstring), and any per-race/per-horse healing failure `trace_emit`'s own
+    `heal_fp_race_traces`/`heal_rs_horse_traces` isolated the same way.
     """
 
     fp_runs_scanned: int = 0
     fp_traces_created: int = 0
     fp_traces_already_existed: int = 0
+    fp_traces_healed: int = 0
+    fp_assessments_healed: int = 0
     rs_runs_scanned: int = 0
     rs_traces_created: int = 0
     rs_traces_already_existed: int = 0
+    rs_traces_healed: int = 0
+    rs_assessments_healed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -234,6 +269,13 @@ def _backfill_fp_traces(
             summary.fp_traces_already_existed += trace_summary.traces_already_existed
             summary.errors.extend(f"run {run.info.run_id}: {msg}" for msg in trace_summary.errors)
 
+            heal_summary = trace_emit.heal_fp_race_traces(tracing_client, experiment_id, eval_rows)
+            summary.fp_traces_healed += heal_summary.traces_healed
+            summary.fp_assessments_healed += heal_summary.assessments_added
+            summary.errors.extend(
+                f"run {run.info.run_id}: heal: {msg}" for msg in heal_summary.errors
+            )
+
 
 def _backfill_rs_traces(
     client: MlflowClient,
@@ -296,6 +338,13 @@ def _backfill_rs_traces(
             summary.rs_traces_created += trace_summary.traces_created
             summary.rs_traces_already_existed += trace_summary.traces_already_existed
             summary.errors.extend(f"run {run.info.run_id}: {msg}" for msg in trace_summary.errors)
+
+            heal_summary = trace_emit.heal_rs_horse_traces(tracing_client, experiment_id, eval_rows)
+            summary.rs_traces_healed += heal_summary.traces_healed
+            summary.rs_assessments_healed += heal_summary.assessments_added
+            summary.errors.extend(
+                f"run {run.info.run_id}: heal: {msg}" for msg in heal_summary.errors
+            )
 
 
 def backfill_traces(

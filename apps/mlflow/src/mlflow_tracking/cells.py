@@ -134,6 +134,46 @@ CELL_KEY_COLUMNS: Final[tuple[str, ...]] = (
     "track_condition",
 )
 
+# Dimension-only columns from a SPECIFIC non-canonical source schema --
+# `ingest_local_pg_history.RS_BUCKET_CELL_DIMENSION_COLUMNS` (the running-style
+# BUCKET-HISTORY schema) -- that `logging_api.select_headline_metrics` must
+# also never treat as a metric candidate, even though (unlike
+# `CELL_KEY_COLUMNS` above) they are not part of the canonical cross-source
+# CELL taxonomy every ingestion path normalizes toward via `COLUMN_ALIASES`.
+# `keibajo_code`/`kyoso_joken_code` from that same source tuple already rename
+# to `venue`/`class_code` (`COLUMN_ALIASES` below) and so are already covered
+# by `CELL_KEY_COLUMNS`; these six never get renamed/classified and would
+# otherwise reach `select_headline_metrics` bare:
+#   - `condition_key`, `grade_code`, `race_name`: label/free-text identifiers
+#     that are ALL-NULL for this ingestion path. A column that is None/NaN
+#     for every row is STILL numeric-dtype in the specific case of a JSON
+#     round-trip (`pd.read_json` coerces a column of all JSON `null` to
+#     float64 NaN, not object/None -- verified: the equivalent all-null
+#     PARQUET round-trip stays `object` dtype and is already safely skipped
+#     by `pd.api.types.is_numeric_dtype`), which the same predicate reports
+#     as numeric. Left unexcluded, `select_headline_metrics` would compute a
+#     fabricated `overall_<column>` weighted mean over pure NaN noise.
+#   - `kyori`, `kyoso_shubetsu_code`, `track_code`: raw, un-banded/
+#     un-classified dimension values (race distance in meters, race-type
+#     code, track code) carried by that same source tuple. `kyori` in
+#     particular is frequently POPULATED (a real int, e.g. 1600) rather than
+#     null, so it would silently produce an equally meaningless but harder-
+#     to-notice `overall_kyori` "headline metric" -- just the race-count-
+#     weighted average race distance, not any kind of accuracy signal.
+# None of these are canonical cross-source CELL dimensions, so they live in
+# their own constant rather than being folded into CELL_KEY_COLUMNS itself
+# (which is documented above as "in the order they should be displayed/
+# grouped by" -- a free-text field like `race_name` was never display/
+# groupby-key shaped in the first place).
+NON_METRIC_DIMENSION_COLUMNS: Final[tuple[str, ...]] = (
+    "condition_key",
+    "grade_code",
+    "race_name",
+    "kyori",
+    "kyoso_shubetsu_code",
+    "track_code",
+)
+
 # Rank-1..6 base metrics (feedback_eval_rank_1_to_6: evaluation must report
 # through rank 6, not just top1-3) plus the two cumulative box metrics.
 RANK_METRIC_COLUMNS: Final[tuple[str, ...]] = (

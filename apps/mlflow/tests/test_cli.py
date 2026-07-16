@@ -37,6 +37,7 @@ from mlflow_tracking import (
     refresh_eval_metrics,
     registry,
     sync_production,
+    sync_production_preview,
 )
 from mlflow_tracking.backfill_running_style import RunningStyleBackfillSummary
 from mlflow_tracking.cell_eval_runs import CellEvalRunsSummary
@@ -459,6 +460,7 @@ def _empty_sync_summary(errors: list[str] | None = None) -> sync_production.Sync
         champion_gaps_detected=0,
         traces_created=0,
         traces_already_existed=0,
+        stale_running_healed=0,
         errors=errors if errors is not None else [],
     )
 
@@ -480,6 +482,7 @@ def test_cmd_sync_production_reports_success(
         champion_gaps_detected=0,
         traces_created=5,
         traces_already_existed=1,
+        stale_running_healed=3,
         errors=[],
     )
 
@@ -491,6 +494,8 @@ def test_cmd_sync_production_reports_success(
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         return summary
 
@@ -509,6 +514,7 @@ def test_cmd_sync_production_reports_success(
     assert "rs eval skipped (no results): 1" in captured.out
     assert "traces created: 5" in captured.out
     assert "traces already existed (idempotent no-op): 1" in captured.out
+    assert "stale running runs healed: 3" in captured.out
 
 
 def test_cmd_sync_production_reports_errors(
@@ -524,6 +530,8 @@ def test_cmd_sync_production_reports_errors(
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         return summary
 
@@ -545,6 +553,8 @@ def test_cmd_sync_production_parses_categories(monkeypatch: pytest.MonkeyPatch) 
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         seen_categories.append(categories)
         return _empty_sync_summary()
@@ -578,6 +588,8 @@ def test_cmd_sync_production_no_traces_flag_passes_emit_traces_false(
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         seen_emit_traces.append(emit_traces)
         return _empty_sync_summary()
@@ -605,6 +617,8 @@ def test_cmd_sync_production_default_partial_coverage_threshold(
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         seen_thresholds.append(partial_coverage_threshold)
         return _empty_sync_summary()
@@ -630,6 +644,8 @@ def test_cmd_sync_production_partial_coverage_threshold_flag_passes_value(
         *,
         emit_traces: bool = True,
         partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
     ) -> sync_production.SyncProductionSummary:
         seen_thresholds.append(partial_coverage_threshold)
         return _empty_sync_summary()
@@ -648,6 +664,176 @@ def test_cmd_sync_production_partial_coverage_threshold_flag_passes_value(
     )
     assert exit_code == 0
     assert seen_thresholds == [50.0]
+
+
+def test_cmd_sync_production_default_repair_stale_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting --no-repair-stale-running/--stale-running-hours passes
+    sync_production's own defaults through unchanged (repair ON by
+    default)."""
+    seen_repair: list[bool] = []
+    seen_hours: list[float] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
+    ) -> sync_production.SyncProductionSummary:
+        seen_repair.append(repair_stale_running)
+        seen_hours.append(stale_running_hours)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(["sync-production", "--date-from", "20260601", "--date-to", "20260601"])
+    assert exit_code == 0
+    assert seen_repair == [True]
+    assert seen_hours == [sync_production.DEFAULT_STALE_RUNNING_HOURS]
+
+
+def test_cmd_sync_production_no_repair_stale_running_flag_passes_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_repair: list[bool] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
+    ) -> sync_production.SyncProductionSummary:
+        seen_repair.append(repair_stale_running)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+            "--no-repair-stale-running",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_repair == [False]
+
+
+def test_cmd_sync_production_stale_running_hours_flag_passes_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_hours: list[float] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str] = sync_production.FP_CATEGORIES,
+        *,
+        emit_traces: bool = True,
+        partial_coverage_threshold: float = sync_production.DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+        repair_stale_running: bool = True,
+        stale_running_hours: float = sync_production.DEFAULT_STALE_RUNNING_HOURS,
+    ) -> sync_production.SyncProductionSummary:
+        seen_hours.append(stale_running_hours)
+        return _empty_sync_summary()
+
+    monkeypatch.setattr(sync_production, "sync_production_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production",
+            "--date-from",
+            "20260601",
+            "--date-to",
+            "20260601",
+            "--stale-running-hours",
+            "12.0",
+        ]
+    )
+    assert exit_code == 0
+    assert seen_hours == [12.0]
+
+
+def test_cmd_sync_production_preview_reports_summary(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: list[tuple[str, str, Sequence[str]]] = []
+
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str],
+    ) -> sync_production_preview.SyncProductionPreviewSummary:
+        seen.append((date_from, date_to, categories))
+        return sync_production_preview.SyncProductionPreviewSummary(
+            dates_processed=3,
+            fp_runs_created=2,
+            fp_runs_updated=1,
+            rs_runs_created=1,
+            rs_runs_updated=2,
+        )
+
+    monkeypatch.setattr(sync_production_preview, "sync_production_preview_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production-preview",
+            "--date-from",
+            "20260717",
+            "--date-to",
+            "20260719",
+            "--categories",
+            "jra,nar",
+        ]
+    )
+
+    assert exit_code == 0
+    assert seen == [("20260717", "20260719", ("jra", "nar"))]
+    captured = capsys.readouterr()
+    assert "dates processed: 3" in captured.out
+    assert "fp runs updated: 1" in captured.out
+    assert "rs runs updated: 2" in captured.out
+
+
+def test_cmd_sync_production_preview_reports_errors(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _fake_sync(
+        client: MlflowClient,
+        date_from: str,
+        date_to: str,
+        categories: Sequence[str],
+    ) -> sync_production_preview.SyncProductionPreviewSummary:
+        return sync_production_preview.SyncProductionPreviewSummary(
+            dates_processed=1,
+            errors=["20260717:nar:finish-position: boom"],
+        )
+
+    monkeypatch.setattr(sync_production_preview, "sync_production_preview_range", _fake_sync)
+    exit_code = cli.main(
+        [
+            "sync-production-preview",
+            "--date-from",
+            "20260717",
+            "--date-to",
+            "20260717",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "error: 20260717:nar:finish-position: boom" in capsys.readouterr().err
 
 
 def test_cmd_refresh_eval_metrics_reports_success(
@@ -710,9 +896,13 @@ def test_cmd_backfill_traces_reports_success(
         fp_runs_scanned=10,
         fp_traces_created=8,
         fp_traces_already_existed=2,
+        fp_traces_healed=1,
+        fp_assessments_healed=3,
         rs_runs_scanned=5,
         rs_traces_created=4,
         rs_traces_already_existed=1,
+        rs_traces_healed=1,
+        rs_assessments_healed=1,
         errors=[],
     )
     seen_bounds: list[tuple[str | None, str | None]] = []
@@ -738,9 +928,13 @@ def test_cmd_backfill_traces_reports_success(
     assert "fp runs scanned: 10" in captured.out
     assert "fp traces created: 8" in captured.out
     assert "fp traces already existed (idempotent no-op): 2" in captured.out
+    assert "fp traces healed (assessment completeness top-up): 1" in captured.out
+    assert "fp assessments healed: 3" in captured.out
     assert "rs runs scanned: 5" in captured.out
     assert "rs traces created: 4" in captured.out
     assert "rs traces already existed (idempotent no-op): 1" in captured.out
+    assert "rs traces healed (assessment completeness top-up): 1" in captured.out
+    assert "rs assessments healed: 1" in captured.out
 
 
 def test_cmd_backfill_traces_no_date_bounds(monkeypatch: pytest.MonkeyPatch) -> None:

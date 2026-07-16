@@ -11,7 +11,7 @@ import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Metric, Param, RunTag
 
-from mlflow_tracking import logging_api
+from mlflow_tracking import cells, logging_api
 
 
 def test_get_or_create_experiment_creates_when_absent(client: MlflowClient) -> None:
@@ -121,6 +121,91 @@ def test_select_headline_metrics_excludes_cell_key_columns_even_if_numeric() -> 
     result = logging_api.select_headline_metrics(df)
     assert "overall_class_code" not in result
     assert result["overall_top1"] == 0.5
+
+
+def test_select_headline_metrics_excludes_all_null_dimension_column() -> None:
+    """Regression test for the running-style BUCKET-HISTORY ingestion bug
+    (ingest_local_pg_history.RS_BUCKET_CELL_DIMENSION_COLUMNS): `condition_key`
+    is all-NULL for that ingestion path. Constructed as literal `float("nan")`
+    values (not `None`) because that is what actually reaches
+    `select_headline_metrics` in production -- verified during the audit that
+    `pd.read_json` coerces an all-JSON-`null` column to float64 NaN (not
+    object/None dtype, which the equivalent all-null PARQUET round-trip stays
+    and is already safely skipped by `is_numeric_dtype`). Before the
+    `cells.NON_METRIC_DIMENSION_COLUMNS` exclusion, this NaN dtype was
+    numeric, so `select_headline_metrics` would fold it into the weighted-mean
+    scan as a fabricated `overall_condition_key`. The genuine `accuracy_pct`
+    metric alongside it must still compute correctly."""
+    df = pd.DataFrame(
+        {
+            "condition_key": [float("nan"), float("nan")],
+            "accuracy_pct": [80.0, 90.0],
+            "race_count": [10, 20],
+        }
+    )
+    assert pd.api.types.is_numeric_dtype(df["condition_key"])
+    result = logging_api.select_headline_metrics(df)
+    assert "overall_condition_key" not in result
+    assert result["overall_accuracy_pct"] == pytest.approx((80.0 * 10 + 90.0 * 20) / 30)
+
+
+def test_select_headline_metrics_excludes_populated_numeric_dimension_column() -> None:
+    """`kyori` (raw race distance in meters, also found in
+    RS_BUCKET_CELL_DIMENSION_COLUMNS during the same audit) is a dimension
+    column that is frequently POPULATED with real numeric values, unlike
+    `condition_key`'s all-NULL case -- this is the harder-to-notice variant
+    of the same bug: left unexcluded, this would silently produce a
+    plausible-looking `overall_kyori` (just the race-count-weighted average
+    race distance) rather than an obviously-fabricated NaN/0.0."""
+    df = pd.DataFrame(
+        {
+            "kyori": [1600, 2000],
+            "accuracy_pct": [80.0, 90.0],
+            "race_count": [10, 20],
+        }
+    )
+    result = logging_api.select_headline_metrics(df)
+    assert "overall_kyori" not in result
+    assert result["overall_accuracy_pct"] == pytest.approx((80.0 * 10 + 90.0 * 20) / 30)
+
+
+def test_select_headline_metrics_excludes_every_non_metric_dimension_column() -> None:
+    """Every column in `cells.NON_METRIC_DIMENSION_COLUMNS` is excluded, not
+    just the two illustrated individually above -- this stays true even if
+    the constant grows in the future, since it iterates the constant itself
+    rather than hardcoding the current 6 names."""
+    df = pd.DataFrame(
+        {
+            **{column: [1, 2] for column in cells.NON_METRIC_DIMENSION_COLUMNS},
+            "top1": [0.4, 0.6],
+            "race_count": [10, 20],
+        }
+    )
+    result = logging_api.select_headline_metrics(df)
+    for column in cells.NON_METRIC_DIMENSION_COLUMNS:
+        assert f"overall_{column}" not in result
+    assert result["overall_top1"] == pytest.approx((0.4 * 10 + 0.6 * 20) / 30)
+
+
+def test_select_headline_metrics_excludes_dimension_columns_from_category_breakdown() -> None:
+    """`NON_METRIC_DIMENSION_COLUMNS` columns must never leak into the
+    per-category breakdown either -- they were never `category_column`-like
+    grouping keys, just dimension-only columns that happen to sit alongside
+    the real `category` column in the same cell_df."""
+    df = pd.DataFrame(
+        {
+            "category": ["jra", "nar"],
+            "track_code": [10, 23],
+            "top1": [0.4, 0.6],
+            "race_count": [10, 20],
+        }
+    )
+    result = logging_api.select_headline_metrics(df)
+    assert "overall_track_code" not in result
+    assert "jra_track_code" not in result
+    assert "nar_track_code" not in result
+    assert result["jra_top1"] == 0.4
+    assert result["nar_top1"] == 0.6
 
 
 def test_select_headline_metrics_returns_no_overall_when_total_weight_zero() -> None:

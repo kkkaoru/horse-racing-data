@@ -314,6 +314,97 @@ prediction succeed" outcome to attach to the root span or to gate
 assessments on (RS has no race-level hit/miss the way FP's ranking does);
 per-horse is the actual unit RS predicts AND evaluates at
 (`RsHorseEvalRow.hit`), so it is the natural trace unit too.
+
+── ASSESSMENT-COMPLETENESS HEALING (`heal_fp_race_traces`/`heal_rs_horse_traces`) ──
+
+Added 2026-07-11 after a real production audit found two genuinely-broken
+traces: one RS trace with ZERO assessments logged at all, and one FP trace
+missing `top3_box_score` despite that assessment being UNCONDITIONAL --
+always attached, per `_log_fp_assessments`'s own contract -- for every trace
+this module ever creates. Root cause: `emit_fp_race_trace`/
+`emit_rs_horse_trace` call `_emit_trace` (writes the trace row + spans,
+synchronously, via `start_trace`/`log_spans`) and then, in a SEPARATE step,
+call `_log_fp_assessments`/`_log_rs_assessments` (one or more further
+`log_assessment` store writes). If a transient store error strikes ANYWHERE
+between the first `log_assessment` call succeeding and a LATER one failing
+(or the very first one, for RS's single-assessment case), the trace and its
+spans already exist -- `_emit_trace` already returned a real `trace_id` --
+but the assessment set is left partially (or, for RS, entirely) unwritten,
+and nothing here retries. Worse: the NEXT time this exact business key is
+processed (the next day's cron, or a backfill re-run), `_find_existing_trace_
+id` finds the already-created trace and `emit_fp_race_trace`/
+`emit_rs_horse_trace` return `None` immediately -- the documented, INTENDED
+idempotent-no-op fast path for "this race already has a trace" -- so the
+missing assessment(s) are never retried by the normal emit path, ever again.
+
+`fp_expected_assessment_names(eval_row)`/`rs_expected_assessment_names()`
+are the single source of truth for what a FULLY-WRITTEN trace's assessment
+set looks like for a given eval row -- derived with the EXACT SAME rules
+`_log_fp_assessments`/`_log_rs_assessments` themselves use to decide what to
+log (the small-field exclusion: a rank whose `place{n}_hit` is None --
+`total_starters < n`, see `serve_eval._compute_race_hits`'s own docstring --
+is correctly ABSENT from the expected set, never counted as "missing";
+`top3_box_score` is unconditionally expected, always). `fp_missing_
+assessment_names`/`rs_missing_assessment_names` subtract a trace's ACTUAL
+logged names (read straight off `TraceInfo.assessments`, which `search_
+traces` eagerly loads via `selectinload(SqlTraceInfo.assessments)` --
+confirmed by reading `sqlalchemy_store.py` in this project's own `.venv` --
+so this costs no extra query beyond the one `search_traces` call already
+needed to find the trace) from that expected set.
+
+`heal_fp_race_traces(tracing_client, experiment_id, eval_rows)`/`heal_rs_
+horse_traces(...)` are the public, batch, per-row-isolated entry points
+(mirroring `emit_fp_race_traces`/`emit_rs_horse_traces`'s own isolation
+philosophy exactly): for EVERY row given -- a freshly-created trace from
+THIS SAME call, a trace from a previous call, or (the whole point) a trace
+left incomplete by a previous PARTIAL write -- look up its existing trace by
+the same deterministic `client_request_id` `emit_fp_race_trace`/
+`emit_rs_horse_trace` would compute, and top up ONLY the names still
+missing. A trace already fully complete (the overwhelming majority, on any
+call after the first) costs one `search_traces` round-trip and ZERO writes,
+exactly like `_find_existing_trace_id`'s own existence check. A trace not
+found at all (this row's OWN trace creation itself failed elsewhere, already
+recorded as its own error) is silently skipped -- healing an assessment onto
+a trace that was never created would be nonsensical, and is not this
+function's job to diagnose. `_log_fp_assessments` grew an `only_names`
+parameter (`None`, the default, preserves every EXISTING caller's "log
+everything expected" behavior unchanged) precisely so the FP healing path
+can reuse the exact same value/rationale-construction logic as fresh
+emission, rather than a second, driftable copy of it -- FP's expected set can
+have up to 7 members (6 ranks + `top3_box_score`), so a "missing" subset can
+genuinely be partial. `_log_rs_assessments` grew NO such parameter: RS's
+expected set (`rs_expected_assessment_names()`) is always a fixed singleton,
+so a "missing" set is either empty (nothing to heal) or exactly that one
+name -- logging "everything" and logging "only what's missing" are the same
+call for RS, so an `only_names` gate there would be dead code (see that
+function's own docstring).
+
+★ Never re-logs (duplicates) an assessment name already present: this is a
+DEFENSIVE choice, not merely an optimization -- `TracingClient.log_assessment`
+unconditionally calls `store.create_assessment(...)` (confirmed by reading
+`mlflow/tracing/client.py` in this project's own `.venv`), which always
+inserts a brand-new assessment row with a fresh id; the store enforces no
+uniqueness constraint on (trace_id, name) at all, so calling `log_assessment`
+for an already-present name would silently create a SECOND assessment with
+the same name on the same trace, not update or reject the first. The
+`only_names`-gated re-log inside `_log_fp_assessments` (FP) and the
+`if not missing: continue` guard inside `heal_rs_horse_traces` (RS) -- both
+built on the `expected - existing` subtraction `fp_missing_assessment_names`/
+`rs_missing_assessment_names` provide -- together guarantee this can never
+happen from this module's own call sites.
+
+Invoked exclusively from `backfill_traces.py` (see that module's own
+docstring), NOT from `sync_production.py`'s daily incremental path -- the
+daily path's own `emit_fp_race_trace(s)`/`emit_rs_horse_trace(s)` calls, and
+their "zero writes when a trace already exists" contract, are UNCHANGED
+(still exactly what `test_trace_emit.py`'s existing idempotency tests
+assert). `backfill_traces.py` already re-derives `eval_rows` for EVERY
+already-evaluated run on EVERY call (see its own docstring's "Idempotent by
+construction, NOT by a run-level skip-cache" section) -- the natural,
+already-scheduled place for a periodic completeness sweep, without adding a
+second `search_traces` round-trip to the much hotter, much higher-volume
+daily sync path for a defect that (by construction: a transient store error
+landing in the narrow window between two specific writes) is rare.
 """
 
 from __future__ import annotations
@@ -321,7 +412,7 @@ from __future__ import annotations
 import hashlib
 import random
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Final, Literal, cast
@@ -419,6 +510,33 @@ class TraceEmitSummary:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class TraceHealSummary:
+    """Outcome counters for one `heal_fp_race_traces`/`heal_rs_horse_traces`
+    call -- see this module's own "ASSESSMENT-COMPLETENESS HEALING" docstring
+    section.
+
+    `traces_checked` counts every row this call examined, regardless of
+    outcome. `traces_healed` counts traces that were missing at least one
+    EXPECTED assessment and got the missing one(s) topped up this call;
+    `assessments_added` is the total count of individual Feedback assessments
+    newly logged across every healed trace THIS call (`>= traces_healed`,
+    since one trace can be missing more than one assessment at once -- e.g.
+    the real RS trace this feature was built to fix, which had ZERO
+    assessments logged at all). A trace already fully complete is silently
+    left alone -- NOT counted as healed, and never re-logged -- the normal,
+    expected outcome for the overwhelming majority of traces on any call
+    after the underlying defect (see this module's own docstring) is fixed.
+    `errors` isolates one race/horse's lookup-or-log failure from every other
+    one in the same call, mirroring `TraceEmitSummary`'s own philosophy.
+    """
+
+    traces_checked: int = 0
+    traces_healed: int = 0
+    assessments_added: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class _ChildSpanSpec:
     """One child (TOOL) span to emit under a trace's root span."""
@@ -496,6 +614,35 @@ def _find_existing_trace_id(
         include_spans=False,
     )
     return matches[0].info.trace_id if matches else None
+
+
+def _find_existing_trace_assessment_names(
+    tracing_client: TracingClient, experiment_id: str, client_request_id: str
+) -> tuple[str, frozenset[str]] | None:
+    """Return `(trace_id, existing_assessment_names)` for the trace already
+    carrying `client_request_id` in `experiment_id`, or None if no such trace
+    exists yet -- the lookup `heal_fp_race_traces`/`heal_rs_horse_traces` use
+    (see this module's own "ASSESSMENT-COMPLETENESS HEALING" docstring
+    section).
+
+    Same `search_traces` call `_find_existing_trace_id` already makes
+    (`include_spans=False`, one round-trip), just also reading
+    `TraceInfo.assessments` off the same response instead of discarding it --
+    `search_traces` eagerly loads assessments regardless of `include_spans`
+    (`selectinload(SqlTraceInfo.assessments)`, confirmed by reading
+    `sqlalchemy_store.py` in this project's own `.venv`), so this is never an
+    extra query beyond the one an existence check already costs.
+    """
+    matches = tracing_client.search_traces(
+        experiment_ids=[experiment_id],
+        filter_string=f"attribute.client_request_id = '{client_request_id}'",
+        max_results=1,
+        include_spans=False,
+    )
+    if not matches:
+        return None
+    match = matches[0]
+    return match.info.trace_id, frozenset(a.name for a in match.info.assessments)
 
 
 def _make_span(
@@ -671,8 +818,53 @@ def fp_race_key(eval_row: serve_eval.FpRaceEvalRow) -> str:
     return f"{eval_row.race_date}:{eval_row.category}:{eval_row.venue}:{eval_row.race_bango}"
 
 
+def _fp_rank_hits(eval_row: serve_eval.FpRaceEvalRow) -> tuple[tuple[int, int | None], ...]:
+    """`(rank, hit)` pairs for ranks 1..6 -- the single shared source both
+    `_log_fp_assessments` (what to LOG) and `fp_expected_assessment_names`
+    (what SHOULD be logged) derive from, so the two can never drift apart."""
+    return (
+        (1, eval_row.top1_hit),
+        (2, eval_row.place2_hit),
+        (3, eval_row.place3_hit),
+        (4, eval_row.place4_hit),
+        (5, eval_row.place5_hit),
+        (6, eval_row.place6_hit),
+    )
+
+
+def fp_expected_assessment_names(eval_row: serve_eval.FpRaceEvalRow) -> frozenset[str]:
+    """The exact set of assessment names a FULLY-WRITTEN FP trace for
+    `eval_row` carries: `place{n}_hit` for every rank whose `_fp_rank_hits`
+    value is not None, plus the unconditional `TOP3_BOX_ASSESSMENT_NAME`.
+
+    Mirrors `_log_fp_assessments`'s own gating exactly (a rank whose
+    `place{n}_hit` is None -- this race's `total_starters < n`, see
+    `serve_eval._compute_race_hits`'s small-field-exclusion docstring -- is
+    correctly ABSENT here too, never counted as "missing" by a completeness
+    check downstream). See this module's own "ASSESSMENT-COMPLETENESS
+    HEALING" docstring section for why this single source of truth exists.
+    """
+    names = {f"place{rank}_hit" for rank, hit in _fp_rank_hits(eval_row) if hit is not None}
+    names.add(TOP3_BOX_ASSESSMENT_NAME)
+    return frozenset(names)
+
+
+def fp_missing_assessment_names(
+    eval_row: serve_eval.FpRaceEvalRow, existing_names: Collection[str]
+) -> frozenset[str]:
+    """`fp_expected_assessment_names(eval_row) - existing_names` -- the
+    assessment names a healing pass must top up for this trace. Empty when
+    `existing_names` already covers everything expected (the trace is
+    already complete -- the common case on any call after the first)."""
+    return fp_expected_assessment_names(eval_row) - set(existing_names)
+
+
 def _log_fp_assessments(
-    tracing_client: TracingClient, trace_id: str, eval_row: serve_eval.FpRaceEvalRow
+    tracing_client: TracingClient,
+    trace_id: str,
+    eval_row: serve_eval.FpRaceEvalRow,
+    *,
+    only_names: frozenset[str] | None = None,
 ) -> None:
     """Log the 6 rank-hit Feedback assessments (place1_hit == top1_hit
     through place6_hit) plus `top3_box_score`, respecting the EXACT
@@ -689,28 +881,33 @@ def _log_fp_assessments(
     many races -- see `serve_eval.aggregate_fp_day_metrics`/`champion_cell_
     eval._aggregate_fp_cells`); there is nothing more graduated at the
     single-race grain this per-trace assessment lives at.
+
+    `only_names`, when given, restricts this call to logging ONLY the
+    assessment names it contains -- used by `heal_fp_race_traces`'s
+    completeness top-up (see this module's own "ASSESSMENT-COMPLETENESS
+    HEALING" docstring section) so it never re-logs (duplicates) a name
+    already present on the trace. `None` (every EXISTING caller --
+    `emit_fp_race_trace`'s fresh-emission path) means "log every expected
+    name", the original, unchanged behavior.
     """
-    rank_hits: tuple[tuple[int, int | None], ...] = (
-        (1, eval_row.top1_hit),
-        (2, eval_row.place2_hit),
-        (3, eval_row.place3_hit),
-        (4, eval_row.place4_hit),
-        (5, eval_row.place5_hit),
-        (6, eval_row.place6_hit),
-    )
-    for rank, hit in rank_hits:
+    for rank, hit in _fp_rank_hits(eval_row):
         if hit is None:
+            continue
+        name = f"place{rank}_hit"
+        if only_names is not None and name not in only_names:
             continue
         _log_feedback(
             tracing_client,
             trace_id,
-            name=f"place{rank}_hit",
+            name=name,
             value=bool(hit),
             rationale=(
                 f"place{rank}_hit: did the model's top pick finish within the top {rank} "
                 "(serve_eval.FpRaceEvalRow)?"
             ),
         )
+    if only_names is not None and TOP3_BOX_ASSESSMENT_NAME not in only_names:
+        return
     _log_feedback(
         tracing_client,
         trace_id,
@@ -858,6 +1055,48 @@ def emit_fp_race_traces(
     return summary
 
 
+def heal_fp_race_traces(
+    tracing_client: TracingClient,
+    experiment_id: str,
+    eval_rows: Sequence[serve_eval.FpRaceEvalRow],
+) -> TraceHealSummary:
+    """For every row in `eval_rows`, look up its existing FP trace (by the
+    SAME deterministic `client_request_id` `emit_fp_race_trace` computes) and
+    top up any EXPECTED-but-missing assessment -- see this module's own
+    "ASSESSMENT-COMPLETENESS HEALING" docstring section for the full defect
+    this fixes and the design rationale.
+
+    Per-row isolated exactly like `emit_fp_race_traces` (one bad race's
+    lookup/log failure is recorded in `errors` and skipped, never aborting
+    the rest of the batch). A race with no trace found at all is silently
+    skipped -- that race's OWN trace-creation failure is a DIFFERENT problem,
+    already surfaced elsewhere (`emit_fp_race_traces`'s own `errors`), not
+    this function's job to diagnose or re-attempt.
+    """
+    summary = TraceHealSummary()
+    for eval_row in eval_rows:
+        summary.traces_checked += 1
+        race_key = fp_race_key(eval_row)
+        client_request_id = _client_request_id(_FP_PREFIX, f"{race_key}:{eval_row.model_version}")
+        try:
+            found = _find_existing_trace_assessment_names(
+                tracing_client, experiment_id, client_request_id
+            )
+            if found is None:
+                continue
+            trace_id, existing_names = found
+            missing = fp_missing_assessment_names(eval_row, existing_names)
+            if not missing:
+                continue
+            _log_fp_assessments(tracing_client, trace_id, eval_row, only_names=missing)
+        except (MlflowException, ValueError, KeyError, TypeError) as exc:
+            summary.errors.append(f"{race_key}:{eval_row.model_version}: {exc}")
+            continue
+        summary.traces_healed += 1
+        summary.assessments_added += len(missing)
+    return summary
+
+
 # ── RS: one trace per horse ──────────────────────────────────────────────────
 
 
@@ -866,6 +1105,24 @@ def rs_race_key(eval_row: serve_eval.RsHorseEvalRow) -> str:
     `fp_race_key`, RS's race-grain identity (the horse-grain identity is
     this plus `ketto_toroku_bango`, see `emit_rs_horse_trace`)."""
     return f"{eval_row.race_date}:{eval_row.category}:{eval_row.venue}:{eval_row.race_bango}"
+
+
+def rs_expected_assessment_names() -> frozenset[str]:
+    """The exact set of assessment names a FULLY-WRITTEN RS trace carries --
+    always exactly `{RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME}`, unconditionally
+    (RS has no small-field-style exclusion at all, unlike FP's rank 4/5/6 --
+    see this module's own RS design-decision docstring). Takes no `eval_row`
+    argument (unlike its FP twin, `fp_expected_assessment_names`) precisely
+    because the expected set never depends on anything about the row."""
+    return frozenset({RS_PREDICTED_CLASS_HIT_ASSESSMENT_NAME})
+
+
+def rs_missing_assessment_names(existing_names: Collection[str]) -> frozenset[str]:
+    """`rs_expected_assessment_names() - existing_names` -- empty unless the
+    trace is missing its one expected assessment entirely (the real defect
+    this module's "ASSESSMENT-COMPLETENESS HEALING" section fixes: a genuine
+    production RS trace was found with ZERO assessments logged at all)."""
+    return rs_expected_assessment_names() - set(existing_names)
 
 
 def _log_rs_assessments(
@@ -877,6 +1134,14 @@ def _log_rs_assessments(
     predicted class match the actual class" boolean, computed once in
     `serve_eval.build_rs_horse_eval_rows` -- this is a direct, verbatim use
     of that field, not a re-derivation.
+
+    No `only_names` parameter (unlike its FP twin, `_log_fp_assessments`):
+    `rs_expected_assessment_names()` is always a fixed singleton, so a
+    "missing" set for RS (see `rs_missing_assessment_names`) can only ever be
+    empty (nothing to heal, this function is never called) or exactly that
+    one name (heal by logging it, identical to a fresh emission) -- an
+    `only_names`-gated partial-skip branch would be dead code, unreachable by
+    any real caller, for RS specifically.
     """
     _log_feedback(
         tracing_client,
@@ -1016,6 +1281,47 @@ def emit_rs_horse_traces(
             summary.traces_already_existed += 1
         else:
             summary.traces_created += 1
+    return summary
+
+
+def heal_rs_horse_traces(
+    tracing_client: TracingClient,
+    experiment_id: str,
+    eval_rows: Sequence[serve_eval.RsHorseEvalRow],
+) -> TraceHealSummary:
+    """RS twin of `heal_fp_race_traces` -- see its own docstring and this
+    module's "ASSESSMENT-COMPLETENESS HEALING" section for the full defect
+    and design rationale (RS's own real-world instance: a trace found with
+    ZERO assessments logged at all)."""
+    summary = TraceHealSummary()
+    for eval_row in eval_rows:
+        summary.traces_checked += 1
+        race_key = rs_race_key(eval_row)
+        business_key = f"{race_key}:{eval_row.ketto_toroku_bango}:{eval_row.model_version}"
+        client_request_id = _client_request_id(_RS_PREFIX, business_key)
+        try:
+            found = _find_existing_trace_assessment_names(
+                tracing_client, experiment_id, client_request_id
+            )
+            if found is None:
+                continue
+            trace_id, existing_names = found
+            missing = rs_missing_assessment_names(existing_names)
+            if not missing:
+                continue
+            # `missing` is necessarily rs_expected_assessment_names() in
+            # full here (a fixed singleton -- see `_log_rs_assessments`'s
+            # own docstring for why it takes no `only_names` parameter),
+            # so logging "everything" is identical to logging "only what's
+            # missing" for RS specifically.
+            _log_rs_assessments(tracing_client, trace_id, eval_row)
+        except (MlflowException, ValueError, KeyError, TypeError) as exc:
+            summary.errors.append(
+                f"{race_key}:{eval_row.ketto_toroku_bango}:{eval_row.model_version}: {exc}"
+            )
+            continue
+        summary.traces_healed += 1
+        summary.assessments_added += len(missing)
     return summary
 
 

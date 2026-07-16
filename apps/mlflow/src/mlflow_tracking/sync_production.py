@@ -91,6 +91,49 @@ that day (`_log_base_tracking`) AND to the finish-position `timelines` point
 configurable threshold (`partial_coverage_threshold`, default
 `DEFAULT_PARTIAL_COVERAGE_THRESHOLD` = 80.0, the `sync-production` CLI's
 `--partial-coverage-threshold` flag) EVEN THOUGH `races_live > 0`.
+
+★ BOTH-PIPELINES-DARK fallback (2026-07-11, see `_resolve_expected_races`'s
+own docstring for the exact three-way branch): the pre-existing jra/nar
+no_rows/backfill_only check above compares FP against running-style's OWN
+`races_observed` as an "expected races" proxy -- which has nothing to compare
+against on a day RS itself also observed zero races (real examples: JRA
+2026-06-13, 06-14, 06-20, 06-21, 06-28, `races_live == 0` for BOTH pipelines
+simultaneously), so the check silently never fired even though races may
+genuinely have been scheduled. `_resolve_expected_races` now falls back, in
+exactly that case, to the SAME race-calendar oracle already built for banei
+(`fp_outcome.races_scheduled`, see `GAP_TYPE_PARTIAL_COVERAGE`'s own comment
+above -- reused directly, no second query), tagged the same
+`GAP_SOURCE_RACE_CALENDAR`. Not a new gap TYPE -- still `GAP_TYPE_NO_ROWS`/
+`GAP_TYPE_BACKFILL_ONLY`, selected the same way as before -- just a new
+ORACLE reached for an existing check on a day the old proxy had nothing to
+offer.
+
+★ SELF-HEAL sweep for interrupted invocations (2026-07-11, see
+`_heal_stale_running_runs`'s own docstring for the mechanics and
+`sync_production_range`'s own docstring for the exact wiring): a real
+incident left 18 runs in the two production-usage experiments tagged
+`sync_base_logged=true` but stuck `status=RUNNING` forever -- an interrupted
+process killed between `_log_base_tracking` setting that tag and this
+module's own `client.set_terminated(run_id, status="FINISHED")` call a few
+lines later, at the end of each model_version-group iteration (see
+`_sync_fp_category_date`'s own docstring). This hid 54% of that experiment's
+volume from any `status=FINISHED` filter/dashboard. `sync_production_range`
+now runs this sweep ONCE, at the very start of every call, before any
+date/category is visited (gated by the new `repair_stale_running` parameter,
+default True): any run matching `status=RUNNING AND
+tags.sync_base_logged='true'` whose `start_time` is older than
+`stale_running_hours` (default `DEFAULT_STALE_RUNNING_HOURS` = 6.0,
+configurable via the `sync-production` CLI's `--stale-running-hours` flag,
+skippable entirely via `--no-repair-stale-running`) is force-terminated
+FINISHED -- old enough that it can only be a genuinely abandoned run, never
+one still legitimately in progress. This is a pure hygiene fix for
+downstream `status=FINISHED` consumers: this module's own idempotency
+machinery (`_find_sync_run`/`sync_key`) already finds a run by tag alone
+regardless of its status, so a stuck-RUNNING run was never a correctness bug
+for `sync_production_range` itself, only for anything reading run status
+elsewhere. The 18 already-stuck runs from the real incident are being
+repaired manually/separately -- this sweep is the CODE fix so the failure
+mode never silently recurs.
 """
 
 from __future__ import annotations
@@ -99,7 +142,7 @@ import tempfile
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Final, Literal, cast
 
@@ -185,6 +228,16 @@ GAP_TYPE_BACKFILL_ONLY: Final[str] = "backfill_only"
 # `gap_type` tag.
 GAP_TYPE_PARTIAL_COVERAGE: Final[str] = "partial_coverage"
 
+# ★ Both-pipelines-dark fallback (2026-07-11) -- `GAP_SOURCE_RACE_CALENDAR` was
+# originally banei-only (running-style has no Ban-ei model, so there was
+# never an RS `races_observed` proxy to use there in the first place). It is
+# now ALSO the fallback oracle `_resolve_expected_races` reaches for on
+# jra/nar when RS's own `races_observed` proxy is itself 0 -- see that
+# function's own docstring for the residual blind-spot this closes (a day
+# where FP and RS are BOTH dark leaves the RS-vs-FP comparison with nothing
+# to compare against). No new gap_source constant needed: this is the exact
+# same tag/oracle, just reached via a second code path.
+
 # Default coverage-ratio threshold (percent, 0-100 scale) for
 # GAP_TYPE_PARTIAL_COVERAGE: a (date, category) with
 # `coverage_pct < DEFAULT_PARTIAL_COVERAGE_THRESHOLD` is flagged, even though
@@ -195,6 +248,21 @@ GAP_TYPE_PARTIAL_COVERAGE: Final[str] = "partial_coverage"
 # `--partial-coverage-threshold` flag, threaded through
 # `sync_production_range`'s `partial_coverage_threshold` parameter.
 DEFAULT_PARTIAL_COVERAGE_THRESHOLD: Final[float] = 80.0
+
+# ★ Self-heal sweep for interrupted invocations (2026-07-11) -- see
+# `_heal_stale_running_runs`'s own docstring for the full mechanics and
+# `sync_production_range`'s own docstring for the real incident this closes
+# (an interrupted process left 18 runs stuck `status=RUNNING` forever, tagged
+# `sync_base_logged=true`, hiding 54% of one experiment's volume from any
+# `status=FINISHED` filter). `DEFAULT_STALE_RUNNING_HOURS` = 6.0 was chosen
+# as comfortably longer than any real (date, category, model_version) sync
+# pass ever legitimately takes -- a run still RUNNING this long after its own
+# `start_time` can only be abandoned, never one still genuinely in progress.
+# Configurable via `sync-production`'s `--stale-running-hours` flag, threaded
+# through `sync_production_range`'s `stale_running_hours` parameter; the
+# sweep itself is skippable entirely via `--no-repair-stale-running`
+# (`repair_stale_running=False`).
+DEFAULT_STALE_RUNNING_HOURS: Final[float] = 6.0
 
 # Tags the champion-mismatch marker run (see _log_champion_gap below) is
 # identified/searched by -- keyed by (date, category, task), a THIRD distinct
@@ -269,6 +337,23 @@ class SyncProductionSummary:
     (no `trace_emit` call is ever made in that case). Per-trace emission
     failures are folded into `errors` (prefixed `...:trace-emit:...`), same
     as every other isolated failure family in this function.
+
+    `stale_running_healed` (2026-07-11) counts every run this call force-
+    terminated FINISHED via the startup self-heal sweep
+    (`_heal_stale_running_runs` -- see that function's own docstring and
+    `sync_production_range`'s own docstring's "SELF-HEAL" section for the
+    real incident this closes). This is a CALL-level total across BOTH
+    production-usage experiments (FP always; RS too, whenever this call's
+    `categories` includes an `RS_CATEGORIES` member), not scoped to any one
+    (date, category) -- the sweep runs exactly ONCE, before the date/category
+    loop even starts, since a stale run left over from a PRIOR call could
+    belong to any date that call covered, not necessarily one THIS call
+    revisits. Stays 0 whenever `repair_stale_running=False` (the sweep is
+    skipped entirely) or when the sweep simply found nothing old enough to
+    heal. A sweep failure (e.g. a transient tracking-store error) is folded
+    into `errors` (prefixed `stale-running-heal:...`), same as every other
+    isolated failure family in this function -- it never prevents the rest
+    of the call (date/category sync, gap checks) from proceeding.
     """
 
     dates_processed: int
@@ -284,6 +369,7 @@ class SyncProductionSummary:
     champion_gaps_detected: int
     traces_created: int
     traces_already_existed: int
+    stale_running_healed: int
     errors: list[str]
 
 
@@ -1312,17 +1398,39 @@ def _resolve_expected_races(
     rs_outcome: _CategoryDateOutcome | None,
     local_conn: db.ConnectionLike,
     date_str: str,
+    *,
+    fp_races_scheduled: int,
 ) -> tuple[int, str] | None:
     """Return `(expected_races, gap_source)` for the serving-gap check on
     (date_str, category) this call, or None when there is nothing to compare
     FP against this call.
 
-    jra/nar (`category in RS_CATEGORIES`): `expected_races` is this call's
-    RS sync `races_observed` for the same (date_str, category), tagged
+    jra/nar (`category in RS_CATEGORIES`), RS genuinely observed something
+    (`rs_outcome.races_observed > 0`): `expected_races` is this call's RS
+    sync `races_observed` for the same (date_str, category), tagged
     `GAP_SOURCE_RUNNING_STYLE`. `rs_outcome is None` (the RS sync itself
     failed/raised this call, see `sync_production_range`'s isolation) returns
     None outright -- an unknown RS race count must never be misread as "zero
     expected", which would incorrectly suppress a real gap.
+
+    jra/nar, BOTH pipelines dark (2026-07-11 -- closes a residual blind
+    spot): `rs_outcome.races_observed == 0` too, so the RS-vs-FP proxy has
+    nothing of its own to compare FP against (real examples: JRA
+    2026-06-13/14/20/21/28, `races_live == 0` for both finish-position AND
+    running-style simultaneously that day). Rather than reporting an
+    oracle of 0 from the RS proxy alone (which would make the caller's own
+    `expected_races > 0` gate silently treat a genuine outage the same as an
+    ordinary no-races day), this falls back to `fp_races_scheduled` -- the
+    SAME race-calendar oracle banei's own branch below uses
+    (`serve_eval.fetch_races_scheduled`, already computed once,
+    unconditionally, by `_sync_fp_category_date` for this exact (date_str,
+    category) and threaded down by the caller rather than re-queried here) --
+    tagged the same `GAP_SOURCE_RACE_CALENDAR`. When the calendar itself is
+    also empty (genuinely no races scheduled that day at all), this still
+    returns that 0 rather than None -- mirroring banei's own convention of
+    never special-casing a zero count -- since the caller's own
+    `expected_races > 0` gate already treats that correctly as "not a gap"
+    without this function needing to encode that rule itself.
 
     banei: running-style has no Ban-ei model at all (see `RS_CATEGORIES`), so
     there is no RS-served count to compare against -- `expected_races`
@@ -1338,19 +1446,20 @@ def _resolve_expected_races(
     ValueError otherwise, so by this point `category` is guaranteed to be one
     of the two branches below.
 
-    Left entirely UNCHANGED by the 2026-07-11 `GAP_TYPE_PARTIAL_COVERAGE`
+    Otherwise UNCHANGED by the 2026-07-11 `GAP_TYPE_PARTIAL_COVERAGE`
     addition (see that constant's own module-level comment): that new check
-    uses a DIFFERENT, more direct oracle (`fp_outcome.races_scheduled`, via
-    `serve_eval.fetch_races_scheduled` -- the real jvd_ra/nvd_ra race
-    calendar for ALL THREE categories, not an RS-observed proxy) computed
-    independently in `_sync_fp_category_date`, so this function's own
-    jra/nar RS-proxy oracle and banei race-calendar oracle keep exactly
-    their pre-existing behavior and callers.
+    reads `fp_outcome.races_scheduled` directly off `fp_outcome` (never
+    calling this function at all), so this function's own oracle selection
+    keeps its pre-existing shape -- the only change here is the new
+    both-dark branch above, which reuses the SAME value rather than
+    introducing a second, independent query.
     """
     if category in RS_CATEGORIES:
         if rs_outcome is None:
             return None
-        return rs_outcome.races_observed, GAP_SOURCE_RUNNING_STYLE
+        if rs_outcome.races_observed > 0:
+            return rs_outcome.races_observed, GAP_SOURCE_RUNNING_STYLE
+        return fp_races_scheduled, GAP_SOURCE_RACE_CALENDAR
     return serve_eval.fetch_banei_race_count(local_conn, date_str), GAP_SOURCE_RACE_CALENDAR
 
 
@@ -1457,6 +1566,88 @@ def _log_champion_gap(
     client.set_terminated(run_id, status="FINISHED")
 
 
+# ── Self-heal: stale RUNNING runs from an interrupted invocation ───────────
+#
+# Real incident (2026-07-11): an interrupted `sync-production` process (killed
+# mid-loop) left 18 runs in the two production-usage experiments tagged
+# `sync_base_logged=true` but stuck `status=RUNNING` forever -- every run this
+# module creates is left FINISHED at the end of its own model_version-group
+# iteration (see `_sync_fp_category_date`'s own docstring), but a process
+# killed BETWEEN `_log_base_tracking` setting that tag and this module's own
+# `client.set_terminated(...)` call a few lines later never reaches that
+# statement. This hid 54% of that experiment's volume from any
+# `status=FINISHED` filter/dashboard. `sync_production_range` runs this sweep
+# ONCE, at the very start of every call (see its own docstring), rather than
+# fixing the specific 18 already-stuck runs itself (a separate, one-time
+# manual repair, out of scope here) -- this is the CODE fix so the same
+# failure mode never silently recurs.
+
+_STALE_RUNNING_SEARCH_FILTER: Final[str] = (
+    f"attributes.status = 'RUNNING' AND tags.{SYNC_BASE_LOGGED_TAG} = '{TRUE_STR}'"
+)
+
+
+def _stale_running_cutoff_ms(hours: float) -> int:
+    """Return the epoch-millisecond cutoff for the self-heal sweep: a run
+    with `run.info.start_time` older (smaller) than this value has been
+    RUNNING for at least `hours` hours and is old enough to be considered
+    abandoned rather than still genuinely in progress.
+
+    Always computed against the REAL wall clock (`datetime.now(UTC)`) --
+    unlike e.g. `timeline.upsert_timeline_point`'s historical-date metric
+    timestamps, there is no "as-of a past date" notion for this sweep: it
+    always answers "how stale is this run RIGHT NOW", at the moment
+    `sync_production_range` happens to run.
+    """
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
+    return int(cutoff.timestamp() * 1000)
+
+
+def _heal_stale_running_runs(client: MlflowClient, experiment_id: str, cutoff_ms: int) -> int:
+    """Force-terminate FINISHED every run in `experiment_id` that is BOTH
+    still `status="RUNNING"` AND has `run.info.start_time < cutoff_ms`
+    (searched via `_STALE_RUNNING_SEARCH_FILTER`, which additionally requires
+    `sync_base_logged=true` -- see that constant's own comment for why this
+    scopes the sweep to exactly the run family the real incident hit, never
+    the marker-run families). Returns the count healed.
+
+    Paginates via `page_token` until exhausted, mirroring
+    `backfill_traces._find_evaluated_runs`'s exact idiom -- the real store
+    could plausibly accumulate more stuck runs than fit in one page over a
+    long-enough outage.
+
+    The `run.info.status == "RUNNING"` check is deliberately re-verified
+    here in code, not left to the search filter alone: this keeps the
+    function's own contract self-evidently correct (a caller reading this
+    function never has to trust an external filter string to know it will
+    never touch an already-FINISHED run), and is exercised directly by this
+    module's own test suite via a monkeypatched `search_runs` returning a
+    mixed RUNNING/FINISHED result set.
+
+    Never called with `cutoff_ms` computed from anything other than
+    `_stale_running_cutoff_ms` in practice -- passed in rather than computed
+    here so a caller (or a test) can supply a deterministic value without
+    monkeypatching wall-clock time.
+    """
+    healed = 0
+    page_token: str | None = None
+    while True:
+        page = client.search_runs(
+            [experiment_id],
+            filter_string=_STALE_RUNNING_SEARCH_FILTER,
+            max_results=1000,
+            page_token=page_token,
+        )
+        for run in page:
+            if run.info.status == "RUNNING" and run.info.start_time < cutoff_ms:
+                client.set_terminated(run.info.run_id, status="FINISHED")
+                healed += 1
+        page_token = page.token
+        if not page_token:
+            break
+    return healed
+
+
 def sync_production_range(
     client: MlflowClient,
     date_from: str,
@@ -1465,6 +1656,8 @@ def sync_production_range(
     *,
     emit_traces: bool = True,
     partial_coverage_threshold: float = DEFAULT_PARTIAL_COVERAGE_THRESHOLD,
+    repair_stale_running: bool = True,
+    stale_running_hours: float = DEFAULT_STALE_RUNNING_HOURS,
     neon_connect: Callable[[], db.ConnectionLike] = db.connect_racing_neon,
     local_connect: Callable[[], db.ConnectionLike] = db.connect_local_replica,
 ) -> SyncProductionSummary:
@@ -1547,6 +1740,23 @@ def sync_production_range(
     serving is sparse by design (see `_sync_fp_category_date`'s own
     docstring) -- only a genuine EXPECTED-but-not-LIVE mismatch is a gap.
 
+    ★ Both-pipelines-dark fallback (2026-07-11, see `_resolve_expected_races`'s
+    own docstring for the full three-way branch): the jra/nar RS-vs-FP
+    comparison above assumes RS itself observed something to compare FP
+    against. On a day where RS ALSO observed zero races (real examples: JRA
+    2026-06-13, 06-14, 06-20, 06-21, 06-28 -- `races_live == 0` for BOTH
+    finish-position and running-style simultaneously), that RS proxy is
+    itself 0, so the comparison had nothing to compare against and never
+    fired at all, even though races may genuinely have been scheduled that
+    day. `_resolve_expected_races` now falls back, in exactly that case, to
+    `fp_outcome.races_scheduled` -- the SAME race-calendar oracle already
+    used for banei -- so a genuinely-abandoned day still gets checked
+    against "were races actually scheduled" instead of silently passing.
+    `gap_type` is still selected the same way as before (`GAP_TYPE_NO_ROWS`
+    vs `GAP_TYPE_BACKFILL_ONLY`, off `fp_outcome.races_observed`); only the
+    `gap_source` differs (`GAP_SOURCE_RACE_CALENDAR` instead of
+    `GAP_SOURCE_RUNNING_STYLE`) on the days this fallback is what fired.
+
     The check reads `fp_outcome.races_live`, not `fp_outcome.races_observed`:
     a date with FP rows that are ALL backfill (delayed re-predictions, see
     `serve_eval.partition_live_backfill`) previously looked "served" even
@@ -1612,6 +1822,32 @@ def sync_production_range(
     detected` counting how many (date, category, task) triples this call
     observed, and isolated the same way.
 
+    ★ SELF-HEAL sweep for interrupted invocations (2026-07-11, see
+    `_heal_stale_running_runs`'s own docstring for the mechanics): BEFORE any
+    date/category is visited, this function runs that sweep once against
+    `config.EXPERIMENT_FP_PRODUCTION_USAGE` (always) and
+    `config.EXPERIMENT_RS_PRODUCTION_USAGE` (only when `categories` includes
+    an `RS_CATEGORIES` member -- preserving this function's own "never touch
+    the RS experiment for an RS-ineligible-only call" invariant, same
+    rationale as the lazy `rs_experiment_id` resolution below), gated by
+    `repair_stale_running` (default True). The real incident this closes: an
+    interrupted process left 18 runs tagged `sync_base_logged=true` stuck
+    `status=RUNNING` forever, hiding 54% of one experiment's volume from any
+    `status=FINISHED` filter. Any such run whose `start_time` is older than
+    `stale_running_hours` (default `DEFAULT_STALE_RUNNING_HOURS` = 6.0,
+    configurable via the `sync-production` CLI's `--stale-running-hours`
+    flag) is force-terminated FINISHED via `client.set_terminated` -- old
+    enough that it can only be genuinely abandoned, since this whole call's
+    OWN runs do not exist yet at the moment the sweep runs, and a
+    realistically-overlapping second invocation would be at most minutes
+    old, nowhere near the threshold. `summary.stale_running_healed` counts
+    how many runs this call healed (across both experiments); a sweep
+    failure is isolated (same `_ISOLATED_EXCEPTIONS`, folded into
+    `summary.errors`) exactly like every other failure point in this
+    function, never aborting the date/category loop that follows. Pass
+    `repair_stale_running=False` (the CLI's `--no-repair-stale-running`) to
+    skip the sweep entirely for this call.
+
     Raises ValueError for an invalid `date_from`/`date_to` (see
     `timeline.validate_yyyymmdd`) or an inverted range (`date_to < date_from`).
     """
@@ -1633,7 +1869,50 @@ def sync_production_range(
     champion_gaps_detected = 0
     traces_created = 0
     traces_already_existed = 0
+    stale_running_healed = 0
     errors: list[str] = []
+
+    # Both experiment ids are resolved lazily (on first actual use) rather
+    # than eagerly up front, so requesting e.g. categories=("banei",) --
+    # which is FP-eligible but never RS-eligible -- never creates the RS
+    # production-usage experiment at all. The self-heal sweep just below is
+    # the ONE exception on the FP side: it always needs the FP experiment
+    # (every `categories` value this module ever syncs is FP-eligible), so
+    # it is resolved right here rather than duplicating a second lazy path.
+    fp_experiment_id: str | None = None
+    rs_experiment_id: str | None = None
+
+    # ★ Self-heal sweep for interrupted invocations (2026-07-11) -- see this
+    # module's own docstring's "SELF-HEAL" section and
+    # `_heal_stale_running_runs`'s own docstring for the mechanics. Runs
+    # exactly ONCE, here, before any date/category is visited -- a stale run
+    # left over from a PRIOR call could belong to any date that call
+    # covered, so there is no natural "per (date, category)" home for this
+    # sweep the way every other check below has one. Isolated per experiment
+    # (same `_ISOLATED_EXCEPTIONS` as every other failure point in this
+    # function), so a transient failure healing one side never blocks the
+    # other side or the date/category loop that follows.
+    if repair_stale_running:
+        stale_running_cutoff_ms = _stale_running_cutoff_ms(stale_running_hours)
+        try:
+            fp_experiment_id = get_or_create_experiment(
+                client, config.EXPERIMENT_FP_PRODUCTION_USAGE
+            )
+            stale_running_healed += _heal_stale_running_runs(
+                client, fp_experiment_id, stale_running_cutoff_ms
+            )
+        except _ISOLATED_EXCEPTIONS as exc:
+            errors.append(f"stale-running-heal:finish-position: {exc}")
+        if any(category in RS_CATEGORIES for category in categories):
+            try:
+                rs_experiment_id = get_or_create_experiment(
+                    client, config.EXPERIMENT_RS_PRODUCTION_USAGE
+                )
+                stale_running_healed += _heal_stale_running_runs(
+                    client, rs_experiment_id, stale_running_cutoff_ms
+                )
+            except _ISOLATED_EXCEPTIONS as exc:
+                errors.append(f"stale-running-heal:running-style: {exc}")
 
     # Built ONCE for this whole call (never per-date/per-category), from
     # `client`'s OWN explicit tracking_uri -- see `trace_emit.
@@ -1661,12 +1940,6 @@ def sync_production_range(
 
     neon_conn = neon_connect()
     local_conn = local_connect()
-    # Both experiment ids are resolved lazily (on first actual use) rather
-    # than eagerly up front, so requesting e.g. categories=("banei",) --
-    # which is FP-eligible but never RS-eligible -- never creates the RS
-    # production-usage experiment at all.
-    fp_experiment_id: str | None = None
-    rs_experiment_id: str | None = None
     with trace_emit.job_trace(
         job_tracing_client,
         timelines_experiment_id,
@@ -1857,7 +2130,11 @@ def sync_production_range(
 
                     try:
                         expected = _resolve_expected_races(
-                            category, rs_outcome, local_conn, date_str
+                            category,
+                            rs_outcome,
+                            local_conn,
+                            date_str,
+                            fp_races_scheduled=fp_outcome.races_scheduled,
                         )
                     except _ISOLATED_EXCEPTIONS as exc:
                         errors.append(f"{date_str}:{category}:serving-gap-expected: {exc}")
@@ -1921,5 +2198,6 @@ def sync_production_range(
         champion_gaps_detected=champion_gaps_detected,
         traces_created=traces_created,
         traces_already_existed=traces_already_existed,
+        stale_running_healed=stale_running_healed,
         errors=errors,
     )
