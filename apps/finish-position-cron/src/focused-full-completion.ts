@@ -101,11 +101,24 @@ const isNarTransformerBlendEnabled = (env: Env): boolean => {
   return normalized !== "0" && normalized !== "false" && normalized !== "off";
 };
 
-const expectedModelVersion = (
-  category: PredictCategory,
-  entries: readonly CatalogEntry[],
-  env: Env,
-): string => {
+interface ExpectedModelVersionParams {
+  category: PredictCategory;
+  entries: readonly CatalogEntry[];
+  env: Env;
+  keibajoCode: string;
+}
+
+// Mirrors cell_routing.json's JRA rules, in the SAME first-match-wins order:
+// (1) kyoso_joken_code=703, (2) dirt + f_le10 + kyoso_joken_code=005, (3)
+// venue=02. Rules 1/2 are mutually exclusive (a race carries exactly one
+// kyoso_joken_code) so their relative check order never matters, but rule 3
+// (venue) is a strictly LOWER-priority fallback -- a venue=02 race that ALSO
+// matches rule 1 or 2 must still resolve to that higher-priority variant, not
+// jockey-pedigree269 by virtue of venue alone.
+const JRA_VENUE_703_KEIBAJO_CODE = "02";
+
+const expectedModelVersion = (params: ExpectedModelVersionParams): string => {
+  const { category, entries, env, keibajoCode } = params;
   if (category === "nar") {
     return isNarTransformerBlendEnabled(env)
       ? NAR_TRANSFORMER_MODEL_VERSION
@@ -127,6 +140,9 @@ const expectedModelVersion = (
   if (entries.some((entry) => entry.kyosoJokenCode?.trim() === "703")) {
     return JRA_703_MODEL_VERSION;
   }
+  if (keibajoCode.padStart(2, "0") === JRA_VENUE_703_KEIBAJO_CODE) {
+    return JRA_703_MODEL_VERSION;
+  }
   return JRA_DEFAULT_MODEL_VERSION;
 };
 
@@ -138,7 +154,12 @@ export const isFocusedFullPredictionComplete = async (
   const source = sourceForCategory(params.category);
   const kaisaiNen = params.runYmd.slice(0, RUN_YMD_YEAR_END);
   const kaisaiTsukihi = params.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_DAY_END);
-  const modelVersion = expectedModelVersion(params.category, entries, params.env);
+  const modelVersion = expectedModelVersion({
+    category: params.category,
+    entries,
+    env: params.env,
+    keibajoCode: params.keibajoCode,
+  });
   const kettoTorokuBangos = entries.map((entry) => entry.kettoTorokuBango);
   const sql = neon(params.env.NEON_DATABASE_URL);
   const result: unknown = await sql.query(

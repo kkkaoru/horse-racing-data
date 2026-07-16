@@ -129,6 +129,65 @@ test("routes JRA 703 and prior-corner races from raw Catalog fields", async () =
   expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013");
 });
 
+test("routes JRA venue 02 (Hakodate) to jockey-pedigree269 with no other special conditions", async () => {
+  setCatalogRows(buildCatalogRows(11));
+  queryMock.mockResolvedValue([{ actual_rows: 11 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+});
+
+test("routes an un-padded venue 2 the same as venue 02", async () => {
+  setCatalogRows(buildCatalogRows(11));
+  queryMock.mockResolvedValue([{ actual_rows: 11 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "2",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269");
+});
+
+test("prior-corner-005 outranks the venue 02 fallback when a race matches both", async () => {
+  setCatalogRows([
+    {
+      ...buildCatalogRows(1)[0],
+      kyoso_joken_code: "005",
+      shusso_tosu: 8,
+      track_code: "2A",
+    },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "03",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v10-prior-corner274-2013");
+});
+
+test("a non-venue-02 JRA race with no special conditions keeps the category default", async () => {
+  setCatalogRows(buildCatalogRows(14));
+  queryMock.mockResolvedValue([{ actual_rows: 14 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "07",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
+});
+
 test("routes ban-ei grade E through the ban-ei Catalog filter", async () => {
   setCatalogRows([{ ...buildCatalogRows(1)[0], grade_code: "E" }]);
   queryMock.mockResolvedValue([{ actual_rows: 1 }]);
