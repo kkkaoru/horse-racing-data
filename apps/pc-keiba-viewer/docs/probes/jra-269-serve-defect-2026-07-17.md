@@ -431,3 +431,42 @@ package coverage 99.63/96.75/100/99.77 (全指標95%超)、tsc/oxlint clean、
   実測ではなく、Neon の全 269 行が raw-Catalog 化以前のものである以上、
   §7.1 の smoke test 結果が出るまでは「269 は健全」と断定もしない —
   **evaluated-but-inconclusive、smoke test 待ち**として記録する。
+
+## 8. Deploy 実行記録 (team-lead 承認、2026-07-17)
+
+team-lead から本日の USER goal「デプロイをこまめに」に基づき deploy 権限を
+明示付与された。事前チェック (git status clean for
+apps/finish-position-predict-container + apps/finish-position-cron、
+`.dockerignore` の modified 状態は既に別 agent が `03a127f7` で commit 済み
+で無関係と確認) 通過後、`cd apps/finish-position-cron && bun run deploy --
+--containers-rollout immediate` を実行。
+
+- **デプロイ前 baseline**: Worker version `6a35ccff-a1ac-4c53-8053-acbbec5c9380`
+  (作成 2026-07-14T19:23:54.313Z)、container image tag `6a35ccff`。
+- **デプロイ後**: Worker **Current Version ID:
+  `48813ea2-f693-49f9-875b-732d55e9f109`**、container image tag `48813ea2`
+  (Application ID `a0348266-3050-47d4-9bad-b04086c1a02b`)。含まれる commit
+  は本 doc の 57a4cd7f (feature_guard.py)、7807e6cd (venue02 completion fix)、
+  0ecc0c39 (doc) に加え、他 agent の並行 commit 全て (deploy 時点の HEAD
+  `af02ca13`)。
+- **デプロイ検証**: health endpoint `GET
+https://finish-position-cron.kaoru.workers.dev/` → `{"ok":true,...}` HTTP
+  200。`wrangler containers list` は deploy 直後 `provisioning` → 数分後
+  `ready` (LIVE INSTANCES=7) に遷移し安定。
+- **rollback 手順**: `git revert` で該当 commit を打ち消した上で同じ
+  `bun run deploy -- --containers-rollout immediate` を再実行するだけ
+  (config-only ではなくコード変更を伴う fix のため secret flip 型の
+  instant-rollback は不可 — 通常の revert+redeploy パス)。緊急停止のみ
+  必要な場合は `wrangler containers list` の Application ID を使い旧
+  image tag `6a35ccff` へ手動ロールバック可能。
+
+### 8.1 Post-deploy smoke (進行中)
+
+デプロイ完了直後、2026-06-13 venue02 R01 (完全欠落レース) への admin
+focused-full を再トリガー → `status: "accepted"`。続けて team-lead 指定の
+Cluster B 完了済みレース (2026-07-12 venue02 R02) にも同時トリガーしたが、
+`status: "busy"` (前者がまだ per-category slot を占有中のため、
+`_claim_focused_full_slot` の設計通り) — 1回目のレース完了後に取り直しが
+必要。1回目の結果は本 doc commit 時点でまだ Neon に反映されていない
+(read-only ポーリング継続中)。結果判明次第、本節を追記し team-lead へ
+report する。
