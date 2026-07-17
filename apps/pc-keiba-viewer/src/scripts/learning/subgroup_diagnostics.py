@@ -316,7 +316,20 @@ def _ndcg_per_race(joined: pl.DataFrame) -> pl.DataFrame:
 
 
 def _top1_per_race(joined: pl.DataFrame) -> pl.DataFrame:
-    """Per-race top1 hit: the predicted-#1 horse finishes 1st."""
+    """Per-race top1 hit: the predicted-#1 horse finishes 1st.
+
+    Cross-harness parity note (bug investigation B, 2026-07-17): "#1" here
+    is resolved by re-ranking `predicted_rank` via `.rank("ordinal")`, not by
+    a literal `predicted_rank == 1` filter. This is intentional and tested
+    (see test_evaluate_subgroup_top1_tie_uses_first_in_stable_order) so that
+    a gap in `predicted_rank` (e.g. an upstream-filtered horse) doesn't
+    silently make every placeN check return False for the rest of the race.
+    Other harnesses that reimplement this metric inline (retest_wf.py,
+    common_eval.py, serve_accuracy_report.py) use a direct value comparison
+    instead and do NOT re-rank around gaps -- see
+    docs/probes/metric-harness-parity-audit-2026-07-17.md for the full
+    empirical comparison. Both behaviors agree whenever `predicted_rank` is
+    already a clean, gap-free 1..N sequence (the normal case)."""
     races = joined.select("race_id").unique()
     hits = (
         joined.filter(pl.col("predicted_rank").is_not_null())
@@ -351,6 +364,25 @@ def _top3_box_per_race(joined: pl.DataFrame) -> pl.DataFrame:
 
     Only races with >=3 scored finishers and >=3 predicted horses qualify; others
     are recorded as a miss (False), matching the scalar guard.
+
+    Cross-harness parity note (bug investigation B, 2026-07-17): `actual_top3`
+    is derived via `.rank("ordinal")` on `finish_position`. For a genuine
+    dead-heat tie (two horses sharing the same finish_position, e.g. both
+    officially 3rd), ordinal rank breaks the tie by row order rather than
+    treating the boundary as ambiguous -- this can register a "lucky" hit or
+    miss depending on incidental row order, confirmed empirically to diverge
+    from retest_wf.py/common_eval.py (which use a direct
+    `finish_position <= 3` count/set check: any tie at the boundary makes the
+    actual-top3 set larger than 3, so it can never equal the exactly-3
+    predicted set, and the race is always scored a miss). This module's
+    behavior is deliberate and covered by
+    test_evaluate_subgroup_top3_box_tie_uses_stable_order, but that test only
+    asserts the vectorized code matches this module's own scalar reference
+    loop -- it does not independently establish which tie-break convention is
+    the "correct" one from a race-result-semantics standpoint. See
+    docs/probes/metric-harness-parity-audit-2026-07-17.md for the full
+    empirical comparison across all four harnesses; not changed here pending
+    a decision on which behavior should be canonical.
     """
     races = joined.select("race_id").unique()
     pred_top3 = (

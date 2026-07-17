@@ -352,6 +352,22 @@ def aggregate_fp_metrics(
     Returns (top1_hits, place2_hits, place3_hits, fukusho_2p_hits, top3_box_hits).
     fukusho_2p: whether *any* of the predicted top-2 horses finished <=2.
     top3_box: whether predicted ranks 1, 2, and 3 all finished in the top 3.
+
+    Cross-harness parity note (bug investigation B, 2026-07-17): place2/place3
+    here are NOT the same metric as the identically-named place2/place3 in
+    the WF lever-testing harnesses (retest_wf.py, common_eval.py,
+    subgroup_diagnostics.py). Those check exact-slot accuracy -- "did my
+    predicted-#2/#3 pick finish exactly 2nd/3rd." This function instead
+    tracks whether the single #1 pick (pred_rank == 1) finished within the
+    top 2 / top 3 -- i.e. real 複勝 (fukusho/"place") betting semantics for
+    a single horse, cascaded across thresholds, matching this report's
+    production serve-accuracy-dashboard purpose. Confirmed empirically to
+    diverge from the WF-harness definition on ordinary (non-tied,
+    non-degenerate) races -- this is an intentional difference in what's
+    being measured, not a bug in either implementation. See
+    docs/probes/metric-harness-parity-audit-2026-07-17.md for the full
+    empirical comparison; do not compare these numbers directly against a
+    WF-harness "place2"/"place3" figure.
     """
     top1 = place2 = place3 = fukusho_2p = top3_box = 0
     for race in race_rows:
