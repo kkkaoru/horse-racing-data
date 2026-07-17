@@ -22,7 +22,60 @@ finish-position-prediction.ts(+test) / race-types.ts) は cherry-pick 時点で
 pc-keiba-viewer tsc` / `lint` / `format:check` / `test:coverage` を実行し、
 全て成功 (coverage: statements 99.36% / branches 97.36% / functions 99.14%
 / lines 99.39%、閾値 95% を全指標で超過、176 test files / 3945 tests pass)
-したことを確認して `git cherry-pick --continue` 相当のコミットで着地。
+したことを確認して `git cherry-pick --continue` 相当のコミットで着地
+(commit `7cdf6149`)。
+
+## 本番デプロイ・検証 (2026-07-18)
+
+`bun run --cwd apps/pc-keiba-viewer deploy:worker` でデプロイ。**Version ID
+`b11c772c-c3c5-4bf5-82d0-844f672c994b`** (`wrangler deployments list` で
+100% トラフィックの最新デプロイと確認済み)。URL:
+`https://pc-keiba-viewer.kkk4oru.com`。デプロイ前に `git status --porcelain
+apps/pc-keiba-viewer` が空であることを再確認 (`apps/sync-realtime-data` の
+別件 WIP は pc-keiba-viewer のビルド依存に含まれないことも
+`package.json` の workspace 依存を確認して検証済み)。
+
+**検証レース**: 2026-07-12 函館9R 北海ハンデキャップ
+(`/races/2026/07/12/02/09`)。grade_code='E' かつ venue='02' (Hakodate) で
+案 (b) の対象、かつ `jra-269-serve-defect-2026-07-17.md` の Cluster B
+劣化ウィンドウ (07-12 05:51-05:52 UTC 生成) に含まれる 40 レースの一つで
+predicted_score stddev を直接算出すると **0.0795**（Neon 本番テーブルを
+直接 SQL で読んで確認）— 低確信度側のしきい値 1.3 を明確に下回る、実デー
+タでの境界動作確認に適したレース。
+
+Cloudflare Access 越しの検証のため、`.env.local` の
+`PC_KEIBA_ACCESS_CLIENT_ID`/`_SECRET` を注入するローカル一時プロキシ
+(scratchpad 限定、リポジトリ非追跡) を経由して chrome-devtools MCP セッシ
+ョンで実ページを操作。結果:
+
+- ページロード直後に「アーモンドAI予想を利用しますか」の confirm()
+  ダイアログが出る (既存機能、本検証と無関係) → dismiss して継続。
+- `document.querySelector('.finish-prediction-confidence-badge')` →
+  1 件、テキスト **「予測の自信度: 低」**、class
+  `finish-prediction-confidence-badge-low`。stddev 0.0795 → low tier
+  というコード上の期待値と一致。
+- `document.querySelector('.finish-prediction-upset-warning-badge')` →
+  1 件、テキスト **「⚠ 荒れやすい傾向のレース」**。
+- 両バッジはレース単位の予測テーブル直上に並んで表示され、
+  予想着順 (predicted_rank) は着順予測スコア降順のまま不変
+  (1.00/0.92/0.85/0.77/0.69…) — 表示専用で順位に影響しないことを実データ
+  で確認。
+- コンソールに WebSocket handshake 501 (`trends/live` /
+  `paddock/live`) と 504 / `ERR_INCOMPLETE_CHUNKED_ENCODING`
+  (`horse-weights-stream`, `time-score`, `condition`) のエラーが出たが、
+  **すべて検証用一時プロキシの制約が原因と切り分け済み**: プロキシは
+  upgrade リクエストを明示的に 501 で拒否し (WebSocket 中継未実装)、
+  レスポンスを `.text()` でバッファするため真のストリーミングを壊し、
+  8 秒のハード abort タイムアウトを持つ。`time-score`
+  (200, 472,928 bytes) と `condition` (200, 47,275 bytes) は本番へ直接
+  (プロキシ経由せず、WAF 対策の `User-Agent: curl/8.7.1` 付きで) リクエス
+  トして問題なく 200 で返ることを個別に確認 — 本番側の欠陥ではない。
+  `paddock/live`/`trends/live`/`horse-weights-stream` はこの badge 機能
+  と無関係な既存のリアルタイム機能で、今回の検証スコープ外。
+- スクリーンショット: 両バッジとテーブル上部を含む viewport
+  キャプチャあり (scratchpad 保存、リポジトリには含めず)。
+
+以上により (a)/(b) は実データ・本番環境で意図どおり動作していることを確認。
 
 ## 0. なぜ今この角度か
 
