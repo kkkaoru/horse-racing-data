@@ -90,6 +90,29 @@ Exists, partially free, but fragmented with real practical costs:
 
 ---
 
+## Update (2026-07-17, additional investigation C): `jvd_br` breeder probe — REJECT, probe stage
+
+Team-lead assigned a quick follow-up probe on the #2 priority candidate above. Verdict: **REJECT, clean, sign-stable but below the magnitude bar** — matches this campaign's consistent connections-family prior exactly.
+
+**Join path, verified before building**: `jvd_se.ketto_toroku_bango` → `jvd_um.ketto_toroku_bango` → `jvd_um.seisansha_code` → `jvd_br`. 100% coverage confirmed at the raw-Postgres level (142,942/142,942 JRA starter rows 2023-2025 join to a non-placeholder `seisansha_code`).
+
+**Features built**: `breeder_win_rate_eb`/`breeder_top3_rate_eb` (EB-shrunk, k=20 pseudo-count, global-prior smoothing) + `breeder_n_starts` (n-support), via strictly-causal 10-year trailing window (`race_date < t.race_date`) over 2013-2025 JRA starters (652,822 rows).
+
+**Bug caught and fixed before trusting the result**: the first run showed only 26.5% match coverage when joining the breeder features onto the offline augmented store (vs. the 100% raw-PG join) — a zero-padding mismatch (`umaban` was a zero-padded string on the breeder side, an unpadded `int32` on the store side, so only two-digit draw numbers happened to match by coincidence). Fixed by normalizing both sides to `int` before the merge; coverage recovered to 74.5% (the residual gap is the augmented store's own pre-existing population not being a strict 100% superset of every raw JRA starter row, not a new defect). Flagging this because a broken join at 26.5% coverage could easily have produced a spuriously different (biased-subsample) result, and this is exactly the kind of harness bug this campaign has been burned by before.
+
+**Probe (odds-controlled partial Spearman vs `finish_position`, control = `[tansho_ninkijun, sim_owner_win_rate]` per team-lead's spec — sim_owner_win_rate as the nearest-neighbor existing connections feature, not jockey/trainer)**:
+
+| Candidate              | 2023    | 2024    | 2025    | max\|partial ρ\| | Sign-stable?       | Pass?               |
+| ---------------------- | ------- | ------- | ------- | ---------------- | ------------------ | ------------------- |
+| `breeder_win_rate_eb`  | +0.0138 | +0.0156 | +0.0155 | 0.0156           | Yes (all positive) | No — below 0.02 bar |
+| `breeder_top3_rate_eb` | +0.0092 | +0.0101 | +0.0122 | 0.0122           | Yes (all positive) | No — below 0.02 bar |
+
+Raw Spearman (uncontrolled) is substantial and in the expected direction (-0.10 to -0.14 vs `finish_position` — negative is "good," higher breeder quality correlates with a better/lower finish number) but collapses to a small, sign-flipped residual once odds and owner are controlled for. This is the cleanest possible instance of this campaign's repeated finding: connections-adjacent signal is real at the raw level but the market (and the already-live owner feature) already prices almost all of it in. **REJECT, DO-NOT-RETEST this construction.** Per the pre-registered protocol, closing at probe stage — no WF slot used.
+
+Artifacts: `apps/pc-keiba-viewer/tmp/jvd-br-breeder-probe-0717/{probe_breeder.py,breeder_features_2023_2025.parquet,probe_report.json}`.
+
+---
+
 ## Constraints honored
 
-Read-only throughout — no ingestion, no probes, no code, no WF training executed. All external fetches were to public pages only (no login, no paid-tier access attempted). No data deleted or written anywhere.
+Read-only throughout for the original survey — no ingestion, no probes, no code, no WF training executed. All external fetches were to public pages only (no login, no paid-tier access attempted). No data deleted or written anywhere. The breeder probe above (2026-07-17 follow-up) is the one exception, explicitly assigned as a separate, scoped, probe-stage-only task — no ingestion pipeline or WF training was built for it either.
