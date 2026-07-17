@@ -470,3 +470,74 @@ Cluster B 完了済みレース (2026-07-12 venue02 R02) にも同時トリガ�
 必要。1回目の結果は本 doc commit 時点でまだ Neon に反映されていない
 (read-only ポーリング継続中)。結果判明次第、本節を追記し team-lead へ
 report する。
+
+## 9. 過去日 smoke の限界確定 + 06-13 batch を preflight 主証拠として採用 (team-lead 最終判定)
+
+### 9.1 R01/R03 (2026-06-13 venue02) — 両方とも timeout、行ゼロ
+
+- R01 (06-13 venue02 R01): 20分超の poller 2 本が timeout、slot は最終的に解放
+  済み (別レースへの trigger が `busy` でなく `accepted` を返したことで確認) —
+  つまり pipeline 自体は完走した (クラッシュでなく) が、Neon に行を一切書か
+  なかった。
+- R03 (同日 venue02 R03、slot が空いたことを確認した上での再 trigger): 20分
+  ceiling で timeout、行ゼロ。R01 と同一の signature。
+- **live-audit による訂正**: 当初の「06-13 は corner-features 欠落日」仮説
+  (team-lead) は誤り — 06-13 の `race_entry_corner_features` は健全 (99.6%
+  filled、欠落5日リスト外)。真因は特定できなかったが、blackout 期の過去日
+  は odds/weight 等の「他 side データ」が当時のまま欠落している可能性が高く、
+  **feature_guard が意図通り劣化入力を遮断した結果である可能性が高い**と
+  team-lead は結論。「過去日 admin trigger による smoke は明日の JRA 健全性
+  の代理として構造的に不適切」と判定され、team-lead 主導で live 本番データ
+  を見る方式へ設計転換された (§9.2)。
+
+### 9.2 決定的証拠: deploy 後の 06-13 36-race バルクバッチ (2026-07-17 01:11 UTC)
+
+retroactive な「本日の NAR organic serving」調査中に発見。**本アカウントの
+admin trigger (R01/R03、いずれも単一レース scope) とは無関係**の書込:
+
+- **時刻**: 2026-07-17 01:11:03〜01:11:21 UTC (18秒間)。deploy (`48813ea2`、
+  2026-07-16 19:23:54 UTC 相当の Worker version 作成、container ready
+  19:29:38 UTC) の**確実に後**。
+- **範囲**: 2026-06-13、JRA venue 02/05/09 の 36 レース、498 行、全て
+  `jra-cb-v9-sim-2013-clean-jockey-pedigree269`。
+- **品質**: within-race score stddev **0.89〜1.76 (全 36 レースが 0.5 超、
+  0 件が閾値未満)** — Cluster B の 0.04〜0.16 とは対照的に完全に健全。
+
+**書込主の特定 (team-lead 指示、安価な範囲での調査)**:
+
+- D1 `finish_position_coverage_gap_events` を 00:50〜01:20 UTC の時間帯で
+  照会 → **0 件**。`run_ymd='20260717'` 全体でも **0 件**。
+- コード設計面でも self-heal は除外される: `listTodaysRaceSources()` は
+  `runYmd = getRunYmdJst(now)` (=今日) にのみ bound されたクエリで
+  `realtime_race_sources` を引く設計であり、**構造的に 06-13 のような
+  過去日を対象にすることが不可能** (§TL;DR で既述の通り、この設計は
+  07-11 付レースが Cluster B に混在していた説明にも使われた事実と同型)。
+- **結論: self-heal は 2 つの独立した根拠 (D1 ログ0件 + コード設計上不可能)
+  で除外**。書込主はそれ以外 — 同日並行して稼働していた他 agent の検証
+  作業 (`jra-champion-fresh2026h1-retrain-2026-07-17.md` の「264-race replay
+  parity vs current champion」gate 等、同じ admin trigger 経路を使い得る
+  作業が本キャンペーンの並行タスクとして存在) である可能性が最も高いが、
+  安価な範囲での特定はここで打ち切り、**「出所未特定・出力は健全」として
+  記録する**。
+
+**team-lead 最終判定 (2026-07-17 18:4x)**: この 06-13 36-race バルクバッチ
+(deploy 済み pipeline による、269 variant を含む、複数venue規模の実書込
+かつ全件健全) を、単発 NAR organic serving 確認よりも**強い**証拠として
+採用し、**preflight PASS** と判定。
+
+### 9.3 NAR refresh-cadence の観測 (副次発見、USER 判断事項化)
+
+本日 (2026-07-17) の実開催 NAR レース (keibajo 42/48/50、16:00 JST〜) を
+確認したところ、**全レースの `prediction_generated_at` が 2026-07-15 の
+まま**(T+2 日先読みの事前予測、`PREDICT_DAYS_AHEAD=2`)で、post 直前の
+新鮮な再スコアリングは 1 件も発生していなかった (18:20 JST 時点、複数
+レースが既に終了しているにもかかわらず)。
+
+原因: `COORDINATOR_ENABLED` (near-post rescore coordinator) が
+2026-07-11 17:37 JST から `"0"` のまま (`b20d676`、当時の理由は
+R2 feat-cache 未整備バグ — この根本原因は `e6111ca6` で既に修理済みだが、
+coordinator 自体は再有効化されていない)。**再有効化の要否は本キャンペーン
+の文脈外 (誰がなぜ 0 にしたか把握できる情報がない) のため、flag のみ行い
+flip はしない** — `campaign-summary-2026-07-17.md` §f ⑦ に USER 判断事項
+として記録した。JRA は明日 09:25/09:30 JST の同日朝 cron があるため、この
+「stale な事前予測がそのまま残る」問題の影響は NAR より小さいと見込まれる。
