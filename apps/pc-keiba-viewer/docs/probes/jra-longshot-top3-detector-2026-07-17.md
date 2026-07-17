@@ -3,7 +3,9 @@ probe: jra-longshot-top3-detector
 date: 2026-07-17
 category: jra
 method: per-horse binary classifier flagging market-undervalued (longshot) horses likely to finish top-3, evaluated as a detection/lift task with its own pre-registered gate — NOT a ranking-accuracy lever
-status: PRE-REGISTERED — design + gate fixed before any training; results pending
+status: PASS on the pre-registered bar, WITH A MATERIAL CAVEAT — lift is ~equivalent to a trivial "lowest-ninkijun-in-band" heuristic; see §5.4 before productizing on a "finds hidden value" framing
+mlflow_run_id: fa344cfb70a54c2cbf2f7452e09faf19
+mlflow_experiment: finish-position/longshot-detector
 ---
 
 # JRA Longshot Top-3 Detector (2026-07-17)
@@ -101,11 +103,15 @@ Built on top of the existing `tmp/candidate-eval-jra/augmented` store (same one
    ability columns (`speed_index_avg_5`, `career_win_rate`,
    `past_corner_progression_avg_5`, `pedigree_score_for_race`,
    `jockey_recent_win_rate`, `trainer_career_win_rate`, `weight_trend_5`,
-   `max(rs_p_nige, rs_p_senkou, rs_p_sashi)`), **minus** `tansho_ninkijun`.
-   Deliberately **pure arithmetic — no fitted weights, no model** — so it is
-   leak-free for every single row regardless of fold by construction (see the
-   leak-safety note in §2.1 on why the alternative, the cached champion CatBoost
-   score, was deliberately NOT used here).
+   `max(rs_p_nige, rs_p_senkou, rs_p_sashi)`). Implemented as
+   `tansho_ninkijun - ability_zmean_rank_in_race` (positive = the non-market
+   composite ranks this horse ahead of where the market has it — verified by
+   spot-check in §5.1). Deliberately **pure arithmetic — no fitted weights, no
+   model** — so it is leak-free for every single row regardless of fold by
+   construction (see the leak-safety note in §2.1 on why the alternative, the
+   cached champion CatBoost score, was deliberately NOT used here). A single
+   feature's sign is a monotonic transform LightGBM is invariant to either way,
+   so this is a documentation-clarity fix, not a design change post-results.
 4. **`volatility_score`** (`tmp/candidate-race-volatility/volatility_scores.parquet`,
    race-level, joined on `race_id`): a WF-trained, odds-free "will this race
    upset" score (#36). Confirmed fold-structured (`fold`/`in_sample` columns) —
@@ -201,12 +207,190 @@ winners better than chance, robustly across years and venues."
 
 ## 5. Results
 
-_PENDING EXECUTION._
+Feature build ran in 1.9s and independently reproduced the doc's own §1 numbers
+exactly (626,798 total rows; 358,454 longshot rows; 27,902 positives; 7.784%
+base rate), a useful cross-check that implementation and pre-registration are
+reading the same store the same way. All `PHYSICAL` (18) / `STYLE_PACE` (49) /
+`SPEED_TIME` (16) columns from `families.py`, all 7 named divergence columns
+plus the 3 `rs_p_*` columns, and every context column survive unchanged in the
+current 310-column store — zero drops.
+
+### 5.1 Leak-safety verification (as required by §2.1)
+
+- **`volatility_score`**: sampled `fold`/`in_sample` directly for 2023/2024/2025
+  rows — every single row in each blind year carries `in_sample=False` with the
+  matching `fold=oos_2023`/`oos_2024`/`oos_2025` label (genuinely held out
+  against its own year). All 2013-2022 rows (`in_sample=True`) were correctly
+  nulled pre-restriction (485,275 of 626,798). No blind-year row needed
+  nulling — the file was already fold-safe for this reuse.
+- **`ability_zmean_minus_mkt_rank`**: spot-checked the most extreme rows. The
+  most-positive examples are `tansho_ninkijun=18` horses the ability composite
+  ranked #1 in-race (max divergence, +17). The most-negative are
+  `tansho_ninkijun=1` favorites the composite ranked dead last (-17) — all
+  three sampled rows actually missed the board (finished 4th/4th/8th), a
+  concrete real-world confirmation the sign and construction behave as
+  intended.
+
+### 5.2 WF training
+
+9 LightGBM binary models (3 seeds x 3 folds) trained in 17.7s total, well
+inside a single foreground call, `is_unbalance=True`, exactly the fixed
+hyperparameters in §3 (no HPO). Memory checked before both the feature build
+(59% free) and training (53% free) — comfortably above the 15% floor.
+
+### 5.3 Pre-registered evaluation (§4)
+
+Pooled seed-averaged (2023-2025, N=79,618 longshot horse-rows / 10,263 races),
+bootstrap LB95 over 2000 race-level cluster resamples:
+
+| k   | metric | flagged% | base% |      lift | delta (pp) | LB95 (pp) |
+| --- | ------ | -------: | ----: | --------: | ---------: | --------: |
+| 1   | top3   |    16.53 |  7.72 | **2.14x** |      +8.81 |     +8.13 |
+| 1   | win    |     3.78 |  1.62 |     2.34x |      +2.16 |     +1.83 |
+| 1   | place2 |     5.24 |  2.50 |     2.10x |      +2.74 |     +2.34 |
+| 1   | place3 |     7.50 |  3.60 |     2.08x |      +3.90 |     +3.43 |
+| 2   | top3   |    14.90 |  7.72 | **1.93x** |      +7.18 |     +6.78 |
+
+Per-year top3 lift (k=1 / k=2): 2023 2.13x/1.96x — 2024 2.10x/1.90x — 2025
+2.19x/1.93x — stable across all 3 blind years. **Summer-4-venue**: 1.98x (k=1)
+/ 1.78x (k=2), LB95 +7.17pp / +5.97pp — does not collapse.
+
+**Cell scan** (n>=200 races, sort-before-mask): all 22 scanned cells
+(`keibajo_code` x10, `kyori_band` x4, `season_band` x4, `current_baba_condition`
+x4) clear >=1.5x on k=1 top3 lift, **every one with a positive LB95** (range
+1.60x-2.39x; weakest is `keibajo_code=02` at 1.60x / LB95+2.66pp). This
+uniformity across 22 independent cuts — not a mix of hits and misses — is
+itself evidence this is a real, broad effect rather than multiple-comparisons
+noise (a spurious pattern would show some cells clearing and others not; here
+every cell clears, by a wide and fairly consistent margin).
+
+Precision-recall: AUC-PR = 0.171 vs. 0.077 base rate (~2.2x). Calibration is
+strongly monotonic decile-over-decile but not absolutely calibrated
+(`is_unbalance=True` reweights the loss and distorts the absolute probability
+scale; rank-ordering, which is all top-k selection needs, is unaffected). Of
+the k=1 true positives (1,696 races), 388 were outright wins, 538 placed
+exactly 2nd, 770 placed exactly 3rd. Full tables:
+`apps/pc-keiba-viewer/tmp/longshot-detector-2026-07-17/eval_result.json`.
+
+**Verdict against the pre-registered bar (§4): PASS.** Both k=1 and k=2 clear
+
+> =1.5x in all 3 blind years, and neither collapses on the summer-4-venue cut
+> (>=1.2x required; both comfortably above it).
+
+### 5.4 Supplementary diagnostic (not pre-registered — run after seeing the PASS, to stress-test what's actually driving it)
+
+Because the pre-registered feature list deliberately includes raw market
+columns (§2 item 2, to let the tree learn its own market-vs-ability
+interaction), a natural question the pre-registered protocol does not answer
+on its own is _how much_ of the lift is genuine non-market signal versus the
+market's own within-band ordering restated. Three checks, run against the same
+blind-year data, kept in a clearly separate, non-pre-registered artifact
+(`sanity_vs_ninkijun_baseline_result.json`) rather than folded into §5.3:
+
+1. **Trivial baseline**: "flag the single lowest-`tansho_ninkijun` horse within
+   the longshot band, no model at all." This achieves **2.1525x** lift at k=1
+   — numerically _higher_ than the trained detector's 2.1411x, on the same
+   10,263-race population (both LB95 ranges are effectively identical: detector
+   LB95+8.13pp vs. baseline LB95+8.22pp).
+2. **Agreement**: the detector's k=1 pick agrees with this trivial rule in
+   **91.46%** of races. On the 876 races (8.5%) where they disagree, the
+   _naive rule wins_ (15.18% vs. 14.16% hit rate on that disagreement subset).
+3. **Feature importance** (fold-2025 model): `inverse_odds_implied_prob` alone
+   accounts for **39%** of total gain; the top 5 features are all pure
+   market/odds columns and together account for **~72%** of total gain. The
+   remaining ~100 non-market physical/style/speed/ability/volatility/venue
+   features collectively contribute the other ~25%, spread thin (each <1%).
+
+**Reading this honestly**: the pre-registered bar (lift over the longshot
+population's _own_ base rate) is met robustly and by a wide, cell-universal
+margin — that part of §5.3 is not in question. But the bar as specified does
+not distinguish "the model found hidden non-market value" from "the model
+mostly re-derives the fact that, even among horses the market has already
+written off, the market's own ordering still carries information" — and the
+diagnostic above shows it is overwhelmingly the latter. A bettor with the odds
+board and no model gets essentially the same result. This is a **materially
+different outcome from what the original USER ask was reaching for**
+("見つけられるように" implies surfacing something not already obvious from
+the odds themselves), even though it technically clears the gate as written.
 
 ## 6. Verdict
 
-_PENDING._
+**PASS on the pre-registered bar, with a caveat material enough to change the
+practical recommendation.** The detector is statistically real and robust — 3/3
+years, both k values, 22/22 cells, summer-4-venue included, no sign of
+multiple-comparisons noise. It would reliably do what it is measured to do if
+shipped. But §5.4 shows the mechanism is ~91% redundant with simply reading the
+odds board within the longshot band, and feature importance confirms market
+columns supply ~72% of the model's decision-making. This is not a discovery of
+market inefficiency; it is closer to a convenient triage tool ("which 1-2 of
+tonight's dozen no-hopers are least implausible") than to the "find what the
+market missed" framing the brief was reaching for.
 
-## 7. Productization proposal (only if bar clears)
+**Recommendation for the orchestrator**: two honest paths forward, not
+mutually exclusive —
 
-_PENDING._
+1. **Ship it as a triage aid with accurate framing** (per the productization
+   sketch below) — genuinely useful for a user scanning a full field, cheap to
+   build, statistically solid, as long as it is never described as "the model
+   found value the market missed." The pre-registered bar was met in good
+   faith and this is a legitimate, if modest, product outcome.
+2. **If genuine non-market-signal discovery is still wanted**, the next
+   iteration should change the _bar_, not just the model: strip all
+   market/odds columns from training entirely (forcing the model to rely on
+   physical/style_pace/speed_time/volatility/venue-prior only) and re-run the
+   same naive-ninkijun-baseline comparison — the real target metric should be
+   **incremental lift over the naive within-band favorite-picking baseline**
+   (currently ~0, arguably slightly negative), not lift over the longshot
+   population's raw base rate (which almost any reasonable ranking signal
+   clears, market-column-heavy or not). This is a materially harder bar and
+   was out of scope for the time budget here, but is the natural next
+   pre-registration if this thread continues.
+
+No deploy either way — reported to the orchestrator per the brief.
+
+## 7. Productization proposal (per option 1 above, if pursued)
+
+- **Storage**: a new, small Neon side-table (e.g. `race_longshot_flag`, keyed
+  like `race_finish_position_model_predictions` on
+  `model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango`)
+  rather than a new column on the existing predictions table — keeps this
+  cleanly additive and independently droppable, matching §0's "never touches
+  `predicted_rank`."
+- **Compute/serving**: piggyback on the existing `apps/finish-position-cron` ->
+  `FinishPositionPredictContainer` -> `predict_lib` pipeline as one more
+  scorer step restricted to `tansho_ninkijun >= 7` horses in that race,
+  upserting into the new table on the same cadence.
+- **Viewer surfacing**: reuse the existing badge pattern already in
+  `apps/pc-keiba-viewer/src/app/races/detail/runners-table.tsx` (the
+  blinker/surface-switch badge convention), shown only on the k=1 (optionally
+  k=1+k=2 as a lighter secondary badge) flagged horse per race. Given §5.4,
+  label it as something like "pick of the long shots" — a triage aid — not
+  any "value found" or "market missed this" framing, which the evidence does
+  not support.
+- **Deploy-checklist analogue**: this doesn't map onto the champion-model
+  deploy-rail checklist (no ranking model is being baked into a container
+  image or replacing anything). The equivalent minimum bar: (a) a real
+  full-train artifact + MLflow registration, (b) the new table + upsert
+  wiring, (c) a smoke test confirming the flag populates for a real upcoming
+  race before trusting it live, (d) rollback = stop writing / hide the badge
+  (materially lower risk than any ranking-affecting change, since
+  `predicted_rank` is never touched).
+- **k=1 vs k=2**: k=1 gives a cleaner single-badge UX and the higher lift;
+  k=2 could be a lighter secondary badge if more density is wanted. Both clear
+  the pre-registered bar; the choice is a product call, not a statistical one.
+
+## Artifacts
+
+- `apps/pc-keiba-viewer/tmp/longshot-detector-2026-07-17/labeled_features.parquet`,
+  `feature_columns.json`, `build_features_report.json` (Step 1)
+- `train_wf.py`, `train_wf_log.json`,
+  `models/seed{42,101,2026}/fold-{2023,2024,2025}/{model.txt,predictions.parquet}`
+  (Step 2)
+- `evaluate.py`, `eval_result.json` — the pre-registered evaluation (Step 3)
+- `sanity_vs_ninkijun_baseline.py`, `sanity_vs_ninkijun_baseline_result.json` —
+  supplementary, not pre-registered, but decisive for §5.4/§6
+- `build_mlflow_manifest.py`, `mlflow_manifest.json`, `verify_mlflow_run.py`
+  (Step 4)
+- MLflow run `fa344cfb70a54c2cbf2f7452e09faf19`
+  (`finish-position/longshot-detector`, independently read-back verified)
+- (not committed — `tmp/` per repo convention)
