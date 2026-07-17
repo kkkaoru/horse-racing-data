@@ -3,7 +3,8 @@
 - **Date**: 2026-07-18 (pilot kicked off late 2026-07-17 evening per team-lead's assignment)
 - **Category**: JRA finish-position. USER decision 5: "クッション値/含水率: cell単位で有効なら有効化" — pilot phase only tonight (ingestion + probe), no WF training, no cell-level adoption decision.
 - **Scope boundary, explicit**: this is a **bounded pilot**, not the full ingestion campaign. The permission question (JRA's copyright notice requires prior written approval for reuse beyond private use/citation — campaign-summary §f item ⑧) is a separate, parallel process; this pilot proceeds under "necessary minimum" data volume in the meantime, per team-lead's explicit framing ("許諾申請は§f記録済みの並行事項 — USER決定は進め、の意と解釈").
-- **Verdict**: **Two of three candidates show a real, cross-checked signal that is not explained by existing baba code or by the already-REJECTed `venue_precipitation` feature.** `turf_moisture_pct` passes both the primary target and a stricter robustness cross-check with consistent sign. `cushion_value` passes the primary target with a directionally-consistent (but sub-floor) cross-check. `dirt_moisture_pct` does **not** show a genuine signal — its nominal "pass" is an artifact of a weak 2-year sign-stability check and fails the robustness cross-check outright. **Recommendation: promote `turf_moisture_pct` (and/or `cushion_value`, near-redundant with it, see §3.4) to a WF-level confirmation next session; do not promote `dirt_moisture_pct` without materially more data.** No adoption decision made tonight — this is pilot+probe only, per explicit scope limit.
+- **Verdict (UPDATED 2026-07-18, post-WF)**: **CLOSED — REJECT.** The WF-level confirmation this §4 recommended for "next session" has now run, on the full historical backfill (1,580 rows, all 70 archive PDFs for the 4 summer venues, 2018-2026 — see §5), not the 10-PDF pilot sample below. Both candidate arms (`turf_moisture_pct` alone, and `turf_moisture_pct`+`cushion_value` together) **fail the §7.2 accept gate at every evaluation level** — pooled JRA-wide (n=10,365), the summer-4-turf primary-population restriction (n=1,380, 100% coverage), every one of 3 blind folds, and all 22 scanned cells (no §8.12 cell-conditional exception clears either). See §5 for the full numeric record, including a self-contained noise-floor diagnostic (a Nakayama cell where the candidate columns are 100%-NULL by construction still produced an individually-passing metric) and a fold-2024-driven-signal caveat consistent with this campaign's other fold-2024 anomaly findings. **No serve integration. This closes the probe** — do not re-open without materially new data (e.g. non-summer4 venue backfill) per the do-not-retest convention. The paragraph below is the original pilot-only verdict, kept for history.
+- **Original pilot verdict (2026-07-18, pre-WF)**: **Two of three candidates show a real, cross-checked signal that is not explained by existing baba code or by the already-REJECTed `venue_precipitation` feature.** `turf_moisture_pct` passes both the primary target and a stricter robustness cross-check with consistent sign. `cushion_value` passes the primary target with a directionally-consistent (but sub-floor) cross-check. `dirt_moisture_pct` does **not** show a genuine signal — its nominal "pass" is an artifact of a weak 2-year sign-stability check and fails the robustness cross-check outright. **Recommendation: promote `turf_moisture_pct` (and/or `cushion_value`, near-redundant with it, see §3.4) to a WF-level confirmation next session; do not promote `dirt_moisture_pct` without materially more data.** No adoption decision made tonight — this is pilot+probe only, per explicit scope limit.
 
 ---
 
@@ -155,9 +156,169 @@ Per team-lead's framing ("pass→WF昇格推奨(次セッション), fail→正�
 
 **No cell-level adoption decision was made or attempted tonight** — per explicit scope limit, this covers pilot ingestion + probe only. Daily ingestion accumulation continues per §1; the historical pilot and probe artifacts are ready inputs for a WF-training pass whenever that is scheduled.
 
+## 5. Walk-forward confirmation (full historical backfill) — 2026-07-18, same day
+
+This section is the "next session" WF confirmation §4 recommended. It ran the same day as the
+pilot, once the full historical backfill (below) was ready, per the campaign's per-race-granularity
+and cell-adoption-gate conventions used throughout this repo.
+
+### 5.1 Backfill scope (supersedes the §2 10-PDF pilot pull)
+
+Full detail: `apps/pc-keiba-viewer/tmp/cushion-moisture-backfill-2026-07-18/coverage_notes.md`.
+
+- **1,580 rows**, all **70** venue-year-meeting PDFs JRA's own archive lists for the 4 summer venues
+  (Sapporo/Hakodate/Fukushima/Kokura), **2018-07-27 .. 2026-04-26** — every archived meeting, not a
+  bounded one-meeting-per-year sample like §2's pilot pull.
+- **Publication start dates confirmed directly from JRA's own archive page text** (not assumed): the
+  year-index pages state, in Japanese, "含水率は2018年7月27日から、クッション値は2020年9月11日から公表"
+  ("moisture content published from 2018-07-27; cushion value published from 2020-09-11"). This was
+  independently cross-checked two more ways (archive-page HTTP 200/403 boundary at 2018, and the
+  clean non-null/null boundary observed in the parsed data itself at exactly those two dates) — see
+  coverage_notes.md §1.
+- Step-4 validation re-fetched and re-parsed the pilot's original 10 PDFs with an independently
+  written parser and found an **exact match on all 248 pilot rows** (plus 6 additional rows the
+  pilot's parser had silently dropped from one PDF due to a half-width-parenthesis quirk — kept, not
+  discarded). The pilot's 248 rows turned out to be a strict subset of this fuller pull with zero
+  unique information of their own (coverage_notes.md §4-5).
+- Honest gaps carried forward: Hakodate has zero 2018 rows (its 2018 meeting finished before the
+  2018-07-27 moisture-publication start — a genuine JRA source gap, not a fetch failure); 2026 is
+  partial-year-to-date for every venue; this pull remains summer-4-venues only (no
+  Tokyo/Nakayama/Kyoto/Hanshin/Chukyo/Niigata backfill was attempted).
+
+### 5.2 Harness design
+
+Script: `apps/pc-keiba-viewer/tmp/cushion-moisture-wf-2026-07-18/wf_cushion_moisture.py`.
+
+- **Two arms only**, as USER decision 5 + the §4 recommendation specified:
+  - `cushion_moisture_v1` = armB-250 (clean 250-feature base) + `turf_moisture_pct`
+  - `cushion_moisture_v2` = armB-250 + `turf_moisture_pct` + `cushion_value` (two independent raw
+    columns, not a hand-built combination — they are not co-published on the same clock time, see
+    §1.2)
+- **3 seeds** (42, 101, 2026) × **3 blind folds** (A=2023, B=2024, C=2025) = the same convention as
+  every other WF probe this campaign, n=10,365 JRA races pooled across all 3 blind years.
+- Copies the established, bug-fixed WF pattern from `tmp/candidate-masked-lever-retest/retest_wf.py`
+  byte-for-byte for `train_fold`/`predict_ranks`/`per_race_hits`/`paired`/`gate` — the **§7.2 accept
+  gate logic is unchanged**, not reimplemented: ≥2 of {top1, place2, place3} pass (delta ≥ +0.08pp
+  AND bootstrap LB95 > 0), of which ≥1 must be place2/place3, and no metric regresses past −0.05pp.
+- Reuses the **9 already-pretrained armB-250 base/control models** (3 seeds × 3 folds,
+  `tmp/candidate-masked-lever-retest/models/base/`) instead of retraining the control arm — only the
+  candidate arm (base+moisture[+cushion]) is trained fresh per arm.
+- **Sort-before-mask discipline preserved**: both the per-cell scan and the new
+  primary-population-restriction mask are computed against a `race_id`-sorted frame before
+  `paired()`'s internal join/filter, per this repo's own documented history of false-positive "near
+  miss" cells caused by masking an unsorted frame.
+- Join: same-calendar-date `(keibajo_code, race_date)`, turf rows only from the historical parquet,
+  forced to null on any non-turf race even where the venue+date key matched (dirt/jump races at the
+  same venue on the same day must not inherit the turf reading).
+- `historical_source` in both report JSONs correctly points at
+  `tmp/cushion-moisture-backfill-2026-07-18/historical_full.parquet` — confirmed this run used the
+  real backfill, not the small 248-row pilot fixture the harness defaults to for smoke-testing.
+
+### 5.3 Results
+
+#### 5.3.1 Pooled (seed-avg, JRA-wide, n=10,365)
+
+| Metric     | v1 base% | v1 cand% | v1 delta_pp | v1 LB95 | v2 base% | v2 cand% | v2 delta_pp | v2 LB95    |
+| ---------- | -------- | -------- | ----------- | ------- | -------- | -------- | ----------- | ---------- |
+| top1       | 33.796   | 33.845   | +0.048      | −0.135  | 33.796   | 33.870   | +0.074      | −0.100     |
+| place2     | 18.119   | 18.234   | +0.116      | −0.100  | 18.119   | 18.244   | +0.125      | −0.084     |
+| place3     | 14.163   | 14.186   | +0.023      | −0.206  | 14.163   | 14.398   | **+0.235**  | **+0.026** |
+| place4     | 12.166   | 11.835   | −0.331      | −0.534  | 12.166   | 12.102   | −0.064      | −0.283     |
+| place5     | 11.076   | 10.979   | −0.097      | −0.289  | 11.076   | 11.002   | −0.074      | −0.273     |
+| place6     | 10.417   | 10.481   | +0.064      | −0.148  | 10.417   | 10.536   | +0.119      | −0.068     |
+| top3_box   | 9.410    | 9.503    | +0.093      | −0.016  | 9.410    | 9.484    | +0.074      | −0.039     |
+| fukusho_2p | 74.912   | 74.900   | −0.013      | −0.167  | 74.912   | 74.941   | +0.029      | −0.145     |
+
+- **v1 gate**: 0/3 primaries pass, `ACCEPT_strict_gate: false`.
+- **v2 gate**: `n_primaries_passed: 1` (place3 alone individually clears delta≥+0.08pp AND LB95>0),
+  but §7.2 requires ≥2 of 3 — `ACCEPT_strict_gate: false`.
+
+#### 5.3.2 Primary population restriction (summer-4-venue turf, non-null join, n=1,380, **100% coverage** of that population)
+
+| Metric     | v1 base% | v1 cand% | v1 delta_pp | v1 LB95 | v2 base% | v2 cand% | v2 delta_pp | v2 LB95 |
+| ---------- | -------- | -------- | ----------- | ------- | -------- | -------- | ----------- | ------- |
+| top1       | 32.053   | 32.053   | 0.000       | −0.507  | 32.053   | 32.126   | +0.073      | −0.362  |
+| place2     | 15.411   | 15.507   | +0.097      | −0.483  | 15.411   | 15.845   | +0.435      | −0.169  |
+| place3     | 13.261   | 13.720   | +0.459      | −0.145  | 13.261   | 13.382   | +0.121      | −0.531  |
+| top3_box   | 8.309    | 8.527    | +0.217      | −0.048  | 8.309    | 8.406    | +0.097      | −0.169  |
+| fukusho_2p | 71.063   | 71.280   | +0.217      | −0.217  | 71.063   | 71.353   | +0.290      | −0.217  |
+
+Both arms: 0/3 primaries pass, `ACCEPT_strict_gate: false`. Note v1's place3 point estimate
+(+0.459pp) clears the +0.08pp bar but its LB95 (−0.145) does not — this is exactly the shape §7.2
+is designed to reject (a point estimate that could easily be noise at this n).
+
+#### 5.3.3 Per-fold (pooled seed-avg, JRA-wide, primaries only)
+
+| Fold (blind year) | v1 top1 | v1 place2           | v1 place3 | v2 top1 | v2 place2            | v2 place3                |
+| ----------------- | ------- | ------------------- | --------- | ------- | -------------------- | ------------------------ |
+| A / 2023          | −0.077  | −0.087              | +0.048    | −0.068  | −0.164               | +0.116 [LB95 −0.289]     |
+| B / 2024          | +0.019  | +0.396 [LB95 0.000] | +0.174    | +0.135  | +0.405 [LB95 +0.029] | **+0.637 [LB95 +0.280]** |
+| C / 2025          | +0.203  | +0.039              | −0.154    | +0.154  | +0.135               | −0.048 [LB95 −0.434]     |
+
+No fold-consistent signal for either arm on any primary — sign flips across folds throughout.
+
+#### 5.3.4 Per-cell scan (22 cells, keibajo_code × kyori_band × season_band × current_baba_condition, n≥200 each)
+
+Neither arm has any cell clear the 2-of-3-primaries gate, and none clears the §8.12 all-7-gated-
+metrics exception (docs/finish-position-prediction-system.md §8.12 item 6: if every one of the 7
+gated metrics — top1..place6 + top3_box — individually clears +0.08pp, a cell may be adopted even if
+LB95 crosses 0; that did not happen in any of the 44 cell×arm combinations scanned here).
+
+- **v1 best individual-primary hit**: `keibajo_code=01` (Sapporo, n=504) — top1 **+1.058pp [LB95
+  +0.066]**. But in the same cell, place2 delta +0.132pp with LB95 −0.860, place3 delta +0.397pp
+  with LB95 −0.529, and place6 delta **−0.463pp**. Only 1 of 3 primaries individually clears the
+  bar, and the all-7-metric exception fails outright (place6 regresses, several metrics flat). No
+  adoption.
+- **v2 best individual-primary hits**:
+  - `keibajo_code=06` (**Nakayama**, n=1,500) — place3 **+0.711pp [LB95 +0.222]**, individually
+    clearing the primary bar.
+  - `keibajo_code=02` (Hakodate, n=432) — place3 **+1.080pp [LB95 +0.154]**, also individually
+    clearing.
+  - Neither clears 2-of-3 primaries (both have flat/negative top1 and place2 — Hakodate's place2 is
+    **−0.849pp**) nor the §8.12 all-7-metric exception. No adoption.
+
+**Nakayama diagnostic — load-bearing for interpreting the above.** `keibajo_code=06` (Nakayama) is
+**not** one of the 4 backfilled venues (01/02/03/10 only) — the historical parquet has zero rows for
+Nakayama, so `turf_moisture_pct`/`cushion_value` are 100%-NULL for every Nakayama race in this
+dataset by construction of the join (§5.2). A cell where the candidate feature carries **literally
+zero information** still produced an individually-passing primary metric (place3 +0.711pp
+[LB95 +0.222]) purely from retraining a differently-shaped model on the same rows. This is a
+self-contained demonstration that swings of this magnitude arise from training noise alone,
+unrelated to the candidate feature's actual content — it calibrates how much weight the
+also-non-adopting Sapporo/Hakodate individual-primary hits above deserve: **none**.
+
+**Fold-2024 caveat on v2's pooled place3 "pass."** v2's pooled place3 is the only primary that
+clears the bar (§5.3.1), but per-fold (§5.3.3) it is driven almost entirely by fold B/2024
+(+0.637pp [LB95 +0.280]) while fold A/2023 (+0.116pp [LB95 −0.289]) and fold C/2025 (−0.048pp
+[LB95 −0.434]) are flat-to-negative — 2 of 3 blind years show no effect on the metric that nominally
+"passed" pooled. This campaign independently documented, the same day (2026-07-17), a
+fold-2024-specific venue-mix anomaly (Kyoto/Hanshin construction-related share shift — see
+`docs/probes/jra-fold2024-anomaly-forensic-2026-07-17.md`) that produced misleading, fold-2024-only-
+driven "positive signals" in multiple other independently tested levers that day, every one of which
+was REJECTed once checked against fold-consistency. This result fits that exact pattern and is
+treated as **corroborating evidence for REJECT**, not a near-miss worth another look.
+
+### 5.4 Verdict
+
+**REJECT, both arms, at every evaluation level tested**: pooled JRA-wide (0/3 primaries, both arms),
+the summer-4-turf primary-population restriction despite 100% coverage of that population (0/3,
+both arms), all 3 blind folds (no fold-consistent primary signal), and all 22 scanned cells (no cell
+clears 2-of-3 primaries or the §8.12 all-7-metric exception). v2's pooled place3 "pass" is the only
+metric that individually clears the bar anywhere in the pooled/restricted views, and it is both
+insufficient on its own (§7.2 requires ≥2 of 3 primaries) and fold-2024-driven rather than a robust
+effect. The Nakayama cell result independently demonstrates that a metric-level "pass" of this
+magnitude is achievable from training noise alone, with zero real information behind it. **No serve
+integration. This closes the probe the pilot (§1-§4) opened** — do not re-open without materially
+new data (e.g. a non-summer4 venue historical backfill), per this campaign's do-not-retest
+convention.
+
 ## Files
 
 - `apps/pc-keiba-viewer/tmp/cushion-moisture-pilot-2026-07-18/fetch_daily.py` — daily fetcher (§1)
 - `apps/pc-keiba-viewer/tmp/cushion-moisture-pilot-2026-07-18/daily_accumulator.parquet` — accumulating daily readings, 58 rows as of first run
 - `apps/pc-keiba-viewer/tmp/cushion-moisture-pilot-2026-07-18/historical_pilot.parquet` + `historical_pilot_notes.md` — bounded historical pull (§2)
 - `apps/pc-keiba-viewer/tmp/cushion-moisture-pilot-2026-07-18/probe_cushion_moisture.py` + `probe_report.json` — probe script + full numeric results (§3)
+- `apps/pc-keiba-viewer/tmp/cushion-moisture-backfill-2026-07-18/historical_full.parquet` + `coverage_notes.md` — full 70-PDF historical backfill, supersedes the pilot pull for the 4 summer venues (§5.1)
+- `apps/pc-keiba-viewer/tmp/cushion-moisture-wf-2026-07-18/wf_cushion_moisture.py` — WF harness, both arms (§5.2)
+- `apps/pc-keiba-viewer/tmp/cushion-moisture-wf-2026-07-18/reports/cushion_moisture_v1.json` + `cushion_moisture_v2.json` — authoritative full numeric WF results (§5.3), source of every number in this section
+- `apps/pc-keiba-viewer/tmp/cushion-moisture-wf-2026-07-18/build_mlflow_cell_reports.py` + `mlflow_cell_report_cushion_moisture_v{1,2}.json` — flat per-cell table derived from the reports above (MLflow's `log-training-run` cell-report ingestion requires a flat list-of-records shape, not the harness's own nested report), attached to the MLflow runs logged to `finish-position/wf-eval`
