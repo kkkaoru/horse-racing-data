@@ -140,6 +140,17 @@
 3. **明日 07-18 09:15 JST — refresher cron 2回目**
 4. **明日 07-18 09:25 JST — JRA cron（本番予測開始前の最終production-grade確認ポイント）**
 5. 恒久ツール: `serve_health_check.py`（commit `9148cce2`、coverage/quality/routing-parity/burst/D1-self-healの5チェック、runbook §8に手順記載、read-only）を随時実行可能。2026-07-11（mixed Cluster A/B）・07-12（uniform Cluster B）の実incidentで受け入れ実証済み（doc件数と一致）
+6. **明日 07-18 レース時間帯（10:00-20:59 JST）— coordinator 再有効化後の初回実地観察**（USER決定によりCOORDINATOR_ENABLED を "0"→"1" に変更、commit `a8119149`。動機の定量根拠は `odds-freshness-value-2026-07-17.md`）: 「rescore 発火と slot 競合の有無」を観察対象に追加。
+
+### coordinator 再有効化 (COORDINATOR_ENABLED=1) — リスクと rollback
+
+**前提条件（既知・USER説明済みの上での決定）**: focused-full path が build した feature を R2 cache に書いていないため、rescore は catalog source で必ず `CacheMissError` → フル `~15-27分` rebuild に堕ちる（`wrangler.jsonc` 既存コメント、07-11 に同日 0→1→0 revert された理由そのもの）。恒久修理はキャンペーン項目 (13)（本 doc 作成agentが実装中、watermark検証付き R2 cache）で別途進行中、今回の再有効化はそれに先行する。
+
+**今回コードで確認した資源競合の機構**（想像ではなくコード実読による）: `predict_lib/serve.py` の `_PIPELINE_EXEC_LOCK` は full / rescore / focused-full detached thread の**全実行パスに共通の単一ロック**であり、カテゴリ毎に1コンテナプロセスしか存在しないため、JRA は実質「同時に1パイプラインしか実行できない」。coordinator が10分毎（JST 10:00-20:59）に enqueue する per-race rescore、および新規enqueueがあった半時間スロット毎に追加発火する **category全体スコープ**の "weight rebuild" rescore は、いずれも上記フル rebuild コストを払うため、実行中は別レースの本物の focused-full 生成がロック解放待ちでブロックされうる（HTTP応答自体は "accepted" で早期returnするため見た目には気づきにくい — 実際のパイプライン実行開始が遅延する形で症状が出る）。レース間隔が詰まる開催日ほど、生成が post 後にずれ込むリスクが高まる。
+
+**明朝の観察項目**: (a) rescore enqueue のタイミングと、同時間帯の focused-full 生成が遅延していないか（生成完了時刻 vs post時刻）、(b) `predicted_at` が post時刻を超えているレースの有無、(c) "busy" レスポンス頻度の変化。
+
+**rollback**: `apps/finish-position-cron/wrangler.jsonc` の `vars.COORDINATOR_ENABLED` を `"1"` → `"0"` に戻して `wrangler deploy`（config-only、1コミット・1 deploy で即時ロールバック可能。secret ではなく committed var なので `wrangler secret` 操作は不要）。
 
 ---
 
