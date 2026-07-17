@@ -363,6 +363,170 @@ def test_query_upcoming_race_keys_filters_to_target_race(monkeypatch: pytest.Mon
     assert captured_params == ["20260629", "20260629", "44", "08"]
 
 
+def test_build_upcoming_feature_rows_skips_pipeline_when_target_race_has_no_upcoming_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """Presence guard: target_race set + zero source rows -> build_pipeline never runs."""
+    import realtime_odds_fetcher
+    import weather_fetcher
+
+    build_pipeline_called = False
+    realtime_odds_called = False
+    venue_weather_called = False
+
+    def fake_query_source_rows(
+        _url: str, _sql: str, _params: list[object]
+    ) -> list[tuple[str, str]]:
+        return []
+
+    def fake_fetch_realtime_odds_parquet(
+        category: str,
+        target_date: str,
+        work_dir: Path,
+        race_keys: list[tuple[str, str]] | None = None,
+    ) -> None:
+        nonlocal realtime_odds_called
+        realtime_odds_called = True
+        return None
+
+    def fake_fetch_venue_weather_dir(_target_date: str, _work_dir: Path) -> None:
+        nonlocal venue_weather_called
+        venue_weather_called = True
+        return None
+
+    def fake_build_pipeline(*_args: object, **_kwargs: object) -> bool:
+        nonlocal build_pipeline_called
+        build_pipeline_called = True
+        return False
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
+    monkeypatch.setattr(
+        realtime_odds_fetcher,
+        "fetch_realtime_odds_parquet",
+        fake_fetch_realtime_odds_parquet,
+    )
+    monkeypatch.setattr(weather_fetcher, "fetch_venue_weather_dir", fake_fetch_venue_weather_dir)
+    monkeypatch.setattr(pipeline_runner, "build_pipeline", fake_build_pipeline)
+
+    rows = pipeline_runner.build_upcoming_feature_rows(
+        "jra",
+        "20260718",
+        0,
+        "postgresql://u:p@h/db",
+        target_race="01:11",
+    )
+
+    assert rows == {}
+    assert build_pipeline_called is False
+    assert realtime_odds_called is False
+    assert venue_weather_called is False
+    assert "presence-guard" in capsys.readouterr().err
+
+
+def test_build_upcoming_feature_rows_runs_pipeline_when_target_race_has_upcoming_rows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Presence guard does not fire when target_race has >=1 source row (unchanged path)."""
+    import realtime_odds_fetcher
+    import weather_fetcher
+
+    build_pipeline_called = False
+
+    def fake_query_source_rows(
+        _url: str, _sql: str, _params: list[object]
+    ) -> list[tuple[str, str]]:
+        return [("01", "11")]
+
+    def fake_fetch_realtime_odds_parquet(
+        category: str,
+        target_date: str,
+        work_dir: Path,
+        race_keys: list[tuple[str, str]] | None = None,
+    ) -> None:
+        return None
+
+    def fake_fetch_venue_weather_dir(_target_date: str, _work_dir: Path) -> None:
+        return None
+
+    def fake_build_pipeline(*_args: object, **_kwargs: object) -> bool:
+        nonlocal build_pipeline_called
+        build_pipeline_called = True
+        return False
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
+    monkeypatch.setattr(
+        realtime_odds_fetcher,
+        "fetch_realtime_odds_parquet",
+        fake_fetch_realtime_odds_parquet,
+    )
+    monkeypatch.setattr(weather_fetcher, "fetch_venue_weather_dir", fake_fetch_venue_weather_dir)
+    monkeypatch.setattr(pipeline_runner, "build_pipeline", fake_build_pipeline)
+
+    rows = pipeline_runner.build_upcoming_feature_rows(
+        "jra",
+        "20260718",
+        0,
+        "postgresql://u:p@h/db",
+        target_race="01:11",
+    )
+
+    assert rows == {}
+    assert build_pipeline_called is True
+
+
+def test_build_upcoming_feature_rows_runs_pipeline_when_no_target_race_even_if_keys_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Presence guard is scoped to target_race only -- whole-day calls are unaffected
+    even when the upcoming-race-keys query happens to return zero rows."""
+    import realtime_odds_fetcher
+    import weather_fetcher
+
+    build_pipeline_called = False
+
+    def fake_query_source_rows(
+        _url: str, _sql: str, _params: list[object]
+    ) -> list[tuple[str, str]]:
+        return []
+
+    def fake_fetch_realtime_odds_parquet(
+        category: str,
+        target_date: str,
+        work_dir: Path,
+        race_keys: list[tuple[str, str]] | None = None,
+    ) -> None:
+        return None
+
+    def fake_fetch_venue_weather_dir(_target_date: str, _work_dir: Path) -> None:
+        return None
+
+    def fake_build_pipeline(*_args: object, **_kwargs: object) -> bool:
+        nonlocal build_pipeline_called
+        build_pipeline_called = True
+        return False
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
+    monkeypatch.setattr(
+        realtime_odds_fetcher,
+        "fetch_realtime_odds_parquet",
+        fake_fetch_realtime_odds_parquet,
+    )
+    monkeypatch.setattr(weather_fetcher, "fetch_venue_weather_dir", fake_fetch_venue_weather_dir)
+    monkeypatch.setattr(pipeline_runner, "build_pipeline", fake_build_pipeline)
+
+    rows = pipeline_runner.build_upcoming_feature_rows(
+        "jra",
+        "20260718",
+        1,
+        "postgresql://u:p@h/db",
+        target_race=None,
+    )
+
+    assert rows == {}
+    assert build_pipeline_called is True
+
+
 def test_build_pipeline_logs_layer_elapsed_seconds(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

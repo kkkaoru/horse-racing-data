@@ -484,6 +484,24 @@ def build_upcoming_feature_rows(
     skipped — there is nothing to score — and the caller continues with the
     next category without raising.
 
+    Presence guard (2026-07-17, latency profile task): when ``target_race``
+    is set, :func:`_query_upcoming_race_keys` already runs first (originally
+    added only to scope the realtime-odds fetch) against the SAME
+    ``jvd_se``/``nvd_se`` source tables and the SAME target-race/unsettled
+    filter the DuckDB base build itself applies. If it comes back empty for
+    that one race, the base build is guaranteed to also find zero target rows
+    for it, which already makes this function return ``{}`` below (the
+    existing ``if not built: return {}`` path, unchanged) — but only after
+    paying the full ~2-9 minute base build + full layer chain first. Skipping
+    straight to that same ``{}`` return here changes only *when* the
+    already-existing empty-mapping outcome is reached for this one case,
+    never *whether* it is reached, so it carries no accuracy risk: it cannot
+    cause a race that would otherwise have been scored to go unscored, and it
+    reuses a query that already ran on every call before this change — no new
+    I/O is added. Deliberately scoped to ``target_race is not None`` only
+    (the per-race latency this was written to address); a whole-day/
+    whole-category call (``target_race is None``) is unchanged.
+
     A realtime-odds fetch is attempted before the base build; on failure (HTTP
     error, timeout, empty response) the fetch is skipped gracefully and the
     build falls back to the existing NULL-odds path so the prediction always
@@ -501,6 +519,13 @@ def build_upcoming_feature_rows(
     race_keys = _query_upcoming_race_keys(
         database_url, target_date, days_ahead, category, target_race
     )
+    if target_race is not None and not race_keys:
+        print(
+            f"[pipeline] presence-guard: target_race={target_race} category={category} "
+            "has zero upcoming rows in source catalog -> skipping feature build",
+            file=sys.stderr,
+        )
+        return {}
     realtime_odds_path = fetch_realtime_odds_parquet(category, target_date, WORK_DIR, race_keys)
     venue_weather_dir = fetch_venue_weather_dir(target_date, WORK_DIR)
     built = build_pipeline(
