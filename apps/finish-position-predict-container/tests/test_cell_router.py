@@ -361,14 +361,14 @@ def test_resolve_variant_prior_corner_smallfield_fires_via_entries_length() -> N
     """
     router = _jra_prior_corner_router()
     entries = [
-        {"track_code": "20", "kyoso_joken_code": "005"} for _ in range(8)
-    ]  # track_code "2*" -> dirt (see derive_surface); no shusso_tosu key at all.
+        {"track_code": "23", "kyoso_joken_code": "005"} for _ in range(8)
+    ]  # track_code 23 -> dirt (see derive_surface); no shusso_tosu key at all.
     assert router.resolve_variant("jra", entries) == "prior_corner_dirt_smallfield_005"
 
 
 def test_resolve_variant_prior_corner_smallfield_does_not_fire_for_large_field() -> None:
     router = _jra_prior_corner_router()
-    entries = [{"track_code": "20", "kyoso_joken_code": "005"} for _ in range(16)]
+    entries = [{"track_code": "23", "kyoso_joken_code": "005"} for _ in range(16)]
     assert router.resolve_variant("jra", entries) == "sim"
 
 
@@ -763,6 +763,73 @@ def test_derived_surface_other() -> None:
 
 def test_derived_surface_non_jra_is_dirt() -> None:
     assert derive_surface("10", "nar") == "dirt"
+
+
+# Boundary regression tests for the 2026-07-17 bug-regression-test audit
+# (item K): track_code 20/21/22 are turf-course configurations (confirmed
+# against the local PG mirror's actual race identities -- track_code=20 is
+# 天皇賞(春) at Kyoto, track_code=21 is スポーツニッポン賞ステイヤーズ
+# ステークス at Nakayama, both long-distance graded turf races), not dirt.
+# The previous "track_code.startswith('2')" implementation misclassified all
+# three as dirt. These pin the exact turf/dirt boundary (19 = last turf code
+# before the gap, 20/21/22 = the previously-misclassified turf codes,
+# 23 = first dirt code) so a future regression to the naive prefix check
+# fails here immediately.
+def test_derived_surface_track_code_19_is_turf() -> None:
+    assert derive_surface("19", "jra") == "turf"
+
+
+def test_derived_surface_track_code_20_is_turf_not_dirt() -> None:
+    assert derive_surface("20", "jra") == "turf"
+
+
+def test_derived_surface_track_code_21_is_turf_not_dirt() -> None:
+    assert derive_surface("21", "jra") == "turf"
+
+
+def test_derived_surface_track_code_22_is_turf_not_dirt() -> None:
+    assert derive_surface("22", "jra") == "turf"
+
+
+def test_derived_surface_track_code_23_is_dirt() -> None:
+    assert derive_surface("23", "jra") == "dirt"
+
+
+def test_derived_surface_track_code_29_is_dirt() -> None:
+    assert derive_surface("29", "jra") == "dirt"
+
+
+def test_derived_surface_track_code_30_is_other() -> None:
+    assert derive_surface("30", "jra") == "other"
+
+
+# Cross-package parity test: subgroup_diagnostics.py (apps/pc-keiba-viewer)
+# independently derives the SAME surface classification for cell-level
+# accuracy evaluation, using an explicit range-based JRA_TURF_CODES (10-22) /
+# JRA_DIRT_CODES (23-29) frozenset construction rather than this module's
+# (now range-matching) logic. The two implementations are NOT allowed to
+# import each other in production (separate deployable packages, cell_router
+# is pure-stdlib and predict_lib has no polars/pandas dependency
+# subgroup_diagnostics.py would pull in) -- this test is the one place they
+# are cross-checked, importing pc-keiba-viewer's module directly (safe here:
+# get_surface_label/JRA_TURF_CODES/JRA_DIRT_CODES have no import-time
+# dependency beyond polars, already a transitive test dependency is not
+# required since only the surface function itself, not the polars-using
+# expression builder, is exercised). Found via the 2026-07-17 audit: this
+# repo's system doc §6 claims the routing and eval-store cell definitions
+# are consistent -- they were not, for exactly the 20/21/22 boundary this
+# test pins for every JRA track_code from 00 to 99.
+#
+# NOTE: the actual cross-package parity check lives in
+# apps/pc-keiba-viewer/tests/test_subgroup_diagnostics.py, not here.
+# subgroup_diagnostics.py depends on polars (needed for its
+# expression-builder path), which is not a finish-position-predict-container
+# dependency (this container is deliberately lean -- it does not do any
+# dataframe work) and is not something this package's test suite should pull
+# in just to exercise one small pure function. cell_router.py's own
+# derive_surface (and its transitive imports: model_meta.py, race_id.py) is
+# pure-stdlib, so the cross-import works safely in the OTHER direction --
+# see that test file for the actual parity assertion.
 
 
 def test_derived_distance_band_sprint() -> None:

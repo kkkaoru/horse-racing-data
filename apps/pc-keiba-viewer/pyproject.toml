@@ -33,7 +33,17 @@ dev = [
 [tool.basedpyright]
 include = ["src/scripts", "tests"]
 exclude = ["tmp", ".next", ".open-next", "node_modules"]
-extraPaths = ["src/scripts", "src/scripts/finish-position-features"]
+# ../finish-position-predict-container/src: resolves the cross-package
+# parity import in tests/test_subgroup_diagnostics.py
+# (predict_lib.cell_router.derive_surface, pure-stdlib, see that test's own
+# docstring for why this direction is safe) -- a real search path, not a
+# suppression, so the type checker actually sees the imported function's
+# signature.
+extraPaths = [
+  "src/scripts",
+  "src/scripts/finish-position-features",
+  "../finish-position-predict-container/src",
+]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportAny = "none"
@@ -51,7 +61,11 @@ reportUnknownParameterType = "error"
 reportUnknownVariableType = "none"
 
 [tool.ty.environment]
-extra-paths = ["src/scripts", "src/scripts/finish-position-features"]
+extra-paths = [
+  "src/scripts",
+  "src/scripts/finish-position-features",
+  "../finish-position-predict-container/src",
+]
 python = ".venv/bin/python"
 
 [tool.pytest.ini_options]

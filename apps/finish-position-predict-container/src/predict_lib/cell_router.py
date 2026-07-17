@@ -82,12 +82,32 @@ class CategoryRouting:
         return self.variants[VARIANT_BASE].architecture
 
 
+# JRA track_code (トラックコード): 10-22 are all turf course configurations,
+# 23-29 are all dirt. A track_code "starts with 2" prefix check (the previous
+# implementation here) incorrectly bucketed 20/21/22 as dirt -- those three
+# codes are turf-course configurations reserved for specific long-distance
+# graded races run over an extended/outer turf layout (e.g. track_code=20 is
+# 天皇賞(春) at Kyoto, 3200m turf; track_code=21 is スポーツニッポン賞
+# ステイヤーズステークス at Nakayama, 3600m turf -- confirmed against the
+# local PG mirror's actual race names/babajotai columns, 2026-07-17
+# bug-regression-test audit item K: every observed row has a populated
+# babajotai_code_shiba and a placeholder babajotai_code_dirt, the turf-race
+# signature). track_code >= 30 (steeplechase/jump courses, e.g. 51/52) falls
+# through to "other", matching this function's pre-existing behaviour and
+# subgroup_diagnostics.get_surface_label's JRA_TURF_CODES/JRA_DIRT_CODES sets
+# (apps/pc-keiba-viewer/src/scripts/learning/subgroup_diagnostics.py) exactly
+# -- see test_cell_router.py's cross-package parity test for the two
+# implementations being kept in sync going forward.
+_JRA_TURF_TRACK_CODES: Final[frozenset[str]] = frozenset(str(code) for code in range(10, 23))
+_JRA_DIRT_TRACK_CODES: Final[frozenset[str]] = frozenset(str(code) for code in range(23, 30))
+
+
 def derive_surface(track_code: str, category: str) -> str:
     if category != "jra":
         return "dirt"
-    if track_code.startswith("1"):
+    if track_code in _JRA_TURF_TRACK_CODES:
         return "turf"
-    if track_code.startswith("2"):
+    if track_code in _JRA_DIRT_TRACK_CODES:
         return "dirt"
     return "other"
 

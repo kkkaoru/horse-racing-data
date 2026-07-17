@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
+from pathlib import Path
+
 import numpy as np
 import polars as pl
+import pytest
 
 import learning.subgroup_diagnostics as subject
 
@@ -56,6 +61,52 @@ def test_get_surface_label_nar_always_dirt():
 
 def test_get_surface_label_banei_always_dirt():
     assert subject.get_surface_label("10", "banei") == "dirt"
+
+
+def _import_predict_container_derive_surface() -> Callable[[str, str], str]:
+    """Import cell_router.derive_surface directly from the sibling
+    finish-position-predict-container package.
+
+    Intentional cross-package import, one direction only: cell_router.py and
+    its transitive imports (model_meta.py, race_id.py) are pure-stdlib
+    (confirmed 2026-07-17), so importing it into pc-keiba-viewer's already
+    much heavier test venv is safe. The reverse direction was tried first and
+    rejected -- subgroup_diagnostics.py needs polars (for its expression-
+    builder path), which is not and should not become a
+    finish-position-predict-container dependency just for this one check
+    (that container is deliberately lean, no dataframe library at all).
+    """
+    container_src = (
+        Path(__file__).resolve().parents[2] / "finish-position-predict-container" / "src"
+    )
+    sys.path.insert(0, str(container_src))
+    from predict_lib.cell_router import derive_surface
+
+    return derive_surface
+
+
+# Cross-package parity test (2026-07-17 bug-regression-test audit, item K):
+# cell_router.py (apps/finish-position-predict-container) independently
+# derives the SAME surface classification for live cell-routing decisions
+# (the prior_corner_dirt_smallfield_005 rule in cell_routing.json has a
+# surface=dirt condition). The two implementations are NOT allowed to import
+# each other in production -- separate deployable packages -- so this test
+# is the one place they are cross-checked, for every 2-digit JRA track_code
+# from "00" to "99". Found via this same audit: system doc §6 claims the
+# routing and eval-store cell definitions are consistent -- they were not,
+# for track_code 20/21/22 specifically (cell_router.py's prior
+# "track_code.startswith('2')" heuristic classified them as dirt; they are
+# turf-course configurations for specific long-distance graded races --
+# track_code=20 is 天皇賞（春） at Kyoto, track_code=21 is スポーツニッポン賞
+# ステイヤーズステークス at Nakayama, confirmed against the local PG mirror's
+# actual race identities and babajotai_code_shiba/_dirt columns). Fixed in
+# cell_router.py to use the same range-based JRA_TURF_CODES(10-22)/
+# JRA_DIRT_CODES(23-29) boundary this file's own get_surface_label already
+# used.
+@pytest.mark.parametrize("track_code", [str(n).zfill(2) for n in range(100)])
+def test_derive_surface_agrees_with_predict_container_cell_router(track_code: str):
+    derive_surface = _import_predict_container_derive_surface()
+    assert subject.get_surface_label(track_code, "jra") == derive_surface(track_code, "jra")
 
 
 def test_get_distance_band_sprint_below_max():

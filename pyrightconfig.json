@@ -3,7 +3,8 @@
   "exclude": ["**/.next", "**/.open-next", "**/node_modules", "**/tmp", "scripts"],
   "extraPaths": [
     "apps/pc-keiba-viewer/src/scripts",
-    "apps/pc-keiba-viewer/src/scripts/finish-position-features"
+    "apps/pc-keiba-viewer/src/scripts/finish-position-features",
+    "apps/finish-position-predict-container/src"
   ],
   "pythonVersion": "3.12",
   "typeCheckingMode": "strict",
