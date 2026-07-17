@@ -317,4 +317,53 @@ team-lead 指示に基づき、`serve_accuracy_report.py` が "no_data" と判�
 
 ---
 
-**この commit は本ドキュメント (§8 に加えて本 §9 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。`serve_accuracy_report.py` / `serve_health_check.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
+## 10. 記録訂正 + 0606/0614/0621 分類 (2026-07-17 追記)
+
+本節は 2026-07-17 に行った 3 件の追加確認をまとめる: (a) commit `1d7e3215` 自身の検証記述の訂正、(b) `serve_health_check.py` による 2026-06-06 / 06-14 / 06-21 の分類、(c) MLflow timeline ツールの skip-if-present 挙動に関する注意喚起。いずれも独立したクロスチェックを経て確認済み。本追記はドキュメント記述のみを対象とし、コード変更・MLflow への書込は一切行っていない。
+
+### 10.1 commit `1d7e3215` の検証記述の訂正 — 引用レースは genuine/garbage いずれの選択でも miss
+
+commit `1d7e3215` (`fix(pc-keiba-viewer): dedup serve-accuracy predictions by post-time, not latest write`) 自身のコミットメッセージは、修正の検証根拠として次のように主張していた:
+
+> Verified the fix against the concrete incident: jra:2026:0711:02:01 (genuine row 10:47 JST predicted the actual winner correctly, Cluster B garbage row generated the next day predicted 5th) is now a correct top1 hit instead of being silently swapped for the garbage row.
+
+**この主張は直接の再検証では再現しない。** 本日、独立した 2 つの経路 (先行 sub-agent による調査、および `jvd_se` / `race_finish_position_model_predictions` に対する筆者自身の直接 SQL 照会) で確認し、両者は完全に一致した:
+
+| 行                                                                                                       | horse_id     | predicted_rank (該当馬) | rank1 pick   | rank1 pick の実際の着順 |
+| -------------------------------------------------------------------------------------------------------- | ------------ | ----------------------- | ------------ | ----------------------- |
+| 実際の優勝馬 (`kakutei_chakujun='01'`)                                                                   | `2024101292` | —                       | —            | 1着 (実際)              |
+| genuine row (`jra-cb-v9-sim-2013-clean`、2026-07-11 01:47:52 UTC = 10:47:52 JST 生成)                    | `2024101292` | **2**                   | `2024108137` | 2着                     |
+| garbage row (`jra-cb-v9-sim-2013-clean-jockey-pedigree269`、2026-07-12 05:51:45 UTC = 14:51:45 JST 生成) | `2024101292` | **3**                   | `2024108137` | 2着                     |
+
+genuine row・garbage row とも優勝馬 (`2024101292`) を rank1 には選んでおらず (それぞれ 2 位・3 位予測)、さらに **両行の rank1 pick は同一馬 (`2024108137`) であり、この馬の実際の着順は 2着** — commit メッセージが主張する「garbage row は5着馬を rank1 予測した」という記述とも食い違う。**このレースは genuine row を採用しても garbage row を採用しても top1 は miss であり、commit が主張する「garbage row にすり替えられていた hit」は存在しない。**
+
+**これは dedup fix 自体の正しさを損なうものではない。** 「検証根拠として挙げた具体例」と「fix が実際に行っている仕事」は別の話であり、明確に区別する必要がある。fix の実際の仕事 (同一馬に対して複数 `model_version` 行が競合するとき、レースの post time より後に書かれた行より、post time 以前に生成された行を優先する) は、この 1 レースの誤った例とは独立に、少なくとも次の 2 つの経路で頑健に検証済みである:
+
+1. **`jra:2026:0711:02:01` に出走した全 10 頭について**、genuine row が garbage row より正しく優先選択されていることを確認した — dedup の選択機構自体は全頭で正しく機能していた。優勝馬に対する genuine row の予測が rank1 でなかったのは、その日のモデル精度についての事実であって、dedup がどちらの行を選んだかとは別の論点である。
+2. **day-level の集計効果は大きく、方向も正しい**: 2026-07-11 の pooled top1 は naive dedup (`ORDER BY prediction_generated_at DESC`) の 13.89% から、fixed dedup では 25.00% に改善した。これは重複/garbage 行 285 件 (本ドキュメント §7.1 記載の「1412 組中 285 組が複数 model_version 競合」と同一の競合集合) を正しく除外したことによる、機構的に予期される通りの実改善である。
+
+fix 自体は健全であり、訂正が必要なのは commit メッセージが挙げた「具体例による検証」の記述だけである。時間的制約下でコミットメッセージを書く際の transcription/lookup ミスである可能性が高い。今後この特定レースを「top1 が反転した証拠」として再引用しないよう、ここに記録しておく。
+
+### 10.2 0606/0614/0621 分類 (`serve_health_check.py` 実行結果)
+
+- **2026-06-06 — Cluster B とは別由来の、新規に特定された劣化/異常 serving 日**: 本ドキュメント §9.4 が既に報告した通り、この日の 24 レース全ては旧世代 model_version (`iter14-jra-cb-pacestyle-course-v8` / `iter25-jra-cb-ensemble-010-v8` / `iter26-jra-cb-ensemble-703-v8` / `iter26-jra-cb-ensemble-005-v8` およびその近縁) で serve されており、対象 venue は 05 (東京) / 09 (阪神) のみ、現行チャンピオン系統 (`jra-cb-v9-sim-2013-clean` / `jockey-pedigree269` / `prior-corner274`) は 1 行も含まれない — 現行チャンピオンの serve accuracy とは比較不能である点は §9.4 で確認済み。
+
+  **本追記での新規知見**: `serve_health_check.py` の quality check を本日改めて実行し、該当する (race, model_version) group のうち **10 件が DEGRADED** (`predicted_score` の group内標準偏差 0.096〜0.300、健全閾値 0.3 未満) であることを、具体例つきで確認した — 例: `jra:2026:0606:05:03` (`iter26-jra-cb-ensemble-703-v8`、stddev=0.298)、`jra:2026:0606:09:05` (`iter14-jra-cb-pacestyle-course-v8`、stddev=0.096)。per-race rollup は `fully_healthy=14 partially_degraded=0 fully_degraded=10`。
+
+  burst detection も本日改めて確認した: 24 レース全てが 2026-06-05 20:27 UTC (= 2026-06-06 05:27 JST) の同一 1 分間に書き込まれている。この単一分バッチ書込という形状は Cluster B (2026-07-12 05:51-05:52 UTC = 14:51-14:52 JST) のシグネチャと構造的に類似するが、**モデル世代が異なり (旧世代 vs 現行チャンピオン系統)、時期も約 5 週間離れている — Cluster B と同一のインシデントではない**。本日のツール実行で新たに発見された、Cluster B とは別に provenance を持つ独立した第二の劣化バッチ書込インシデントとして、ここに明示的に記録する (Cluster B の焼き直しとして扱わない)。
+
+- **2026-06-14 / 2026-06-21 — 健全、新規インシデントではない**: 両日とも `serve_health_check.py --date 20260614/20260621 --category jra` を実行し確認した。全国 JRA 36 レース中 **35 レースが予測行ゼロ** (品質劣化ではなく完全な coverage gap — 既知の FP serving blackout window、本ドキュメント §1 の台帳と整合) で、残り **1 レースのみ genuine backfill 予測が存在**し、その 1 レースの quality は両日とも **健全** (`fully_healthy=1 partially_degraded=0 fully_degraded=0`、degraded group は両日ゼロ件)。
+
+  ※ この「36 レース」は全国 JRA 集計であり、本ドキュメント §1 の対象範囲 (venue 02/03/10 限定、この 2 日とも函館のみが開催中) とはスコープが異なる。06-14 の全国 1 genuine レースは §1 の函館分 1\* (12 レース中 1 件) と同一のレースであることを確認した。一方 06-21 は §1 の函館分が 0 件 (12 レース中 0、完全欠落 12) であるため、全国 1 genuine レースは対象 3 場 (函館/福島/小倉) のいずれでもなく、スコープ外の JRA 他 venue のレースである。
+
+  `serve_health_check.py` が報告する 35/36 の "routing parity mismatch" は、本ドキュメント §9.4/§9.5 が 2026-06-07 について既に説明した vacuous artifact と同一である — 予測行がゼロのレースは期待されるどの model_version とも自明に「不一致」になるため、これ自体は何の証拠にもならず、意味を持つのは genuine coverage gap の件数のみである。**この 2 日について、インシデントカタログへの追加は不要** — 既存の blackout 特性づけを裏付けるのみで、新規の発見はない。
+
+### 10.3 MLflow timeline の skip-if-present 挙動 — 事後訂正が自動反映されない
+
+`apps/mlflow/src/mlflow_tracking/timeline.py::upsert_timeline_point` は、timeline point の重複判定を**値ではなく step (対象日) の存在有無のみ**で行う。該当 step に 1 点でも既にログ済みであれば、新しい値がバグ修正後の正しい値であっても**その書込は無条件でスキップされる** (同関数の docstring より: "Each metric key is deduped by STEP, not by value: ... a point at the same step is skipped entirely (even if the value differs -- re-ingesting the same date is assumed to reproduce the same number; this is a presence check, not a reconciliation)")。
+
+この結果、**バグ修正前に記録された stale な point は、修正後に同じ ingestion を再実行するだけでは訂正されない** — stale な値はチャート上に残り続け、対象 run の対象 step を明示的に狙った別手段 (削除/上書き) で個別に対処するまで残存する。本日の JRA summer serve-accuracy 再計測作業 (本ドキュメント §9) の過程で、同関数の docstring 読解と、実際の再 ingestion 前後の値を突き合わせる経験的確認の両方から独立に確認した。
+
+---
+
+**この commit は本ドキュメント (§8・§9 に加えて本 §10 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。§10 の追加はドキュメント記述 (commit `1d7e3215` の検証記述の訂正、0606/0614/0621 の分類、MLflow timeline 挙動の注意喚起) のみであり、コード変更・新規ファイル作成・MLflow への書込は一切行っていない。`serve_accuracy_report.py` / `serve_health_check.py` / `timeline.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
