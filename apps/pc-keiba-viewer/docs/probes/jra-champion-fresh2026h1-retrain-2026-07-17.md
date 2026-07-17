@@ -376,6 +376,13 @@ established durability-verification discipline
   retrain script `retrain.py`, MLflow manifest builder
   `build_mlflow_manifest.py`. All under the same `tmp/` directory
   (git-ignored per project convention; not committed).
+- Per-cell gate machinery (2026-07-18 addition, USER decision ④):
+  `blind_gate_runbook.py`'s `run_cell_scan` / `cell_gate_status` /
+  `generate_cell_routing_proposal` / `compute_venue_mix_caution` (same
+  file, extended in place) — see §10.3 for what this does and the
+  not-yet-done production wiring checklist. No proposal has been
+  generated yet (`blind_gate/` is still empty, §10) and nothing under
+  `apps/finish-position-predict-container` has been touched.
 
 ---
 
@@ -483,3 +490,104 @@ YES` prints, proceed to Step 4 exactly as specified in the original
   4GB/2 threads per enrichment layer (12GB/3 threads for `h2h`
   specifically, unchanged from `build_harvest_layers.py`). Check
   `memory_pressure` before running if other heavy jobs are active.
+
+### 10.3 Per-cell variant wiring checklist (USER decision ④, 2026-07-18 addition)
+
+USER decision ④ (2026-07-18): v34 should activate **per-cell wherever it
+genuinely wins**, not only via the all-or-nothing pooled flip in §10.1
+point 3. `blind_gate_runbook.py` was extended the same day with a
+§8.12-compliant per-cell gate (`cell_gate_status`), a
+`cell_routing.json`-shaped proposal generator
+(`generate_cell_routing_proposal`, gated by a hard assert on both the
+per-race blind-date floor and the pooled n≥200 floor), and a venue-mix-skew
+diagnostic (`compute_venue_mix_caution`, the "fold-2024 lesson" —
+`docs/probes/jra-fold2024-anomaly-forensic-2026-07-17.md`). **None of this
+wiring has been done tonight.** This is machinery only, verified against
+synthetic data, not run against real accumulated weekend data — the
+accumulator is still empty (§10 above), so there is nothing yet to wire.
+This section is a checklist for whoever runs the (also-not-yet-run)
+proposal generator against real accumulated data and gets a cell that
+clears the full binding gate.
+
+The per-cell path differs from the already-documented pooled flip (§10.1
+point 3) in exactly these ways:
+
+1. **Baked model artifact — same as the pooled path, no duplicate baking.**
+   A per-cell promotion still bakes to
+   `models/finish-position/jra/jra-cb-v9-sim-2013-clean-fresh2026h1/`
+   exactly as §10.1 point 3 already specifies. One baked artifact serves
+   both the pooled-flip path and any number of per-cell variants — the
+   difference is entirely in how `cell_routing.json` points at it, not in
+   what gets copied where.
+2. **`cell_routing.json` — additive, not a default-variant replacement.**
+   §10.1 point 3 replaces the `sim` default variant's `model_version`
+   wholesale. A per-cell promotion instead adds a **new named variant**
+   (`fresh2026h1_<dimension>_<value>`, e.g. `fresh2026h1_venue_05` — the
+   naming `generate_cell_routing_proposal` already uses) plus a **new
+   rule** targeting only that cell, alongside the existing `sim` /
+   `jockey_pedigree_703` / `prior_corner_dirt_smallfield_005` entries.
+   Merge the `cell_routing_proposal.json` sidecar's `cell_routing_fragment`
+   into the real file by hand, diffing first — the manual-review discipline
+   `generate_cell_routing_proposal`'s own docstring cites from
+   `apps/mlflow`'s `export-cell-routing`: "never a faithful reproduction,
+   always diff before baking, sidecar provenance, never auto-applied"
+   (`apps/mlflow/README.md`, "export-cell-routing is a synthesis, not a
+   reproduction"). The default `sim` variant and every existing rule stay
+   untouched.
+3. **Viewer mirror — the identical addition, mirrored by hand.**
+   `apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.ts`'s
+   `FINISH_POSITION_CELL_ROUTING_CONFIG` needs the same new variant + rule
+   added. Its own `finish-position-cell-routing.test.ts` parity test will
+   catch a missed or divergent sync — not re-explained here, see that test
+   file.
+4. **`FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS` — automatic once point 3 is
+   done, not a separate edit.** Checked directly in `src/db/queries.ts`:
+   this constant is `[...FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS,
+...getAllFinishPositionDisplayPriorityModelVersions()]`, and that second
+   spread already folds in every `FINISH_POSITION_CELL_ROUTING_CONFIG`
+   variant's `model_version` (`getAllFinishPositionCellRoutingModelVersions`
+   in `finish-position-cell-routing.ts`). So completing point 3 alone is
+   sufficient — the new `jra-cb-v9-sim-2013-clean-fresh2026h1` model_version
+   becomes selectable without a separate `queries.ts` change, and a
+   priority-0 cell-routed prediction won't be filtered out by
+   `allowed_prediction_model_versions`.
+5. **MLflow registry — a `routing_scope` tag, not a champion alias flip.**
+   A per-cell variant is narrower than a full champion swap, so this is
+   **not** `set-champion jra-finish-position 34` (§10.1 point 3's pooled
+   mechanism). Checked against the existing precedent directly: neither
+   `jockey_pedigree_703` nor `prior_corner_dirt_smallfield_005` carries a
+   `champion`/`challenger` alias of their own — they carry a `routing_scope`
+   tag on their own model version instead
+   (`apps/mlflow/src/mlflow_tracking/registry.py`;
+   `backfill_finish_position.py`'s `_tag_routed_variant` /
+   `routing_scope=f"class:{class_code}"` registration path). Tag v34's
+   model version with `routing_scope` reflecting the specific cell,
+   matching that precedent — `build_cell_routing_export`'s own docstring
+   already documents that a `routing_scope` outside the `class:`-prefixed
+   convention (which is what any of this campaign's non-`kyoso_joken_code`
+   dimensions would be) is recovered on export as a variant _without_ an
+   auto-reconstructed rule, i.e. the operator completes the rule by hand —
+   the same manual step point 2 above already requires, not new work this
+   adds. The existing `challenger` alias (already pointing at v34, §8)
+   does not need to change: it correctly continues to describe v34's
+   coarser, pooled status, while the `routing_scope` tag is the mechanism
+   that actually reflects a per-cell promotion.
+6. **Parity tests, commit, no push.** Same discipline as §10.1 point 3: run
+   each touched package's full check —
+   `bun run --filter pc-keiba-viewer check` for points 3/4 above, and
+   `bun run --filter finish-position-predict-container python:check` if
+   `cell_routing.json` itself is touched (it lives under
+   `apps/finish-position-predict-container`, outside `pc-keiba-viewer`'s
+   own check) — commit, **then stop and report before push**, per the
+   standing "commit OK, push needs explicit instruction" rule. A per-cell
+   promotion does not flip `stage` off `pending-weekend-blind-gate` the way
+   a full champion flip would (§10.1 point 3's last step): that tag
+   describes the pooled challenger's own status, which a narrower per-cell
+   promotion doesn't resolve one way or the other.
+
+**Trigger condition**: this checklist applies to something concrete only
+once `blind_gate_runbook.py`'s `cell_routing_proposal.json` sidecar
+actually exists — i.e. the pooled n≥200 floor has been met (§10.1 point 3's
+own binding checkpoint) _and_ at least one cell cleared the full gate in
+`run_cell_scan`. Before that, `generate_cell_routing_proposal`'s own hard
+asserts guarantee the file is never written, so there is nothing to wire.
