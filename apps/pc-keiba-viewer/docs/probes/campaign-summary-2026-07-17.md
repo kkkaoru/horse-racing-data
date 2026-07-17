@@ -141,17 +141,21 @@
 3. **明日 07-18 09:15 JST — refresher cron 2回目**（配線後23時間超で迎える初回発火機会 — 発火すれば伝播遅延仮説を支持。同じGraphQL手法（§12.1a）でlive-audit側から即日確認可能）
 4. **明日 07-18 09:25 JST — JRA cron（本番予測開始前の最終production-grade確認ポイント）**
 5. 恒久ツール: `serve_health_check.py`（commit `9148cce2`、coverage/quality/routing-parity/burst/D1-self-healの5チェック、runbook §8に手順記載、read-only）を随時実行可能。2026-07-11（mixed Cluster A/B）・07-12（uniform Cluster B）の実incidentで受け入れ実証済み（doc件数と一致）
-6. **明日 07-18 レース時間帯（10:00-20:59 JST）— coordinator 再有効化後の初回実地観察**（USER決定によりCOORDINATOR_ENABLED を "0"→"1" に変更、commit `a8119149`。動機の定量根拠は `odds-freshness-value-2026-07-17.md`）: 「rescore 発火と slot 競合の有無」を観察対象に追加。
+6. **明日 07-18 レース時間帯（10:00-20:59 JST）— coordinator 再有効化後の初回実地観察**（USER決定によりCOORDINATOR_ENABLED を "0"→"1" に変更、commit `a8119149`。動機の定量根拠は `odds-freshness-value-2026-07-17.md`）: 「rescore 発火と slot 競合の有無」を観察対象に追加。deploy は 07-18 朝 (~08:00-08:45 JST) の一括 bundle (⑦force + ⑬cache + ⑭RS観測 + ⑮filter) に③も合流、team-lead GO 待ち。
 
 ### coordinator 再有効化 (COORDINATOR_ENABLED=1) — リスクと rollback
 
-**前提条件（既知・USER説明済みの上での決定）**: focused-full path が build した feature を R2 cache に書いていないため、rescore は catalog source で必ず `CacheMissError` → フル `~15-27分` rebuild に堕ちる（`wrangler.jsonc` 既存コメント、07-11 に同日 0→1→0 revert された理由そのもの）。恒久修理はキャンペーン項目 (13)（本 doc 作成agentが実装中、watermark検証付き R2 cache）で別途進行中、今回の再有効化はそれに先行する。
+**前提条件（既知・USER説明済みの上での決定）**: focused-full path が build した feature を R2 cache に書いていないため、rescore は catalog source で必ず `CacheMissError` → フル rebuild に堕ちる（`wrangler.jsonc` 既存コメント、07-11 に同日 0→1→0 revert された理由そのもの）。**恒久修理（キャンペーン項目 (13)）は実装・テスト・commit 完了**（`5737847f`、`apps/finish-position-predict-container/src/predict_upcoming.py`）— focused-full が書いた per-race R2 cache を、`day_base_covers_entry_list` 再利用の watermark 検証付きで rescore が読めるようにした。**ただし対象は単一レース scope の rescore のみ**（coordinator の通常 per-race メッセージ）。**category 全域 scope の "weight rebuild" rescore（`triggerWeightRebuildIfNeeded`、半時間スロット毎に最大1回、新規 race が rescore window に入った tick で追加発火）は (13) の対象外のまま** — scope なし (`keibajo_code`/`race_bango` 無し) の CacheMissError fallback は `target_race=None` の **category 全体フル rebuild** になる（`predict_lib/serve.py` の rescore-fallback-to-full 経路をコード確認済み: `_run_predict_fn(predict_fn, params)` が元の `params` をそのまま渡すため、weight-rebuild メッセージの空 scope がそのまま whole-category 全 race 分の DuckDB rebuild に展開される）。単一レースの ~15-27分 fallback より長時間になりうる、(13) 適用後も残る最大の残存リスク。
 
-**今回コードで確認した資源競合の機構**（想像ではなくコード実読による）: `predict_lib/serve.py` の `_PIPELINE_EXEC_LOCK` は full / rescore / focused-full detached thread の**全実行パスに共通の単一ロック**であり、カテゴリ毎に1コンテナプロセスしか存在しないため、JRA は実質「同時に1パイプラインしか実行できない」。coordinator が10分毎（JST 10:00-20:59）に enqueue する per-race rescore、および新規enqueueがあった半時間スロット毎に追加発火する **category全体スコープ**の "weight rebuild" rescore は、いずれも上記フル rebuild コストを払うため、実行中は別レースの本物の focused-full 生成がロック解放待ちでブロックされうる（HTTP応答自体は "accepted" で早期returnするため見た目には気づきにくい — 実際のパイプライン実行開始が遅延する形で症状が出る）。レース間隔が詰まる開催日ほど、生成が post 後にずれ込むリスクが高まる。
+**明朝の観察項目（3点、具体的な確認方法込み）**:
 
-**明朝の観察項目**: (a) rescore enqueue のタイミングと、同時間帯の focused-full 生成が遅延していないか（生成完了時刻 vs post時刻）、(b) `predicted_at` が post時刻を超えているレースの有無、(c) "busy" レスポンス頻度の変化。
+(a) **rescore 発火の確認**: `wrangler tail --format pretty finish-position-cron` をレース時間帯に流し、`race-coordinator.ts` の cron tick ログ（`RaceCoordinatorSummary` の `enqueued > 0`）を確認。または Neon で同一 `(keibajo_code, race_bango, model_version)` の `prediction_generated_at` が post 時刻の 25 分前以内に更新されているレースの有無を確認（focused-full の初回生成は post の遥か前、~7分/レース実測のRS完了trigger起点であることと対比）。
 
-**rollback**: `apps/finish-position-cron/wrangler.jsonc` の `vars.COORDINATOR_ENABLED` を `"1"` → `"0"` に戻して `wrangler deploy`（config-only、1コミット・1 deploy で即時ロールバック可能。secret ではなく committed var なので `wrangler secret` 操作は不要）。
+(b) **「生成が発走までに完了しないレース」の検出（単一lock競合の実害指標）**: D1 `realtime_race_sources.race_start_at_jst` と Neon `race_finish_position_model_predictions.prediction_generated_at` を `(keibajo_code, race_bango)` で突合し、`prediction_generated_at > race_start_at_jst`（または post 直前の狭い安全マージン以内、例: 残り2分未満）のレースを抽出する。0件なら実害なし、1件でもあれば lock 競合が実際に生成を遅延させた確定証拠として扱う。
+
+(c) **weight-rebuild（category 全域）の占有時間実測**: 上記の理由により最大の未緩和リスクなので個別に測定する。`wrangler tail` で `mode=rescore` かつ `keibajoCode`/`raceBango` が付いていない `/predict` request の開始時刻と、それに続く `rescore-fallback-to-full` progress line の開始・終了時刻を記録する。この間、同一カテゴリの他レースの focused-full request が "busy" にならず単に応答が遅延する形で滞留しているかを、該当時間帯の他レースの `prediction_generated_at` 分布と合わせて確認する。
+
+**rollback**: `apps/finish-position-cron/wrangler.jsonc` の `vars.COORDINATOR_ENABLED` を `"1"` → `"0"` に戻して `wrangler deploy` 一回（config-only diff、commit + deploy で概ね2分以内。secret ではなく committed var なので `wrangler secret` 操作は不要）。
 
 ---
 
