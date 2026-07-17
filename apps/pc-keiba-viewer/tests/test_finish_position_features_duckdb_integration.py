@@ -346,13 +346,13 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
         [
             (
                 "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
-                "02", "0.5", "35.0", "0002", "0050", "480", "1", "3",
+                "02", "0", "0.5", "35.0", "0002", "0050", "480", "1", "3",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
-            "kakutei_chakujun", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
             "tansho_odds", "bataiju", "seibetsu_code", "barei",
         ],
         orient="row",
@@ -446,17 +446,17 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
         [
             (
                 "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
-                "00", "", "", "00", "0000", "480", "1", "3",
+                "00", "0", "", "", "00", "0000", "480", "1", "3",
             ),
             (
                 "2026", "0627", "02", "01", "h002", "02", "j2", "t2",
-                "00", "", "", "03", "0055", "470", "1", "4",
+                "00", "0", "", "", "03", "0055", "470", "1", "4",
             ),
         ],
         schema=[
             "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
             "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
-            "kakutei_chakujun", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
             "tansho_odds", "bataiju", "seibetsu_code", "barei",
         ],
         orient="row",
@@ -495,6 +495,225 @@ def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholde
     normal_row = out.filter(pl.col("umaban") == 2)
     assert normal_row["tansho_ninkijun"][0] == 3
     assert normal_row["tansho_odds"][0] == 5.5
+
+
+def test_upcoming_target_union_sql_jra_excludes_scratched_and_excluded_entrants():
+    """Production entrant-selection fix (2026-07-18, effective for races run
+    2026-07-18 onward): jvd_se.ijo_kubun_code is '1' (取消/scratched) or '2'
+    (除外/excluded) for a horse that was entered but never actually ran --
+    kakutei_chakujun stays the '00' placeholder forever for those rows
+    (reference_jvd_placeholder_semantics), so finish_position alone can never
+    distinguish a scratch from a genuinely upcoming horse at predict time.
+    This seeds one horse per real ijo_kubun_code value ('0'..'7') in a single
+    upcoming JRA race and asserts the surviving umaban set is exactly the six
+    non-'1'/'2' codes -- proving both that '1'/'2' are excluded AND that
+    '3'..'7' (abandoned mid-race / disqualified / demoted / other in-race
+    event -- the horse DID run) are NOT accidentally swept up by an
+    over-broad predicate.
+    """
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    se_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "05", "01", "h001", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h002", "02", "j2", "t2",
+                "00", "1", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h003", "03", "j3", "t3",
+                "00", "2", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h004", "04", "j4", "t4",
+                "05", "3", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h005", "05", "j5", "t5",
+                "03", "4", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h006", "06", "j6", "t6",
+                "02", "5", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h007", "07", "j7", "t7",
+                "08", "6", "", "", "00", "0000", "480", "1", "4",
+            ),
+            (
+                "2026", "0718", "05", "01", "h008", "08", "j8", "t8",
+                "07", "7", "", "", "00", "0000", "480", "1", "4",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.jvd_se as select * from se_df")
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "05", "01", "1600", "10", "A", "703",
+                "8", "1", None,
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.jvd_ra as select * from ra_df")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.upcoming_target_union_sql("jra", "20260718", "20260718")
+    out = con.execute(sql).pl().sort("umaban")
+
+    assert out["umaban"].to_list() == [1, 4, 5, 6, 7, 8]
+    assert out["ketto_toroku_bango"].to_list() == [
+        "h001", "h004", "h005", "h006", "h007", "h008",
+    ]
+    # h001 (code '0') has not run yet; h004 (code '3') has -- confirms the
+    # surviving rows still carry correct, unrelated finish_position parsing.
+    assert out.filter(pl.col("umaban") == 1)["finish_position"][0] is None
+    assert out.filter(pl.col("umaban") == 4)["finish_position"][0] == 5
+
+
+def test_upcoming_target_union_sql_nar_excludes_scratched_entrant():
+    """NAR-specific check that _rec_select_from_se_ra's ijo_kubun_code filter
+    (proven in full for JRA above -- this is the exact same function, only
+    ``se_table`` / ``keibajo_predicate`` differ) also fires through the NAR
+    keibajo_predicate branch (``se.keibajo_code <> '83'``): one normal horse,
+    one scratched (取消) horse at a non-Ban-ei NAR venue.
+    """
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    se_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "30", "01", "h101", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "440", "1", "5",
+            ),
+            (
+                "2026", "0718", "30", "01", "h102", "02", "j2", "t2",
+                "00", "1", "", "", "00", "0000", "440", "1", "5",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.nvd_se as select * from se_df")
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "30", "01", "1400", "20", "B", "000",
+                "2", None, "1",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.nvd_ra as select * from ra_df")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.upcoming_target_union_sql("nar", "20260718", "20260718")
+    out = con.execute(sql).pl()
+
+    assert out["ketto_toroku_bango"].to_list() == ["h101"]
+
+
+def test_build_rec_select_sql_ban_ei_upcoming_window_excludes_scratched_entrant_via_both_layers():
+    """Ban-ei-specific regression test for the second, more subtle half of the
+    2026-07-18 entrant-selection fix: unlike JRA/NAR, Ban-ei has no
+    race_entry_corner_features equivalent, so _rec_select_from_ban_ei (not
+    _rec_select_from_corner_features) is the sole `base` (priority 0) source
+    for category='ban-ei' in build_rec_select_sql, and its own
+    [history_start, to_date] window silently extends through the upcoming
+    target date in --target-date mode (see that function's docstring). A
+    scratched Ban-ei horse would therefore still win the
+    ``qualify row_number() ... order by (finish_position is null),
+    _rec_priority`` tie-break via THIS function's priority-0 row even after
+    _rec_select_from_se_ra's own priority-1 branch excludes it, unless
+    _rec_select_from_ban_ei ALSO filters ijo_kubun_code. This exercises the
+    FULL union + qualify tie-break (not either function in isolation), so a
+    regression in either layer's filter fails this test.
+    """
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    se_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "83", "01", "h201", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "500", "1", "5",
+            ),
+            (
+                "2026", "0718", "83", "01", "h202", "02", "j2", "t2",
+                "00", "1", "", "", "00", "0000", "500", "1", "5",
+            ),
+            (
+                "2026", "0718", "83", "01", "h203", "03", "j3", "t3",
+                "00", "2", "", "", "00", "0000", "500", "1", "5",
+            ),
+            (
+                "2026", "0718", "83", "01", "h204", "04", "j4", "t4",
+                "05", "4", "", "", "00", "0000", "500", "1", "5",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.nvd_se as select * from se_df")
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2026", "0718", "83", "01", "820", "23", "A", "000",
+                "4", None, "1",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.nvd_ra as select * from ra_df")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.build_rec_select_sql(
+        "ban-ei", "20130101", "20260718", ("20260718", "20260718")
+    )
+    out = con.execute(sql).pl().sort("umaban")
+
+    assert out["ketto_toroku_bango"].to_list() == ["h201", "h204"]
 
 
 def test_stage_se_table_filters_by_concatenated_date(capsys: pytest.CaptureFixture[str]):

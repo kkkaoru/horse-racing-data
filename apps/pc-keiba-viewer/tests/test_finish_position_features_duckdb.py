@@ -286,6 +286,16 @@ def test_upcoming_target_union_sql_requires_numeric_umaban():
     assert "try_cast(nullif(trim(se.umaban), '') as int) is not null" in sql
 
 
+def test_upcoming_target_union_sql_excludes_scratched_and_excluded_entrants():
+    """2026-07-18 entrant-selection fix: ijo_kubun_code '1' (取消/scratched)
+    and '2' (除外/excluded) must be excluded from predict-time entrant
+    selection; '0' and '3'..'7' (the horse ran, or has not run yet but was
+    not withdrawn) must NOT be swept up by the predicate. Shared by JRA / NAR
+    / Ban-ei since they all route through this one function."""
+    sql = subject.upcoming_target_union_sql("jra", "20260603", "20260603")
+    assert "coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')" in sql
+
+
 def test_upcoming_target_union_sql_target_race_filters_direct_source_rows():
     sql = subject.upcoming_target_union_sql(
         "nar",
@@ -4303,6 +4313,31 @@ def test_rec_select_from_ban_ei_uses_pg_dot_without_entity_filter() -> None:
     sql = subject._rec_select_from_ban_ei("20060101", "20260628")
     assert "pg.nvd_se" in sql
     assert "postgres_query" not in sql
+
+
+def test_rec_select_from_ban_ei_excludes_scratched_and_excluded_entrants() -> None:
+    """2026-07-18 entrant-selection fix, Ban-ei half: this function doubles as
+    the Ban-ei UPCOMING-window entrant source (its own [history_start,
+    to_date] window extends through the target date in --target-date mode,
+    see its docstring), so it must exclude ijo_kubun_code '1'/'2' itself --
+    filtering only _rec_select_from_se_ra would leave a scratched Ban-ei
+    horse able to win the priority tie-break in build_rec_select_sql via
+    this function's own (unfiltered) priority-0 row."""
+    sql = subject._rec_select_from_ban_ei("20060101", "20260628")
+    assert "coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')" in sql
+
+
+def test_rec_select_from_ban_ei_entity_filter_still_excludes_scratched_entrants() -> None:
+    """The entity_filter branch (used for the focused per-race build path)
+    builds a differently-shaped subquery but shares the exact same
+    ``where_clause`` string, so the ijo_kubun_code predicate must survive
+    there too."""
+    sql = subject._rec_select_from_ban_ei(
+        "20060101",
+        "20260628",
+        entity_filter=" and ketto_toroku_bango in ('2020100001')",
+    )
+    assert "coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')" in sql
 
 
 def test_stage_rec_table_target_race_scopes_history_entities_and_current_source(

@@ -521,11 +521,42 @@ def _rec_select_from_corner_features(
 def _rec_select_from_ban_ei(
     history_start: str, to_date: str, entity_filter: str = ""
 ) -> str:
+    """Ban-ei ``nvd_se`` x ``nvd_ra`` SELECT for ``[history_start, to_date]``.
+
+    Unlike ``_rec_select_from_corner_features`` (used for JRA / NAR history),
+    Ban-ei has no ``race_entry_corner_features`` equivalent, so this direct
+    source read is unconditionally part of ``base`` in
+    :func:`build_rec_select_sql` for every category -- including when
+    ``to_date`` is called with a ``--target-date`` mode window, which extends
+    ``to_date`` through the target/upcoming date (see
+    :func:`stage_source_tables`). That means this function silently doubles
+    as the Ban-ei UPCOMING-window entrant source too, at ``_rec_priority`` 0
+    -- it is NOT limited to genuinely historical (already-settled) rows.
+
+    Scratch / exclusion filter (2026-07-18, production entrant-selection fix)
+    -------------------------------------------------------------------------
+    Because of the dual role above, ``ijo_kubun_code in ('1', '2')`` (取消 /
+    除外 -- scratched or excluded before the race, so ``kakutei_chakujun``
+    stays the '00' placeholder forever) must be excluded HERE, not only in
+    ``_rec_select_from_se_ra``'s own UPCOMING-window branch
+    (``upcoming_target_union_sql``): both branches feed the same
+    ``qualify row_number() ... order by (finish_position is null),
+    _rec_priority`` tie-break in :func:`build_rec_select_sql`, and this
+    function's rows win that tie-break (priority 0) whenever both sides show
+    a NULL ``finish_position`` -- the case for every genuinely upcoming race.
+    Filtering only the priority-1 side would leave a scratched Ban-ei horse
+    fully unfiltered via this priority-0 path. Codes '3'/'4'/'5'/'6'/'7' mean
+    the horse DID run and must stay. ``coalesce(..., '0')`` treats a NULL
+    ``ijo_kubun_code`` as normal so a data gap in this unrelated column never
+    drops a legitimate entrant -- same rationale as
+    ``_rec_select_from_se_ra``.
+    """
     where_clause = (
         f"se.keibajo_code = '{BAN_EI_KEIBAJO_CODE}'"
         f" and se.kaisai_nen between '{history_start[:4]}' and '{to_date[:4]}'"
         f" and (se.kaisai_nen || se.kaisai_tsukihi) between '{history_start}' and '{to_date}'"
-        f" and se.ketto_toroku_bango is not null{entity_filter}"
+        f" and se.ketto_toroku_bango is not null"
+        f" and coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2'){entity_filter}"
     )
     if entity_filter:
         from_source = (
@@ -665,6 +696,24 @@ def _rec_select_from_se_ra(
     ``_drop_realtime_odds_table_if_exists``) produces the same result as NULL for
     every row, so the fallback path is always executed when no realtime data is
     available — preserving the existing behaviour exactly.
+
+    Scratch / exclusion filter (2026-07-18, production entrant-selection fix)
+    -------------------------------------------------------------------------
+    ``ijo_kubun_code`` ("異常区分コード") on ``jvd_se`` / ``nvd_se`` is '1'
+    (取消 / scratched pre-race) or '2' (除外 / excluded pre-race) for a horse
+    that was entered but never actually ran -- its ``kakutei_chakujun`` is
+    always the '00' placeholder (see ``reference_jvd_placeholder_semantics``),
+    so it can never be distinguished from a genuinely upcoming, not-yet-run
+    horse by ``finish_position`` alone at predict time. This function is the
+    per-horse UPCOMING-window entrant source for all three categories (JRA /
+    NAR / Ban-ei, via ``se_table``), so it excludes
+    ``ijo_kubun_code in ('1', '2')`` here -- entrant selection ("who do we
+    build a feature row and generate a prediction for") is exactly this
+    function's job. Codes '3'/'4'/'5'/'6'/'7' (abandoned-mid-race /
+    disqualified / demoted / other in-race event) mean the horse DID run and
+    must stay; only '1'/'2' are excluded. ``coalesce(..., '0')`` treats a NULL
+    ``ijo_kubun_code`` as normal ('0') so a data gap in this unrelated column
+    never drops a legitimate entrant.
     """
     race_filter = ""
     if target_race is not None:
@@ -732,6 +781,7 @@ def _rec_select_from_se_ra(
       and (se.kaisai_nen || se.kaisai_tsukihi) between '{target_from}' and '{target_to}'
       and se.ketto_toroku_bango is not null
       and try_cast(nullif(trim(se.umaban), '') as int) is not null
+      and coalesce(trim(se.ijo_kubun_code), '0') not in ('1', '2')
     """
 
 
@@ -832,6 +882,20 @@ def build_rec_select_sql(
     # whose own corner_*/time_sa/kohan_3f stay NULL (post-race-only, never
     # populated by `_rec_select_from_se_ra`) -- an accepted trade-off against
     # silently losing the label entirely, which is what the bug did.
+    #
+    # KNOWN GAP (2026-07-18, entrant-selection scratch/exclusion fix): both
+    # `_rec_select_from_se_ra` (priority 1, direct jvd_se/nvd_se read) and
+    # `_rec_select_from_ban_ei` (priority 0, direct nvd_se read, Ban-ei only)
+    # now exclude `ijo_kubun_code in ('1', '2')` -- see each function's own
+    # docstring. `_rec_select_from_corner_features` (priority 0, JRA/NAR) does
+    # NOT: `race_entry_corner_features` is a separately-owned, pre-materialised
+    # table (written by the running-style Worker in apps/sync-realtime-data)
+    # that carries no `ijo_kubun_code` column at all, so a JRA/NAR horse
+    # scratched AFTER that Worker last wrote its pre-race row could still
+    # surface here as the sole (and therefore trivially winning) candidate for
+    # that horse. Confirmed out of scope for the 2026-07-18 fix (different
+    # package/language, separately owned pipeline); flagged here for whoever
+    # picks up that follow-up.
     return f"""
     select * exclude (_rec_priority) from (
       select base_union.*, _rec_priority from (

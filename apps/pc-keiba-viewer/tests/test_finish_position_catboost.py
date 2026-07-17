@@ -115,6 +115,29 @@ def test_filter_range_excludes_nan_finish_position():
     assert out["race_id"].to_list() == ["r1"]
 
 
+def test_filter_range_excludes_scratched_and_excluded_horses():
+    """Training-side characterization test for the 2026-07-18 predict-time
+    entrant-selection fix (jvd_se/nvd_se ijo_kubun_code '1'=取消/scratched,
+    '2'=除外/excluded -- both mean the horse was entered but never actually
+    ran). Confirms the training corpus needed NO code change for that fix:
+    finish_position_features_duckdb.py already derives finish_position=NULL
+    for such a row (kakutei_chakujun is the '00' placeholder in 100% of
+    scratch/exclusion cases -- it is never backfilled because the horse never
+    crossed the line), and this walk-forward window filter already hard-
+    excludes any NULL finish_position row, independent of which upstream
+    stage produced it or whether the predict-time entrant filter ever ran
+    over that row. A scratch/exclusion row can therefore never contribute a
+    training label."""
+    df = pl.DataFrame({
+        "race_date": ["20260718", "20260718"],
+        "race_id": ["r1", "r1"],
+        "ketto_toroku_bango": ["h_ran", "h_scratched"],
+        "finish_position": [1.0, None],
+    })
+    out = subject.filter_range(df, "20260718", "20260718")
+    assert out["ketto_toroku_bango"].to_list() == ["h_ran"]
+
+
 # ---------------------------------------------------------------------------
 # filter_year
 # ---------------------------------------------------------------------------
