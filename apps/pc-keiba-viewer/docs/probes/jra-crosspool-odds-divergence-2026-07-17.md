@@ -621,4 +621,138 @@ alongside the other same-day campaign runs.
 - `tmp/crosspool-odds-divergence/wf_run.log` — full stdout of the WF
   training run (18 CatBoost fits, per-seed/per-fold progress).
 
+## 10. Addendum (2026-07-17, wave 4-2): marginal implied-probability LEVEL — REJECT
+
+**Task**: team-lead assigned a follow-up hypothesis reusing this probe's
+harness — does the marginal implied probability LEVEL of the umaren/wide
+pools (not the divergence tested in §1-9 above) carry additive signal for
+the champion model? Framed as genuinely untested since 2026-06-12's
+`e0904c74` was a probe-stage ABORT under the then-stricter 0.08 bar
+(current bar is 0.02).
+
+### 10.1 Dedup correction (found before proceeding)
+
+The task's dedup rationale had the two constructs backwards. **This IS
+`e0904c74`'s original hypothesis, not a new one** — confirmed by two
+independent sources written before this task was ever assigned:
+
+- `jra-unexploited-data-inventory-2026-07-04.md` Part 2 (this repo's own
+  prior exhaustive census) explicitly recommends folding jvd_o1-jvd_o6 into
+  KNOWN DEAD wholesale, "do not re-open without a genuinely new angle (e.g.,
+  a cross-pool divergence signal, not marginal implied probability, which
+  is a different hypothesis than what was tested)."
+- This probe's own `probe_partial_rho.py` docstring (§4 above, written this
+  morning before this task existed) states: "This is a different construct
+  than the marginal exotic-pool implied probability itself (already tested,
+  JRA ABORT, commit e0904c74)... here we test the divergence between two
+  pools... not the level of either pool."
+- Structurally: `z_p2`/`z_p3` (the within-race z-scored level, exactly what
+  team-lead's proposed construction asks for) are computed as intermediates
+  in `build_feature.py` before being subtracted into
+  `div_umaren_z`/`div_wide_z`. Within-race z-scoring is a per-race linear
+  (monotonic) transform, so it does not change within-race rank order — the
+  level construct is Spearman-rank-equivalent to `e0904c74`'s original,
+  unnormalized construction.
+
+Rather than stand down or blindly proceed, ran a cheap fresh probe check
+(`probe_level_dedup_check.py`, 2023-2025, same odds-controlled
+partial-Spearman methodology) before committing to the WF budget. Result
+was genuinely mixed: for the bet-type-matched targets
+(`is_top1`/`is_top2`/`is_top3`), fresh numbers are modest and consistent
+with `e0904c74`'s historical ~0.08 ceiling (max 0.09, several below the
+current 0.02 floor). But for the continuous `finish_norm` target, the level
+construct clears the current bar strongly — `z_p2` vs `finish_norm` reaches
+0.212, `z_p3` vs `finish_norm` reaches 0.225, both **stronger than this
+probe's own successful divergence-construct probe pass** (§4's max 0.144).
+Team-lead had already pre-authorized proceeding to a likely-REJECT-but-
+worth-formally-closing WF regardless of probe outcome, and this
+materially-stronger-than-historical fresh signal tipped the decision toward
+proceeding rather than standing down on dedup grounds alone.
+
+### 10.2 Feature construction
+
+`level_umaren_z` / `level_wide_z`: identical decode/join pipeline to §3's
+divergence construction (`build_feature_level.py`, a copy of
+`build_feature.py` with the final subtraction step against `z_pwin`
+removed), 2013-2025, 626,774 rows / 44,907 races, 100% coverage (both
+jvd_o2/jvd_o3 have full coverage in this window, matching §2's
+data-availability finding).
+
+### 10.3 Walk-forward validation
+
+Same spec as §5: CatBoost YetiRank, armB-250 clean base +
+`[level_umaren_z, level_wide_z]`, 3 seeds (42/101/2026) × 3 blind folds
+(train≤Y-1, test Y for Y∈{2023,2024,2025}), 2000-iteration paired
+bootstrap.
+
+| metric     |   base |   cand | delta (pp) |  LB95 (pp) |
+| ---------- | -----: | -----: | ---------: | ---------: |
+| top1       | 33.796 | 34.054 |     +0.257 |     −0.000 |
+| place2     | 18.119 | 18.183 |     +0.064 |     −0.244 |
+| place3     | 14.163 | 14.160 |     −0.003 |     −0.325 |
+| place4     | 12.166 | 12.214 |     +0.048 |     −0.241 |
+| place5     | 11.076 | 11.089 |     +0.013 |     −0.248 |
+| place6     | 10.416 | 10.616 |     +0.199 |     −0.052 |
+| top3_box   |  9.410 |  9.539 |     +0.129 |     −0.042 |
+| fukusho_2p | 74.912 | 75.224 |     +0.312 | **+0.074** |
+
+**Gate: REJECT.** 0/3 primaries clear (top1's LB95 sits at −0.0001,
+essentially a coin flip away from crossing zero but still on the wrong
+side; place2/place3 both clearly miss). No regression breach (worst delta
+−0.003pp, place3, far inside the −0.05pp floor). `fukusho_2p` is the only
+metric with LB95>0, but it isn't a gated primary. Per-seed top1 deltas
+(+0.511/−0.010/+0.270) are not sign-stable across seeds — a second
+independent signal that the pooled +0.257 is not a robust effect.
+
+### 10.4 Cell scan (sort-before-mask)
+
+22 cells with n≥200 across the harness's 4 standard dims (keibajo_code /
+kyori_band / season_band / current_baba_condition). **0/22 clear the
+routing gate** (need ≥2 of 3 primaries with delta≥+0.08pp & LB95>0, plus
+place2 or place3 among them). Three isolated single-metric hits, none
+gate-clearing: Kokura (keibajo_code=10) top1 +1.179pp[LB95+0.253, n=792],
+Tokyo (keibajo_code=05) top1 +0.622pp[LB95+0.020, n=1607], season_band=1
+top1 +0.593pp[LB95+0.099, n=2699] — each a single primary out of 66
+primary-metric comparisons (22 cells × 3 primaries), the same
+multi-comparison-noise signature seen across every other cell scan in
+today's campaign.
+
+### 10.5 Verdict
+
+**REJECT.** Confirms and extends `e0904c74`'s original 2026-06-12 finding
+under the current, more permissive probe bar and full WF rigor: even
+though the fresh probe signal materially exceeded the historical ceiling
+(driven by the continuous `finish_norm` target), it does not survive to
+the actual ranking-loss WF gate — the same "probe necessary, not
+sufficient" pattern that recurred all day (divergence §6, longshot v1,
+vector-knn). **This closes the exotic-pool marginal-implied-probability
+family for JRA a second, independent way** (§1-9's divergence construction
+and this addendum's level construction both REJECT), alongside the already
+DO-NOT-RETEST status the level construction carried from `e0904c74`.
+**DO-NOT-RETEST** (both constructions).
+
+### 10.6 MLflow record
+
+- **Run ID**: `da1b1dcb7274403cad957d568785b661`
+- **Run name**: `jra-crosspool-level-candidate-2026-07-17`
+- Read-back independently verified (fresh `MlflowClient`, apps/mlflow's own
+  `config.get_tracking_uri()` resolver): scheme `postgresql`,
+  `gate_result=REJECT` tag, all delta/LB95 metrics for top1/place2/place3
+  match the table in §10.3 exactly.
+
+### 10.7 Artifacts (this addendum)
+
+- `tmp/crosspool-odds-divergence/build_feature_level.py` — level-construct
+  feature builder (2013-2025).
+- `tmp/crosspool-odds-divergence/probe_level_dedup_check.py` — the fresh
+  dedup-verification probe (§10.1).
+- `tmp/crosspool-odds-divergence/retest_wf_level.py` — WF gate harness,
+  adapted from `retest_wf.py`.
+- `tmp/crosspool-odds-divergence/reports/crosspool_level.json` — full WF
+  report.
+- `tmp/crosspool-odds-divergence/log_mlflow_level.py` — MLflow recording
+  script.
+- `tmp/crosspool-odds-divergence/wf_run_level.log` — full stdout of the WF
+  run.
+
 (`tmp/` is gitignored per repo convention — only this doc is committed.)
