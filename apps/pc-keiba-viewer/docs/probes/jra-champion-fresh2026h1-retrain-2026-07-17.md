@@ -312,6 +312,20 @@ accept/reject decision this campaign made today.
 Either way, the retrained artifact is safe to keep as a registered
 challenger in the meantime (§8) — that action has no production effect.
 
+### 7.1 DECISION (team-lead, 2026-07-17): path 2 — keep challenger, blind-gate the weekend
+
+Team-lead selected **path 2**. Verbatim rationale: (i) gate (b)'s
+structural inconclusiveness aside, the in-sample replay's own point
+estimates were negative on 5/7 metrics — even granting they're
+noise-consistent, that's zero evidence actively supporting "flip
+tonight"; (ii) 2026-07-18 onward is a genuinely blind weekend for both
+models — real verification is days away, not weeks; (iii) the serving
+stack already absorbed two deploys today, and stacking an unverified
+artifact on top the night before racing exceeds the bar the goal's
+"production-use consideration" is meant to enforce. **Champion alias
+stays at v13. Challenger v34 is held pending a real blind gate — see §10
+for the runbook.**
+
 ---
 
 ## 8. MLflow record
@@ -362,3 +376,110 @@ established durability-verification discipline
   retrain script `retrain.py`, MLflow manifest builder
   `build_mlflow_manifest.py`. All under the same `tmp/` directory
   (git-ignored per project convention; not committed).
+
+---
+
+## 10. Flip runbook (weekend blind gate, per §7.1's DECISION)
+
+**One command, re-run per race day or weekend, from `apps/pc-keiba-viewer`:**
+
+```sh
+uv run python tmp/candidate-jra-champion-fresh2026h1-2026-07-17/blind_gate_runbook.py \
+    --from-date 20260718 --to-date 20260719
+```
+
+`blind_gate_runbook.py` builds that date window's features from scratch
+(base builder + the same 16 enrichment layers + pacestyle used
+throughout this doc), scores it with **both** the live champion
+(`apps/finish-position-predict-container/models/finish-position/jra/jra-cb-v9-sim-2013-clean/`)
+and the fresh2026h1 challenger (this dir's `artifact/`), and appends the
+per-race hit outcomes to a persistent, dedup-by-`race_id` accumulator at
+`tmp/candidate-jra-champion-fresh2026h1-2026-07-17/blind_gate/accumulated_hits.parquet`.
+Every invocation recomputes the paired comparison over **all** races
+accumulated so far (not just the new window) and prints a `FLIP-READY:
+YES/NO` line plus a JSON status block
+(`blind_gate/latest_gate_status.json`) and a cell×rank1-5 table
+(`blind_gate/latest_cell_report.json`, venue/surface/distance_band,
+n≥20).
+
+**Smoke-tested** (this session, 2026-07-17) against the already-settled
+2026-07-10→07-12 window (72 races, 941 horse-rows) to confirm the full
+pipeline runs end-to-end before leaving it for the real blind weekend —
+mechanics only, not a gate reading, since that window is in-sample for
+the challenger. Result: completed cleanly in 224.7s (base builder + all
+16 layers + assembly + dual scoring + accumulation + gate computation),
+zero errors. The gate output itself correctly read `FLIP-READY: NO` and
+flagged `interim_safety_check_n50plus: "FLAG"` (worst LB95 −12.5pp) —
+expected and reassuring, not a concern: at n=72 on an in-sample window
+the CIs are necessarily wide and this population can't validly speak to
+regression either way (same reasoning as gate (b), §4.3), so the gate
+logic correctly refused to report a false "OK" rather than silently
+passing an underpowered/contaminated reading. This confirms the flag
+condition itself is reachable and behaves as designed, which the real
+weekend-1 run needs to have been exercised at least once before being
+trusted blind.
+
+**The smoke test's 72 in-sample rows were deleted from the accumulator
+after verifying the pipeline** (`blind_gate/accumulated_hits.parquet` +
+the `blind_gate/20260710_20260712/` working dir), specifically so they
+cannot silently count toward the real "blind n≥200" flip gate — that
+population must be exclusively 2026-07-13+ races that are genuinely
+out-of-sample for the challenger. `blind_gate/` is empty and ready for
+the first real invocation on 2026-07-18.
+
+### 10.1 The three checkpoints team-lead specified
+
+1. **After each race day**: run the command above with that day's
+   `--from-date`/`--to-date` (a single day or a whole weekend at once —
+   both work identically since the window is just a DuckDB date filter).
+   This is the "score the day, append to the accumulator" step — always
+   safe to run, no gate decision attached.
+2. **Interim safety check (weekend 1, ~72 races expected 07-18/19)**:
+   after running the command for that weekend, check
+   `blind_gate/latest_gate_status.json`'s
+   `interim_safety_check_n50plus` field. `"OK"` means every metric's
+   accumulated LB95 clears the −0.05pp §8.12 floor — no red flag, keep
+   going. `"FLAG"` means investigate before scoring further weekends
+   (something the underpowered gate (b) in §4 didn't show — worth a
+   fresh look, not an automatic abort). `"PENDING (n<50)"` just means
+   not enough races yet.
+3. **Flip gate (binding, blind n≥200, ≈2 weekends)**: same file's
+   `flip_gate_n200plus` field reads `"READY"` only when **all** of: n≥200
+   accumulated blind races, every one of top1/place2/place3/place4/
+   place5/place6/top3_box has LB95 > −0.05pp (the §8.12 no-regression
+   floor, applied by confidence interval this time, not raw point
+   estimate — n≥200 gives ~0.5pp resolution per race, an order of
+   magnitude tighter than gate (b)'s n=264 in-sample reading, so this is
+   the first genuinely trustworthy quantitative reading this whole task
+   produces), and at least one of {top1, place2, place3} is
+   significantly positive (delta>0 **and** LB95>0). When `FLIP-READY:
+YES` prints, proceed to Step 4 exactly as specified in the original
+   task brief: bake the artifact to
+   `models/finish-position/jra/jra-cb-v9-sim-2013-clean-fresh2026h1/`,
+   update `model_meta.json` + test fixtures, update `cell_routing.json`
+   default (`sim`) variant + the viewer mirror
+   (`finish-position-cell-routing.ts`) + `FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS`
+   simultaneously + parity tests, run each package's full check, commit,
+   flip the MLflow champion alias (`set-champion jra-finish-position 34`),
+   update the `stage` tag off `pending-weekend-blind-gate`, **then stop
+   and report before push**, per the standing "commit OK, push needs
+   explicit instruction" rule. If instead `FLIP-READY: NO` persists past
+   ~3 weekends (n well over 200) with a genuinely negative,
+   significant reading on any metric, that's a real regression signal
+   this time (not an n=264 in-sample artifact) — close the flip attempt,
+   keep the live champion, and downgrade challenger v34's `stage` tag to
+   `rejected-see-blind-gate-results`.
+
+### 10.2 Design notes for whoever runs this next
+
+- The accumulator is additive and idempotent — re-running an
+  already-scored window just re-derives and dedups the same rows, so
+  it's safe to re-run a window if a session gets interrupted mid-build.
+- If a window has zero finished races yet (JRA results can lag same-day
+  posting), the script prints `window_rows: 0` and just re-reports the
+  existing accumulated status — safe to re-run later the same day.
+- Resource budget matches every other harvest build in this doc: DuckDB
+  6GB/4 threads for the base builder and the final assembly join,
+  4GB/2 threads per enrichment layer (12GB/3 threads for `h2h`
+  specifically, unchanged from `build_harvest_layers.py`). Check
+  `memory_pressure` before running if other heavy jobs are active.
