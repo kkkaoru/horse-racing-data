@@ -429,15 +429,20 @@ team-lead 指示により、(1) 22:00 JST の `corner-features-refresh` evening 
 
 `CORNER_FEATURES_REFRESH_CRON_EVENING = "0 13 * * *"` (UTC) = JST 22:00。デプロイ済み Worker Version `3a75b34f-14c2-426b-b661-bb8f6258d6f2` (2026-07-17T01:23:06Z UTC) がこの tick を含む — `wrangler deployments list` で本検証時点でも同 Version が 100% active であることを再確認済み (ロールバック無し)。
 
-**直接証拠**: Neon に対する無条件クエリ `select now(), max(updated_at) from race_entry_corner_features`:
+**直接証拠 (2 回測定、うち 1 回目は不正確だったため訂正した)**: Neon に対する無条件クエリ `select now(), max(updated_at) from race_entry_corner_features` を、libpq (psycopg, `NEON_PRIMARY_URL`) と Worker 自身が使うのと同じ HTTP driver (`@neondatabase/serverless` の `neon()`) の両方で計 8 回 (libpq 4 回 + HTTP 4 回) クロスチェックした。1 回目の測定 (`max(updated_at)=2026-07-17 12:00:13.187748+00:00`) はこの 8 回の再測定と一致せず、単発の不整合な読み取りだったと判断し破棄した。8 回全て一致した値を正とする:
 
 ```
-neon now():        2026-07-17 13:56:23.403131+00:00  (22:56:23 JST)
-max(updated_at):    2026-07-17 12:00:13.187748+00:00  (21:00:13 JST)
-gap:                1:56:10 — tick 予定時刻 (13:00 UTC) から 56 分超経過、値は tick 前から不変
+neon now() (直近):   2026-07-17 14:06:38.515Z  (23:06:38 JST)
+max(updated_at):     2026-07-17 00:17:46.067Z  (09:17:46 JST) — libpq 4回 / HTTP driver 4回、全て一致
 ```
+
+さらにこの `09:17:46 JST` という時刻自体を、本日のデプロイ時刻 `Worker Version 3a75b34f` (`2026-07-17T01:23:06.113Z` = **10:23:06 JST**) と比較すると、**書込みはデプロイの 1 時間 5 分前** であることが分かった。つまりこの書込みは、evening/morning cron が配線された新コードのデプロイ後に自動発火したものでは有り得ず、デプロイ前に (おそらく開発時の real-Neon smoke test として) write 可能な credential で手動実行された結果だと考えられる — 本日の cron 経由の自動書込みの証拠としては使えない。
+
+言い換えると、**今日中に「新しく配線された cron が自動発火して書き込んだ」と言える機会は 22:00 JST の evening tick 一回のみ** (今日の 09:15 JST の morning tick はデプロイ完了 [10:23 JST] より前なので、たとえ発火していたとしても新コードではない)。その唯一の機会である 13:00 UTC (22:00 JST) の tick から、直近の再確認時点 (23:06 JST) で **1 時間 6 分経過しても `updated_at` は動いていない**。
 
 13:00 UTC の tick が発火し何らかの行を UPSERT していれば、`updated_at = now()` は `ON CONFLICT DO UPDATE SET` 節で無条件 (値が変化したかどうかに関わらず) に更新される (`corner-features-refresh.ts:413`)。UPSERT の元となる `raw_rows` SELECT (`buildJraSelectSql`/`buildNarSelectSql`) は `[fromDate, toDate]` 日付レンジのみで絞り込む全件再計算であり、NULL 行だけに絞る WHERE 句は無い。本 tick の window は `[runYmd-7日, runYmd+2日]` = `[07-10, 07-19]` — この 10 日間に JRA・NAR 双方で多数の確定レースが存在することは本ドキュメント既存セクションで確認済みであり、「対象 0 行だったから何も動かなかった」は考えにくい。つまり **tick が正常発火していれば `updated_at` は動いていたはずだが、動いていない**。
+
+なお、この 1 回目の測定値が 8 回の再測定と食い違った事実自体も報告に値する: `NEON_PRIMARY_URL` 経由の読み取りは (libpq・HTTP driver どちらであっても) 常に同一の最新値を返すとは限らない、という不整合を実際に観測した。原因は未特定 (Neon 側のプーラー/キャッシュ層の可能性が高いが未確認)。本監査の他セクションで同クレデンシャルを使った一度限りの読み取り結果についても、複数回のクロスチェック無しでは額面通りに信頼しきれない可能性がある点を留意事項として記録する。
 
 **診断の試み**: デプロイ済みコードと全く同じ `refreshCornerFeatures()` を、evening cron と同一パラメータ (`daysAhead=2, lookbackDays=7, runYmd="20260717"`) で手動呼び出しし、`.env` の `NEON_PRIMARY_URL` を使って本番 Neon に対して 3 回連続実行した (scratchpad 上の bun script、`apps/finish-position-cron` 配下は一切変更なし)。3 回とも同一のエラーで失敗:
 
@@ -454,7 +459,7 @@ gap:                1:56:10 — tick 予定時刻 (13:00 UTC) から 56 分超�
 
 **構造的な観測ギャップ (副次的発見)**: `refreshCornerFeatures()` は自身の catch 節でエラーを `console.error` するのみで re-throw しない (`corner-features-refresh.ts:486-490`)。つまり Cloudflare 側が「scheduled ハンドラは正常終了した」と記録していても、内部で Neon 接続/権限エラーが起きて全処理がスキップされていた可能性を外部から区別する手段が (Analytics スコープなしでは) 無い。これは本タスクの rs*p*\* 観測ギャップ (§12.4) と同じ「silent catch で症状が外部に伝播しない」というクラスの問題であり、根はコードのバグではなく **観測可能性の欠如** である。
 
-**結論**: 22:00 JST tick が実際に発火したかどうかを確定できなかった。tick 前後で `updated_at` が全く動いていない事実と、UPSERT が対象 0 行になり得ない window 設計であることから、「発火したが正常に完了した」の可能性は低いと考えるが、「発火しなかった」と「発火したが内部エラーで silent に失敗した」を区別する材料が無い。**これは未解決のまま報告する** — 推奨フォローアップ: (a) 翌朝 00:15 JST の morning tick 後に同じ `max(updated_at)` チェックを再実行、(b) 可能なら `Account Analytics: Read` スコープを取得して実行ログを直接確認、(c) §12.5 で提案する durable last-run marker を追加。
+**結論**: 22:00 JST tick が実際に発火したかどうかを確定できなかった。本日中に新デプロイの cron が自動発火したと言える唯一の機会である 22:00 JST tick から 1 時間超経過しても `updated_at` が全く動いていない事実と、UPSERT が対象 0 行になり得ない window 設計であることから、「発火したが正常に完了した」の可能性は低いと考えるが、「発火しなかった」と「発火したが内部エラーで silent に失敗した」を区別する材料が無い。**これは未解決のまま報告する** — 推奨フォローアップ: (a) 翌朝 09:15 JST の morning tick (これが新コードとしては初回の自動発火機会になる) 後に `max(updated_at)` チェックを再実行 (今回学んだ教訓により、libpq/HTTP driver 双方で複数回クロスチェックすること)、(b) 可能なら `Account Analytics: Read` スコープを取得して実行ログを直接確認、(c) §12.5 で提案する durable last-run marker を追加。
 
 ### 12.2 `468a4f0e` の tolerate semantics 確定
 
@@ -506,4 +511,4 @@ rs*p*\* 欠損率を将来観測可能にする最も安価な方法は、既存
 
 ---
 
-**この commit は本ドキュメント §12 の追加のみを対象とする。診断のため以下を実施したが、いずれも `apps/pc-keiba-viewer` および `apps/finish-position-cron` の追跡対象ファイルには変更を加えていない**: (a) `apps/finish-position-cron/src/corner-features-refresh.ts` / `feature_guard.py` / `add-pacestyle-features.py` / `running-style-parquet-export.ts` (`apps/sync-realtime-data`, read-only) / `running-style-catalog-client.ts` (同) の read、(b) Neon への読み取り専用クエリ (`race_entry_corner_features` の `now()`/`max(updated_at)`)、(c) `NEON_PRIMARY_URL` を使った `refreshCornerFeatures()` の手動呼び出し 3 回 (scratchpad 上の一時 bun script から実行、production Neon への write を試みたが read-only transaction で全て拒否され実際の書込みは発生していない — 呼び出し先の関数は本セッション既存の deploy 済みコードそのものであり本 commit で新規に追加したものではない)、(d) R2 (`pc-keiba-features-archive`) の boto3 list による shard 存在確認 (読み取りのみ)、(e) `wrangler deployments list` / `wrangler whoami` によるデプロイ状態・OAuth スコープの確認。MLflow・D1・R2 への書込みやデータ削除は本追記では一切行っていない。
+**この commit は本ドキュメント §12 の追加 (初稿 + §12.1 証拠の訂正) のみを対象とする。診断のため以下を実施したが、いずれも `apps/pc-keiba-viewer` および `apps/finish-position-cron` の追跡対象ファイルには変更を加えていない**: (a) `apps/finish-position-cron/src/corner-features-refresh.ts` / `feature_guard.py` / `add-pacestyle-features.py` / `running-style-parquet-export.ts` (`apps/sync-realtime-data`, read-only) / `running-style-catalog-client.ts` (同) の read、(b) Neon への読み取り専用クエリ (`race_entry_corner_features` の `now()`/`max(updated_at)`、libpq/HTTP driver 双方で計 8 回のクロスチェックを含む)、(c) `NEON_PRIMARY_URL` を使った `refreshCornerFeatures()` の手動呼び出し 3 回 (scratchpad 上の一時 bun script から実行、production Neon への write を試みたが read-only transaction で全て拒否され実際の書込みは発生していない — 呼び出し先の関数は本セッション既存の deploy 済みコードそのものであり本 commit で新規に追加したものではない)、(d) R2 (`pc-keiba-features-archive`) の boto3 list による shard 存在確認 (読み取りのみ)、(e) `wrangler deployments list` / `wrangler whoami` によるデプロイ状態・OAuth スコープの確認。初稿の §12.1 は libpq 単発読み取り 1 回のみに基づいており、その後 libpq 4 回 + HTTP driver 4 回のクロスチェックで異なる (かつデプロイ時刻より前と判明した) 値に気付いたため、本 commit で訂正・上書きした — 初稿の一発読み取りをそのまま報告しなかった理由もそのまま §12.1 内に記録している。MLflow・D1・R2 への書込みやデータ削除は本追記では一切行っていない。
