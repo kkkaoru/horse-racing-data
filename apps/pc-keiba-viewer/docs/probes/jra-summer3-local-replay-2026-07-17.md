@@ -3,7 +3,8 @@
 - **Date**: 2026-07-17
 - **Category**: JRA finish-position — local reproduction of production-identical scoring for the 264 confirmed 2026-06-01..07-12 races at venues 02/03/10, per user instruction relayed by team-lead (follow-on to `jra-summer4-cell-baseline-2026-07-17.md` and `jra-serving-audit-jun-jul-2026-07-17.md`).
 - **Goal**: (1) locally reproduce the same cell-routed predictions the Cloudflare Container would genuinely serve (no Neon writes — local analysis only), bypassing the write-cluster serving defect documented in the sister audit; (2) compare routed-vs-champion-only, both-vs-market; (3) validate the reproduction against the one confirmed-healthy production sample (the 2026-07-11 Mac-batch, "Cluster A").
-- **Headline result — a validation caveat, not a clean answer**: the reproduction pipeline was built and fully scores all 264 races, and shows a **robust, positive routed-vs-champion-only effect** (pooled top1 +4.17pp [LB95 +1.89]), replicated at all 3 venues individually (venue02 +5.0pp [LB95 +1.67], venue03 +4.17pp [LB95 0.00], venue10 +2.78pp [LB95 0.00]). **But** a parity check against the one known-genuinely-healthy production sample (07-11 Mac-batch, 21 races, plain champion) found only **weak agreement** (mean Spearman ρ=0.30, top1 exact-match 4.8%, mean |rank diff| 3.7) — i.e. this reproduction captures directional signal but is **not a faithful bit-exact replica** of true serve-time scoring. Every number below should be read with that caveat; see §5.
+- **v1 headline (SUPERSEDED, kept below for the audit trail — see §8 for the current answer)**: the reproduction pipeline was built and fully scores all 264 races, and shows a **robust, positive routed-vs-champion-only effect** (pooled top1 +4.17pp [LB95 +1.89]), replicated at all 3 venues individually (venue02 +5.0pp [LB95 +1.67], venue03 +4.17pp [LB95 0.00], venue10 +2.78pp [LB95 0.00]). **But** a parity check against the one known-genuinely-healthy production sample (07-11 Mac-batch, 21 races, plain champion) found only **weak agreement** (mean Spearman ρ=0.30, top1 exact-match 4.8%, mean |rank diff| 3.7) — i.e. this reproduction captures directional signal but is **not a faithful bit-exact replica** of true serve-time scoring. Every number in §1-§7 below should be read with that caveat.
+- **★ v2 headline (CURRENT, §8)**: the two gaps §5 identified are now closed — (a) the `finish_position_features_duckdb.py` row-priority bug is fixed (commit `2326bf1f`) and (b) all 18 previously-missing champion-family features are now built (h2h layer rerun at 12GB memory, a `grade_race_lineage` layer added ahead of `trainer` to supply `target_race_id`). **Parity against Cluster A is now strong**: Spearman ρ=0.30→**0.93**, top1 exact-match 4.8%→**76.2%**, mean |rank diff| 3.72→**0.91**. With genuinely complete features, **the v1 routing effect mostly evaporates**: pooled routed-vs-champion-only top1 is now +0.76pp [LB95 −0.76, does not clear 0], and **no venue or cell (surface/distance_band/class_label) shows a robust (LB95>0 or UB95<0) result on any of rank1-6** at n=264. Per the 2026-07-17 user instruction relayed after v1, §8's tables are cell × rank1-6 first, pooled numbers are reference-only.
 
 ---
 
@@ -268,12 +269,121 @@ of the write-cluster issue).
 
 ## 7. Artifacts
 
-- `apps/pc-keiba-viewer/tmp/candidate-jra-summer3-local-replay-2026-07-17/build_harvest_layers.py` — 15-layer harvest builder (v2: full-base-input, fixed from a v1 that used an overly narrow minimal projection)
+- `apps/pc-keiba-viewer/tmp/candidate-jra-summer3-local-replay-2026-07-17/build_harvest_layers.py` — final (16-layer, full-base-input, per-layer input override for `trainer`) harvest builder
 - `.../score_and_compare.py` — cell routing reimplementation + scoring + all comparisons
-- `.../scored.parquet` — per-horse scored output (both routed and champion_only ranks)
-- `.../comparison.json` — full metric tables (all cells, all metrics, LB95/UB95)
-- `.../features/` — base per-race-builder output (0613-0712, all JRA venues)
-- `.../work/out/*` — the 13 successful harvest layers
-- `.../harvest_v3.log`, `base_build3.log` — build logs (layer failures included, for reproducibility)
-- Reused unchanged: `tmp/candidate-jra-2026-scoring/eval/build_full_harvest.py` (pattern source), `finish-position/lookups/course-numerical-features.parquet` (baked course lookup)
-- Local PG: `127.0.0.1:15432` (Apple container runtime instance, verified not the colima shadow twin). Neon: `NEON_PRIMARY_URL`, read-only, used only for the §4 Cluster-A parity comparison. No writes, no deletes, no admin API calls.
+- `.../scored.parquet`, `.../comparison.json` — **v2 (post-fix) outputs**, all §8 numbers
+- `.../features_v2/` — base per-race-builder output, rebuilt with the `2326bf1f` fix (0613-0712, all JRA venues; superseded `.../features/` from v1, kept for the audit trail)
+- `.../work/out/*` — all 16 harvest layers (v1's 13; v2 adds `grade_lineage`, and `h2h`/`trainer` are the v1 failures now fixed)
+- `.../harvest_v4.log`, `base_build3.log`, `score_compare3.log` — v2 build/score logs
+- `.../harvest_v3.log`, `score_compare2.log` (v1, 13/15 layers, kept for the audit trail) — superseded by the above
+- Reused unchanged: `tmp/candidate-jra-2026-scoring/eval/build_full_harvest.py` (pattern source), `finish-position/lookups/course-numerical-features.parquet` (baked course lookup), `tmp/candidate-leak-clean-retrain/nar-full-regen/run_stage9_h2h_peryear.sh` (consulted for the h2h OOM fix, not directly executed -- see §8.1)
+- Code fix: `src/scripts/finish_position_features_duckdb.py` + `tests/test_finish_position_features_duckdb_integration.py` (commit `2326bf1f`)
+- Local PG: `127.0.0.1:15432` (Apple container runtime instance, verified not the colima shadow twin). Neon: `NEON_PRIMARY_URL`, read-only, used only for the §4/§8.2 Cluster-A parity comparison. No writes, no deletes, no admin API calls.
+
+---
+
+## 8. v2 — fidelity gap closed, confirmed values (2026-07-17, continued session)
+
+### 8.1 What changed since v1
+
+1. **Root cause found and fixed for the §1.3 `finish_position` NULL bug**, in `finish_position_features_duckdb.py`, not upstream: `build_rec_select_sql`'s row-priority dedup between the `race_entry_corner_features`-derived row (priority 0) and the direct `jvd_se`/`jvd_ra` row (priority 1) ordered on `_rec_priority` alone, i.e. "does a corner-features row exist" rather than "is it complete". A race can have a corner-features row (written by the running-style Worker for its own purposes) whose `finish_position` was never backfilled after settlement while `jvd_se` already has the genuine result — the old ordering always kept the incomplete row. Fixed (commit `2326bf1f`, tests + cov97.51% + type-check clean) by ordering on `(finish_position is null)` before `_rec_priority`: a row that actually carries the outcome now always wins the tie-break; genuinely-upcoming races (both NULL) and normal already-materialised races (both agree) are unaffected. Rebuilding the base confirmed all 10 target dates now have the expected ~95-99% settled `finish_position` (was 0% on 0627/0711/0712). The _upstream_ non-backfill in `race_entry_corner_features` itself (a `sync-realtime-data` asset) was separately root-caused and healed by another agent (commit `46ac761b`) — this fix stands as defense-in-depth regardless.
+2. **All 18 previously-missing champion-family features recovered**: `h2h` (OOM at 4GB) reran successfully at `--memory-limit 12GB --threads 3` — its target-side input is already tiny (360 races) so the NAR precedent's per-year input-scoping wrapper (`tmp/candidate-leak-clean-retrain/nar-full-regen/run_stage9_h2h_peryear.sh`) wasn't needed, just more headroom for the history-side self-join it itself budgets 12GB for. `trainer`'s `target_race_id` dependency is supplied by a new `grade_race_lineage` layer (`add-grade-race-lineage-features.py --config lineage-races/jra.json`) run immediately before it, with `trainer`'s `--input-dir` pointed at `grade_race_lineage`'s output instead of the shared base (every other layer is independent and still reads the base directly). **Result: 250/250, 269/269, 274/274 declared features present for all three variants — 0 missing**, vs 18/250 (7.2%) missing in v1.
+
+### 8.2 Parity re-check against Cluster A (07-11 Mac-batch, 21 races, plain champion) — before/after
+
+| Metric                     | v1 (18/250 missing) | v2 (0/250 missing) |
+| -------------------------- | ------------------- | ------------------ |
+| Mean Spearman ρ            | 0.30                | **0.93**           |
+| Top1 exact-match           | 4.8% (1/21)         | **76.2%** (16/21)  |
+| Per-horse exact rank match | 11.6%               | **44.9%**          |
+| Mean \|rank diff\|         | 3.72                | **0.91**           |
+
+This is now a high-fidelity reproduction, not merely a directional one. The
+missing 7.2% of features (all `h2h_*`, `target_grade_trial_*`, and the
+`trainer_grade_*`/`trainer_target_race_*` family) were evidently far more
+load-bearing for matching genuine serve-time scores than their column-count
+share would suggest.
+
+### 8.3 Confirmed values — cell × rank1-6 (primary, per 2026-07-17 user instruction: evaluate by cell × individual rank, never by a summarized/pooled number)
+
+Delta convention throughout: **routed − champion_only** (the routing rule's
+own incremental effect) and, where noted, **arm − market**. Bold marks
+LB95>0 or UB95<0 (robust in either direction); n=264 total, no venue/cell
+below reaches the WF n≥200 gate, so nothing here is adoption-grade — this is
+a confirmed **2026 OOS descriptive read**, not a gate decision.
+
+**By venue (routed − champion_only)**:
+
+| Venue        | n   | top1                 | place2               | place3               | place4               | place5              | place6               |
+| ------------ | --- | -------------------- | -------------------- | -------------------- | -------------------- | ------------------- | -------------------- |
+| 02 Hakodate  | 120 | +2.50 [0.00, +5.83]  | −0.83 [−4.17, +1.67] | −0.83 [−5.00, +2.50] | −3.33 [−7.50, +0.02] | 0.00 [−4.17, +4.17] | −0.83 [−5.00, +2.50] |
+| 03 Fukushima | 72  | 0.00 [0.00, 0.00]    | +1.39 [0.00, +5.56]  | 0.00 [−4.17, +4.17]  | −1.39 [−4.17, 0.00]  | 0.00 [0.00, 0.00]   | −1.39 [−4.17, 0.00]  |
+| 10 Kokura    | 72  | −1.39 [−5.56, +2.78] | 0.00 [0.00, 0.00]    | −1.39 [−4.17, 0.00]  | 0.00 [0.00, 0.00]    | +1.39 [0.00, +4.17] | −4.17 [−9.72, 0.00]  |
+
+**No venue clears a robust (LB95>0) top1 win any more.** Venue02's +2.50pp
+touches LB95=0.00 exactly (boundary, not >0). Venue03/venue10 show
+essentially zero-to-slightly-negative routing effect. This is a substantial
+downgrade from v1's "+5.0pp [LB95 +1.67] at venue02" claim — that claim did
+not survive the fidelity fix.
+
+**By venue (routed vs market — is the served config, imperfections included, actually beating the favorite?)**:
+
+| Venue | n   | top1                 | place2               | place3               | place4               | place5               | place6               |
+| ----- | --- | -------------------- | -------------------- | -------------------- | -------------------- | -------------------- | -------------------- |
+| 02    | 120 | −0.83 [−3.33, +1.67] | +1.67 [−1.67, +5.00] | −1.67 [−6.67, +3.33] | −3.33 [−9.17, +1.67] | +2.50 [−2.50, +7.50] | +0.83 [−2.50, +4.17] |
+| 03    | 72  | +2.78 [0.00, +6.94]  | −2.78 [−9.72, +4.17] | +1.39 [−2.78, +5.56] | 0.00 [0.00, 0.00]    | 0.00 [0.00, 0.00]    | 0.00 [−5.56, +5.56]  |
+| 10    | 72  | −1.39 [−6.94, +4.17] | +1.39 [0.00, +4.17]  | +1.39 [−2.78, +6.94] | −1.39 [−6.94, +4.17] | +1.39 [−4.17, +6.94] | −1.39 [−6.94, +4.20] |
+
+**No venue shows a robust deviation from market on any rank.** Fukushima's
++2.78pp top1 touches LB95=0.00 exactly; everything else brackets zero.
+
+**By cell (surface / distance_band / class_label; routed vs market)**:
+
+| Cell                  | n   | top1                 | place2               | place3               | place4                | place5               |
+| --------------------- | --- | -------------------- | -------------------- | -------------------- | --------------------- | -------------------- |
+| surface=dirt          | 100 | +1.00 [−3.00, +6.00] | +1.00 [−2.00, +4.00] | −3.00 [−7.00, +1.00] | −3.00 [−7.00, 0.00]   | 0.00 [−5.00, +5.00]  |
+| surface=turf          | 157 | −0.64 [−3.82, +1.91] | 0.00 [−3.19, +3.82]  | +1.91 [−1.91, +6.37] | −1.27 [−6.37, +3.19]  | +2.55 [−0.64, +6.37] |
+| distance=intermediate | 104 | −1.92 [−6.73, +2.89] | 0.00 [−2.89, +2.89]  | −1.92 [−6.73, +2.89] | −2.89 [−7.69, +1.92]  | −1.92 [−6.73, +2.89] |
+| distance=mile         | 76  | +1.32 [0.00, +3.95]  | −1.32 [−6.58, +3.95] | +1.32 [−3.95, +6.58] | 0.00 [−5.26, +5.26]   | +3.95 [−1.32, +9.21] |
+| distance=sprint       | 35  | +2.86 [0.00, +8.57]  | +2.86 [0.00, +8.57]  | 0.00 [−8.57, +8.57]  | −2.86 [−8.57, 0.00]   | +5.71 [0.00, +14.29] |
+| class=E (tokubetsu)   | 62  | −1.61 [−4.84, 0.00]  | +1.61 [−3.23, +8.06] | 0.00 [−8.06, +8.06]  | −4.84 [−11.29, +1.61] | +3.23 [0.00, +8.06]  |
+| class=unknown         | 196 | +0.51 [−2.55, +3.57] | 0.00 [−3.06, +2.55]  | −0.51 [−3.57, +2.55] | −1.02 [−4.59, +2.55]  | +1.02 [−2.05, +4.59] |
+
+**Every cell brackets zero on every rank** (several touch a bound exactly at
+0.00 without crossing it). At n=264 total, none of these cuts — venue,
+surface, distance_band, or class_label — shows a statistically robust
+deviation from market on any individual rank 1 through 6.
+
+### 8.4 Reference only — pooled (do not use for any adoption/verdict decision, per the 2026-07-17 user instruction)
+
+| Comparison             | top1                 | place2               | place3               | place4               | place5               | place6               |
+| ---------------------- | -------------------- | -------------------- | -------------------- | -------------------- | -------------------- | -------------------- |
+| routed − champion_only | +0.76 [−0.76, +2.65] | 0.00 [−1.52, +1.52]  | −0.76 [−3.03, +1.14] | −1.89 [−3.79, 0.00]  | +0.38 [−1.52, +2.27] | −1.89 [−4.17, +0.38] |
+| routed − market        | 0.00 [−2.27, +2.27]  | +0.38 [−1.89, +2.65] | 0.00 [−3.03, +3.03]  | −1.89 [−4.92, +1.14] | +1.52 [−1.14, +4.17] | 0.00 [−3.03, +2.65]  |
+| champion_only − market | −0.76 [−3.41, +1.89] | +0.38 [−2.27, +3.03] | +0.76 [−1.89, +3.79] | 0.00 [−3.41, +3.03]  | +1.14 [−1.14, +3.41] | +1.89 [−0.76, +4.55] |
+
+### 8.5 Final verdict
+
+1. **venue02 route 2026 effectiveness**: not confirmed at gate-grade, and the
+   v1 apparent confirmation (+5.0pp [LB95 +1.67]) does not survive the
+   fidelity fix — v2's venue02 routed-vs-champion_only is +2.50pp with
+   LB95 touching exactly 0.00, i.e. a plausible small positive effect
+   consistent with (not independently confirming) the existing WF evidence
+   for `kyoso_joken_code=703` (+0.782pp [LB95 +0.270], n=3710,
+   `jra-summer4-cell-baseline-2026-07-17.md` §3), but this 264-race, ~1-month
+   2026 sample is too small to move that WF-level conclusion on its own in
+   either direction.
+2. **True 2026 summer-3-venue local accuracy vs market**: also not
+   distinguishable from market at this sample size, in either the routed or
+   champion-only configuration, on any of rank1-6, in any of the venue/
+   surface/distance_band/class_label cuts examined. This is a genuinely
+   different conclusion from v1's "both arms robustly underperform market"
+   (§2.2) — that finding was substantially an artifact of the 7.2%
+   missing-feature gap, not a real 2026 signal.
+3. **What this local replay newly establishes with confidence**: the
+   reproduction pipeline itself (feature build + cell routing + scoring) is
+   now validated as high-fidelity (ρ=0.93 vs the one known-genuine production
+   sample) and is available for reuse by other agents wanting a clean,
+   serving-defect-free 2026 dataset — see §7 for artifact paths. The
+   `finish_position_features_duckdb.py` fix (commit `2326bf1f`) is a
+   permanent, tested improvement independent of this specific campaign.
