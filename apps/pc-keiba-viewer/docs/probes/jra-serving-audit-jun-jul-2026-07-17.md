@@ -167,6 +167,72 @@ venue02 ルール (`cell_routing.json` rule 3) が本番投入された 2026-07-
 
 既報 (§2 Defect A) の通り、2026-07-12 05:51:45〜05:52:32 UTC (14:51-14:52 JST) の約 47 秒間に、対象 3 場 (函館/福島/小倉) 72 レース分の予測行が生成された。同時間帯に 07-11 分 (22+14=36 行グループ) と 07-12 分 (36 行グループ) の両方が書き込まれている。根本原因・生成元スクリプトの特定は serve-defect-269 の担当範囲のため、本監査ではこれ以上追跡しない。
 
+## 8. 週末監視手順 (serve_health_check.py, 2026-07-17 追記)
+
+本監査 (§1-§7) が手動/ad-hoc SQL で発見した Cluster A/B 劣化パターンを毎開催日で自動検知できる read-only 診断ツール `apps/pc-keiba-viewer/src/scripts/serve_health_check.py` (183 tests、カバレッジ99%) を追加した。以下はその運用手順 (runbook) である。
+
+### 8.1 実行コマンド
+
+`cd apps/pc-keiba-viewer && uv run python src/scripts/serve_health_check.py --date YYYYMMDD --category jra [--json]`。`--date` 省略時は当日 JST (`resolve_date_arg()`)。`--category` 省略時は `jra` — この tool の各種閾値 (quality の stddev<0.3、burst の>10件/分) は JRA incident データで較正されており、他カテゴリ値も実行自体は受け付けるが閾値の転用は未検証。`--json` を付けると人間可読テキストの代わりに JSON を stdout に出力する。次回開催日 (2026-07-18 土、函館/福島/小倉) 以降、毎開催日の監視に本コマンドを使うことを想定する。
+
+### 8.2 5チェック項目の要約
+
+| #   | チェック                         | 判定対象                                                                                                                                                                                                                                                                     | 異常判定基準                                                                                                                                       |
+| --- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Coverage                         | `jvd_ra` (placeholder-safe 述語 `trim(shusso_tosu) NOT IN ('', '00')` で確定レースのみ抽出 — 本監査 §「手法」と同一) と `race_finish_position_model_predictions` の突合。発走時刻 (`hasso_jikoku`) が現在時刻を過ぎた確定レースのみを対象とする post-time-passed filter 付き | model_version 問わず予測行が 1 件も存在しないレースがあれば異常                                                                                    |
+| 2   | Quality (Cluster-B signature)    | `predicted_score` を (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, model_version) で group化 — race 単独ではない (§2 Defect A/B の通り、同一レースが健全な model_version 行集合と劣化した model_version 行集合を同時に持ちうるため) — した within-group 標準偏差    | stddev < 0.3 (劣化域 0.05〜0.15 と健全域 0.72〜1.57 の中間に双方へ余裕を持たせた閾値) の group を DEGRADED として列挙                              |
+| 3   | Routing parity                   | `cell_routing.json` の first-match-wins ルールを Python で再実装し、確定レースごとに期待 model_version 行の有無を確認                                                                                                                                                        | 期待 model_version 行が欠落していれば mismatch。対象カテゴリに cell_routing ルール定義が無い場合 (現状 jra / ban-ei のみ定義、nar は未定義) は N/A |
+| 4   | Burst detection                  | `prediction_generated_at` を `date_trunc('minute', ...)` で分単位 group化                                                                                                                                                                                                    | 同一分内の書き込みレース数が 10 件を超える (11 件以上の) bucket を検出 (実測例は §8.4 参照)                                                        |
+| 5   | D1 self-heal件数 (informational) | `bunx wrangler d1 execute finish-position-cron-db --remote` で `finish_position_coverage_gap_events` の該当日件数を取得                                                                                                                                                      | 情報提供のみ、exit code に一切影響しない。wrangler 不使用/失敗時は `N/A (wrangler unavailable)`                                                    |
+
+### 8.3 健全/異常の判定基準 (exit code)
+
+- **0**: checks 1-4 が全てクリーン (異常ゼロ)。
+- **1**: checks 1-4 のいずれかが異常を検知 (check 5/D1 は informational のため対象外)。
+- **2**: ツール自体の失敗 (Neon 接続エラー、`NEON_PRIMARY_URL` 未設定、`cell_routing.json` 読み込み失敗、または `main()` の outer catch-all が捕捉するその他の未処理例外)。exit code 1 は「本物の品質異常を検知した」場合専用に予約されており、コードのバグ等によって exit code 1 が偶発的に出力されることはない設計 — その場合は exit code 2 になる。
+
+### 8.4 受け入れテスト実証結果
+
+本ツールを、本ドキュメント §1-§7 が手動/ad-hoc SQL で解明した 2 つの実インシデント日に対して実行し、既知のパターンを自動検知できることを確認した。
+
+2026-07-12 (jra、§2 Defect A の Cluster B 一律劣化) を対象に `--date 20260712 --category jra` で実行した結果:
+
+| チェック           | 結果                                                                                                       |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| [2] Quality        | 36/36 (race, model_version) group が全て DEGRADED、stddev 範囲 0.048〜0.160                                |
+| [3] Routing parity | 0 mismatch (ルーティング自体の _存在_ はこの日正常 — 壊れていたのは _品質_ のみ、§2 Defect A の実測と整合) |
+| [4] Burst          | 1 分 flagged: 2026-07-12 05:52 UTC (14:52 JST)、36 races                                                   |
+| [5] D1 count       | 6                                                                                                          |
+| **exit code**      | **1**                                                                                                      |
+
+2026-07-11 (jra、§2 Defect A/B の Cluster A/B 混在 — 本ツールの (race, model_version) grouping 設計が意図通り機能する最重要の検証ケース) を対象に `--date 20260711 --category jra` で実行した結果:
+
+| チェック                      | 結果                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [2] Quality (per-race rollup) | `fully_healthy=0 partially_degraded=21 fully_degraded=15`。21 レースは `model_version=jra-cb-v9-sim-2013-clean` の健全な group (stddev 0.694〜1.507、§2 Cluster A 実測 0.72〜1.57 と整合) と、同一レース上の劣化した routed-variant/backfill group を同時に持つ。この 21 という件数は §2 Defect B が独立に報告する Cluster A 対象レース数 (函館12/福島4/小倉5=21) と完全に一致する |
+| [4] Burst                     | 3 分 flagged: 01:47 UTC/21 races (Cluster A、健全バッチ)、05:51 UTC/22 races + 05:52 UTC/14 races (Cluster B backfill、22+14=36 は §6 記載の「22+14件」と一致)                                                                                                                                                                                                                     |
+| [5] D1 count                  | 0 (self-heal cron は §2 Defect C の通り 2026-07-12 04:26 JST 配線であり、07-11 時点ではまだ存在しない)                                                                                                                                                                                                                                                                             |
+| **exit code**                 | **1**                                                                                                                                                                                                                                                                                                                                                                              |
+
+[1] Coverage と (07-11分の) [3] Routing parity の個別出力値はこの受け入れテストの記録には含まれていない。ただし両日とも完全欠落レースが存在しないことは本ドキュメント §1 の台帳 (07-11 / 07-12 とも「真の coverage」36†) で既に確認済みであり、両日の exit code 1 は checks [2] (quality) と [4] (burst) の実測異常のみで十分に説明される。
+
+両日とも、本ドキュメントが独立に (手動/ad-hoc SQL で) 解明した内容を本ツールが正確に再現した。特に 07-11 の MIXED 結果は (race, model_version) 粒度での group化設計が意図通りに機能する証拠として最も重要である — この粒度がなければ、同一レース内の健全な行集合と劣化した行集合の `predicted_score` が単一の stddev 計算に混在し、`fully_healthy=0` という明確なシグナルは失われていたはずである (race 単独 group化との比較実行は本ツールでは行っていない — これは grouping 設計の論理的帰結であり、実測比較ではない)。
+
+### 8.5 異常検知時の対処順
+
+1. **`feature_guard.py` のログ確認**: `apps/finish-position-predict-container/src/predict_lib/feature_guard.py` (commit `57a4cd7f` で deploy 済み、単体 17 tests / カバレッジ100%。同 commit を含む `finish-position-predict-container` package 全体では 1288 tests / cov 99.81%) が該当レースを reject しているか確認する。特徴量欠損/劣化率がレース平均 50% 以上の場合に書き込み自体を拒否する fail-closed 恒久対策であり、正しく機能していれば Cluster B 型の劣化書き込みはそもそも Neon に到達しない。ログ上で reject されているか、あるいはこの guard 自体が呼ばれていない別経路 (§2 Defect A が特定できなかった書込元) なのかを切り分ける。
+
+2. **該当レースの focused-full 再トリガー**: admin API `POST /api/admin/run-focused-full-race` (`Authorization: Bearer $FINISH_POSITION_CRON_TRIGGER_TOKEN`) を使う。**Cloudflare WAF が非ブラウザ User-Agent を error 1010 で 403 拒否するため、curl 実行時はブラウザ相当の User-Agent 明示が必須** (既存メモリ `project_cf_only_serving_2026_07_11` / `reference_realtime_odds_weight_architecture` 参照)。単一 slot lock の設計により、既に処理中/完了済みレースへの再トリガーは安全な no-op になる。
+
+   **再トリガー前に必ず確認すること (既知の罠)**: `focused-full-completion.ts::expectedModelVersion()` が使う「既に complete」判定は、期待 model_version の **行数が揃っているかのみ** を見ており、`predicted_score` の分散などの **値の健全性は一切見ない**。この罠は実際に発生済みであり、並行する専任診断 (`jra-269-serve-defect-2026-07-17.md` §7.1) の本番 admin trigger smoke test で、劣化した 269 行が既に存在する対象レース (2026-07-12 venue02 R01) への再トリガーが行数一致のみを理由に `status: "already-complete"` で実行されずスキップされたことが確認されている。本ドキュメント §8.4 の実証結果自体 (2026-07-12 の 36 レースは行数としては期待頭数分揃っているが quality check では全て DEGRADED) がまさにこの罠の的中条件を示している。したがって再トリガーの前には、対象レースが本当に未生成かを **count だけでなく本ツールの quality check (check 2) でも確認** し、count は揃っているが quality が悪いレースについては、素朴な再トリガーが `already-complete` にブロックされて効果を持たない可能性を踏まえて対処する (§2 Defect C も参照)。
+
+3. **それでも解消しない場合のロールバック**: CF-only serving パイプライン自体を疑う場合は `docs/finish-position-prediction-system.md` §1.2 の Mac batch fallback 緊急ロールバックを検討する — 無効化済みの launchd plist は 1 コマンドで復元できる (`cp ~/Library/LaunchAgents.disabled-20260711/com.kkk4oru.finish-position-predict.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kkk4oru.finish-position-predict.plist`、詳細は既存 project memory `project_cf_only_serving_2026_07_11` に記載)。あるいは直近の `finish-position-cron` / `finish-position-predict-container` deploy commit への revert を検討する。いずれもデータ削除・UPDATE を伴わない (pointer/flag の revert のみ)。
+
+### 8.6 既知の限界
+
+- **Routing parity (check 3)** は「期待 model_version の行が存在するか」の二値判定のみを行う。複数の model_version が同一レースに競合して存在する場合に viewer がどちらを表示するか (`finish-position-cell-routing.ts` の priority-0 ロジック、§7.3 参照) までは検証しない。したがって check 3 が OK でも viewer が実際に表示している行が健全とは限らない — 本ドキュメント §2 Defect B (健全な Cluster A 行が priority-0 の壊れた行集合に恒久的にシャドーイングされる事象) は check 3 単独では検出できない。
+- **D1 self-heal件数 (check 5)** は informational のみで exit code に一切影響しない。self-heal 発火は genuine な自己修復 (本当に未生成だったレースの検出) と、§2 Defect C の false-positive re-trigger (行数は揃っているが `expectedModelVersion()` のルール欠落により complete と判定できず再エンキューされる) の両方でカウントが増えうるため、単独の pass/fail 指標として扱えない。
+
 ---
 
-**このドキュメントのみを commit する。他の untracked/modified ファイル (apps/mlflow, apps/sync-realtime-data, 他 probe doc 等) には一切触れていない。**
+**この commit は本節を追加した本ドキュメントおよび `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定のみを対象とする。他の untracked/modified ファイルには一切触れていない。**
