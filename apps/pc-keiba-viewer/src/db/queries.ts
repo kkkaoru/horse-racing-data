@@ -4,6 +4,7 @@ import { cache } from "react";
 
 import { TRACK_LABELS, type RaceSource } from "../lib/codes";
 import {
+  getAllFinishPositionCellRoutingOffLabelVariantModelVersions,
   getAllFinishPositionDisplayPriorityModelVersions,
   resolveFinishPositionDisplayPriorityModelVersion,
 } from "../lib/finish-position-cell-routing";
@@ -2916,6 +2917,21 @@ const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = Array.from(
   ]),
 );
 
+// Defensive hardening (belt-and-suspenders, not a fix for an observed leak --
+// see docs/probes/jra-serving-audit-jun-jul-2026-07-17.md sec 11.5/11.7):
+// priority 3 below is the only branch that compares model_version across
+// different values, so it is the only branch that could ever select an
+// off-label cell-routing variant (e.g. jockey-pedigree269) outside its
+// intended priority-0 cell match. This is intentionally NOT
+// getAllFinishPositionCellRoutingModelVersions() -- that broader getter
+// includes each category's plain default variant
+// (jra-cb-v9-sim-2013-clean / banei-cb-v9-sim-2011), which must remain
+// selectable via priority 3; see that getter's docstring and
+// getAllFinishPositionCellRoutingOffLabelVariantModelVersions' docstring in
+// finish-position-cell-routing.ts for the full reasoning.
+const FINISH_POSITION_CELL_ROUTING_OFF_LABEL_VARIANT_MODEL_VERSIONS =
+  getAllFinishPositionCellRoutingOffLabelVariantModelVersions();
+
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
     return withDbQueryCache(
@@ -2946,6 +2962,14 @@ export const getFinishPositionLambdarankPredictions = cache(
             with allowed_model_versions(model_version) as (
               values ${sql.join(
                 FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS.map((version) => sql`(${version})`),
+                sql`, `,
+              )}
+            ),
+            cell_routing_off_label_variant_model_versions(model_version) as (
+              values ${sql.join(
+                FINISH_POSITION_CELL_ROUTING_OFF_LABEL_VARIANT_MODEL_VERSIONS.map(
+                  (version) => sql`(${version})`,
+                ),
                 sql`, `,
               )}
             ),
@@ -3020,6 +3044,9 @@ export const getFinishPositionLambdarankPredictions = cache(
                   and p3.race_bango = ${race.raceBango}
                   and p3.model_version in (
                     select model_version from allowed_prediction_model_versions
+                  )
+                  and p3.model_version not in (
+                    select model_version from cell_routing_off_label_variant_model_versions
                   )
                   and not exists (
                     select 1

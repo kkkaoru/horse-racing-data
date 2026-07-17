@@ -421,6 +421,18 @@ priority=3 に、cell-routing variant の model_version を除外する防御的
 
 **結論: 分析側 (`serve_accuracy_report.py`) が本日修正したものと同型のバグは、viewer 側 (`getFinishPositionLambdarankPredictions`) には存在しない。**
 
+### 11.7 (実装記録) §11.5 の防御強化案を USER 決定⑯として実施 (2026-07-18 追記)
+
+§11.5 が backlog として記録した防御強化案を、USER 決定⑯として本日実施した。実装は `apps/pc-keiba-viewer/src/db/queries.ts::getFinishPositionLambdarankPredictions` の `selected_model` CTE、priority=3 の WHERE 句に `and p3.model_version not in (select model_version from cell_routing_off_label_variant_model_versions)` を追加しただけであり、priority=0/1/2 には一切手を入れていない (priority=0 は cell-routing variant を正当に選ぶ唯一の経路であり、そのため `allowed_prediction_model_versions` は従来どおり cell-routing variant を含んだ全集合を使い続ける)。§11.2 補足が指摘していた stale-subclass 除外の `not exists` 節もそのまま残し、統合はしていない。
+
+**§11.5 が名指しした `getAllFinishPositionCellRoutingModelVersions()` (`finish-position-cell-routing.ts:375`) を、そのままは exclusion に使わなかった点を明記する。** 実装着手前にこの関数の返り値を実測したところ、各カテゴリの `variants` マップには rule 経由でのみ到達する variant だけでなく、そのカテゴリ自身の `default_variant` (= 平場のチャンピオンモデル、現行は `jra-cb-v9-sim-2013-clean` / `banei-cb-v9-sim-2011`) も同じマップ内に列挙されており、関数はそれもまとめて返す。これは viewer 側ミラーだけの現象ではなく、コンテナ側の実 `cell_routing.json` (`apps/finish-position-predict-container/src/predict_lib/cell_routing.json`) を直接確認しても同型である。したがって `getAllFinishPositionCellRoutingModelVersions()` の返り値をそのまま priority=3 の exclusion set に転用すると、`jra-cb-v9-sim-2013-clean` / `banei-cb-v9-sim-2011` という「off-label どころかむしろ最も正当な」平場モデルまで priority=3 の候補プールから恒久的に締め出してしまう。今日時点ではこの 2 モデルがそのまま category の "active" チャンピオンでもあるため priority=2 が常に先に拾い実害は顕在化しないが、`FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS` にこの 2 モデルが明示的に残されているのは「active でなくなった後も priority=3 経由で拾えるように」という意図であり、将来の champion 交代のタイミングで初めて顕在化しうる潜在的な regression だった。「実害ゼロの防御強化」のはずが、逆に実害ゼロではない新しい bug を仕込みかねなかったという意味で、§11.3 の自己訂正と同じ精神で扱うべき発見として記録する。
+
+このため `finish-position-cell-routing.ts` に `getAllFinishPositionCellRoutingOffLabelVariantModelVersions()` (line 401) を新設した。ロジックは「各カテゴリの `variants` から、その `default_variant` と一致する要素だけを除いたもの」で、現行設定では `["banei-cb-v8-window2011-wf-15y", "jra-cb-v9-sim-2013-clean-jockey-pedigree269", "jra-cb-v10-prior-corner274-2013"]` の 3 件のみを返す (= rule 経由でしか到達しない、真に "off-label" な variant のみ)。priority=3 の新 CTE `cell_routing_off_label_variant_model_versions` はこちらから構築しており、`getAllFinishPositionCellRoutingModelVersions()` (allowlist 用、default variant を含む広い集合) とは明確に使い分けている。設定から直接導出する構造 (ハードコードでない) は維持されているため、「ハードコード禁止、parity test が守る形」という既存方針にはそのまま従っている。両関数の docstring に相互参照とこの非対称性 (allowlist は広いほど安全、exclusion list は正確でなければならない) を追記し、次に同じ関数を別用途へ転用しようとする読者が同じ見落としを繰り返さないようにした。
+
+テストは `queries.test.ts` に (a) priority=3 が off-label variant を除外して何も選ばない回帰確認、(b) `jra-cb-v9-sim-2013-clean` のような平場モデルは引き続き priority=3 経由で選べることを示す non-regression 確認の 2 本を追加し、`finish-position-cell-routing.test.ts` にも新関数が default variant を除いた 3 件のみを固定順序で返すことを確認するテストを追加した。`bun run --filter pc-keiba-viewer tsc` / `lint` / `test:coverage` はいずれも成功し (3929 tests pass)、4 指標とも 95% のしきい値を上回っている (実測: statements 99.36% / branches 97.31% / functions 99.14% / lines 99.39%、`finish-position-cell-routing.ts` は uncovered line 0)。
+
+念のため明記する ── 本節はあくまで §11.5 の backlog を USER 承認のもとで実施した記録であり、§11.3-11.4 が確認した「実害 0 件」という事実、および §11 の「結論: バグなし」を覆すものではない。今回見つかった `getAllFinishPositionCellRoutingModelVersions()` の対象範囲の広さも、priority=3 の exclusion に転用しようとして初めて問題になるものであり、既存の allowlist 用途 (`FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS`) では何の問題も無い。
+
 ## 12. バグ調査A: RS shard 欠損の silent 劣化監査 + 22:00 refresher tick 検証 (2026-07-17 追記)
 
 team-lead 指示により、(1) 22:00 JST の `corner-features-refresh` evening cron tick の live 検証を最優先で差し込み、(2) `468a4f0e` (tolerate missing running-style shard) が rs*p*\* NULL 経由で FP serving を silent に劣化させていないかを監査した。両方の結果をここにまとめる。

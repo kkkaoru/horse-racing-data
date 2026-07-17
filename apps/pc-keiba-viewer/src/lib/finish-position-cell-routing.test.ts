@@ -8,6 +8,7 @@ import { expect, it } from "vitest";
 import {
   FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS,
   getAllFinishPositionCellRoutingModelVersions,
+  getAllFinishPositionCellRoutingOffLabelVariantModelVersions,
   resolveCellRoutingModelVersionForConfig,
   resolveDimension,
   resolveFinishPositionCellRoutingModelVersion,
@@ -472,6 +473,17 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
     "jra-cb-v10-prior-corner274-2013",
     "jra-cb-v9-sim-2013-clean",
+  ]);
+});
+
+// --- getAllFinishPositionCellRoutingOffLabelVariantModelVersions -----------
+
+it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each category's default variant", () => {
+  const versions = getAllFinishPositionCellRoutingOffLabelVariantModelVersions();
+  expect(versions).toStrictEqual([
+    "banei-cb-v8-window2011-wf-15y",
+    "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
+    "jra-cb-v10-prior-corner274-2013",
   ]);
 });
 

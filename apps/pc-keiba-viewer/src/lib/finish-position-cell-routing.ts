@@ -357,10 +357,52 @@ export const resolveFinishPositionDisplayPriorityModelVersion = (
     ? NAR_TRANSFORMER_BLEND_MODEL_VERSION
     : resolveFinishPositionCellRoutingModelVersion(params);
 
-/** Every distinct model_version referenced by any category's variants, deduped. */
+/**
+ * Every distinct model_version referenced by any category's variants,
+ * deduped -- each category's own default_variant included (e.g.
+ * "jra-cb-v9-sim-2013-clean" / "banei-cb-v9-sim-2011" today, since
+ * cell_routing.json lists the default alongside every rule-only variant in
+ * the same `variants` map). That inclusiveness is intentional here: this
+ * backs a broad ALLOW-list (FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS in
+ * queries.ts) where sweeping in the default too is harmless.
+ *
+ * Do NOT reuse this set as an EXCLUSION list for "off-label variant"
+ * purposes -- it is not restricted to rule-only variants, so excluding it
+ * wholesale would also exclude each category's plain default/champion model.
+ * See getAllFinishPositionCellRoutingOffLabelVariantModelVersions below for
+ * that narrower, exclusion-safe view.
+ */
 export const getAllFinishPositionCellRoutingModelVersions = (): string[] => {
   const versions = Object.values(FINISH_POSITION_CELL_ROUTING_CONFIG).flatMap((categoryConfig) =>
     Object.values(categoryConfig.variants).map((variant) => variant.model_version),
+  );
+  return Array.from(new Set(versions));
+};
+
+/**
+ * Every cell-routing variant model_version EXCEPT each category's own
+ * default_variant -- the true "off-label" set a race can reach only through
+ * an explicit cell_routing.json rule match, mirroring how priority 0 in
+ * queries.ts::getFinishPositionLambdarankPredictions resolves them
+ * (resolveFinishPositionCellRoutingModelVersion /
+ * resolveCellRoutingModelVersionForConfig above return null -- "no
+ * override, use the plain default" -- exactly when the matched variant name
+ * equals the category's default_variant).
+ *
+ * Deliberately narrower than getAllFinishPositionCellRoutingModelVersions()
+ * above: reusing that broader set as an exclusion list would sweep in each
+ * category's plain default (jra-cb-v9-sim-2013-clean / banei-cb-v9-sim-2011
+ * today) and wrongly block queries.ts's priority-3 fallback from ever
+ * selecting that same default/base model_version again once it stops being
+ * the "active" row (priority 2) -- even though
+ * FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS in queries.ts explicitly
+ * keeps it allowed for exactly that fallback purpose.
+ */
+export const getAllFinishPositionCellRoutingOffLabelVariantModelVersions = (): string[] => {
+  const versions = Object.values(FINISH_POSITION_CELL_ROUTING_CONFIG).flatMap((categoryConfig) =>
+    Object.entries(categoryConfig.variants)
+      .filter(([variantName]) => variantName !== categoryConfig.default_variant)
+      .map(([, variant]) => variant.model_version),
   );
   return Array.from(new Set(versions));
 };

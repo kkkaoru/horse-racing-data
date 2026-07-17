@@ -893,6 +893,74 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
 });
 
+it("getFinishPositionLambdarankPredictions excludes off-label cell-routing variants from priority 3, returning nothing when that off-label row is the only candidate", async () => {
+  const unroutedJraRace: RaceDetail = {
+    ...PERCLASS_703_RACE,
+    keibajoCode: "05",
+    kyosoJokenCode: "010",
+  };
+  executeMock.mockResolvedValue({ rows: [] });
+  const result = await getFinishPositionLambdarankPredictions(
+    unroutedJraRace,
+    PERCLASS_703_RUNNERS,
+  );
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  expect(queryText).toMatch(
+    /p3\.model_version not in \(\s*select model_version from cell_routing_off_label_variant_model_versions\s*\)/u,
+  );
+  const cteBody =
+    queryText.match(
+      /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
+    )?.[1] ?? "";
+  expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269'/u);
+  expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013'/u);
+  expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean'\)/u);
+  expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011'/u);
+  expect(result.length).toBe(0);
+});
+
+it("getFinishPositionLambdarankPredictions still lets priority 3 select the plain JRA default champion (not excluded, unlike a routed variant)", async () => {
+  const unroutedJraRace: RaceDetail = {
+    ...PERCLASS_703_RACE,
+    keibajoCode: "05",
+    kyosoJokenCode: "010",
+  };
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "jra-cb-v9-sim-2013-clean",
+        predicted_rank: 1,
+        predicted_score: "0.8",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "jra-cb-v9-sim-2013-clean",
+        predicted_rank: 2,
+        predicted_score: "0.3",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    unroutedJraRace,
+    PERCLASS_703_RUNNERS,
+  );
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  const cteBody =
+    queryText.match(
+      /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
+    )?.[1] ?? "";
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean'\)/u);
+  expect(result.length).toBe(2);
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean");
+  expect(result[1]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean");
+});
+
 it("getFinishPositionLambdarankPredictions applies leak-free guard to final selected rows", async () => {
   executeMock.mockResolvedValue({ rows: [] });
   await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, PERCLASS_703_RUNNERS);
