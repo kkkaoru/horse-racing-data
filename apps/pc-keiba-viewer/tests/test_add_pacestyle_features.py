@@ -445,7 +445,22 @@ def test_stage_rs_predictions_from_r2_uses_raw_catalog_generation() -> None:
     assert "race_running_style_model_predictions" not in create_sql
 
 
-def test_stage_rs_predictions_from_r2_creates_empty_relation_when_shard_missing() -> None:
+def test_stage_rs_predictions_from_r2_logs_shard_found_true_on_success(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A shard that resolves via read_parquet must log shard_found=True on stderr."""
+    con = MagicMock()
+    subject.stage_rs_predictions_from_r2(con, "jra", "20260715", "archive")
+    captured = capsys.readouterr()
+    assert (
+        "[finish-position-features] rs_shard_status category=jra "
+        "race_date=20260715 shard_found=True"
+    ) in captured.err
+
+
+def test_stage_rs_predictions_from_r2_creates_empty_relation_when_shard_missing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     con = MagicMock()
     con.execute.side_effect = [
         duckdb.IOException(
@@ -460,14 +475,26 @@ def test_stage_rs_predictions_from_r2_creates_empty_relation_when_shard_missing(
     assert con.execute.call_count == 3
     assert "where false" in con.execute.call_args_list[1].args[0]
     assert "create index rs_preds_idx" in con.execute.call_args_list[2].args[0]
+    captured = capsys.readouterr()
+    assert (
+        "[finish-position-features] rs_shard_status category=jra "
+        "race_date=20260715 shard_found=False"
+    ) in captured.err
 
 
-def test_stage_rs_predictions_from_r2_reraises_other_io_errors() -> None:
+def test_stage_rs_predictions_from_r2_reraises_other_io_errors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     con = MagicMock()
     con.execute.side_effect = duckdb.IOException("HTTP 503 from R2")
 
     with pytest.raises(duckdb.IOException, match="HTTP 503 from R2"):
         subject.stage_rs_predictions_from_r2(con, "jra", "20260715", "archive")
+
+    # Non-"No files found" IOExceptions re-raise unchanged -- neither
+    # shard_found log line should have been emitted.
+    captured = capsys.readouterr()
+    assert "rs_shard_status" not in captured.err
 
 
 def test_install_and_attach_pg_runs_install_load_attach_in_order() -> None:

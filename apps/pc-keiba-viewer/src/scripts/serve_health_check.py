@@ -6,7 +6,7 @@ docs/probes/jra-serving-audit-jun-jul-2026-07-17.md's investigation of the
 JRA races off degraded/stale features, collapsing within-race
 ``predicted_score`` differentiation to ~1/11th of healthy variance). This is
 a general-purpose ongoing health check -- it must work correctly against ANY
-date, not just 2026-07-12 -- covering five independent checks:
+date, not just 2026-07-12 -- covering six independent checks:
 
   1. Coverage:      confirmed, already-run races with zero prediction rows.
   2. Quality:        within-(race, model_version) predicted_score stddev
@@ -19,6 +19,20 @@ date, not just 2026-07-12 -- covering five independent checks:
                      exit code (self-heal firing can be genuine repair or
                      the known false-positive re-trigger pattern documented
                      as the audit's Defect C).
+  6. R2 shard presence: whether the running-style prediction shard
+                     (add-pacestyle-features.py's raw-iceberg-v1 R2 input)
+                     exists for each of the last R2_SHARD_LOOKBACK_DAYS
+                     days, checked for both jra and nar regardless of
+                     --category. A day still in progress (today JST) is
+                     always reported but never counted as a gap -- a
+                     same-day shard can legitimately not exist yet (see
+                     add-pacestyle-features.py's create_empty_rs_predictions
+                     fallback); a settled day (strictly before today) with
+                     no shard is a genuine gap and DOES flip the exit code.
+                     R2 access itself being unavailable (no credentials,
+                     network failure) is reported as N/A, distinct from a
+                     real gap, and never flips the exit code -- mirrors
+                     check 3's routing_supported=False treatment.
 
 Run with:
     uv run python src/scripts/serve_health_check.py --date 20260712 --category jra
@@ -49,9 +63,9 @@ predictions table (confirmed by the audit doc), so a single connection
 covers every check. The DSN value is never printed or logged anywhere in
 this module.
 
-Exit code: 0 if checks 1-4 all found zero anomalies (check 5/D1 never
-affects this); 1 if any of checks 1-4 found at least one anomaly; 2 if the
-tool itself failed (e.g. a Neon connection error, a missing
+Exit code: 0 if checks 1-4 and 6 all found zero anomalies (check 5/D1 never
+affects this); 1 if any of checks 1-4 or 6 found at least one anomaly; 2 if
+the tool itself failed (e.g. a Neon connection error, a missing
 NEON_PRIMARY_URL, or an unhandled bug) -- this distinction is enforced by
 main()'s outer catch-all, not just by the explicit connection-error
 handling in run(), so exit code 1 is never accidentally produced by a code
@@ -74,7 +88,9 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final, Protocol, TypedDict, cast
 
+import boto3
 import psycopg
+from botocore.exceptions import BotoCoreError, ClientError
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -102,6 +118,28 @@ RACE_STATUS_FULLY_DEGRADED: Final[str] = "fully_degraded"
 D1_DATABASE_NAME: Final[str] = "finish-position-cron-db"
 D1_QUERY_TIMEOUT_SECONDS: Final[int] = 30
 D1_UNAVAILABLE_LABEL: Final[str] = "N/A (wrangler unavailable)"
+
+# Check 6 constants: R2 raw-iceberg-v1 RS-prediction shard presence over a
+# trailing window. RUNNING_STYLE_CATALOG_GENERATION / R2_PREDICTIONS_PREFIX
+# and the R2_* env var names mirror add-pacestyle-features.py's own
+# constants of the same name/value exactly (redefined locally rather than
+# imported -- see module docstring on self-containment). Both categories
+# are always checked regardless of --category: add-pacestyle-features.py's
+# R2 path only ever serves jra/nar, and shard landing is a pipeline-wide
+# signal, not scoped to whichever category this invocation happens to be
+# diagnosing via checks 1-5.
+R2_SHARD_LOOKBACK_DAYS: Final[int] = 7
+R2_SHARD_CATEGORIES: Final[tuple[str, ...]] = ("jra", "nar")
+RUNNING_STYLE_CATALOG_GENERATION: Final[str] = "raw-iceberg-v1"
+R2_PREDICTIONS_PREFIX: Final[str] = (
+    f"running-style/predictions/by-day/{RUNNING_STYLE_CATALOG_GENERATION}"
+)
+R2_BUCKET_ENV_VAR: Final[str] = "R2_BUCKET"
+R2_BUCKET_DEFAULT: Final[str] = "pc-keiba-features-archive"
+R2_ACCOUNT_ID_ENV_VAR: Final[str] = "R2_ACCOUNT_ID"
+R2_ACCESS_KEY_ID_ENV_VAR: Final[str] = "R2_ACCESS_KEY_ID"
+R2_SECRET_ACCESS_KEY_ENV_VAR: Final[str] = "R2_SECRET_ACCESS_KEY"
+R2_UNAVAILABLE_LABEL: Final[str] = "N/A (R2 access unavailable)"
 
 # apps/pc-keiba-viewer/src/scripts/serve_health_check.py -> apps/
 _APPS_DIR: Final[Path] = Path(__file__).resolve().parents[3]
@@ -145,6 +183,14 @@ class ConnectionLike(Protocol):
     def cursor(self) -> CursorLike: ...
 
     def close(self) -> None: ...
+
+
+class ListObjectsClient(Protocol):
+    """The one boto3 S3-client method check 6 needs -- narrowed to a
+    structural Protocol (mirrors ConnectionLike/CursorLike above) so tests
+    can pass a plain mock instead of a real boto3 client."""
+
+    def list_objects_v2(self, **kwargs: object) -> Mapping[str, object]: ...
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -199,6 +245,22 @@ class BurstBucket:
 
 
 @dataclass(frozen=True)
+class R2ShardCheck:
+    """One (day, category) R2 raw-iceberg-v1 shard-presence result (check 6).
+
+    ``shard_found`` is a tri-state: True/False when the presence check
+    actually ran against R2, None when the check mechanism itself could not
+    run at all (missing credentials, a client/network error) -- mirrors
+    check 5's None-means-N/A contract. A None entry is never treated as a
+    gap (see find_r2_shard_gaps).
+    """
+
+    day: str  # YYYYMMDD
+    category: str
+    shard_found: bool | None
+
+
+@dataclass(frozen=True)
 class RoutingCondition:
     dimension: str
     values: frozenset[str]
@@ -231,6 +293,9 @@ class HealthCheckReport:
     routing_mismatches: tuple[RoutingMismatch, ...]
     burst_buckets: tuple[BurstBucket, ...]
     d1_gap_event_count: int | None
+    r2_shard_checks: tuple[R2ShardCheck, ...]
+    r2_shard_gaps: tuple[R2ShardCheck, ...]
+    r2_shard_access_available: bool
 
     @property
     def degraded_quality_groups(self) -> tuple[QualityGroupResult, ...]:
@@ -243,6 +308,7 @@ class HealthCheckReport:
             degraded_group_count=len(self.degraded_quality_groups),
             routing_mismatch_count=len(self.routing_mismatches),
             burst_bucket_count=len(self.burst_buckets),
+            r2_shard_gap_count=len(self.r2_shard_gaps),
         )
 
 
@@ -691,19 +757,26 @@ def determine_exit_code(
     degraded_group_count: int,
     routing_mismatch_count: int,
     burst_bucket_count: int,
+    r2_shard_gap_count: int,
 ) -> int:
-    """Pure 0/1 decision for checks 1-4 (check 5/D1 never affects this --
-    self-heal firing can be either genuine repair or the known
+    """Pure 0/1 decision for checks 1-4 and 6 (check 5/D1 never affects this
+    -- self-heal firing can be either genuine repair or the known
     false-positive re-trigger pattern documented as the audit's Defect C, so
-    a raw count alone is not a clean pass/fail signal). The distinct "tool
-    itself failed" exit code (2) is produced by run()/main()'s exception
-    handling, not by this function.
+    a raw count alone is not a clean pass/fail signal). check 6 (R2 shard
+    presence) DOES flip the exit code for a genuine gap: r2_shard_gap_count
+    only ever counts settled days (strictly before today JST) with a
+    confirmed-missing shard (see find_r2_shard_gaps) -- a day still in
+    progress or an R2-access failure never contributes to this count, so
+    neither ever flips the exit code through this parameter. The distinct
+    "tool itself failed" exit code (2) is produced by run()/main()'s
+    exception handling, not by this function.
     """
     any_anomaly = (
         coverage_gap_count > 0
         or degraded_group_count > 0
         or routing_mismatch_count > 0
         or burst_bucket_count > 0
+        or r2_shard_gap_count > 0
     )
     return EXIT_ANOMALIES_FOUND if any_anomaly else EXIT_OK
 
@@ -753,6 +826,57 @@ def parse_d1_gap_events_count(stdout: str) -> int | None:
     return count
 
 
+# ── Pure helpers: R2 shard presence (check 6) ───────────────────────────────
+
+
+def trailing_day_strs(end_date_str: str, lookback_days: int) -> list[str]:
+    """Return ``lookback_days`` YYYYMMDD strings ending at (and including)
+    ``end_date_str``, oldest first -- e.g.
+    ``trailing_day_strs("20260718", 3) == ["20260716", "20260717", "20260718"]``.
+    Builds check 6's R2 shard-presence lookback window.
+    """
+    end = date(int(end_date_str[:4]), int(end_date_str[4:6]), int(end_date_str[6:8]))
+    return [
+        (end - timedelta(days=offset)).strftime("%Y%m%d")
+        for offset in range(lookback_days - 1, -1, -1)
+    ]
+
+
+def r2_shard_prefix(day_str: str, category: str) -> str:
+    """R2 key prefix for one day/category's RS-prediction shard directory,
+    matching add-pacestyle-features.py's ``stage_rs_predictions_from_r2``
+    glob shape (see ``R2_PREDICTIONS_PREFIX``'s comment for why this is a
+    local redefinition rather than an import)."""
+    yyyy, mm, dd = day_str[:4], day_str[4:6], day_str[6:8]
+    return f"{R2_PREDICTIONS_PREFIX}/{yyyy}/{mm}/{dd}/{category}/"
+
+
+def find_r2_shard_gaps(
+    checks: Sequence[R2ShardCheck], today_str: str,
+) -> list[R2ShardCheck]:
+    """Check 6: (day, category) pairs with a confirmed-missing shard on a
+    day strictly before today -- a genuine gap.
+
+    A day still in progress (``day >= today_str``) is never flagged even
+    when its shard has not landed yet, mirroring ``is_post_time_passed``'s
+    fail-closed "not yet due" treatment for check 1: a same-day shard can
+    legitimately not exist yet early in the race day (see
+    add-pacestyle-features.py's ``create_empty_rs_predictions`` fallback),
+    so today alone is exempt regardless of what date_str was requested.
+    ``shard_found=None`` ("couldn't even check") is never a gap either --
+    only a confirmed False counts.
+    """
+    return [c for c in checks if c.shard_found is False and c.day < today_str]
+
+
+def r2_shard_access_available(checks: Sequence[R2ShardCheck]) -> bool:
+    """True once at least one check resolved to True/False rather than the
+    couldn't-even-check None -- mirrors ``routing_supported``'s role for
+    check 3: an empty ``r2_shard_gaps`` list only means something once the
+    checking mechanism itself produced at least one real answer."""
+    return any(c.shard_found is not None for c in checks)
+
+
 # ── Pure orchestration: assemble the full report from fetched data ─────────
 
 
@@ -764,12 +888,13 @@ def build_health_check_report(
     burst_rows: Sequence[BurstRow],
     routing_payload: Mapping[str, object],
     d1_gap_event_count: int | None,
+    r2_shard_checks: Sequence[R2ShardCheck],
     now: datetime,
 ) -> HealthCheckReport:
     """Pure assembly of a full report from already-fetched data -- no I/O.
-    Thin wrapper functions (query_*, connect_neon, query_d1_gap_event_count)
-    do the fetching; this function and everything it calls is directly
-    unit-testable without mocks."""
+    Thin wrapper functions (query_*, connect_neon, query_d1_gap_event_count,
+    query_r2_shard_presence) do the fetching; this function and everything
+    it calls is directly unit-testable without mocks."""
     kaisai_nen = date_str[:4]
     kaisai_tsukihi = date_str[4:]
 
@@ -789,6 +914,9 @@ def build_health_check_report(
 
     burst_buckets = flag_burst_buckets(burst_rows)
 
+    today_str = now.strftime("%Y%m%d")
+    r2_shard_gaps = find_r2_shard_gaps(r2_shard_checks, today_str)
+
     return HealthCheckReport(
         date_str=date_str,
         category=category,
@@ -800,6 +928,9 @@ def build_health_check_report(
         routing_mismatches=tuple(routing_mismatches),
         burst_buckets=tuple(burst_buckets),
         d1_gap_event_count=d1_gap_event_count,
+        r2_shard_checks=tuple(r2_shard_checks),
+        r2_shard_gaps=tuple(r2_shard_gaps),
+        r2_shard_access_available=r2_shard_access_available(r2_shard_checks),
     )
 
 
@@ -942,6 +1073,68 @@ def query_d1_gap_event_count(date_str: str, category: str) -> int | None:
     return parse_d1_gap_events_count(completed.stdout)
 
 
+def _build_r2_client() -> ListObjectsClient:
+    """Construct a boto3 S3-compatible client against R2's endpoint,
+    reusing the exact env var names add-pacestyle-features.py's
+    ``setup_r2_duckdb_secret`` reads (R2_ACCOUNT_ID / R2_ACCESS_KEY_ID /
+    R2_SECRET_ACCESS_KEY). Raises KeyError if any is unset, matching
+    ``connect_neon``'s own env-lookup contract so callers can catch it the
+    same way."""
+    account_id = os.environ[R2_ACCOUNT_ID_ENV_VAR]
+    access_key = os.environ[R2_ACCESS_KEY_ID_ENV_VAR]
+    secret_key = os.environ[R2_SECRET_ACCESS_KEY_ENV_VAR]
+    return cast(
+        ListObjectsClient,
+        boto3.client(
+            "s3",
+            endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="auto",
+        ),
+    )
+
+
+def _prefix_has_object(client: ListObjectsClient, bucket: str, prefix: str) -> bool:
+    """True if at least one object exists under ``prefix`` in ``bucket``."""
+    response = client.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    return bool(response.get("Contents"))
+
+
+def query_r2_shard_presence(
+    day_strs: Sequence[str], categories: Sequence[str], bucket: str,
+) -> list[R2ShardCheck]:
+    """Best-effort per-(day, category) R2 shard-presence check (check 6).
+
+    Returns ``shard_found=None`` for every (day, category) -- without
+    attempting any network calls -- when an R2 client cannot even be
+    constructed (a missing credential env var): one fast fail instead of
+    ``len(day_strs) * len(categories)`` redundant failures. Once a client
+    exists, each (day, category) is checked independently; a per-call
+    botocore/network error degrades only that one entry to None rather than
+    aborting the remaining checks or crashing the tool -- never raises,
+    mirroring ``query_d1_gap_event_count``'s "never crash the tool, never a
+    false positive" contract.
+    """
+    try:
+        client = _build_r2_client()
+    except KeyError:
+        return [
+            R2ShardCheck(day=day, category=category, shard_found=None)
+            for day in day_strs
+            for category in categories
+        ]
+    checks: list[R2ShardCheck] = []
+    for day in day_strs:
+        for category in categories:
+            try:
+                found = _prefix_has_object(client, bucket, r2_shard_prefix(day, category))
+            except (BotoCoreError, ClientError):
+                found = None
+            checks.append(R2ShardCheck(day=day, category=category, shard_found=found))
+    return checks
+
+
 # ── Output formatting (human-readable) ──────────────────────────────────────
 
 
@@ -1009,6 +1202,37 @@ def _format_d1_section(report: HealthCheckReport) -> list[str]:
     return [f"[5] D1 self-heal activity (informational): {report.d1_gap_event_count} event(s)"]
 
 
+def _r2_shard_status_label(shard_found: bool | None) -> str:
+    if shard_found is None:
+        return "N/A"
+    return "found" if shard_found else "not found yet"
+
+
+def _format_r2_shard_section(report: HealthCheckReport) -> list[str]:
+    header = (
+        f"[6] R2 shard presence (trailing {R2_SHARD_LOOKBACK_DAYS}d, "
+        f"{'/'.join(R2_SHARD_CATEGORIES)})"
+    )
+    if not report.r2_shard_access_available:
+        return [f"{header}: {R2_UNAVAILABLE_LABEL}"]
+    if not report.r2_shard_gaps:
+        lines = [f"{header}: OK (0 gaps)"]
+    else:
+        lines = [f"{header}: {len(report.r2_shard_gaps)} gap(s) found"]
+        lines += [
+            f"      - {g.day} category={g.category}: shard not found"
+            for g in report.r2_shard_gaps
+        ]
+    requested_day_checks = [c for c in report.r2_shard_checks if c.day == report.date_str]
+    if requested_day_checks:
+        statuses = ", ".join(
+            f"{c.category}={_r2_shard_status_label(c.shard_found)}"
+            for c in sorted(requested_day_checks, key=lambda c: c.category)
+        )
+        lines.append(f"      Requested date ({report.date_str}): {statuses}")
+    return lines
+
+
 def format_report(report: HealthCheckReport) -> str:
     """Format a full report as a human-readable string."""
     lines = [
@@ -1021,6 +1245,7 @@ def format_report(report: HealthCheckReport) -> str:
     lines += _format_routing_section(report)
     lines += _format_burst_section(report)
     lines += _format_d1_section(report)
+    lines += _format_r2_shard_section(report)
     verdict = "anomalies found" if report.exit_code == EXIT_ANOMALIES_FOUND else "OK"
     lines += ["", f"Exit code: {report.exit_code} ({verdict})"]
     return "\n".join(lines)
@@ -1061,6 +1286,12 @@ class BurstBucketDict(TypedDict):
     race_count: int
 
 
+class R2ShardCheckDict(TypedDict):
+    day: str
+    category: str
+    shard_found: bool | None
+
+
 class HealthCheckReportDict(TypedDict):
     date_str: str
     category: str
@@ -1076,6 +1307,10 @@ class HealthCheckReportDict(TypedDict):
     burst_bucket_count: int
     burst_buckets: list[BurstBucketDict]
     d1_gap_event_count: int | None
+    r2_shard_access_available: bool
+    r2_shard_gap_count: int
+    r2_shard_gaps: list[R2ShardCheckDict]
+    r2_shard_checks: list[R2ShardCheckDict]
     exit_code: int
 
 
@@ -1134,6 +1369,16 @@ def report_to_dict(report: HealthCheckReport) -> HealthCheckReportDict:
             for b in report.burst_buckets
         ],
         "d1_gap_event_count": report.d1_gap_event_count,
+        "r2_shard_access_available": report.r2_shard_access_available,
+        "r2_shard_gap_count": len(report.r2_shard_gaps),
+        "r2_shard_gaps": [
+            {"day": g.day, "category": g.category, "shard_found": g.shard_found}
+            for g in report.r2_shard_gaps
+        ],
+        "r2_shard_checks": [
+            {"day": c.day, "category": c.category, "shard_found": c.shard_found}
+            for c in report.r2_shard_checks
+        ],
         "exit_code": report.exit_code,
     }
 
@@ -1205,10 +1450,11 @@ def run(
     json_output: bool = False,
     now: datetime | None = None,
 ) -> int:
-    """Run all 5 checks and print the report. Returns the process exit code
+    """Run all 6 checks and print the report. Returns the process exit code
     (0/1/2 -- see module docstring). ``now`` defaults to ``datetime.now(JST)``
     when omitted, and is otherwise injectable for deterministic testing of
-    check 1's post-time filter.
+    check 1's post-time filter (and check 6's today-JST gap-exemption
+    boundary).
     """
     validate_date_arg(date_str)
     effective_now = now if now is not None else datetime.now(JST)
@@ -1236,9 +1482,13 @@ def run(
 
     d1_gap_event_count = query_d1_gap_event_count(date_str, category)
 
+    r2_bucket = os.environ.get(R2_BUCKET_ENV_VAR, R2_BUCKET_DEFAULT)
+    r2_shard_day_strs = trailing_day_strs(date_str, R2_SHARD_LOOKBACK_DAYS)
+    r2_shard_checks = query_r2_shard_presence(r2_shard_day_strs, R2_SHARD_CATEGORIES, r2_bucket)
+
     report = build_health_check_report(
         date_str, category, confirmed_races, prediction_rows, burst_rows,
-        routing_payload, d1_gap_event_count, effective_now,
+        routing_payload, d1_gap_event_count, r2_shard_checks, effective_now,
     )
 
     if json_output:

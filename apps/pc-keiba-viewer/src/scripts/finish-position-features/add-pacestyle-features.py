@@ -405,8 +405,18 @@ def stage_rs_predictions_from_r2(
     except duckdb.IOException as error:
         if "No files found that match" not in str(error):
             raise
+        print(
+            f"[finish-position-features] rs_shard_status category={category} "
+            f"race_date={run_date_ymd} shard_found=False",
+            file=sys.stderr,
+        )
         create_empty_rs_predictions(con)
         return
+    print(
+        f"[finish-position-features] rs_shard_status category={category} "
+        f"race_date={run_date_ymd} shard_found=True",
+        file=sys.stderr,
+    )
     con.execute("create index rs_preds_idx on rs_preds (race_id, ketto_toroku_bango)")
 
 

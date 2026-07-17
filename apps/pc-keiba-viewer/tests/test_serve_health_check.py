@@ -2,8 +2,9 @@
 
 Covers all pure-compute helpers directly (no I/O), plus thin
 integration-style tests for the I/O wrapper functions with mocked
-psycopg cursors/connections and mocked subprocess calls. No test opens a
-real network connection or spawns a real subprocess.
+psycopg cursors/connections, mocked boto3/botocore R2 clients, and mocked
+subprocess calls. No test opens a real network connection or spawns a real
+subprocess.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
+from botocore.exceptions import BotoCoreError, ClientError
 from pytest import CaptureFixture
 
 import serve_health_check as subject
@@ -803,27 +805,31 @@ def test_burst_bucket_minute_jst_converts_utc_to_jst() -> None:
 
 
 def test_determine_exit_code_all_clean_returns_0() -> None:
-    assert subject.determine_exit_code(0, 0, 0, 0) == 0
+    assert subject.determine_exit_code(0, 0, 0, 0, 0) == 0
 
 
 def test_determine_exit_code_coverage_gap_returns_1() -> None:
-    assert subject.determine_exit_code(1, 0, 0, 0) == 1
+    assert subject.determine_exit_code(1, 0, 0, 0, 0) == 1
 
 
 def test_determine_exit_code_degraded_quality_returns_1() -> None:
-    assert subject.determine_exit_code(0, 1, 0, 0) == 1
+    assert subject.determine_exit_code(0, 1, 0, 0, 0) == 1
 
 
 def test_determine_exit_code_routing_mismatch_returns_1() -> None:
-    assert subject.determine_exit_code(0, 0, 1, 0) == 1
+    assert subject.determine_exit_code(0, 0, 1, 0, 0) == 1
 
 
 def test_determine_exit_code_burst_bucket_returns_1() -> None:
-    assert subject.determine_exit_code(0, 0, 0, 1) == 1
+    assert subject.determine_exit_code(0, 0, 0, 1, 0) == 1
+
+
+def test_determine_exit_code_r2_shard_gap_returns_1() -> None:
+    assert subject.determine_exit_code(0, 0, 0, 0, 1) == 1
 
 
 def test_determine_exit_code_all_anomalies_returns_1() -> None:
-    assert subject.determine_exit_code(3, 5, 2, 1) == 1
+    assert subject.determine_exit_code(3, 5, 2, 1, 4) == 1
 
 
 # ── build_d1_gap_events_query ─────────────────────────────────────────────────
@@ -883,6 +889,118 @@ def test_parse_d1_gap_events_count_count_not_an_int_returns_none() -> None:
     assert subject.parse_d1_gap_events_count(stdout) is None
 
 
+# ── trailing_day_strs ─────────────────────────────────────────────────────────
+
+
+def test_trailing_day_strs_returns_n_days_ending_at_end_date() -> None:
+    assert subject.trailing_day_strs("20260718", 3) == ["20260716", "20260717", "20260718"]
+
+
+def test_trailing_day_strs_single_day_is_just_end_date() -> None:
+    assert subject.trailing_day_strs("20260718", 1) == ["20260718"]
+
+
+def test_trailing_day_strs_crosses_month_boundary() -> None:
+    # 2026 is not a leap year -- Feb has 28 days.
+    assert subject.trailing_day_strs("20260301", 3) == ["20260227", "20260228", "20260301"]
+
+
+def test_trailing_day_strs_default_lookback_matches_constant() -> None:
+    result = subject.trailing_day_strs("20260718", subject.R2_SHARD_LOOKBACK_DAYS)
+    assert len(result) == 7
+    assert result[-1] == "20260718"
+    assert result[0] == "20260712"
+
+
+# ── r2_shard_prefix ───────────────────────────────────────────────────────────
+
+
+def test_r2_shard_prefix_jra_shape() -> None:
+    result = subject.r2_shard_prefix("20260718", "jra")
+    assert result == "running-style/predictions/by-day/raw-iceberg-v1/2026/07/18/jra/"
+
+
+def test_r2_shard_prefix_nar_shape() -> None:
+    result = subject.r2_shard_prefix("20260105", "nar")
+    assert result == "running-style/predictions/by-day/raw-iceberg-v1/2026/01/05/nar/"
+
+
+# ── find_r2_shard_gaps ────────────────────────────────────────────────────────
+
+
+def test_find_r2_shard_gaps_empty_returns_empty() -> None:
+    assert subject.find_r2_shard_gaps([], "20260718") == []
+
+
+def test_find_r2_shard_gaps_settled_day_missing_shard_is_a_gap() -> None:
+    checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=False)]
+    result = subject.find_r2_shard_gaps(checks, "20260718")
+    assert result == checks
+
+
+def test_find_r2_shard_gaps_today_missing_shard_is_not_a_gap() -> None:
+    checks = [subject.R2ShardCheck(day="20260718", category="jra", shard_found=False)]
+    assert subject.find_r2_shard_gaps(checks, "20260718") == []
+
+
+def test_find_r2_shard_gaps_future_day_missing_shard_is_not_a_gap() -> None:
+    checks = [subject.R2ShardCheck(day="20260719", category="jra", shard_found=False)]
+    assert subject.find_r2_shard_gaps(checks, "20260718") == []
+
+
+def test_find_r2_shard_gaps_settled_day_found_shard_is_not_a_gap() -> None:
+    checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=True)]
+    assert subject.find_r2_shard_gaps(checks, "20260718") == []
+
+
+def test_find_r2_shard_gaps_settled_day_unknown_shard_is_not_a_gap() -> None:
+    checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=None)]
+    assert subject.find_r2_shard_gaps(checks, "20260718") == []
+
+
+def test_find_r2_shard_gaps_mixed_only_settled_false_entries_returned() -> None:
+    checks = [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=False),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=True),
+        subject.R2ShardCheck(day="20260717", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260717", category="nar", shard_found=False),
+        subject.R2ShardCheck(day="20260718", category="jra", shard_found=False),
+    ]
+    result = subject.find_r2_shard_gaps(checks, "20260718")
+    assert result == [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=False),
+        subject.R2ShardCheck(day="20260717", category="nar", shard_found=False),
+    ]
+
+
+# ── r2_shard_access_available ─────────────────────────────────────────────────
+
+
+def test_r2_shard_access_available_empty_is_false() -> None:
+    assert subject.r2_shard_access_available([]) is False
+
+
+def test_r2_shard_access_available_all_none_is_false() -> None:
+    checks = [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=None),
+    ]
+    assert subject.r2_shard_access_available(checks) is False
+
+
+def test_r2_shard_access_available_one_real_answer_is_true() -> None:
+    checks = [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=False),
+    ]
+    assert subject.r2_shard_access_available(checks) is True
+
+
+def test_r2_shard_access_available_all_found_is_true() -> None:
+    checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=True)]
+    assert subject.r2_shard_access_available(checks) is True
+
+
 # ── build_health_check_report ─────────────────────────────────────────────────
 
 
@@ -901,7 +1019,7 @@ def test_build_health_check_report_fully_clean_day() -> None:
         ("05", "01", "jra-cb-v9-sim-2013-clean", 1.6),
     ]
     report = subject.build_health_check_report(
-        "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), 2, now,
+        "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), 2, [], now,
     )
     assert report.checked_race_count == 1
     assert report.coverage_gaps == ()
@@ -919,7 +1037,7 @@ def test_build_health_check_report_coverage_gap_flips_exit_code() -> None:
         ("2026", "0712", "05", "01", "1010", "10", 1200, 16, "A", "016"),
     ]
     report = subject.build_health_check_report(
-        "20260712", "jra", confirmed, [], [], _real_routing_payload(), None, now,
+        "20260712", "jra", confirmed, [], [], _real_routing_payload(), None, [], now,
     )
     assert len(report.coverage_gaps) == 1
     assert report.exit_code == 1
@@ -939,7 +1057,7 @@ def test_build_health_check_report_mixed_quality_matches_07_11_shape() -> None:
         ("02", "01", "jra-cb-v9-sim-2013-clean-jockey-pedigree269", 0.12),
     ]
     report = subject.build_health_check_report(
-        "20260711", "jra", confirmed, predictions, [], _real_routing_payload(), 0, now,
+        "20260711", "jra", confirmed, predictions, [], _real_routing_payload(), 0, [], now,
     )
     assert len(report.quality_groups) == 2
     assert len(report.degraded_quality_groups) == 1
@@ -961,7 +1079,7 @@ def test_build_health_check_report_routing_mismatch_flips_exit_code() -> None:
         ("02", "01", "jra-cb-v9-sim-2013-clean", 1.2),
     ]
     report = subject.build_health_check_report(
-        "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), None, now,
+        "20260712", "jra", confirmed, predictions, [], _real_routing_payload(), None, [], now,
     )
     # venue=02 routes to jockey_pedigree_703, but only the plain default was
     # served -> mismatch.
@@ -973,7 +1091,7 @@ def test_build_health_check_report_burst_flips_exit_code() -> None:
     now = datetime(2026, 7, 12, 20, 0, 0, tzinfo=subject.JST)
     minute = datetime(2026, 7, 12, 5, 51, 0, tzinfo=timezone.utc)
     report = subject.build_health_check_report(
-        "20260712", "jra", [], [], [(minute, 22)], _real_routing_payload(), None, now,
+        "20260712", "jra", [], [], [(minute, 22)], _real_routing_payload(), None, [], now,
     )
     assert len(report.burst_buckets) == 1
     assert report.exit_code == 1
@@ -985,7 +1103,7 @@ def test_build_health_check_report_routing_unsupported_category() -> None:
         ("2026", "0712", "54", "01", "1010", "10", 1200, 8, "A", "016"),
     ]
     report = subject.build_health_check_report(
-        "20260712", "nar", confirmed, [], [], _real_routing_payload(), None, now,
+        "20260712", "nar", confirmed, [], [], _real_routing_payload(), None, [], now,
     )
     assert report.routing_supported is False
     assert report.routing_mismatches == ()
@@ -994,9 +1112,42 @@ def test_build_health_check_report_routing_unsupported_category() -> None:
 def test_build_health_check_report_d1_none_passthrough() -> None:
     now = datetime(2026, 7, 12, 20, 0, 0, tzinfo=subject.JST)
     report = subject.build_health_check_report(
-        "20260712", "jra", [], [], [], _real_routing_payload(), None, now,
+        "20260712", "jra", [], [], [], _real_routing_payload(), None, [], now,
     )
     assert report.d1_gap_event_count is None
+
+
+def test_build_health_check_report_r2_settled_gap_flips_exit_code() -> None:
+    now = datetime(2026, 7, 18, 20, 0, 0, tzinfo=subject.JST)
+    r2_checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=False)]
+    report = subject.build_health_check_report(
+        "20260718", "jra", [], [], [], _real_routing_payload(), None, r2_checks, now,
+    )
+    assert report.r2_shard_gaps == tuple(r2_checks)
+    assert report.r2_shard_access_available is True
+    assert report.exit_code == 1
+
+
+def test_build_health_check_report_r2_today_miss_does_not_flip_exit_code() -> None:
+    now = datetime(2026, 7, 18, 20, 0, 0, tzinfo=subject.JST)
+    r2_checks = [subject.R2ShardCheck(day="20260718", category="jra", shard_found=False)]
+    report = subject.build_health_check_report(
+        "20260718", "jra", [], [], [], _real_routing_payload(), None, r2_checks, now,
+    )
+    assert report.r2_shard_gaps == ()
+    assert report.r2_shard_checks == tuple(r2_checks)
+    assert report.exit_code == 0
+
+
+def test_build_health_check_report_r2_access_unavailable_propagates() -> None:
+    now = datetime(2026, 7, 18, 20, 0, 0, tzinfo=subject.JST)
+    r2_checks = [subject.R2ShardCheck(day="20260716", category="jra", shard_found=None)]
+    report = subject.build_health_check_report(
+        "20260718", "jra", [], [], [], _real_routing_payload(), None, r2_checks, now,
+    )
+    assert report.r2_shard_access_available is False
+    assert report.r2_shard_gaps == ()
+    assert report.exit_code == 0
 
 
 # ── format_report / section formatters ───────────────────────────────────────
@@ -1008,6 +1159,7 @@ def _clean_report() -> subject.HealthCheckReport:
         coverage_gaps=(), quality_groups=(), quality_rollup=(),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=2,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
 
 
@@ -1022,6 +1174,7 @@ def test_format_coverage_section_lists_gaps() -> None:
         coverage_gaps=(("2026", "0712", "02", "05"),), quality_groups=(), quality_rollup=(),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_coverage_section(report)
     assert lines == [
@@ -1064,6 +1217,7 @@ def test_format_quality_section_lists_degraded_and_rollup_counts() -> None:
         ),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_quality_section(report)
     assert lines == [
@@ -1079,6 +1233,7 @@ def test_format_routing_section_not_supported() -> None:
         coverage_gaps=(), quality_groups=(), quality_rollup=(),
         routing_supported=False, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_routing_section(report)
     assert lines == ["[3] Routing parity: N/A (no cell-routing rules for category=nar)"]
@@ -1101,6 +1256,7 @@ def test_format_routing_section_lists_mismatches() -> None:
             ),
         ),
         burst_buckets=(), d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_routing_section(report)
     assert lines == [
@@ -1125,6 +1281,7 @@ def test_format_burst_section_lists_flagged_minutes() -> None:
             ),
         ),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_burst_section(report)
     assert lines == [
@@ -1139,6 +1296,7 @@ def test_format_d1_section_unavailable() -> None:
         coverage_gaps=(), quality_groups=(), quality_rollup=(),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     lines = subject._format_d1_section(report)
     assert lines == ["[5] D1 self-heal activity (informational): N/A (wrangler unavailable)"]
@@ -1147,6 +1305,81 @@ def test_format_d1_section_unavailable() -> None:
 def test_format_d1_section_shows_count() -> None:
     lines = subject._format_d1_section(_clean_report())
     assert lines == ["[5] D1 self-heal activity (informational): 2 event(s)"]
+
+
+# ── _r2_shard_status_label ────────────────────────────────────────────────────
+
+
+def test_r2_shard_status_label_none_is_na() -> None:
+    assert subject._r2_shard_status_label(None) == "N/A"
+
+
+def test_r2_shard_status_label_true_is_found() -> None:
+    assert subject._r2_shard_status_label(True) == "found"
+
+
+def test_r2_shard_status_label_false_is_not_found_yet() -> None:
+    assert subject._r2_shard_status_label(False) == "not found yet"
+
+
+# ── _format_r2_shard_section ──────────────────────────────────────────────────
+
+
+def test_format_r2_shard_section_access_unavailable() -> None:
+    report = subject.HealthCheckReport(
+        date_str="20260712", category="jra", checked_race_count=0,
+        coverage_gaps=(), quality_groups=(), quality_rollup=(),
+        routing_supported=True, routing_mismatches=(), burst_buckets=(),
+        d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=False,
+    )
+    lines = subject._format_r2_shard_section(report)
+    assert lines == ["[6] R2 shard presence (trailing 7d, jra/nar): N/A (R2 access unavailable)"]
+
+
+def test_format_r2_shard_section_ok_when_no_gaps_and_no_requested_day_data() -> None:
+    lines = subject._format_r2_shard_section(_clean_report())
+    assert lines == ["[6] R2 shard presence (trailing 7d, jra/nar): OK (0 gaps)"]
+
+
+def test_format_r2_shard_section_ok_with_requested_day_status() -> None:
+    report = subject.HealthCheckReport(
+        date_str="20260718", category="jra", checked_race_count=0,
+        coverage_gaps=(), quality_groups=(), quality_rollup=(),
+        routing_supported=True, routing_mismatches=(), burst_buckets=(),
+        d1_gap_event_count=None,
+        r2_shard_checks=(
+            subject.R2ShardCheck(day="20260718", category="jra", shard_found=True),
+            subject.R2ShardCheck(day="20260718", category="nar", shard_found=False),
+        ),
+        r2_shard_gaps=(), r2_shard_access_available=True,
+    )
+    lines = subject._format_r2_shard_section(report)
+    assert lines == [
+        "[6] R2 shard presence (trailing 7d, jra/nar): OK (0 gaps)",
+        "      Requested date (20260718): jra=found, nar=not found yet",
+    ]
+
+
+def test_format_r2_shard_section_lists_gaps_and_requested_day() -> None:
+    report = subject.HealthCheckReport(
+        date_str="20260718", category="jra", checked_race_count=0,
+        coverage_gaps=(), quality_groups=(), quality_rollup=(),
+        routing_supported=True, routing_mismatches=(), burst_buckets=(),
+        d1_gap_event_count=None,
+        r2_shard_checks=(
+            subject.R2ShardCheck(day="20260718", category="jra", shard_found=True),
+            subject.R2ShardCheck(day="20260718", category="nar", shard_found=False),
+        ),
+        r2_shard_gaps=(subject.R2ShardCheck(day="20260716", category="nar", shard_found=False),),
+        r2_shard_access_available=True,
+    )
+    lines = subject._format_r2_shard_section(report)
+    assert lines == [
+        "[6] R2 shard presence (trailing 7d, jra/nar): 1 gap(s) found",
+        "      - 20260716 category=nar: shard not found",
+        "      Requested date (20260718): jra=found, nar=not found yet",
+    ]
 
 
 def test_format_report_ok_verdict() -> None:
@@ -1161,6 +1394,7 @@ def test_format_report_anomaly_verdict() -> None:
         coverage_gaps=(("2026", "0712", "02", "01"),), quality_groups=(), quality_rollup=(),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     formatted = subject.format_report(report)
     assert "Exit code: 1 (anomalies found)" in formatted
@@ -1200,6 +1434,7 @@ def test_report_to_dict_only_includes_degraded_groups_not_healthy() -> None:
         ),
         routing_supported=True, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     result = subject.report_to_dict(report)
     assert result["quality_degraded_count"] == 1
@@ -1220,6 +1455,7 @@ def test_report_to_dict_burst_buckets_include_utc_and_jst() -> None:
             ),
         ),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     result = subject.report_to_dict(report)
     assert result["burst_buckets"] == [
@@ -1237,9 +1473,35 @@ def test_report_to_dict_routing_supported_false() -> None:
         coverage_gaps=(), quality_groups=(), quality_rollup=(),
         routing_supported=False, routing_mismatches=(), burst_buckets=(),
         d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
     )
     result = subject.report_to_dict(report)
     assert result["routing_supported"] is False
+
+
+def test_report_to_dict_includes_r2_shard_keys() -> None:
+    report = subject.HealthCheckReport(
+        date_str="20260718", category="jra", checked_race_count=0,
+        coverage_gaps=(), quality_groups=(), quality_rollup=(),
+        routing_supported=True, routing_mismatches=(), burst_buckets=(),
+        d1_gap_event_count=None,
+        r2_shard_checks=(
+            subject.R2ShardCheck(day="20260716", category="jra", shard_found=False),
+            subject.R2ShardCheck(day="20260718", category="jra", shard_found=True),
+        ),
+        r2_shard_gaps=(subject.R2ShardCheck(day="20260716", category="jra", shard_found=False),),
+        r2_shard_access_available=True,
+    )
+    result = subject.report_to_dict(report)
+    assert result["r2_shard_access_available"] is True
+    assert result["r2_shard_gap_count"] == 1
+    assert result["r2_shard_gaps"] == [{"day": "20260716", "category": "jra", "shard_found": False}]
+    assert result["r2_shard_checks"] == [
+        {"day": "20260716", "category": "jra", "shard_found": False},
+        {"day": "20260718", "category": "jra", "shard_found": True},
+    ]
+    # Should not raise -- None is JSON-serializable as null.
+    json.dumps(result)
 
 
 # ── parse_args ────────────────────────────────────────────────────────────────
@@ -1462,6 +1724,135 @@ def test_query_d1_gap_event_count_returns_none_on_timeout() -> None:
     assert result is None
 
 
+# ── _build_r2_client ───────────────────────────────────────────────────────────
+
+
+def test_build_r2_client_raises_keyerror_when_env_var_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("R2_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("R2_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("R2_SECRET_ACCESS_KEY", raising=False)
+    with pytest.raises(KeyError):
+        subject._build_r2_client()
+
+
+def test_build_r2_client_uses_required_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("R2_ACCOUNT_ID", "account")
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "secret")
+    mock_client = MagicMock()
+    with patch("serve_health_check.boto3.client", return_value=mock_client) as mock_boto3_client:
+        result = subject._build_r2_client()
+    assert result is mock_client
+    mock_boto3_client.assert_called_once_with(
+        "s3",
+        endpoint_url="https://account.r2.cloudflarestorage.com",
+        aws_access_key_id="key",
+        aws_secret_access_key="secret",
+        region_name="auto",
+    )
+
+
+# ── _prefix_has_object ─────────────────────────────────────────────────────────
+
+
+def test_prefix_has_object_true_when_contents_present() -> None:
+    client = MagicMock()
+    client.list_objects_v2.return_value = {"Contents": [{"Key": "foo"}]}
+    result = subject._prefix_has_object(client, "bucket", "prefix/")
+    assert result is True
+    client.list_objects_v2.assert_called_once_with(Bucket="bucket", Prefix="prefix/", MaxKeys=1)
+
+
+def test_prefix_has_object_false_when_no_contents_key() -> None:
+    client = MagicMock()
+    client.list_objects_v2.return_value = {}
+    assert subject._prefix_has_object(client, "bucket", "prefix/") is False
+
+
+def test_prefix_has_object_false_when_contents_empty_list() -> None:
+    client = MagicMock()
+    client.list_objects_v2.return_value = {"Contents": []}
+    assert subject._prefix_has_object(client, "bucket", "prefix/") is False
+
+
+# ── query_r2_shard_presence (mocked) ────────────────────────────────────────────
+
+
+def test_query_r2_shard_presence_client_unavailable_returns_all_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subject, "_build_r2_client", MagicMock(side_effect=KeyError("R2_ACCOUNT_ID")),
+    )
+    result = subject.query_r2_shard_presence(["20260716", "20260717"], ["jra", "nar"], "bucket")
+    assert result == [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=None),
+        subject.R2ShardCheck(day="20260717", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260717", category="nar", shard_found=None),
+    ]
+
+
+def test_query_r2_shard_presence_client_unavailable_never_attempts_prefix_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subject, "_build_r2_client", MagicMock(side_effect=KeyError("R2_ACCOUNT_ID")),
+    )
+    prefix_check = MagicMock()
+    monkeypatch.setattr(subject, "_prefix_has_object", prefix_check)
+    subject.query_r2_shard_presence(["20260716"], ["jra"], "bucket")
+    prefix_check.assert_not_called()
+
+
+def test_query_r2_shard_presence_success_reflects_per_day_category_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = MagicMock()
+    monkeypatch.setattr(subject, "_build_r2_client", MagicMock(return_value=fake_client))
+
+    def fake_prefix_has_object(client: object, bucket: str, prefix: str) -> bool:
+        assert client is fake_client
+        assert bucket == "bucket"
+        return "jra" in prefix
+
+    monkeypatch.setattr(subject, "_prefix_has_object", fake_prefix_has_object)
+    result = subject.query_r2_shard_presence(["20260716"], ["jra", "nar"], "bucket")
+    assert result == [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=True),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=False),
+    ]
+
+
+def test_query_r2_shard_presence_per_call_client_error_degrades_to_none_without_aborting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(subject, "_build_r2_client", MagicMock(return_value=MagicMock()))
+
+    def fake_prefix_has_object(client: object, bucket: str, prefix: str) -> bool:
+        if "jra" in prefix:
+            raise ClientError({"Error": {"Code": "500", "Message": "boom"}}, "ListObjectsV2")
+        return True
+
+    monkeypatch.setattr(subject, "_prefix_has_object", fake_prefix_has_object)
+    result = subject.query_r2_shard_presence(["20260716"], ["jra", "nar"], "bucket")
+    assert result == [
+        subject.R2ShardCheck(day="20260716", category="jra", shard_found=None),
+        subject.R2ShardCheck(day="20260716", category="nar", shard_found=True),
+    ]
+
+
+def test_query_r2_shard_presence_per_call_botocore_error_degrades_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(subject, "_build_r2_client", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(subject, "_prefix_has_object", MagicMock(side_effect=BotoCoreError()))
+    result = subject.query_r2_shard_presence(["20260716"], ["jra"], "bucket")
+    assert result == [subject.R2ShardCheck(day="20260716", category="jra", shard_found=None)]
+
+
 # ── _fail ──────────────────────────────────────────────────────────────────────
 
 
@@ -1551,6 +1942,7 @@ def test_run_clean_report_returns_exit_0(
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=1))
+    monkeypatch.setattr(subject, "query_r2_shard_presence", MagicMock(return_value=[]))
     code = subject.run("20260712", "jra")
     assert code == 0
     mock_conn.close.assert_called_once()
@@ -1574,6 +1966,7 @@ def test_run_anomaly_found_returns_exit_1(monkeypatch: pytest.MonkeyPatch) -> No
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
+    monkeypatch.setattr(subject, "query_r2_shard_presence", MagicMock(return_value=[]))
     code = subject.run(
         "20260712", "jra", now=datetime(2026, 7, 12, 23, 59, tzinfo=subject.JST),
     )
@@ -1595,12 +1988,89 @@ def test_run_json_output_prints_valid_json(
         }, "rules": []}}),
     )
     monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
+    monkeypatch.setattr(subject, "query_r2_shard_presence", MagicMock(return_value=[]))
     code = subject.run("20260712", "jra", json_output=True)
     assert code == 0
     captured = capsys.readouterr()
     parsed = json.loads(captured.out)
     assert parsed["exit_code"] == 0
     assert parsed["date_str"] == "20260712"
+
+
+def test_run_r2_shard_gap_flips_exit_code_end_to_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuine R2 shard gap surfaces through the full run() wiring, not
+    just through build_health_check_report called directly."""
+    mock_conn = MagicMock()
+    monkeypatch.setattr(subject, "connect_neon", MagicMock(return_value=mock_conn))
+    monkeypatch.setattr(subject, "query_confirmed_races", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_predictions", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_burst_buckets", MagicMock(return_value=[]))
+    monkeypatch.setattr(
+        subject, "load_cell_routing_json",
+        MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+        }, "rules": []}}),
+    )
+    monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
+    monkeypatch.setattr(
+        subject, "query_r2_shard_presence",
+        MagicMock(
+            return_value=[subject.R2ShardCheck(day="20260710", category="jra", shard_found=False)],
+        ),
+    )
+    code = subject.run(
+        "20260712", "jra", now=datetime(2026, 7, 12, 20, 0, tzinfo=subject.JST),
+    )
+    assert code == 1
+
+
+def test_run_resolves_r2_shard_query_args_from_date_and_bucket_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run() wires trailing_day_strs(date_str, R2_SHARD_LOOKBACK_DAYS),
+    R2_SHARD_CATEGORIES, and the R2_BUCKET env var (falling back to
+    R2_BUCKET_DEFAULT) into query_r2_shard_presence."""
+    monkeypatch.delenv("R2_BUCKET", raising=False)
+    mock_conn = MagicMock()
+    monkeypatch.setattr(subject, "connect_neon", MagicMock(return_value=mock_conn))
+    monkeypatch.setattr(subject, "query_confirmed_races", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_predictions", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_burst_buckets", MagicMock(return_value=[]))
+    monkeypatch.setattr(
+        subject, "load_cell_routing_json",
+        MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+        }, "rules": []}}),
+    )
+    monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
+    query_r2 = MagicMock(return_value=[])
+    monkeypatch.setattr(subject, "query_r2_shard_presence", query_r2)
+    subject.run("20260718", "jra")
+    query_r2.assert_called_once_with(
+        subject.trailing_day_strs("20260718", subject.R2_SHARD_LOOKBACK_DAYS),
+        subject.R2_SHARD_CATEGORIES,
+        subject.R2_BUCKET_DEFAULT,
+    )
+
+
+def test_run_uses_r2_bucket_env_var_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("R2_BUCKET", "custom-bucket")
+    mock_conn = MagicMock()
+    monkeypatch.setattr(subject, "connect_neon", MagicMock(return_value=mock_conn))
+    monkeypatch.setattr(subject, "query_confirmed_races", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_predictions", MagicMock(return_value=[]))
+    monkeypatch.setattr(subject, "query_burst_buckets", MagicMock(return_value=[]))
+    monkeypatch.setattr(
+        subject, "load_cell_routing_json",
+        MagicMock(return_value={"jra": {"default_variant": "sim", "variants": {
+            "sim": {"model_version": "jra-cb-v9-sim-2013-clean", "feature_count": 250, "architecture": "catboost"},
+        }, "rules": []}}),
+    )
+    monkeypatch.setattr(subject, "query_d1_gap_event_count", MagicMock(return_value=None))
+    query_r2 = MagicMock(return_value=[])
+    monkeypatch.setattr(subject, "query_r2_shard_presence", query_r2)
+    subject.run("20260718", "jra")
+    assert query_r2.call_args.args[2] == "custom-bucket"
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
