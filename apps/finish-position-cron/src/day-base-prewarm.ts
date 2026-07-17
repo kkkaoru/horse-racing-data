@@ -18,13 +18,16 @@
 // try/catch that logs and returns rather than rethrows.
 
 import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
+import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
 
-// Mirrors PREDICT_CONTAINER_NAME_PREFIX in worker.ts / PREDICT_DO_NAME_PREFIX
-// in queue-consumer.ts. Duplicated (not imported) to avoid a circular import
-// -- worker.ts calls into this module to dispatch the prewarm. Keep this
-// literal in sync if the DO naming convention ever changes.
-const PREDICT_CONTAINER_NAME_PREFIX = "predict-";
+// Deliberately stays category-scoped (never resolvePredictDoName) even when
+// RACE_SHARDED_DO is on: this prewarm is a day-stable, category-wide cache
+// warm, not a race-scoped request, so there is no (keibajoCode, raceBango)
+// to shard by. When sharding is enabled each shard still gets its day-base
+// cache lazily on that shard's first race (the container's per-race
+// synchronous fallback, see the module docstring above) -- slower on that
+// first hit per shard, never incorrect.
 const PREWARM_HOST = "http://do";
 const PREWARM_PATH = "/prewarm-day-base";
 const PREWARM_RESULT_TYPE = "result";
@@ -129,7 +132,7 @@ const handlePrewarmResponse = async (
 // propagated.
 export const prewarmCategory = async (params: PrewarmCategoryParams): Promise<void> => {
   const { category, daysAhead, env, runYmd } = params;
-  const doName = `${PREDICT_CONTAINER_NAME_PREFIX}${category}`;
+  const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
   const url = buildPrewarmUrl({ category, daysAhead, runYmd });
   try {
     const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);

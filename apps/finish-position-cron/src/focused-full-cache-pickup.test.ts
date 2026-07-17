@@ -52,6 +52,18 @@ test("fetches the pickup endpoint with the expected URL and DO name", async () =
   );
 });
 
+test("fetches the pickup endpoint at a race-sharded DO when RACE_SHARDED_DO is enabled", async () => {
+  stubFetchMock.mockResolvedValue(jsonResponse({ found: false }));
+  await pickUpFocusedFullCache({
+    category: "jra",
+    env: { ...makeEnv(), RACE_SHARDED_DO: "1" },
+    keibajoCode: "05",
+    raceBango: "09",
+    runYmd: "20260712",
+  });
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-1");
+});
+
 test("proxies a found payload to R2 via proxyResultParquetsToR2", async () => {
   const env = makeEnv();
   stubFetchMock.mockResolvedValue(

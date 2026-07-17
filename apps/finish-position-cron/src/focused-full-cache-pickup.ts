@@ -23,9 +23,9 @@
 
 import { proxyResultParquetsToR2 } from "./container-ndjson-proxy";
 import type { PredictResultLine } from "./ndjson-stream";
+import { resolvePredictDoName } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
 
-const PREDICT_DO_NAME_PREFIX = "predict-";
 const FOCUSED_FULL_CACHE_PATH = "/focused-full-cache";
 const PREDICT_HOST = "http://do";
 const RESULT_LINE_TYPE = "result";
@@ -80,7 +80,7 @@ export const pickUpFocusedFullCache = async (
   params: FocusedFullCachePickupParams,
 ): Promise<void> => {
   const { env, category, runYmd, keibajoCode, raceBango, debug } = params;
-  const doName = `${PREDICT_DO_NAME_PREFIX}${category}`;
+  const doName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
   const url = buildFocusedFullCacheUrl(params);
   try {
     const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(doName);

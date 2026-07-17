@@ -20,6 +20,7 @@ import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
+import { resolvePredictDoName } from "./predict-do-shard";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
 import type { Env, PredictQueueMessage } from "./types";
 
@@ -29,7 +30,6 @@ const RUN_YMD_MONTH_START = 4;
 const RUN_YMD_MONTH_END = 6;
 const RUN_YMD_DAY_START = 6;
 const RUN_YMD_DAY_END = 8;
-const PREDICT_DO_NAME_PREFIX = "predict-";
 const PREDICT_PATH = "/predict";
 const PREDICT_HOST = "http://do";
 const RESCORE_MODE = "rescore";
@@ -155,20 +155,6 @@ interface PerRaceRescoreUrlParams {
   runYmd: string;
   cardMaxRaceBango?: number;
 }
-
-interface PredictDoNameParams {
-  category: string;
-  keibajoCode?: string;
-  raceBango?: string;
-  runYmd: string;
-}
-
-const buildPredictDoName = ({ category }: PredictDoNameParams): string => {
-  // Per-race messages still carry race scope in the /predict query. The
-  // Container instance is category-scoped to avoid exhausting max_instances while
-  // previous race-scoped instances wait through sleepAfter.
-  return `${PREDICT_DO_NAME_PREFIX}${category}`;
-};
 
 const buildPredictUrl = (params: PredictUrlParams): string => {
   const searchParams = new URLSearchParams({
@@ -488,7 +474,7 @@ const processContainerPerRaceRescore = async (
 ): Promise<void> => {
   const { category, daysAhead, debug, keibajoCode, raceBango, runYmd } = message.body;
   const startedAt = Date.now();
-  const predictDoName = buildPredictDoName({ category, keibajoCode, raceBango, runYmd });
+  const predictDoName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPerRaceRescoreUrl({
     cardMaxRaceBango,
@@ -652,12 +638,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
       `[predict-queue] category-claim ok ${describePredictMessage(message.body)}`,
     );
   }
-  const predictDoName = buildPredictDoName({
-    category,
-    keibajoCode,
-    raceBango,
-    runYmd,
-  });
+  const predictDoName = resolvePredictDoName({ category, env, keibajoCode, raceBango });
   const cardMaxRaceBango = await resolveCardMaxRaceBangoForKochi({ env, keibajoCode, runYmd });
   const predictUrl = buildPredictUrl({
     cardMaxRaceBango,

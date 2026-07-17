@@ -21,6 +21,7 @@ import { buildPredictStartOptions } from "./dispatch";
 import { DLQ_QUEUE_NAME, handleDlqQueue } from "./dlq-consumer";
 import { claimRescoreRace, completeFocusedFullRace } from "./do-state";
 import { warmNeon } from "./neon-warm";
+import { PREDICT_DO_NAME_PREFIX, resolvePredictDoName } from "./predict-do-shard";
 import { PredictRunCoordinator } from "./predict-run-coordinator";
 import { handleQueue } from "./queue-consumer";
 import { enqueuePredict } from "./queue-producer";
@@ -72,7 +73,6 @@ const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_STOP_CONTAINER_DO_PATH = "/__admin/stop-container";
 const PREDICT_DO_HOST = "http://do";
 const PREDICT_PATH = "/predict";
-const PREDICT_CONTAINER_NAME_PREFIX = "predict-";
 const MAX_ADMIN_STOP_NAMES = 100;
 const INTERNAL_RESCORE_RACE_PATH = "/api/internal/rescore-race";
 const INTERNAL_RESCORE_RACE_METHOD = "POST";
@@ -369,8 +369,7 @@ const parseStopContainerNames = (body: Record<string, unknown>): string[] | null
   if (!Array.isArray(names)) return null;
   if (names.length === 0 || names.length > MAX_ADMIN_STOP_NAMES) return null;
   const parsed = names.filter(
-    (name): name is string =>
-      typeof name === "string" && name.startsWith(PREDICT_CONTAINER_NAME_PREFIX),
+    (name): name is string => typeof name === "string" && name.startsWith(PREDICT_DO_NAME_PREFIX),
   );
   return parsed.length === names.length ? parsed : null;
 };
@@ -432,7 +431,12 @@ const runFocusedFullRace = async (
     console.warn(`[predict-worker] admin-run-focused-full start ${describeRaceRequest(body)}`);
   }
   const doId = env.FINISH_POSITION_PREDICT_CONTAINER.idFromName(
-    `${PREDICT_CONTAINER_NAME_PREFIX}${body.category}`,
+    resolvePredictDoName({
+      category: body.category,
+      env,
+      keibajoCode: body.keibajoCode,
+      raceBango: body.raceBango,
+    }),
   );
   const stub = env.FINISH_POSITION_PREDICT_CONTAINER.get(doId);
   const response = await stub.fetch(new Request(predictUrl));

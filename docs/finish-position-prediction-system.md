@@ -522,7 +522,7 @@ flowchart TB
 
 - **Upstream trigger（`sync-realtime-data`）**: 脚質完了後に `FINISH_POSITION_PREDICT_QUEUE` へ focused per-race full を enqueue する。queue binding が無い環境だけ `FINISH_POSITION_CRON` service binding / API の `POST /run` に fallback する。脚質推論自体の詳細は §4。
 - **Cron Worker（`finish-position-cron`）**: Cloudflare Queues 経由で Container をトリガーする。`apps/finish-position-cron/wrangler.jsonc` に cron / queue / container binding を定義。
-- **Container DO（`FinishPositionPredictContainer`）**: Python HTTP server を内包し、DuckDB ビルドと scoring を実行する。`instance_type: standard-4`, `max_instances: 10`。Queue consumer からの Container DO 名は `predict-{category}` に集約する。per-race identity は `/predict` query の `keibajoCode` / `raceBango` で渡し、DO 名を race scope にしてはならない。
+- **Container DO（`FinishPositionPredictContainer`）**: Python HTTP server を内包し、DuckDB ビルドと scoring を実行する。`instance_type: standard-4`, `max_instances: 10`。Container DO 名は `predict-do-shard.ts` の `resolvePredictDoName()` が一元的に解決する。既定（`RACE_SHARDED_DO` 未設定）は `predict-{category}` に集約し、per-race identity は `/predict` query の `keibajoCode` / `raceBango` で渡すだけで DO 名は race scope にならない。`RACE_SHARDED_DO=1` の場合のみ `predict-{category}-{shardIndex}`（`shardIndex` は `RACE_SHARD_MAX_CONCURRENT` 個の固定 bucket への hash、既定 3）に race-sharded される — 詳細と、DO 名に `runYmd`/レース識別子を直接埋め込む方式がなぜ今も禁止のままかは §5.4.2。
 - **PredictRunCoordinator（DO）**: run の dedup / state を strong-consistency で管理（旧 KV `PREDICT_STATE` を置換）。eventual consistency の KV では二重実行を防げないため DO に移行した。
 
 ### 5.2 HTTP エンドポイント
@@ -566,7 +566,7 @@ feature generation -> running-style generation -> finish-position full generatio
 
 `skipDedup: true` は「脚質完了に連動した focused per-race full」を意味する。`finish-position-cron` の queue consumer はこの message では category-level の `claimRun` / `completeRun` を通らず、category complete や category cache warm を汚さない。Container の NDJSON final line が `status:error` の場合は成功扱いせず、queue retry / DLQ に回す。
 
-Container の `sleepAfter` 中も Cloudflare の live instance count には残る。Queue の `max_concurrency: 1` は consumer invocation を直列化するだけで、race-scoped DO 名が作る複数の sleeping Container instance を抑制しない。NAR のように同日に多数レースがある場合、`predict-nar-{runYmd}-{keibajoCode}-{raceBango}` のような DO 名は `max_instances: 10` を超過し得るため禁止する。
+Container の `sleepAfter` 中も Cloudflare の live instance count には残る。Queue の `max_concurrency: 1` は consumer invocation を直列化するだけで、race-scoped DO 名が作る複数の sleeping Container instance を抑制しない。DO 名にレース識別子や `runYmd` を直接埋め込み、レースの組み合わせ数だけ DO 名が無限に増える方式（例: `predict-nar-{runYmd}-{keibajoCode}-{raceBango}`）は `max_instances: 10` を恒常的に超過し得るため今も禁止する。§5.4.2 の `RACE_SHARDED_DO` は名前空間をカテゴリごと固定個数の bucket に限定する別方式であり、この禁止とは抵触しない。
 
 ```mermaid
 sequenceDiagram
@@ -618,9 +618,23 @@ sequenceDiagram
 
 **bit 一致の根拠（実測ではなく構成上の保証）**: watermark が一致して day-base を再利用する分岐は、`build_day_base` が以前書いた**同一の parquet ファイル**をそのまま返す（再生成・再導出ではない）。したがって `predicted_score` の bit 一致は「同じバイト列を同じモデルで 2 回 score すれば同じ結果になる」という自明な帰結であり、実データでの row-diff で証明する対象ではない。実際にテストが必要なのは watermark の判定ロジック自体（不一致/欠損/計算失敗のいずれでも確実に fail-closed するか）であり、これは `tests/test_pipeline_runner.py` の `test_ensure_day_base_catalog_source_watermark_*` / `test_compute_source_watermark_*` / `test_write_watermark_*` / `test_read_watermark_*`（すべて mocked、live catalog 不要、通常の pytest 実行で毎回走る）で担保する。`tests/test_day_base_parity.py`（手動・`RUN_DAY_BASE_PARITY=1` gated）は offline Postgres URL のみを使うため今回の分岐を通らないが、新規 category を allowlist に追加する前の運用チェック手順をそのファイルの docstring に追記した（同一プロセス内で同一レースを 2 回リクエストし、2 回目のログに `step=daybase-*` が出ず `step=racechain-layer` のみになることを確認する）。
 
+#### 5.4.2 レース単位 DO shard 化（`RACE_SHARDED_DO`, USER decision 11）
+
+**背景**: `docs/probes/serving-latency-architecture-2026-07-17.md` §2（commit `9da2f5eb`）が確認した通り、`_claim_focused_full_slot()` / `_PIPELINE_EXEC_LOCK`（`predict_lib/serve.py`）が focused-full pipeline を**category ごとに 1 プロセス**へ直列化しているのは正当な correctness 制約である——DuckDB base build + layer chain が `feat-{category}-base` のような category-scoped（race-scoped ではない）work directory に書き込むため、同一 category の異なるレースを同一プロセスで並行実行すると WORK_DIR 衝突で intermediate file が破損する。`max_instances: 10` に対し実運用は category 数（jra/nar/ban-ei = 最大 3）しか Container DO を同時起動しないため、7 instance 分の余剰キャパシティが構造的に未使用のまま残っていた。
+
+**方式**: `predict-do-shard.ts` の `resolvePredictDoName()` が全 DO 名解決の single source of truth。`RACE_SHARDED_DO=1` かつ request が race-scoped（`keibajoCode`/`raceBango` 両方あり）の場合のみ、`predict-{category}-{shardIndex}` を返す。`shardIndex = FNV-1a(keibajoCode:raceBango) % RACE_SHARD_MAX_CONCURRENT`（既定 3、`raceBango` 単独ではなく `keibajoCode:raceBango` を hash することで同日の全競馬場の「レース 1」が同じ bucket に集まる事故を避ける）。`runYmd` は hash に含めない——bucket 数は日付が進んでも増えない固定個数のままであり、これが §5.4 で今も禁止している「DO 名にレース識別子や `runYmd` を直接埋め込む」方式（DO 名の cardinality が無限に増える）との決定的な違いである。各 shard は独立した Container filesystem を持つため、shard 間の WORK_DIR 衝突は構造的に発生しない。shard 内は既存の `_PIPELINE_EXEC_LOCK` がそのまま有効。
+
+**上限制御**: `RACE_SHARD_MAX_CONCURRENT`（既定 3）が category あたりの shard 数を固定する。jra/nar/ban-ei が同時に全 shard 稼働した最悪ケースでも `3 category × 3 shard = 9 <= max_instances: 10` を満たす。値を上げる場合は `category 数 × RACE_SHARD_MAX_CONCURRENT <= max_instances: 10` を deploy 前に再確認すること。
+
+**適用範囲と非対応箇所**: `queue-consumer.ts`（focused-full / 通常 full の両方、および per-race rescore）、`focused-full-cache-pickup.ts`（pickup が実際に書き込まれた shard と同じ DO を引くために必須）、`worker.ts` の admin `run-focused-full-race` エンドポイントが `resolvePredictDoName()` を経由する。`day-base-prewarm.ts` の category 単位 day-base cache warm は意図的に unsharded のまま（race scope が存在しないため）——sharding 有効時、各 shard は自身の day-base cache を最初のレースで遅延ビルドする（container 既存の per-race lazy fallback、精度に影響なし、その shard の最初の 1 レースだけ遅い）。keibajoCode/raceBango が無い category 全域の `mode=full` request（§5.4 の legacy full path）も無条件で unsharded 名にフォールバックする——1 回のシーケンシャル `/predict` 呼び出しで category 全レースを処理するため、そもそも sharding の恩恵を受けない。
+
+**ロールバック**: `RACE_SHARDED_DO` を未設定（または `"1"` 以外）に戻す。1 環境変数のみ、redeploy 1 回、code 変更不要。flag off 時は `resolvePredictDoName()` が sharding 導入前と bit-identical な `predict-{category}` を返す（`predict-do-shard.test.ts` で回帰確認済み）。
+
+**既知の未解決事項（この変更のスコープ外、flag on にする前に team-lead が確認する）**: `wrangler.jsonc` の queue consumer は `max_concurrency: 3`（§5.6 の cron コメント参照——3 category に対して 1 対 1 で足りるよう設定された値）。`RACE_SHARDED_DO` を有効化しても、同時に処理できる queue message 数はこの `max_concurrency` の天井を超えない——shard 数を増やしても、それを実際に並行消費する consumer invocation 数が `max_concurrency: 3` のままではスループット改善が頭打ちになる。flag を ON にして real throughput を得るには `max_concurrency` を category 数 × shard 数相当まで引き上げる deploy が別途必要（この PR のスコープ外、team-lead の deploy 判断待ち）。
+
 ### 5.5 per-race rescore は Container 統一
 
-JRA / NAR / Ban-ei の per-race rescore はすべて `finish-position-cron` から Container held `/predict` に渡す。Worker-native JRA scorer は production の model metadata / cell routing / feature contract と乖離しやすいため、queue consumer の production dispatch では使用しない。Container 側が `mode=rescore` と race scope を受け取り、同じ feature build / model routing / Neon UPSERT 経路で再 scoring する。
+JRA / NAR / Ban-ei の per-race rescore はすべて `finish-position-cron` から Container held `/predict` に渡す。Worker-native JRA scorer は production の model metadata / cell routing / feature contract と乖離しやすいため、queue consumer の production dispatch では使用しない。Container 側が `mode=rescore` と race scope を受け取り、同じ feature build / model routing / Neon UPSERT 経路で再 scoring する。per-race rescore の DO 名解決も §5.4.2 の `resolvePredictDoName()` を経由するため、`RACE_SHARDED_DO=1` の場合はこの経路も race-sharded された DO へ dispatch される。
 
 #### 5.5.1 rescore の R2 feature cache（per-race, watermark 検証）
 

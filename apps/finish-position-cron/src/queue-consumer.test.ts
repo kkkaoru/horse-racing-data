@@ -258,6 +258,23 @@ test("uses a stable category-scoped DO name for focused per-race full skipDedup 
   }
 });
 
+test("targets a race-sharded DO for a focused per-race full skipDedup message when RACE_SHARDED_DO is enabled", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra-1");
+});
+
 test("threads cardMaxRaceBango into a Kochi focused-full skipDedup query URL", async () => {
   const realtimeBindMock = vi.fn(() => ({
     first: vi.fn(async () => ({ max_race_bango: 10 })),
@@ -775,6 +792,25 @@ test("targets the per-race rescore at a category-scoped predict-nar DO with the 
   expect(fetchRequest.url).toBe(
     "http://do/predict?category=nar&daysAhead=0&mode=rescore&keibajoCode=44&raceBango=01&runDate=20260619",
   );
+  consoleSpy.mockRestore();
+});
+
+test("targets a race-sharded DO for the per-race rescore when RACE_SHARDED_DO is enabled", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "nar",
+        daysAhead: 0,
+        keibajoCode: "44",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260619",
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar-2");
   consoleSpy.mockRestore();
 });
 

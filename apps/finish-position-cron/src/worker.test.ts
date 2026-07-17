@@ -942,6 +942,29 @@ test("admin run focused full race endpoint proxies a held predict request", asyn
   expect(await response.text()).toBe('{"type":"result","status":"success","racesPredicted":1}\\n');
 });
 
+test("admin run focused full race endpoint targets a race-sharded DO when RACE_SHARDED_DO is enabled", async () => {
+  containerDoFetchMock.mockResolvedValueOnce(
+    new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {
+      headers: { "Content-Type": "application/x-ndjson" },
+      status: 200,
+    }),
+  );
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+  expect(response.status).toBe(200);
+  expect(containerDoIdFromNameMock).toHaveBeenCalledWith("predict-jra-0");
+});
+
 test("admin run focused full race endpoint threads cardMaxRaceBango for a Kochi race", async () => {
   resolveCardMaxRaceBangoForKochiMock.mockResolvedValueOnce(10);
   containerDoFetchMock.mockResolvedValueOnce(

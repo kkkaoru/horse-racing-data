@@ -97,6 +97,25 @@ export interface Env {
   // prediction path can fetch venue weather data over HTTP. Plain var; optional
   // so existing callers/tests need not set it.
   VENUE_WEATHER_URL?: string;
+  // Feature flag (USER decision 11, docs/finish-position-prediction-system.md
+  // §5.4): "1" switches every Container DO name lookup for a race-scoped
+  // predict request (queue-consumer.ts, focused-full-cache-pickup.ts,
+  // worker.ts's admin run-focused-full-race) from one DO per category to a
+  // hash-sharded DO per category (see predict-do-shard.ts), so races spread
+  // across independent container filesystems instead of all serializing
+  // through the one process-wide pipeline slot each category DO holds today.
+  // Unset/any other value keeps the pre-sharding `predict-{category}` name --
+  // the instant-rollback path. Optional so existing callers/tests need not
+  // set it.
+  RACE_SHARDED_DO?: string;
+  // Shard count per category when RACE_SHARDED_DO is enabled, parsed as a
+  // positive integer; unset/non-positive/non-integer falls back to 3 inside
+  // predict-do-shard.ts. wrangler.jsonc's FinishPositionPredictContainer caps
+  // at max_instances: 10 shared across jra/nar/ban-ei, so 3 keeps the
+  // worst-case fully-active 3-category x N-shard total (3x3=9) under that
+  // limit -- raising it must be checked against max_instances before deploy.
+  // Optional so existing callers/tests need not set it.
+  RACE_SHARD_MAX_CONCURRENT?: string;
 }
 
 export type CronAuditStatus = "started" | "success" | "error";
