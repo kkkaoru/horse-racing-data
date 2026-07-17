@@ -366,4 +366,61 @@ fix 自体は健全であり、訂正が必要なのは commit メッセージ�
 
 ---
 
-**この commit は本ドキュメント (§8・§9 に加えて本 §10 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。§10 の追加はドキュメント記述 (commit `1d7e3215` の検証記述の訂正、0606/0614/0621 の分類、MLflow timeline 挙動の注意喚起) のみであり、コード変更・新規ファイル作成・MLflow への書込は一切行っていない。`serve_accuracy_report.py` / `serve_health_check.py` / `timeline.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
+## 11. Viewer 表示側 dedup 意味論監査 — 結論: バグなし (2026-07-17 追記)
+
+本節は、team-lead 経由で共有された USER 指示のバグ調査をまとめる: `apps/pc-keiba-viewer/src/db/queries.ts` の `getFinishPositionLambdarankPredictions` (2919行) に、`serve_accuracy_report.py` の analysis 側 dedup が本日の修正 (commit `1d7e3215`) 以前に抱えていた「post-race backfill 行を、より古い genuine な行より優先して選んでしまう」罠と同型のバグが存在するか、という監査依頼である。確認すべき点は3つ: (a) 同一 model_version 内での複数行選択にこの罠が存在するか、(b) 2026-07-11・07-12 の実データで裏付けられるか、(c) tier priority による選択ロジックと allowlist の網羅性。**結論を先に記す — バグではない。** ただし調査の途中で 1 件の誤った仮説を立て、独立した re-verification によってその場で訂正された経緯があり (§11.3)、これも省略・軽視せずそのまま記録する。本節はドキュメント記述のみを対象とし、コード変更・MLflow への書込は一切行っていない。
+
+### 11.1 (a)(b): 同一 model_version 内の複数行選択は構造的に不可能、実データでも裏付け
+
+**(a)**: `race_finish_position_model_predictions` の UPSERT 主キー (`apps/finish-position-predict-container/src/predict_lib/upsert_sql.py:23-31`) は `PRIMARY_KEY_COLUMNS = (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)` である。これは同一 (model_version, 馬, レース) の組に対して行が常に高々 1 行しか存在し得ないことを意味する。同じキーへの後続の書込は `build_upsert_sql` が組み立てる `on conflict (...) do update set ...` により既存行を in-place で上書きする (内容を書き換え、`prediction_generated_at = now()` で鮮度だけ更新する) のみであり、競合する 2 本目の行が新たに生まれることは構造的にあり得ない。したがって、**「同一 model_version 内で複数行のうちどれを選ぶか」という判断自体が viewer の read path のどこにも存在せず、監査すべき対象がそもそも無い** — これは `serve_accuracy_report.py` の元々のバグ (priority-tier 構造を一切持たず、`ORDER BY prediction_generated_at DESC` という生の並び替えだけで、**異なる** model_version の行を横断的に選んでいた) とは構造的に別物である。
+
+**(b)**: 既知のインシデント対象日である 2026-07-11・2026-07-12 について、Neon primary への直接 read-only query で確認した。`race_finish_position_model_predictions` の該当期間 93 件の (date, venue, race, model_version) group 全てにおいて、行数と distinct 馬 (`ketto_toroku_bango`) 数の不一致は **0 件**、`prediction_generated_at` の min/max スプレッドが 1 時間を超える group も **0 件** — このインシデント期間に限って言えば、in-place 上書き以外のパターン (行の競合・重複) が発生した痕跡は一切見当たらなかった。
+
+### 11.2 (c) クエリの tier 構造 (`getFinishPositionLambdarankPredictions` 読解)
+
+(c) を検討するため、`apps/pc-keiba-viewer/src/db/queries.ts::getFinishPositionLambdarankPredictions` (2919-3082行) を直接読解して確認した。このクエリは `selected_model` という CTE で 4 段の priority を `union all` し、`order by priority, recency desc nulls last limit 1` によりレース全体に対して単一の `model_version` を1つだけ選ぶ。外側の `SELECT` はその model_version に属する行を馬の数だけそのまま返すだけなので、§11.1 (a) の通り馬単位の曖昧さはここでも生じない。
+
+| priority | 選択条件                                                                                                                                                                                                                                     | recency の扱い                           |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 0        | そのレースの cell-routing 期待 variant (`resolveFinishPositionDisplayPriorityModelVersion`, `finish-position-cell-routing.ts:353`) に該当する行があれば無条件選択。null/該当行なしなら次点へフォールスルー                                   | 未使用 (行の有無のみ)                    |
+| 1        | このレースの RS-overlay model_version (`active.model_version` に `-rs-overlay-` とレース開催年月日を連結した文字列) に該当する行があれば選択                                                                                                 | 未使用                                   |
+| 2        | 現在登録されている "active"/champion model_version に、このレースの行が **1 行でも** あれば選択 — 存在有無のみのチェックで鮮度/品質シグナルは一切見ない                                                                                      | `null::timestamptz` を固定でハードコード |
+| 3        | 上記いずれにも該当しない場合、そのレースに行を持つ他の allowed model_version の中から `prediction_generated_at` の最大値が最も新しいものを選ぶ — このクエリが唯一「異なる model_version 間の genuine な "latest write wins" 比較」を行う箇所 | `max(p3.prediction_generated_at)`        |
+
+priority=0/1/2 はいずれも「特定 1 model_version の行があるかどうか」の existence check であり、複数 model_version 間の比較は発生しない。priority=3 のみが `serve_accuracy_report.py` の旧バグと同種の「複数 model_version 間の recency 比較」を行う。
+
+(補足) priority=3 の WHERE 句には `finish_position_active_models.subclass is not null` な「stale」モデルを除外する `not exists` 節が既に存在するが、これは cell-routing variant を対象にした exclusion ではなく無関係な別の防御機構である。§11.3/§11.5 が指摘する「cell-routing variant 用の exclusion が無い」という観察はこれとは別の話であり、混同しないよう明記する。
+
+(参考) 「allowlist の網羅性」というテーマは、本ドキュメント §2 **Defect E** が既に別角度から確認済みである: Defect E は「cell-routing variant の model_version が `FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS` に正しく **含まれている** か (priority=0 が選びたい時に誤って弾かれないか)」を確認し、問題なしと結論している。次節 §11.3 が検証するのはその裏側 — 「cell-routing variant の model_version が priority=3 の候補プールから正しく **除外されている** か」— であり、両者は同じ「allowlist 完全性」という主題の異なる半分にあたる。
+
+### 11.3 調査過程の自己訂正 — grade_code と kyoso_joken_code の取り違え
+
+§11.2 の tier 構造を検討する過程で、当初、次の仮説を立てた: **priority=3 の WHERE 句には cell-routing variant の model_version (`getAllFinishPositionCellRoutingModelVersions()` が返す `jockey-pedigree269` / `prior-corner274` など、本来 priority=0 経由でのみ — そのレースの属性が `cell_routing.json` のルールに一致した場合にのみ — 選ばれるべきもの) を除外する防御的な exclusion が存在しない**、というもの。
+
+この仮説を裏付けるように見える具体例として、2026-07-12 に、champion model_version の行が 0 件でありながら `jockey-pedigree269` の行が存在するレースを 9 件発見した (福島 keibajo_code=03 race_bango 01/02/03/06/07、小倉 keibajo_code=10 race_bango 01/02/03/04)。これらのレースの `jvd_ra.grade_code` を確認したところ全レース空欄であり、「どの routing ルールにも一致していない = priority=0 は本来ミスするはずで、priority=3 がこの off-label な variant を漏らして選んでしまったに違いない」と結論した。
+
+**この結論は誤りであり、独立した先行 sub-agent による careful re-verification によってその場で指摘・訂正された。** JRA の cell-routing ルール1 (`finish-position-cell-routing.ts:123-126`、`conditions: [{ dimension: "kyoso_joken_code", values: ["703"] }], variant: "jockey_pedigree_703"`) が実際に見ているのは `grade_code` ではなく `kyoso_joken_code` である。両者は `jvd_ra` 上の全く別の分類軸であり、`grade_code` は G1/G2/G3/OP/空欄という重賞格付け、`kyoso_joken_code` はレース条件コードで、`"703"` はこのルールが対象とする特定の条件値である。**筆者は誤った列を確認していた。** 該当 9 レースを `kyoso_joken_code` で再照会したところ、**全 9 レースが `kyoso_joken_code='703'` であることを確認した (sub-agent の指摘を受けた後、筆者自身による独立再確認でも同じ結果を得た)**。つまりルール1は正当に一致しており、`cellVariantModelVersion` は 9 レース全てで正しく `jockey-pedigree269` に解決され、priority=0 がそれを直接選択している。これらのレースは priority=3 に一切到達しておらず、意図通り正しくルーティングされたものであって、off-label な fallback 漏れではない。
+
+re-verification はさらに踏み込み、このテーブルの全履歴で書き込まれたことのある (race, cell-routing-variant model_version) の組を**すべて**洗い出した (65 組)。このうち champion model_version の行が 0 件の 44 組 (= priority=3 の候補プール構成が結果に影響し得る唯一の部分集合) それぞれに対し、`cell_routing.json` の実際の first-match-wins ロジック (rule1: `kyoso_joken_code=703` → `jockey_pedigree_703`、rule2: dirt かつ field≤10 かつ `kyoso_joken_code=005` → `prior_corner_dirt_smallfield_005`、rule3: `venue=02` → `jockey_pedigree_703`) を適用し、left join でレースの取りこぼしが無いことも確認した。**結果: 65 組中、正当なルールに一致しなかったものは 0 件** — rule1 経由 30 件、rule3 経由 13 件 (全て venue=02/函館)、rule2 経由 1 件 (この 1 件は選択された model_version が文字通り `jra-cb-v10-prior-corner274-2013` であり、rule2 が予測する variant と完全一致することも独立に確認した)。priority=0 のルーティング解決は、このテーブルの全履歴を見る限り、cell-routing variant の model_version について priority=3 に到達する前に取りこぼしたことが一度もない。
+
+この一連の流れ (誤った仮説の提示 → 独立した sub-agent の re-verification による指摘・訂正) は、検証規律が機能した実例としてそのまま記録する。最初の分析 (`grade_code` を確認して「一致していない」と判定) は、コード上のルール定義を正しく読めば防げたはずの単純な列違いのミスだったが、「確定した bug」として出荷される前に独立した re-verification によって捕捉・訂正された。**「priority=3 が cell-routing variant を漏らして選んでいる」という主張は、bug としては成立しない。**
+
+**このスレッドの結論**: 理論上疑われた priority=3 の leakage は実際には発生していない — インシデント期間だけでなく全履歴を通じて 0 件。priority=3 の SQL が cell-routing variant に対する防御的 exclusion を欠いているという構造的な事実そのものは正確な観察だが、priority=0 が常に先に正しく解決しているため、これまで一度もその欠落が実害として顕在化したことがない。
+
+### 11.4 9 レースの予測が壊れている理由 (既知の別問題、担当スレッドも既に割当済み)
+
+上記 9 レースの予測は実際に品質としてほぼ乱数に近い (`predicted_score` の score 分散が壊滅的に小さい) が、これは本ドキュメント §2 **Defect A** (2026-07-12 の「Cluster B」一括書込インシデントが `predicted_score` の品質を劣化させている問題、within-race score 標準偏差が健全時 ~0.7〜1.5 に対し ~0.095) が、**正しくルーティングされた priority=0 serve の内側に、たまたま乗っている**だけであり、tier 選択自体の欠陥ではない。正しく routing された serve の中身が (Defect A により) データ品質として壊れている、という §2 で既に報告・未対処のまま `serve-defect-269` 調査スレッドに割り当て済みの問題であり (§7 参照)、本節でこれを再オープン・再割当てすることはしない。読者が「本節の tier 選択ロジックはクリーンなのに、なぜこの 9 レースの予測は依然として悪く見えるのか」を理解できるよう、接続関係のみをここに明記する。
+
+### 11.5 (任意・非緊急) 将来的な防御強化案
+
+priority=3 に、cell-routing variant の model_version を除外する防御的 exclusion を追加する余地はある — 既存の `allowed_model_versions` CTE パターンを踏襲し、`getAllFinishPositionCellRoutingModelVersions()` が返す集合を priority=3 の候補プールから除外する形が考えられる。これは **現時点で実在するバグを修正するものではない** (§11.3 の通り実害 0 件)。あくまで、将来 priority=0 のルーティングロジックとテーブルに実際に書き込まれる model_version の集合とが乖離するような未知のシナリオに備えた belt-and-suspenders 的な防御強化案であり、backlog 候補としての記録に留める。緊急性はなく、着手するかどうかは将来のセッションの判断に委ねる。
+
+### 11.6 Defect B との関係 (既存の結論を変更しない)
+
+この display path において唯一 genuine に「誤った予測が表示され得る」既知のメカニズムは、本ドキュメント §2 **Defect B** (priority=0 が一度一致すると無条件に信頼され、priority=2 の existence-only check が本来サーブしていたはずのものと比べた品質/鮮度チェックが一切無い) である。本節の監査はこの既存の結論を変更・再オープンするものではなく、本節が調査した (実在しなかった) priority=3 leak と Defect B とを明確に区別するためにのみ触れる。
+
+**結論: 分析側 (`serve_accuracy_report.py`) が本日修正したものと同型のバグは、viewer 側 (`getFinishPositionLambdarankPredictions`) には存在しない。**
+
+---
+
+**この commit は本ドキュメント (§8・§9・§10 に加えて本 §11 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。§10 の追加はドキュメント記述 (commit `1d7e3215` の検証記述の訂正、0606/0614/0621 の分類、MLflow timeline 挙動の注意喚起) のみであり、コード変更・新規ファイル作成・MLflow への書込は一切行っていない。§11 の追加も同様にドキュメント記述のみである — 検証のため `apps/pc-keiba-viewer/src/db/queries.ts` / `apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.ts` / `apps/finish-position-predict-container/src/predict_lib/upsert_sql.py` を read しただけで、いずれも変更していない。MLflow への書込・Neon/D1 への書込やデータ削除も本追記では一切行っていない。`serve_accuracy_report.py` / `serve_health_check.py` / `timeline.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
