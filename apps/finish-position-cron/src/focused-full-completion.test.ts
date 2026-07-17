@@ -109,6 +109,43 @@ test("uses raw Catalog entries and only queries Neon prediction output", async (
   );
 });
 
+// Characterization test (2026-07-17 bug-regression-test audit, item H): documents
+// a known, ACCEPTED limitation, not a bug being fixed here -- see
+// docs/probes/bug-regression-test-audit-2026-07-17.md. The completion check
+// this guard performs is `count(distinct ketto_toroku_bango) === entries.length`
+// -- it counts rows, it never inspects predicted_score or any other quality
+// signal, so a race with the RIGHT row count but a degenerate/near-random score
+// distribution (the actual 2026-07-12 Cluster-B signature -- see
+// feature_guard.py's own docstring in the predict-container package, which
+// fixed the WRITE side of this incident) is reported complete here just the
+// same as a genuinely healthy race, because this guard structurally has no way
+// to tell them apart. Pins the exact query text (no predicted_score/stddev
+// term anywhere in it) so a future change to what this guard checks shows up
+// here as a deliberate, reviewed diff rather than a silent behavior change.
+test("isFocusedFullPredictionComplete only counts rows -- it cannot detect a degenerate-score race with the right row count (documented limitation)", async () => {
+  setCatalogRows(buildCatalogRows(12));
+  queryMock.mockResolvedValue([{ actual_rows: 12 }]);
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "01",
+      runYmd: "20260613",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledWith(
+    expect.not.stringContaining("predicted_score"),
+    expect.anything(),
+  );
+  expect(queryMock).toHaveBeenCalledWith(
+    expect.stringContaining("count(distinct ketto_toroku_bango)"),
+    expect.anything(),
+  );
+});
+
 test("uses the NAR base model when transformer blending is disabled", async () => {
   await isFocusedFullPredictionComplete({
     category: "nar",
@@ -326,6 +363,14 @@ test("rejects malformed raw Catalog entries", async () => {
 
 // --- parity against the container's real cell_routing.json ----------------
 
+const readContainerCellRoutingConfig = (): CellRoutingConfig => {
+  const containerConfigPath = resolve(
+    process.cwd(),
+    "../finish-position-predict-container/src/predict_lib/cell_routing.json",
+  );
+  return JSON.parse(readFileSync(containerConfigPath, "utf-8")) as CellRoutingConfig;
+};
+
 // Intentional exception to "mock all file I/O in tests": this test's entire
 // purpose is to catch drift between expectedModelVersion()'s hand-written JRA
 // rule branches (703, prior-corner-005, venue==02) and the container's real
@@ -334,20 +379,28 @@ test("rejects malformed raw Catalog entries", async () => {
 // survived a full rewrite of this file unnoticed) -- mirrors the same
 // pattern already established in
 // apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.test.ts.
+//
+// This specific test only pins cell_routing.json's OWN shape (rule count +
+// declared model_version list) -- it never calls expectedModelVersion(), so
+// it cannot by itself detect a CODE-side regression (e.g. a branch silently
+// dropped during a refactor, which is exactly how the venue==02 gap this
+// suite fixes originally happened -- the JSON never changed, only the code
+// did). Found during the 2026-07-17 bug-regression-test audit: confirmed by
+// mutation (temporarily removing the venue==02 branch from
+// expectedModelVersion() left this test green). The 3 tests below close that
+// gap by deriving each rule's expected model_version from this same parsed
+// config and asserting expectedModelVersion()'s ACTUAL behaviour (observed
+// via isFocusedFullPredictionComplete's resolved query parameter) matches
+// it -- genuine two-sided parity, not just a JSON shape sentinel.
 test("expectedModelVersion covers every JRA rule in the real cell_routing.json (parity guard)", () => {
-  const containerConfigPath = resolve(
-    process.cwd(),
-    "../finish-position-predict-container/src/predict_lib/cell_routing.json",
-  );
-  const containerConfig: CellRoutingConfig = JSON.parse(
-    readFileSync(containerConfigPath, "utf-8"),
-  ) as CellRoutingConfig;
+  const containerConfig = readContainerCellRoutingConfig();
   const jraRules = containerConfig.jra.rules;
   // The rule COUNT is the parity contract: a new rule added to
   // cell_routing.json without a matching branch in expectedModelVersion()
   // fails silently exactly like the venue==02 gap this test guards against.
   // A failure here means: add the matching branch above FIRST, then update
-  // this expectation to the new count.
+  // this expectation to the new count (AND the 3 behavioural parity tests
+  // below, which index into this same rules array by position).
   expect(jraRules).toHaveLength(3);
   const ruleModelVersions = jraRules.map(
     (rule) => containerConfig.jra.variants[rule.variant]?.model_version,
@@ -357,4 +410,57 @@ test("expectedModelVersion covers every JRA rule in the real cell_routing.json (
     "jra-cb-v10-prior-corner274-2013", // rule 2: dirt + f_le10 + kyoso_joken_code=005
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269", // rule 3: venue=02
   ]);
+});
+
+test("expectedModelVersion resolves rule 1 (kyoso_joken_code=703) to the model_version cell_routing.json declares for it", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[0];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([{ ...buildCatalogRows(1)[0], kyoso_joken_code: "703" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 2 (dirt + f_le10 + kyoso_joken_code=005) to the model_version cell_routing.json declares for it", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[1];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows([
+    { ...buildCatalogRows(1)[0], kyoso_joken_code: "005", shusso_tosu: 8, track_code: "2A" },
+  ]);
+  queryMock.mockResolvedValue([{ actual_rows: 1 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "05",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+test("expectedModelVersion resolves rule 3 (venue=02) to the model_version cell_routing.json declares for it", async () => {
+  const containerConfig = readContainerCellRoutingConfig();
+  const rule = containerConfig.jra.rules[2];
+  const expectedFromConfig = containerConfig.jra.variants[rule?.variant ?? ""]?.model_version;
+
+  setCatalogRows(buildCatalogRows(11));
+  queryMock.mockResolvedValue([{ actual_rows: 11 }]);
+  await isFocusedFullPredictionComplete({
+    category: "jra",
+    env: makeEnv(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260613",
+  });
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
 });
