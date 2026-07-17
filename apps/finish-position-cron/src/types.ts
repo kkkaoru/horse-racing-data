@@ -156,11 +156,20 @@ export interface PredictQueueMessage {
   // Enables verbose diagnostic logs for this message and the downstream
   // Container /predict request. Absent/false keeps production logs quiet.
   debug?: boolean;
-  // Explicit operator bypass for the old-date guard (old-date-guard.ts):
-  // when true, an authenticated operator has deliberately re-triggered a
-  // historical/old-dated run (e.g. a manual backfill retrigger), so the
-  // queue consumer skips the runYmd staleness check entirely and dispatches
-  // to the Container as normal. Absent/false keeps the guard active.
+  // Explicit operator bypass for two independent guards, both in
+  // queue-consumer.ts: (1) the old-date guard (old-date-guard.ts) -- skips
+  // the runYmd staleness check entirely; (2) the focused-full completion
+  // guard (ackIfFocusedFullAlreadyComplete, backed by
+  // isFocusedFullPredictionComplete in focused-full-completion.ts) -- skips
+  // the "Neon already has every row for this model_version" short-circuit.
+  // The completion guard only counts rows, so it cannot tell a genuinely
+  // finished race from one whose rows are present but wrong (e.g. the
+  // 2026-07-12 degenerate-score batch -- see
+  // focused-full-completion.test.ts's "documented limitation" test); force
+  // lets an operator deliberately re-trigger such a race so the normal
+  // full-build pipeline runs and its per-(model_version, horse) UPSERT
+  // overwrites the bad row in place. Both bypasses dispatch to the
+  // Container as normal. Absent/false keeps both guards active.
   force?: boolean;
 }
 

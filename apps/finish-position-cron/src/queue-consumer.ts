@@ -249,6 +249,13 @@ const ackIfFocusedFullAlreadyComplete = async (
   env: Env,
 ): Promise<boolean> => {
   if (!isFocusedSkipDedupMessage(message.body)) return false;
+  if (message.body.force === true) {
+    debugLog(
+      message.body,
+      `[predict-queue] focused-completion-check bypassed (force) ${describePredictMessage(message.body)}`,
+    );
+    return false;
+  }
   const { category, keibajoCode, raceBango, runYmd } = message.body;
   try {
     debugLog(

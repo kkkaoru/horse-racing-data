@@ -329,6 +329,33 @@ test("acks focused full skipDedup messages without container when Neon already h
   });
 });
 
+test("force:true bypasses the focused full completion guard and reaches the Container DO", async () => {
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(true);
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        force: true,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260712",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(isFocusedFullPredictionCompleteMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&mode=full&runDate=20260712&keibajoCode=02&raceBango=01",
+  );
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
 test("continues to container when focused full completion guard fails", async () => {
   const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   isFocusedFullPredictionCompleteMock.mockRejectedValue(new Error("neon unavailable"));
