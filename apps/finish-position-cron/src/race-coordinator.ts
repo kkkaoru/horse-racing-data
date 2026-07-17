@@ -32,7 +32,6 @@ const COORDINATOR_ENABLED_FLAG = "1";
 const RESCORE_MODE: PredictMode = "rescore";
 const RESCORE_DAYS_AHEAD = 0;
 const WEIGHT_REBUILD_KEIBAJO = "WR";
-const WEIGHT_REBUILD_DAYS_AHEAD = 0;
 const MS_PER_MINUTE = 60 * 1000;
 const JST_OFFSET_HOURS = 9;
 const JST_OFFSET_MS = JST_OFFSET_HOURS * 60 * 60 * 1000;
@@ -417,15 +416,27 @@ export const resolveRescoreCategories = (env: Env): PredictCategory[] => {
   return resolved.length > 0 ? resolved : [...DEFAULT_RESCORE_CATEGORIES];
 };
 
-// Claim a synthetic WR race in the DO (strong consistency) and, when this is the
-// first claim of the half-hour slot for the category, enqueue a rescore-mode
-// build so the Container re-scores from the cached R2 parquet with the
-// now-available weight data (no Neon 21y scan). Deduped per-category
-// per-half-hour (the JST half-hour slot is the synthetic raceBango). Returns
-// true when the rescore build was enqueued.
+// Claim a synthetic WR race in the DO (strong consistency) and, when this is
+// the first claim of the half-hour slot for the category, enumerate every
+// race registered for the category+day (the same realtime_race_sources scan
+// planRescoreForCategory uses) and enqueue one per-race rescore message per
+// race -- so each lands on isPerRaceRescore's dispatch path in
+// queue-consumer.ts exactly like the near-post per-race rescore does,
+// letting each individually hit the per-race watermarked R2 cache
+// (predict_upcoming._fetch_watermarked_per_race_cache) instead of falling
+// back to a category-wide rebuild. Before this, a single scopeless message
+// was sent instead; for a catalog source that always CacheMissErrors (no
+// per-race object to watermark-check against a whole-category scope) and
+// its fallback rebuilds EVERY race for the day in one call -- the largest
+// remaining cost this coordinator could trigger. Deduped per-category
+// per-half-hour (the JST half-hour slot is the synthetic raceBango) exactly
+// as before; that one claim gates whether the whole fan-out fires this
+// tick, not each individual race. Returns the number of per-race messages
+// enqueued (0 when the claim is rejected or the day has no races for this
+// category -- both are legitimate no-op outcomes, not errors).
 export const triggerWeightRebuildIfNeeded = async (
   params: WeightRebuildParams,
-): Promise<boolean> => {
+): Promise<number> => {
   const claim = await claimRescoreRace({
     category: params.category,
     env: params.env,
@@ -434,18 +445,26 @@ export const triggerWeightRebuildIfNeeded = async (
     runYmd: params.runYmd,
   });
   if (!claim.proceed) {
-    return false;
+    return 0;
   }
-  await params.env.PREDICT_QUEUE.send({
-    category: params.category,
-    daysAhead: WEIGHT_REBUILD_DAYS_AHEAD,
-    mode: RESCORE_MODE,
-    runDate: params.date,
-    runDateIso: params.date,
-    runYmd: params.runYmd,
-    skipDedup: true,
-  } satisfies PredictQueueMessage);
-  return true;
+  const rows = await listRacesForCategory(params.env, params.category, params.runYmd);
+  await Promise.all(
+    rows.map((row) =>
+      params.env.PREDICT_QUEUE.send(
+        buildRescoreMessage({
+          category: params.category,
+          date: params.date,
+          runYmd: params.runYmd,
+          target: {
+            keibajoCode: pad(row.keibajo_code, KEIBAJO_PAD_WIDTH),
+            raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+            raceStartAtJst: row.race_start_at_jst,
+          },
+        }),
+      ),
+    ),
+  );
+  return rows.length;
 };
 
 export const runRaceCoordinatorTick = async (
@@ -471,10 +490,11 @@ export const runRaceCoordinatorTick = async (
       }),
     ),
   );
-  // Trigger a Container rescore rebuild (with fresh weight data) for categories
+  // Trigger a per-race rescore fan-out (fresh weight data) for categories
   // that had at least one race newly enqueued. Deduped per-category
   // per-half-hour via claimRescoreRace with synthetic key WR:<JST half-hour
-  // slot> — one rescore rebuild per category per half-hour.
+  // slot> — one fan-out per category per half-hour (see
+  // triggerWeightRebuildIfNeeded for what "fan-out" means).
   await Promise.all(
     summaries
       .filter((summary) => summary.enqueued > 0)

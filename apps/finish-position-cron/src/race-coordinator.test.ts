@@ -419,6 +419,7 @@ test("resolveRescoreCategories falls back to JRA-only when no token is recognize
 });
 
 test("triggerWeightRebuildIfNeeded claims a synthetic WR race keyed by the JST half-hour slot in the DO", async () => {
+  stubD1Rows([]);
   await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-05",
@@ -436,6 +437,7 @@ test("triggerWeightRebuildIfNeeded claims a synthetic WR race keyed by the JST h
 });
 
 test("triggerWeightRebuildIfNeeded uses different dedup keys for different JST half-hour slots", async () => {
+  stubD1Rows([]);
   await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-05",
@@ -467,6 +469,7 @@ test("triggerWeightRebuildIfNeeded uses different dedup keys for different JST h
 });
 
 test("triggerWeightRebuildIfNeeded uses the same dedup key within a single half-hour slot", async () => {
+  stubD1Rows([]);
   await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-05",
@@ -498,6 +501,7 @@ test("triggerWeightRebuildIfNeeded uses the same dedup key within a single half-
 });
 
 test("triggerWeightRebuildIfNeeded floors to the lower slot just before the half-hour boundary", async () => {
+  stubD1Rows([]);
   await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-05",
@@ -515,6 +519,7 @@ test("triggerWeightRebuildIfNeeded floors to the lower slot just before the half
 });
 
 test("triggerWeightRebuildIfNeeded uses the upper slot at the half-hour boundary", async () => {
+  stubD1Rows([]);
   await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-05",
@@ -531,8 +536,13 @@ test("triggerWeightRebuildIfNeeded uses the upper slot at the half-hour boundary
   });
 });
 
-test("triggerWeightRebuildIfNeeded sends a rescore-mode skipDedup message when claim proceeds", async () => {
+test("triggerWeightRebuildIfNeeded enqueues one per-race rescore message per race registered for the day", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: true });
+  stubD1Rows([
+    { keibajo_code: "5", race_bango: "1", race_start_at_jst: "2026-06-19T10:10:00+09:00" },
+    { keibajo_code: "5", race_bango: "2", race_start_at_jst: "2026-06-19T10:40:00+09:00" },
+    { keibajo_code: "2", race_bango: "11", race_start_at_jst: "2026-06-19T15:30:00+09:00" },
+  ]);
   const enqueued = await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-19",
@@ -540,20 +550,59 @@ test("triggerWeightRebuildIfNeeded sends a rescore-mode skipDedup message when c
     now: new Date("2026-06-19T05:00:00.000Z"),
     runYmd: "20260619",
   });
-  expect(sendMock).toHaveBeenCalledWith({
+  expect(enqueued).toBe(3);
+  expect(sendMock).toHaveBeenCalledTimes(3);
+  expect(sendMock).toHaveBeenNthCalledWith(1, {
     category: "jra",
     daysAhead: 0,
+    keibajoCode: "05",
     mode: "rescore",
+    raceBango: "01",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
-    skipDedup: true,
   });
-  expect(enqueued).toBe(true);
+  expect(sendMock).toHaveBeenNthCalledWith(2, {
+    category: "jra",
+    daysAhead: 0,
+    keibajoCode: "05",
+    mode: "rescore",
+    raceBango: "02",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+  expect(sendMock).toHaveBeenNthCalledWith(3, {
+    category: "jra",
+    daysAhead: 0,
+    keibajoCode: "02",
+    mode: "rescore",
+    raceBango: "11",
+    runDate: "2026-06-19",
+    runDateIso: "2026-06-19",
+    runYmd: "20260619",
+  });
+});
+
+test("triggerWeightRebuildIfNeeded enqueues nothing on a day with zero registered races for the category", async () => {
+  claimRescoreRaceMock.mockResolvedValue({ proceed: true });
+  stubD1Rows([]);
+  const enqueued = await triggerWeightRebuildIfNeeded({
+    category: "ban-ei",
+    date: "2026-06-19",
+    env: makeEnv(),
+    now: new Date("2026-06-19T05:00:00.000Z"),
+    runYmd: "20260619",
+  });
+  expect(enqueued).toBe(0);
+  expect(sendMock).not.toHaveBeenCalled();
 });
 
 test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async () => {
   claimRescoreRaceMock.mockResolvedValue({ proceed: false, state: "enqueued" });
+  stubD1Rows([
+    { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
+  ]);
   const enqueued = await triggerWeightRebuildIfNeeded({
     category: "jra",
     date: "2026-06-19",
@@ -562,10 +611,15 @@ test("triggerWeightRebuildIfNeeded does not send when claim is rejected", async 
     runYmd: "20260619",
   });
   expect(sendMock).not.toHaveBeenCalled();
-  expect(enqueued).toBe(false);
+  expect(enqueued).toBe(0);
 });
 
-test("runRaceCoordinatorTick triggers weight rebuild for categories with enqueued races", async () => {
+test("runRaceCoordinatorTick triggers a weight-rebuild per-race fan-out for categories with enqueued races", async () => {
+  // The single stubbed race both falls inside the near-post window (drives
+  // planRescoreForCategory's own enqueue) and is the only row
+  // listRacesForCategory returns for the weight-rebuild fan-out -- so this
+  // one race is dispatched twice, once by each independent mechanism, both
+  // producing the identical per-race rescore message shape.
   stubD1Rows([
     { keibajo_code: "05", race_bango: "11", race_start_at_jst: "2026-06-19T14:10:00+09:00" },
   ]);
@@ -581,14 +635,16 @@ test("runRaceCoordinatorTick triggers weight rebuild for categories with enqueue
     raceBango: "1400",
     runYmd: "20260619",
   });
+  expect(sendMock).toHaveBeenCalledTimes(2);
   expect(sendMock).toHaveBeenCalledWith({
     category: "jra",
     daysAhead: 0,
+    keibajoCode: "05",
     mode: "rescore",
+    raceBango: "11",
     runDate: "2026-06-19",
     runDateIso: "2026-06-19",
     runYmd: "20260619",
-    skipDedup: true,
   });
 });
 
