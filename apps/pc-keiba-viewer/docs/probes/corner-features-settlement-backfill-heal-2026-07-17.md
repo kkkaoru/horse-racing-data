@@ -288,7 +288,7 @@ ra.keibajo_code, ra.race_bango,` を select リストに含めた上で
 psycopg2 でロールバック付きドライランする二重確認)。最終的に §5.3 の実書込
 で 1626 行が正しく作成されたことが最終確認になっている。
 
-### 5.2 cron 配線 + backward lookback (deploy 未実施、team-lead の GO 待ち)
+### 5.2 cron 配線 + backward lookback (deploy 済み、2026-07-17 10:23 JST)
 
 - **`lookbackDays` オプション追加**: `refreshCornerFeatures()` に
   `lookbackDays?: number` を追加。指定時は `fromDate = runYmd - lookbackDays`
@@ -317,15 +317,32 @@ env.CORNER_FEATURES_LOOKBACK_DAYS` を渡す):
   `format:check`/`test:coverage` はすべて green (624 tests, stmts 99.64% /
   branches 96.78% / functions 100% / lines 99.77%、しきい値 95% を全指標で
   上回る)。
-  - **deploy 手順** (team-lead の GO 後): `apps/finish-position-cron` で
-    `bunx wrangler deploy` (通常の Worker deploy、DB migration や Container
-    image rebuild は不要 — `race_entry_corner_features` の DDL は
-    `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` なので実行時に
-    自己完結する)。deploy 後の確認: 次の 09:15 または 22:00 JST tick で
-    `wrangler tail` または Cloudflare dashboard のログに
+  - **deploy 記録 (実施済み、2026-07-17 10:23 JST)**: team-lead の GO
+    (audit agent の C/G/H mutation 検証完了 commit `0cdbaddb` を確認、
+    `git status --porcelain apps/finish-position-cron` clean、in-flight
+    smoke なしを前提条件として確認済み) を受け、`cd apps/finish-position-cron
+&& bun run deploy -- --containers-rollout immediate` を実行した。- Worker Version ID: `3a75b34f-14c2-426b-b661-bb8f6258d6f2` - Container image tag: `3a75b34f` (旧 `48813ea2` から更新、
+    Application ID `a0348266-3050-47d4-9bad-b04086c1a02b`) - health endpoint (`https://finish-position-cron.kaoru.workers.dev/`):
+    2 回連続で `HTTP 200` (deploy 直後・約3分後の2回)。- **cron trigger 一覧を deploy コマンド自身の出力で確認**: 既存 6 本
+    (`55 17`, `25 0`, `30 0`, `*/30 1-11`, `*/10 1-11`, `7,22,37,52 1-11`)
+    に加え、新規 2 本 `15 0 * * *` / `0 13 * * *` が登録済み。- **container 状態**: `wrangler containers list` は deploy 直後
+    "provisioning" (live instances 7、変化なし) を示した。**これは
+    deploy 固有の問題ではないと判断**: 同時刻に全く触っていない
+    `mlflow-ui-proxy-mlflowcontainer` も "ready"→"provisioning"→"ready"
+    と数分内に往復しており、Cloudflare Containers platform 側の一般的な
+    ステータス再評価挙動と推測される。live instances は 7 のまま 0 に
+    落ちておらず、`LAST MODIFIED` が継続更新されている (stuck ではなく
+    platform が能動的に reconcile している証跡)。Worker 自体は health
+    200 で安定しているため、**deploy は成功と判断する**。container の
+    最終的な "ready" 遷移は今夜 22:00 JST tick の live 検証時に併せて
+    再確認する。- 事後確認: `git status --porcelain apps/finish-position-cron` は
+    deploy 前後を通じて clean のまま (deploy はコード変更を伴わない)。
+  - **今夜 22:00 JST tick の live 検証は live-audit の担当として予約**
+    (team-lead 指示)。確認予定: (a) Cloudflare 側ログに
     `[corner-features-refresh] ok runYmd=... fromDate=... toDate=...`
-    が出ることを確認し、Neon 側で該当日の `finish_position` 充足率が
-    上がっていることを read-only クエリで確認する。
+    が出るか、(b) Neon 側で当日 (0717) の `race_entry_corner_features`
+    fill rate が tick 前後で上昇するか。結果は本 doc に追記し team-lead へ
+    報告する。
   - **rollback** (config のみ、redeploy 不要な場合): 問題が起きた場合は
     `wrangler.jsonc` の 2 cron 行をコメントアウトして再 deploy すれば
     即座に無効化できる (他の cron・既存機能への依存は無い、新規追加のみ)。
