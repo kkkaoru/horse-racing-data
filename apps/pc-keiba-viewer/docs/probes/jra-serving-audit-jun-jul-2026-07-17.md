@@ -235,4 +235,86 @@ venue02 ルール (`cell_routing.json` rule 3) が本番投入された 2026-07-
 
 ---
 
-**この commit は本節を追加した本ドキュメントおよび `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定のみを対象とする。他の untracked/modified ファイルには一切触れていない。**
+## 9. Cell×rank1-5 精度標準への準拠 + 06-06/06-07 旧モデル世代データの発見 (2026-07-17 追記)
+
+### 9.1 新基準 (team-lead 経由、USER)
+
+> 評価は常に cell 単位で、着順 1,2,3,4,5 の個別精度で行う。要約した精度で評価しない。
+
+以降、精度に関するあらゆる主張は **cell (本節では venue = `keibajo_code`) 単位**で、**top1 / place2 / place3 / place4 / place5 の 5 個の個別数値**を primary 根拠とする。`fukusho_2p` / `top3_box` のような複数着順を 1 つの hit フラグに畳み込む集約指標 (本ドキュメント §1-§8 が使ってきたもの、および pooled/全体平均の数値全般) は reference のみとし、単独では主張の根拠にしない。本節は今日実施した JRA summer serve-accuracy 再計測タスクをこの基準に合わせて re-work したものであり、あわせて本節作成中に発見した独立のデータ来歴問題 (06-06/06-07 の旧モデル世代混入) を訂正する。
+
+### 9.2 実装: `rank1_5_by_venue.py`
+
+`serve_accuracy_report.py --json` の出力は `top1_pct / place2_pct / place3_pct / fukusho_2p_pct / top3_box_pct` のみで **place4 / place5 を一切計算しない** (実際の JSON 出力を読んで確認済み)。team-lead 指示 (「script が cell 粒度未対応なら、既存出力に venue×rank 分解を追加する後処理でも可 — script 本体の大改修までは不要」) に従い、`serve_accuracy_report.py` 自体は**一切変更せず**、新規スタンドアロンスクリプト `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` (gitignored scratch、未 commit) を追加した。
+
+- **再利用 (import、再実装せず)**: `serve_accuracy_report.parse_post_time_jst` / `select_serving_row` / `dedup_prediction_rows_per_horse` / `FpRow` / `query_finish_position_metrics`。生行 fetch の SQL 文自体は `query_finish_position_metrics` から byte-for-byte 複製した (JOIN 構造のみで分岐/順序ロジックを含まないため、dedup ロジックの二重実装リスクとは性質が異なると判断)。
+- **place4_pct / place5_pct の定義**: この repo 既存の正式な convention (`apps/mlflow/src/mlflow_tracking/serve_eval.py::_compute_race_hits` / `compute_rank_pct`、2026-07-17 直接読解で確認済み) を踏襲。top1/place2/place3 は predicted 1 位馬の実着順が該当順位以下かを**無条件**判定 (`serve_accuracy_report.py` 自身の top1_hits/place2_hits/place3_hits と同一)。place4/place5 は同じ判定に加え、**その競走の頭数 (`shusso_tosu`) がその順位未満なら判定を None (非該当、ミス扱いにしない) として分母から除外** — 小頭数競走で機械的に「4着以内」を満たしてしまい place4_pct を水増しする不具合を防ぐガード。JRA 実データでは頭数がほぼ常に 5 頭を超えるため、今回の対象母集団では実際に除外が発生したケースは 0 件だった (全 cell で `place4_eligible_races == race_count`)。
+- **正しさの検証**: 0711/0712 それぞれについて、本スクリプトの venue 別 top1/place2/place3 を `serve_accuracy_report.query_finish_position_metrics` 自身がテスト済みの `subgroups` (dimension="venue") 出力と突合 — **不一致 0 件**。dedup ロジックの再利用が正しく機能していることを独立に確認した。
+
+### 9.3 現行チャンピオン (0711 + 0712) venue×rank1-5 — PRIMARY
+
+対象: JRA venue 02 (函館) / 03 (福島) / 10 (小倉)、2026-07-11 + 2026-07-12 (36 レース/日 × 2 日、既知の genuine 現行チャンピオン full coverage 日)。`dedup_prediction_rows_per_horse` により horse 単位で 1 行に確定した「実際に serve された予測」に基づく。
+
+| venue                            | race_count |       top1 |     place2 |     place3 |      place4 (elig) |      place5 (elig) |
+| -------------------------------- | ---------: | ---------: | ---------: | ---------: | -----------------: | -----------------: |
+| 02 函館                          |         24 |     20.83% |     29.17% |     37.50% |     50.00% (24/24) |     54.17% (24/24) |
+| 03 福島                          |         24 |      8.33% |     20.83% |     29.17% |     45.83% (24/24) |     50.00% (24/24) |
+| 10 小倉                          |         24 |     12.50% |     20.83% |     37.50% |     54.17% (24/24) |     62.50% (24/24) |
+| **ALL (pooled, reference-only)** |     **72** | **13.89%** | **23.61%** | **34.72%** | **50.00% (72/72)** | **55.56% (72/72)** |
+
+**この 3 行 (02/03/10) が primary の根拠であり、ALL 行は reference のみ**。全 venue で市場ベースライン (§2 実測 32.43%) および `serve_accuracy_report.py` docstring 記載の健全 baseline (FULL top1=44.71%) を大きく下回っている — これは §2 Defect A (2026-07-12 Cluster B の劣化書込が cell-routing priority-0 により最優先表示される) が cell 単位でも一貫して効いていることを裏付ける。venue 間でも一様ではない: 函館 (top1=20.83%) は §2 Defect B の Cluster A 健全予測 (函館 12 レース全て) が pooled 対象の半分を占めるため相対的に高く、福島 (top1=8.33%) は Cluster A 該当が 4 レースのみで大半が Cluster B 由来のため最も低い — pooled 平均 (13.89%) だけを見ていては venue 間のこの差が完全に隠れる、まさに新基準が防ごうとしている blind spot の実例。
+
+### 9.4 06-06 / 06-07 旧モデル世代データの発見 — 訂正: 「genuine subtotal」への pooling は誤りだった
+
+**本日の先行タスク (Task 40 — 本ドキュメントとは別の predecessor report、本ドキュメントには未反映) は 2026-06-06 を 07-11/07-12 と並ぶ「genuine full coverage 3 日」の 1 つとして扱い、「genuine subtotal (0606+0711+0712)」として pooled した。これは誤りであり、本節で明示的に訂正する。**
+
+`serve_health_check.py --date 20260606/20260607 --category jra` を実行し、独立に Neon への直接 SQL 照会 (`race_finish_position_model_predictions` の raw row count、JOIN を経由しない) で二重確認した結果:
+
+- **2026-06-06**: `race_finish_position_model_predictions` に **332 行** (source='jra')、venue は **05 (東京) / 09 (阪神) の 2 場のみ** — 函館/福島/小倉 (02/03/10) では **0 行**。model_version は下記 5 種全て `iter14`/`iter25`/`iter26` 系統であり、**現行チャンピオン (`jra-cb-v9-sim-2013-clean` およびその routed variants `jockey-pedigree269`/`prior-corner274`) は 1 行も存在しない**:
+  - `iter14-jra-cb-pacestyle-course-v8`
+  - `iter25-jra-cb-ensemble-010-v8`
+  - `iter26-jra-cb-ensemble-005-v8`
+  - `iter26-jra-cb-ensemble-016-v8`
+  - `iter26-jra-cb-ensemble-703-v8`
+
+  現行 `cell_routing.json` に対する routing parity は 24/24 (全確定レース) mismatch。加えて `serve_health_check.py` の check 2 (quality) で 10 件の (race, model_version) group が stddev 0.096〜0.300 (健全閾値 0.3 未満、§2 Cluster-B シグネチャと同型) を示し、check 4 (burst) で 2026-06-06 05:27 JST に 24 レースの write-burst を検出した。**旧モデル世代であることに加え、その世代自身の出力内でも追加の品質劣化が見られる**。
+
+  venue×rank1-5 (05 東京 / 09 阪神、reference のみ — 現行チャンピオンとは比較不能):
+
+  | venue        | race_count |  top1 | place2 | place3 |  place4 (elig) |  place5 (elig) |
+  | ------------ | ---------: | ----: | -----: | -----: | -------------: | -------------: |
+  | 05 東京      |         12 | 0.00% | 16.67% | 25.00% | 50.00% (12/12) | 50.00% (12/12) |
+  | 09 阪神      |         12 | 0.00% |  0.00% | 16.67% | 16.67% (12/12) | 33.33% (12/12) |
+  | ALL (pooled) |         24 | 0.00% |  8.33% | 20.83% | 33.33% (24/24) | 41.67% (24/24) |
+
+- **2026-06-07**: **新たな独立検証 (本節作成中に発見、team-lead の元指示の記述を訂正)**。元指示は「24/24 routing mismatch、quality degradation ゼロ、burst flag ゼロ ⇒ 同じ旧モデル世代からの NORMAL, HEALTHY serving」としていたが、`race_finish_position_model_predictions` を直接 `COUNT(*)` で照会した結果 **0606 とは異なり raw row が source='jra' で 0 件** (model_version 問わず) であることを確認した (venue も 0、model_version も 0)。念のため 2026-06-01〜06-15 の全 `kaisai_tsukihi` を走査したが、0606 (332 行) と既知の 0614 (n=1 backfill、11 行) 以外に該当日近傍で行が分散して存在する形跡もなかった。
+
+  **訂正**: 06-07 の「24/24 mismatch・quality degradation ゼロ・burst flag ゼロ」というシグネチャは、**予測が 1 行も存在しない (旧モデルであれ現行であれ) ことの vacuous な (空集合ゆえの自明な) 現れ**であり、「健全な旧モデル世代 serving」の証拠ではない。予測行が 0 件であれば、quality check (グループ自体が存在しない) と burst check (書込自体が存在しない) は機械的に「異常ゼロ」を返し、routing check は「期待 model_version が一致しない」を全件で返す — これは §9.5 で述べる check 3 の限界とも合わせて、**old_model_era というより既存の "no_data" 系日 (0613/0620/0628、§9.6 参照) と構造的に同一**である。06-07 は本節の old-model-era 比較データセットから実質的に空 (race_count=0) として扱う。
+
+**実務上の帰結**: 「現行チャンピオンの summer 期間 serve accuracy」を主張する際、**06-06 と 06-07 はいずれも "genuine current-system" framing から除外する**。06-06 は現行チャンピオンとは異なる旧モデル世代の出力であり (かつ venue も函館/福島/小倉ではなく東京/阪神)、06-07 は単なるカバレッジ欠落 (予測 0 件) であって旧モデルの健全 serving ですらない。どちらも 07-11/07-12 の "genuine subtotal" に pooling してはならない — 元の Task 40 の framing はこの 2 点いずれについても誤りだった。
+
+### 9.5 `serve_health_check.py` routing-parity check の既知の限界 (§8.6 に追加)
+
+§8.6 は check 3 (routing parity) の「行の有無のみ判定し、複数行競合時の viewer 表示優先度までは見ない」という限界を既に記載しているが、本節の発見によりもう 1 つの限界を追記する:
+
+- **Check 3 はカレントの `cell_routing.json` (commit 済みの現行版) しか知らず、バージョン履歴を持たない**。したがって過去の日付に対する routing "mismatch" は、「その日実際に live だったモデル世代に現行のルーティング規則を遡って適用できない (構造的に適用しようがない)」ことを意味するに過ぎず、**古い日付であればあるほど mismatch は期待通り/無害**であり、それ自体は defect の証拠にならない。06-06/06-07 の 24/24 mismatch はまさにこのケース。
+- これは check 2 (quality stddev) / check 4 (burst) とは性質が全く異なる点が重要: **quality/burst の異常検知は「その値自体」が異常性の証拠**になる (06-06 の stddev 0.096〜0.300 や 05:27 JST の burst は、旧モデル世代であることとは独立に、それ自体が品質問題を示す)。一方 **routing mismatch は age (古さ) の副作用として自明に発生しうる non-signal** であり、単独では「何か問題がある」ことを意味しない。この 2 種類のシグナルを混同すると、06-06 (旧モデル + 追加劣化の両方) と 06-07 (単なる欠落) のような性質の異なる 2 日を誤って同一カテゴリに分類してしまう — 実際に元の task brief がこの混同を犯していた (§9.4 訂正参照)。
+
+### 9.6 0613 / 0620 / 0628 "no_data" の再確認 (スポットチェック)
+
+team-lead 指示に基づき、`serve_accuracy_report.py` が "no_data" と判定するこの 3 日について、JOIN を経由しない直接 `COUNT(*)` (`race_finish_position_model_predictions`, source='jra', model_version 問わず) でスポットチェックした。結果: **3 日とも raw row 0 件** (distinct venue = 0, distinct model_version = 0)。06-07 (§9.4) のような「隠れた旧モデル行が JOIN で silently 除外されている」パターンはこの 3 日には**見つからなかった** — `serve_accuracy_report.py` の "no_data" 判定は 3 日とも文字通り正しい (予測テーブルに本当に何も無い)。既知メモリ「FP serving 6週間 blackout (5/25-7/7)」と整合する。
+
+### 9.7 MLflow 記録
+
+`apps/mlflow/src/mlflow_tracking/ingest_eval.ingest_cell_report` (Path B、`experiment=finish-position/wf-eval`、`eval_regime=serve`) で 2 本の run を記録した。**1 本にまとめなかった理由**: `logging_api.select_headline_metrics` は渡された cell 表の全行を `race_count` 加重平均して `overall_*` headline metric を自動計算するが、"era" という概念を持たない。current_champion と old_model_era の disjoint venue 行を同じ表に混在させると、この自動集計が 2 つの異なる (比較不能な) serving 世代を 1 つの `overall_top1_pct` に blend してしまい、本節が是正しようとしている pooling の誤りを MLflow 側で再生産することになる。そのため era ごとに別 run・別 cell 表とした。
+
+| run                                                | run_id                             | tags                                                                                                                                 | 主な metrics                                                                               |
+| -------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `jra-current-champion-rank1-5-by-venue-2026-07-17` | `cd092e57fbd24d3c898646475db42c2d` | `campaign=2026-07-17-cell-rank-eval-standard`, `era=current_champion`, `dates=20260711,20260712`                                     | `overall_top1_pct=13.89` (`pooled_top1_pct` と一致、独立集計クロスチェック) 他 place2-5    |
+| `jra-old-model-era-rank1-5-by-venue-2026-07-17`    | `ceb367bcf12e4720b9b5b91a1cd4f5eb` | `campaign=2026-07-17-cell-rank-eval-standard`, `era=old_model_era`, `dates=20260606,20260607`, `coverage_correction=(§9.4 の訂正文)` | `overall_top1_pct=0.00`、`pooled_0607_race_count=0.00` (§9.4 の訂正を metric としても明示) |
+
+いずれも `run_key` によるべき等ログ (再実行しても新規 run を作らず既存を再利用)。cell 表は `cell_metrics.json` / `cell_metrics.parquet` として artifact に添付。両 run とも書込プロセスとは別プロセスの fresh `MlflowClient` (`config.load_dotenv_local()` → `config.load_repo_root_env_fallback()`、scheme=`postgresql` 確認済み、生 URI は一切出力していない) で read-back し、tags/metrics/artifacts が byte-for-byte 一致することを確認した。`overall_place4_pct`/`overall_place5_pct` は `select_headline_metrics` の自動集計 (cell 表由来) と、本節手動計算の `pooled_place4_pct`/`pooled_place5_pct` の両方が独立に一致しており、§9.2 のクロスチェックに続く 2 段目の正しさの根拠になっている。
+
+---
+
+**この commit は本ドキュメント (§8 に加えて本 §9 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。`serve_accuracy_report.py` / `serve_health_check.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
