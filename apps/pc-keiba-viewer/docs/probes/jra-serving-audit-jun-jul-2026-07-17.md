@@ -421,6 +421,89 @@ priority=3 に、cell-routing variant の model_version を除外する防御的
 
 **結論: 分析側 (`serve_accuracy_report.py`) が本日修正したものと同型のバグは、viewer 側 (`getFinishPositionLambdarankPredictions`) には存在しない。**
 
+## 12. バグ調査A: RS shard 欠損の silent 劣化監査 + 22:00 refresher tick 検証 (2026-07-17 追記)
+
+team-lead 指示により、(1) 22:00 JST の `corner-features-refresh` evening cron tick の live 検証を最優先で差し込み、(2) `468a4f0e` (tolerate missing running-style shard) が rs*p*\* NULL 経由で FP serving を silent に劣化させていないかを監査した。両方の結果をここにまとめる。
+
+### 12.1 22:00 JST refresher tick 検証 (優先事項) — 結果: 書込み未検出、原因未確定
+
+`CORNER_FEATURES_REFRESH_CRON_EVENING = "0 13 * * *"` (UTC) = JST 22:00。デプロイ済み Worker Version `3a75b34f-14c2-426b-b661-bb8f6258d6f2` (2026-07-17T01:23:06Z UTC) がこの tick を含む — `wrangler deployments list` で本検証時点でも同 Version が 100% active であることを再確認済み (ロールバック無し)。
+
+**直接証拠**: Neon に対する無条件クエリ `select now(), max(updated_at) from race_entry_corner_features`:
+
+```
+neon now():        2026-07-17 13:56:23.403131+00:00  (22:56:23 JST)
+max(updated_at):    2026-07-17 12:00:13.187748+00:00  (21:00:13 JST)
+gap:                1:56:10 — tick 予定時刻 (13:00 UTC) から 56 分超経過、値は tick 前から不変
+```
+
+13:00 UTC の tick が発火し何らかの行を UPSERT していれば、`updated_at = now()` は `ON CONFLICT DO UPDATE SET` 節で無条件 (値が変化したかどうかに関わらず) に更新される (`corner-features-refresh.ts:413`)。UPSERT の元となる `raw_rows` SELECT (`buildJraSelectSql`/`buildNarSelectSql`) は `[fromDate, toDate]` 日付レンジのみで絞り込む全件再計算であり、NULL 行だけに絞る WHERE 句は無い。本 tick の window は `[runYmd-7日, runYmd+2日]` = `[07-10, 07-19]` — この 10 日間に JRA・NAR 双方で多数の確定レースが存在することは本ドキュメント既存セクションで確認済みであり、「対象 0 行だったから何も動かなかった」は考えにくい。つまり **tick が正常発火していれば `updated_at` は動いていたはずだが、動いていない**。
+
+**診断の試み**: デプロイ済みコードと全く同じ `refreshCornerFeatures()` を、evening cron と同一パラメータ (`daysAhead=2, lookbackDays=7, runYmd="20260717"`) で手動呼び出しし、`.env` の `NEON_PRIMARY_URL` を使って本番 Neon に対して 3 回連続実行した (scratchpad 上の bun script、`apps/finish-position-cron` 配下は一切変更なし)。3 回とも同一のエラーで失敗:
+
+```
+[corner-features-refresh] create extension vector skipped: NeonDbError: cannot execute CREATE EXTENSION in a read-only transaction
+[corner-features-refresh] failed ...: NeonDbError: cannot execute CREATE TABLE in a read-only transaction
+```
+
+ただし **この結果は結論を出すには使えない** — `NEON_PRIMARY_URL` は本セッションを通じて読み取り専用検証用に使ってきた credential であり、Worker が実際に使う `env.NEON_DATABASE_URL` (Cloudflare Worker secret、ローカルから値を読む手段が無い) とは別物。今回 3 回とも read-only だった一方、本セッション序盤の NAR 07-13-15 backfill 時は同種の read-only 状態が数秒単位で flicker し再試行で解消した実績がある (`corner-features-settlement-backfill-heal-2026-07-17.md` §5.2 既述) ため、「ロールが恒常的に read-only」とも断定できない。この診断は **本番 credential の write path を検証できなかった** という事実のみが確定結果。
+
+**除外できたもの**: デプロイの取り消し/ロールバック (`wrangler deployments list` で該当 Version が現在も 100% active であることを確認)。`wrangler.jsonc` 側のクロン文字列登録 (`"0 13 * * *"` が現在のファイルに存在、構文有効)。
+
+**確認できなかったもの**: Cloudflare 側の実行ログ・呼出し履歴。`wrangler whoami` を再実行し、依然として `account (read)` のみで `Account Analytics: Read` スコープが無いことを再確認 (GraphQL Analytics API 利用不可)。ローカルに scoped API call 用の wrangler token file も存在しない。D1/KV/R2 いずれにもこの cron 専用の実行マーカーは無い (grep で該当箇所ゼロ)。
+
+**構造的な観測ギャップ (副次的発見)**: `refreshCornerFeatures()` は自身の catch 節でエラーを `console.error` するのみで re-throw しない (`corner-features-refresh.ts:486-490`)。つまり Cloudflare 側が「scheduled ハンドラは正常終了した」と記録していても、内部で Neon 接続/権限エラーが起きて全処理がスキップされていた可能性を外部から区別する手段が (Analytics スコープなしでは) 無い。これは本タスクの rs*p*\* 観測ギャップ (§12.4) と同じ「silent catch で症状が外部に伝播しない」というクラスの問題であり、根はコードのバグではなく **観測可能性の欠如** である。
+
+**結論**: 22:00 JST tick が実際に発火したかどうかを確定できなかった。tick 前後で `updated_at` が全く動いていない事実と、UPSERT が対象 0 行になり得ない window 設計であることから、「発火したが正常に完了した」の可能性は低いと考えるが、「発火しなかった」と「発火したが内部エラーで silent に失敗した」を区別する材料が無い。**これは未解決のまま報告する** — 推奨フォローアップ: (a) 翌朝 00:15 JST の morning tick 後に同じ `max(updated_at)` チェックを再実行、(b) 可能なら `Account Analytics: Read` スコープを取得して実行ログを直接確認、(c) §12.5 で提案する durable last-run marker を追加。
+
+### 12.2 `468a4f0e` の tolerate semantics 確定
+
+`git show 468a4f0e` の diff を読解した。変更の中心は `add-pacestyle-features.py` の `stage_rs_predictions_from_r2()` — R2 の該当日 shard 読み込みを try/except で囲み、`duckdb.IOException` のメッセージが `"No files found that match"` の場合のみ `create_empty_rs_predictions()` (7 列の型付き NULL 一時テーブル) にフォールバックし、それ以外の `IOException` は再 raise する。
+
+後続の `joined` CTE は常に `base b LEFT JOIN rs_preds rs ON rs.race_id = ... AND rs.ketto_toroku_bango = ...` (`add-pacestyle-features.py:477-479`) という構造であるため、shard が無くても **レースそのものが feature build から脱落することは無い** — 対象レースの全馬について rs*p*\* 系列の列だけが NULL 化される「値の欠損」であり、「行の欠損」ではない。つまり team-lead の想定通り「NULL 化」が正しい semantics であり、default 値埋めではない。
+
+### 12.3 rs*p*\* NULL 化の影響列 — 実測 11 列 (7 直接 + 4 派生、全て連動)
+
+`rs_extra` (`add-pacestyle-features.py:436-460`) の SELECT リストを実際に数え上げたところ、最終 feature テーブルに現れる `rs_`-prefix 列は **11 列**:
+
+- 直接ソース (7列、`create_empty_rs_predictions()` の空テーブルもこの 7 列を型付き NULL で用意): `rs_p_nige`, `rs_p_senkou`, `rs_p_sashi`, `rs_p_oikomi`, `rs_predicted_class`, `rs_predicted_corner_front_score`, `rs_predicted_corner_rank`
+- 派生 (4列、`CASE WHEN rs.rs_p_nige IS NOT NULL THEN ... END` 等の NULL-safe SQL 式で上記 7 列から計算): `rs_predicted_corner_rank_pct`, `rs_confidence_entropy`, `rs_p_nige_x_field_pace`, `rs_sire_style_match`
+
+派生 4 列は全て `CASE WHEN rs.rs_p_nige IS NOT NULL` (または `rs_predicted_corner_rank IS NOT NULL`) ガード付きのため、7 列がまとめて NULL 化されればこの 4 列も自動的に連動して NULL 化される。逆に言えば `create_empty_rs_predictions()` が 7 列しか持たないことによるスキーマ不整合(列不足エラー)は無い — 確認した限り実装は健全。team-lead 指示文中の「rs 8 列」は恐らく `rs_p_*` 4 列 + `rs_predicted_class/corner_front_score/corner_rank/corner_rank_pct` の主要 8 列を指す概算だが、実測の完全な影響範囲は **11 列**である。
+
+### 12.4 rs*p*\* NULL 率の間接推定 — R2 shard 存在確認による考察
+
+Neon 側に特徴量そのものは保存されないため直接測定はできない。R2 の shard 存在確認 (間接手段) を実施した。
+
+**generation 移行の発見**: `RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1"` は 2026-07-15 未明に writer/reader 双方に導入されたばかりの新しい世代識別子である:
+
+| 時刻 (JST)       | commit     | 内容                                                                                     |
+| ---------------- | ---------- | ---------------------------------------------------------------------------------------- |
+| 02:48:50         | `11caa696` | Python reader (`add-pacestyle-features.py`) が `raw-iceberg-v1` パスを読みに行くよう変更 |
+| 03:20:40 (+32分) | `0c26aedb` | TS writer (`running-style-parquet-export.ts`) が `raw-iceberg-v1` パスに書くよう変更     |
+| 04:22:21 (+62分) | `468a4f0e` | tolerate-missing-shard フォールバックを追加 (本調査の起点)                               |
+
+reader が writer より 32 分早くデプロイされているため、02:48-03:20 JST の間は reader が新パスを、writer が旧パスを見ており、万一この 32 分間に feature build が走っていれば shard-miss になり得た。さらに 03:20-04:22 JST の 62 分間は reader/writer は新パスで一致しているが tolerate フォールバックはまだ無く、この間の shard-miss は (NULL 化ではなく) 未処理例外だったはずである。ただしこの 94 分間は深夜 02:48-04:22 JST であり、JRA は日中開催・NAR も大半が夕方までに終了するため、この window 内に実際の feature build が走った可能性は低いと考えられる (R2 オブジェクトの正確な書込時刻までは今回確認していない — 推測であり確証ではない)。
+
+**shard 存在の実測** (boto3 S3 互換 list、`pc-keiba-features-archive` バケット):
+
+- 旧世代パス (`running-style/predictions/by-day/2026/...`、generation サブディレクトリ無し): 2026-06-07〜07-14 に 50 オブジェクト。JRA shard は本監査の対象レース日 (06-13, 06-14, 06-20, 06-21, 06-27, 06-28, 07-04, 07-05, 07-11, 07-12) **全てに存在**する。07-14 以降は旧パスへの書込が止まっている (07-15 の migration と符合)。
+- 新世代パス (`running-style/predictions/by-day/raw-iceberg-v1/...`): 2026-07-15〜07-19 に **NAR shard のみ 5 オブジェクト、JRA shard は 0 件**。
+
+**解釈**: 本監査が対象とした JRA レース日 (§1 の 264 レース、healthy cluster である 07-11/07-12 含む) は全て 07-14 以前であり、該当日の RS shard は (新旧いずれのパスでも該当する世代の) **旧世代パスに存在が確認できている** — つまりこれらの日について「shard 自体が存在しない」ことは NULL 化の原因ではなかった (shard の中身/カバレッジ範囲まで完全とは断定しない — 存在確認のみ)。
+
+**前向きのリスク (最重要の発見)**: 07-15 の generation 移行後、**JRA のレース開催日が一度も無い** (直近 JRA 開催は 07-12、次回は明日 07-18)。NAR は 07-15 以降 daily で新パスへの書込・読み出しが機能していることが shard 存在から確認できるが、これは JRA でも同じパスが機能する保証にはならない — カテゴリ別の分岐やパス構築ロジックに JRA 固有の問題が無いとは限らない。**明日 07-18 (土) が、generation 移行後で初めての JRA 開催日であり、JRA の RS 予測が新しい `raw-iceberg-v1` パスへ正しく書込・読み出しされるかどうかの実質的な初回検証になる。** ここで shard-miss が起きれば、tolerate フォールバックにより §12.3 の 11 列が NULL 化されたまま FP feature build が「成功」として進み、§12.4 の通り feature_guard は検知しない。
+
+### 12.5 `feature_guard` の 50% 閾値との関係 — 実測: 11 列は素通りする
+
+`apps/finish-position-predict-container/src/predict_lib/feature_guard.py` を読解した。`is_degenerate_feature_matrix()` は `race_missing_feature_fraction(entries, feature_names) >= threshold` (`DEFAULT_MISSING_FEATURE_FRACTION_THRESHOLD = 0.5`) で判定し、`race_missing_feature_fraction` は **エントリごとの「全 feature_names 中 None の列の割合」をレース平均**したものである (列別の重み付けは無い、`feature_guard.py:66-82`)。`feature_names` はモデルのブースター自身が記録する全特徴量名 (booster_pool 経由でロード) であり、この監査で確認した範囲では総数は概ね 250 列超。
+
+team-lead の想定通り、rs*p*\* 系列の §12.3 で確定した 11 列 (総数の 5% 未満) が丸ごと NULL 化されても、`race_missing_feature_fraction` は 50% には遠く及ばず **このガードは一切反応しない**。feature_guard は「レース全体がほぼ空のフィーチャ行列でスコアされた」という壊滅的な失敗 (2026-07-12 の 269 インシデント相当) を検知する設計であり、少数列だけが体系的に欠損する本ケースのような部分的な機能劣化は設計上の対象外 — これは feature_guard の欠陥ではなく、そもそも別の失敗モードに対する別のガードが必要であることを意味する。
+
+### 12.6 観測手段の設計提案 (次サイクル候補、1 paragraph)
+
+rs*p*\* 欠損率を将来観測可能にする最も安価な方法は、既存パターンの踏襲で実現できる: `add-pacestyle-features.py` が `stage_rs_predictions_from_r2()` の呼び出し結果 (shard hit/miss を bool で既に判定している) を、feature build 完了時に `[finish-position-features] rs_shard_status category=<JRA|NAR> race_date=<YYYYMMDD> shard_found=<true|false>` 形式の構造化ログとして 1 行出力する (この module 自身が cron 実行の一部として呼ばれる場合は既存の `[corner-features-refresh] ok/failed` と同じ命名規約に揃える)。ログだけでは今回同様 Analytics スコープが無いと見えないため、恒久的な可視化には `serve_health_check.py` (本ドキュメント §8、今回のセッションで新設済み) に 6 番目のチェック項目として「直近 N 日の JRA/NAR 各レース日について R2 の新世代パスに shard オブジェクトが存在するか」を boto3 で走査する処理を追加するのが最も低コストで、既存の週末監視ランブックにそのまま乗る。行レベルの `n_null_rs_columns` を Neon の予測テーブル自体に永続化する案は feature_guard 同様「書き込み側の変更」を伴い影響範囲が大きいため、まずは shard 存在監視 (読み取りのみ、既存 boto3 パターンの再利用) から始めるのが妥当と考える。
+
 ---
 
-**この commit は本ドキュメント (§8・§9・§10 に加えて本 §11 を追加) のみを対象とする。§8 追加時点の commit には `serve_health_check.py`／そのテスト／`pyproject.toml` の coverage 設定も含まれていた (当時の変更内容、本 commit には含まれない)。§9 追加にあたり `apps/pc-keiba-viewer/tmp/ms-summer-serve/rank1_5_by_venue.py` を新規作成したが、`tmp/` 配下は `.gitignore` 対象の scratch であり本 commit には含まれない。§10 の追加はドキュメント記述 (commit `1d7e3215` の検証記述の訂正、0606/0614/0621 の分類、MLflow timeline 挙動の注意喚起) のみであり、コード変更・新規ファイル作成・MLflow への書込は一切行っていない。§11 の追加も同様にドキュメント記述のみである — 検証のため `apps/pc-keiba-viewer/src/db/queries.ts` / `apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.ts` / `apps/finish-position-predict-container/src/predict_lib/upsert_sql.py` を read しただけで、いずれも変更していない。MLflow への書込・Neon/D1 への書込やデータ削除も本追記では一切行っていない。`serve_accuracy_report.py` / `serve_health_check.py` / `timeline.py` を含む既存スクリプトは本追記に際して一切変更していない。他の untracked/modified ファイルには一切触れていない。**
+**この commit は本ドキュメント §12 の追加のみを対象とする。診断のため以下を実施したが、いずれも `apps/pc-keiba-viewer` および `apps/finish-position-cron` の追跡対象ファイルには変更を加えていない**: (a) `apps/finish-position-cron/src/corner-features-refresh.ts` / `feature_guard.py` / `add-pacestyle-features.py` / `running-style-parquet-export.ts` (`apps/sync-realtime-data`, read-only) / `running-style-catalog-client.ts` (同) の read、(b) Neon への読み取り専用クエリ (`race_entry_corner_features` の `now()`/`max(updated_at)`)、(c) `NEON_PRIMARY_URL` を使った `refreshCornerFeatures()` の手動呼び出し 3 回 (scratchpad 上の一時 bun script から実行、production Neon への write を試みたが read-only transaction で全て拒否され実際の書込みは発生していない — 呼び出し先の関数は本セッション既存の deploy 済みコードそのものであり本 commit で新規に追加したものではない)、(d) R2 (`pc-keiba-features-archive`) の boto3 list による shard 存在確認 (読み取りのみ)、(e) `wrangler deployments list` / `wrangler whoami` によるデプロイ状態・OAuth スコープの確認。MLflow・D1・R2 への書込みやデータ削除は本追記では一切行っていない。
