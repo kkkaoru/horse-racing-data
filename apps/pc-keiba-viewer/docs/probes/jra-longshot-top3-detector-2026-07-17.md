@@ -3,8 +3,8 @@ probe: jra-longshot-top3-detector
 date: 2026-07-17
 category: jra
 method: per-horse binary classifier flagging market-undervalued (longshot) horses likely to finish top-3, evaluated as a detection/lift task with its own pre-registered gate — NOT a ranking-accuracy lever
-status: PASS on the pre-registered bar, WITH A MATERIAL CAVEAT — lift is ~equivalent to a trivial "lowest-ninkijun-in-band" heuristic; see §5.4 before productizing on a "finds hidden value" framing
-mlflow_run_id: fa344cfb70a54c2cbf2f7452e09faf19
+status: CLOSED (canonical) — v1 PASSED its population-relative gate but was ~equivalent to a naive market-rank heuristic (§5.4); v2 (§8, orchestrator-directed) re-registered the bar as market-free-model-vs-naive-baseline and FAILED cleanly and uniformly (0/3 years, 0/22 cells, summer-4-venue included). Final answer: even within the longshot band, non-market signal increment is zero with this feature set. DO-NOT-RETEST this construction; see §8.4.
+mlflow_run_id: fa344cfb70a54c2cbf2f7452e09faf19 (v1), 21ff845f5030412dbead46d49eee2a19 (v2, parent-linked to v1)
 mlflow_experiment: finish-position/longshot-detector
 ---
 
@@ -313,7 +313,13 @@ different outcome from what the original USER ask was reaching for**
 ("見つけられるように" implies surfacing something not already obvious from
 the odds themselves), even though it technically clears the gate as written.
 
-## 6. Verdict
+## 6. Verdict (v1 — superseded by §8, kept as historical record)
+
+> **This section's recommendation was superseded by the orchestrator's v2
+> direction (§8) and should not be acted on independently.** Path 1 below
+> ("ship as a triage tool") was explicitly declined: a tool that matches a
+> naive market-rank heuristic adds nothing over what the viewer's existing
+> odds display already shows a user. Path 2 was adopted and executed as §8.
 
 **PASS on the pre-registered bar, with a caveat material enough to change the
 practical recommendation.** The detector is statistically real and robust — 3/3
@@ -348,7 +354,7 @@ mutually exclusive —
 
 No deploy either way — reported to the orchestrator per the brief.
 
-## 7. Productization proposal (per option 1 above, if pursued)
+## 7. Productization proposal (v1, path 1 — DECLINED, see §6 and §8; kept as historical record only)
 
 - **Storage**: a new, small Neon side-table (e.g. `race_longshot_flag`, keyed
   like `race_finish_position_model_predictions` on
@@ -379,6 +385,153 @@ No deploy either way — reported to the orchestrator per the brief.
   k=2 could be a lighter secondary badge if more density is wanted. Both clear
   the pre-registered bar; the choice is a product call, not a statistical one.
 
+## 8. v2 — market-free re-test against a naive-baseline bar (orchestrator-directed)
+
+### 8.1 Why v2, and what changed
+
+The orchestrator's read of §5.4/§6 (correct): the USER's ask was specifically
+about finding longshots the market got wrong, and a "lift over population
+base rate" gate cannot distinguish that from "lift over the population's own
+market-implied ordering restated." v2 re-registers the bar to make that
+distinction directly, and removes market information from the model entirely
+so any surviving lift can only come from non-market signal.
+
+**Feature set — market-free, verified by exhaustive accounting, not
+recap-and-hope**: kept the full `PHYSICAL` (18) / `STYLE_PACE` (49) /
+`SPEED_TIME` (16) families (0 drops), `volatility_score`, and race context
+(`kyori_band`, `season_band`, `current_baba_condition`, `surface`,
+`grade_code`, `keibajo_code`) — 90 columns, plus a fold-recomputed
+`venue_egrade_longshot_rate` (train-only, exactly as §2 item 5 specified) =
+91 features fed to the model. Excluded: all 15 `families.py` `MARKET`
+columns, `tansho_ninkijun` itself, and — the easy one to miss —
+**`ability_zmean_minus_mkt_rank`**, which despite its "ability" framing is
+literally `tansho_ninkijun - ability_rank` and therefore directly encodes
+market rank. The execution agent verified this exclusion programmatically
+(an accounting assertion that would have raised if it leaked in) rather than
+trusting the column name. `RECENT_FORM`/`CAREER_ABILITY`/`CONNECTIONS`/
+`SIMILARITY` were confirmed absent from the cached feature table by a
+zero-overlap check against their column names in `families.py` — not
+assumed absent because v1 "shouldn't" have included them.
+
+Two judgment calls made during implementation, noted for the record: (1)
+`grade_code` is now a raw model feature (v1 only used it to build the E-grade
+prior) — applied per this doc's literal instruction; (2) `keibajo_code` is
+included as a raw feature (reusing v1's categorical-handling architecture,
+and structurally required anyway as the E-grade-prior join key) even though
+it wasn't explicitly named in the Context bullet — flagged rather than
+silently assumed.
+
+Model/WF spec unchanged from v1 (LightGBM binary, same hyperparameters, same
+3-fold x 3-seed structure) — only the input features and the evaluation
+baseline changed.
+
+### 8.2 New pre-registered bar
+
+Within the longshot population, per race: model top-k (by predicted
+probability) vs. naive top-k (lowest `tansho_ninkijun` in the band), same
+race set, paired. **PASS iff, for at least one of k=1 or k=2** (matching v1's
+own k=1-OR-k=2 bar structure): `relative_lift = model_top3_rate /
+naive_top3_rate >= 1.15` in all 3 blind years (2023/2024/2025, sign of the
+delta must be positive in all 3 — "3/3 sign-stable" per the orchestrator's
+instruction), AND summer-4-venue `relative_lift >= 1.0` for that same k (a
+deliberately softer "does not collapse" bar than the main +15% requirement,
+given the smaller n in that cut — this specific number was left to my
+judgment by the orchestrator and is recorded here for transparency, not
+silently chosen).
+
+### 8.3 Results
+
+Pooled 2023-2025 (N=79,618 longshot horse-rows / 10,263 races — **exact
+match** to v1's population, confirming this is the identical evaluation set
+under a different model and baseline, not an artifact of a different
+sample):
+
+| k   | metric | model% | naive% | relative_lift | delta (pp) | LB95 (pp) |
+| --- | ------ | -----: | -----: | ------------: | ---------: | --------: |
+| 1   | top3   |  11.69 |  16.61 |    **0.704x** |      -4.92 |     -5.71 |
+| 1   | win    |   2.31 |   3.79 |        0.609x |      -1.48 |     -1.86 |
+| 1   | place2 |   3.80 |   5.28 |        0.720x |      -1.48 |     -1.93 |
+| 1   | place3 |   5.58 |   7.54 |        0.740x |      -1.96 |     -2.53 |
+| 2   | top3   |  10.72 |  14.85 |    **0.722x** |      -4.12 |     -4.58 |
+
+Per-year top3 relative_lift, k1/k2 (all negative delta, LB95 never crosses
+zero): 2023 0.725/0.706 (LB95 -5.84/-5.21pp) — 2024 0.734/0.756 (LB95
+-5.60/-4.32pp) — 2025 0.654/0.706 (LB95 -7.27/-5.19pp). **Sign is negative in
+all 3 years for both k — 0/3, not the required 3/3.**
+
+Summer-4-venue (n=2,420 races): 0.760x (k1) / 0.781x (k2), LB95 -5.66pp /
+-4.31pp — fails even the softer >=1.0x "does not collapse" bar.
+
+**Cell scan** (22 cells, n>=200, sort-before-mask): **0 of 22** clear
+`relative_lift >= 1.0` on k1 top3 (range 0.635x-0.831x). This is the exact
+mirror image of v1's "22/22 uniform pass" — here it is a uniform, clean
+underperformance, not a mix of hits and misses, which is itself evidence this
+is a real, coherent effect rather than noise (in either direction).
+
+Per-rank breakdown (k1): the model caught 1,200 true positives (237 win /
+390 place2 / 573 place3) against the naive rule's 1,705 (389 / 542 / 774) —
+naive wins on every single rank category, at both k values.
+
+**Cross-validation**: the independently-recomputed naive-baseline rate in v2
+(16.6131% at k1 pooled) matches v1's own separately-computed
+`sanity_vs_ninkijun_baseline_result.json` figure (16.613%) to 3 decimal
+places, via a fully independent script and pipeline — strong evidence the
+paired-comparison harness itself is correct and this is a genuine finding,
+not a bookkeeping bug.
+
+**Feature importance** (fold-2025 models, gain-based, averaged across seeds):
+top-5 = `last_3_avg_kohan_3f` (5.0%), `kohan3f_avg_5` (4.8%),
+`kohan3f_firm_avg5` (4.2%), `recent_soha_time_per_meter_avg5` (4.1%),
+`weight_trend_5` (4.0%) — top-5 sum only **22%** of total gain (vs. v1's
+72% market-column concentration). `speed_time` (closing-3F pace metrics
+dominate the very top) and `physical` (weight trend, `futan_juryo_*`) carry
+the most weight, with `style_pace` (corner-progression columns) also
+represented; `keibajo_code` ranks #10 at 2.7%. Signal is genuinely diffuse
+across the non-market families — there is no equivalent of v1's single
+dominant `inverse_odds_implied_prob` feature — it is simply not enough,
+in aggregate, to match a rule with direct access to market rank.
+
+### 8.4 Final verdict: FAIL — canonical closure
+
+**FAIL, cleanly and uniformly.** Both k values fail every component of the
+bar: relative lift is confidently below 1.0 (not just below 1.15) in all 3
+years, at both k, pooled, in the summer-4-venue cut, and in all 22 scanned
+cells. This is not a near-miss or an ambiguous result requiring judgment — it
+is a decisive, mechanistically coherent negative finding, consistent with
+v1's §5.4 diagnosis (the original detector's "excess" lift over naive was
+already essentially zero even _with_ market columns available; removing
+them was always likely to leave the model behind a rule with direct market
+access, and it does, by a wide and statistically confident margin).
+
+**Canonical conclusion**: within the JRA longshot population
+(`tansho_ninkijun>=7`), physical/style_pace/speed_time features plus an
+odds-free volatility score and a train-only E-grade x venue prior carry
+real, non-market, genuinely diffuse signal (feature importance confirms this
+— it is not that the market-free model is degenerate or randomly-scored),
+but that signal is **not sufficient, in aggregate, to out-rank a horse's own
+market position within the band**. Reading the odds board remains the single
+strongest available signal for "which longshot is relatively live," even
+restricted to a population the market has already collectively written off.
+This directly corroborates today's broader market-wall evidence from sibling
+probes (wide-umaren, contender-reorder, upset-scan) run in parallel this
+session.
+
+**DO-NOT-RETEST**: this exact construction (market-free physical/style_pace/
+speed_time/volatility/E-grade-prior feature set, LightGBM binary, longshot
+population `ninkijun>=7`, evaluated against the naive-ninkijun baseline) is
+now closed. A future attempt would need either genuinely new non-market
+input signal not already in this feature set, or — the one explicitly
+untested adjacent question this doc surfaced but did not test (§8.3's last
+feature-importance note) — a **blend of market rank plus these features**
+(rather than either alone), which is a different, not-yet-closed question
+from "market-free model alone vs. naive," and was out of scope here.
+
+No deploy (neither v1's declined triage-tool path nor a market-free model,
+since it fails outright). Both v1 and v2 results are recorded in MLflow
+(parent-linked) and this doc for the historical record; `path 1` (§7) was
+declined per the orchestrator's explicit instruction as adding nothing over
+existing odds display.
+
 ## Artifacts
 
 - `apps/pc-keiba-viewer/tmp/longshot-detector-2026-07-17/labeled_features.parquet`,
@@ -393,4 +546,13 @@ No deploy either way — reported to the orchestrator per the brief.
   (Step 4)
 - MLflow run `fa344cfb70a54c2cbf2f7452e09faf19`
   (`finish-position/longshot-detector`, independently read-back verified)
+- **v2** (`apps/pc-keiba-viewer/tmp/longshot-detector-2026-07-17/v2/`, v1's
+  directory left untouched): `feature_columns_v2.json`, `train_wf_v2.py`,
+  `train_wf_log_v2.json`,
+  `models/seed{42,101,2026}/fold-{2023,2024,2025}/{model.txt,predictions.parquet}`,
+  `evaluate_v2.py`, `eval_result_v2.json`, `build_mlflow_manifest_v2.py`,
+  `mlflow_manifest_v2.json`, `verify_mlflow_run_v2.py`
+- MLflow run `21ff845f5030412dbead46d49eee2a19`
+  (`finish-position/longshot-detector`, `mlflow.parentRunId` +
+  `parent_run_id` both set to v1's run, independently read-back verified)
 - (not committed — `tmp/` per repo convention)
