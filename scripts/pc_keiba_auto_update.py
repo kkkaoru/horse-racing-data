@@ -64,6 +64,7 @@ else:
 # ---------------------------------------------------------------------------
 APP_PROCESS_NAME = "Com.Pckeiba.Database.exe"
 APP_WINDOW_TITLE_RE = r"^PC-KEIBA Database$"
+CLICKONCE_INSTALL_ROOT = Path(os.environ["LOCALAPPDATA"]) / "Apps" / "2.0"
 APPREF_PATH = (
     Path(os.environ["APPDATA"])
     / "Microsoft"
@@ -214,15 +215,36 @@ def _wait_for_app_pid(launch_timeout: int) -> int | None:
     return None
 
 
+def find_installed_app_exe() -> Path | None:
+    """Return the newest executable from the current user's ClickOnce cache."""
+    if not CLICKONCE_INSTALL_ROOT.exists():
+        return None
+    candidates = tuple(CLICKONCE_INSTALL_ROOT.rglob(APP_PROCESS_NAME))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+
+
+def resolve_app_launch_path() -> Path:
+    """Prefer the installed executable and retain appref-ms as a fallback."""
+    installed_exe = find_installed_app_exe()
+    if installed_exe is not None:
+        return installed_exe
+    if APPREF_PATH.exists():
+        return APPREF_PATH
+    raise FileNotFoundError(
+        f"PC-KEIBA Database launch target not found: {CLICKONCE_INSTALL_ROOT} / {APPREF_PATH}"
+    )
+
+
 def ensure_app_running(launch_timeout: int = 90) -> int:
     pid = find_app_pid()
     if pid is not None:
         logging.info("PC-KEIBA Database は既に PID=%d で起動中", pid)
         return pid
-    if not APPREF_PATH.exists():
-        raise FileNotFoundError(f"appref-ms 未検出: {APPREF_PATH}")
-    logging.info("起動: %s", APPREF_PATH)
-    os.startfile(str(APPREF_PATH))
+    launch_path = resolve_app_launch_path()
+    logging.info("起動: %s", launch_path)
+    os.startfile(str(launch_path))
     pid = _wait_for_app_pid(launch_timeout)
     if pid is None:
         raise RuntimeError(f"プロセスが {launch_timeout} 秒以内に起動しませんでした")

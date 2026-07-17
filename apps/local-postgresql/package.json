@@ -10,7 +10,7 @@
     "replica:create-subscription": "./scripts/create-neon-subscription.sh",
     "replica:push": "bun run replica:push:r2-catalog && bun run replica:push:neon",
     "replica:push:neon": "bun run ./scripts/push-neon-sync.ts",
-    "replica:push:r2-catalog": "bun run --cwd ../pc-keiba-r2-catalog sync:full",
+    "replica:push:r2-catalog": "bun run --env-file=../../.env --cwd ../pc-keiba-r2-catalog sync:full",
     "replica:status": "bun run ./scripts/push-neon-status.ts",
     "replica:watch": "bun run ./scripts/push-neon-status.ts --watch 10",
     "replica:tail-log": "tail -f tmp/push-neon-sync.log",

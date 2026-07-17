@@ -30,6 +30,7 @@ def isolate_tmp_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(mod, "LOCK_FILE", lock)
     monkeypatch.setattr(mod, "LOG_DIR", log_dir)
     monkeypatch.setattr(mod, "APPREF_PATH", tmp_path / "appref.appref-ms")
+    monkeypatch.setattr(mod, "CLICKONCE_INSTALL_ROOT", tmp_path / "clickonce")
     return tmp_path
 
 
@@ -244,6 +245,47 @@ def test_find_app_pid_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ensure_app_running_already(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "find_app_pid", lambda: 42)
     assert mod.ensure_app_running() == 42
+
+
+def test_find_installed_app_exe_returns_none_without_cache() -> None:
+    assert mod.find_installed_app_exe() is None
+
+
+def test_find_installed_app_exe_returns_none_without_executable() -> None:
+    mod.CLICKONCE_INSTALL_ROOT.mkdir()
+    (mod.CLICKONCE_INSTALL_ROOT / "unrelated.exe").write_text("dummy")
+    assert mod.find_installed_app_exe() is None
+
+
+def test_find_installed_app_exe_returns_newest(tmp_path: Path) -> None:
+    older = mod.CLICKONCE_INSTALL_ROOT / "older" / mod.APP_PROCESS_NAME
+    newer = mod.CLICKONCE_INSTALL_ROOT / "newer" / mod.APP_PROCESS_NAME
+    older.parent.mkdir(parents=True)
+    newer.parent.mkdir(parents=True)
+    older.write_text("older")
+    newer.write_text("newer")
+    older.touch()
+    time.sleep(0.01)
+    newer.touch()
+    assert mod.find_installed_app_exe() == newer
+
+
+def test_resolve_app_launch_path_prefers_installed_executable() -> None:
+    installed = mod.CLICKONCE_INSTALL_ROOT / mod.APP_PROCESS_NAME
+    installed.parent.mkdir(parents=True)
+    installed.write_text("dummy")
+    mod.APPREF_PATH.write_text("dummy")
+    assert mod.resolve_app_launch_path() == installed
+
+
+def test_resolve_app_launch_path_falls_back_to_appref() -> None:
+    mod.APPREF_PATH.write_text("dummy")
+    assert mod.resolve_app_launch_path() == mod.APPREF_PATH
+
+
+def test_resolve_app_launch_path_raises_without_target() -> None:
+    with pytest.raises(FileNotFoundError):
+        mod.resolve_app_launch_path()
 
 
 def test_ensure_app_running_launches(
