@@ -1,0 +1,114 @@
+# 2026-07-17 夏4場 cell 精度向上 + MLflow 記録キャンペーン — Summary
+
+- **Date**: 2026-07-17 (JST, 06:24 開始 〜 23:59 締切)
+- **Scope**: JRA 夏4場（01札幌／02函館／03福島／10小倉）cell 精度向上キャンペーン。全成果の索引。
+- **Primary source**: `.claude/plans/2026-07-17-summer4-cell-mlflow-campaign.md` の統合判定ログ（orchestrator 記入・事実のみ）。数値・時刻はすべて同ログから引用。
+- **関連**: 本 doc は `docs/finish-position-prediction-system.md` §11 と対になる索引。§11 は JRA frontier の恒久記録、本 doc は本日 1 日分の横断インデックス（USER 指示 / verdict 一覧 / incident / heal / bug 監査 / 保留事項 / 今後の検証）。
+
+---
+
+## (a) USER 指示 5 件と回答
+
+| #   | 受領時刻 | 指示                                                                                                   | 回答                                                                                                                                                                                                                                                                                                                                                                                                           |
+| --- | -------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 朝       | MLflow で学習結果を記録できるように。過去の学習結果参照も MLflow データを使う                          | mlflow-wire agent が完了（commit `4b015776`、885 tests/cov100%）。記録レシピ: `cd apps/mlflow && uv run python -m mlflow_tracking.cli log-training-run <manifest.json>`（`hr-mlflow-training-run/v1`、`eval_regime` 必須）。cell 単体は `log-eval`。smoke run 読み戻し検証済み。既存 MLflow データに venue02-269 の過去 run（`verdict=hakodate-269-adopt-candidate`）が存在し、過去参照が MLflow 起点で可能に  |
+| 2   | 朝       | 予測行は既存ロジックで適した cell 単位でローカル生成 → 6/1〜7/12 夏3場 264 レースの予測と結果を比較    | summer-baseline agent が担当。v1（commit `865d8e6f`）は忠実性弱（Mac-batch 一致率 4.8%／ρ0.30、18 列欠落）で参考値止まり。v2（commit `39ba8013`）で 250/269/274 列を完全復旧し ρ0.93／一致率76.2% を達成、v1 の数値（routed vs champion +4.17pp、vs market -9〜14pp）はアーティファクトと判明し訂正。venue02 route の根拠は WF 実測（703 cell +0.782pp[LB95+0.270]、venue02 place3-only robust）が引き続き優先 |
+| 3   | 09:3x    | 評価は常に cell 単位×着順1-5 の個別精度で。要約精度での評価は禁止。cell 単位でモデルを選択できるように | (a) 評価規律として全 agent に通達済み（本日の全 doc が cell×rank1-5 formatを採用）。(b) per-cell モデル選択台帳タスクを sapporo-diagnosis に割当、v1 完了（§11 参照、doc `jra-cell-model-selection-ledger-2026-07-17.md`）                                                                                                                                                                                     |
+| 4   | 09:3x    | オッズ/人気順通りでない1-3着の不人気馬を予測で見つけられるように（手法不問）                           | longshot top-3 detector タスクを vector-knn agent に割当。v1（市場込み、doc §11 参照）は一見 PASS も naive-ninkijun 基線と同値と判明、v2（市場free、bar=naive比+15%）は決定的 FAIL。**正典結論: longshot band 内で市場外シグナル増分はゼロ**。triage tool の出荷は見送り                                                                                                                                       |
+| 5   | 10:2x    | 見つけた全てのバグはテストコードの実行で検知できるように                                               | wide-umaren（本 agent）を独立監査役に任命。バグ台帳 A-K（11項目）を mutation-testing gold standard で監査、4件で実ギャップを発見・修正。§(e) 参照。**以後の恒久規律として確立**: バグ修正 commit には再導入で落ちるテストを必ず同梱                                                                                                                                                                            |
+
+---
+
+## (b) Verdict 一覧表（本日クローズしたレバー・検証項目）
+
+| #   | レバー／検証項目                                               | Verdict                                                 | Doc                                                | Commit                                     | MLflow run                                                                  |
+| --- | -------------------------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| 1   | 条件A〜D の RL 定式化（bandit／meet内逐次較正／REINFORCE）     | 3案とも閉鎖（数学的同値／dominated／WF REJECT）         | `jra-rl-formulation-assessment-2026-07-17.md`      | `b6dff215`                                 | `d8e87169`（`finish-position/wf-eval`）                                     |
+| 2   | Additive kNN 検索特徴（条件A〜D 文脈、31次元 embedding）       | REJECT、系統として完全クローズ                          | `jra-vector-knn-retrieval-2026-07-17.md`           | `2e487d0f`                                 | `00a02dd756ee47749ed806a5fc7b2288`                                          |
+| 3   | Cross-pool odds divergence（wide/馬連 vs 単勝、lever bank #3） | probe PASS→WF REJECT（top1のみ通過、cell 0/28）         | `jra-crosspool-odds-divergence-2026-07-17.md`      | `57e9bcd2`                                 | `d7940f824d1a4301ab2cabb936a887b9`                                          |
+| 4   | Longshot top-3 detector v1（市場特徴込み）                     | 表面上 PASS→naive-ninkijun 基線と同値と判明             | `jra-longshot-top3-detector-2026-07-17.md`         | `e2de4722`                                 | `fa344cfb70a54c2cbf2f7452e09faf19`                                          |
+| 5   | Longshot top-3 detector v2（市場free、91特徴）                 | 決定的 FAIL（naive基線比 0.65-0.78x）                   | 同上                                               | `f9744a54`                                 | `21ff845f5030412dbead46d49eee2a19`（v1 に parent-link）                     |
+| 6   | Cell model selection ledger v1（326 cell 網羅棚卸し）          | 現行3route再確認、追加提案ゼロ、005はKEEP裁定           | `jra-cell-model-selection-ledger-2026-07-17.md`    | `fdc0522e`                                 | N/A（doc内に run 未記録、parquet/jsonのみ将来のMLflow取り込み用に整形済み） |
+| 7   | Contender-set限定reorder + stacked meta-learner（#37系譜）     | REJECT、#37系譜を完全クローズ                           | `jra-contender-set-meta-reorder-2026-07-17.md`     | `20c11195`                                 | `6237adb9`                                                                  |
+| 8   | Sapporo top1 −2.91pp 機構診断 + JRA-wide precondition検証      | CLOSED（市場情報優位=not fillable、accepted deficit）   | `jra-sapporo-top1-deficit-diagnosis-2026-07-17.md` | `af02ca13`（診断）／`066b10c8`（クローズ） | `8827b906`／`4fded6d1`                                                      |
+| 9   | 夏4場 cell 精度 baseline（serve-realistic WF、n=2,448）        | 札幌top1のみrobust弱cell、venue02はplace3-onlyrobust    | `jra-summer4-cell-baseline-2026-07-17.md`          | `87a7ac27`（+`1236f627`訂正）              | `5724...`/`30d7...`/`81e4...`（3 runs）                                     |
+| 10  | 264-race local replay v1（夏3場 6/1-7/12）                     | 忠実性弱（ρ0.30）→数値はアーティファクト、参考値のみ    | `jra-summer3-local-replay-2026-07-17.md`           | `865d8e6f`                                 | `5fc8dfeb`                                                                  |
+| 11  | 264-race local replay v2（250/269/274列復旧）                  | ρ0.93/一致率76.2%。venue02はn=264で判定不能、WF根拠優先 | 同上                                               | `39ba8013`                                 | `8fd830a8`                                                                  |
+| 12  | 夏4場 upset-mechanism 探索（S1/S2、2024-2026）                 | null（2026は2024/25と無差別）、新規候補0                | `jra-summer-upset-refresh-2026-07-17.md`           | `d4578cf9`                                 | N/A（統計的再集計、モデル学習を伴わない）                                   |
+
+**補足（新規verdictではなく本日commit分）**: 07-11 時点で判定済みだった season-conditional jockey/trainer form REJECT と volatility-tiered fusion REJECT の2 doc は、未コミットのまま持ち越されていたため本日 `2587d9b3` で正式commit（§11 は今朝 `bea9f809` で反映済み）。
+
+---
+
+## (c) Serving incident タイムライン（Cluster B）
+
+| 時刻                               | 出来事                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-12 05:51:45–32 UTC（47秒） | 原因burst発生: champion（`jra-cb-v9-sim-2013-clean`）／269 routed variant／274 routed variant を等しく劣化させる書込（score stddev 0.04-0.17、健常時0.69-1.44の約1/10）                                                                                                                                                    |
+| 07-17 07:1x                        | summer-baseline が269 variant top1 0/29 異常を検知 → serve-defect-269 agent 緊急spawn                                                                                                                                                                                                                                      |
+| 07-17 08:1x                        | 診断完了（commit `57a4cd7f`）: Cluster Bはchampion/269/274を同等に劣化させており269固有ではない。routing自体は忠実でrank反転なし。CF経路（rescore coordinator／day-base split／共有scoring関数）は原因から除外。書込主は本audit権限では未特定（仮説: refactor中間状態のローカル実行がNeon直書き）                          |
+| 07-17 08:4x                        | root-cause fixの一部（`e6111ca6`、processed feature cache拒否）が既に07-15 04:23 JST deployで本番稼働中と確認。cron側venue02 rule fix（`7807e6cd`）準備完了。Defect B（garbage行のviewer shadow）はaccepted-residualとして本日クローズ判定                                                                                 |
+| 07-17 09:45                        | **Deploy 1**: feature_guard系 — Worker version `48813ea2-f693-49f9-875b-732d55e9f109`（container image tag `48813ea2`、旧`6a35ccff`）。同梱: `57a4cd7f`(feature_guard fail-closed defense) + `7807e6cd`(venue02 completion fix) + `63c69c08`(cell_routing.json parity guard初版)。health 200、containers 7 instances ready |
+| 07-17 10:1x                        | bug監査Cで`63c69c08`のparity guardがJSON形状のみ検査しexpectedModelVersion()本体を未呼び出しと判明 → 双方向parity test 3本に置換（`0cdbaddb`）。以降deploy gateを「監査完了+tree clean→GO」に変更                                                                                                                          |
+| 07-17 10:2x-10:5x                  | corner-features-refresh.tsが07-12 commit以来cron未配線でdormant、かつ3つの常時失敗バグ（multi-command DDL／CREATE EXTENSION権限エラー／select-list alias参照エラー）を内包していたと判明 → 修正（`a87d5356`）、NAR 07-13..15の1,626行をNeonへbackfill（dry-run==real一致）                                                 |
+| 07-17 10:40                        | **Deploy 2**: refresher系 — Worker version `3a75b34f-14c2-426b-b661-bb8f6258d6f2`（container image tag `3a75b34f`、旧`48813ea2`）。同梱: `a87d5356`。cron 8本中2本新設（JST 09:15／22:00）。health 200                                                                                                                     |
+| 07-17 以降                         | preflight smoke（R01/R03、いずれも過去日=06-13ゆえtimeout・行ゼロで判定不能）は16:00 JST NAR organic checkと22:00 refresher cron tick検証に委譲 — **§(g)参照、現時点で未確定**                                                                                                                                             |
+
+---
+
+## (d) データ heal 一覧
+
+| 対象                                    | 内容                                                                                                        | 行数                                        | Doc/commit                                                           |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------- |
+| `race_entry_corner_features` 決済後埋め | JRA/NARの根本原因=自動後埋め経路の不在（win5-overlay副作用+手動のみ）。local+Neon両storeへ冪等NULL→値UPDATE | JRA 2,450 + NAR 1,487 + `shusso_tosu` 3,982 | `corner-features-settlement-backfill-heal-2026-07-17.md`／`46ac761b` |
+| NAR corner-features 07-13..15           | 行自体がゼロだった3日分を、修正済みrefresher経路でNeonへbackfill（dry-run==real検証済み）                   | 1,626                                       | `a87d5356`                                                           |
+| （未heal・正直に記録） NAR 01-03／05-19 | 上流`nvd_se`自体が`'00'`（ingestion gap）でheal不能                                                         | —                                           | 同上doc内に記載                                                      |
+| （未heal・受容） local PG NAR 3日分     | 経路なしで未healだが影響軽微としてaccepted                                                                  | —                                           | 同上                                                                 |
+
+---
+
+## (e) バグ regression-test 監査サマリ（A-K、詳細は `bug-regression-test-audit-2026-07-17.md` 参照）
+
+| #   | バグ                                                                                                                              | 状態                                                                                                                            | Commit                           |
+| --- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| A   | `feature_guard`のfail-closed配線が呼び出し箇所（`_score_one_race_direct`等）で無テスト。純粋関数自体は厳密テスト済みだった        | **実ギャップ発見・修正**                                                                                                        | `d04206c1`                       |
+| B   | variant loaderのfeature-ORDER不一致が、意図的に順序非依存なhash checkでは検知されない                                             | 既存テストで検知可能と確認                                                                                                      | `57a4cd7f`                       |
+| C   | `expectedModelVersion()`のvenue==02→jockey-pedigree269 rule欠落                                                                   | **実ギャップ発見・修正**（parity guardも偽物と判明、双方向化）                                                                  | `7807e6cd`/`63c69c08`/`0cdbaddb` |
+| D   | `query_finish_position_metrics`が`prediction_generated_at DESC`で劣化後発rescoreを誤選択                                          | 既存テストで検知可能と確認                                                                                                      | `1d7e3215`                       |
+| E   | RS側の同型バグ（`query_running_style_metrics`）                                                                                   | 既存テストで検知可能と確認                                                                                                      | `218b5849`                       |
+| F   | `build_rec_select_sql`のUPCOMING tie-breakが未決済corner-features行を優先                                                         | 既存テストで検知可能と確認                                                                                                      | `2326bf1f`                       |
+| G   | `corner-features-refresh.ts`の3つの常時失敗バグ（multi-command DDL／`CREATE EXTENSION`権限エラー／alias参照エラー）               | 既存テストで検知可能と確認（モックのみだった当初テストの後継はreal driver想定のSQL-shape assertで真に検知可能、コード欠陥なし） | `a87d5356`                       |
+| H   | `focused-full-completion.ts`の完了guardが行countのみ検査し、score品質/stddevを見ない                                              | characterization testのみ追加（意図的に非修正、既知の限界として明文化）                                                         | `0cdbaddb`                       |
+| I   | UPCOMING oddsフォールバックが`'0000'`/`'00'`未確定placeholderを`0`/`0.0`に誤変換                                                  | **実ギャップ発見・修正**（cross-pool probe執筆中に発見）                                                                        | `dde59c45`                       |
+| J   | MLflow `timeline.upsert_timeline_point`が真のupsertでなくpresence checkのみ                                                       | 既存テスト（`a3102b12`、07-08以来）で検知可能、意図的仕様と確認                                                                 | pre-existing                     |
+| K   | `cell_router.py`と`subgroup_diagnostics.py`がJRA track_code 20-22のsurface判定で不一致（正解はturf、cell_routerが誤ってdirt判定） | **実ギャップ発見・修正**（天皇賞(春)等55race実証、本番誤routing実績ゼロ確認、全100 track_codeのcross-package parity test新設）  | `01cd669f`                       |
+
+**総括**: 11/11項目完了。4件（A/C/I/K）で実ギャップを発見し修正、6件（B/D/E/F/G/J）は既存テストがmutationで正しく検知することを確認、1件（H）はドキュメント化のみ（修正不要と判断）。全対象package（`finish-position-predict-container`／`pc-keiba-viewer`／`finish-position-cron`／`mlflow`）で`git status --porcelain`クリーンを確認済み。
+
+---
+
+## (f) USER 判断待ち事項
+
+| #   | 事項                                                                                                                                             | 背景                                                                                                               |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| ①   | Neon MLflow DSN（パスワード込み）のローテーション                                                                                                | 本日中に3件目の露出を確認（agent transcriptへのredactionミス経由、repo/git混入なし）。ローテーション実施はUSER判断 |
+| ②   | `pc-keiba-viewer/CLAUDE.md`の`python:check`記述が`package.json`実体とstale不一致                                                                 | `serve_health_check.py`開発中に発見。`CLAUDE.md`はUSER管理のためagent側で無断修正せず                              |
+| ③   | lefthookのpython hookが`tests/**`・`pyproject.toml`をglobしておらず、テストのみの変更ではpre-commitが走らない                                    | 監査中に発見（本キャンペーンではmanual実行で代替、`lefthook.yml`自体の変更は本日のスコープ外）                     |
+| ④   | E-top2 override pathへのfeature_guard配線が未実施（優先度低）                                                                                    | serve-defect-269診断のresidualとして記録。E-top2自体が現在無効化中のため実害なし                                   |
+| ⑤   | Defect B（Cluster B由来のgarbage行をviewerのpriority-0 routingが健全な唯一のクラスタ=07-11 Mac-batch 21racesの上にshadowしてしまう表示層defect） | accepted-residualとして本日クローズ判定済み。恒久修正が必要か否かはUSER判断                                        |
+
+---
+
+## (g) 今夜〜明日の検証スケジュール
+
+1. **16:00 JST — NAR organic check**（本日最初のorganicレース。deploy後の初めての生きたsmoke機会。serve_health_check.pyまたは同等の手動確認でstddev/model_version/guard非妨害を確認）
+2. **22:00 JST — refresher cron tick 検証**（07-17新設の2 cron のうち22:00枠が初回発火。live-audit管轄で確認）
+3. **明日 07-18 09:15 JST — refresher cron 2回目**
+4. **明日 07-18 09:25 JST — JRA cron（本番予測開始前の最終production-grade確認ポイント）**
+5. 恒久ツール: `serve_health_check.py`（commit `9148cce2`、coverage/quality/routing-parity/burst/D1-self-healの5チェック、runbook §8に手順記載、read-only）を随時実行可能。2026-07-11（mixed Cluster A/B）・07-12（uniform Cluster B）の実incidentで受け入れ実証済み（doc件数と一致）
+
+---
+
+## Artifacts / 関連 doc 一覧（本日 `apps/pc-keiba-viewer/docs/probes/` 新規作成、14件）
+
+`bug-regression-test-audit-2026-07-17.md` / `corner-features-settlement-backfill-heal-2026-07-17.md` / `jra-269-serve-defect-2026-07-17.md` / `jra-cell-model-selection-ledger-2026-07-17.md` / `jra-contender-set-meta-reorder-2026-07-17.md` / `jra-crosspool-odds-divergence-2026-07-17.md` / `jra-longshot-top3-detector-2026-07-17.md` / `jra-rl-formulation-assessment-2026-07-17.md` / `jra-sapporo-top1-deficit-diagnosis-2026-07-17.md` / `jra-serving-audit-jun-jul-2026-07-17.md` / `jra-summer-upset-refresh-2026-07-17.md` / `jra-summer3-local-replay-2026-07-17.md` / `jra-summer4-cell-baseline-2026-07-17.md` / `jra-vector-knn-retrieval-2026-07-17.md`
