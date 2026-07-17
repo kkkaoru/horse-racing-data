@@ -89,6 +89,24 @@
 
 `getAllFinishPositionDisplayPriorityModelVersions()` は `FINISH_POSITION_CELL_ROUTING_CONFIG` の全 variant (`jockey_pedigree_703`, `prior_corner_dirt_smallfield_005`, `sim`) を機械的に収集するため、`jra-cb-v9-sim-2013-clean-jockey-pedigree269` / `jra-cb-v10-prior-corner274-2013` は両方とも allowlist に含まれることをコードで確認した。2026-07-11 incident の修理は健在。
 
+### Defect F (2026-07-18 発見・現在進行形): `force=true` は completion gate を 1 段しか bypass せず、`claimFocusedFullRace` の terminal-status gate で永久にブロックされる — Defect A の 72 レース修復が全面停止中
+
+- **発見の経緯**: 07-18 早朝、day-base reuse smoke test (Hakodate R01→R02) の一環として `POST /run`（`category=jra runYmd=20260712 keibajoCode=02 raceBango=01 mode=full skipDedup=true force=true`）を実行したが、6.5 時間後も Neon 行は 2026-07-12T05:52:09Z の元の Cluster B 壊れた行のまま一切変化しなかった。`wrangler tail --format pretty` を張った状態で同一リクエストを `debug=true` 付きで再実行し、原因をログで直接特定した。
+- **実測ログ (該当部分そのまま)**:
+  ```
+  [predict-queue] focused-completion-check bypassed (force) ... keibajo=02 race=01
+  [predict-queue] focused-claim ... proceed=false state=success staleAfterMs=900000
+  Focused full already in flight ... -- will re-check on redelivery
+  ```
+- **コード根拠**: `force=true` は `queue-consumer.ts::ackIfFocusedFullAlreadyComplete`（Neon 行数ベースの完了チェック）を正しく bypass する（`4d2f256b` の対象範囲はここまで、動作は正しい）。しかしその直後に呼ばれる `claimFocusedFullOrRetry` → `PredictRunCoordinator.claimFocusedFullRace`（`apps/finish-position-cron/src/predict-run-coordinator.ts:138-158`）には `force` パラメータ自体が一切渡っていない。同関数は対象レースの DO storage キー `focused-full:{runYmd}:{category}:{keibajoCode}:{raceBango}`（`buildFocusedFullRaceKey`、`predict-run-coordinator.ts:67-68` — 日付・カテゴリ・場・レース番号のみで構成、`model_version` も生成時刻も含まない）を読み、既存レコードの `status` が `TERMINAL_STATUSES`（`predict-run-coordinator.ts:70`、内容は `new Set(["success"])` のみ）に含まれる場合は無条件で `{ proceed: false, state: existing.status }` を返す（`predict-run-coordinator.ts:143-146`）。**この分岐に `force` を見る条件は無く、また一度 `status:"success"` に達した DO storage キーをリセットするコードパスはこのファイル内のどこにも存在しない。**
+- **`status:"success"` に到達する経路は 2 つ**: (1) 本物の完走時に `completeFocusedFullRace({status:"success"})` が呼ばれる正規の完了、(2) `ackIfFocusedFullAlreadyComplete` 自身が「行数さえ揃っていれば」complete と判定した時にも同じ `completeFocusedFullRace({status:"success"})` を呼ぶ（`queue-consumer.ts:278-286`）— これは Defect A の壊れた行（頭数分の行はあるが score 品質はランダム）でも成立してしまう判定なので、**Defect A の 72 レースは実質 100% がこの DO キーを既に `success` で持っていると推定される**（本監査 §1 の「真の coverage 72 レース」がまさにこの判定基準で「coverage あり」と分類されていたこと自体が状況証拠）。
+- **影響範囲**: `mode=full + skipDedup=true`（focused-full）経由の再トリガー全般が対象。`force=true` を付けても一度 `success` に達したレースは二度と再トリガーできない — 72 レース修復タスクは対象 24 レース (函館) に限らずこの 1 点で全面ブロックされている。
+- **本番 live serving への影響: 低いと判断**（未着手・裏取り済み）: coordinator の近post rescore 経路 (`isPerRaceRescore` → `processPerRaceRescore`、`queue-consumer.ts:213-218,626`) は `ackIfFocusedFullAlreadyComplete` / `claimFocusedFullOrRetry` のどちらも通らない別コードパスであり、本 defect の影響を受けない。したがって本日 (07-18) 09:25 開催後の `COORDINATOR_ENABLED=1` rescore 発火自体は無関係。
+- **対処状況**: **未修正**（コード変更なし）。開催 2 時間前のタイミングでの coverage-protected package への急ぎ修正は USER 判断でリスク超過と判断し見送り。修正案 (要 `predict-run-coordinator.test.ts` でのテスト追加、両方とも要検討):
+  1. `claimFocusedFullRace` のシグネチャに `force?: boolean` を足し、`force===true` のときは `TERMINAL_STATUSES` チェックを丸ごとスキップして無条件で新規 claim を発行する。
+  2. または `force===true` のときに既存の terminal レコードを明示的に delete/overwrite してから通常の claim ロジックに入る（DO storage の実質的な「reset」）。
+     いずれの場合も、(a) 「stale だが terminal ではない」既存の 15分 staleness ガード (`FOCUSED_FULL_IN_FLIGHT_STALE_MS`) の挙動を壊さないこと、(b) force で reset した後の claim が本当に新しいパイプライン起動に繋がることを実際の redelivery サイクルで確認する統合テストを追加すること、の 2 点が受け入れ条件。17:00 JST 以降の落ち着いた窓で ⑬⑭⑮ deploy と合わせて実装・テスト・deploy する第 3 bundle 項目として扱う。72 レース修復の再開はこの fix の deploy 後。
+
 ## 3. venue02 routed-arm (`jockey-pedigree269`) の実測効果 — 評価不能
 
 団長の依頼にある「venue02 の routed 269 と 703 route が当たったレースを層別」した効果測定は、**現在の Neon データからは評価不能**と結論する。理由: 本監査期間に存在する `jockey-pedigree269` 行は 100% が Defect A の壊れた Cluster B 由来であり (単発バックフィル2件を除く)、Cluster A (健全) 側には venue02/703-joken レースの `jockey-pedigree269` 行が一切存在しない (default モデルの下にのみ健全な予測が眠っている)。したがって「ルーティング自体が有効か」と「このバッチの入力が壊れていたか」の 2 つの効果が完全に交絡しており、分離できない。**Cluster A の函館 12 レース (top1=41.67%) と福島/小倉の非703レース (同バッチ内、champion default) を比較すれば venue 単体の base rate は見えるが、これは "269 モデルの効果" ではなく "default モデルの函館での base rate" である**ため、この監査ではそれ以上の結論を出さない。健全な (Cluster A 品質の) 269 モデル出力が Neon に載った時点で改めて評価すべき。
