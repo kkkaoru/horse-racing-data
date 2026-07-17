@@ -34,6 +34,7 @@ built by the pure, unit-tested ``predict_lib.pipeline_args`` builders.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -406,6 +407,101 @@ def _query_source_rows(
         return connection.execute(sql, list(params)).fetchall()
     finally:
         connection.close()
+
+
+def _se_table_and_filter(category: Category) -> tuple[str, str]:
+    """Return the (table, keibajo_code filter) pair used to scope a
+    category's raw entrant/result rows -- mirrors :func:`_query_upcoming_race_keys`'s
+    own per-category split so the watermark below reads the identical row
+    set that the day-base build itself will read."""
+    if category == "jra":
+        return "jvd_se", "keibajo_code in ('01','02','03','04','05','06','07','08','09','10')"
+    if category == "nar":
+        return "nvd_se", "keibajo_code <> '83'"
+    return "nvd_se", "keibajo_code = '83'"
+
+
+def _compute_source_watermark(
+    category: Category, target_date: str, database_url: str,
+) -> tuple[str, int] | None:
+    """Return ``(max_data_sakusei_nengappi, row_count)`` for category+day's raw
+    entrant/result source (``jvd_se`` / ``nvd_se``), or ``None`` on any failure.
+
+    This is the day-base freshness signal: recorded alongside a freshly-built
+    day-base (see :func:`build_day_base`) and recomputed fresh on every
+    :func:`ensure_day_base` call. A mismatch -- or inability to compute either
+    side -- means the underlying source data for this category+day has
+    changed since the cached day-base was built (a correction, a late
+    scratch, a late add, a backfill), or the freshness signal itself could
+    not be verified. Either way the caller must not trust the cache and must
+    rebuild -- ``None`` is the fail-closed sentinel throughout this module's
+    existing freshness-resolution functions (mirrors
+    :func:`day_base_covers_entry_list`'s own "return False on ANY exception"
+    contract).
+
+    ``data_sakusei_nengappi`` (JV-Data's per-record "data creation date"
+    field) is used rather than a generic "updated_at" column because
+    ``jvd_se`` / ``nvd_se`` do not carry one -- this is the closest existing
+    per-row freshness signal, confirmed present on both tables by direct
+    schema read.
+
+    Deliberately narrow scope: this does NOT attempt to catch staleness in
+    the 7 late-binding odds/weight columns :func:`build_day_base`'s own
+    docstring already explains are handled by the independent ``mode=rescore``
+    freshness layer regardless of this watermark. It exists to catch changes
+    to the day's ENTRANT/RESULT source data itself, as a defense-in-depth
+    layer alongside (not a replacement for) the entry-list-membership check
+    :func:`day_base_covers_entry_list` already runs unconditionally on every
+    call to :func:`build_upcoming_feature_rows_split`, regardless of which
+    branch produced ``day_base_dir``.
+    """
+    se_table, keibajo_filter = _se_table_and_filter(category)
+    try:
+        rows = _query_source_rows(
+            database_url,
+            f"""
+                select max(data_sakusei_nengappi), count(*)
+                from pg.{se_table}
+                where kaisai_nen = ? and kaisai_tsukihi = ? and {keibajo_filter}
+            """,
+            [target_date[:4], target_date[4:]],
+        )
+    except Exception as exc:
+        print(
+            f"[day-base] watermark query failed category={category} "
+            f"target_date={target_date} error={exc}",
+            file=sys.stderr,
+        )
+        return None
+    if not rows or not rows[0][1]:
+        return None
+    max_updated, row_count = rows[0]
+    count_value = row_count if isinstance(row_count, int) else int(str(row_count))
+    return (str(max_updated).strip() if max_updated is not None else "", count_value)
+
+
+def _watermark_path(day_dir: Path) -> Path:
+    return day_dir / "watermark.json"
+
+
+def _write_watermark(day_dir: Path, watermark: tuple[str, int]) -> None:
+    payload = {"max_data_sakusei_nengappi": watermark[0], "row_count": watermark[1]}
+    try:
+        _watermark_path(day_dir).write_text(json.dumps(payload), encoding="utf-8")
+    except OSError as exc:
+        # Best-effort: a write failure here must not fail the day-base build
+        # itself -- it just means the NEXT ensure_day_base call for this
+        # category+day will find no watermark file, treat it as a mismatch,
+        # and safely rebuild (fail-closed), same outcome as today.
+        print(f"[day-base] watermark write failed dir={day_dir} error={exc}", file=sys.stderr)
+
+
+def _read_watermark(day_dir: Path) -> tuple[str, int] | None:
+    try:
+        payload = json.loads(_watermark_path(day_dir).read_text(encoding="utf-8"))
+        return (str(payload["max_data_sakusei_nengappi"]), int(payload["row_count"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _query_upcoming_race_keys(
@@ -997,6 +1093,17 @@ def build_day_base(
     final_dir = day_dir / "final"
     shutil.rmtree(final_dir, ignore_errors=True)
     current.rename(final_dir)
+    if is_catalog_source_url(database_url):
+        # Record the freshness signal THIS build's source data had at
+        # completion time, so a later ensure_day_base call (same process,
+        # next race of the day) can verify the source hasn't changed before
+        # trusting this day-base instead of rebuilding. Best-effort: a
+        # failed watermark compute/write here degrades the NEXT call to
+        # "no watermark found" (safe fail-closed rebuild), never this
+        # build's own success.
+        watermark = _compute_source_watermark(category, target_date, database_url)
+        if watermark is not None:
+            _write_watermark(day_dir, watermark)
     _log_pipeline_progress(
         f"done daybase category={category} target_date={target_date} output={final_dir}"
     )
@@ -1016,9 +1123,32 @@ def ensure_day_base(
     mirroring ``weather_fetcher.fetch_venue_weather_dir``'s
     fetch/materialize/fallback shape:
 
-    1. Catalog source trust boundary -- production ``r2-catalog://`` reads
-       never accept an existing processed local/R2 day-base. Return ``None``
-       so the caller rebuilds from current raw Catalog data.
+    1. Catalog source watermark gate -- production ``r2-catalog://`` reads
+       only trust an existing LOCAL-DISK day-base (this same container
+       process already built it for an earlier race of the same category+
+       day) when a FRESH watermark (:func:`_compute_source_watermark`: max
+       ``data_sakusei_nengappi`` + row count of the day's raw ``jvd_se`` /
+       ``nvd_se`` rows) matches the watermark :func:`build_day_base` wrote
+       alongside it. A watermark that cannot be computed, is missing, or
+       does not match means the caller rebuilds from current raw Catalog
+       data -- this is a REPLACEMENT for the previous unconditional bypass
+       (every catalog-source call always returned ``None`` here, forcing a
+       full day-base rebuild for literally every race), not a relaxation of
+       its fail-closed contract: any ambiguity still returns ``None``.
+
+       R2 cross-process reuse (a day-base built by a DIFFERENT container
+       process, or by the ``/prewarm-day-base`` job, fetched from R2) is
+       deliberately NOT attempted for catalog sources yet -- the R2 upload
+       for that path happens in the Cloudflare Worker/DO layer
+       (``predict_lib.serve.iter_prewarm_chunks`` returns the parquet bytes
+       for the Worker to PUT; this container has no write-capable R2
+       token), which does not yet carry a watermark sidecar object. Wiring
+       that up is explicit follow-up work, not attempted here under time
+       pressure -- see the day-base-redesign doc. Until then, a
+       catalog-source day-base is only trusted from THIS process's own
+       local disk (the already-built-this-request case: race 2+ of the day
+       served by the same long-lived container process, the single most
+       common case per this docstring's own step 2 below).
     2. Offline local disk fast path -- if this container process already built (or
        downloaded) the day-base for this category+day, return it immediately.
        This is the common case for the 2nd+ race of the day served by the same
@@ -1031,10 +1161,15 @@ def ensure_day_base(
        full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
        function itself never blocks on a multi-minute build.
     """
-    if is_catalog_source_url(database_url):
-        return None
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
+    if is_catalog_source_url(database_url):
+        watermark = _compute_source_watermark(category, target_date, database_url)
+        if watermark is None:
+            return None
+        if has_parquet_output(final_dir) and _read_watermark(day_dir) == watermark:
+            return final_dir
+        return None
     if has_parquet_output(final_dir):
         return final_dir
     if r2_config is None:

@@ -62,6 +62,39 @@ What it does
    join key: exact equality for non-float columns, ``numpy.isclose`` with
    ``rtol=1e-9`` for float columns. Any mismatch fails the test with the
    offending column names + mismatch counts.
+
+Watermark-gated catalog-source reuse (2026-07-18 day-base redesign)
+---------------------------------------------------------------------
+``pipeline_runner.ensure_day_base`` now trusts an existing LOCAL-DISK
+day-base for ``r2-catalog://`` sources when a fresh watermark (max
+``data_sakusei_nengappi`` + row count of the day's ``jvd_se`` / ``nvd_se``
+rows, see ``pipeline_runner._compute_source_watermark``) matches the one
+recorded when that day-base was built -- replacing the previous
+unconditional ``return None`` for every catalog-source call. This test
+file does not exercise that branch (it always passes an offline
+``postgresql://`` URL, which skips the watermark gate entirely and hits
+the unchanged offline fast path) and does not need to: a watermark MATCH
+means ``ensure_day_base`` returns the literal same ``final_dir`` a prior
+``build_day_base`` call already wrote, not a re-derivation, so
+``predicted_score`` bit-identity on that path is guaranteed by
+construction (re-scoring the same parquet bytes through the same model is
+deterministic) rather than something this row-diff needs to prove
+empirically. The gating logic itself -- does a mismatched/missing/
+unverifiable watermark correctly refuse to trust the cache -- is what
+actually needed test coverage, and is covered by
+``tests/test_pipeline_runner.py``'s
+``test_ensure_day_base_catalog_source_watermark_*`` unit tests (mocked,
+deterministic, run in every CI/pre-commit pass, no live catalog needed).
+
+Before flipping ``DAY_BASE_SPLIT_ENABLED`` to newly include a category
+whose catalog-source watermark reuse hasn't been exercised against real
+production traffic yet, additionally confirm live: request the same race
+twice in the same container process (e.g. two ``focused-full`` calls a
+few seconds apart for the same ``category``+``target_date``) and check
+the container logs for a ``step=racechain-layer`` sequence on the SECOND
+call with no accompanying ``step=daybase-base`` / ``step=daybase-layer``
+lines -- that log signature is the local-disk watermark-hit path actually
+firing rather than falling through to a full day-base rebuild.
 """
 
 from __future__ import annotations

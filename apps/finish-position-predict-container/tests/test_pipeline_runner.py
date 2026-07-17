@@ -46,6 +46,21 @@ _reset_category_work_dirs = cast(
     Callable[[str, Path], None],
     getattr(pipeline_runner, _RESET_CATEGORY_WORK_DIRS_ATTR),
 )
+_COMPUTE_SOURCE_WATERMARK_ATTR = "_compute_source_watermark"
+_WRITE_WATERMARK_ATTR = "_write_watermark"
+_READ_WATERMARK_ATTR = "_read_watermark"
+_compute_source_watermark = cast(
+    "Callable[[str, str, str], tuple[str, int] | None]",
+    getattr(pipeline_runner, _COMPUTE_SOURCE_WATERMARK_ATTR),
+)
+_write_watermark = cast(
+    "Callable[[Path, tuple[str, int]], None]",
+    getattr(pipeline_runner, _WRITE_WATERMARK_ATTR),
+)
+_read_watermark = cast(
+    "Callable[[Path], tuple[str, int] | None]",
+    getattr(pipeline_runner, _READ_WATERMARK_ATTR),
+)
 
 
 def test_mask_pg_url_redacts_userinfo():
@@ -991,6 +1006,41 @@ def test_build_day_base_resets_stale_day_dir_before_building(
     assert not (result / "stale.parquet").exists()
 
 
+def test_build_day_base_writes_watermark_for_catalog_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Offline (``postgresql://``) builds never write a watermark -- only
+    catalog-source (``r2-catalog://``) builds do, since only catalog-source
+    reads consult one in ``ensure_day_base``."""
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    monkeypatch.setattr(pipeline_runner, "DUCKDB_BUILDER", tmp_path / "builder.py")
+    monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
+    monkeypatch.setattr(pipeline_runner, "day_chain_for", lambda _category: ("script-a.py",))
+    monkeypatch.setattr(pipeline_runner, "has_parquet_output", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline_runner, "build_base_argv", lambda *args, **kwargs: ["base", str(args[5])]
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "build_layer_argv", lambda *args, **kwargs: ["layer", str(args[4])]
+    )
+    monkeypatch.setattr(
+        pipeline_runner,
+        "run_with_stderr_capture",
+        lambda a: Path(a[-1]).mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(
+        pipeline_runner, "_query_source_rows", lambda *_args, **_kwargs: [("20260712", 1200)]
+    )
+
+    result = pipeline_runner.build_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba")
+
+    assert result is not None
+    day_dir = _day_base_dir("jra", "20260712")
+    assert _read_watermark(day_dir) == ("20260712", 1200)
+
+
 def test_build_day_base_propagates_base_build_failure_and_records_status(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
@@ -1030,6 +1080,113 @@ def test_build_day_base_signature_accepts_realtime_and_weather():
 
 
 # ---------------------------------------------------------------------------
+# _compute_source_watermark / _write_watermark / _read_watermark
+# ---------------------------------------------------------------------------
+
+
+def test_compute_source_watermark_returns_max_updated_and_row_count(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    captured_sql: list[str] = []
+
+    def fake_query_source_rows(
+        _url: str, sql: str, params: list[object]
+    ) -> list[tuple[object, ...]]:
+        captured_sql.append(sql)
+        assert params == ["2026", "0712"]
+        return [("20260712", 946)]
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
+
+    result = _compute_source_watermark("jra", "20260712", "r2-catalog://pc-keiba")
+
+    assert result == ("20260712", 946)
+    assert "jvd_se" in captured_sql[0]
+    assert "data_sakusei_nengappi" in captured_sql[0]
+
+
+def test_compute_source_watermark_uses_nvd_se_for_nar_and_banei(monkeypatch: pytest.MonkeyPatch):
+    captured_sql: list[str] = []
+
+    def fake_query_source_rows(
+        _url: str, sql: str, _params: list[object]
+    ) -> list[tuple[object, ...]]:
+        captured_sql.append(sql)
+        return [("20260712", 500)]
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", fake_query_source_rows)
+
+    _compute_source_watermark("nar", "20260712", "r2-catalog://pc-keiba")
+    _compute_source_watermark("ban-ei", "20260712", "r2-catalog://pc-keiba")
+
+    assert "nvd_se" in captured_sql[0]
+    assert "keibajo_code <> '83'" in captured_sql[0]
+    assert "nvd_se" in captured_sql[1]
+    assert "keibajo_code = '83'" in captured_sql[1]
+
+
+def test_compute_source_watermark_returns_none_on_query_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    def raiser(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        raise RuntimeError("attach failed")
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", raiser)
+
+    result = _compute_source_watermark("jra", "20260712", "r2-catalog://pc-keiba")
+
+    assert result is None
+    assert "attach failed" in capsys.readouterr().err
+
+
+def test_compute_source_watermark_returns_none_when_zero_rows(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        pipeline_runner, "_query_source_rows", lambda *_a, **_k: [(None, 0)]
+    )
+
+    result = _compute_source_watermark("jra", "20260712", "r2-catalog://pc-keiba")
+
+    assert result is None
+
+
+def test_write_then_read_watermark_round_trips(tmp_path: Path):
+    day_dir = tmp_path / "daybase-jra-20260712"
+    day_dir.mkdir(parents=True)
+
+    _write_watermark(day_dir, ("20260712", 946))
+
+    assert _read_watermark(day_dir) == ("20260712", 946)
+
+
+def test_read_watermark_returns_none_when_file_missing(tmp_path: Path):
+    day_dir = tmp_path / "daybase-jra-20260712"
+    day_dir.mkdir(parents=True)
+
+    assert _read_watermark(day_dir) is None
+
+
+def test_read_watermark_returns_none_on_malformed_json(tmp_path: Path):
+    day_dir = tmp_path / "daybase-jra-20260712"
+    day_dir.mkdir(parents=True)
+    (day_dir / "watermark.json").write_text("not json", encoding="utf-8")
+
+    assert _read_watermark(day_dir) is None
+
+
+def test_write_watermark_failure_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A watermark write to a path that cannot be created must not raise --
+    it degrades the NEXT ensure_day_base call to a safe rebuild, never this
+    build's own success (see build_day_base's call site)."""
+    unwritable_dir = tmp_path / "not-a-real-parent" / "nested" / "too-deep"
+
+    _write_watermark(unwritable_dir, ("20260712", 946))
+
+    assert "watermark write failed" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
 # ensure_day_base
 # ---------------------------------------------------------------------------
 
@@ -1053,28 +1210,103 @@ def test_ensure_day_base_local_disk_hit_skips_r2(monkeypatch: pytest.MonkeyPatch
     assert called == []
 
 
-def test_ensure_day_base_catalog_source_rejects_existing_local_and_r2(
+def test_ensure_day_base_catalog_source_watermark_match_returns_local_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
-    from predict_lib.serve import R2Config
+    """Replaces the old ``test_ensure_day_base_catalog_source_rejects_existing_local_and_r2``:
+    the catalog-source path is no longer an unconditional bypass (e6111ca6's
+    original fix) -- it now trusts a local-disk day-base when a FRESH
+    watermark matches the one recorded alongside it. R2 is still never
+    attempted for catalog sources (deliberately out of scope for this
+    change -- see ``ensure_day_base``'s own docstring)."""
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_dir = _day_base_dir("jra", "20260712")
+    final_dir = day_dir / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "features.parquet").write_bytes(b"TRUSTED")
+    _write_watermark(day_dir, ("20260712", 1200))
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda *_args, **_kwargs: [("20260712", 1200)],
+    )
+    r2_calls: list[bool] = []
+    monkeypatch.setattr(
+        pipeline_runner, "r2_get_parquet", lambda *args, **kwargs: r2_calls.append(True) or True
+    )
 
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
+
+    assert result == final_dir
+    assert r2_calls == []
+
+
+def test_ensure_day_base_catalog_source_watermark_mismatch_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_dir = _day_base_dir("jra", "20260712")
+    final_dir = day_dir / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "features.parquet").write_bytes(b"STALE")
+    _write_watermark(day_dir, ("20260712", 1200))
+    # A late correction/scratch bumped the row count -- the current source
+    # no longer matches what this cached day-base was built from.
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda *_args, **_kwargs: [("20260712", 1201)],
+    )
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
+
+    assert result is None
+
+
+def test_ensure_day_base_catalog_source_no_watermark_file_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A local-disk day-base with no watermark sidecar (e.g. left over from
+    before this change, or a write failure at build time) is untrusted even
+    though the parquet itself is present."""
     work_dir = tmp_path / "work"
     monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
     final_dir = _day_base_dir("jra", "20260712") / "final"
     final_dir.mkdir(parents=True)
-    (final_dir / "features.parquet").write_bytes(b"UNTRUSTED")
-    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
-    r2_calls: list[bool] = []
+    (final_dir / "features.parquet").write_bytes(b"NO-WATERMARK")
     monkeypatch.setattr(
         pipeline_runner,
-        "r2_get_parquet",
-        lambda *args, **kwargs: r2_calls.append(True) or True,
+        "_query_source_rows",
+        lambda *_args, **_kwargs: [("20260712", 1200)],
     )
+
+    result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", None)
+
+    assert result is None
+
+
+def test_ensure_day_base_catalog_source_watermark_query_fails_returns_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_dir = _day_base_dir("jra", "20260712")
+    final_dir = day_dir / "final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "features.parquet").write_bytes(b"UNVERIFIABLE")
+    _write_watermark(day_dir, ("20260712", 1200))
+
+    def raiser(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+        raise RuntimeError("catalog attach failed")
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", raiser)
+    r2 = None
 
     result = pipeline_runner.ensure_day_base("jra", "20260712", 0, "r2-catalog://pc-keiba", r2)
 
     assert result is None
-    assert r2_calls == []
 
 
 def test_ensure_day_base_r2_hit_when_local_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
