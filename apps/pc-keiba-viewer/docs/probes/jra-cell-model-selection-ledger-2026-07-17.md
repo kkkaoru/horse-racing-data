@@ -25,8 +25,16 @@ robust ✅; venue02 rule confirms its known place3-only character (no new
 top1 evidence, none contradicting either) ➖; the 005 rule's **exact**
 literal `cell_routing.json` condition shows a robust top1 gain **paired
 with a robust place5 regression** at n=210 — a genuine multi-metric
-trade-off that fails the strict no-regression gate, flagged for review
-(not an automatic removal recommendation — see §3.3 for why).
+trade-off that fails the strict no-regression gate. **Orchestrator decision
+(same day): KEEP the route as a deliberate, explicit trade-off acceptance**
+(top1's value outweighs place5's cost at this scale) — see §3.3 for the
+full rationale and the adoption-process gap this surfaced (the original
+adoption evidence never reported the place5 cost at all).
+
+**v2 addendum (same day, team-lead-directed follow-up)**: the one new lead
+this ledger's sweep found (§4's venue=01×intermediate top1 gain for both
+candidates, single-seed, gate-failed on a place2 regression) was re-tested
+at 3-seed average before any ADOPT consideration — see §7 for the result.
 
 **Systematic new-cell sweep** (7 single dimensions + 7 two-way crosses +
 pooled, ×2 candidates = 290 cells, plus 43 champion-vs-market reference
@@ -261,15 +269,46 @@ own full multi-metric table — that is a well-scoped, cheap follow-up
 should do before treating either finding as more authoritative than the
 other.
 
-**Recommendation**: flag for orchestrator review, not an automatic removal.
-Reasons for restraint: n=210 is at the gate's own floor (structurally wide
-CIs expected); this is single-seed data; the place5 cost may be an
-acceptable, already-implicit trade-off if top1 was the metric the original
-decision optimized for (a policy question, not one this ledger should
-decide unilaterally); and the unresolved cell-definition discrepancy above
-means this finding and the original adoption evidence have not been shown
-to actually conflict on the _same_ population. **No routing.json change
-proposed by this ledger** — this is a flagged-for-review finding.
+**Recommendation at the time this ledger was first written**: flag for
+orchestrator review, not an automatic removal. Reasons for restraint: n=210
+is at the gate's own floor (structurally wide CIs expected); this is
+single-seed data; the place5 cost may be an acceptable, already-implicit
+trade-off if top1 was the metric the original decision optimized for (a
+policy question, not one this ledger should decide unilaterally); and the
+unresolved cell-definition discrepancy above means this finding and the
+original adoption evidence have not been shown to actually conflict on the
+_same_ population.
+
+**Orchestrator decision (2026-07-17, same day): KEEP the route.** Rationale
+(verbatim from the decision): top1 +1.90pp [LB95+0.48] is a robust real
+gain, and the place5 −1.90pp cost is judged practically acceptable at this
+scale — the value of an exact rank-5 hit is far smaller than the value of a
+top1 hit, so a robust top1 win purchased at the cost of a robust place5
+loss is, on balance, a reasonable trade to keep. **This is recorded here as
+an explicit, deliberate trade-off acceptance, not as "no regression was
+found."** The regression is real and was measured; the decision is to keep
+the rule anyway because the asymmetry in what top1 vs place5 are worth
+outweighs it.
+
+**Adoption-process gap, recorded per orchestrator instruction**: the
+original adoption evidence for this rule (§ the discrepancy above) did not
+surface a place5 regression at all — it reported only the top1 win on a
+different cell definition ("03|0"). Whether that's because the "03|0" cell
+genuinely doesn't show the same place5 cost, or because the original
+gate-check simply didn't report place4-6/top3_box for that specific
+candidate at the time, was not established. **Either way, a routing
+decision was made without the full rank1-6 picture that this ledger's
+methodology (mandated by the same-day USER instruction to always evaluate
+cell × rank1-5 individually) would have surfaced up front.** This is logged
+as a process gap for future cell-route adoptions: the multi-metric table
+(not just the headline top1 delta) should be checked before, not after,
+a rule goes live. The "03|0"-vs-literal-AND cell-definition question
+remains open and is **not** resolved by this decision — a future session
+should still reconcile which population the original decision validated
+before this route's next review, per §3.3's earlier note.
+
+**No routing.json change is made as a result of this ledger** — the
+existing rule stays exactly as configured.
 
 ---
 
@@ -323,14 +362,15 @@ retraining of jockey-pedigree269, or pooling additional years).
 - **CHANGE**: none. Both existing conditional rules (703, venue02) are
   re-confirmed at the same evidentiary strength as before — no new
   evidence to expand or narrow either.
-- **REMOVE**: none proposed outright. **One flagged-for-review finding**:
-  the literal `dirt×f_le10×005` condition shows a robust place5 regression
-  alongside its robust top1 gain (§3.3) — orchestrator should decide
-  whether this is an acceptable known trade-off or warrants reconciling
-  against the original "03|0" adoption evidence before the next time this
-  rule comes up for review. No urgency implied; this is not a newly
-  discovered defect, just a sharper characterization than was previously
-  on record.
+- **REMOVE**: none. The literal `dirt×f_le10×005` condition's robust place5
+  regression alongside its robust top1 gain (§3.3) was reviewed by the
+  orchestrator same-day and the route is **kept**, as an explicit trade-off
+  acceptance (top1's value judged to outweigh place5's cost) — see §3.3 for
+  the full decision record and the adoption-process gap it surfaced. The
+  "03|0"-vs-literal-AND cell-definition question remains open for a future
+  review.
+- **v2 addendum**: see §7 for the 3-seed re-test of the
+  venue=01×intermediate lead and its resulting verdict.
 
 ---
 
@@ -354,7 +394,82 @@ retraining of jockey-pedigree269, or pooling additional years).
 
 ---
 
-## 7. 日本語まとめ
+## 7. v2 addendum: 3-seed re-test of the venue=01×intermediate lead — CLOSED, noise
+
+Team-lead pre-registered the decision criterion (verbatim) before this ran:
+apply the standard §7.2/§8.12 gate, including the −0.05pp no-regression
+floor, to the **3-seed average**; ADOPT only if it clears, otherwise close
+as noise/trade-off.
+
+**Training**: 2 additional seeds (101, 2026) of the jockey-pedigree269
+candidate were trained, matching the existing single run's own seed-formula
+shape (`seed_base + fold_year`) extended to champion's other 2 seed
+identities, 3 folds each (6 models, ~44s/fold, ~266s total). Each new
+seed's candidate was paired against its own matched-seed champion-equivalent
+base (masked-lever-retest's cached `seed101`/`seed2026` armB models — a
+valid seed-matched pair, same design principle as §2.4). `memory_pressure -Q`
+confirmed 49-55% free immediately before and during training (other agents
+training concurrently at the time).
+
+### Result: still REJECT on 3-seed average
+
+| Cell                                      | n    | top1 Δ  | top1 LB95 | place2 Δ | Gate   |
+| ----------------------------------------- | ---- | ------- | --------- | -------- | ------ |
+| `venue=01 × distance_band=intermediate`   | 215  | +2.1705 | +0.3101   | −0.7752  | REJECT |
+| `venue=01` (all distance bands)           | 504  | +1.0582 | −0.0000   | −0.2646  | REJECT |
+| `distance_band=intermediate` (all venues) | 4443 | +0.0450 | −0.2551   | −0.0150  | REJECT |
+
+The 3-seed-averaged top1 delta (+2.17pp, LB95+0.31 — itself still
+individually robust) is smaller than the single-seed figure (+3.72pp) but
+**place2's regression persists** (−0.78pp, still the `worst_delta_pp`
+driving `no_regression=False`) — the gate fails for the same structural
+reason as the single-seed result, just at reduced magnitude. Neither
+`venue=01` alone nor `distance_band=intermediate` alone shows a
+comparable effect (the latter is flat at +0.045pp, LB95−0.26 — confirming
+this was never a generic "intermediate distance" effect, only a
+venue×distance **interaction**, if it's anything at all).
+
+### Per-seed breakdown — this is genuine noise, not a diluted-but-real effect
+
+| Seed           | top1 Δ  | place2 Δ    | place3 Δ |
+| -------------- | ------- | ----------- | -------- |
+| seed42 (equiv) | +3.7209 | −1.3953     | +0.4651  |
+| seed101        | +0.4651 | −2.3256     | 0.0000   |
+| seed2026       | +2.3256 | **+1.3953** | −0.4651  |
+
+At n=215, **top1's own delta ranges 8x across the 3 seeds** (+0.47pp to
++3.72pp) and **place2's sign literally flips** (negative at 2 of 3 seeds,
+positive at the third) — well outside the ±0.4pp single-arm noise floor
+this campaign established elsewhere (`project_training_noise_floor_2026_07_11`)
+for populations at this scale, and a textbook illustration of why a
+single-seed, n=215 cell hit cannot be trusted without exactly this kind of
+multi-seed confirmation.
+
+**Verdict: CLOSED as noise, not ADOPTed.** This is a **different question**
+from this session's own now-closed Sapporo top1-vs-**market** diagnosis
+(`jra-sapporo-top1-deficit-diagnosis-2026-07-17.md`, closed same day under
+its own separate criteria) — that doc asked whether champion beats market
+at Sapporo (concluded: market has a durable informational edge, not
+fillable); this addendum asked whether a different **feature set**
+(jockey-pedigree269) beats **champion** at Sapporo×intermediate specifically
+(concluded: no, the apparent single-seed edge was seed noise). Both are now
+closed, for different reasons, and neither re-opens the other.
+
+**DO-NOT-RETEST**: the jockey-pedigree269 (or prior-corner274)
+venue=01×distance_band=intermediate routing hypothesis, at this population
+and seed set — tested at 3-seed average with the pre-registered gate and
+closed. Re-opening requires either a materially larger population (more
+years, or pooling additional similar cells) or new external evidence, not
+a re-slice of the same 2023-2025 single/3-seed WF population.
+
+Artifacts: `apps/pc-keiba-viewer/tmp/candidate-jra-cell-model-ledger-2026-07-17/v2-multiseed/`
+(`train_269_seeds.py`, `train.log`, `base_preds_seed{101,2026}.parquet`,
+`cand_preds_seed{101,2026}.parquet`, `eval_3seed.py`, `eval.log`,
+`eval_3seed_result.json`).
+
+---
+
+## 8. 日本語まとめ
 
 USER 指示(「cell 単位 × rank1-5 個別精度で常に評価、要約精度禁止、cell 単位で
 モデル選択可能に」)に基づき、JRA の leak-free 候補モデル 3 種(champion
@@ -396,6 +511,18 @@ surface 判定で相違することを直接コード比較で確認——本番
 であり DO-NOT-RETEST の対象外だが、n=215・単一 seed のため v2 向けの
 リードとして記録するに留めた。
 
+**同日 追記2件**: (1) orchestrator 判断により 005 route は**維持**——top1
++1.90pp の実利が place5 −1.90pp の対価を上回るという明示的トレードオフ受容
+として記録し、当初採用が place5 悪化を把握せずに決定された点を
+adoption-process の欠陥として明記した(§3.3)。(2) 札幌×中距離リードは
+team-lead 事前登録基準(3-seed 平均で標準 gate 通過時のみ ADOPT)に基づき
+269 の seed101/2026 を追加学習(6 model、約266秒)して再検証——3-seed 平均
+でも top1 +2.17pp[LB95+0.31]は頑健だが place2 悪化(−0.78pp)が消えず gate
+不合格。seed 別内訳は top1 が+0.47〜+3.72pp の8倍レンジ、place2 の符号が
+反転(2/3 seed 負、1/3 seed 正)——ノイズ床(±0.4pp)を大きく超える典型的な
+single-seed noise と確定し、**CLOSED(ADOPT せず、DO-NOT-RETEST)**とした
+(§7)。
+
 ---
 
 ## Artifacts
@@ -417,3 +544,7 @@ surface 判定で相違することを直接コード比較で確認——本番
   `docs/finish-position-prediction-system.md` §6-§8
 - 2026 supplementary reference: `apps/pc-keiba-viewer/tmp/candidate-jra-summer3-local-replay-2026-07-17/`
   (team-lead-shared, high-fidelity 264-race local replay)
+- v2 addendum (§7): `apps/pc-keiba-viewer/tmp/candidate-jra-cell-model-ledger-2026-07-17/v2-multiseed/`
+  — `train_269_seeds.py` + `train.log` (2 new seeds, 6 models),
+  `base_preds_seed{101,2026}.parquet` / `cand_preds_seed{101,2026}.parquet`,
+  `eval_3seed.py` + `eval.log` + `eval_3seed_result.json` (3-seed gate re-test)
