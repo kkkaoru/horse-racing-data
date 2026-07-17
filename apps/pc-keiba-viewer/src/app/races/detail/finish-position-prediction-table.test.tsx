@@ -852,3 +852,190 @@ test("compareFinishPredictionRows breaks an equal predicted-rank tie by horse nu
   };
   expect(compareFinishPredictionRows(first, second)).toStrictEqual(2);
 });
+
+test("FinishPositionPredictionTable renders the high confidence badge when modelPredictionFeatures carry confidenceTier high", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "high",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const badge = document.querySelector(".finish-prediction-confidence-badge-high");
+  expect(badge?.textContent).toStrictEqual("予測の自信度: 高");
+  expect(badge?.getAttribute("title")).toStrictEqual(
+    "馬同士の予測スコアの差が大きいほど「自信度」を高く表示しています。的中を保証するものではありません。",
+  );
+});
+
+test("FinishPositionPredictionTable renders the mid confidence badge label", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "mid",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const badge = document.querySelector(".finish-prediction-confidence-badge-mid");
+  expect(badge?.textContent).toStrictEqual("予測の自信度: 中");
+});
+
+test("FinishPositionPredictionTable renders the low confidence badge label", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const badge = document.querySelector(".finish-prediction-confidence-badge-low");
+  expect(badge?.textContent).toStrictEqual("予測の自信度: 低");
+});
+
+test("FinishPositionPredictionTable renders no confidence badge when confidenceTier is null", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={sampleInputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-confidence-badge")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable renders the upset warning badge for grade E at Hakodate (02)", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = { ...sampleInputs, currentGradeCode: "E" };
+  const request: RealtimeRaceRequest = { ...sampleRequest, keibajoCode: "02" };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={request}
+    />,
+  );
+  const badge = document.querySelector(".finish-prediction-upset-warning-badge");
+  expect(badge?.textContent).toStrictEqual("⚠ 荒れやすい傾向のレース");
+  expect(badge?.getAttribute("title")).toStrictEqual(
+    "特別戦かつ函館・札幌開催のレースは、過去実績で人気薄の馬が勝つ割合が高めです。予測の精度自体が下がるわけではありませんが、波乱の可能性を念頭に置いてご覧ください。",
+  );
+});
+
+test("FinishPositionPredictionTable renders the upset warning badge for grade E at Sapporo (01)", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = { ...sampleInputs, currentGradeCode: "E" };
+  const request: RealtimeRaceRequest = { ...sampleRequest, keibajoCode: "01" };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={request}
+    />,
+  );
+  expect(
+    document.querySelector(".finish-prediction-upset-warning-badge")?.textContent,
+  ).toStrictEqual("⚠ 荒れやすい傾向のレース");
+});
+
+test("FinishPositionPredictionTable does not render the upset warning badge for grade E at Fukushima (03), out of scope for this badge", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = { ...sampleInputs, currentGradeCode: "E" };
+  const request: RealtimeRaceRequest = { ...sampleRequest, keibajoCode: "03" };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={request}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-upset-warning-badge")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable does not render the upset warning badge for a non-E grade at Hakodate", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = { ...sampleInputs, currentGradeCode: "A" };
+  const request: RealtimeRaceRequest = { ...sampleRequest, keibajoCode: "02" };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={request}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-upset-warning-badge")).toStrictEqual(null);
+});

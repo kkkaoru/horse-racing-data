@@ -33,6 +33,7 @@ import {
 import type {
   BloodlineStatsRow,
   ConditionCorrelationRow,
+  FinishPositionConfidenceTier,
   FinishPredictionRow,
   Runner,
   SimilarRaceStatsRow,
@@ -580,6 +581,37 @@ export function CorrectionMasterCheckbox({ rawToggles }: CorrectionMasterCheckbo
   );
 }
 
+// Badge (a): per-race confidence indicator. Label text intentionally avoids any
+// numeric/probability framing -- see FINISH_PREDICTION_CONFIDENCE_TOOLTIP.
+const FINISH_PREDICTION_CONFIDENCE_TIER_LABELS: ReadonlyMap<FinishPositionConfidenceTier, string> =
+  new Map([
+    ["high", "高"],
+    ["mid", "中"],
+    ["low", "低"],
+  ]);
+
+const FINISH_PREDICTION_CONFIDENCE_TOOLTIP =
+  "馬同士の予測スコアの差が大きいほど「自信度」を高く表示しています。的中を保証するものではありません。";
+
+// Badge (b): E-grade x venue upset-rate warning. Sapporo (01) / Hakodate (02) only --
+// Fukushima (03) / Kokura (10) show the same-direction but weaker effect and are
+// deliberately out of scope for this badge.
+const FINISH_PREDICTION_UPSET_WARNING_LABEL = "⚠ 荒れやすい傾向のレース";
+
+const FINISH_PREDICTION_UPSET_WARNING_TOOLTIP =
+  "特別戦かつ函館・札幌開催のレースは、過去実績で人気薄の馬が勝つ割合が高めです。予測の精度自体が下がるわけではありませんが、波乱の可能性を念頭に置いてご覧ください。";
+
+const FINISH_PREDICTION_UPSET_WARNING_GRADE_CODE = "E";
+
+const FINISH_PREDICTION_UPSET_WARNING_KEIBAJO_CODES: ReadonlySet<string> = new Set(["01", "02"]);
+
+const isFinishPredictionUpsetWarningRace = (
+  gradeCode: string | null | undefined,
+  keibajoCode: string,
+): boolean =>
+  gradeCode === FINISH_PREDICTION_UPSET_WARNING_GRADE_CODE &&
+  FINISH_PREDICTION_UPSET_WARNING_KEIBAJO_CODES.has(keibajoCode);
+
 export function FinishPositionPredictionTable({
   combinedScoreData = null,
   combinedScoreLoading = false,
@@ -743,9 +775,33 @@ export function FinishPositionPredictionTable({
     );
   }
 
+  const confidenceTier = displayRows[0]?.confidenceTier ?? null;
+  const isUpsetWarningRace = isFinishPredictionUpsetWarningRace(
+    inputs.currentGradeCode,
+    realtimeRequest.keibajoCode,
+  );
+
   return (
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
+      <div className="finish-prediction-race-badges">
+        {confidenceTier === null ? null : (
+          <span
+            className={`finish-prediction-confidence-badge finish-prediction-confidence-badge-${confidenceTier}`}
+            title={FINISH_PREDICTION_CONFIDENCE_TOOLTIP}
+          >
+            予測の自信度: {FINISH_PREDICTION_CONFIDENCE_TIER_LABELS.get(confidenceTier)}
+          </span>
+        )}
+        {isUpsetWarningRace ? (
+          <span
+            className="finish-prediction-upset-warning-badge"
+            title={FINISH_PREDICTION_UPSET_WARNING_TOOLTIP}
+          >
+            {FINISH_PREDICTION_UPSET_WARNING_LABEL}
+          </span>
+        ) : null}
+      </div>
       <div className="finish-prediction-odds-toggle">
         <CorrectionMasterCheckbox rawToggles={rawToggles} />
         <span className="correction-toggle-separator" aria-hidden="true" />

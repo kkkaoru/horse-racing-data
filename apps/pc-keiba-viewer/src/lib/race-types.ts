@@ -662,7 +662,15 @@ export interface FinishPositionSimilarityFeature extends Record<string, unknown>
   winRate: number | null;
 }
 
+// Race-level, display-only confidence tier derived from the within-race standard
+// deviation of predicted_score. Optional on both interfaces below because not every
+// code path that builds these values has this signal available (e.g. the older
+// race_entry_finish_model_predictions fallback query has no predicted_score to
+// derive a stddev from). See src/db/queries.ts for the derivation and thresholds.
+export type FinishPositionConfidenceTier = "high" | "low" | "mid";
+
 export interface FinishPositionModelPredictionFeature extends Record<string, unknown> {
+  confidenceTier?: FinishPositionConfidenceTier | null;
   horseNumber: string;
   modelVersion: string;
   predictedFinishNorm: number | null;
@@ -678,6 +686,7 @@ export interface SameDayVenueJockeyWinFeature extends Record<string, unknown> {
 
 export interface FinishPredictionRow extends Record<string, unknown> {
   confidence: number;
+  confidenceTier?: FinishPositionConfidenceTier | null;
   details: FinishPredictionDetail[];
   horseName: string;
   horseNumber: string;

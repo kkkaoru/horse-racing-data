@@ -609,6 +609,11 @@ export const buildFinishPredictionRowsFromResults = ({
   similarityFeatures = [],
 }: BuildFinishPredictionRowsParams): FinishPredictionRow[] => {
   const category = getCategory({ keibajoCode: currentKeibajoCode, source: currentSource });
+  // Race-level confidence tier: every model feature for this race repeats the same
+  // value (see getFinishPositionLambdarankPredictions in src/db/queries.ts), so
+  // reading it off the first entry is sufficient. Purely additive / display-only --
+  // never used below to influence score, confidence, or predictedRank.
+  const confidenceTier = modelPredictionFeatures[0]?.confidenceTier ?? null;
   const config = getConditionAdjustedConfig({
     baseConfig: CATEGORY_CONFIG[category],
     category,
@@ -802,6 +807,7 @@ export const buildFinishPredictionRowsFromResults = ({
         : rankShowProbability * 0.55 + modelShowProbability * 0.45;
     return {
       confidence: row.confidence,
+      confidenceTier,
       details: row.details,
       horseName: row.horseName,
       horseNumber: row.horseNumber,

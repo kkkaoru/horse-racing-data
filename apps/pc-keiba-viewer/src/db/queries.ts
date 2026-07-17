@@ -22,6 +22,7 @@ import type {
   EntityDetailSummary,
   EntityListQuery,
   EntityRaceResult,
+  FinishPositionConfidenceTier,
   FinishPositionModelPredictionFeature,
   FinishPositionSimilarityFeature,
   FinishPositionStatsRow,
@@ -2932,6 +2933,52 @@ const FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS = Array.from(
 const FINISH_POSITION_CELL_ROUTING_OFF_LABEL_VARIANT_MODEL_VERSIONS =
   getAllFinishPositionCellRoutingOffLabelVariantModelVersions();
 
+// Race-level, display-only confidence tier derived from the within-race standard
+// deviation of predicted_score for the single model_version selected_model resolves
+// to below. Purely additive: this never feeds back into predicted_rank / row order.
+//
+// Thresholds derived from 31,092 real (race, seed, fold_year) walk-forward scoring
+// instances across all 10 JRA venues, 2023-2025 blind folds, field_size >= 5, using
+// apps/pc-keiba-viewer/tmp/confidence-shrinkage/raw_base_predictions.parquet:
+//   min 0.449, p10 1.075, p25 1.229, tercile1 (33rd pct) 1.289, median 1.393,
+//   tercile2 (67th pct) 1.502, p75 1.562, p90 1.691, max 2.184, mean 1.388.
+// The two cut points below are those tercile boundaries rounded to one decimal
+// place (1.289 -> 1.3, 1.502 -> 1.5). Standard deviation is the sample stddev
+// (N-1 divisor), matching the pandas groupby(...).std() default used to compute
+// the source distribution above.
+const FINISH_POSITION_CONFIDENCE_LOW_MAX_STDDEV = 1.3;
+const FINISH_POSITION_CONFIDENCE_MID_MAX_STDDEV = 1.5;
+const FINISH_POSITION_CONFIDENCE_MIN_VALID_SCORES = 2;
+
+const resolveFinishPositionConfidenceTier = (stddev: number): FinishPositionConfidenceTier => {
+  if (stddev < FINISH_POSITION_CONFIDENCE_LOW_MAX_STDDEV) {
+    return "low";
+  }
+  if (stddev < FINISH_POSITION_CONFIDENCE_MID_MAX_STDDEV) {
+    return "mid";
+  }
+  return "high";
+};
+
+// Population is every horse's predicted_score in the race (all sharing one
+// model_version, since selected_model above already resolved to exactly one).
+// Returns null -- no badge -- when fewer than 2 valid scores exist, rather than
+// fabricating a tier from an undefined or degenerate (always-zero) spread.
+const calculateFinishPositionConfidenceTier = (
+  rawScores: ReadonlyArray<string | null>,
+): FinishPositionConfidenceTier | null => {
+  const scores = rawScores
+    .map((value) => (value === null ? null : Number(value)))
+    .filter((value): value is number => value !== null && Number.isFinite(value));
+  if (scores.length < FINISH_POSITION_CONFIDENCE_MIN_VALID_SCORES) {
+    return null;
+  }
+  const mean = scores.reduce((total, value) => total + value, 0) / scores.length;
+  const variance =
+    scores.reduce((total, value) => total + (value - mean) ** 2, 0) / (scores.length - 1);
+  return resolveFinishPositionConfidenceTier(Math.sqrt(variance));
+};
+
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
     return withDbQueryCache(
@@ -3085,6 +3132,9 @@ export const getFinishPositionLambdarankPredictions = cache(
               and p.keibajo_code = ${race.keibajoCode}
               and p.race_bango = ${race.raceBango}
           `);
+          const confidenceTier = calculateFinishPositionConfidenceTier(
+            result.rows.map((row) => row.predicted_score),
+          );
           return result.rows.map((row) => {
             const fieldSize = Math.max(1, row.shusso_tosu ?? runners.length);
             const denominator = Math.max(1, fieldSize - 1);
@@ -3093,6 +3143,7 @@ export const getFinishPositionLambdarankPredictions = cache(
               Math.max(0, (row.predicted_rank - 1) / denominator),
             );
             return {
+              confidenceTier,
               horseNumber: String(row.umaban),
               modelVersion: row.model_version,
               predictedFinishNorm,

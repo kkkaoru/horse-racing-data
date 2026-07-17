@@ -1,10 +1,28 @@
 # 確信度表示層 — 設計提案 (2026-07-17)
 
-**Status**: 設計のみ、実装なし。USER go/no-go 判断用の 1 ページ提案書。
-**Scope**: `apps/pc-keiba-viewer` の finish-position 予測表示。**3 案とも
+**Status**: USER 決定⑥により (a)・(b) を実装、本番投入済み (2026-07-18)。(c) は
+保留のまま。**Scope**: `apps/pc-keiba-viewer` の finish-position 予測表示。**3 案とも
 `predicted_rank`（推薦順位）を一切変更しない** — 既存予測結果の「見せ方」の
 みを変える display-layer 改善であり、§7.2 accept gate や WF/serve accuracy
 の gated metrics には一切触れない（§5 で根拠を明示）。
+
+## 実装メモ (2026-07-18)
+
+(a)/(b) は worktree branch 上で先に実装され (`commit 99af695d`)、`main` への
+cherry-pick 中に `queries.ts` で conflict が発生 (`git status` に `UU` として
+07-18 未明から放置)。原因は同じ挿入点で 2 つの独立した module-scope 定数
+ブロックが競合しただけ — `main` 側 (`commit 1b74e097`, tier-3 off-label
+variant 防御的 hardening) と cherry-pick 側 (本 doc の確信度 tier 計算) は
+互いのロジックに一切依存しない。両ブロックをそのまま両方保持する形で解消
+(順序: 既存の off-label variant ブロックを先、確信度 tier ブロックを後ろに
+配置)。他の 7 ファイル (globals.css / queries.test.ts /
+finish-position-prediction-table.tsx(+test) /
+finish-position-prediction.ts(+test) / race-types.ts) は cherry-pick 時点で
+無 conflict のまま既に stage 済みだった。解消後 `bun run --filter
+pc-keiba-viewer tsc` / `lint` / `format:check` / `test:coverage` を実行し、
+全て成功 (coverage: statements 99.36% / branches 97.36% / functions 99.14%
+/ lines 99.39%、閾値 95% を全指標で超過、176 test files / 3945 tests pass)
+したことを確認して `git cherry-pick --continue` 相当のコミットで着地。
 
 ## 0. なぜ今この角度か
 

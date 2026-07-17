@@ -6837,6 +6837,53 @@ fieldset.stats-section-toggle-wrap {
   margin-bottom: var(--space-14px-55);
 }
 
+.finish-prediction-race-badges {
+  align-items: center;
+  column-gap: var(--space-8px-28);
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-14px-55);
+  row-gap: var(--space-6px-33);
+}
+
+.finish-prediction-confidence-badge {
+  background: color-mix(in srgb, var(--badge-color) var(--space-14pct-123), var(--surface));
+  border: var(--space-1px-7) solid
+    color-mix(in srgb, var(--badge-color) var(--space-42pct-124), var(--surface));
+  border-radius: var(--space-999px-30);
+  color: color-mix(in srgb, var(--badge-color) var(--space-72pct-125), var(--ink));
+  display: inline-flex;
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+  padding: var(--space-4px-18) var(--space-8px-28);
+  white-space: nowrap;
+}
+
+.finish-prediction-confidence-badge-low {
+  --badge-color: var(--muted);
+}
+
+.finish-prediction-confidence-badge-mid {
+  --badge-color: var(--accent);
+}
+
+.finish-prediction-confidence-badge-high {
+  --badge-color: var(--accent-strong);
+}
+
+.finish-prediction-upset-warning-badge {
+  background: color-mix(in srgb, var(--danger) var(--space-14pct-123), var(--surface));
+  border: var(--space-1px-7) solid
+    color-mix(in srgb, var(--danger) var(--space-42pct-124), var(--surface));
+  border-radius: var(--space-999px-30);
+  color: color-mix(in srgb, var(--danger) var(--space-72pct-125), var(--ink));
+  display: inline-flex;
+  font-size: var(--space-13px-92);
+  font-weight: var(--number-700-14);
+  padding: var(--space-4px-18) var(--space-8px-28);
+  white-space: nowrap;
+}
+
 .finish-prediction-odds-toggle {
   align-items: center;
   column-gap: var(--space-12px-9);

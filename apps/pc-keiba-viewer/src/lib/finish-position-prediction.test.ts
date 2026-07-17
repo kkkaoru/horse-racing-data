@@ -290,6 +290,55 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.winProbability).toBeGreaterThan(0);
   });
 
+  it("propagates the race-level confidenceTier from modelPredictionFeatures onto every output row", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          confidenceTier: "high",
+          horseNumber: "01",
+          modelVersion: "test-model",
+          predictedFinishNorm: 0.2,
+          showProbability: null,
+          winProbability: null,
+        },
+        {
+          confidenceTier: "high",
+          horseNumber: "02",
+          modelVersion: "test-model",
+          predictedFinishNorm: 0.8,
+          showProbability: null,
+          winProbability: null,
+        },
+      ],
+      results: [],
+      runners: [
+        runner({ bamei: "馬1", tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "01" }),
+        runner({ bamei: "馬2", tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "02" }),
+      ],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.confidenceTier).toStrictEqual("high");
+    expect(rows[1]?.confidenceTier).toStrictEqual("high");
+  });
+
+  it("defaults confidenceTier to null when no model prediction features are supplied", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      results: [],
+      runners: [runner({ bamei: "モデル無し馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+    });
+
+    expect(rows[0]?.confidenceTier).toStrictEqual(null);
+  });
+
   it("uses LightGBM, LSTM, and Transformer model predictions as an ensemble", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
