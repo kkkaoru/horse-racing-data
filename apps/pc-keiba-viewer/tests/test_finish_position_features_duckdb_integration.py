@@ -400,6 +400,103 @@ def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale
     assert out["corner1_norm"][0] is None
 
 
+def test_build_rec_select_sql_upcoming_window_treats_unconfirmed_odds_placeholder_as_null():
+    """Regression test for a gap found during the 2026-07-17
+    bug-regression-test-audit campaign (docs/probes/
+    bug-regression-test-audit-2026-07-17.md, item I): jvd_se's
+    tansho_ninkijun/tansho_odds use the same non-NULL zero-string placeholder
+    convention documented for kakutei_chakujun (reference_jvd_placeholder_
+    semantics memory) -- confirmed empirically against the local PG mirror
+    (2026-07-17): every 2026 jvd_se row with tansho_ninkijun='00' has
+    tansho_odds='0000' too (816/816, exact co-occurrence). The UPCOMING-branch
+    fallback (used when no realtime_odds_rt override resolves) previously cast
+    these directly (`try_cast(nullif(trim(...), '') as ...)`, which only
+    guards the empty-string case) -- '00'/'0000' cast cleanly to 0/0.0 instead
+    of NULL, which would have fed a fabricated "this horse is the certain
+    favorite at 0.0x odds" value into every unconfirmed-odds row a race's
+    feature build ever saw for an as-yet-unresolved horse. This test builds
+    one placeholder row (not-yet-confirmed) and one normal row side by side
+    and asserts the placeholder row comes out NULL while the normal row
+    parses correctly.
+    """
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    # An empty-but-correctly-typed corner_df: constructing straight from an
+    # empty list (schema=column-names-only) leaves DuckDB unable to infer
+    # real types for the branch this gets UNIONed with (the same reason the
+    # nvd_se/nvd_ra tables below are built via `limit 0` off a populated
+    # frame, not from an empty literal). One real row, then trimmed to zero.
+    corner_df = pl.DataFrame(
+        [
+            (
+                "jra", "20260627", "2026", "0627", "02", "01", "h999", 9, "j9", "t9",
+                1600, "10", "A", "703", 10,
+                None, None, 35.0, 34.0, 0.3, 0.35, 0.4, 0.5,
+                "1", None, 2, 5.0, 1, 3,
+            ),
+        ],
+        schema=REC_COLUMNS,
+        orient="row",
+    )
+    con.register("corner_df", corner_df)
+    con.execute(
+        "create table pg.race_entry_corner_features as select * from corner_df limit 0"
+    )
+    se_df = pl.DataFrame(
+        [
+            (
+                "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
+                "00", "", "", "00", "0000", "480", "1", "3",
+            ),
+            (
+                "2026", "0627", "02", "01", "h002", "02", "j2", "t2",
+                "00", "", "", "03", "0055", "470", "1", "4",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.jvd_se as select * from se_df")
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2026", "0627", "02", "01", "1600", "10", "A", "703",
+                "10", "1", None,
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.jvd_ra as select * from ra_df")
+    con.execute("create table pg.nvd_se as select * from se_df limit 0")
+    con.execute("create table pg.nvd_ra as select * from ra_df limit 0")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.build_rec_select_sql(
+        "jra", "20130101", "20260627", ("20260627", "20260627")
+    )
+    out = con.execute(sql).pl().sort("umaban")
+
+    assert out.height == 2
+    placeholder_row = out.filter(pl.col("umaban") == 1)
+    assert placeholder_row["tansho_ninkijun"][0] is None
+    assert placeholder_row["tansho_odds"][0] is None
+    normal_row = out.filter(pl.col("umaban") == 2)
+    assert normal_row["tansho_ninkijun"][0] == 3
+    assert normal_row["tansho_odds"][0] == 5.5
+
+
 def test_stage_se_table_filters_by_concatenated_date(capsys: pytest.CaptureFixture[str]):
     captured = _ExecCaptureCon()
     subject.stage_se_table(

@@ -704,11 +704,11 @@ def _rec_select_from_se_ra(
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
       coalesce(
         rt.ninkijun_realtime,
-        try_cast(nullif(trim(se.tansho_ninkijun), '') as int)
+        try_cast(nullif(nullif(trim(se.tansho_ninkijun), ''), '00') as int)
       ) as tansho_ninkijun,
       coalesce(
         rt.tansho_odds_realtime,
-        try_cast(nullif(trim(se.tansho_odds), '') as double) / 10
+        try_cast(nullif(nullif(trim(se.tansho_odds), ''), '0000') as double) / 10
       ) as tansho_odds,
       coalesce(
         rt.bataiju_realtime,
