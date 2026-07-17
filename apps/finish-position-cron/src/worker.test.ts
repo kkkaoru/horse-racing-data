@@ -88,8 +88,14 @@ vi.mock("./day-base-prewarm", () => ({
   runDayBasePrewarm: runDayBasePrewarmMock,
 }));
 
+// shouldRunCornerFeaturesRefreshCron is a pure string comparison against the
+// two real cron constants (CORNER_FEATURES_REFRESH_CRON_MORNING/_EVENING,
+// corner-features-refresh.ts) -- inlined here as literals rather than
+// re-derived, mirroring the shouldRunCoverageSelfHealCron mock below.
 vi.mock("./corner-features-refresh", () => ({
   refreshCornerFeatures: refreshCornerFeaturesMock,
+  shouldRunCornerFeaturesRefreshCron: (cron: string) =>
+    cron === "15 0 * * *" || cron === "0 13 * * *",
 }));
 
 // shouldRunCoverageSelfHealCron is a pure string comparison against the real
@@ -392,6 +398,52 @@ test("handleScheduled does not refresh corner features on the feature-build cron
   await handleScheduled(makeEvent("30 0 * * *"), makeEnv());
   expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
   expect(runDayBasePrewarmMock).toHaveBeenCalledTimes(1);
+});
+
+test("handleScheduled dispatches corner-features refresh for the morning cron", async () => {
+  await handleScheduled(makeEvent("15 0 * * *"), makeEnv());
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledTimes(1);
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 2, lookbackDays: 0, runYmd: "20260603" }),
+  );
+});
+
+test("handleScheduled dispatches corner-features refresh for the evening cron", async () => {
+  await handleScheduled(makeEvent("0 13 * * *"), makeEnv());
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledTimes(1);
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
+    expect.objectContaining({ daysAhead: 2, lookbackDays: 0, runYmd: "20260603" }),
+  );
+});
+
+test("handleScheduled passes CORNER_FEATURES_LOOKBACK_DAYS through to the corner-features refresh", async () => {
+  const env = { ...makeEnv(), CORNER_FEATURES_LOOKBACK_DAYS: "7" };
+  await handleScheduled(makeEvent("0 13 * * *"), env);
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
+    expect.objectContaining({ lookbackDays: 7 }),
+  );
+});
+
+test("handleScheduled defaults corner-features lookbackDays to 0 when CORNER_FEATURES_LOOKBACK_DAYS is unset", async () => {
+  await handleScheduled(makeEvent("15 0 * * *"), makeEnv());
+  expect(refreshCornerFeaturesMock).toHaveBeenCalledWith(
+    expect.objectContaining({ lookbackDays: 0 }),
+  );
+});
+
+test("handleScheduled corner-features refresh cron does not start container, warm, coordinate, or self-heal", async () => {
+  await handleScheduled(makeEvent("15 0 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+  expect(runDayBasePrewarmMock).not.toHaveBeenCalled();
+  expect(runCoverageSelfHealMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not refresh corner features for the coverage self-heal cron", async () => {
+  await handleScheduled(makeEvent("7,22,37,52 1-11 * * *"), makeEnv());
+  expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled feature-build cron does not enqueue a direct full-mode predict", async () => {

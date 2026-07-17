@@ -39,6 +39,18 @@
       // only the specific races whose post time is >15 min past and still
       // missing a complete prediction (see src/coverage-self-heal.ts).
       "7,22,37,52 1-11 * * *", // JST 10:00-20:59 — coverage self-healing scan
+      // race_entry_corner_features refresh (§4.4, src/corner-features-refresh.ts):
+      // morning run populates pre-race entrant rows before the JRA pre-wake/
+      // feature-build crons above read them; evening run (after the last
+      // race-hours tick, JST 20:59) upserts today's now-settled finish_position
+      // etc. Both pass CORNER_FEATURES_LOOKBACK_DAYS below so either run also
+      // re-sweeps recent days whose settlement columns were still NULL on a
+      // prior visit -- the self-heal fix for the incident documented in
+      // docs/probes/corner-features-settlement-backfill-heal-2026-07-17.md
+      // (this refresher existed since 2026-07-12 but was never wired to any
+      // cron until now). Idempotent upsert-only, safe to run twice a day.
+      "15 0 * * *", // JST 09:15 — corner-features refresh (morning, pre-race)
+      "0 13 * * *", // JST 22:00 — corner-features refresh (evening, settlement)
       // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
       // disabled until PHASE 3 pilot confirms full-mode container viability.
       // To enable: uncomment the line below and wrangler deploy.
@@ -98,6 +110,15 @@
   ],
   "vars": {
     "PREDICT_DAYS_AHEAD": "2",
+    // Backward window (days) the corner-features-refresh crons above
+    // additionally sweep on every run, so a day whose settlement columns
+    // (finish_position etc.) were still NULL on a prior visit gets
+    // re-upserted instead of staying permanently stuck once it ages past the
+    // forward [runYmd, runYmd+PREDICT_DAYS_AHEAD] window. 7 days gives two
+    // fires/day (morning + evening) up to 14 chances to catch a gap before
+    // it falls outside this window; tune down if the wider raw_rows scan
+    // proves costly (Neon cost-consciousness, see repo memory).
+    "CORNER_FEATURES_LOOKBACK_DAYS": "7",
     // Heavy prediction reads use the dedicated Iceberg catalog. Neon remains
     // only for lightweight viewer reads and prediction-result projection.
     "SOURCE_DATABASE_URL": "r2-catalog://pc-keiba",

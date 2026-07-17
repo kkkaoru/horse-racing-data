@@ -23,6 +23,13 @@ export interface Env {
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
+  // Backward window (days) the corner-features-refresh.ts evening/morning
+  // crons additionally sweep, so a day whose settlement columns were still
+  // NULL on a prior visit gets re-upserted instead of staying permanently
+  // stuck (docs/probes/corner-features-settlement-backfill-heal-2026-07-17.md).
+  // Optional so existing callers/tests need not set it; unset/unparseable
+  // falls back to 0 (no backward window, matching the pre-lookback behavior).
+  CORNER_FEATURES_LOOKBACK_DAYS?: string;
   PC_KEIBA_R2_CATALOG?: CatalogServiceBinding;
   // Read/source connection for the heavy DuckDB feature build. Production sets
   // r2-catalog://pc-keiba; an unset value is forwarded empty and the container

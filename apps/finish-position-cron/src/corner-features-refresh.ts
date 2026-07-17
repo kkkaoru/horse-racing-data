@@ -33,17 +33,53 @@
 // now-available rows on its own, since every statement above is
 // idempotent/upsert-only.
 
-import { neon } from "@neondatabase/serverless";
+import { neon, type NeonQueryFunction } from "@neondatabase/serverless";
 import type { Env } from "./types";
 
 const YYYYMMDD_YEAR_END = 4;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const NO_LOOKBACK_DAYS = 0;
 
 interface RefreshCornerFeaturesParams {
   env: Env;
   runYmd: string;
   daysAhead: number;
+  // Optional backward extension of the upsert's date window, so a run that
+  // fires after the primary window (see CORNER_FEATURES_REFRESH_CRON_MORNING/
+  // _EVENING below) also re-touches the last N days. This is the self-heal
+  // mechanism for the 2026-07-17 finding (docs/probes/
+  // corner-features-settlement-backfill-heal-2026-07-17.md): a day whose
+  // settlement columns were still NULL when this cron last visited it (e.g.
+  // this cron was never wired at all before, or a single day's run failed)
+  // gets swept up again by any later run within lookbackDays, instead of
+  // being permanently stuck once it ages out of [runYmd, runYmd+daysAhead].
+  // Absent/0 preserves the original forward-only window (fromDate = runYmd).
+  lookbackDays?: number;
 }
+
+// JST 09:15, 5 min before the existing JRA pre-wake (WARM_CRON_PRE_JRA,
+// "25 0 * * *") and feature-build (FEATURE_BUILD_CRON, "30 0 * * *") crons in
+// cron-decision.ts, so today's pre-race entrant rows exist before those
+// crons' work reads them. Named/scoped locally (not added to
+// cron-decision.ts) mirroring coverage-self-heal.ts's own
+// COVERAGE_SELF_HEAL_CRON precedent -- a self-contained module owns its own
+// cron string rather than centralizing every schedule in one file.
+export const CORNER_FEATURES_REFRESH_CRON_MORNING = "15 0 * * *";
+// JST 22:00, after the last JRA/NAR race-hours tick (WARM_CRON_RACE_HOURS ends
+// at JST 20:59) with a buffer for kakutei_chakujun to settle into jvd_se/
+// nvd_se, so today's races' settlement columns get upserted the same day they
+// run instead of waiting for lookbackDays on a future run to catch them.
+export const CORNER_FEATURES_REFRESH_CRON_EVENING = "0 13 * * *";
+
+const CORNER_FEATURES_REFRESH_CRONS: ReadonlySet<string> = new Set([
+  CORNER_FEATURES_REFRESH_CRON_MORNING,
+  CORNER_FEATURES_REFRESH_CRON_EVENING,
+]);
+
+// Returns true when the cron string matches one of the two corner-features
+// refresh schedules (morning pre-race populate, evening settlement catch-up).
+export const shouldRunCornerFeaturesRefreshCron = (cron: string): boolean =>
+  CORNER_FEATURES_REFRESH_CRONS.has(cron);
 
 const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   const year = Number.parseInt(yyyymmdd.slice(0, YYYYMMDD_YEAR_END), 10);
@@ -56,9 +92,17 @@ const addDaysToYyyymmdd = (yyyymmdd: string, days: number): string => {
   return `${y}${m}${d}`;
 };
 
-const CORNER_FEATURES_TABLE_DDL = `
-  create extension if not exists vector;
+// Two separate statements (not one semicolon-joined string): neon()'s
+// serverless HTTP driver runs each sql.query() call as a single prepared
+// statement and rejects "cannot insert multiple commands into a prepared
+// statement" for a string containing more than one command -- confirmed
+// against real production Neon on 2026-07-17 while backfilling the
+// zero-row NAR gap (docs/probes/corner-features-settlement-backfill-heal-
+// 2026-07-17.md); the previous single combined string had never actually
+// succeeded against real Neon, only against the mocked driver in tests.
+const CORNER_FEATURES_EXTENSION_DDL = "create extension if not exists vector";
 
+const CORNER_FEATURES_TABLE_DDL = `
   create table if not exists race_entry_corner_features (
     source text not null,
     race_date text not null,
@@ -128,12 +172,19 @@ const CORNER_FEATURES_ALTER_STATEMENTS: readonly string[] = [
   "alter table race_entry_corner_features add column if not exists kohan_3f numeric",
 ];
 
+// Excludes source/kaisai_nen/kaisai_tsukihi/keibajo_code/race_bango: both
+// callers (buildJraSelectSql/buildNarSelectSql) already select those in the
+// SELECT list this constant is appended to ('jra'/'nar' source, ra.kaisai_nen,
+// ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango). A prior version of this
+// constant repeated them here as bare, unqualified names -- a select-list item
+// cannot reference another item's own alias (source here is a string literal
+// alias, not a real jvd_se/nvd_se/jvd_ra/nvd_ra column), so every raw_rows
+// query failed with "column \"source\" does not exist" and
+// refreshCornerFeatures() never wrote a single row, independent of the
+// multi-statement DDL and CREATE EXTENSION permission issues fixed alongside
+// this (all three found together while backfilling the 2026-07-17 NAR
+// zero-row gap, see corner-features-settlement-backfill-heal-2026-07-17.md).
 const ENTRY_COLUMNS = `
-  source,
-  kaisai_nen,
-  kaisai_tsukihi,
-  keibajo_code,
-  race_bango,
   se.ketto_toroku_bango,
   se.umaban,
   se.bamei,
@@ -197,10 +248,15 @@ const buildNarSelectSql = (dateFilter: string): string => `
     ${dateFilter}
 `;
 
-// Normalization + upsert, verbatim from build-corner-feature-table.ts's
+// Normalization + upsert, ported from build-corner-feature-table.ts's
 // buildSql (see that file for the full derivation of each *_norm / the
-// 8-dimension feature_vector) -- only the raw_rows source selects differ
-// (date-window-parameterized here instead of CLI-flag-parameterized there).
+// 8-dimension feature_vector) -- the raw_rows source selects differ
+// (date-window-parameterized here instead of CLI-flag-parameterized there),
+// and time_sa's regex was widened to `^[+-]?[0-9]+$`: jvd_se/nvd_se.time_sa is
+// sign-prefixed ('+012', '-000'), unlike every other raw column normalized
+// here, so the original unsigned-only regex silently matched zero rows (found
+// 2026-07-17 while healing 0523/0524/0627/0711/0712's permanently-NULL
+// settlement columns -- see corner-features-settlement-backfill-heal-2026-07-17.md).
 const buildCornerFeaturesUpsertSql = (fromDate: string, toDate: string): string => {
   const dateFilter = buildRaceDateFilterSql(fromDate, toDate);
   return `
@@ -247,7 +303,7 @@ const buildCornerFeaturesUpsertSql = (fromDate: string, toDate: string): string 
         case when tansho_ninkijun ~ '^[0-9]+$' then nullif(tansho_ninkijun, '00')::integer else null end tansho_ninkijun,
         case when tansho_odds ~ '^[0-9]+$' then nullif(tansho_odds, '0000')::numeric / 10 else null end tansho_odds,
         case when soha_time ~ '^[0-9]+$' then nullif(soha_time, '0000')::integer else null end soha_time,
-        case when time_sa ~ '^[0-9]+$' then nullif(time_sa, '0000')::numeric / 10 else null end time_sa,
+        case when time_sa ~ '^[+-]?[0-9]+$' then nullif(time_sa, '0000')::numeric / 10 else null end time_sa,
         case when kohan_3f ~ '^[0-9]+$' then nullif(kohan_3f, '000')::numeric / 10 else null end kohan_3f,
         case
           when shusso_tosu ~ '^[0-9]+$' and corner_1 ~ '^[0-9]+$' then
@@ -382,24 +438,54 @@ const CORNER_FEATURES_INDEX_STATEMENTS: readonly string[] = [
 // degrades the completion check's accuracy (the status quo before this
 // refresh existed) but must never block the day-base prewarm cron it runs
 // alongside.
-export const refreshCornerFeatures = async (params: RefreshCornerFeaturesParams): Promise<void> => {
-  const { env, runYmd, daysAhead } = params;
-  console.log(`[corner-features-refresh] start runYmd=${runYmd} daysAhead=${daysAhead}`);
+const resolveFromDate = (runYmd: string, lookbackDays: number | undefined): string =>
+  lookbackDays ? addDaysToYyyymmdd(runYmd, -lookbackDays) : runYmd;
+
+// Best-effort only: the connecting role for env.NEON_DATABASE_URL is a
+// regular application role, not a superuser, and Neon reserves CREATE
+// EXTENSION for elevated roles (confirmed against real production Neon on
+// 2026-07-17: "cannot execute CREATE EXTENSION in a read-only transaction",
+// see corner-features-settlement-backfill-heal-2026-07-17.md). The pgvector
+// extension this statement installs is already active in production (the
+// table's existing rows already use the vector(8) feature_vector column), so
+// a permission failure here is expected steady-state, not a real problem --
+// swallowing it (unlike every other statement in refreshCornerFeatures,
+// which aborts the whole run on any failure) lets a genuinely fresh
+// environment's real failure still surface in the outer catch below while a
+// known-redundant permission denial never blocks the rest of the refresh.
+const ensureVectorExtension = async (sql: NeonQueryFunction<false, false>): Promise<void> => {
   try {
+    await sql.query(CORNER_FEATURES_EXTENSION_DDL);
+  } catch (err) {
+    console.warn(`[corner-features-refresh] create extension vector skipped: ${String(err)}`);
+  }
+};
+
+export const refreshCornerFeatures = async (params: RefreshCornerFeaturesParams): Promise<void> => {
+  const { env, runYmd, daysAhead, lookbackDays } = params;
+  const effectiveLookbackDays = lookbackDays ?? NO_LOOKBACK_DAYS;
+  console.log(
+    `[corner-features-refresh] start runYmd=${runYmd} daysAhead=${daysAhead} lookbackDays=${effectiveLookbackDays}`,
+  );
+  try {
+    const fromDate = resolveFromDate(runYmd, lookbackDays);
     const toDate = addDaysToYyyymmdd(runYmd, daysAhead);
     const sql = neon(env.NEON_DATABASE_URL);
+    await ensureVectorExtension(sql);
     await sql.query(CORNER_FEATURES_TABLE_DDL);
     for (const statement of CORNER_FEATURES_ALTER_STATEMENTS) {
       await sql.query(statement);
     }
-    await sql.query(buildCornerFeaturesUpsertSql(runYmd, toDate));
+    await sql.query(buildCornerFeaturesUpsertSql(fromDate, toDate));
     for (const statement of CORNER_FEATURES_INDEX_STATEMENTS) {
       await sql.query(statement);
     }
-    console.log(`[corner-features-refresh] ok runYmd=${runYmd} toDate=${toDate}`);
+    console.log(
+      `[corner-features-refresh] ok runYmd=${runYmd} fromDate=${fromDate} toDate=${toDate}`,
+    );
   } catch (err) {
     console.error(
-      `[corner-features-refresh] failed runYmd=${runYmd} daysAhead=${daysAhead}: ${String(err)}`,
+      `[corner-features-refresh] failed runYmd=${runYmd} daysAhead=${daysAhead} lookbackDays=${effectiveLookbackDays}: ${String(err)}`,
     );
   }
 };

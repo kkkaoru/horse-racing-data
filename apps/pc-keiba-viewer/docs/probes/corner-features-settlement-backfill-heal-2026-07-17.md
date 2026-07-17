@@ -194,21 +194,24 @@ spot-check (jra 20260712 venue02 R01, 12頭立て、healed 後の実値):
   存在しない以上そこから埋めることは原理的に不可能。本 heal のスコープ外
   として報告のみに留める。
 
-**heal されなかった残存項目 (未対処、報告のみ)**:
+**heal されなかった残存項目 (本セクション記載時点で未対処。§5 で 1・3・4 は解消済み、2 は引き続き未解決)**:
 
 1. **07-13〜07-15 (NAR) の行自体の欠落** — INSERT が必要でUPDATE-onlyの
    本 heal 権限の範囲外。`corner-features-refresh.ts` を worker.ts に
    配線するか、`generate-win5-overlay.ts` を手動実行 (14日 lookback が
-   これらの日を含む形で) すれば埋まる可能性がある。
+   これらの日を含む形で) すれば埋まる可能性がある。**→ §5.3 で解消
+   (既存経路を直接手動実行、Neon 側のみ)。**
 2. **nar 0103・0519 の finish_position** — `nvd_se` 自体の欠落、別の
-   upstream 調査が必要。
+   upstream 調査が必要。**→ 引き続き未解決 (本 heal のスコープ外)。**
 3. **`corner-features-refresh.ts` が worker.ts に未配線** —
    コード変更が必要なため本監査では実施しない (提案のみ)。配線されない
    限り、今後も「決済確定前に挿入され、その後二度と再訪されない日」は
-   同型の恒久 NULL を生み続ける。
+   同型の恒久 NULL を生み続ける。**→ §5.2 で解消 (cron 配線 + backward
+   lookback 追加、ただし deploy は team-lead の GO 待ち)。**
 4. **`corner-features-refresh.ts` 自身の `time_sa` 正規表現バグ**
    (符号非対応) — 現在は未配線のため実害は無いが、将来配線する際は
-   同時に直すべき。
+   同時に直すべき。**→ §5.1 で解消。加えて §5.1 で real-Neon smoke 中に
+   さらに 2 件の独立した既存バグを発見・修正 (詳細は §5.1)。**
 
 ## 4. 総括
 
@@ -224,3 +227,169 @@ spot-check (jra 20260712 venue02 R01, 12頭立て、healed 後の実値):
 
 すべての変更は before/after を独立した read-only クエリで検証済み。
 local PG と Neon (production) は heal 後も完全に同じ値を持つ。
+
+**この直後、team-lead から続投指示を受け §5 の恒久化作業を実施した。§4 の
+「未解決の欠落」「コード変更」行は §5 時点でそれぞれ更新されている
+(NAR 07-13〜07-15 は §5.3 で解消、コード変更は
+`apps/finish-position-cron` に実施 — `apps/sync-realtime-data` は
+最後まで一切未編集)。**
+
+## 5. 恒久化 (team-lead 続投指示、2026-07-17 追記)
+
+`apps/sync-realtime-data` は最後まで一切編集していない (read のみの制約は継続)。
+以下はすべて `apps/finish-position-cron` (別パッケージ) への変更。
+
+### 5.1 `corner-features-refresh.ts` の修正 — regex バグ + 独立発見の 2 バグ
+
+団長指示の `time_sa` 正規表現バグ (`^[0-9]+$` → `^[+-]?[0-9]+$`、§3.2 で local
+heal 時に発見したものと同一) を production コードにも適用した。**それに加え、
+実際に本番 Neon へ smoke するまで誰も気づいていなかった、独立した 2 件の
+既存バグを発見・修正した** — mock されたテストは常に成功を返す `vi.fn()` を
+使っていたため、これらは一度も検出されていなかった:
+
+1. **複数コマンドの単一 `sql.query()` 呼び出し**: `CORNER_FEATURES_TABLE_DDL`
+   が `create extension if not exists vector; create table if not exists ...`
+   をセミコロン区切りの1つの文字列として保持しており、`neon()` の
+   serverless HTTP driver は `NeonDbError: cannot insert multiple commands
+into a prepared statement` で拒否することを実際の本番 Neon に対して確認した。
+   `CORNER_FEATURES_EXTENSION_DDL` として独立した文へ分離し、2 回の
+   `sql.query()` 呼び出しに分割した。
+2. **`CREATE EXTENSION` の権限不足**: 分離後、今度は
+   `cannot execute CREATE EXTENSION in a read-only transaction` で失敗した。
+   pgvector 拡張は既存データ (`feature_vector vector(8)` 列) が使っている
+   ため実際にはインストール済みであり、この文は本質的に no-op な
+   bootstrap ステップに過ぎない。`ensureVectorExtension()` として分離し、
+   失敗を warning ログのみで飲み込んで後続処理を止めないようにした
+   (関数内の他の全ステップは従来通り、失敗すると refresh 全体を中断する)。
+3. **`ENTRY_COLUMNS` の壊れた列重複** (最も重大): `buildJraSelectSql` /
+   `buildNarSelectSql` は既に
+   `select 'jra'/'nar' source, ra.kaisai_nen, ra.kaisai_tsukihi,
+ra.keibajo_code, ra.race_bango,` を select リストに含めた上で
+   `${ENTRY_COLUMNS}` を追記していたが、`ENTRY_COLUMNS` 自体の先頭にも
+   `source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,` という
+   **無限定 (テーブル修飾なし) の重複行**があった。SQL の select リストは
+   同じリスト内の別項目のエイリアスを参照できず (`source` はここでは文字列
+   リテラルへのエイリアスであって `jvd_se`/`jvd_ra` の実列ではない)、
+   実行すると必ず `NeonDbError: column "source" does not exist` で失敗する
+   ことを実際の本番 Neon に対して確認した (psycopg2 経由でも同一エラーを
+   再現し、driver 固有の問題ではなく純粋な SQL バグと確定)。`ENTRY_COLUMNS`
+   の重複 5 行を削除した。
+
+**この 3 バグはすべて日付範囲やデータに関係なく、`refreshCornerFeatures()`
+が呼ばれるたびに必ず失敗する類のバグである。** つまり
+`corner-features-refresh.ts` は 2026-07-12 の commit (`bfd6c13d` /
+`d84ca119`) 以来、**cron に配線されていなかった事実と関係なく、そもそも
+一度も本番 Neon への書き込みに成功したことがなかった**——たとえ当時 cron に
+配線されていたとしても、try/catch に飲み込まれたエラーログを誰も見る機会
+がないまま、毎回何もせず失敗し続けていたはずである。
+
+検証方法: 各修正を real 本番 Neon に対して個別に確認した (`bun run` で実際の
+`refreshCornerFeatures()` を直接 import・実行、および抽出した SQL 文字列を
+psycopg2 でロールバック付きドライランする二重確認)。最終的に §5.3 の実書込
+で 1626 行が正しく作成されたことが最終確認になっている。
+
+### 5.2 cron 配線 + backward lookback (deploy 未実施、team-lead の GO 待ち)
+
+- **`lookbackDays` オプション追加**: `refreshCornerFeatures()` に
+  `lookbackDays?: number` を追加。指定時は `fromDate = runYmd - lookbackDays`
+  (未指定/0 は従来通り `fromDate = runYmd`、後方互換)。§1 で述べた
+  「forward-only 設計だと決済確定前に挿入された日は二度と再訪されない」
+  という構造的欠陥への対処 — cron 自体が飛んだ日や 1 回失敗した日も、
+  後続の実行が `lookbackDays` 分だけ遡って自動的に拾い直す。
+- **cron 2 本を `wrangler.jsonc` に追加** (`worker.ts` の
+  `shouldRunCornerFeaturesRefreshCron` で分岐、`refreshCornerFeatures`
+  へ `daysAhead=env.PREDICT_DAYS_AHEAD`, `lookbackDays=
+env.CORNER_FEATURES_LOOKBACK_DAYS` を渡す):
+  - `15 0 * * *` (JST 09:15) — 朝、JRA prewake/feature-build cron (09:25/09:30)
+    の直前。当日の pre-race entrant 行を先に用意する。
+  - `0 13 * * *` (JST 22:00) — 夜、レース時間帯 cron の最終 tick (JST 20:59)
+    の後、kakutei_chakujun が確定するバッファを見て設定。当日レースの決済列
+    をその日のうちに埋める。
+  - `CORNER_FEATURES_LOOKBACK_DAYS=7` を `vars` に追加 (2 回/日 × 最大14回の
+    チャンスで直近の欠落を拾う計算)。Neon コスト最適化の観点から、raw_rows
+    のスキャン幅が広がるため、コストが問題になれば値を下げられるよう
+    env var 化した (memory `feedback_neon_cost_always_optimize` 参照)。
+- **既存 cron との衝突確認**: `wrangler.jsonc` の現行 cron 一覧
+  (`55 17`, `25 0`, `30 0`, `*/30 1-11`, `*/10 1-11`, `7,22,37,52 1-11`) と
+  分単位で重複しないことを確認済み。
+- **deploy は実施していない**: team-lead 指示により serve-defect-269 の
+  smoke 完了後に直列化するため待機。ローカルでの `tsc`/`lint`/
+  `format:check`/`test:coverage` はすべて green (624 tests, stmts 99.64% /
+  branches 96.78% / functions 100% / lines 99.77%、しきい値 95% を全指標で
+  上回る)。
+  - **deploy 手順** (team-lead の GO 後): `apps/finish-position-cron` で
+    `bunx wrangler deploy` (通常の Worker deploy、DB migration や Container
+    image rebuild は不要 — `race_entry_corner_features` の DDL は
+    `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` なので実行時に
+    自己完結する)。deploy 後の確認: 次の 09:15 または 22:00 JST tick で
+    `wrangler tail` または Cloudflare dashboard のログに
+    `[corner-features-refresh] ok runYmd=... fromDate=... toDate=...`
+    が出ることを確認し、Neon 側で該当日の `finish_position` 充足率が
+    上がっていることを read-only クエリで確認する。
+  - **rollback** (config のみ、redeploy 不要な場合): 問題が起きた場合は
+    `wrangler.jsonc` の 2 cron 行をコメントアウトして再 deploy すれば
+    即座に無効化できる (他の cron・既存機能への依存は無い、新規追加のみ)。
+    緊急停止したいだけなら `CORNER_FEATURES_LOOKBACK_DAYS` を `"0"` に
+    すれば forward-only の元の (今回 3 バグ修正済みの) 挙動に縮退できる。
+
+### 5.3 NAR 07-13〜07-15 の行自体の欠落 — 既存経路で解消 (Neon のみ)
+
+団長の条件 (「INSERT は既存 production 経路がある場合のみ実行、手書き
+INSERT は提案止まり」) に従い、**新しいコードを書く代わりに、上記で
+修正・レビュー済みの `refreshCornerFeatures()` を bun で直接 import・実行**
+した (`runYmd="20260715", daysAhead=0, lookbackDays=2` → 対象範囲
+`[20260713, 20260715]` に厳密に一致)。これは「将来 deploy される cron が
+実行するのと同一のコード」を手動で1回起動しただけであり、新規の
+手書き SQL ではない。
+
+**実行前に dry-run で件数確認**: 抽出した実 upsert SQL を psycopg2 で
+`rollback()` 付き実行し、1626 行が対象になることを 3 回連続で再現確認して
+から本実行した。
+
+**結果 (Neon のみ、read-only で独立検証済み)**:
+
+| source | race_date | total | finish_position | finish_norm | shusso_tosu | soha_time | time_sa | kohan_3f |
+| ------ | --------- | ----- | --------------- | ----------- | ----------- | --------- | ------- | -------- |
+| nar    | 0713      | 505   | 500             | 500         | 505         | 500       | 505     | 389      |
+| nar    | 0714      | 619   | 613             | 613         | 619         | 613       | 619     | 619      |
+| nar    | 0715      | 502   | 496             | 496         | 502         | 496       | 502     | 502      |
+
+合計 1626 行 (dry-run の事前確認と完全一致)。finish_position 非NULL率は
+`nvd_se` の確定行数 (500/613/496、§1 で既報) と一致 — 未確定分だけ正しく
+NULL のまま残っている。spot-check で `time_sa` の負値 (符号付きパース) も
+正しく反映されていることを確認した。
+
+**local PG は今回は未 heal**: `refreshCornerFeatures()` は
+`@neondatabase/serverless` の `neon()` (Neon 専用 HTTP driver) を使うため
+local PG (`127.0.0.1:15432`) には接続できない。local PG への同等の INSERT は
+既存経路が無く (win5-overlay の手動実行は範囲外、§1 参照)、新規の手書き
+INSERT は団長指示により実行不可のため、**local PG 側の 07-13〜07-15 行自体
+欠落は今回未解消のまま報告する**。local PG は元々 Neon からの一方向
+レプリケーションを受ける側ではなく win5-overlay が直接書く側という
+非対称な構成 (§1) のため、この差分は既存の generic replica-push だけでは
+埋まらない可能性が高い。
+
+### 5.4 テスト
+
+`corner-features-refresh.test.ts` に regex 修正・lookback・cron 述語・
+今回発見した 2 バグの回帰テストを追加 (21 tests、全 green)。
+`worker.test.ts` に cron 配線の分岐テストを追加 (新規 6 test、既存の
+コーディネータ/self-heal/feature-build 系との相互非干渉も確認)。
+
+パッケージ全体: 624 tests 全 green、
+stmts 99.64% / branches 96.78% / functions 100% / lines 99.77%
+(しきい値 95% を全指標で上回る)、`tsc` 0 errors、`oxlint` 0 warnings、
+`oxfmt --check` exit 0。
+
+### 5.5 補足: Neon 接続が数秒単位で read-only を返す一過性事象を観測
+
+本タスク中、`NEON_PRIMARY_URL` への複数の新規接続で
+`current_setting('default_transaction_read_only')` が `on`/`off` を
+数秒間隔で往復する事象を観測した (`inet_server_addr()` は `127.0.0.1` /
+`::1` — ローカルプロキシ/pooler 経由と判明、`pg_is_in_recovery()=false` な
+ので物理レプリカではない)。DDL/DML とも影響を受け、単純な retry で解消した
+(3 回連続成功を確認)。本件は Neon 側または local プロキシ側の一過性挙動と
+推測されるが原因の確定はしていない。**今後 agent がこの repo から Neon へ
+書き込む際、`ReadOnlySqlTransaction`/`cannot execute ... in a read-only
+transaction` に遭遇したら、まずは数回のリトライを試すこと** — コードや
+権限の恒久的な問題とは限らない。

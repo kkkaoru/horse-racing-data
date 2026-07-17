@@ -3,6 +3,10 @@
 import { getContainer } from "@cloudflare/containers";
 import { buildAuditBindParams, buildAuditInsertSql, buildAuditRecord } from "./audit";
 import { FinishPositionPredictContainer } from "./container-class";
+import {
+  refreshCornerFeatures,
+  shouldRunCornerFeaturesRefreshCron,
+} from "./corner-features-refresh";
 import { runCoverageSelfHeal, shouldRunCoverageSelfHealCron } from "./coverage-self-heal";
 import {
   PREDICT_CRON,
@@ -38,6 +42,11 @@ import type {
 
 const CONTAINER_INSTANCE_NAME = "daily-finish-position-predict";
 const ZERO_RACES = 0;
+// Conservative default (no backward window) when env.CORNER_FEATURES_LOOKBACK_DAYS
+// is unset -- matches refreshCornerFeatures's own forward-only default so an
+// environment/test fixture missing this var behaves exactly as it did before
+// the lookback feature was added.
+const CORNER_FEATURES_NO_LOOKBACK_DAYS = 0;
 const RUN_DATE_FIELD = "runDate";
 const MODE_FIELD = "mode";
 const CATEGORY_FIELD = "category";
@@ -582,6 +591,26 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     // focused-full DO claim/heartbeat/staleness semantics -- never a
     // day-wide re-run. See coverage-self-heal.ts.
     await runCoverageSelfHeal({ env, now: new Date(event.scheduledTime) });
+    return;
+  }
+  if (shouldRunCornerFeaturesRefreshCron(event.cron)) {
+    // §4.4 independent Neon-side refresh of race_entry_corner_features (docs/
+    // probes/corner-features-settlement-backfill-heal-2026-07-17.md): fires
+    // twice daily (morning pre-race populate, evening settlement catch-up --
+    // see CORNER_FEATURES_REFRESH_CRON_MORNING/_EVENING). lookbackDays widens
+    // the upsert window backward so a day whose settlement columns were still
+    // NULL on this cron's last visit gets swept up again instead of being
+    // permanently stuck once it ages past [runYmd, runYmd+daysAhead] -- the
+    // exact failure mode this cron's prior five days of not being wired at
+    // all had already produced. Idempotent upsert-only, matching every other
+    // maintenance cron in this file.
+    const scheduledAt = new Date(event.scheduledTime);
+    await refreshCornerFeatures({
+      daysAhead: Number(env.PREDICT_DAYS_AHEAD),
+      env,
+      lookbackDays: Number(env.CORNER_FEATURES_LOOKBACK_DAYS ?? CORNER_FEATURES_NO_LOOKBACK_DAYS),
+      runYmd: getRunYmdJst(scheduledAt),
+    });
     return;
   }
   if (shouldRunFeatureBuildCron(event.cron)) {
