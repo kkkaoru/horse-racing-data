@@ -105,26 +105,48 @@ Every cell dimension in this ledger is derived using
 reimplemented in polars — **not**
 `learning/subgroup_diagnostics.py`'s eval-store convention used elsewhere in
 this campaign's cell claims (champion_ledger.py, the summer4 baseline, this
-session's own Sapporo diagnosis). This is a deliberate choice, confirmed by
-direct code comparison: the two conventions **disagree on `surface` for JRA
-track_code 20-22** — `cell_router.py`'s `derive_surface` classifies by
-leading digit (`"1*"`→turf, `"2*"`→dirt, i.e. 20-22 are **dirt** in
-production routing), while `subgroup_diagnostics.py`/`subgroup.py`'s
-set-based convention (`{10..22}`→turf) treats 20-22 as **turf**. Since this
-ledger's entire purpose is proposing routing rules that must correspond 1:1
-with what `cell_routing.json` would actually match at serve, using anything
-other than `cell_router.py`'s own logic would risk proposing a rule that
-doesn't route the races it claims to.
+session's own Sapporo diagnosis). This was a deliberate choice at the time
+this section was first written: the two conventions disagreed on `surface`
+for JRA track_code 20-22, and since this ledger's purpose is proposing
+routing rules that must correspond 1:1 with what `cell_routing.json` would
+actually match at serve, using `cell_router.py`'s own logic (whatever it
+was) seemed like the right call.
 
-| Dimension          | Production derivation (verbatim from `cell_router.py`)                               | Values                                          |
-| ------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| `venue`            | `keibajo_code` (raw)                                                                 | `01`..`10`                                      |
-| `surface`          | `track_code` starts with `"1"`→turf, `"2"`→dirt, else `other` (JRA only)             | turf / dirt / other                             |
-| `distance_band`    | `kyori<1200`→sprint, `<1600`→mile, `<2000`→intermediate, `<2400`→long, else extended | 5 bands                                         |
-| `field_band`       | `shusso_tosu<=10`→`f_le10`, `<=13`→`f11_13`, `<=15`→`f14_15`, else `f16p`            | 4 bands (**not** cells.py's small/medium/large) |
-| `season`           | month 3-5→spring, 6-8→summer, 9-11→autumn, else winter                               | 4 bands                                         |
-| `class`            | `grade_code` raw, or `unknown` if blank                                              | raw grade_code values                           |
-| `kyoso_joken_code` | raw (this is the dimension the live 703/005 rules actually key on, not `class`)      | raw condition codes                             |
+> **Correction, same day, added after a parallel bug-regression-test audit
+> (commit `01cd669f`, 10:39 JST) found `cell_router.py`'s `derive_surface`
+> was itself buggy for track_code 20-22** — it classified them dirt via a
+> naive `track_code.startswith("2")` prefix check, when they are genuinely
+> turf-course configurations (track*code=20 is 天皇賞(春) at Kyoto,
+> track_code=21 is スポーツニッポン賞ステイヤーズステークス at Nakayama,
+> confirmed against real race identities and `babajotai_code_shiba`/`_dirt`
+> populated-vs-placeholder signatures). `subgroup_diagnostics.py`'s
+> range-based convention (10-22→turf) was the **correct** one all along; the
+> fix makes `cell_router.py` match it exactly, closing the disagreement this
+> section originally described. **Impact on this ledger's own numbers,
+> measured directly, not assumed**: only 3 races (all `track_code=21`, 44
+> horse-rows) in this ledger's entire 10,365-race 2023-2025 JRA-wide
+> population are affected (`track_code=20`/`22` don't occur in this specific
+> window at all) — 0.03% of the population — and **zero of them satisfy the
+> live `005` rule's other conditions** (`kyoso_joken_code=005`), so §3.3's
+> finding is unaffected, and no cell reported anywhere in this doc (all
+> `n≥200`) could plausibly shift by a detectable amount from reclassifying 3
+> races. This ledger's verdicts stand unchanged; only this section's
+> description of \_why* `cell_router.py`'s logic was used needed correcting.
+> The source fix had **not** been deployed to the live container as of this
+> correction (source-only; deploy deferred, per the audit doc) — meaning
+> live serving still ran the pre-fix (buggy) logic at the time this note was
+> written, a separate fact from this ledger's own (predict-only, no serving
+> involved) numbers being unaffected.
+
+| Dimension          | Production derivation (verbatim from `cell_router.py`)                                                                                                                                             | Values                                          |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `venue`            | `keibajo_code` (raw)                                                                                                                                                                               | `01`..`10`                                      |
+| `surface`          | `track_code ∈ {10..22}`→turf, `{23..29}`→dirt, else `other` (JRA only; this ledger's own script used the pre-fix `startswith` heuristic, corrected above — 3-race impact, see the correction note) | turf / dirt / other                             |
+| `distance_band`    | `kyori<1200`→sprint, `<1600`→mile, `<2000`→intermediate, `<2400`→long, else extended                                                                                                               | 5 bands                                         |
+| `field_band`       | `shusso_tosu<=10`→`f_le10`, `<=13`→`f11_13`, `<=15`→`f14_15`, else `f16p`                                                                                                                          | 4 bands (**not** cells.py's small/medium/large) |
+| `season`           | month 3-5→spring, 6-8→summer, 9-11→autumn, else winter                                                                                                                                             | 4 bands                                         |
+| `class`            | `grade_code` raw, or `unknown` if blank                                                                                                                                                            | raw grade_code values                           |
+| `kyoso_joken_code` | raw (this is the dimension the live 703/005 rules actually key on, not `class`)                                                                                                                    | raw condition codes                             |
 
 **`field_band` caveat, inherited from `cell_router.py`'s own documented,
 accepted reality** (its code comment, read directly): live serving derives
@@ -482,9 +504,14 @@ artifact + 2 候補の既存 gate 出力)を in-memory 再スコアのみ(`score
 §6.4)は一切参照していない。
 
 **cell 次元の導出は `cell_router.py` の本番ルーティングロジックを直接再実装**
-(subgroup_diagnostics.py の eval-store convention とは track_code 20-22 の
-surface 判定で相違することを直接コード比較で確認——本番配線と 1:1 対応する
-ことを最優先したため)。
+(本番配線と 1:1 対応することを最優先したため)。**同日追記の訂正**: 別の
+bug-regression-test 監査 (commit `01cd669f`) が `cell_router.py` 自体の
+track_code 20-22 surface 判定バグ (誤=dirt、正=turf、天皇賞(春)/ステイヤーズS
+で実証) を発見・修正——本台帳が当初「意図的にcell_router.py側を採用」と
+記していた前提そのものが誤りだったと判明した。本台帳の実データへの影響は
+実測済み: 該当 3 レース (track_code=21 のみ、44 頭行、全体の 0.03%) のみ、
+かつ 005 route の cell とは無交差——**本台帳の結論はいずれも変更なし**、
+§2.1 の記述のみ訂正した。
 
 **既存 3 route 再検証(headline)**: 703→jockey-pedigree269 は再確認・頑健
 (元の採用根拠とほぼ完全一致、3 年連続同方向)。venue02→jockey-pedigree269 は
