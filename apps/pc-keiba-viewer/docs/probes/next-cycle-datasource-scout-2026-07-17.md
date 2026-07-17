@@ -113,6 +113,70 @@ Artifacts: `apps/pc-keiba-viewer/tmp/jvd-br-breeder-probe-0717/{probe_breeder.py
 
 ---
 
+## Update (2026-07-17, additional investigation D): cushion value/moisture PoC — technical verification + judgment brief
+
+Team-lead assigned a technical PoC on the #1 priority candidate (2a above) to get it to the resolution the USER needs to actually decide go/no-go. **Explicitly not an implementation task** — a handful of manual fetches to characterize format/timing/parse-difficulty, no bulk collection, no cron, no D1/R2 table, no pipeline built. Everything below is verified by direct fetch, not re-stated from 2a's earlier, coarser pass.
+
+### D.1 URL patterns — confirmed, one correction to 2a's implicit assumption
+
+- Background/explainer pages (already right in 2a): `jra.go.jp/keiba/baba/{cushion,moist,condition,dirt,kaisetsu}/`.
+- **Live current-meeting data**: `jra.go.jp/keiba/baba/index{N}.html`, `N`=1(Tokyo)…10 — one URL per venue, not a single shared page. Fetched `index3.html` (Hakodate) directly; it served today's (2026-07-17) live moisture + cushion readings.
+- **Archive PDFs**: `jra.go.jp/keiba/baba/archive/{year}pdf/{venue-romaji}{NN}.pdf`. **Correction**: 2a's phrasing ("one per course per meeting period") was right, but I initially mis-guessed `NN` as calendar month — it is actually the **JRA meeting number (第N回, the same `kaisai_kai` used throughout this campaign's other work today)**, confirmed directly: `fukushima01.pdf` contains "2026年 第1回 福島競馬" (the meeting spanning 2026-04-10→04-26, not January). Matters for backfill planning: enumerate by (venue, year, kai=1..~6), not by month.
+- **A PDF only appears once its meeting has concluded**: `hakodate01.pdf` (Hakodate's 2026 kai=01, still in progress per today's separate Sapporo-readiness investigation) returns the same "not found" response as any nonexistent path, while the already-finished `fukushima01.pdf` returns the real file — live-page scraping and PDF-archive backfill are two genuinely separate data sources with different timing, not one interface with two access modes.
+- **Operational quirk worth flagging for whoever eventually builds this**: any nonexistent path (wrong venue/kai guess, or a not-yet-published one) returns **HTTP 403 with a custom ~56KB "Forbidden　JRA" error page**, not a standard 404. A scraper needs to detect this by content (e.g. `file` magic bytes / actual `%PDF` header check), not by HTTP status code alone — a genuine permission-based block would look identical at the status-code level.
+
+### D.2 Publication timing — confirmed, slightly earlier than 2a's estimate
+
+The live page showed "7月17日（日）現在" data (same-day). The parsed PDF (D.3) carries actual measurement timestamps: cushion value read as early as **05:00 JST on race days themselves** (07:00 Sat/Sun, 09:00 the preceding Friday pre-meeting check), moisture similarly 05:00-06:00 — earlier than 2a's "~9:30 JST" estimate, and in every case well ahead of any JRA race's earliest post time.
+
+### D.3 Format + PDF parse difficulty — tested directly, not estimated
+
+One PDF fetched and parsed end-to-end (`fukushima01.pdf`, 44.7KB — two other venue/kai guesses returned the "not found" page above, one more format-diversity data point rather than a failure). Result: **clean, machine-generated, text-based table — parsed completely and correctly on the first attempt, no OCR/scanned-image difficulty at all.** Exact column structure (finer-grained than 2a's "~1 measurement point/course" estimate):
+
+```
+開催日次 | 測定月日 | 曜日 | [芝コースクッション値: 使用コース(A/B) | 測定時刻 | 測定値]
+         | [含水率: 測定時刻 | 芝コース(%): ゴール前・4コーナー | ダートコース(%): ゴール前・4コーナー]
+```
+
+Moisture is actually **2 measurement points per surface** (near-goal + 4th-corner), for both turf and dirt — 4 moisture numbers + 1 cushion-value number per measurement day, each a plain decimal (e.g. `9.5`, `11.1`). A pre-meeting Friday row appears before day 1 with no `開催日次` label but full readings, matching 2a's "day-before-racing" publication note concretely.
+
+**Caveat**: n=1 clean sample; JRA may have varied this template somewhat across 2018-2026, budget for 1-2 format variants in a real batch parser. **Separately unresolved**: whether the _live_ HTML page exposes the raw decimal cushion value as plain text, or only a banded 5-tier visual (a same-day WebFetch summarization of `index3.html` suggested band language like "12以上〜7以下" was present, but tool-summarization fidelity isn't strong enough to be sure) — recommend a direct view-source check before designing the daily-scrape path, since if the raw number is only in the PDF/archive and not the live page, same-day (pre-backfill) ingestion would need a different design than assumed.
+
+### D.4 Design draft (reference only — nothing built)
+
+- **Daily path**: a small CF cron (same shape/scale as the existing `corner-features-refresh`/`daily-feature-build` wiring) fetches `index{N}.html` for the relevant venues each race morning after the ~05:00-09:00 JST publication window, parses the table above, writes to a small new D1 table or per-day R2/Neon row keyed by `(venue, date)`. Rough scope: one single-purpose cron + parser, comparable in size to the existing corner-features-refresh build — not a large project.
+- **Historical backfill**: enumerate `(venue, year, kai=1..~6)`, fetch archive PDFs, skip the "not found" responses, parse with the same table shape. Bounded for summer-4-venue scope specifically — those venues run short, 1-2-kai/year meetings (confirmed via this campaign's own `kaisai_kai` work today), so full 2018-2026 backfill for just those 4 venues is on the order of dozens of files, not hundreds.
+- **Serve-time join**: `(keibajo_code, race_date)` — venue+day level, not per-race — `LEFT JOIN` onto the race-level feature frame. The race-morning reading always precedes even the earliest same-day post time, so no leak risk from the join itself.
+- **Historical range vs. this campaign's 2013+ training window**: moisture back to 2018-07-27 (~8 of 13 years), cushion value back to 2020-09-11 (~6 of 13 years) — a genuinely partial-coverage feature with a hard era boundary, not full-window. Recommend an explicit `is_null` flag alongside the raw value (this codebase's established pattern for partial-coverage columns elsewhere) rather than leaving CatBoost to infer the missingness pattern implicitly — "value present" is otherwise confounded with "era ≥ 2018/2020" and any unrelated era drift.
+
+### D.5 Judgment brief
+
+**Expected effect — honest estimate, not a sales pitch:**
+
+- Relationship to the champion's existing weather/going-nowcast features (`venue_precipitation_total`, `venue_wind_speed_max`, `track_condition_normalized`, `rain_x_track_condition`, `weather_normalized` — confirmed present in the champion's feature list): those are **causal proxies one step removed** (rain → moisture, not measured moisture itself). Cushion value/moisture would be the direct physical measurement replacing an indirect weather-based stand-in for the same underlying quantity — structurally more precise than what exists today, for that reason alone.
+- Orthogonality to the categorical `jvd_ra` baba-condition code: established directly in 2a, not inferred — JRA's own explanatory page states the categorical code is a "総合的判定" (holistic call) using these numbers as only partial input, with explicit visual-inspection language especially for dirt. First-party evidence the categorical code is a lossy compression, not the same information re-encoded.
+- **Base-rate caution, stated plainly**: today's campaign closed essentially every other new-signal candidate screened — jockey/trainer families, pedigree/sire-line (twice), wide/umaren pool, broad CatBoost HPO, an architecture bake-off, NAR-data pooling, and (per this doc's own D.7 dedup check below) monotonic constraints — a long, consistent run of REJECTs, mostly because CatBoost depth=8 over 250 features already saturates available signal via tree interactions with venue/track/weather. This candidate is structurally different from all of those (a genuinely new raw data _source_, not a recombination of already-available columns), which is exactly why 2a ranked it #1 — but today's honest base rate should temper a priori confidence, not just the theoretical orthogonality argument above.
+
+**Permission risk:**
+
+- `robots.txt` fully open — crawl access is not the blocker.
+- JRA's `/use/` copyright page, fetched directly: reuse beyond private/citation use requires prior written JRA permission, requested through an official Microsoft-Forms-hosted application, confirmed live: `https://forms.office.com/pages/responsepage.aspx?id=4a27THZhzkGlSGfKCAU3fYwivZrxqOpItcrtx1XiU8NUQVEwRDZOVjFCOFYzWkNYRlVCNTNNUFhRUi4u`.
+- These are two different questions — crawl-access permission (`robots.txt`) does not resolve the copyright-reuse question. This system's intended use (private ingestion into a prediction model, not republishing the raw data) leans closer to "private use" than public reuse, but systematic machine-ingestion into an ongoing prediction system is a genuine gray area a reasonable person could read either way — recommend the user submit the linked form (or otherwise contact JRA directly) for explicit clarification before any ingestion beyond this PoC's handful of manual fetches.
+
+**Go/no-go decision points, for the USER:**
+
+- [ ] Written JRA permission obtained/clarified — the actual blocker on anything beyond this PoC.
+- [ ] Accept a "dozens of PDFs" historical-backfill scope for summer-4-venue coverage (small; full-JRA scope would be proportionally larger).
+- [ ] Accept the era-boundary partial-coverage caveat (moisture 2018+, cushion 2020+) as a modeling constraint to design around, not a blocker.
+- [ ] Accept that the expected-effect case is a structurally-plausible, evidence-supported hypothesis (D.5 above), not yet a proven one — this PoC did not run a probe.
+- **If GO**: the recommended next step is exactly what 2a already said — a small, current-season-only pilot scrape (no historical backfill yet) + the same odds-controlled partial-Spearman probe protocol used for every other candidate this campaign has screened, _before_ committing to the PDF-backfill labor.
+
+### D.6 Artifacts
+
+Scratch fetches only (not committed, `tmp/`-equivalent scope): 1 live HTML page (`index3.html`), 1 archive index page, 1 successfully-parsed PDF (`fukushima01.pdf`), plus several confirmatory "not found" responses that established the kai-based (not month-based) naming and the post-meeting-only PDF availability. No data written anywhere; no pipeline code created.
+
+---
+
 ## Constraints honored
 
-Read-only throughout for the original survey — no ingestion, no probes, no code, no WF training executed. All external fetches were to public pages only (no login, no paid-tier access attempted). No data deleted or written anywhere. The breeder probe above (2026-07-17 follow-up) is the one exception, explicitly assigned as a separate, scoped, probe-stage-only task — no ingestion pipeline or WF training was built for it either.
+Read-only throughout for the original survey — no ingestion, no probes, no code, no WF training executed. All external fetches were to public pages only (no login, no paid-tier access attempted). No data deleted or written anywhere. The breeder probe (investigation C) and the cushion-value/moisture PoC (investigation D) above are the two exceptions, each explicitly assigned as a separate, scoped follow-up task — investigation C ran a probe-stage-only test (no WF training); investigation D fetched a handful of public pages/PDFs to characterize format and feasibility (no ingestion pipeline, no bulk collection, no probe run — exactly as scoped).
