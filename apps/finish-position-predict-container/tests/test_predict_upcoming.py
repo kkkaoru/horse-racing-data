@@ -106,6 +106,22 @@ _variant_booster_feature_order_matches = cast(
     Callable[[BoosterLike, Architecture, Sequence[str]], bool],
     getattr(predict_upcoming, _VARIANT_BOOSTER_FEATURE_ORDER_MATCHES_ATTR),
 )
+_SCORE_ONE_RACE_DIRECT_ATTR = "_score_one_race_direct"
+_score_one_race_direct = cast(
+    Callable[
+        [
+            BoosterLike,
+            str,
+            Category,
+            Sequence[Mapping[str, object]],
+            Sequence[str],
+            Architecture,
+            str,
+        ],
+        list[list[object]],
+    ],
+    getattr(predict_upcoming, _SCORE_ONE_RACE_DIRECT_ATTR),
+)
 
 # ---------------------------------------------------------------------------
 # Minimal stub connection
@@ -1578,6 +1594,64 @@ def test_variant_booster_feature_order_matches_exact_order_is_a_match() -> None:
 def test_variant_booster_feature_order_matches_permuted_order_is_a_mismatch() -> None:
     booster = _ScoreByUmabanWithFeatureNames([0.1], ["b", "a", "c"])
     assert _variant_booster_feature_order_matches(booster, "catboost", ["a", "b", "c"]) is False
+
+
+# --- feature_guard wiring at _score_one_race_direct's actual call site -----
+#
+# 2026-07-17 gap found during the bug-regression-test-audit campaign
+# (docs/probes/bug-regression-test-audit-2026-07-17.md): commit 57a4cd7f
+# added predict_lib/feature_guard.py with thorough unit tests
+# (tests/test_feature_guard.py) for the pure is_degenerate_feature_matrix
+# logic, but nothing exercised the WIRING -- the `if
+# is_degenerate_feature_matrix(...): return []` guard actually placed inside
+# _score_one_race_direct / _score_one_race_nar_blend. Confirmed by mutation
+# (temporarily deleting both wiring blocks, restored afterward): the full
+# predict-container suite (1288 tests) still passed at 99.81% coverage with
+# the guard completely disconnected -- i.e. every existing test would have
+# missed a regression that silently re-enabled writing predictions from a
+# degenerate feature matrix. These two tests close that gap by calling
+# _score_one_race_direct directly, the same function score_races() itself
+# calls at both its cell-routing-variant and category-default call sites.
+def test_score_one_race_direct_skips_write_for_degenerate_feature_matrix() -> None:
+    booster = _ScoreByUmaban([0.9, 0.1])
+    # Every feature absent for both entries -- the guard's target failure
+    # signature (a whole-race input failure, not one legitimately-sparse
+    # debut horse).
+    degenerate_entries: list[dict[str, object]] = [
+        {"ketto_toroku_bango": "H1", "umaban": 1},
+        {"ketto_toroku_bango": "H2", "umaban": 2},
+    ]
+    rows = _score_one_race_direct(
+        booster,
+        "jra:20260101:05:01:01",
+        "jra",
+        degenerate_entries,
+        ["a", "b", "c", "d"],
+        "catboost",
+        "jra-cb-v9-sim-2013-clean",
+    )
+    assert rows == []
+
+
+def test_score_one_race_direct_scores_healthy_feature_matrix() -> None:
+    """Companion to the test above: a fully-populated feature matrix must
+    still be scored normally -- the guard must not false-positive on a
+    healthy race."""
+    booster = _ScoreByUmaban([0.9, 0.1])
+    healthy_entries: list[dict[str, object]] = [
+        {"ketto_toroku_bango": "H1", "umaban": 1, "a": 1.0, "b": 2.0},
+        {"ketto_toroku_bango": "H2", "umaban": 2, "a": 3.0, "b": 4.0},
+    ]
+    rows = _score_one_race_direct(
+        booster,
+        "jra:20260101:05:01:01",
+        "jra",
+        healthy_entries,
+        ["a", "b"],
+        "catboost",
+        "jra-cb-v9-sim-2013-clean",
+    )
+    assert len(rows) == 2
 
 
 def _banei_entries_two_features() -> list[dict[str, object]]:
