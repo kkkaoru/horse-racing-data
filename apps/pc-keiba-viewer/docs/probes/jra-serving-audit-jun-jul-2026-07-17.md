@@ -540,3 +540,46 @@ rs*p*\* 欠損率を将来観測可能にする最も安価な方法は、既存
 **この commit は本ドキュメント §12.1a の追加のみを対象とする。診断のため `.env` の `CLOUDFLARE_DEBUG_TOKEN` を使い Cloudflare GraphQL Analytics API (`workersInvocationsAdaptive`) へ読み取り専用クエリを複数回実行した (scratchpad 上の一時 JSON ファイル + curl から実行) 以外、コード・設定ファイルへの変更は一切無い。**`apps/finish-position-cron/wrangler.jsonc` は cron 文字列一覧の確認のため read のみ、`apps/sync-realtime-data` は無関係のため触れていない。MLflow・D1・R2・Neon への書込みは本追記では一切行っていない (Cloudflare Analytics API はアカウントの請求/実行メタデータを返す read-only API であり、対象 worker のコードや設定は変更されない)。
 
 **過去の commit 履歴 (本ドキュメント §12 系列)**: 初稿 (§12 全体) は 1 commit、libpq 単発読み取り 1 回のみに基づく §12.1 の証拠を libpq 4 回 + HTTP driver 4 回のクロスチェックで訂正した commit が 1 つ、そして本 commit (§12.1a、GraphQL Analytics による確定) が続く。
+
+---
+
+## 13. 2026-07-18 朝間チェックポイント実績（07:30、team-lead 指示による開催前監視）
+
+本節は §12.6 が提案していた「serve_health_check.py への第6チェック追加」実装後、**raw-iceberg-v1 世代移行後で初めての JRA 開催日**の実地観察記録である。team-lead 指示（campaign-summary-2026-07-17.md §g）に基づく朝間チェックシーケンスの 07:30 分。read-only 確認のみ、コード・設定変更なし。
+
+### 13.1 D1 JRA レース登録状況
+
+`realtime_race_sources`（`apps/sync-realtime-data` 所有、D1 binding `REALTIME_DB`）を `source='jra' AND kaisai_nen='2026' AND kaisai_tsukihi='0718'` で照会（07:2x JST 実行）: **0 行**。既知の過去実績（discovery は概ね 09:00 JST 前後）と整合し、この時点では異常ではない。opening-day（世代移行後最初の開催日）の前例が無いため、09:00 を過ぎても 0 のままなら初めてその時点で異常と扱う。
+
+（補足: 当初 team-lead 指示文にあった `jra_race_keys` という別テーブル名は誤りと判明——同名の migration ファイル `0008_jra_race_keys.sql` は実際には一回限りの `race_key` プレフィックス修復スクリプトであり、CREATE TABLE は存在しない。JRA 行は `realtime_race_sources` 自体に `source='jra'` として同居しており、日付列は他 source 同様 `kaisai_nen`/`kaisai_tsukihi` 分割。以後この単一テーブルのみを対象にすれば良い。）
+
+### 13.2 `serve_health_check.py --date 20260718 --category jra` full run
+
+Neon 接続に `NEON_PRIMARY_URL` が必要——非対話シェルでは repo-root `.env`（`direnv`/`dotenv` 前提）が自動ロードされないため、`set -a && source .env && set +a` で明示ロードしてから実行（値は一切出力していない）。
+
+```
+[1] Coverage: OK (0 gaps)
+[2] Quality (Cluster-B signature): OK (0 degraded groups)
+[3] Routing parity: OK (0 mismatches)
+[4] Burst detection: OK (0 minute-buckets > 10 races)
+[5] D1 self-heal activity (informational): 0 event(s)
+[6] R2 shard presence (trailing 7d, jra/nar): 9 gap(s) found
+      - 20260712/20260713/20260714: jra AND nar both not found
+      - 20260715/20260716/20260717: jra not found（nar は found）
+      - 20260718 (本日): jra=not found yet, nar=found
+Exit code: 1
+```
+
+**解釈（exit code 1 は本日時点では genuine incident ではないと判断）**:
+
+- 07-13〜07-17 の jra gap: この5日間 JRA 開催そのものが無かった週日（次回開催が本日07-18である旨、本ドキュメント §5 に既述）——予測が生成されていないので shard が無いのは自明であり、§8.6/§9.5 が check 3（routing parity）について指摘した「no-data 日の vacuous mismatch」と同種の non-signal。
+- 07-12 の jra gap: この日自体は genuine な JRA 開催日（§1〜§9 の Cluster A/B インシデント本体）だったが、raw-iceberg-v1 世代パスへの移行は 07-15 のため、07-12 の RS 予測は旧世代パスにのみ存在する（§12.4 で既確認）。新パスに無いのは移行前データとして完全に予期通り。
+- **本日 07-18 の `jra=not found yet` のみが今回唯一の生きた観察対象**。ただし §13.1 の通り D1 へのレース登録自体がまだ 0 件（RS予測生成はレース登録より下流の工程）のため、07:30 時点でこれが未発見であること自体は想定内——正式な異常判定は 08:30 判断点（D1 登録が進んだ後も shard が付かない場合）まで持ち越す。
+
+**check 6 の設計上の限界（新規記録、§8.6 に類する追記候補）**: check 6 は「対象日にレースが実在したか」を判定せず、trailing window 内の全 (day, category) の組を機械的に shard 存在チェックする。したがって non-race day や pre-migration date の gap は check 3 と同じ vacuous-artifact 性質を持ち、exit code 1 だけを見て「異常」と早合点しないよう運用上の注意が必要（今回がその実例）。恒久対応は次サイクル候補として記録するに留め、本日の運用では手動解釈で対処する。
+
+### 13.3 含水率/クッション値 当日値取得
+
+`tmp/cushion-moisture-pilot-2026-07-18/fetch_daily.py` を実行（07:2x JST）: 正常終了、accumulator は 58 行（前回 00:2x JST 実行時と同数）。**2026-07-18 分の読み取りは 0 行——本日分はまだ未公表**（公表窓 05:00-07:00/10:00 諸説あり、doc 記載の窓とスクリプト自身の出力メッセージで幅がある）。前セッションが仕込んだ `CronCreate` 自動取得（id `bf67d061`）はセッションスコープのため生存確認できず、本実行が唯一確認できた実行。08:30 チェックポイントで再実行し取得を試みる。
+
+**次アクション**: 08:30 判断点で (a) D1 JRA 登録の再確認、(b) R2 shard 再確認（本日分が着地していなければ `plan-running-style-predictions` inline job 起動を検討）、(c) cushion/moisture 再取得、を実施する。
