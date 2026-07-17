@@ -305,6 +305,101 @@ def test_build_rec_select_sql_ban_ei_uses_only_nvd_se_path():
     assert "union all" not in sql
 
 
+def test_build_rec_select_sql_upcoming_window_orders_settled_finish_position_first():
+    """Shape regression for the 2026-07-17 fix: the row-priority tie-break
+    must consult `finish_position is null` before `_rec_priority`, not the
+    other way around (see build_rec_select_sql's docstring-adjacent comment
+    for the incident this guards against)."""
+    sql = subject.build_rec_select_sql(
+        "jra", "20130101", "20260627", ("20260627", "20260627")
+    )
+    assert "order by (finish_position is null), _rec_priority" in sql
+
+
+def test_build_rec_select_sql_upcoming_window_recovers_settled_result_over_stale_corner_row():
+    """Execution-level regression test for the 2026-06-27/07-11/07-12 bug:
+    a race already has a row in race_entry_corner_features (written by the
+    running-style Worker for its own pre-race purposes) but that row's
+    finish_position was never backfilled after settlement, while jvd_se/
+    jvd_ra (the priority-1 direct source) already carry the genuine settled
+    result. The priority-0 corner-features row must not silently shadow it.
+    """
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    corner_df = pl.DataFrame(
+        [
+            (
+                "jra", "20260627", "2026", "0627", "02", "01", "h001", 1, "j1", "t1",
+                1600, "10", "A", "703", 10,
+                None, None, 35.0, 34.0, 0.3, 0.35, 0.4, 0.5,
+                "1", None, 2, 5.0, 1, 3,
+            ),
+        ],
+        schema=REC_COLUMNS,
+        orient="row",
+    )
+    con.register("corner_df", corner_df)
+    con.execute(
+        "create table pg.race_entry_corner_features as select * from corner_df"
+    )
+    se_df = pl.DataFrame(
+        [
+            (
+                "2026", "0627", "02", "01", "h001", "01", "j1", "t1",
+                "02", "0.5", "35.0", "0002", "0050", "480", "1", "3",
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.jvd_se as select * from se_df")
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2026", "0627", "02", "01", "1600", "10", "A", "703",
+                "10", "1", None,
+            ),
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.jvd_ra as select * from ra_df")
+    # build_rec_select_sql("jra", ...) unconditionally unions in the
+    # ban-ei (nvd_se x nvd_ra) branch alongside the jra corner-features
+    # branch -- empty tables with the matching shape so that union
+    # contributes zero rows for this jra-only scenario.
+    con.execute("create table pg.nvd_se as select * from se_df limit 0")
+    con.execute("create table pg.nvd_ra as select * from ra_df limit 0")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.build_rec_select_sql(
+        "jra", "20130101", "20260627", ("20260627", "20260627")
+    )
+    out = con.execute(sql).pl()
+
+    assert out.height == 1
+    assert out["finish_position"][0] == 2
+    # The fix is a whole-row tie-break, not a column-level merge: recovering
+    # the settled finish_position this way means the winning row is the
+    # direct-source one, whose own corner1_norm is NULL by design (corner_*
+    # is post-race-only and _rec_select_from_se_ra never populates it -- see
+    # that function's docstring). Losing corner_* on this narrow recovered
+    # slice is an accepted trade-off against silently losing the label
+    # entirely, which is what the bug did.
+    assert out["corner1_norm"][0] is None
+
+
 def test_stage_se_table_filters_by_concatenated_date(capsys: pytest.CaptureFixture[str]):
     captured = _ExecCaptureCon()
     subject.stage_se_table(

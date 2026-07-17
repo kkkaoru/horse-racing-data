@@ -810,6 +810,28 @@ def build_rec_select_sql(
     # rows (priority 0) on the target window. Keep the corner-feature row when it
     # exists (it carries corner_* signals); fall back to the direct source row
     # for races not yet materialised into race_entry_corner_features.
+    #
+    # "Materialised" must mean *complete*, not merely "a row exists": a race
+    # can already have a row in race_entry_corner_features (written by the
+    # running-style Worker for its own pre-race purposes) whose
+    # finish_position was never backfilled after settlement, while jvd_se/
+    # jvd_ra (the priority-1 direct source) already carry the genuine
+    # settled result. Ordering on `_rec_priority` alone always kept the
+    # priority-0 row in that case and silently discarded the real outcome
+    # for every entry in the race (observed for 2026-06-27/07-11/07-12: rows
+    # existed in race_entry_corner_features with finish_position NULL on
+    # 100% of entries despite jvd_se/jvd_ra both being fully settled).
+    # Ordering on `(finish_position is null)` first means a row that
+    # actually carries the outcome always wins the tie-break before
+    # `_rec_priority` is even consulted -- for a genuinely upcoming race
+    # both rows are NULL so this is a no-op and `_rec_priority` decides as
+    # before; for a normal already-materialised race both rows agree so the
+    # tie-break is unreachable either way. This is a whole-row tie-break,
+    # not a column-level merge: on the narrow slice this recovers (settled
+    # but not corner_*-backfilled), the winning row is the direct-source one,
+    # whose own corner_*/time_sa/kohan_3f stay NULL (post-race-only, never
+    # populated by `_rec_select_from_se_ra`) -- an accepted trade-off against
+    # silently losing the label entirely, which is what the bug did.
     return f"""
     select * exclude (_rec_priority) from (
       select base_union.*, _rec_priority from (
@@ -819,7 +841,7 @@ def build_rec_select_sql(
       ) base_union
       qualify row_number() over (
         partition by source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango
-        order by _rec_priority
+        order by (finish_position is null), _rec_priority
       ) = 1
     )
     """
