@@ -425,7 +425,7 @@ priority=3 に、cell-routing variant の model_version を除外する防御的
 
 team-lead 指示により、(1) 22:00 JST の `corner-features-refresh` evening cron tick の live 検証を最優先で差し込み、(2) `468a4f0e` (tolerate missing running-style shard) が rs*p*\* NULL 経由で FP serving を silent に劣化させていないかを監査した。両方の結果をここにまとめる。
 
-### 12.1 22:00 JST refresher tick 検証 (優先事項) — 結果: 書込み未検出、原因未確定
+### 12.1 22:00 JST refresher tick 検証 (優先事項) — 結果: **確定 (cron 未発火)、根拠は 12.1a 追記を参照**
 
 `CORNER_FEATURES_REFRESH_CRON_EVENING = "0 13 * * *"` (UTC) = JST 22:00。デプロイ済み Worker Version `3a75b34f-14c2-426b-b661-bb8f6258d6f2` (2026-07-17T01:23:06Z UTC) がこの tick を含む — `wrangler deployments list` で本検証時点でも同 Version が 100% active であることを再確認済み (ロールバック無し)。
 
@@ -459,7 +459,21 @@ max(updated_at):     2026-07-17 00:17:46.067Z  (09:17:46 JST) — libpq 4回 / H
 
 **構造的な観測ギャップ (副次的発見)**: `refreshCornerFeatures()` は自身の catch 節でエラーを `console.error` するのみで re-throw しない (`corner-features-refresh.ts:486-490`)。つまり Cloudflare 側が「scheduled ハンドラは正常終了した」と記録していても、内部で Neon 接続/権限エラーが起きて全処理がスキップされていた可能性を外部から区別する手段が (Analytics スコープなしでは) 無い。これは本タスクの rs*p*\* 観測ギャップ (§12.4) と同じ「silent catch で症状が外部に伝播しない」というクラスの問題であり、根はコードのバグではなく **観測可能性の欠如** である。
 
-**結論**: 22:00 JST tick が実際に発火したかどうかを確定できなかった。本日中に新デプロイの cron が自動発火したと言える唯一の機会である 22:00 JST tick から 1 時間超経過しても `updated_at` が全く動いていない事実と、UPSERT が対象 0 行になり得ない window 設計であることから、「発火したが正常に完了した」の可能性は低いと考えるが、「発火しなかった」と「発火したが内部エラーで silent に失敗した」を区別する材料が無い。**これは未解決のまま報告する** — 推奨フォローアップ: (a) 翌朝 09:15 JST の morning tick (これが新コードとしては初回の自動発火機会になる) 後に `max(updated_at)` チェックを再実行 (今回学んだ教訓により、libpq/HTTP driver 双方で複数回クロスチェックすること)、(b) 可能なら `Account Analytics: Read` スコープを取得して実行ログを直接確認、(c) §12.5 で提案する durable last-run marker を追加。
+**当初の結論 (下記 12.1a で更新される前の時点)**: 22:00 JST tick が実際に発火したかどうかを Neon 側の間接証拠だけでは確定できなかった。本日中に新デプロイの cron が自動発火したと言える唯一の機会である 22:00 JST tick から 1 時間超経過しても `updated_at` が全く動いていない事実と、UPSERT が対象 0 行になり得ない window 設計であることから、「発火したが正常に完了した」の可能性は低いと考えるが、「発火しなかった」と「発火したが内部エラーで silent に失敗した」を区別する材料が無い、として一旦未解決のまま報告した。
+
+### 12.1a 追加検証: Cloudflare GraphQL Analytics による確定 (team-lead 指示、2026-07-17 深夜追記)
+
+team-lead から、別スレッド (hpo-catboost、調査 `b6e91420`) の副産物として **`.env` の `CLOUDFLARE_DEBUG_TOKEN` に `Account Analytics: Read` が既に付与済み**であることが判明したと連絡があった (sync-realtime-data worker の 22:00:15 JST バーストで実証済み)。上記時点で「ローカルに scoped API call 用の wrangler token file も存在しない」と記録したのは誤りではないが、`.env` の別トークンで代替できることを見落としていた。この token で Cloudflare GraphQL Analytics API (`POST https://api.cloudflare.com/client/v4/graphql`、`workersInvocationsAdaptive` dataset) を直接叩けることを確認した。
+
+**手法の妥当性確認 (control check)**: 本 worker には 22:00 tick 以前から長期稼働している cron が複数あり (`wrangler.jsonc` の `triggers.crons`)、そのうち `WARM_CRON_PRE_JRA = "25 0 * * *"` (00:25 UTC) と `FEATURE_BUILD_CRON = "30 0 * * *"` (00:30 UTC) を control として選んだ。2026-07-16・2026-07-17 の両日とも、この 2 つの時刻ちょうど (00:25:27-58Z / 00:30:27-58Z) に `status=success, requests=1, subrequests=1` という最小・一貫した signature の invocation が記録されていることを確認した — これにより (a) `workersInvocationsAdaptive` が scheduled (cron) 発火を確かに記録すること、(b) `scriptName: "finish-position-cron"` フィルタが正しいこと、(c) cron tick は `requests=1, subrequests=1` という識別可能な signature を持つこと、の 3 点を実測で担保した (想像ではなく計測、`feedback_always_measure_never_assume` の実践)。
+
+**本題のクエリ結果**: `finish-position-cron` の 2026-07-17 11:30-14:30 UTC の全 invocation (34 件) を取得し時系列で並べたところ、**12:50:32Z の invocation の次は 13:41:56Z まで一件も存在しない** — 13:00:00 UTC ちょうどを挟む **51 分間、完全に空白**だった。`wrangler.jsonc` の `triggers.crons` を全数確認すると、22:00 evening tick (`0 13 * * *`) 以外に 12:xx-13:xx UTC の時間帯に発火すべき cron は実は 1 つも無い (`*/30 1-11 * * *` / `*/10 1-11 * * *` / `7,22,37,52 1-11 * * *` はいずれも hour レンジが `1-11` UTC までで、12 時以降は対象外) — つまりこの時間帯に本来発火すべきだった cron は evening tick ただ 1 つであり、その 1 つが観測されなかった。**結論: 22:00 JST evening tick は発火しなかった (deploy 後、この cron 文字列にとって最初の scheduled 機会だった)。**
+
+これにより当初の 2 択 (「発火しなかった」 vs 「発火したが internal error で silent に失敗した」) の後者は排除された — invocation record 自体が存在しないので、内部で catch されたエラーを云々する以前の話である。原因の確定はできていないが (Cloudflare 側の内部ログへのアクセス権はまだ無い)、**最も筋が良い仮説は cron trigger の新規登録が実際にスケジューラへ反映されるまでの伝播遅延**である — 22:00 tick はこの cron 文字列 (`wrangler.jsonc` へ本日 10:23 JST デプロイで追加) にとって配線後で迎えた最初の scheduled 機会だった。09:15 JST の morning tick (`15 0 * * *`) は今日分がデプロイ前の時刻だったため未検証のまま残っており、これが配線後 23 時間以上を経た初めての機会になる — 発火すれば伝播遅延仮説を支持、発火しなければ別の原因を疑う必要がある、というクリーンな判別テストになる。
+
+副次的に、12:02-12:50 UTC に見えていた「約 10 分間隔」の invocation 群は上記の通り `triggers.crons` のどの cron にも該当せず (全て hour 1-11 UTC 止まり)、queue consumer のメッセージ処理や `sync-realtime-data` からの HTTP webhook 等、cron 以外の起動要因によるものと考えられる (深追いはしていない、本題と無関係)。また 13:41:56Z に `status=scriptThrewException, errors=1` の invocation が 1 件記録されているが、時刻が `15 0 * * *` / `0 13 * * *` いずれの corner-features-refresh cron 分とも一致しないため無関係と判断し、これも深追いしていない。
+
+**結論 (最終)**: 22:00 JST evening tick は発火しなかったことを Cloudflare 側の一次データで確定した。原因は cron 登録の伝播遅延が最有力仮説だが未確証。**フォローアップ**: (a) 翌朝 09:15 JST の morning tick 後、同じ GraphQL 手法で発火有無を確認 (§g にも追記、配線後 23 時間超で初回発火となるためクリーンな判別テスト)、(b) 発火していれば伝播遅延仮説を支持、evening tick も明日以降は正常発火すると予想、(c) 明日 22:00 JST も発火しなければ伝播遅延ではなく別の恒久的な問題を疑い再調査、(d) §12.5 で提案した durable last-run marker はこの種の確認を将来 Neon 側だけで完結できるようにする改善として引き続き有効。
 
 ### 12.2 `468a4f0e` の tolerate semantics 確定
 
@@ -511,4 +525,6 @@ rs*p*\* 欠損率を将来観測可能にする最も安価な方法は、既存
 
 ---
 
-**この commit は本ドキュメント §12 の追加 (初稿 + §12.1 証拠の訂正) のみを対象とする。診断のため以下を実施したが、いずれも `apps/pc-keiba-viewer` および `apps/finish-position-cron` の追跡対象ファイルには変更を加えていない**: (a) `apps/finish-position-cron/src/corner-features-refresh.ts` / `feature_guard.py` / `add-pacestyle-features.py` / `running-style-parquet-export.ts` (`apps/sync-realtime-data`, read-only) / `running-style-catalog-client.ts` (同) の read、(b) Neon への読み取り専用クエリ (`race_entry_corner_features` の `now()`/`max(updated_at)`、libpq/HTTP driver 双方で計 8 回のクロスチェックを含む)、(c) `NEON_PRIMARY_URL` を使った `refreshCornerFeatures()` の手動呼び出し 3 回 (scratchpad 上の一時 bun script から実行、production Neon への write を試みたが read-only transaction で全て拒否され実際の書込みは発生していない — 呼び出し先の関数は本セッション既存の deploy 済みコードそのものであり本 commit で新規に追加したものではない)、(d) R2 (`pc-keiba-features-archive`) の boto3 list による shard 存在確認 (読み取りのみ)、(e) `wrangler deployments list` / `wrangler whoami` によるデプロイ状態・OAuth スコープの確認。初稿の §12.1 は libpq 単発読み取り 1 回のみに基づいており、その後 libpq 4 回 + HTTP driver 4 回のクロスチェックで異なる (かつデプロイ時刻より前と判明した) 値に気付いたため、本 commit で訂正・上書きした — 初稿の一発読み取りをそのまま報告しなかった理由もそのまま §12.1 内に記録している。MLflow・D1・R2 への書込みやデータ削除は本追記では一切行っていない。
+**この commit は本ドキュメント §12.1a の追加のみを対象とする。診断のため `.env` の `CLOUDFLARE_DEBUG_TOKEN` を使い Cloudflare GraphQL Analytics API (`workersInvocationsAdaptive`) へ読み取り専用クエリを複数回実行した (scratchpad 上の一時 JSON ファイル + curl から実行) 以外、コード・設定ファイルへの変更は一切無い。**`apps/finish-position-cron/wrangler.jsonc` は cron 文字列一覧の確認のため read のみ、`apps/sync-realtime-data` は無関係のため触れていない。MLflow・D1・R2・Neon への書込みは本追記では一切行っていない (Cloudflare Analytics API はアカウントの請求/実行メタデータを返す read-only API であり、対象 worker のコードや設定は変更されない)。
+
+**過去の commit 履歴 (本ドキュメント §12 系列)**: 初稿 (§12 全体) は 1 commit、libpq 単発読み取り 1 回のみに基づく §12.1 の証拠を libpq 4 回 + HTTP driver 4 回のクロスチェックで訂正した commit が 1 つ、そして本 commit (§12.1a、GraphQL Analytics による確定) が続く。

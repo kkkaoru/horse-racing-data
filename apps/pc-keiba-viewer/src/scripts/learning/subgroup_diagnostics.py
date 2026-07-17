@@ -233,27 +233,31 @@ def compute_race_ndcg(group: pl.DataFrame) -> float:
 
 
 def compute_race_top1(group: pl.DataFrame) -> bool:
-    valid = group.filter(pl.col("predicted_rank").is_not_null())
-    if valid.is_empty():
+    """Scalar reference for `_top1_per_race`. Semantics unified 2026-07-18
+    (USER decision item 8): literal `predicted_rank == 1` match, not
+    sort-and-take-first (which silently reassigns "the #1 pick" around a
+    gap below rank 1). See `_top1_per_race`'s docstring for the history."""
+    row = group.filter(pl.col("predicted_rank") == 1)
+    if row.is_empty():
         return False
-    best = valid.sort("predicted_rank").row(0, named=True)
-    fp = best["finish_position"]
+    fp = row.row(0, named=True)["finish_position"]
     return fp is not None and int(cast(SupportsInt, fp)) == 1
 
 
 def compute_race_top3_box(group: pl.DataFrame) -> bool:
+    """Scalar reference for `_top3_box_per_race`. Semantics unified
+    2026-07-18 (USER decision item 8): literal `<= 3` filter on both sides
+    (not sort-and-take-3, which arbitrarily breaks dead-heat ties by row
+    order), requiring at least 3 qualifying horses on each side. See
+    `_top3_box_per_race`'s docstring for the history."""
     predicted_top3 = set(
-        group.filter(pl.col("predicted_rank").is_not_null())
-        .sort("predicted_rank")
-        .head(3)["ketto_toroku_bango"]
-        .to_list()
+        group.filter(pl.col("predicted_rank") <= 3)["ketto_toroku_bango"].to_list()
     )
     actual_top3 = set(
-        group.filter(pl.col("finish_position").is_not_null())
-        .sort("finish_position")
-        .head(3)["ketto_toroku_bango"]
-        .to_list()
+        group.filter(pl.col("finish_position") <= 3)["ketto_toroku_bango"].to_list()
     )
+    if len(predicted_top3) < 3 or len(actual_top3) < 3:
+        return False
     return predicted_top3 == actual_top3
 
 
@@ -318,23 +322,21 @@ def _ndcg_per_race(joined: pl.DataFrame) -> pl.DataFrame:
 def _top1_per_race(joined: pl.DataFrame) -> pl.DataFrame:
     """Per-race top1 hit: the predicted-#1 horse finishes 1st.
 
-    Cross-harness parity note (bug investigation B, 2026-07-17): "#1" here
-    is resolved by re-ranking `predicted_rank` via `.rank("ordinal")`, not by
-    a literal `predicted_rank == 1` filter. This is intentional and tested
-    (see test_evaluate_subgroup_top1_tie_uses_first_in_stable_order) so that
-    a gap in `predicted_rank` (e.g. an upstream-filtered horse) doesn't
-    silently make every placeN check return False for the rest of the race.
-    Other harnesses that reimplement this metric inline (retest_wf.py,
-    common_eval.py, serve_accuracy_report.py) use a direct value comparison
-    instead and do NOT re-rank around gaps -- see
-    docs/probes/metric-harness-parity-audit-2026-07-17.md for the full
-    empirical comparison. Both behaviors agree whenever `predicted_rank` is
-    already a clean, gap-free 1..N sequence (the normal case)."""
+    Semantics unified 2026-07-18 (USER decision item 8, following the
+    cross-harness metric parity audit in
+    docs/probes/metric-harness-parity-audit-2026-07-17.md): "#1" is a
+    literal `predicted_rank == 1` match, matching
+    retest_wf.py/common_eval.py/serve_accuracy_report.py. Before this date
+    this function re-ranked `predicted_rank` via `.rank("ordinal")` instead,
+    which silently reassigned "the #1 pick" to the smallest surviving value
+    whenever there was a gap below rank 1 -- see the audit doc for the
+    empirically-confirmed divergence this caused against the other
+    harnesses. Historical cell_training_evaluations rows computed before
+    this change are NOT retroactively recomputed; the new semantics apply
+    from the next re-evaluation onward."""
     races = joined.select("race_id").unique()
     hits = (
-        joined.filter(pl.col("predicted_rank").is_not_null())
-        .with_columns(_slot=pl.col("predicted_rank").rank("ordinal").over("race_id"))
-        .filter(pl.col("_slot") == 1)
+        joined.filter(pl.col("predicted_rank") == 1)
         .group_by("race_id")
         .agg((pl.col("finish_position").first() == 1).fill_null(value=False).alias("top1"))
     )
@@ -344,13 +346,17 @@ def _top1_per_race(joined: pl.DataFrame) -> pl.DataFrame:
 
 
 def _placeN_per_race(joined: pl.DataFrame, n: int) -> pl.DataFrame:
-    """Per-race placeN hit: the predicted-#N horse finishes Nth."""
+    """Per-race placeN hit: the predicted-#N horse finishes Nth.
+
+    Semantics unified 2026-07-18 (USER decision item 8): literal
+    `predicted_rank == n` match, not ordinal re-ranking around gaps -- see
+    `_top1_per_race`'s docstring for the full history/rationale, identical
+    here. Historical cell_training_evaluations rows are not retroactively
+    recomputed."""
     col_name = f"place{n}"
     races = joined.select("race_id").unique()
     hits = (
-        joined.filter(pl.col("predicted_rank").is_not_null())
-        .with_columns(_slot=pl.col("predicted_rank").rank("ordinal").over("race_id"))
-        .filter(pl.col("_slot") == n)
+        joined.filter(pl.col("predicted_rank") == n)
         .group_by("race_id")
         .agg((pl.col("finish_position").first() == n).fill_null(value=False).alias(col_name))
     )
@@ -365,43 +371,33 @@ def _top3_box_per_race(joined: pl.DataFrame) -> pl.DataFrame:
     Only races with >=3 scored finishers and >=3 predicted horses qualify; others
     are recorded as a miss (False), matching the scalar guard.
 
-    Cross-harness parity note (bug investigation B, 2026-07-17): `actual_top3`
-    is derived via `.rank("ordinal")` on `finish_position`. For a genuine
-    dead-heat tie (two horses sharing the same finish_position, e.g. both
-    officially 3rd), ordinal rank breaks the tie by row order rather than
-    treating the boundary as ambiguous -- this can register a "lucky" hit or
-    miss depending on incidental row order, confirmed empirically to diverge
-    from retest_wf.py/common_eval.py (which use a direct
-    `finish_position <= 3` count/set check: any tie at the boundary makes the
-    actual-top3 set larger than 3, so it can never equal the exactly-3
-    predicted set, and the race is always scored a miss). This module's
-    behavior is deliberate and covered by
-    test_evaluate_subgroup_top3_box_tie_uses_stable_order, but that test only
-    asserts the vectorized code matches this module's own scalar reference
-    loop -- it does not independently establish which tie-break convention is
-    the "correct" one from a race-result-semantics standpoint. See
-    docs/probes/metric-harness-parity-audit-2026-07-17.md for the full
-    empirical comparison across all four harnesses; not changed here pending
-    a decision on which behavior should be canonical.
+    Semantics unified 2026-07-18 (USER decision item 8): both sides use a
+    literal `<= 3` filter (matching common_eval.py/retest_wf.py), not
+    ordinal re-ranking. A dead-heat tie at the boundary (more than 3 horses
+    sharing `finish_position<=3`, e.g. two officially tied for 3rd) makes
+    the actual-side set larger than 3 members; since the predicted-side set
+    is capped at 3 by the `>=3` qualification guard in the normal case, the
+    two sets can't be equal, so the race is conservatively scored a miss
+    rather than the arbitrary row-order-dependent hit/miss the old
+    `.rank("ordinal")` approach produced. Before this date this function
+    re-ranked via `.rank("ordinal")` on both sides -- see
+    docs/probes/metric-harness-parity-audit-2026-07-17.md for the
+    empirically-confirmed divergence this caused. Historical
+    cell_training_evaluations rows are not retroactively recomputed; the
+    new semantics apply from the next re-evaluation onward.
     """
     races = joined.select("race_id").unique()
     pred_top3 = (
-        joined.filter(pl.col("predicted_rank").is_not_null())
-        .with_columns(
-            _slot=pl.col("predicted_rank").rank("ordinal").over("race_id"),
-            _n_pred=pl.len().over("race_id"),
-        )
-        .filter((pl.col("_slot") <= 3) & (pl.col("_n_pred") >= 3))
+        joined.filter(pl.col("predicted_rank") <= 3)
+        .with_columns(_n_pred=pl.len().over("race_id"))
+        .filter(pl.col("_n_pred") >= 3)
         .group_by("race_id")
         .agg(pl.col("ketto_toroku_bango").sort().alias("_pred_set"))
     )
     actual_top3 = (
-        joined.filter(pl.col("finish_position").is_not_null())
-        .with_columns(
-            _slot=pl.col("finish_position").rank("ordinal").over("race_id"),
-            _n_actual=pl.len().over("race_id"),
-        )
-        .filter((pl.col("_slot") <= 3) & (pl.col("_n_actual") >= 3))
+        joined.filter(pl.col("finish_position") <= 3)
+        .with_columns(_n_actual=pl.len().over("race_id"))
+        .filter(pl.col("_n_actual") >= 3)
         .group_by("race_id")
         .agg(pl.col("ketto_toroku_bango").sort().alias("_actual_set"))
     )

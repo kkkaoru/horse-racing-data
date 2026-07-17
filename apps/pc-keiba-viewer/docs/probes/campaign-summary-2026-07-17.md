@@ -137,8 +137,8 @@
 ## (g) 今夜〜明日の検証スケジュール
 
 1. **16:00 JST — NAR organic check**（本日最初のorganicレース。deploy後の初めての生きたsmoke機会。serve_health_check.pyまたは同等の手動確認でstddev/model_version/guard非妨害を確認） — **実施済み（18:2x、Mac sleep 遅延のため遡及実行）**: 当初想定のNAR organic行は0件だった（本日レースは全て07-15生成のT+2事前予測のまま、⑦参照）。代わりに retroactive 調査で発見した**deploy後（2026-07-17 01:11 UTC、書込主未特定・self-heal は D1ログ0件+設計上今日限定scopeのため除外済み）の06-13 36-race×3venue jockey-pedigree269バッチ（全stddev健全 0.89-1.76）をpreflight PASSの主証拠として採用**（`jra-269-serve-defect-2026-07-17.md` §9 参照）
-2. **22:00 JST — refresher cron tick 検証**（07-17新設の2 cron のうち22:00枠が初回発火。live-audit管轄で確認）
-3. **明日 07-18 09:15 JST — refresher cron 2回目**
+2. **22:00 JST — refresher cron tick 検証**（07-17新設の2 cron のうち22:00枠が初回発火。live-audit管轄で確認） — **実施済み・確定: 未発火**。Neon側の間接証拠（`updated_at`不変）では原因未確定のまま一旦報告したが、`CLOUDFLARE_DEBUG_TOKEN`（`.env`、Analytics:Read付与済みとhpo-catboost調査`b6e91420`で判明）でCloudflare GraphQL Analytics（`workersInvocationsAdaptive`）を直接照会し確定させた。12:50:32Z〜13:41:56Z UTCの51分間、finish-position-cronのinvocationが完全に0件（13:00:00 UTC＝22:00 JSTの発火予定時刻を挟む）。手法は既存の長期稼働cron（`WARM_CRON_PRE_JRA`=00:25 UTC、`FEATURE_BUILD_CRON`=00:30 UTC）が両日とも`requests=1,subrequests=1`の最小signatureで確実に記録されていることをcontrol checkとして確認した上で採用。最有力仮説はcron新規登録の伝播遅延（このcron文字列にとって配線後初のscheduled機会だった）だが未確証、詳細は`jra-serving-audit-jun-jul-2026-07-17.md` §12.1a参照
+3. **明日 07-18 09:15 JST — refresher cron 2回目**（配線後23時間超で迎える初回発火機会 — 発火すれば伝播遅延仮説を支持。同じGraphQL手法（§12.1a）でlive-audit側から即日確認可能）
 4. **明日 07-18 09:25 JST — JRA cron（本番予測開始前の最終production-grade確認ポイント）**
 5. 恒久ツール: `serve_health_check.py`（commit `9148cce2`、coverage/quality/routing-parity/burst/D1-self-healの5チェック、runbook §8に手順記載、read-only）を随時実行可能。2026-07-11（mixed Cluster A/B）・07-12（uniform Cluster B）の実incidentで受け入れ実証済み（doc件数と一致）
 6. **明日 07-18 レース時間帯（10:00-20:59 JST）— coordinator 再有効化後の初回実地観察**（USER決定によりCOORDINATOR_ENABLED を "0"→"1" に変更、commit `a8119149`。動機の定量根拠は `odds-freshness-value-2026-07-17.md`）: 「rescore 発火と slot 競合の有無」を観察対象に追加。

@@ -62,7 +62,7 @@ uv run pytest                                            # しきい値含むテ
 
 # コミット前 (lefthook と同じ)
 bun run --filter pc-keiba-viewer check                  # format + lint + tsc + test:coverage
-bun run --filter pc-keiba-viewer python:check           # ruff + ty + basedpyright + pytest (cov)
+bun run --filter pc-keiba-viewer python:check           # basedpyright + ty + mccabe + pytest (cov)
 ```
 
 ### テストコードのスタイル (`.claude/rules/typescript.md` の主要点)

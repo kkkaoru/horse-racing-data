@@ -1218,11 +1218,12 @@ def test_compute_subgroup_diagnostics_perfect_prediction_scores_one():
 
 
 def _reference_placeN(group: pl.DataFrame, n: int) -> bool:
-    # Horse at predicted ordinal rank N (among non-null predicted_rank) finishes Nth.
-    valid = group.filter(pl.col("predicted_rank").is_not_null()).sort("predicted_rank")
-    if valid.height < n:
+    # Horse with a literal predicted_rank == n finishes Nth (semantics unified
+    # 2026-07-18, USER decision item 8 -- matches subject._placeN_per_race).
+    row = group.filter(pl.col("predicted_rank") == n)
+    if row.is_empty():
         return False
-    fp = valid.row(n - 1, named=True)["finish_position"]
+    fp = row.row(0, named=True)["finish_position"]
     return fp is not None and int(fp) == n
 
 
@@ -1300,7 +1301,18 @@ def test_evaluate_subgroup_place_metrics_match_reference():
 
 
 def test_evaluate_subgroup_top1_tie_uses_first_in_stable_order():
-    # Two horses share predicted_rank=1; the first row (winner) must be the top1 pick.
+    # Two horses share predicted_rank=1 (a genuine predicted-side tie, not a
+    # gap -- out of scope for the 2026-07-18 literal-match unification, which
+    # targets gap-handling, not tie-handling on the predicted side). top1
+    # still resolves via first-in-stable-order (picks "a"), since a literal
+    # `predicted_rank == 1` filter matches both tied rows and `.first()`
+    # naturally preserves row order. place2 is where the semantics changed:
+    # under the old ordinal-reranking scheme this treated "b" (the second
+    # horse tied at raw rank 1) as "the slot-2 pick" and scored a hit; under
+    # literal-match, place2 looks for a horse with predicted_rank literally
+    # == 2 ("c"), who finishes 3rd, so it's a miss. Both are asserted
+    # explicitly (not just via self-consistency) so a regression is visible
+    # without needing to also break the reference helper.
     joined = pl.DataFrame({
         "race_id": ["r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c"],
@@ -1312,14 +1324,22 @@ def test_evaluate_subgroup_top1_tie_uses_first_in_stable_order():
     assert result["top1_accuracy"] == 1.0
     assert result["top1_accuracy"] == ref_top1
     assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
+    assert result["place2_accuracy"] == 0.0
     assert result["place2_accuracy"] == ref_place[2]
     assert result["place3_accuracy"] == ref_place[3]
     assert result["top3_box_accuracy"] == ref_top3
 
 
-def test_evaluate_subgroup_top3_box_tie_uses_stable_order():
-    # Predicted ranks tie at slot 3/4; finish positions also tie — the vectorized
-    # ordinal rank must select the same first-3 horse sets as the stable sort.
+def test_evaluate_subgroup_top3_box_predicted_and_actual_tie_at_boundary_still_matches_as_sets():
+    # Predicted ranks tie at 3/4 AND finish positions tie at 3/4 with the
+    # SAME two horses (c, d) on both sides. Under literal `<=3` filtering
+    # (unified 2026-07-18), both the predicted-top3 and actual-top3 sets
+    # widen to {a,b,c,d} (4 members each) and are still equal as sets, so
+    # this specific race remains a hit -- included to document that a
+    # symmetric tie (predicted also reflects the ambiguity) is NOT the
+    # asymmetric dead-heat case fixed by this change (see
+    # test_top3_box_per_race_dead_heat_at_boundary_is_conservative_miss for
+    # that scenario, where only the actual side ties).
     joined = pl.DataFrame({
         "race_id": ["r1", "r1", "r1", "r1"],
         "ketto_toroku_bango": ["a", "b", "c", "d"],
@@ -1328,11 +1348,59 @@ def test_evaluate_subgroup_top3_box_tie_uses_stable_order():
     })
     ref_ndcg, ref_top1, ref_place, ref_top3 = _reference_metrics(joined)
     result = subject.evaluate_subgroup(joined)
+    assert result["top3_box_accuracy"] == 1.0
     assert result["top3_box_accuracy"] == ref_top3
     assert result["top1_accuracy"] == ref_top1
     assert abs(result["ndcg_at_3"] - ref_ndcg) < 1e-9
     assert result["place2_accuracy"] == ref_place[2]
     assert result["place3_accuracy"] == ref_place[3]
+
+
+def test_top3_box_per_race_dead_heat_at_boundary_is_conservative_miss():
+    # Regression test (USER decision item 8, 2026-07-18): a genuine
+    # asymmetric dead heat -- two horses (c, d) BOTH officially finish 3rd
+    # while predicted_rank stays a clean, tie-free 1..4 permutation (c
+    # predicted 3rd). Before this date, subject._top3_box_per_race resolved
+    # `actual_top3` via `.rank("ordinal")` on finish_position, which
+    # arbitrarily admitted only ONE of the two tied horses (by row order)
+    # into the "actual top 3" set -- here that happened to be c, which
+    # matches the predicted set exactly, so the OLD code scored this a HIT.
+    # The unified, conservative semantics treat any tie at the boundary as
+    # unresolvable ambiguity: the actual-top3 set has 4 members, can never
+    # equal the 3-member predicted set, and the race is a MISS. If this test
+    # ever starts asserting True again, the old ordinal-reranking behavior
+    # has been reintroduced.
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 4,
+        "ketto_toroku_bango": ["a", "b", "c", "d"],
+        "predicted_rank": [1.0, 2.0, 3.0, 4.0],
+        "finish_position": [1.0, 2.0, 3.0, 3.0],
+    })
+    result = subject._top3_box_per_race(joined)
+    assert result["top3"].to_list() == [False]
+    assert subject.compute_race_top3_box(joined) is False
+
+
+def test_placeN_per_race_gap_uses_literal_match_not_reassignment():
+    # Regression test (USER decision item 8, 2026-07-18): predicted_rank has
+    # a gap at 3 (horse "c" was filtered upstream, predicted_rank=None);
+    # horse "d" carries the RAW predicted_rank=4, but genuinely finishes
+    # 3rd. Before this date, subject._placeN_per_race re-ranked the
+    # surviving predicted_rank values {1,2,4} via `.rank("ordinal")` into
+    # ordinal slots {1,2,3}, silently reassigning "d" to "the slot-3 pick"
+    # and scoring place3 a HIT since d really did finish 3rd. The unified,
+    # literal-match semantics look for a row with predicted_rank literally
+    # == 3; none exists (the true gap), so place3 is a MISS regardless of
+    # what anyone's finish_position is. If this test ever starts asserting
+    # True again, the old ordinal-reranking behavior has been reintroduced.
+    joined = pl.DataFrame({
+        "race_id": ["r1"] * 4,
+        "ketto_toroku_bango": ["a", "b", "c", "d"],
+        "predicted_rank": [1.0, 2.0, None, 4.0],
+        "finish_position": [1.0, 2.0, 4.0, 3.0],
+    })
+    result = subject._placeN_per_race(joined, 3)
+    assert result["place3"].to_list() == [False]
 
 
 def test_assign_subgroup_keys_matches_scalar_helpers_row_by_row():

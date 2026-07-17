@@ -136,6 +136,9 @@ pre-commit:
       glob:
         - "apps/pc-keiba-viewer/src/scripts/*.{py,pyi}"
         - "apps/pc-keiba-viewer/src/scripts/**/*.{py,pyi}"
+        - "apps/pc-keiba-viewer/tests/*.{py,pyi}"
+        - "apps/pc-keiba-viewer/tests/**/*.{py,pyi}"
+        - "apps/pc-keiba-viewer/pyproject.toml"
       run: bun run --filter pc-keiba-viewer python:check
     # apps/finish-position-predict-container/ 配下 Python (Cloudflare Container の
     # 着順予測 predict_lib + entrypoint)。 python:check が ruff + basedpyright +

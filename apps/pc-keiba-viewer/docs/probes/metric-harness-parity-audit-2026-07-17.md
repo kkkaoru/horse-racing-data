@@ -56,7 +56,7 @@ unverified claim that Sapporo alone reverses the sign. Flagged as a
 residual, not re-verified within this task's scope; a decision on whether
 to re-run is left open.
 
-## Finding 2 — `top3_box` dead-heat tie-break diverges by harness — DOCUMENTED, not fixed
+## Finding 2 — `top3_box` dead-heat tie-break diverges by harness — FIXED 2026-07-18 (see Resolution)
 
 Golden-dataset race `tie3` (8 horses, T3 and T4 both `finish_position=3`,
 predicted ranks a clean 1..8 permutation with T3 predicted 3rd):
@@ -97,7 +97,7 @@ tested, and lives in an enforced production module, changing it needs a
 deliberate decision (and touches the scalar reference too), not a
 unilateral fix inside a 60-75min bug audit.
 
-## Finding 3 — `predicted_rank` gap-handling diverges by harness — DOCUMENTED, not fixed
+## Finding 3 — `predicted_rank` gap-handling diverges by harness — FIXED 2026-07-18 (see Resolution)
 
 Golden-dataset race `gap_pred` (G3's prediction was filtered upstream —
 `predicted_rank=None`; G4's _raw_ `predicted_rank=4` because of the
@@ -187,23 +187,93 @@ here.
 bootstrap CI should be effectively seed-invariant; different seeds produce
 Monte Carlo noise, not a systematic bias, so this is not treated as a bug.
 
+## Resolution (2026-07-18, USER decision item 8)
+
+USER decided to unify Findings 2 and 3 rather than leave them as
+documented-but-divergent: `subgroup_diagnostics.py`'s `_top1_per_race`,
+`_placeN_per_race`, `_top3_box_per_race` (and their scalar test-reference
+twins `compute_race_top1`/`compute_race_top3_box`) now use the same literal
+`predicted_rank == n` / `<= 3` filtering as `common_eval.py`/`retest_wf.py`,
+replacing the `.rank("ordinal")` re-derivation on both the predicted and
+actual sides. Net effect: `top3_box` now scores a dead-heat tie at the
+boundary as a conservative miss (an ambiguous actual-top3 set can never
+equal the exactly-3-member predicted set), and `placeN`/`top3_box` no
+longer silently reassign "the Nth pick" around a gap in `predicted_rank`.
+
+**Explicitly out of scope for this change**: genuine _predicted-side_ ties
+(e.g. two horses literally sharing `predicted_rank`, as opposed to a gap)
+still resolve via first-in-stable-order, since predicted_rank is always
+derived from a continuous model score via `.rank(method="ordinal")` in
+every harness read during this audit and a real value-duplicate there is
+not a realistic occurrence (unlike a genuine finish_position dead heat,
+which is a real racing outcome).
+
+**Test updates**: `_reference_placeN` (test-file-local helper) updated to
+literal-match, matching the production functions. The two existing
+tie-scenario tests were updated in place --
+`test_evaluate_subgroup_top1_tie_uses_first_in_stable_order` now asserts
+the changed `place2_accuracy` value explicitly (not just self-consistency
+against the reference), and
+`test_evaluate_subgroup_top3_box_tie_uses_stable_order` was renamed to
+`..._predicted_and_actual_tie_at_boundary_still_matches_as_sets` with a
+comment explaining why a _symmetric_ tie (both sides reflect the same
+ambiguity) is a different case from the asymmetric dead heat this fix
+targets. Two new dedicated regression tests were added --
+`test_top3_box_per_race_dead_heat_at_boundary_is_conservative_miss` and
+`test_placeN_per_race_gap_uses_literal_match_not_reassignment` -- each
+mutation-verified by temporarily reverting the corresponding function to
+its pre-2026-07-18 `.rank("ordinal")` implementation and confirming the
+test fails (`[True] == [False]` in both cases), then restoring.
+
+**Real-data impact scale** (measured against the local PG mirror,
+`jvd_se.kakutei_chakujun`, confirmed races only,
+`trim(kakutei_chakujun) not in ('', '00')`): a dead-heat tie touching the
+top-3 boundary occurs in **0.559% of JRA races** (778 / 139,195) and
+**0.485% of NAR races** (482 / 99,297) -- small but not negligible; this is
+the population where `top3_box` verdicts can change under the new
+semantics. Ban-ei uses a separate table (`nvd_se`, per
+`reference_banei_data_location`) not included in this count.
+`predicted_rank` gaps were **not independently measured**: this is a
+serving-pipeline artifact (a per-horse row dropped between feature-matrix
+construction and rank assignment), and every harness read during this
+audit assigns `predicted_rank` via `.rank(method="ordinal")` over a whole
+race's entrants uniformly -- `feature_guard.py` (today's earlier serving-
+incident fix) rejects at whole-race granularity, not per-horse, so a
+genuine mid-race gap is a defensive edge case the fix protects against
+rather than something currently observed in `cell_training_evaluations`.
+
+**Not retroactive**: historical `cell_training_evaluations` (and any other
+already-recorded MLflow/eval-store rows) computed under the pre-2026-07-18
+semantics are **not** recomputed by this change. The new semantics apply
+from the next re-evaluation onward; a `top3_box_accuracy` figure recorded
+before 2026-07-18 may not be bit-for-bit comparable to one recorded after,
+specifically for the ~0.5%-of-races population where a boundary tie was
+present.
+
 ## Verdict
 
-- **1 real bug fixed**: `common_eval.py`'s `SUMMER_VENUES` (commit below).
-- **3 real, empirically-confirmed behavioral divergences documented** (not
-  code-fixed): `top3_box` tie-handling, `predicted_rank` gap-handling
-  (both in the enforced, tested `subgroup_diagnostics.py`), and
-  `serve_accuracy_report.py`'s different `place2`/`place3` semantics.
+- **2 real bugs fixed**: `common_eval.py`'s `SUMMER_VENUES` (2026-07-17),
+  and `subgroup_diagnostics.py`'s `top3_box` tie-handling +
+  `predicted_rank` gap-handling, unified to the conservative/literal-match
+  side per USER decision (2026-07-18, see Resolution above).
+- **1 documented, intentional difference remains**:
+  `serve_accuracy_report.py`'s different `place2`/`place3` semantics
+  (real fukusho-betting cascading accuracy, not exact-slot accuracy) --
+  not a bug in either side, left as-is with a cross-referencing docstring.
 - **Bootstrap LB95 mechanics**: consistent on `N_BOOT` and resample unit;
   seeds differ across harnesses but this doesn't affect correctness.
 - **`serve_health_check.py`**: confirmed out of scope, doesn't implement
   these metrics.
 
-No new lint-disable/type-ignore/coverage-threshold changes. Two enforced
-files touched (`subgroup_diagnostics.py`, `serve_accuracy_report.py`) —
-docstring-only, no behavior change, verified via `uv run basedpyright`
-(0 errors) and `uv run pytest` (4657 passed, 97.51% coverage, no
-regression) after the edits.
+No new lint-disable/type-ignore/coverage-threshold changes throughout
+either the 2026-07-17 audit or the 2026-07-18 resolution. 2026-07-17:
+`subgroup_diagnostics.py`/`serve_accuracy_report.py` touched
+docstring-only, no behavior change. 2026-07-18: `subgroup_diagnostics.py`
+got the real semantic change described in Resolution above (plus a
+docstring update to `serve_accuracy_report.py`'s already-documented
+Finding 4, unchanged); verified via `uv run basedpyright` (0 errors) and
+`uv run pytest` (4659 passed, 97.51% coverage, `subgroup_diagnostics.py`
+itself at 100%, no regression) after the 2026-07-18 edits.
 
 ## Artifacts
 
