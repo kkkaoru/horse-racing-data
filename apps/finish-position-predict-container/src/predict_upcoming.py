@@ -45,6 +45,7 @@ import hashlib
 import http.server
 import json
 import os
+import shutil
 import socket
 import sys
 import threading
@@ -1504,6 +1505,101 @@ def _ensure_cached_parquet(
         raise CacheMissError(f"R2 cache miss: {object_key} not found in bucket {r2.bucket}")
 
 
+def _fetch_watermarked_per_race_cache(
+    final_dir: Path,
+    category_str: str,
+    run_date: str,
+    scope: RaceScope,
+    r2: R2Config,
+    source_url: str,
+) -> bool:
+    """Fetch + watermark-validate a per-race R2 feature cache into ``final_dir``.
+
+    The catalog-source counterpart to :func:`_ensure_cached_parquet` -- only
+    called for a single-race ``scope`` (the coordinator's per-race rescore
+    shape; a whole-category rescore never reaches this function, see the
+    caller). e6111ca6 made ``mode=rescore`` unconditionally distrust ANY
+    cached parquet for a catalog source, because the pre-``262f06cb`` R2
+    cache was provably untrustworthy (``tmp/rc2-defect-sweep/
+    sweepC-class3-r2-cache-inventory.txt``: never populated by the dominant
+    focused-full path at all, and half of the few objects that DID exist held
+    a DIFFERENT date's races than their key implied). ``262f06cb`` fixed the
+    write gap (focused-full's detached pipeline now hands its payload to
+    :class:`predict_lib.focused_full_cache.FocusedFullCacheStore`, picked up
+    once Neon confirms completion and proxied to R2 the normal way) and every
+    object it writes lives under the ``build_r2_per_race_feat_cache_key``
+    per-race, per-date key namespace (``feat-cache/catalog-v1/...`` --
+    tagged with the current source-architecture generation, so a pre-migration
+    stale object can never collide with it). What was still missing is this
+    function: a caller willing to actually READ that now-trustworthy cache,
+    gated behind a real freshness check rather than blanket rejection.
+
+    The watermark check reuses :func:`pipeline_runner.day_base_covers_entry_list`
+    UNMODIFIED, pointed at the downloaded candidate instead of a day-base
+    directory: it queries the CURRENT entrant list for this exact race from
+    the live source and confirms every current horse appears in the
+    candidate's OWN rows for this exact ``keibajo_code``/``race_bango``
+    (matched via the parquet's own ``race_id`` column, never the R2 key's
+    embedded date). This closes both risks the sweep documented in one check:
+    entry-list drift (a late scratch/add since focused-full built the cache)
+    fails the coverage test directly, and a candidate holding the WRONG
+    race's rows entirely matches zero current entrants for THIS race and is
+    rejected the same way -- there is no code path where a mismatched-content
+    object can pass.
+
+    The candidate is downloaded into an isolated sibling directory first,
+    never ``final_dir`` directly, so a failed or watermark-rejected candidate
+    can never contaminate ``final_dir`` with partial or untrusted content;
+    ``final_dir`` itself is only reset and populated after the watermark
+    passes. Returns ``True`` (features now live in ``final_dir``) or
+    ``False`` (caller must fall back to :class:`CacheMissError`, the
+    unchanged pre-existing behavior) on ANY failure -- R2 miss, network
+    error, watermark rejection, or any exception from the freshness check.
+    Never raises.
+    """
+    if scope.keibajo_code is None or scope.race_bango is None:
+        return False
+    object_key = build_r2_per_race_feat_cache_key(
+        category_str, run_date, scope.keibajo_code, scope.race_bango
+    )
+    candidate_dir = final_dir.parent / f"{final_dir.name}-per-race-candidate"
+    candidate_path = candidate_dir / "features.parquet"
+    try:
+        shutil.rmtree(candidate_dir, ignore_errors=True)
+        if not r2_get_parquet(r2, object_key, candidate_path):
+            return False
+        from pipeline_runner import day_base_covers_entry_list  # bundled in image
+        from predict_lib.model_meta import resolve_category
+
+        target_race = f"{scope.keibajo_code}:{scope.race_bango}"
+        category = resolve_category(category_str)
+        if not day_base_covers_entry_list(
+            candidate_dir, category, run_date, target_race, source_url
+        ):
+            print(
+                f"[predict-serve] rescore per-race cache watermark rejected "
+                f"key={object_key} target_race={target_race}",
+                file=sys.stderr,
+            )
+            return False
+        shutil.rmtree(final_dir, ignore_errors=True)
+        final_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(candidate_path, final_dir / "features.parquet")
+        print(
+            f"[predict-serve] rescore per-race cache watermark accepted key={object_key}",
+            file=sys.stderr,
+        )
+        return True
+    except BaseException as exc:
+        print(
+            f"[predict-serve] rescore per-race cache fetch failed key={object_key}: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        shutil.rmtree(candidate_dir, ignore_errors=True)
+
+
 def _load_cached_races(final_dir: Path) -> dict[str, list[Mapping[str, object]]]:
     """Read the cached feature parquet into a ``race_id`` -> entries map directly.
 
@@ -1618,10 +1714,17 @@ def _make_rescore_fn(
     refreshed parquet by ``race_id`` so :func:`iter_predict_chunks` can embed the
     per-race payloads in the result line for both full and rescore modes.
 
-    Production ``r2-catalog://`` sources do not enter that cache path. The
-    returned function raises :class:`CacheMissError` before inspecting local
-    disk or R2, which makes :func:`iter_predict_chunks` run the raw Catalog full
-    build. A caller without that fallback fails closed.
+    Production ``r2-catalog://`` sources use a DIFFERENT cache: not the
+    whole-day object step 1 describes, but the per-race, watermark-validated
+    cache :func:`_fetch_watermarked_per_race_cache` populates from
+    ``262f06cb``'s focused-full write path -- only reachable when the
+    request carries a single-race ``scope`` (the coordinator's per-race
+    rescore shape; a whole-category rescore still has no safe cache to trust
+    and goes straight to :class:`CacheMissError`, same as before). Either
+    way, any failure -- object absent, watermark rejected, any exception --
+    falls back to :class:`CacheMissError`, which makes
+    :func:`iter_predict_chunks` run the raw Catalog full build. A caller
+    without that fallback fails closed.
     """
     catalog_source = is_catalog_source_url(source_url)
     _last: list[tuple[str, str]] = []
@@ -1646,17 +1749,28 @@ def _make_rescore_fn(
         # rescore shape, where self-derivation from a single-race ``scoped`` map
         # would be wrong -- see score_races' docstring).
         del days_ahead, keibajo_code, race_bango
-        if catalog_source:
-            raise CacheMissError(
-                "processed feature cache is disabled for r2-catalog source; "
-                "raw Catalog rebuild required"
-            )
         from pipeline_runner import WORK_DIR  # bundled in image
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
         final_dir = WORK_DIR / f"feat-{category}-v7-final"
-        _ensure_cached_parquet(final_dir, category_str, run_date, r2)
+        if catalog_source:
+            # Whole-category rescore (no single-race scope) has no per-race
+            # object to watermark-check against -- unchanged, still fails
+            # closed immediately. A single-race scope gets one real attempt
+            # at the watermark-validated cache before falling back.
+            fetched = False
+            if scope.keibajo_code is not None and scope.race_bango is not None and r2 is not None:
+                fetched = _fetch_watermarked_per_race_cache(
+                    final_dir, category_str, run_date, scope, r2, source_url
+                )
+            if not fetched:
+                raise CacheMissError(
+                    "processed feature cache unavailable or failed watermark "
+                    "check for r2-catalog source; raw Catalog rebuild required"
+                )
+        else:
+            _ensure_cached_parquet(final_dir, category_str, run_date, r2)
 
         races = _as_entry_map(_load_cached_races(final_dir))
         race_keys = _scope_race_keys(races, scope)

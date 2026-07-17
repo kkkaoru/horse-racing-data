@@ -600,9 +600,33 @@ sequenceDiagram
 4. `FINISH_POSITION_PREDICT_QUEUE` へ `mode=full` / `skipDedup=true` の per-race message を enqueue する。queue binding が無い環境だけ `FINISH_POSITION_CRON` service binding / API の `POST /run` に fallback する。
 5. Container が DuckDB feature build（`--target-race 35:01`）→ v7 layers → CatBoost/XGBoost scoring → Neon UPSERT を実行する。
 
+#### 5.4.1 focused-full の day-base split（day-shared 層、watermark 検証）
+
+`mode=full` の focused per-race 生成は `DAY_BASE_SPLIT_ENABLED`（`predict_lib.pipeline_args.is_day_base_split_enabled`、カンマ区切り category allowlist、redeploy 不要で live 読み取り）が有効な category に限り、DuckDB base build + `DAY_CHAIN`（当日全レース共通の重い層、JRA だけで 12 層）を**当日 1 回だけ**実行し（`pipeline_runner.build_day_base`）、以後の各レースは軽量な `RACE_CHAIN` のみをその day-base に対して実行する（`pipeline_runner.build_pipeline_from_day_base`）。§5.5.1 の per-race rescore R2 cache とは別の層であり、両者は独立に有効化・無効化できる（前者は `mode=full` の day-shared 層、後者は `mode=rescore` の per-race 層）。
+
+**2026-07-15（`e6111ca6`）〜2026-07-18: catalog source は無条件 bypass だった。** production の feature source（`SOURCE_DATABASE_URL=r2-catalog://pc-keiba`）に対して `pipeline_runner.ensure_day_base()` は常に `None` を返す設計になっており、`DAY_BASE_SPLIT_ENABLED` を category allowlist に入れても効果がゼロだった（2026-07-17 の serving latency architecture 評価で独立に確認済み、commit `9da2f5eb`）——`build_upcoming_feature_rows_split` は `ensure_day_base` が `None` を返すたびに `build_day_base` を同期的にフル実行するため、実質「毎レース day-base をフルビルドし直す」経路になっていた。当時の unconditional bypass 自体は正当な fail-closed 修理だった（§1-2 で観測された "confidently wrong な予測を生む古い/劣化した cache" と機構的に一致する signature に対する応急処置）。
+
+**2026-07-18: watermark 検証付き再利用に置換。** `ensure_day_base()` は catalog source に対して次の順で解決する。
+
+1. `pipeline_runner._compute_source_watermark(category, target_date, database_url)` で当日の `jvd_se`（JRA）/ `nvd_se`（NAR/Ban-ei）から `max(data_sakusei_nengappi)` と行数を計算する（`_query_source_rows` 経由、`_catalog_attach.attach_source_catalog` で catalog を DuckDB `pg` alias として attach——production の `r2-catalog://` と offline Postgres の両方で動く既存の共有ヘルパーをそのまま再利用）。計算できない場合（例外・0 行）は `None` を返し fail-closed（フルビルドへ）。
+2. このプロセス自身がこの category+day の day-base を既にローカルディスクへビルド済みで、かつそのビルド完了時に `build_day_base` が書き込んだ watermark（`day_dir/watermark.json`）が手順 1 の**現在**の watermark と一致する場合のみ、その day-base を信頼して返す。
+3. 一致しない・watermark ファイルが無い・計算不能——いずれも `None`（fail-closed、フルビルドへ）。
+
+**R2 経由の cross-process 再利用は今回スコープ外。** day-base の R2 upload は Cloudflare Worker/DO 層（`predict_lib.serve.iter_prewarm_chunks` が parquet bytes を返し、Container 自体は write 可能な R2 token を持たないため Worker 側が実際の PUT を行う）で行われており、まだ watermark sidecar を運ばない。したがって catalog source の day-base 再利用は今のところ**同一 Container プロセス内**（同じ category+day の 2 レース目以降）に限られる——`ensure_day_base` 自身の docstring が元々 "most common case" と位置付けていたケースそのもの。R2 側に watermark を運ぶ改修は明示的な follow-up。
+
+**ロールバック**: `DAY_BASE_SPLIT_ENABLED` から該当 category を外す（1 手順、redeploy 不要）。旧 day-base ディレクトリは削除しない——次回 `ensure_day_base` が呼ばれてもフルビルドへ fail-closed するだけで、参照されなくなるだけである。
+
+**bit 一致の根拠（実測ではなく構成上の保証）**: watermark が一致して day-base を再利用する分岐は、`build_day_base` が以前書いた**同一の parquet ファイル**をそのまま返す（再生成・再導出ではない）。したがって `predicted_score` の bit 一致は「同じバイト列を同じモデルで 2 回 score すれば同じ結果になる」という自明な帰結であり、実データでの row-diff で証明する対象ではない。実際にテストが必要なのは watermark の判定ロジック自体（不一致/欠損/計算失敗のいずれでも確実に fail-closed するか）であり、これは `tests/test_pipeline_runner.py` の `test_ensure_day_base_catalog_source_watermark_*` / `test_compute_source_watermark_*` / `test_write_watermark_*` / `test_read_watermark_*`（すべて mocked、live catalog 不要、通常の pytest 実行で毎回走る）で担保する。`tests/test_day_base_parity.py`（手動・`RUN_DAY_BASE_PARITY=1` gated）は offline Postgres URL のみを使うため今回の分岐を通らないが、新規 category を allowlist に追加する前の運用チェック手順をそのファイルの docstring に追記した（同一プロセス内で同一レースを 2 回リクエストし、2 回目のログに `step=daybase-*` が出ず `step=racechain-layer` のみになることを確認する）。
+
 ### 5.5 per-race rescore は Container 統一
 
 JRA / NAR / Ban-ei の per-race rescore はすべて `finish-position-cron` から Container held `/predict` に渡す。Worker-native JRA scorer は production の model metadata / cell routing / feature contract と乖離しやすいため、queue consumer の production dispatch では使用しない。Container 側が `mode=rescore` と race scope を受け取り、同じ feature build / model routing / Neon UPSERT 経路で再 scoring する。
+
+#### 5.5.1 rescore の R2 feature cache（per-race, watermark 検証）
+
+production の feature source（`SOURCE_DATABASE_URL=r2-catalog://pc-keiba`）に対して、`mode=rescore` は無条件に cache を信用しない期間があった（`e6111ca6`、2026-07-15）。背景: 当時の R2 `feat-cache/` は (a) 支配的な focused-full path（`mode=full` + `keibajoCode` + `raceBango`）が detached thread で結果を返すため一度も populate されておらず、(b) 数少ない既存 object も半数がキー名と異なる日付の内容を保持していた（`tmp/rc2-defect-sweep/sweepC-class3-r2-cache-inventory.txt` 参照）。`262f06cb`（2026-07-12）が (a) を修理済み：focused-full の detached pipeline は結果を `predict_lib.focused_full_cache.FocusedFullCacheStore` に保持し、queue consumer が Neon 完了を確認した直後の一回限りの follow-up call（`GET /focused-full-cache`、`focused-full-cache-pickup.ts`）で拾って通常の NDJSON ストリーム経由で R2 へ proxy する。書込先は `build_r2_per_race_feat_cache_key` が生成する per-race・per-date・generation-tagged key（`feat-cache/catalog-v1/{category}/{runDate}/{keibajoCode}/{raceBango}/features.parquet`）で、(b) の旧フォーマット object（generation tag なし）とは別 namespace のため衝突しない。
+
+2026-07-18 時点：この書込済み cache を実際に読む経路を追加した。単一レース scope（coordinator の per-race rescore message）に限り、`_fetch_watermarked_per_race_cache`（`predict_upcoming.py`）が候補 object を一時ディレクトリへ取得し、`pipeline_runner.day_base_covers_entry_list` をそのまま再利用した watermark 検証（現在の `jvd_se`/`nvd_se` 全 entrant が候補 parquet の該当レース行に含まれるか）を通過した場合のみ `final_dir` へ反映する。この検証は entry-list drift（直前の出走取消・追加）と、万一 write 側が別レースの内容を書いてしまった場合（sweepC が発見した種類の破損）の両方を同時に弾く（候補が別レースの行しか持たなければ現在の entrant を一件も cover できず、そのまま reject される）。取得・検証のいずれかが失敗（R2 miss・watermark reject・例外）した場合は例外なく既存の `CacheMissError` にフォールバックし、raw Catalog からの full rebuild を実行する（fail-closed、accuracy への影響なし）。whole-category rescore（single-race scope なし、coordinator の "weight rebuild" trigger）は対象外のまま：watermark 対象を単一レースの entry-list に限定できないため、引き続き無条件で `CacheMissError` にフォールバックする。
 
 ### 5.6 cron スケジュール（`finish-position-cron/wrangler.jsonc`）
 

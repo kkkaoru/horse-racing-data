@@ -101,6 +101,11 @@ _ensure_cached_parquet = cast(
     Callable[[Path, str, str, R2Config | None], None],
     getattr(predict_upcoming, _ENSURE_CACHED_PARQUET_ATTR),
 )
+_FETCH_WATERMARKED_PER_RACE_CACHE_ATTR = "_fetch_watermarked_per_race_cache"
+_fetch_watermarked_per_race_cache = cast(
+    Callable[[Path, str, str, RaceScope, R2Config, str], bool],
+    getattr(predict_upcoming, _FETCH_WATERMARKED_PER_RACE_CACHE_ATTR),
+)
 _VARIANT_BOOSTER_FEATURE_ORDER_MATCHES_ATTR = "_variant_booster_feature_order_matches"
 _variant_booster_feature_order_matches = cast(
     Callable[[BoosterLike, Architecture, Sequence[str]], bool],
@@ -1126,16 +1131,81 @@ def test_ensure_cached_parquet_fetches_only_catalog_generation(
     assert captured_keys == ["feat-cache/catalog-v1/jra/20260712/features.parquet"]
 
 
-def test_catalog_rescore_forces_full_fallback_without_reading_processed_cache(
+def test_catalog_rescore_whole_category_scope_forces_full_fallback_without_reading_processed_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A whole-category rescore (no single-race scope) has no per-race object
+    to watermark-check against, so it still fails closed immediately -- the
+    one part of the pre-(13) behavior that stays unconditional. See
+    ``test_catalog_rescore_per_race_scope_*`` for the single-race scope,
+    where a watermark-gated cache attempt now happens first."""
     cache_reads: list[bool] = []
+    fetch_watermarked_calls: list[bool] = []
     full_calls: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         predict_upcoming,
         "_ensure_cached_parquet",
         lambda *args, **kwargs: cache_reads.append(True),
     )
+    monkeypatch.setattr(
+        predict_upcoming,
+        "_fetch_watermarked_per_race_cache",
+        lambda *args, **kwargs: fetch_watermarked_calls.append(True) or False,
+    )
+    rescore_fn, _per_race_payload_fn = _make_rescore_fn(
+        "postgresql://neon-output/db",
+        tmp_path,
+        "r2-catalog://pc-keiba",
+        R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
+        RaceScope(),
+    )
+
+    def full_predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        full_calls.append(
+            (category, run_date, days_ahead, keibajo_code, race_bango, card_max_race_bango)
+        )
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260712",
+        days_ahead=0,
+        mode="rescore",
+        card_max_race_bango=12,
+    )
+    chunks = list(iter_predict_chunks(params, full_predict, rescore_fn=rescore_fn))
+    parsed = [json.loads(chunk.decode()) for chunk in chunks]
+
+    assert cache_reads == []
+    assert fetch_watermarked_calls == []
+    assert full_calls == [("jra", "20260712", 0, None, None, 12)]
+    assert any(item.get("stage") == "rescore-fallback-to-full" for item in parsed)
+    assert parsed[-1]["status"] == "success"
+
+
+def test_catalog_rescore_per_race_scope_falls_back_when_watermarked_cache_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single-race scope now gets one real attempt at the watermarked
+    per-race cache before falling back -- when that attempt fails (R2 miss,
+    watermark rejected, or any exception, all collapsed to a ``False``
+    return by ``_fetch_watermarked_per_race_cache`` itself), the outcome is
+    identical to the pre-(13) behavior: full pipeline fallback."""
+    fetch_calls: list[tuple[object, ...]] = []
+    full_calls: list[tuple[object, ...]] = []
+
+    def fake_fetch(*args: object) -> bool:
+        fetch_calls.append(args)
+        return False
+
+    monkeypatch.setattr(predict_upcoming, "_fetch_watermarked_per_race_cache", fake_fetch)
     rescore_fn, _per_race_payload_fn = _make_rescore_fn(
         "postgresql://neon-output/db",
         tmp_path,
@@ -1169,10 +1239,243 @@ def test_catalog_rescore_forces_full_fallback_without_reading_processed_cache(
     chunks = list(iter_predict_chunks(params, full_predict, rescore_fn=rescore_fn))
     parsed = [json.loads(chunk.decode()) for chunk in chunks]
 
-    assert cache_reads == []
+    assert len(fetch_calls) == 1
     assert full_calls == [("jra", "20260712", 0, "05", "11", 12)]
     assert any(item.get("stage") == "rescore-fallback-to-full" for item in parsed)
     assert parsed[-1]["status"] == "success"
+
+
+def test_catalog_rescore_per_race_scope_uses_watermarked_cache_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the watermarked per-race cache attempt succeeds, the rescore
+    proceeds on the cached-and-refreshed path -- the full pipeline is never
+    invoked, and no ``rescore-fallback-to-full`` stage is emitted."""
+    import pandas as pd
+
+    from pipeline_runner import RACE_ID_FIELD
+
+    def fake_fetch(final_dir: Path, *_rest: object) -> bool:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        frame = pd.DataFrame(
+            [{RACE_ID_FIELD: "jra:2026:0712:05:11", "umaban": 1, "ketto_toroku_bango": "H1"}]
+        )
+        frame.to_parquet(final_dir / "features.parquet")
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "_fetch_watermarked_per_race_cache", fake_fetch)
+    monkeypatch.setattr(predict_upcoming, "_fetch_fresh_snapshots", lambda *a, **k: {})
+    monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", lambda *a, **k: 1)
+    full_calls: list[object] = []
+    rescore_fn, _per_race_payload_fn = _make_rescore_fn(
+        "postgresql://neon-output/db",
+        tmp_path,
+        "r2-catalog://pc-keiba",
+        R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b"),
+        RaceScope(keibajo_code="05", race_bango="11"),
+    )
+
+    def full_predict(*args: object) -> int:
+        full_calls.append(args)
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260712",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="11",
+    )
+    chunks = list(iter_predict_chunks(params, full_predict, rescore_fn=rescore_fn))
+    parsed = [json.loads(chunk.decode()) for chunk in chunks]
+
+    assert full_calls == []
+    assert not any(item.get("stage") == "rescore-fallback-to-full" for item in parsed)
+    assert parsed[-1]["status"] == "success"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_watermarked_per_race_cache -- direct unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_watermarked_per_race_cache_false_without_race_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    r2_calls: list[str] = []
+    monkeypatch.setattr(
+        predict_upcoming,
+        "r2_get_parquet",
+        lambda *_a: r2_calls.append("called") or True,
+    )
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir, "jra", "20260712", RaceScope(keibajo_code="05"), r2, "r2-catalog://pc-keiba"
+    )
+
+    assert result is False
+    assert r2_calls == []
+
+
+def test_fetch_watermarked_per_race_cache_false_on_r2_miss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", lambda *_a: False)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05", race_bango="11"),
+        r2,
+        "r2-catalog://pc-keiba",
+    )
+
+    assert result is False
+    assert not final_dir.exists()
+
+
+def test_fetch_watermarked_per_race_cache_requests_the_per_race_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: list[str] = []
+
+    def fake_r2_get_parquet(_r2: R2Config, object_key: str, _dest: Path) -> bool:
+        captured.append(object_key)
+        return False
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_r2_get_parquet)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05", race_bango="11"),
+        r2,
+        "r2-catalog://pc-keiba",
+    )
+
+    assert captured == ["feat-cache/catalog-v1/jra/20260712/05/11/features.parquet"]
+
+
+def test_fetch_watermarked_per_race_cache_false_when_watermark_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    def fake_r2_get_parquet(_r2: R2Config, _key: str, dest: Path) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"CANDIDATE-BYTES")
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_r2_get_parquet)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *a, **k: False)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05", race_bango="11"),
+        r2,
+        "r2-catalog://pc-keiba",
+    )
+
+    assert result is False
+    assert not final_dir.exists()
+
+
+def test_fetch_watermarked_per_race_cache_false_when_watermark_check_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    def fake_r2_get_parquet(_r2: R2Config, _key: str, dest: Path) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"CANDIDATE-BYTES")
+        return True
+
+    def raising_check(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("source unreachable")
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_r2_get_parquet)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", raising_check)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05", race_bango="11"),
+        r2,
+        "r2-catalog://pc-keiba",
+    )
+
+    assert result is False
+    assert not final_dir.exists()
+
+
+def test_fetch_watermarked_per_race_cache_true_populates_final_dir_when_watermark_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pipeline_runner
+
+    def fake_r2_get_parquet(_r2: R2Config, _key: str, dest: Path) -> bool:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"CANDIDATE-BYTES")
+        return True
+
+    entry_list_calls: list[tuple[object, ...]] = []
+
+    def fake_covers(
+        day_base_dir: Path,
+        category: object,
+        run_date: object,
+        target_race: object,
+        source_url: object,
+    ) -> bool:
+        entry_list_calls.append((day_base_dir, category, run_date, target_race, source_url))
+        return True
+
+    monkeypatch.setattr(predict_upcoming, "r2_get_parquet", fake_r2_get_parquet)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", fake_covers)
+    final_dir = tmp_path / "feat-jra-v7-final"
+    final_dir.mkdir(parents=True)
+    (final_dir / "stale.parquet").write_bytes(b"OLD-STALE-CONTENT")
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
+
+    result = _fetch_watermarked_per_race_cache(
+        final_dir,
+        "jra",
+        "20260712",
+        RaceScope(keibajo_code="05", race_bango="11"),
+        r2,
+        "r2-catalog://pc-keiba",
+    )
+
+    assert result is True
+    assert (final_dir / "features.parquet").read_bytes() == b"CANDIDATE-BYTES"
+    assert not (final_dir / "stale.parquet").exists()
+    assert entry_list_calls == [
+        (
+            final_dir.parent / "feat-jra-v7-final-per-race-candidate",
+            "jra",
+            "20260712",
+            "05:11",
+            "r2-catalog://pc-keiba",
+        )
+    ]
+    candidate_dir = final_dir.parent / "feat-jra-v7-final-per-race-candidate"
+    assert not candidate_dir.exists()
 
 
 def test_prewarm_parquet_payload_returns_none_when_no_parquet(tmp_path: Path) -> None:
