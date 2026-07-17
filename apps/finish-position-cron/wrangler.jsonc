@@ -141,10 +141,25 @@
     // exist at all. Every rescore attempt would therefore CacheMissError and
     // silently fall back to the full pipeline (~15-27 min), completing after
     // post and overwriting the honest pre-race prediction row with a
-    // post-race-generated one. Re-enable only after the focused-full path is
-    // fixed to also populate the R2 cache. Rollback: flip back to "0"
-    // (config-only, instant) — this IS that rollback.
-    "COORDINATOR_ENABLED": "0",
+    // post-race-generated one.
+    // Flipped "0" -> "1" again on 2026-07-18 per explicit USER decision
+    // ("7/17 から有効化して"), made WITH the above precondition gap explained
+    // and accepted — see docs/probes/odds-freshness-value-2026-07-17.md for
+    // the quantified motivation (market favorite churns in ~28% of races
+    // between a 09:30-ish snapshot and near-post) and
+    // apps/pc-keiba-viewer/docs/probes/campaign-summary-2026-07-17.md §g for
+    // the accompanying risk-mitigation note and tomorrow-morning observation
+    // item. The R2-cache gap this comment describes is being fixed
+    // permanently in a separate change (campaign item ⑬: focused-full writes
+    // its built parquet to R2, keyed with a watermark so mode=rescore can
+    // reuse it instead of unconditionally CacheMissError-ing) — until that
+    // change deploys, every rescore this coordinator triggers still costs a
+    // full ~15-27 min rebuild, which can hold the category's single
+    // container execution slot long enough to delay a DIFFERENT race's
+    // genuine focused-full generation (both paths serialize on the same
+    // process-wide _PIPELINE_EXEC_LOCK — see predict_lib/serve.py). Rollback:
+    // flip back to "0" (config-only, one deploy) — this is that rollback.
+    "COORDINATOR_ENABLED": "1",
     // Comma-separated PredictCategory list scoping the per-race coordinator
     // above. JRA-only: rescore for a JRA race shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
