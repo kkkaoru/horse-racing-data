@@ -159,7 +159,21 @@
     // genuine focused-full generation (both paths serialize on the same
     // process-wide _PIPELINE_EXEC_LOCK — see predict_lib/serve.py). Rollback:
     // flip back to "0" (config-only, one deploy) — this is that rollback.
-    "COORDINATOR_ENABLED": "1",
+    // Rolled back to "0" again on 2026-07-18 ~10:17 JST (team-lead-authorized,
+    // config-only, sharding/Defect F unaffected): the coordinator's per-10-min
+    // tick was confirmed re-writing all 36 JRA races on today's opening day
+    // with byte-identical degraded scores (stddev ~0.08-0.15, matching
+    // Defect A's signature) every tick -- root cause is the unrelated
+    // pc-keiba-r2-catalog /v1/running-style-features query hitting an R2 SQL
+    // "expression too deep" error for JRA (see
+    // apps/pc-keiba-viewer/docs/probes/jra-serving-audit-jun-jul-2026-07-17.md
+    // Defect G), so RS stays null and every rescore this coordinator fires
+    // re-scores from the same degraded feature vector. This flag does not fix
+    // that; it only stops the coordinator from re-producing (not just
+    // leaving stale) garbage while the real fix is designed for the 17:00 JST
+    // window. Re-enable once the R2 SQL query is fixed and RS generation is
+    // confirmed healthy for JRA.
+    "COORDINATOR_ENABLED": "0",
     // Comma-separated PredictCategory list scoping the per-race coordinator
     // above. JRA-only: rescore for a JRA race shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
