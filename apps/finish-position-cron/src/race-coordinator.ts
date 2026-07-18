@@ -15,7 +15,10 @@
 // allowlist automatically. env.RESCORE_CATEGORIES scopes which categories are
 // enqueued (see resolveRescoreCategories below); when the coordinator is
 // disabled entirely (COORDINATOR_ENABLED !== "1") it is a shadow no-op — see
-// worker.ts gating.
+// worker.ts gating. NAR/Ban-ei additionally only plan within a JST 14:00-21:00
+// wall-clock window (see isWithinCategoryTimeBox) as a safety margin against
+// an atypically delayed mode=full still running for that category; JRA has no
+// such restriction.
 
 import { claimRescoreRace } from "./do-state";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
@@ -51,9 +54,16 @@ const RESCORE_CATEGORIES_SEPARATOR = ",";
 // JRA per-race rescore routes to the container's existing mode=rescore path,
 // which shares _score_and_flush_races / score_races with the full pass so it
 // inherits the current champion, cell routing, and the production model
-// version allowlist automatically. NAR/Ban-ei rescore is intentionally held
-// back until the day-base full-pass speedup, so it does not contend with the
-// morning bulk run for those categories' single per-category container slot.
+// version allowlist automatically. Kept JRA-only as the conservative
+// fallback (not because NAR/Ban-ei can't run it): the container-slot
+// contention this comment used to warn about was real when written
+// (2026-07-18 analysis found the DO-sharding fix that structurally resolves
+// it, commit d624009b, landed the same morning) -- the live wrangler.jsonc
+// value now widens this to "jra,nar,ban-ei" with a time-boxed coordinator
+// window for those two categories (see CATEGORY_TIME_BOX_JST /
+// isWithinCategoryTimeBox below); this constant stays JRA-only purely so an
+// unset/malformed env var fails toward the longest-verified scope rather
+// than silently reactivating NAR/Ban-ei rescore with no time-box review.
 const DEFAULT_RESCORE_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra"];
 // Kochi racecourse: the venue the is_final_race cell-routing dimension
 // currently exists for (predict_lib.cell_router.py, no live routing rule
@@ -62,6 +72,12 @@ const DEFAULT_RESCORE_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra"];
 // dispatch pays zero added cost for a dimension it will never route on.
 export const KOCHI_KEIBAJO_CODE = "54";
 const KOCHI_SOURCE = "nar";
+
+interface CategoryTimeBoxJst {
+  endHour: number;
+  startHour: number;
+}
+
 interface CategoryRaceFilter {
   keibajoCodes: ReadonlyArray<string>;
   keibajoMode: "all" | "exclude" | "include";
@@ -87,6 +103,24 @@ const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter
 };
 const ALL_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra", "nar", "ban-ei"];
 const ALL_CATEGORIES_SET = new Set<string>(ALL_CATEGORIES);
+
+// NAR/Ban-ei-only safety gate (JST 14:00-21:00, matching Kochi/Saga/Ban-ei's
+// own afternoon-evening card -- see docs/probes for the 2026-07-18 scope-gap
+// analysis): an EXTRA restriction beyond a race's own post-time window
+// (isWithinRescoreWindow), scoped only to categories whose per-race mode=full
+// generation has historically run as a single whole-day batch hours before
+// race hours (empirically 00:25-00:26 JST for NAR/Ban-ei), so a rescore this
+// coordinator enqueues can never race an atypically delayed mode=full still
+// running for the same category. JRA carries no time-box here (absent from
+// CATEGORY_TIME_BOX_JST): its own coordinator cron trigger
+// (COORDINATOR_CRON_RACE_HOURS) already scopes when this whole tick runs at
+// all, and JRA's per-race mode=full has no comparable single-batch-for-the-
+// whole-day pattern to guard against.
+const NAR_BAN_EI_TIME_BOX_JST: CategoryTimeBoxJst = { endHour: 21, startHour: 14 };
+const CATEGORY_TIME_BOX_JST: Readonly<Partial<Record<PredictCategory, CategoryTimeBoxJst>>> = {
+  "ban-ei": NAR_BAN_EI_TIME_BOX_JST,
+  nar: NAR_BAN_EI_TIME_BOX_JST,
+};
 
 interface RaceSourceRow {
   keibajo_code: string;
@@ -399,6 +433,18 @@ const buildShadowSummary = (category: PredictCategory, date: string): RaceCoordi
 export const isCoordinatorEnabled = (env: Env): boolean =>
   env.COORDINATOR_ENABLED === COORDINATOR_ENABLED_FLAG;
 
+// True when category has no configured time-box (jra: always true, no
+// restriction), or when now's JST wall-clock hour falls within
+// [startHour, endHour) for a category that does (nar/ban-ei). Only gates
+// whether this tick plans the category at all -- a race's own post-time
+// proximity (isWithinRescoreWindow) is unaffected and still applies on top.
+export const isWithinCategoryTimeBox = (category: PredictCategory, now: Date): boolean => {
+  const box = CATEGORY_TIME_BOX_JST[category];
+  if (box === undefined) return true;
+  const jstHour = new Date(now.getTime() + JST_OFFSET_MS).getUTCHours();
+  return jstHour >= box.startHour && jstHour < box.endHour;
+};
+
 const isPredictCategory = (value: string): value is PredictCategory =>
   ALL_CATEGORIES_SET.has(value);
 
@@ -480,14 +526,16 @@ export const runRaceCoordinatorTick = async (
   const runYmd = formatRunYmdJst(params.now);
   const summaries = await Promise.all(
     categories.map((category) =>
-      planRescoreForCategory({
-        category,
-        date,
-        env: params.env,
-        leadMinutes: params.leadMinutes,
-        now: params.now,
-        runYmd,
-      }),
+      isWithinCategoryTimeBox(category, params.now)
+        ? planRescoreForCategory({
+            category,
+            date,
+            env: params.env,
+            leadMinutes: params.leadMinutes,
+            now: params.now,
+            runYmd,
+          })
+        : buildShadowSummary(category, date),
     ),
   );
   // Trigger a per-race rescore fan-out (fresh weight data) for categories

@@ -191,14 +191,28 @@
     // confirmed healthy for JRA.
     "COORDINATOR_ENABLED": "0",
     // Comma-separated PredictCategory list scoping the per-race coordinator
-    // above. JRA-only: rescore for a JRA race shares the container's
+    // above. rescore for any listed category shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
     // the current champion + cell routing + production model version
-    // allowlist automatically. NAR/Ban-ei rescore is intentionally excluded —
-    // their container rescore would compete with the single per-category
-    // container slot the morning full pass also uses; revisit after the
-    // day-base full-pass speedup lands.
-    "RESCORE_CATEGORIES": "jra",
+    // allowlist automatically.
+    // Widened "jra" -> "jra,nar,ban-ei" 2026-07-18 evening, deploy targeted
+    // for 2026-07-19 early-morning off-hours (team-lead-approved, per
+    // do-sharding's task #40 analysis): NAR/Ban-ei (Saga/Kochi/Ban-ei) had been
+    // excluded since 2026-07-11 over a "single per-category container slot"
+    // contention concern with their morning mode=full pass -- that concern was
+    // structurally resolved by the DO-sharding fix (commit d624009b,
+    // 2026-07-18 01:11 JST, predict-do-shard.ts: each category already runs on
+    // its own Durable Object, predict-{category}[-{shardIndex}]) a week after
+    // this exclusion was written, and nobody revisited it. Confirmed via live
+    // Neon data that NAR/Ban-ei's whole-day mode=full pass empirically
+    // finishes at 00:25-00:26 JST, 14-20h before any NAR/Ban-ei post time
+    // (14:30-20:50 JST) -- no realistic overlap under current timing either.
+    // race-coordinator.ts's CATEGORY_TIME_BOX_JST additionally restricts
+    // NAR/Ban-ei rescore to JST 14:00-21:00 wall-clock as extra margin against
+    // an atypically delayed mode=full (the one tail risk); JRA is unaffected
+    // (no time-box, same as before). Rollback: "jra,nar,ban-ei" -> "jra"
+    // (config-only, one deploy).
+    "RESCORE_CATEGORIES": "jra,nar,ban-ei",
     // Event-driven rescore from sync-realtime-data is disabled while the
     // per-race full path is the production ordering authority. Full generation
     // must not compete with post-weight rescore retries for Container capacity.

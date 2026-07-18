@@ -13,6 +13,7 @@ import {
   formatRunDateJst,
   formatRunYmdJst,
   isCoordinatorEnabled,
+  isWithinCategoryTimeBox,
   isWithinRescoreWindow,
   planRescoreForCategory,
   resolveCardMaxRaceBangoForKochi,
@@ -107,6 +108,46 @@ test("isWithinRescoreWindow includes the exact window-end boundary", () => {
 test("isWithinRescoreWindow returns false for an unparseable post time", () => {
   const now = new Date("2026-06-19T05:00:00.000Z");
   expect(isWithinRescoreWindow("not-a-date", now, 25)).toBe(false);
+});
+
+test("isWithinCategoryTimeBox always returns true for jra regardless of hour", () => {
+  expect(isWithinCategoryTimeBox("jra", new Date("2026-06-19T00:00:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns true for jra at a JST hour outside 14-21", () => {
+  expect(isWithinCategoryTimeBox("jra", new Date("2026-06-19T02:00:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns false for nar just before the JST 14:00 window start", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T04:59:00.000Z"))).toBe(false);
+});
+
+test("isWithinCategoryTimeBox returns true for nar at the exact JST 14:00 window start", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T05:00:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns true for nar in the middle of the JST window", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T09:00:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns true for nar just before the JST 21:00 window end", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T11:59:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns false for nar at the exact JST 21:00 window end", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T12:00:00.000Z"))).toBe(false);
+});
+
+test("isWithinCategoryTimeBox returns false for ban-ei just before the JST 14:00 window start", () => {
+  expect(isWithinCategoryTimeBox("ban-ei", new Date("2026-06-19T04:59:00.000Z"))).toBe(false);
+});
+
+test("isWithinCategoryTimeBox returns true for ban-ei at the exact JST 14:00 window start", () => {
+  expect(isWithinCategoryTimeBox("ban-ei", new Date("2026-06-19T05:00:00.000Z"))).toBe(true);
+});
+
+test("isWithinCategoryTimeBox returns false for ban-ei at the exact JST 21:00 window end", () => {
+  expect(isWithinCategoryTimeBox("ban-ei", new Date("2026-06-19T12:00:00.000Z"))).toBe(false);
 });
 
 test("selectRacesWithinWindow keeps only in-window races and zero-pads the keys", () => {
@@ -307,6 +348,52 @@ test("runRaceCoordinatorTick plans every category listed in RESCORE_CATEGORIES",
     now: new Date("2026-06-19T05:00:00.000Z"),
   });
   expect(summaries.map((s) => s.category)).toStrictEqual(["jra", "nar", "ban-ei"]);
+  expect(prepareMock).toHaveBeenCalledTimes(3);
+});
+
+test("runRaceCoordinatorTick shadows nar/ban-ei outside their JST time-box while jra still plans", async () => {
+  stubD1Rows([]);
+  const summaries = await runRaceCoordinatorTick({
+    env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T02:00:00.000Z"), // JST 11:00 -- before the 14:00 window start
+  });
+  expect(summaries).toStrictEqual([
+    {
+      alreadyClaimed: 0,
+      category: "jra",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+    {
+      alreadyClaimed: 0,
+      category: "nar",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+    {
+      alreadyClaimed: 0,
+      category: "ban-ei",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+  ]);
+  expect(prepareMock).toHaveBeenCalledTimes(1);
+});
+
+test("runRaceCoordinatorTick plans nar/ban-ei once inside their JST time-box", async () => {
+  stubD1Rows([]);
+  await runRaceCoordinatorTick({
+    env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T09:00:00.000Z"), // JST 18:00 -- inside the 14:00-21:00 window
+  });
   expect(prepareMock).toHaveBeenCalledTimes(3);
 });
 
