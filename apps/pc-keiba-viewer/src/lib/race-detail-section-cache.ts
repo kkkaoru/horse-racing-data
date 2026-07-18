@@ -3,7 +3,16 @@ import type { RaceSource } from "./codes";
 export const DETAIL_SECTION_CACHE_WARM_PARAM = "__cacheWarm";
 export const PREDICTION_REFRESH_PARAM = "__predictionRefresh";
 
-export const DETAIL_SECTION_CACHE_VERSION = "v2";
+// Bumped v2->v3 on 2026-07-18 for cherry-picked commit a8f5ad1d (training
+// section: emit a placeholder row per entrant with no jvd_hc/wc match). Same
+// stale-cache trap as query-cache.ts / finish-prediction-inputs-cache.server.ts:
+// any race whose "training" (or any other section sharing this version)
+// payload had already been cached before this deploy would otherwise keep
+// serving the pre-fix shape for up to DETAIL_SECTION_CACHE_AFTER_START_SECONDS
+// (6 hours) past post time, and the per-race cache-bust endpoint would need
+// to be called race-by-race to work around it. Bumping here invalidates every
+// section's cache at once instead.
+export const DETAIL_SECTION_CACHE_VERSION = "v3";
 const PREMIUM_DATA_TOP_DETAIL_SECTION_CACHE_VERSION = "v2";
 
 export const DETAIL_SECTION_CACHE_AFTER_START_SECONDS = 6 * 60 * 60;
