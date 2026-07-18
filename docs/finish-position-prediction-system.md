@@ -632,7 +632,12 @@ sequenceDiagram
 
 **既知の未解決事項（この変更のスコープ外、flag on にする前に team-lead が確認する）**: `wrangler.jsonc` の queue consumer は `max_concurrency: 3`（§5.6 の cron コメント参照——3 category に対して 1 対 1 で足りるよう設定された値）。`RACE_SHARDED_DO` を有効化しても、同時に処理できる queue message 数はこの `max_concurrency` の天井を超えない——shard 数を増やしても、それを実際に並行消費する consumer invocation 数が `max_concurrency: 3` のままではスループット改善が頭打ちになる。flag を ON にして real throughput を得るには `max_concurrency` を category 数 × shard 数相当まで引き上げる deploy が別途必要（この PR のスコープ外、team-lead の deploy 判断待ち）。
 
-**デプロイ履歴**: 2026-07-18、commit `d624009b`、flag OFF（`RACE_SHARDED_DO` / `RACE_SHARD_MAX_CONCURRENT` は `wrangler.jsonc` の `vars` に未追加——未設定＝OFF）で本番デプロイ済み（Version ID `36cba906-41c5-40b5-b9da-ec0613de1401`）。`/` health check 200 確認済み。挙動は bit-identical（`resolvePredictDoName()` が sharding 導入前と同じ `predict-{category}` を返す）。
+**デプロイ履歴**:
+
+- 2026-07-18 09:xx JST、commit `d624009b`、flag OFF（`RACE_SHARDED_DO` / `RACE_SHARD_MAX_CONCURRENT` は `wrangler.jsonc` の `vars` に未追加——未設定＝OFF）で本番デプロイ済み（Version ID `36cba906-41c5-40b5-b9da-ec0613de1401`）。`/` health check 200 確認済み。挙動は bit-identical（`resolvePredictDoName()` が sharding 導入前と同じ `predict-{category}` を返す）。
+- 同日 09:2x JST、USER 追加承認（「max_concurrency 引き上げ OK / live 競合 OK」）を受け、17:00 まで待たず即日 flag ON。Defect F 修正（commit `78076cc8`）と同一 deploy に束ね、commit `a0eb365a` で `vars.RACE_SHARDED_DO="1"` + `queues.consumers[0].max_concurrency` を `3`→`9` に変更（Version ID `84e51027-b08a-4b19-8a88-2c728d9a8be2`）。`/` health check 200 確認済み。
+  - **決定論的検証**: 本番 D1（`sync-realtime-data`、`realtime_race_sources`）から本日実際の予定レース 70 件を取得し、デプロイ済みコードそのもの（`src/predict-do-shard.ts` の `resolvePredictDoName()` を直接 import・実行、再実装ではない）に通したところ、jra/nar/ban-ei の全 category で shard 0/1/2 全てが使われることを確認（合計 9 個の distinct DO 名、既定 `RACE_SHARD_MAX_CONCURRENT=3` 通り）。
+  - **live 挙動検証**: 本日の実レース 2 件（keibajoCode=02 raceBango=01 → `predict-jra-1`、keibajoCode=10 raceBango=01 → `predict-jra-0`、上記決定論的検証と同じ計算で別 shard と確認済み）を admin `run-focused-full-race`（`debug=true`）で同時発火。両方とも HTTP 200・`status:"accepted"` で "busy" にならず並行して受理された（`wrangler tail` ログでも "admin-run-focused-full start/response" が両レースぶん記録され、durationMs はそれぞれ 5467ms / 9027ms でオーバーラップ）。旧（sharding 前）挙動なら同一 category=jra の 2 レースは同一 DO の `_PIPELINE_EXEC_LOCK` を奪い合うため、後着が "busy" になるか長時間ブロックされる可能性が高かった——両方が busy 化せず accepted になったことは、別 DO（別 shard）へ実際に分散されたことの間接証拠。両レースの実際の完了・Neon 書き込み・stddev 確認はパイプライン完了後（~15-27分後を想定）に別途フォローアップ。
 
 #### 5.4.3 17:00 flag-on runbook
 
