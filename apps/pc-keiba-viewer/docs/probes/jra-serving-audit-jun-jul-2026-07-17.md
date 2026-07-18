@@ -611,3 +611,20 @@ Exit code: 1
 3. **含水率/クッション値**: `fetch_daily.py` 再実行、accumulator 引き続き 58 行（増分ゼロ）。**本日分は 08:30 時点でもまだ未公表**。doc 記載の公表窓（05:00-07:00）は過ぎているが、スクリプト自身のメッセージが示す通り実際は venue 依存で 10:00 まで幅がありうる。09:20/09:40 チェックポイントで再試行する。
 
 **次アクション**: 09:00 を過ぎた時点で D1 登録が依然 0 なら team-lead へ即エスカレーション（このチェックポイント自体では実施しない、次の自然な確認機会である 09:20 チェックで併せて確認）。09:20 で corner-features 09:15 tick 検証と合わせて D1/shard 再確認、cushion/moisture 再試行を行う。
+
+### 13.5 09:16 JST 開催直前チェック実績
+
+**1. D1 JRA 登録 — discovery 完了確認**: `realtime_race_sources`（source='jra', 2026/0718）を再照会したところ **36 行 (keibajo 02/03/10 各12レース)**。08:30 時点ではまだ 0 行だったため、09:00 discovery が想定通り機能したことを確認 — opening-day 前例が無かった項目だが正常に discovery された。
+
+**2. R2 shard (check 6)**: `serve_health_check.py` 再実行、出力は 08:30 と同一（本日分 `jra=not found yet`）。races が discovery されたのは直近数分のため、RS 予測生成（discovery のさらに下流の工程）がまだ追いついていないだけと解釈——09:25 の第一レースまでに着地するかを引き続き監視する。races 未登録による「生成対象なし」の段階は今回で終わり、以後の not-found は genuine な生成遅延の可能性を帯びる。
+
+**3. 09:15 JST corner-features tick — 発火確認（伝播遅延仮説が支持された）**: 2つの独立手法で確認した。
+
+- **Neon 直接読取**（psycopg、2回連続クロスチェック、両方一致）: `now()=2026-07-18 00:16:59 UTC` に対し `max(updated_at)=2026-07-18 00:16:16 UTC`（= 09:16:16 JST）——ほぼ現在時刻に一致。2回目の読取（`now()=00:17:25 UTC`）でも同一値で安定。
+- **Cloudflare GraphQL Analytics**（§12.1a と同一手法、`workersInvocationsAdaptive`、`scriptName=finish-position-cron`、00:10-00:25 UTC 窓）: `datetimeMinute=2026-07-18T00:15:00Z`（= 09:15 JST ちょうど）に `status=success, requests=2, subrequests=50` の invocation を確認。§12.1a の control check が示した「trivial cron は requests=1,subrequests=1」という基準に対し、`subrequests=50` は実質的な DB 処理（複数レース分の upsert）を伴う genuine な実行であることを示す——昨夜 22:00 JST tick の完全な無音（invocation 自体が存在しない）とは明確に異なる。
+
+**結論: 昨夜 22:00 JST tick 未発火の原因として最有力視していた「cron 登録の伝播遅延」仮説が支持された** — 配線後 23 時間超を経た今朝の 09:15 tick は正常発火し、Neon への書込みも実際に発生している。§12.1a のフォローアップ項目 (a)(b) はこれで解消。残る (c)「今夜 22:00 JST も発火しなければ伝播遅延ではなく別の恒久的な問題」は今夜の観察待ち。
+
+**留意点（team-lead 指摘の deploy churn 切り分け）**: `apps/finish-position-cron` の `wrangler deployments list` を確認したところ、直近デプロイが **00:14:45 UTC**（version `36cba906`）と **00:18:00 UTC**（version `12344a51`）の2件——tick 発火時刻 (00:15:00Z) をほぼ挟む形で do-sharding/deploy-verify によるデプロイが進行中だったことを確認した。scheduled cron invocation は deploy イベントとは別記録（`workersInvocationsAdaptive` は実行ログ、deploy は `Source: Upload` の別メタデータ）であるため tick 発火の実在性自体は揺るがないが、**tick がどちらのバージョンで実行されたかは本チェックでは確定できない**（00:14:45 デプロイ直後〜00:18:00 デプロイ直前の狭い窓）。実害の兆候（エラー、silent failure）は見当たらないため、現時点では informational な記録に留める。
+
+**次アクション**: 09:25 開催後、最初の JRA レース群の serving 行が発走前 created・健全 stddev (>0.5) で着地するかを最重要観察点として確認する。
