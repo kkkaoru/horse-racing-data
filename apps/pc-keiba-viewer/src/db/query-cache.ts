@@ -6,7 +6,15 @@ import { withDbRetry } from "./db-retry";
 
 const DEFAULT_TTL_SECONDS = 60 * 60;
 const KV_MAX_TTL_SECONDS = 60 * 60 * 24;
-const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v3";
+// Bumped to v4 on 2026-07-18 to force-invalidate every entry this layer holds
+// as part of the emergency finish-position quality gate rollout: entries
+// warmed by any request (including monitoring/verification checks) before
+// that deploy landed cache a JSON body with no isQualityGated field at all,
+// and would otherwise keep serving that stale shape for up to
+// PC_KEIBA_DB_CACHE_TTL_SECONDS regardless of new deploys (this cache key is
+// content-addressed, not deploy-version-addressed, and the per-race
+// cache-bust endpoint targets a different KV key scheme, not this one).
+const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v4";
 
 declare global {
   interface CacheStorage {
