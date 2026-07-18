@@ -95,6 +95,28 @@ flowchart TB
 - **`race-prediction-guard.sh` は稼働を継続**するが、純粋な monitor + CF-retrigger loop に縮小した。RS completeness check / discover-urls 再kick / corner-features prerequisite / prewarm tick、および CF trigger escalation（`POST finish-position-cron.../run`、per-category、marker で二重発火防止）はすべてそのまま。local Docker "last resort" 分岐（`cf-trigger-failed->local` / `cf-already-tried->local`）のみ `GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"` で既定 OFF 化し、CF trigger を唯一の escalation tier にした。`GUARD_LOCAL_FALLBACK_ENABLED=1` で明示的にオーバーライド可能（緊急時のみ、常用しない）。
 - **win5-overlay（`apps/pc-keiba-viewer/scripts/com.kkkaoru.win5-overlay.plist`、Sat/Sun 09:00 JST）は今回は無効化していない** — WIN5 オーバーレイ行の生成に加え、事実上 `race_entry_corner_features` の唯一の refresher であり、07-12 分の corner feature は既にビルド済みのため依存関係を壊さないための判断。2026-07-11 時点の調査では `~/Library/LaunchAgents/` に本 plist は **install されていない**（repo 内の reference plist のみ存在）ため今夜の実害はないが、将来 install した場合に備え、Mac 上に残る唯一の production-adjacent job として明記する。corner-features refresh が decouple されるまでは無効化しない方針（reliability-wave item 21 で移行予定）。
 
+### 1.3 恒久ルール — RS 生成 scheduling も Mac batch に依存禁止（2026-07-18）
+
+**USER 指示（2026-07-18）: 本番の prediction generation は Mac batch processing（launchd / docker / cron）に一切依存してはならない。** finish-position は §1.2 で Cloudflare-only 済みだったが、running-style（脚質）生成の **kick scheduling** だけは `race-prediction-guard.sh` の JST 0-9 時台（1 時間おき）・10-20 時台（20 分おき）・21-23 時台（1 時間おき、翌日分も含む）が `POST https://sync-realtime-data.kkk4oru.com/api/jobs`（`{type: "plan-running-style-predictions", date}`、`REALTIME_ADMIN_TOKEN` 認証）で駆動しており、Mac 依存が残っていた。
+
+調査の結果、`sync-realtime-data` は既にこの同じ job を叩くネイティブな Cloudflare Cron を 2 本持っていた（`apps/sync-realtime-data/src/running-style-cron.ts`、read-only 参照 — 本 worktree からは編集しない）:
+
+- `RUNNING_STYLE_INFERENCE_CRON = "*/10 0-14 * * *"`（UTC 00:00-14:59 == JST 09:00-23:59、10 分おき）— 当日分を計画
+- `RUNNING_STYLE_PREWARM_CRON = "0 12 * * *"`（UTC 12:00 == JST 21:00、1 日 1 回）— 翌日分を計画
+
+このため guard の JST 0-9 時台バンドだけが本当の欠落窓（JST 00:00-08:59、上記どちらのネイティブ cron も発火しない）であり、10-20 時台・21 時台は既にネイティブ cron の方が高頻度で優れていた。`finish-position-cron` の `src/running-style-kick.ts` は同じ `POST /api/jobs` エンドポイントへ HTTP kick する Cloudflare Cron を 2 本追加してこの欠落窓を埋める（`sync-realtime-data` 自体のコードは変更しない）:
+
+| cron            | JST         | 用途                                                                          |
+| --------------- | ----------- | ----------------------------------------------------------------------------- |
+| `0 15-23 * * *` | 00:00-08:00 | 当日分 RS kick（ネイティブ cron が JST 09:00 開始のため、その直前まで埋める） |
+| `0 13,14 * * *` | 22:00,23:00 | 翌日分 RS kick 冗長リトライ（ネイティブ prewarm は JST 21:00 の 1 回のみ）    |
+
+`plan-running-style-predictions` job は既に予測済みの race を再 enqueue しないため（`selectRacesNeedingRunningStyleInference`）、この 2 本を稼働中の Mac guard と並走させても安全（冪等）。
+
+**恒久ルール**: 本番の prediction generation（feature generation / running-style generation / finish-position full generation のいずれも）は Mac ベースの batch processing（launchd / docker / cron）に依存してはならない。scheduling は常に Cloudflare Cron Trigger を authority とする。
+
+`race-prediction-guard.sh` の RS-kick scheduling 役割は、上記 CF cron が live 稼働で検証され次第 superseded とし、guard 側の該当ロジック（またはその launchd job 自体）を退役させる。退役までは §1.2 と同様、guard は稼働を継続する（CF cron 検証前に唯一の RS-kick 経路を止めない）。
+
 ---
 
 ## 2. 本番モデル（2026-07-08 時点）
@@ -671,10 +693,12 @@ coordinator の "weight rebuild" trigger（`race-coordinator.ts` の `triggerWei
 | `30 0 * * *`      | 09:30       | Cloudflare-side feature generation / per-race planning |
 | `*/30 1-11 * * *` | 10:00-20:59 | レース時間帯の Neon keep-warm                          |
 | `*/10 1-11 * * *` | 10:00-20:59 | per-race rescore coordinator                           |
+| `0 15-23 * * *`   | 00:00-08:00 | RS kick（当日）— §1.3、`src/running-style-kick.ts`     |
+| `0 13,14 * * *`   | 22:00,23:00 | RS kick（翌日、冗長リトライ）— §1.3、同上              |
 
 `observability.head_sampling_rate: 0.1` を設定済み（請求最適化のため新規 Worker は必須）。
 
-脚質予測は `sync-realtime-data/wrangler.jsonc` の `*/10 0-14 * * *`（JST 09:00-23:50）cron で planner が走る。前日 prewarm / 当日 backfill は daily feature generation と running-style planning を同じ順序で呼ぶ。
+脚質予測は `sync-realtime-data/wrangler.jsonc` の `*/10 0-14 * * *`（JST 09:00-23:50、当日分）と `0 12 * * *`（JST 21:00、翌日分 prewarm）cron で planner が走る。前日 prewarm / 当日 backfill は daily feature generation と running-style planning を同じ順序で呼ぶ。上記 2 crons が発火しない JST 00:00-08:59 の欠落窓は `finish-position-cron` 側の RS kick cron（§1.3）が埋める — これは `race-prediction-guard.sh` の Mac 依存 RS-kick scheduling を Cloudflare Cron へ移行する恒久ルールの実装である。
 
 ### 5.7 Docker / 永続化
 
@@ -701,6 +725,7 @@ secret 値はドキュメントに記載しない。運用上必要な名前だ�
 | `sync-realtime-data`                         | `DATABASE_URL_NEON`, `NEON_DATABASE_URL`  | 脚質 Neon mirror の writable PostgreSQL 接続先                                                                     |
 | `sync-realtime-data`                         | `HYPERDRIVE`                              | feature read pool。production Hyperdrive は read-replica oriented                                                  |
 | `finish-position-cron`                       | `NEON_DATABASE_URL`, `PREDICT_DAYS_AHEAD` | Neon warm / Container trigger                                                                                      |
+| `finish-position-cron`                       | `REALTIME_ADMIN_TOKEN`                    | §1.3 RS kick cron の `sync-realtime-data` `POST /api/jobs` 認証。同名 secret を `race-prediction-guard.sh` も使用  |
 
 脚質 Neon write は `getFinishPositionWritePool()` が `DATABASE_URL_NEON` → `NEON_DATABASE_URL` → Hyperdrive fallback の順に選ぶ。production Hyperdrive は read-replica oriented なので、writable secret が存在する環境で Hyperdrive を write path の第一候補にしてはならない。read pool は従来通り Hyperdrive first でよい。
 

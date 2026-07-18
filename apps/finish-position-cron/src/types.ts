@@ -37,6 +37,15 @@ export interface Env {
   SOURCE_DATABASE_URL?: string;
   PREDICT_DAYS_AHEAD: string;
   TRIGGER_TOKEN: string;
+  // Bearer token for sync-realtime-data's POST /api/jobs endpoint, used by
+  // running-style-kick.ts to enqueue plan-running-style-predictions for the
+  // JST windows sync-realtime-data's own native running-style crons do not
+  // cover. Same secret value scripts/launchd/race-prediction-guard.sh already
+  // reads from apps/sync-realtime-data/.dev.vars locally; set here via
+  // `wrangler secret put REALTIME_ADMIN_TOKEN`. Optional so existing
+  // callers/tests need not set it -- an unset value fails the kick's bearer
+  // auth against sync-realtime-data (logged, never thrown).
+  REALTIME_ADMIN_TOKEN?: string;
   // Feature flag for the per-race rescore coordinator. "1" enables enqueueing;
   // any other value (including unset) keeps it in shadow — the cron still fires
   // but enqueues nothing, so deploying the coordinator does not change

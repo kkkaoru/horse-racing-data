@@ -30,6 +30,12 @@ import {
   resolveCardMaxRaceBangoForKochi,
   runRaceCoordinatorTick,
 } from "./race-coordinator";
+import {
+  runRunningStyleKickMorningGap,
+  runRunningStyleKickTomorrowPrewarm,
+  shouldRunRunningStyleKickMorningGapCron,
+  shouldRunRunningStyleKickTomorrowPrewarmCron,
+} from "./running-style-kick";
 import { getRunDateJst, getRunYmdJst } from "./time";
 import { isAuthorized, isTriggerRequest, parseRunDates } from "./trigger";
 import type {
@@ -601,6 +607,21 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     // focused-full DO claim/heartbeat/staleness semantics -- never a
     // day-wide re-run. See coverage-self-heal.ts.
     await runCoverageSelfHeal({ env, now: new Date(event.scheduledTime) });
+    return;
+  }
+  if (shouldRunRunningStyleKickMorningGapCron(event.cron)) {
+    // Fills the JST 00:00-08:59 gap sync-realtime-data's own native
+    // running-style crons do not cover for TODAY (see running-style-kick.ts
+    // module doc) -- the Cloudflare replacement for
+    // scripts/launchd/race-prediction-guard.sh's JST 0-9 hourly RS kick band.
+    await runRunningStyleKickMorningGap({ env, now: new Date(event.scheduledTime) });
+    return;
+  }
+  if (shouldRunRunningStyleKickTomorrowPrewarmCron(event.cron)) {
+    // Redundant re-attempts for TOMORROW's prewarm at JST 22:00/23:00,
+    // matching the guard's own 21/22/23 hourly tomorrow band (see
+    // running-style-kick.ts module doc).
+    await runRunningStyleKickTomorrowPrewarm({ env, now: new Date(event.scheduledTime) });
     return;
   }
   if (shouldRunCornerFeaturesRefreshCron(event.cron)) {

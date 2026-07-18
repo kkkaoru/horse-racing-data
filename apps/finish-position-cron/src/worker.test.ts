@@ -17,6 +17,8 @@ const {
   resolveCardMaxRaceBangoForKochiMock,
   runCoverageSelfHealMock,
   refreshCornerFeaturesMock,
+  runRunningStyleKickMorningGapMock,
+  runRunningStyleKickTomorrowPrewarmMock,
 } = vi.hoisted(() => {
   const start = vi.fn(async () => undefined);
   const warmNeon = vi.fn(async () => undefined);
@@ -28,6 +30,8 @@ const {
   const completeFocusedFullRace = vi.fn(async () => undefined);
   const runDayBasePrewarm = vi.fn(async () => undefined);
   const refreshCornerFeatures = vi.fn(async () => undefined);
+  const runRunningStyleKickMorningGap = vi.fn(async () => undefined);
+  const runRunningStyleKickTomorrowPrewarm = vi.fn(async () => undefined);
   const resolveCardMaxRaceBangoForKochi = vi.fn(async (): Promise<number | undefined> => undefined);
   const runCoverageSelfHeal = vi.fn(async () => ({
     alreadyComplete: 0,
@@ -52,6 +56,8 @@ const {
     resolveCardMaxRaceBangoForKochiMock: resolveCardMaxRaceBangoForKochi,
     runCoverageSelfHealMock: runCoverageSelfHeal,
     refreshCornerFeaturesMock: refreshCornerFeatures,
+    runRunningStyleKickMorningGapMock: runRunningStyleKickMorningGap,
+    runRunningStyleKickTomorrowPrewarmMock: runRunningStyleKickTomorrowPrewarm,
   };
 });
 
@@ -107,6 +113,17 @@ vi.mock("./coverage-self-heal", () => ({
   shouldRunCoverageSelfHealCron: (cron: string) => cron === "7,22,37,52 1-11 * * *",
 }));
 
+// shouldRunRunningStyleKick*Cron is a pure string comparison against the two
+// real cron constants (RUNNING_STYLE_KICK_CRON_MORNING_GAP/_TOMORROW_PREWARM,
+// running-style-kick.ts) -- inlined here as literals rather than re-derived,
+// mirroring the shouldRunCornerFeaturesRefreshCron mock above.
+vi.mock("./running-style-kick", () => ({
+  runRunningStyleKickMorningGap: runRunningStyleKickMorningGapMock,
+  runRunningStyleKickTomorrowPrewarm: runRunningStyleKickTomorrowPrewarmMock,
+  shouldRunRunningStyleKickMorningGapCron: (cron: string) => cron === "0 15-23 * * *",
+  shouldRunRunningStyleKickTomorrowPrewarmCron: (cron: string) => cron === "0 13,14 * * *",
+}));
+
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
 
@@ -134,6 +151,7 @@ const makeEnv = (): Env => ({
   PREDICT_DAYS_AHEAD: "2",
   PREDICT_QUEUE: { send: predictQueueSendMock } as unknown as Env["PREDICT_QUEUE"],
   PREDICT_RUN_COORDINATOR: {} as unknown as Env["PREDICT_RUN_COORDINATOR"],
+  REALTIME_ADMIN_TOKEN: "admin-secret",
   REALTIME_DB: { prepare: realtimePrepareMock } as unknown as D1Database,
   RESCORE_ENABLED: "1",
   TRIGGER_TOKEN: "secret-token",
@@ -167,6 +185,8 @@ beforeEach(() => {
   runDayBasePrewarmMock.mockClear();
   refreshCornerFeaturesMock.mockClear();
   runCoverageSelfHealMock.mockClear();
+  runRunningStyleKickMorningGapMock.mockClear();
+  runRunningStyleKickTomorrowPrewarmMock.mockClear();
   predictQueueSendMock.mockClear();
   containerDoFetchMock.mockClear();
   containerDoGetMock.mockClear();
@@ -444,6 +464,50 @@ test("handleScheduled corner-features refresh cron does not start container, war
 test("handleScheduled does not refresh corner features for the coverage self-heal cron", async () => {
   await handleScheduled(makeEvent("7,22,37,52 1-11 * * *"), makeEnv());
   expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled kicks the running-style morning-gap plan for the morning-gap cron", async () => {
+  await handleScheduled(makeEvent("0 15-23 * * *"), makeEnv());
+  expect(runRunningStyleKickMorningGapMock).toHaveBeenCalledTimes(1);
+  expect(runRunningStyleKickMorningGapMock).toHaveBeenCalledWith(
+    expect.objectContaining({ now: new Date("2026-06-02T18:00:00.000Z") }),
+  );
+  expect(runRunningStyleKickTomorrowPrewarmMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled morning-gap RS kick cron does not start container, warm, coordinate, self-heal, or refresh corner features", async () => {
+  await handleScheduled(makeEvent("0 15-23 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+  expect(runCoverageSelfHealMock).not.toHaveBeenCalled();
+  expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled kicks the running-style tomorrow-prewarm plan for the tomorrow-prewarm cron", async () => {
+  await handleScheduled(makeEvent("0 13,14 * * *"), makeEnv());
+  expect(runRunningStyleKickTomorrowPrewarmMock).toHaveBeenCalledTimes(1);
+  expect(runRunningStyleKickTomorrowPrewarmMock).toHaveBeenCalledWith(
+    expect.objectContaining({ now: new Date("2026-06-02T18:00:00.000Z") }),
+  );
+  expect(runRunningStyleKickMorningGapMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled tomorrow-prewarm RS kick cron does not start container, warm, coordinate, self-heal, or refresh corner features", async () => {
+  await handleScheduled(makeEvent("0 13,14 * * *"), makeEnv());
+  expect(startMock).not.toHaveBeenCalled();
+  expect(warmNeonMock).not.toHaveBeenCalled();
+  expect(coordinatorTickMock).not.toHaveBeenCalled();
+  expect(runCoverageSelfHealMock).not.toHaveBeenCalled();
+  expect(refreshCornerFeaturesMock).not.toHaveBeenCalled();
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleScheduled does not kick running-style for the coverage self-heal cron", async () => {
+  await handleScheduled(makeEvent("7,22,37,52 1-11 * * *"), makeEnv());
+  expect(runRunningStyleKickMorningGapMock).not.toHaveBeenCalled();
+  expect(runRunningStyleKickTomorrowPrewarmMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled feature-build cron does not enqueue a direct full-mode predict", async () => {

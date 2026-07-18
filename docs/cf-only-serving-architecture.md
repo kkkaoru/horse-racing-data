@@ -26,6 +26,22 @@ tonight's deploy smoke test (a NAR focused-full run that returned "accepted"
 and then produced zero prediction rows and zero errors after 10 minutes / 40
 polls -- the exact silent-death shape this doc's §4.1-4.2 fixes).
 
+**Update 2026-07-18 (RS scheduling, not finish-position)**: this doc's Mac-free
+directive only ever covered finish-position generation; `race-prediction-guard.sh`
+kept one Mac-dependent role after §0-6 shipped -- it was the thing that POSTed
+`sync-realtime-data`'s `plan-running-style-predictions` job for the JST windows
+`sync-realtime-data`'s own native running-style crons do not cover (`*/10 0-14 * * *`
+today, `0 12 * * *` tomorrow-prewarm). Per the same permanent rule this doc
+established for finish-position -- production prediction generation must not
+depend on Mac batch processing -- that RS-kick scheduling gap is now also closed
+by a Cloudflare Cron Trigger (`finish-position-cron`'s `src/running-style-kick.ts`,
+two new crons in `wrangler.jsonc`). See
+`docs/finish-position-prediction-system.md` §1.3 for the full design, the exact
+crontab, and the guard-retirement sequence; the guard's RS-kick role is
+superseded once that CF cron is verified live, matching how §1.2 above already
+treats the guard's finish-position role as reduced to a monitor + CF-retrigger
+loop.
+
 ---
 
 ## 0. Why Mac batch existed, and why removing it is not free

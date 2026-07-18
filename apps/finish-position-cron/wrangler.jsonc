@@ -51,6 +51,22 @@
       // cron until now). Idempotent upsert-only, safe to run twice a day.
       "15 0 * * *", // JST 09:15 — corner-features refresh (morning, pre-race)
       "0 13 * * *", // JST 22:00 — corner-features refresh (evening, settlement)
+      // Running-style (脚質) kick crons (src/running-style-kick.ts): HTTP POST
+      // sync-realtime-data's existing POST /api/jobs endpoint with the same
+      // {type: "plan-running-style-predictions", date} job
+      // scripts/launchd/race-prediction-guard.sh already sends, for the two
+      // JST windows sync-realtime-data's own native running-style crons
+      // (RUNNING_STYLE_INFERENCE_CRON "*/10 0-14 * * *" == JST 09:00-23:59
+      // today; RUNNING_STYLE_PREWARM_CRON "0 12 * * *" == JST 21:00 tomorrow,
+      // apps/sync-realtime-data/src/running-style-cron.ts) do not cover.
+      // USER directive 2026-07-18: production prediction generation must not
+      // depend on Mac-based batch processing; this is the Cloudflare
+      // replacement for the guard's RS-kick scheduling role. Idempotent
+      // (plan-running-style-predictions only enqueues races still missing
+      // predictions), so it is safe to run alongside the still-running Mac
+      // guard during the transition.
+      "0 15-23 * * *", // JST 00:00-08:00 — RS kick (today), fills the pre-09:00 gap
+      "0 13,14 * * *", // JST 22:00,23:00 — RS kick (tomorrow), redundant re-attempts after the 21:00 native prewarm
       // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
       // disabled until PHASE 3 pilot confirms full-mode container viability.
       // To enable: uncomment the line below and wrangler deploy.
