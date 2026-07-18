@@ -102,10 +102,16 @@
 - **`status:"success"` に到達する経路は 2 つ**: (1) 本物の完走時に `completeFocusedFullRace({status:"success"})` が呼ばれる正規の完了、(2) `ackIfFocusedFullAlreadyComplete` 自身が「行数さえ揃っていれば」complete と判定した時にも同じ `completeFocusedFullRace({status:"success"})` を呼ぶ（`queue-consumer.ts:278-286`）— これは Defect A の壊れた行（頭数分の行はあるが score 品質はランダム）でも成立してしまう判定なので、**Defect A の 72 レースは実質 100% がこの DO キーを既に `success` で持っていると推定される**（本監査 §1 の「真の coverage 72 レース」がまさにこの判定基準で「coverage あり」と分類されていたこと自体が状況証拠）。
 - **影響範囲**: `mode=full + skipDedup=true`（focused-full）経由の再トリガー全般が対象。`force=true` を付けても一度 `success` に達したレースは二度と再トリガーできない — 72 レース修復タスクは対象 24 レース (函館) に限らずこの 1 点で全面ブロックされている。
 - **本番 live serving への影響: 低いと判断**（未着手・裏取り済み）: coordinator の近post rescore 経路 (`isPerRaceRescore` → `processPerRaceRescore`、`queue-consumer.ts:213-218,626`) は `ackIfFocusedFullAlreadyComplete` / `claimFocusedFullOrRetry` のどちらも通らない別コードパスであり、本 defect の影響を受けない。したがって本日 (07-18) 09:25 開催後の `COORDINATOR_ENABLED=1` rescore 発火自体は無関係。
-- **対処状況**: **未修正**（コード変更なし）。開催 2 時間前のタイミングでの coverage-protected package への急ぎ修正は USER 判断でリスク超過と判断し見送り。修正案 (要 `predict-run-coordinator.test.ts` でのテスト追加、両方とも要検討):
-  1. `claimFocusedFullRace` のシグネチャに `force?: boolean` を足し、`force===true` のときは `TERMINAL_STATUSES` チェックを丸ごとスキップして無条件で新規 claim を発行する。
-  2. または `force===true` のときに既存の terminal レコードを明示的に delete/overwrite してから通常の claim ロジックに入る（DO storage の実質的な「reset」）。
-     いずれの場合も、(a) 「stale だが terminal ではない」既存の 15分 staleness ガード (`FOCUSED_FULL_IN_FLIGHT_STALE_MS`) の挙動を壊さないこと、(b) force で reset した後の claim が本当に新しいパイプライン起動に繋がることを実際の redelivery サイクルで確認する統合テストを追加すること、の 2 点が受け入れ条件。17:00 JST 以降の落ち着いた窓で ⑬⑭⑮ deploy と合わせて実装・テスト・deploy する第 3 bundle 項目として扱う。72 レース修復の再開はこの fix の deploy 後。
+- **対処状況**: **修正済み・deploy 済み（同日 07-18 09:1x-09:18 JST、USER 承認により当初想定の17:00待ちから前倒し）**。実装は上記案 1+2 を両方満たす形（`force` を `claimFocusedFullRace` シグネチャに追加し `force===true` のとき `TERMINAL_STATUSES` チェックをスキップ、そのまま既存の「新規キー」overwrite パスに合流させることで実質的な reset も同時に達成）。`do-state.ts`/`predict-run-coordinator.ts`/`queue-consumer.ts`/`types.ts` の4ファイル+対応テスト、commit `78076cc8`（654 tests pass、cov 99.64/96.84/100/99.77、lint 0、tsc 0）。Worker deploy version `12344a51`（09:18 JST）。その後 ⑪ race-sharded DO 化 (`RACE_SHARDED_DO=1`) との bundle deploy `84e51027`（09:20:35 JST、bundle owner: do-sharding）に乗り換え済み。**本番 smoke で解消を確認済み**: 同一レース (Hakodate 2026-07-12 R01) への再 force トリガーで `wrangler tail` 上 `focused-claim ... proceed=true state=-`（旧: `proceed=false state=success`）を直接確認、`doName=predict-jra-1`（sharding 経路）に正しくルーティングされた。
+
+### Defect G (2026-07-18 発見・現在進行形): `feature_guard` の 50% 閾値が RS-only 欠損 (実測11/約260列 ≈ 4%) を検知できず、Defect A と同一シグネチャの garbage を silently serve する
+
+- **背景**: 2026-07-18 は raw-iceberg-v1 RS shard 生成経路にとって移行後 (07-15) 初の JRA 開催日。当日朝、morning-ops の観測で `race_running_style_model_predictions` / `race_finish_position_model_predictions` の両方が source=jra, 2026-07-18 で **0 行**と確認 (RS 未生成 → FP トリガー未発火の cold-start)。バックアップ経路として `POST /api/admin/run-focused-full-race`（force、Defect F 修正で proceed するようになった直後）で当日 2 レースを直接 FP トリガーして経路を検証した。
+- **実測**: 函館 02/01 と小倉 10/01 の 2 レースがいずれも着地したが、**stddev がそれぞれ 0.0813 (n=8) / 0.1487 (n=12)** — §2 Defect A の Cluster B 劣化域 (0.05〜0.15) と完全に一致し、健全域 (0.72〜1.57) や本判断基準の閾値 (>0.5) を大きく下回った。着地時刻も函館 02/01 は自身の発走時刻 (09:50 JST) の**3分以上後**（09:53:43 着地）で、品質以前にタイミングとしても手遅れだった。
+- **原因**: `apps/finish-position-predict-container/src/predict_lib/feature_guard.py` の `missing_feature_fraction` / `race_missing_feature_fraction` は特徴量全列に対する欠損割合の**平均**を見て `DEFAULT_MISSING_FEATURE_FRACTION_THRESHOLD = 0.5`（50%）以上で reject する設計 (`feature_guard.py:48,88-99`)。RS 未生成時に NULL 化するのは `rs_p_*` 系の列のみで、実測 11 列（既存 memory `project_running_style_r2_first_prod` 系の調査、campaign-summary ⑫ 参照）——feature 総数 (championモデルでは約250〜274列) に対して **約4%** に過ぎず、50% 閾値には遠く及ばない。したがって guard は「通す」判定を下し、RS 由来のシグナルが丸ごと欠落した劣化特徴量ベクトルがそのまま champion/routed モデルにスコアリングされ、§2 Defect A で確認済みの「within-race score 分散が健全時の1/11程度に潰れる」シグネチャがそのまま today's live data で再現した。
+- **Defect A との関係**: 本 defect は Defect A (2026-07-12 Cluster B の劣化書込) の**根本原因の一つを裏付ける独立再現**であるとともに、feature_guard 導入後 (`57a4cd7f`) も同種の劣化が発生しうることを示す——feature_guard は「欠損が広範囲 (50%以上)」なケースにのみ有効な防御であり、「特定サブシステム (RS) が丸ごと欠けている」ような**局所集中型の欠損**には無力である。
+- **対処状況**: **未修正（提案のみ）**。恒久対策候補: (a) `rs_p_*` 系の列を個別の必須列 (mandatory subset) として定義し、このサブセットが1つでも NULL ならレース単位で reject する専用 guard を `feature_guard.py` に追加する、(b) RS 完全性 (`race_running_style_model_predictions` に該当レースの行が揃っているか) を FP focused-full トリガーの pre-condition として明示的にチェックし、RS 未完了なら FP 側もトリガーしない/rescore 待ちにする設計に変更する。今回は本番影響が limited（該当2レースのみ、admin trigger によるテストで発見・以降のトリガーは停止）だったが、同種の cold-start が今後の開催日でも再発しうるため次サイクル本命候補とする。
+- **当日のトリアージ判断**: 本 defect の発見を受け、当日残り34レースへの直接 force トリガーは**見送り**、RS 生成 (morning-ops 対応) の完了を待って FP 自動トリガーが健全な特徴量で生成するのを待つ方針に切替え済み。
 
 ## 3. venue02 routed-arm (`jockey-pedigree269`) の実測効果 — 評価不能
 
@@ -642,5 +648,26 @@ Exit code: 1
 **未検証な理由**: R2 SQL への直接照会に `R2_SQL_TOKEN`/`WRANGLER_R2_SQL_AUTH_TOKEN`/`R2_CATALOG_TOKEN` が必要だが、本チェック実行環境にはこれらが無く直接確認できなかった。
 
 team-lead へ即時報告済み（2件のメッセージ、09:47台）。提案した回復アクション（`sync_r2_catalog.py --date 20260718 --tables jvd_ra,jvd_se` の実行）は権限保持者（deploy-verify 想定）の判断・実行に委ね、本 agent からは実行していない。rollback 候補（`RACE_SHARDED_DO` 削除、`COORDINATOR_ENABLED=0`）の要否も team-lead 判断待ち。
+
+**続報は本節に追記する。**
+
+### 13.7 根本原因確定 — `pc-keiba-r2-catalog` の `/v1/running-style-features` が JRA のみ HTTP 502
+
+team-lead 指示により rollback は見送り（今朝の deploy とは無関係と判定、後述で裏付け）、`plan-running-style-predictions` inline job を発火（09:57:49 JST、`{"ok":true}`, HTTP 200, 29.6秒）。ただしこの job は per-race 生成をキューに積むのみで生成自体は非同期のため、R2 shard は直後には着地せず（`.../2026/07/18/jra/` は 0 objects のまま）。
+
+D1 `running_style_inference_state`（race単位の状態 + `error_message` 列を持つ、migration `0019`）を直接照会し、生きた原因を特定した:
+
+```
+source=jra: failed=6, pending=29, processing=1  (計36)
+source=nar: completed=34  (計34、全完了)
+```
+
+**失敗6件全ての `error_message` が同一**: `PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502`（対象: `jra:20260718:02:02/06/07/08/09`, `jra:20260718:03:10/11`）。JRA での試行7件中、成功0・失敗6・処理中1 ——**100% 失敗**。NAR は 34/34 完了。
+
+`race_running_styles`（D1、per-horse予測本体）を直接照会しても裏付けが取れた: `category='jra'` の行は **本日分ゼロ**（`category='nar'` 223行・`category='ban-ei'` 119行、計342行——これが R2 の nar shard の `rowCount:342`/`bytesWritten:78775` と一致）。
+
+**追加の切り分け（deploy 無関係の確認）**: `pc-keiba-r2-catalog` Worker は `wrangler deployments list` で確認する限り **2026-07-14 以降 再デプロイされていない**——今朝の一連の deploy（sharding/coordinator/Defect F 等）とは無関係。Cloudflare GraphQL Analytics（`workersInvocationsAdaptive`, scriptName=pc-keiba-r2-catalog, 00:40-01:00 UTC）では `clientDisconnected` ステータスが複数分間で多発（00:41Z=16件、00:46Z=9件、00:51Z=18件）——502 は単純なアプリケーションエラーというより、呼び出し元 (`sync-realtime-data`) がタイムアウトして切断したことを示唆し、**JRA向けクエリが重い/遅くタイムアウトしている**可能性（R2 SQL/Iceberg 側で JRA テーブルへの初回クエリが partition pruning 等で最適化されていない等）を示す。
+
+**結論**: 本日が raw-iceberg-v1 移行後で初めて JRA カテゴリがこの経路を実運用で通った日であり、これまで露呈していなかった JRA 固有の欠陥（クエリの重さ/タイムアウト、または未検証パスの何らかの不整合）が原因。deploy 起因ではなく、rollback では直らないという team-lead 判定と整合する。函館R1(09:50)・小倉R1(09:55) は post 時刻超過、福島R1(10:05) は本節記述時点でなお間に合う可能性。team-lead へ全て報告済み、`pc-keiba-r2-catalog` 側の修復は同 Worker の deploy 権限保持者に引き継ぎ中。
 
 **続報は本節に追記する。**
