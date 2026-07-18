@@ -161,6 +161,18 @@ def test_parse_predict_params_debug_flag_default_false() -> None:
     assert result.debug_logs is False
 
 
+def test_parse_predict_params_force_flag_enabled() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619&force=1")
+    assert isinstance(result, PredictParams)
+    assert result.force is True
+
+
+def test_parse_predict_params_force_flag_default_false() -> None:
+    result = parse_predict_params("category=jra&runDate=20260619")
+    assert isinstance(result, PredictParams)
+    assert result.force is False
+
+
 def test_iter_predict_chunks_sets_debug_env_during_predict() -> None:
     seen: list[str | None] = []
     os.environ["PREDICT_DEBUG_LOGS"] = "previous"
@@ -1841,7 +1853,9 @@ def testbuild_focused_full_race_key_differs_per_race() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_focused_full_params(keibajo_code: str = "05", race_bango: str = "09") -> PredictParams:
+def _make_focused_full_params(
+    keibajo_code: str = "05", race_bango: str = "09", force: bool = False
+) -> PredictParams:
     return PredictParams(
         category="jra",
         run_date="20260619",
@@ -1849,6 +1863,7 @@ def _make_focused_full_params(keibajo_code: str = "05", race_bango: str = "09") 
         mode="full",
         keibajo_code=keibajo_code,
         race_bango=race_bango,
+        force=force,
     )
 
 
@@ -2534,6 +2549,40 @@ def test_iter_predict_chunks_focused_full_already_complete_skips_launch_and_rele
     assert last["racesPredicted"] == 0
     assert call_count[0] == 0, "predict_fn must not be launched when already complete"
     assert release_calls == [expected_key]
+
+
+def test_iter_predict_chunks_focused_full_force_bypasses_already_complete() -> None:
+    """Defect H: when params.force is True, the pipeline must still launch even
+    though completion_fn reports the race already complete -- force must
+    reach the container's own completion check, not just the Worker's."""
+    invoked = threading.Event()
+
+    def _predict(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        invoked.set()
+        return 1
+
+    params = _make_focused_full_params(keibajo_code="23", race_bango="09", force=True)
+    chunks = list(
+        iter_predict_chunks(
+            params,
+            _predict,
+            focused_full_claim_fn=lambda _key: FOCUSED_FULL_SLOT_CLAIMED,
+            focused_full_release_fn=lambda _key: None,
+            focused_full_completion_fn=lambda _p: True,
+            sleep_fn=_noop_sleep,
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == FOCUSED_FULL_ACCEPTED_STATUS
+    assert last["racesPredicted"] == 0
+    assert invoked.wait(timeout=2.0), "predict_fn was never invoked when force bypasses completion"
 
 
 def test_iter_predict_chunks_focused_full_completion_false_runs_pipeline() -> None:

@@ -942,6 +942,33 @@ test("admin run focused full race endpoint proxies a held predict request", asyn
   expect(await response.text()).toBe('{"type":"result","status":"success","racesPredicted":1}\\n');
 });
 
+test("admin run focused full race endpoint threads force into the predict URL", async () => {
+  containerDoFetchMock.mockResolvedValueOnce(
+    new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {
+      headers: { "Content-Type": "application/x-ndjson" },
+      status: 200,
+    }),
+  );
+  const response = await handleFetch(
+    adminRunFocusedFullRaceRequest(
+      "secret-token",
+      JSON.stringify({
+        category: "jra",
+        force: true,
+        keibajoCode: "10",
+        raceBango: "07",
+        runYmd: "20260705",
+      }),
+    ),
+    makeEnv(),
+  );
+  expect(response.status).toBe(200);
+  const request = (containerDoFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(request.url).toBe(
+    "http://do/predict?category=jra&daysAhead=0&keibajoCode=10&mode=full&raceBango=07&runDate=20260705&force=1",
+  );
+});
+
 test("admin run focused full race endpoint targets a race-sharded DO when RACE_SHARDED_DO is enabled", async () => {
   containerDoFetchMock.mockResolvedValueOnce(
     new Response('{"type":"result","status":"success","racesPredicted":1}\\n', {

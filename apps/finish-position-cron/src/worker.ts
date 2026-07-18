@@ -85,6 +85,10 @@ const RUN_DATE_SEPARATOR = "-";
 interface InternalRescoreRaceRequest {
   category: PredictCategory;
   debug?: boolean;
+  // See PredictUrlParams.force in queue-consumer.ts (Defect H) -- forwarded
+  // to the container so its row-count-only completion check can be bypassed
+  // for an admin-triggered focused-full re-run too.
+  force?: boolean;
   keibajoCode: string;
   raceBango: string;
   runYmd: string;
@@ -274,6 +278,7 @@ const parseInternalRescoreRaceBody = (
   return {
     category,
     ...(resolveDebugFlag(body) ? { debug: true } : {}),
+    ...(body[FORCE_FIELD] === true ? { force: true } : {}),
     keibajoCode: keibajoCode.trim(),
     raceBango: raceBango.trim(),
     runYmd,
@@ -410,6 +415,7 @@ const buildFocusedFullPredictUrl = (
     runDate: body.runYmd,
   });
   if (body.debug === true) searchParams.set("debug", "1");
+  if (body.force === true) searchParams.set("force", "1");
   if (cardMaxRaceBango !== undefined) {
     searchParams.set("cardMaxRaceBango", String(cardMaxRaceBango));
   }

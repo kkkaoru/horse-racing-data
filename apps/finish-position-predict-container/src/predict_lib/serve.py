@@ -185,6 +185,7 @@ class PredictParams:
         "category",
         "days_ahead",
         "debug_logs",
+        "force",
         "keibajo_code",
         "mode",
         "race_bango",
@@ -201,6 +202,7 @@ class PredictParams:
         race_bango: str | None = None,
         debug_logs: bool = False,
         card_max_race_bango: int | None = None,
+        force: bool = False,
     ) -> None:
         self.category: str = category
         self.run_date: str = run_date
@@ -210,6 +212,15 @@ class PredictParams:
         self.race_bango: str | None = race_bango
         self.debug_logs: bool = debug_logs
         self.card_max_race_bango: int | None = card_max_race_bango
+        # Operator bypass for _focused_full_is_complete's row-count-only
+        # completion check (Defect H, apps/pc-keiba-viewer/docs/probes/
+        # jra-serving-audit-jun-jul-2026-07-17.md): forwarded from the Worker's
+        # own force flag (queue-consumer.ts / worker.ts), which already
+        # bypasses ackIfFocusedFullAlreadyComplete there. Without this, a race
+        # whose expected row count already exists (even if the values are
+        # garbage) is skipped by _focused_full_preflight regardless of the
+        # Worker-level force bypass.
+        self.force: bool = force
 
 
 def is_focused_full_request(params: PredictParams) -> bool:
@@ -280,6 +291,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
     keibajo_code = _optional_scope_value(_first_qs(qs, "keibajoCode"))
     race_bango = _optional_scope_value(_first_qs(qs, "raceBango"))
     debug_logs = _parse_debug_flag(_first_qs(qs, "debug"))
+    force = _parse_debug_flag(_first_qs(qs, "force"))
 
     raw_card_max_race_bango = _first_qs(qs, "cardMaxRaceBango")
     if raw_card_max_race_bango is None:
@@ -301,6 +313,7 @@ def parse_predict_params(query_string: str) -> PredictParams | str:
         race_bango=race_bango,
         debug_logs=debug_logs,
         card_max_race_bango=card_max_race_bango,
+        force=force,
     )
 
 
@@ -1126,7 +1139,16 @@ def _focused_full_is_complete(
 
     ``None`` (no check wired) and any exception both yield False so the pipeline
     still runs -- a completion-check failure must never block a prediction.
+    ``params.force`` also short-circuits to False (Defect H): *completion_fn*
+    (``_focused_full_prediction_complete`` in predict_upcoming.py) only counts
+    rows against the expected horse count, so it cannot distinguish a
+    genuinely finished race from one whose rows are present but garbage (see
+    apps/pc-keiba-viewer/docs/probes/jra-serving-audit-jun-jul-2026-07-17.md
+    Defect A/H) -- force lets an operator deliberately re-run such a race so
+    the per-(model_version, horse) UPSERT overwrites the bad rows in place.
     """
+    if params.force:
+        return False
     if completion_fn is None:
         return False
     try:

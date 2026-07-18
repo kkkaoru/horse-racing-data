@@ -119,6 +119,13 @@ interface PredictUrlParams {
   category: string;
   daysAhead: number;
   debug?: boolean;
+  // Forwarded to the container so its own row-count-only completion check
+  // (_focused_full_is_complete, predict_lib/serve.py) can be bypassed the
+  // same way force already bypasses this Worker's ackIfFocusedFullAlreadyComplete
+  // -- see Defect H, apps/pc-keiba-viewer/docs/probes/
+  // jra-serving-audit-jun-jul-2026-07-17.md. Absent/false keeps the
+  // container's own guard active.
+  force?: boolean;
   keibajoCode?: string;
   mode: string;
   raceBango?: string;
@@ -166,6 +173,7 @@ const buildPredictUrl = (params: PredictUrlParams): string => {
   if (params.keibajoCode) searchParams.set("keibajoCode", params.keibajoCode);
   if (params.raceBango) searchParams.set("raceBango", params.raceBango);
   if (params.debug === true) searchParams.set("debug", "1");
+  if (params.force === true) searchParams.set("force", "1");
   if (params.cardMaxRaceBango !== undefined) {
     searchParams.set("cardMaxRaceBango", String(params.cardMaxRaceBango));
   }
@@ -646,6 +654,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     category,
     daysAhead,
     debug: message.body.debug,
+    force: message.body.force,
     keibajoCode,
     mode,
     raceBango,
