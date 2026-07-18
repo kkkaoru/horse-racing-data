@@ -11,12 +11,16 @@ const config = (): R2SqlCatalogConfig => ({
 });
 
 it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs", () => {
-  const sql = buildRunningStyleFeaturesQuery(config(), {
-    date: "20260715",
-    keibajoCode: "05",
-    raceBango: "01",
-    source: "jra",
-  });
+  const sql = buildRunningStyleFeaturesQuery(
+    config(),
+    {
+      date: "20260715",
+      keibajoCode: "05",
+      raceBango: "01",
+      source: "jra",
+    },
+    true,
+  );
   expect(sql.match(/FROM pc_keiba\.jvd_se/gu)).toHaveLength(2);
   expect(sql.match(/FROM pc_keiba\.jvd_ra/gu)).toHaveLength(2);
   expect(sql).toMatch("left join pc_keiba.jvd_um um");
@@ -39,18 +43,26 @@ it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs
 });
 
 it("separates NAR and ban-ei scans while keeping raw row source nar", () => {
-  const nar = buildRunningStyleFeaturesQuery(config(), {
-    date: "20260715",
-    keibajoCode: "42",
-    raceBango: "09",
-    source: "nar",
-  });
-  const banEi = buildRunningStyleFeaturesQuery(config(), {
-    date: "20260715",
-    keibajoCode: "83",
-    raceBango: "09",
-    source: "ban-ei",
-  });
+  const nar = buildRunningStyleFeaturesQuery(
+    config(),
+    {
+      date: "20260715",
+      keibajoCode: "42",
+      raceBango: "09",
+      source: "nar",
+    },
+    true,
+  );
+  const banEi = buildRunningStyleFeaturesQuery(
+    config(),
+    {
+      date: "20260715",
+      keibajoCode: "83",
+      raceBango: "09",
+      source: "ban-ei",
+    },
+    true,
+  );
   expect(nar).toMatch("FROM pc_keiba.nvd_se");
   expect(nar).toMatch("left join pc_keiba.nvd_um um");
   expect(nar).not.toMatch(/jvd_(?:se|ra|um)/u);
@@ -60,12 +72,16 @@ it("separates NAR and ban-ei scans while keeping raw row source nar", () => {
 });
 
 it("emits only fixed raw-table R2 SQL syntax", () => {
-  const sql = buildRunningStyleFeaturesQuery(config(), {
-    date: "20260715",
-    keibajoCode: "05",
-    raceBango: "01",
-    source: "jra",
-  });
+  const sql = buildRunningStyleFeaturesQuery(
+    config(),
+    {
+      date: "20260715",
+      keibajoCode: "05",
+      raceBango: "01",
+      source: "jra",
+    },
+    true,
+  );
   expect(sql).not.toMatch(/race_entry_corner_features|daily_race_entries|archive|neon/iu);
   expect(sql).not.toMatch(/::| filter \(where|\n\s*window\s/iu);
   expect(sql).not.toMatch(/then\s+case/iu);
@@ -74,13 +90,17 @@ it("emits only fixed raw-table R2 SQL syntax", () => {
 
 it("rejects unsafe filters and mismatched NAR categories", () => {
   const build = (overrides: Partial<Parameters<typeof buildRunningStyleFeaturesQuery>[1]>) =>
-    buildRunningStyleFeaturesQuery(config(), {
-      date: "20260715",
-      keibajoCode: "05",
-      raceBango: "01",
-      source: "jra",
-      ...overrides,
-    });
+    buildRunningStyleFeaturesQuery(
+      config(),
+      {
+        date: "20260715",
+        keibajoCode: "05",
+        raceBango: "01",
+        source: "jra",
+        ...overrides,
+      },
+      true,
+    );
   expect(() => build({ date: "2026-07-15" })).toThrow("date must match YYYYMMDD");
   expect(() => build({ keibajoCode: "5" })).toThrow("keibajoCode must contain two digits");
   expect(() => build({ raceBango: "1;" })).toThrow("raceBango must contain two digits");
@@ -94,17 +114,44 @@ it("rejects unsafe filters and mismatched NAR categories", () => {
     buildRunningStyleFeaturesQuery(
       { ...config(), R2_SQL_NAMESPACE: "pc_keiba;drop" },
       { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
+      true,
     ),
   ).toThrow("R2_SQL_NAMESPACE must be an unquoted SQL identifier");
 });
 
 it("builds a fixed JSON EXPLAIN for the exact production query", () => {
-  const explain = buildRunningStyleExplainQuery(config(), {
-    date: "20260715",
-    keibajoCode: "05",
-    raceBango: "01",
-    source: "jra",
-  });
+  const explain = buildRunningStyleExplainQuery(
+    config(),
+    {
+      date: "20260715",
+      keibajoCode: "05",
+      raceBango: "01",
+      source: "jra",
+    },
+    true,
+  );
   expect(explain).toMatch(/^EXPLAIN FORMAT JSON WITH history_se/u);
   expect(explain).toMatch("limit 18");
+});
+
+it("omits ORDER BY (keeping LIMIT) when includeOrderBy is false, for the R2 SQL expression-too-deep fallback", () => {
+  const withOrderBy = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
+    true,
+  );
+  const withoutOrderBy = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
+    false,
+  );
+  expect(withOrderBy).toMatch("select * from final_features order by umaban limit 18");
+  expect(withoutOrderBy).toMatch("select * from final_features limit 18");
+  expect(withoutOrderBy).not.toMatch("order by umaban");
+  // Everything up to the final SELECT (the entire 44-CTE chain) is
+  // byte-identical -- only the trailing SELECT's ORDER BY differs.
+  const finalSelectPattern = / final_features(?: order by umaban)? limit 18/u;
+  expect(withOrderBy.replace(finalSelectPattern, "")).toBe(
+    withoutOrderBy.replace(finalSelectPattern, ""),
+  );
 });

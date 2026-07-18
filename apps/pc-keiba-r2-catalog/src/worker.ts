@@ -11,8 +11,13 @@ import {
   type CacheDescriptor,
 } from "./cache";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
-import { buildRaceFeaturesQuery, buildRaceKeysQuery, executeR2Sql } from "./r2-sql";
-import { normaliseRunningStyleRows } from "./running-style-response";
+import {
+  buildRaceFeaturesQuery,
+  buildRaceKeysQuery,
+  executeR2Sql,
+  R2SqlQueryError,
+} from "./r2-sql";
+import { normaliseRunningStyleRows, numberOrNull } from "./running-style-response";
 import { buildRunningStyleFeaturesQuery } from "./running-style-sql";
 import type {
   Env,
@@ -26,6 +31,11 @@ import type {
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{1,2}$/u;
 const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-ei"];
+// R2 SQL error code for "query expression too deep: nesting depth exceeds
+// the protocol's limit" -- see running-style-feature-ctes.ts's
+// includeOrderBy docstring for why this happens and only for large-enough
+// source data volumes.
+const R2_SQL_EXPRESSION_TOO_DEEP_CODE = 40018;
 
 const jsonResponse = (value: unknown, status = 200): Response =>
   Response.json(value, {
@@ -155,18 +165,39 @@ const handleRaceFeatures = (
   );
 };
 
+const isExpressionTooDeepError = (error: unknown): boolean =>
+  error instanceof R2SqlQueryError && error.code === R2_SQL_EXPRESSION_TOO_DEEP_CODE;
+
+const compareByUmaban = (left: Record<string, unknown>, right: Record<string, unknown>): number =>
+  (numberOrNull(left.umaban) ?? 0) - (numberOrNull(right.umaban) ?? 0);
+
 const handleRunningStyleFeatures = async (
   url: URL,
   env: Env,
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseRunningStyleFilters(url);
-  const rows = await executeR2Sql(
-    env,
-    buildRunningStyleFeaturesQuery(env, filters),
-    dependencies.fetchImpl,
-  );
-  return jsonResponse(normaliseRunningStyleRows(rows));
+  try {
+    const rows = await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, true),
+      dependencies.fetchImpl,
+    );
+    return jsonResponse(normaliseRunningStyleRows(rows));
+  } catch (error) {
+    if (!isExpressionTooDeepError(error)) throw error;
+    // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
+    // the plan-depth protocol limit for a data volume as large as JRA's --
+    // retry once without ORDER BY (still LIMIT 18) and sort the small
+    // (<=18 rows) result here instead. Identical row set and values; only
+    // where the sort happens changes.
+    const rows = await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, false),
+      dependencies.fetchImpl,
+    );
+    return jsonResponse(normaliseRunningStyleRows([...rows].sort(compareByUmaban)));
+  }
 };
 
 const purgeTargets = (url: URL): CacheDescriptor[] => {

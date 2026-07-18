@@ -1,6 +1,11 @@
 import { expect, it, vi } from "vitest";
 
-import { buildRaceFeaturesQuery, buildRaceKeysQuery, executeR2Sql } from "./r2-sql";
+import {
+  buildRaceFeaturesQuery,
+  buildRaceKeysQuery,
+  executeR2Sql,
+  R2SqlQueryError,
+} from "./r2-sql";
 import type { Env, Fetcher } from "./types";
 
 const kv = {
@@ -171,6 +176,8 @@ it("rejects R2 SQL HTTP and payload failures", async () => {
     (error: unknown) => error,
   );
   expect(httpError).toBeInstanceOf(Error);
+  expect(httpError).toBeInstanceOf(R2SqlQueryError);
+  expect((httpError as R2SqlQueryError).code).toBe(40004);
   expect(String(httpError)).toContain("R2 SQL HTTP 400: 40004 Expected: ), found: when");
   expect(String(httpError)).not.toContain("secret_query");
   expect(String(httpError)).not.toContain("secret-token");
@@ -183,6 +190,10 @@ it("rejects R2 SQL HTTP and payload failures", async () => {
   await expect(executeR2Sql(env(), "SELECT 1", queryFailure)).rejects.toThrow(
     "R2 SQL query failed: 80001 edge unavailable",
   );
+  const queryError = await executeR2Sql(env(), "SELECT 1", queryFailure).catch(
+    (error: unknown) => error,
+  );
+  expect((queryError as R2SqlQueryError).code).toBe("80001");
   await expect(executeR2Sql(env(), "SELECT 1", missingRows)).rejects.toThrow(
     "R2 SQL response has invalid rows",
   );

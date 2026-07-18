@@ -41,15 +41,16 @@ export const runRunningStyleSmoke = async (
   config: R2SqlCatalogConfig,
   filters: RunningStyleFeatureFilters,
   fetchImpl: Fetcher,
+  includeOrderBy: boolean,
 ): Promise<RunningStyleSmokeResult> => {
   const explain = await executeR2Sql(
     config,
-    buildRunningStyleExplainQuery(config, filters),
+    buildRunningStyleExplainQuery(config, filters, includeOrderBy),
     fetchImpl,
   );
   const rows = await executeR2Sql(
     config,
-    buildRunningStyleFeaturesQuery(config, filters),
+    buildRunningStyleFeaturesQuery(config, filters, includeOrderBy),
     fetchImpl,
   );
   return { explainRows: explain.length, queryRows: rows.length };

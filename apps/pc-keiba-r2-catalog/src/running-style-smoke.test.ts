@@ -43,6 +43,7 @@ it("runs EXPLAIN before the exact fixed query", async () => {
       },
       { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
       fetchMock,
+      true,
     ),
   ).resolves.toStrictEqual({ explainRows: 1, queryRows: 2 });
   expect(fetchMock).toHaveBeenCalledTimes(2);

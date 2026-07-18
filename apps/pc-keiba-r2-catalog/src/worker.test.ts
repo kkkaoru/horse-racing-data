@@ -230,6 +230,69 @@ it("queries running-style features with no-store and bypasses Cache API and KV",
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("limit 18");
 });
 
+it("retries running-style features without ORDER BY and sorts by umaban when R2 SQL rejects the query as too deep", async () => {
+  const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
+  const fetchImpl: Fetcher = async (input, init) => {
+    fetchCalls.push({ input: String(input), init });
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+        { status: 400 },
+      );
+    }
+    return Response.json({
+      result: {
+        rows: [
+          { ...featureRow(), race_bango: "1", umaban: "3" },
+          { ...featureRow(), race_bango: "1", umaban: "1" },
+          { ...featureRow(), race_bango: "1", umaban: "2" },
+        ],
+      },
+      success: true,
+    });
+  };
+  const env: Env = {
+    ADMIN_TOKEN: "admin-secret",
+    CACHE_TTL_SECONDS: "15",
+    CATALOG_KV: {
+      async delete() {},
+      async get() {
+        return null;
+      },
+      async put() {},
+    },
+    KV_TTL_SECONDS: "120",
+    R2_SQL_ACCOUNT_ID: "account",
+    R2_SQL_BUCKET_NAME: "pc-keiba-r2-catalog",
+    R2_SQL_NAMESPACE: "pc_keiba",
+    R2_SQL_TOKEN: "r2-secret",
+  };
+  const cache: CacheStore = {
+    async delete() {
+      return false;
+    },
+    async match() {
+      return undefined;
+    },
+    async put() {},
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    env,
+    { cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  expect(fetchCalls).toHaveLength(2);
+  expect(String(fetchCalls[0]?.init?.body)).toMatch("order by umaban limit 18");
+  expect(String(fetchCalls[1]?.init?.body)).not.toMatch("order by umaban");
+  expect(String(fetchCalls[1]?.init?.body)).toMatch("limit 18");
+  await expect(response.json()).resolves.toMatchObject({
+    rows: [{ umaban: 1 }, { umaban: 2 }, { umaban: 3 }],
+  });
+});
+
 it("requires all running-style race filters and a separated source", async () => {
   const harness = createHarness();
   const urls = [

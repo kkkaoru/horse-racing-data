@@ -16,5 +16,8 @@ const config = {
   R2_SQL_TOKEN: requireToken(),
 };
 const filters = parseRunningStyleSmokeArgs(Bun.argv.slice(2));
-const result = await runRunningStyleSmoke(config, filters, fetch);
-console.log(JSON.stringify({ filters, ok: true, ...result }));
+// Optional 5th CLI arg "no-order-by" reproduces the R2 SQL ORDER BY fallback
+// path (see worker.ts::handleRunningStyleFeatures) for manual diagnosis.
+const includeOrderBy = Bun.argv[6] !== "no-order-by";
+const result = await runRunningStyleSmoke(config, filters, fetch, includeOrderBy);
+console.log(JSON.stringify({ filters, includeOrderBy, ok: true, ...result }));

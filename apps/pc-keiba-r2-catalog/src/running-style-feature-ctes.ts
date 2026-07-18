@@ -40,8 +40,23 @@ const entryKeyJoin = (left: string, right: string): string =>
   `${raceKeyJoin(left, right)}
     and ${right}.ketto_toroku_bango = ${left}.ketto_toroku_bango`;
 
+// includeOrderBy controls whether the final SELECT sorts server-side
+// (`ORDER BY umaban`). R2 SQL's distributed Top-K sort (ORDER BY + LIMIT
+// together) builds a per-partition pruning expression that recurses through
+// this query's 44 chained CTEs and can exceed R2 SQL's plan-depth protocol
+// limit (error code 40018, "query expression too deep") for a data volume
+// as large as JRA's -- confirmed by bisection: `count(*) FROM final_features`
+// (the full CTE chain, no ORDER BY/LIMIT) succeeds, and `LIMIT 18` alone (no
+// ORDER BY) succeeds, but `ORDER BY umaban LIMIT 18` together 400s. Passing
+// false drops the ORDER BY so callers hitting that limit can retry once and
+// sort the small (<=18 rows) result client-side instead -- see
+// worker.ts::handleRunningStyleFeatures's fallback. LIMIT 18 is kept in both
+// cases only as a defensive cap (a single race's field size never exceeds
+// this), not as a semantic truncation, so the row *set* returned is
+// unaffected by this flag -- only where the sort happens changes.
 export const runningStyleFeatureCtesSql = (
   masterTable: string,
+  includeOrderBy: boolean,
 ): string => `target_current_bataiju as (
   select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
          ketto_toroku_bango, bataiju as current_bataiju
@@ -795,5 +810,5 @@ final_features as (
   left join base_feature_ranks ranks on ${entryKeyJoin("b", "ranks")}
   left join base_feature_race_aggregates aggregates on ${raceKeyJoin("b", "aggregates")}
 )
-select * from final_features order by umaban limit 18
+select * from final_features${includeOrderBy ? " order by umaban" : ""} limit 18
 `;

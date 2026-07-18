@@ -336,10 +336,29 @@ const parseJson = (text: string): unknown => {
   }
 };
 
+// Thrown for every non-2xx or success:false R2 SQL response. Carries the
+// first Cloudflare error entry's `code` (when present) as a typed field so
+// callers can react to a *specific* R2 SQL failure (e.g. code 40018,
+// "query expression too deep") without parsing the message string -- see
+// running-style-features's ORDER BY fallback in worker.ts.
+export class R2SqlQueryError extends Error {
+  readonly code: number | string | undefined;
+
+  constructor(message: string, code: number | string | undefined) {
+    super(message);
+    this.name = "R2SqlQueryError";
+    this.code = code;
+  }
+}
+
+const cloudflareErrors = (payload: unknown): Record<string, unknown>[] => {
+  if (!isRecord(payload) || !Array.isArray(payload.errors)) return [];
+  return payload.errors.filter(isRecord);
+};
+
 const cloudflareErrorText = (payload: unknown): string | null => {
-  if (!isRecord(payload) || !Array.isArray(payload.errors)) return null;
-  const details = payload.errors.flatMap((error): string[] => {
-    if (!isRecord(error) || typeof error.message !== "string") return [];
+  const details = cloudflareErrors(payload).flatMap((error): string[] => {
+    if (typeof error.message !== "string") return [];
     const code =
       typeof error.code === "number" || typeof error.code === "string"
         ? `${String(error.code)} `
@@ -347,6 +366,12 @@ const cloudflareErrorText = (payload: unknown): string | null => {
     return [`${code}${error.message}`];
   });
   return details.length === 0 ? null : details.join("; ");
+};
+
+const cloudflareErrorCode = (payload: unknown): number | string | undefined => {
+  const first = cloudflareErrors(payload)[0];
+  if (first === undefined) return undefined;
+  return typeof first.code === "number" || typeof first.code === "string" ? first.code : undefined;
 };
 
 const parseHttpErrorPayload = (text: string): unknown => {
@@ -361,7 +386,10 @@ const parseHttpErrorPayload = (text: string): unknown => {
 const parseRows = (payload: unknown): Record<string, unknown>[] => {
   if (!isRecord(payload) || payload.success !== true || !isRecord(payload.result)) {
     const details = cloudflareErrorText(payload);
-    throw new Error(details === null ? "R2 SQL query failed" : `R2 SQL query failed: ${details}`);
+    throw new R2SqlQueryError(
+      details === null ? "R2 SQL query failed" : `R2 SQL query failed: ${details}`,
+      cloudflareErrorCode(payload),
+    );
   }
   const rows = payload.result.rows;
   if (!Array.isArray(rows) || !rows.every(isRecord)) {
@@ -387,9 +415,13 @@ export const executeR2Sql = async (
   });
   const text = await response.text();
   if (!response.ok) {
-    const details = cloudflareErrorText(parseHttpErrorPayload(text));
+    const payload = parseHttpErrorPayload(text);
+    const details = cloudflareErrorText(payload);
     const suffix = details === null ? "" : `: ${details}`;
-    throw new Error(`R2 SQL HTTP ${String(response.status)}${suffix}`);
+    throw new R2SqlQueryError(
+      `R2 SQL HTTP ${String(response.status)}${suffix}`,
+      cloudflareErrorCode(payload),
+    );
   }
   return parseRows(parseJson(text));
 };

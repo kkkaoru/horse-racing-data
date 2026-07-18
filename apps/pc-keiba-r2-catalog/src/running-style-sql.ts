@@ -227,6 +227,7 @@ target AS (
 export const buildRunningStyleFeaturesQuery = (
   env: R2SqlCatalogConfig,
   filters: RunningStyleFeatureFilters,
+  includeOrderBy: boolean,
 ): string => {
   validateFilters(filters);
   const source = sourceConfig(filters.source);
@@ -262,10 +263,11 @@ target_rec AS (
   ${normalisedRecSelect(source, "target_se", "target_ra")}
 ),
 ${targetCte(source)},
-${runningStyleFeatureCtesSql(master)}`;
+${runningStyleFeatureCtesSql(master, includeOrderBy)}`;
 };
 
 export const buildRunningStyleExplainQuery = (
   env: R2SqlCatalogConfig,
   filters: RunningStyleFeatureFilters,
-): string => `EXPLAIN FORMAT JSON ${buildRunningStyleFeaturesQuery(env, filters)}`;
+  includeOrderBy: boolean,
+): string => `EXPLAIN FORMAT JSON ${buildRunningStyleFeaturesQuery(env, filters, includeOrderBy)}`;
