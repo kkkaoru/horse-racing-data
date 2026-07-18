@@ -628,3 +628,19 @@ Exit code: 1
 **留意点（team-lead 指摘の deploy churn 切り分け）**: `apps/finish-position-cron` の `wrangler deployments list` を確認したところ、直近デプロイが **00:14:45 UTC**（version `36cba906`）と **00:18:00 UTC**（version `12344a51`）の2件——tick 発火時刻 (00:15:00Z) をほぼ挟む形で do-sharding/deploy-verify によるデプロイが進行中だったことを確認した。scheduled cron invocation は deploy イベントとは別記録（`workersInvocationsAdaptive` は実行ログ、deploy は `Source: Upload` の別メタデータ）であるため tick 発火の実在性自体は揺るがないが、**tick がどちらのバージョンで実行されたかは本チェックでは確定できない**（00:14:45 デプロイ直後〜00:18:00 デプロイ直前の狭い窓）。実害の兆候（エラー、silent failure）は見当たらないため、現時点では informational な記録に留める。
 
 **次アクション**: 09:25 開催後、最初の JRA レース群の serving 行が発走前 created・健全 stddev (>0.5) で着地するかを最重要観察点として確認する。
+
+### 13.6 🚨 09:47 JST インシデント — 第一レース発走直前、本日 JRA 予測行ゼロ
+
+第一レース（函館R1, post 09:50 JST）まで残り3分未満の 09:47:55 JST 時点で確認:
+
+- `race_finish_position_model_predictions` を `source='jra' AND kaisai_nen='2026' AND kaisai_tsukihi='0718'` で group化照会 → **row groups: 0**。36レース中1レースも予測行が存在しない（score劣化ではなく完全な不在）。
+- `serve_health_check.py --date 20260718 --category jra`: check 6 は依然 `jra=not found yet`（07:30 から一度も変化なし）。
+- R2 を直接照会（boto3、region_name="auto"）: `running-style/predictions/by-day/raw-iceberg-v1/2026/07/18/jra/` = **0 objects**。一方 `.../2026/07/18/nar/` には `nar-running-style-lgbm-prod-v3.parquet`（LastModified 2026-07-18 00:47:57 UTC = 09:47:57 JST、確認の**まさにその瞬間**）が存在——**raw-iceberg-v1 の write パイプライン自体は健全（NAR が証明）、JRA カテゴリのみ本日一度も書き込みが無い**。
+
+**切り分け仮説（read-only 調査、未検証）**: `RUNNING_STYLE_INFERENCE_CRON`（10分毎）→ `planRunningStylePredictionsForDate` → `listRunningStyleRacesByDate` は D1/local PG ではなく **R2 Iceberg カタログ**（`pc-keiba-r2-catalog` Worker の `/v1/race-keys`、`jvd_ra`/`nvd_ra` UNION ALL、`apps/sync-realtime-data/src/running-style-race-list.ts:12-18`）からレース一覧を取得している。この R2 Iceberg 側への `jvd_ra`/`jvd_se` 反映は `apps/pc-keiba-r2-catalog/scripts/sync_r2_catalog.py` という別経路のスクリプトで、本監査では**自動 cron/launchd トリガーを発見できなかった**。NAR は毎日開催があるため習慣的に再実行されている可能性が高いが、**本日が raw-iceberg-v1 移行後で最初の JRA 開催日であり、この sync が JRA 分についてまだ再実行されていない**可能性がある——D1/Neon に地上の JRA レースが登録済み（§13.5）であることと、R2 Iceberg カタログに反映済みであることは別の2段構造。
+
+**未検証な理由**: R2 SQL への直接照会に `R2_SQL_TOKEN`/`WRANGLER_R2_SQL_AUTH_TOKEN`/`R2_CATALOG_TOKEN` が必要だが、本チェック実行環境にはこれらが無く直接確認できなかった。
+
+team-lead へ即時報告済み（2件のメッセージ、09:47台）。提案した回復アクション（`sync_r2_catalog.py --date 20260718 --tables jvd_ra,jvd_se` の実行）は権限保持者（deploy-verify 想定）の判断・実行に委ね、本 agent からは実行していない。rollback 候補（`RACE_SHARDED_DO` 削除、`COORDINATOR_ENABLED=0`）の要否も team-lead 判断待ち。
+
+**続報は本節に追記する。**
