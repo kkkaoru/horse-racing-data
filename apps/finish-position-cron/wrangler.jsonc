@@ -183,6 +183,19 @@
     // venue-weather Worker base URL, forwarded into the container env so the
     // Python prediction path can fetch venue weather data over HTTP.
     "VENUE_WEATHER_URL": "https://venue-weather.kaoru.workers.dev",
+    // Race-sharded Container DO naming (USER decision 11, docs/finish-position-prediction-system.md
+    // §5.4.2/§5.4.3). "1" makes src/predict-do-shard.ts's resolvePredictDoName()
+    // spread each category's race-scoped requests across RACE_SHARD_MAX_CONCURRENT
+    // (unset here -- default 3, see types.ts) independent Container DOs instead of
+    // one shared DO per category, so different races' focused-full/rescore builds
+    // no longer serialize through a single per-category pipeline slot. Flipped
+    // "0"(unset)->"1" on 2026-07-18 alongside the paired max_concurrency raise
+    // below (queues.consumers[0].max_concurrency) -- both changes ship in the same
+    // deploy so the fanout is never live without the consumer concurrency to
+    // actually exploit it. Rollback: remove this line (or set to anything other
+    // than "1") and revert max_concurrency to 3, then redeploy -- one step, no
+    // code change (apps/pc-keiba-viewer/docs/probes/campaign-summary-2026-07-17.md §g).
+    "RACE_SHARDED_DO": "1",
   },
   "queues": {
     "producers": [{ "binding": "PREDICT_QUEUE", "queue": "finish-position-predict-queue" }],
@@ -197,18 +210,30 @@
         // while earlier per-race instances idled through sleepAfter. Commit
         // 09dd0755 ("scope predict containers by category, add stop admin
         // endpoint") fixed that by consolidating DO names to one per category
-        // (see buildPredictDoName in src/queue-consumer.ts). Investigation on
-        // 2026-07-02 found the leftover max_concurrency: 1 was itself causing
-        // production incidents: race_finish_position_model_predictions saw
-        // zero rows for JRA/Ban-ei after the 2026-06-26 deploy because a
+        // (see resolvePredictDoName in src/predict-do-shard.ts). Investigation
+        // on 2026-07-02 found the leftover max_concurrency: 1 was itself
+        // causing production incidents: race_finish_position_model_predictions
+        // saw zero rows for JRA/Ban-ei after the 2026-06-26 deploy because a
         // hung/slow /predict call for one category could occupy the single
         // serialized consumer slot for the ~15-17 min queue read/retry cycle,
         // stalling otherwise-fast NAR messages behind it. With only 3
         // categories (jra/nar/ban-ei), each mapping to at most one
-        // category-scoped Container DO at a time, max_concurrency: 3 lets at
+        // category-scoped Container DO at a time, max_concurrency: 3 let at
         // most 3 concurrent category DOs run — well under max_instances: 10
         // above — while letting a hung category stop blocking the others.
-        "max_concurrency": 3,
+        //
+        // Raised 3->9 on 2026-07-18 alongside vars.RACE_SHARDED_DO="1" above
+        // (USER decision 11): with race-sharding on, a category's DO name
+        // space grows to RACE_SHARD_MAX_CONCURRENT (default 3) independent
+        // DOs, so a consumer max_concurrency capped at 3 would still only
+        // ever process 3 messages at once total across every category and
+        // shard combined -- the sharding would exist but the queue itself
+        // would never dispatch enough parallel messages to use it. 9 = 3
+        // categories x 3 shards (the fully-active worst case), matching
+        // containers[0].max_instances: 10 above (9 <= 10). If
+        // RACE_SHARD_MAX_CONCURRENT is ever raised, this must be
+        // recalculated against max_instances at the same time.
+        "max_concurrency": 9,
         // max_retries: 16 (raised from 12 on 2026-07-11) replaces the implicit
         // Cloudflare platform default of 3 retries. Focused per-race full
         // messages get a fast "accepted" result while the container's real
