@@ -632,6 +632,19 @@ sequenceDiagram
 
 **既知の未解決事項（この変更のスコープ外、flag on にする前に team-lead が確認する）**: `wrangler.jsonc` の queue consumer は `max_concurrency: 3`（§5.6 の cron コメント参照——3 category に対して 1 対 1 で足りるよう設定された値）。`RACE_SHARDED_DO` を有効化しても、同時に処理できる queue message 数はこの `max_concurrency` の天井を超えない——shard 数を増やしても、それを実際に並行消費する consumer invocation 数が `max_concurrency: 3` のままではスループット改善が頭打ちになる。flag を ON にして real throughput を得るには `max_concurrency` を category 数 × shard 数相当まで引き上げる deploy が別途必要（この PR のスコープ外、team-lead の deploy 判断待ち）。
 
+**デプロイ履歴**: 2026-07-18、commit `d624009b`、flag OFF（`RACE_SHARDED_DO` / `RACE_SHARD_MAX_CONCURRENT` は `wrangler.jsonc` の `vars` に未追加——未設定＝OFF）で本番デプロイ済み（Version ID `36cba906-41c5-40b5-b9da-ec0613de1401`）。`/` health check 200 確認済み。挙動は bit-identical（`resolvePredictDoName()` が sharding 導入前と同じ `predict-{category}` を返す）。
+
+#### 5.4.3 17:00 flag-on runbook
+
+flag を実際に有効化して並列化の効果を得るための手順。`RACE_SHARDED_DO` / `RACE_SHARD_MAX_CONCURRENT` は secret ではなく plain var（`COORDINATOR_ENABLED` 等の既存 flag と同じ扱い）——`wrangler secret put` ではなく `wrangler.jsonc` の `vars` 編集 + 通常 deploy でよい。
+
+1. `apps/finish-position-cron/wrangler.jsonc` の `vars` に `"RACE_SHARDED_DO": "1"` と `"RACE_SHARD_MAX_CONCURRENT": "3"`（既定 3 のままなら省略可、明示したい場合のみ追加）を追加する。
+2. 同じ `wrangler.jsonc` の `queues.consumers[0].max_concurrency` を現行の `3` から `category 数 × RACE_SHARD_MAX_CONCURRENT` 相当（既定 shard 数 3 なら `9`）へ引き上げる。`containers[0].max_instances: 10` を超えないことを確認する（`3 category × 3 shard = 9 <= 10` は既定値で安全、shard 数を上げる場合は再計算必須）。
+3. `bun run deploy`。
+4. `/` health check 200 を確認する。
+5. 実測: 本番ログで `[predict-queue] container-fetch start` の `doName=` フィールドに `predict-{category}-{shardIndex}` が実際に出ていること（同一 category で複数の shardIndex が同時に現れること）を確認する。Cloudflare dashboard の Container instance 数が同時に複数（shard 数分）動いていることも確認する。
+6. ロールバック: `wrangler.jsonc` の `vars` から `RACE_SHARDED_DO` を外す（または `"1"` 以外に変更）し、`max_concurrency` を `3` に戻して deploy。1 手順、コード変更不要。
+
 ### 5.5 per-race rescore は Container 統一
 
 JRA / NAR / Ban-ei の per-race rescore はすべて `finish-position-cron` から Container held `/predict` に渡す。Worker-native JRA scorer は production の model metadata / cell routing / feature contract と乖離しやすいため、queue consumer の production dispatch では使用しない。Container 側が `mode=rescore` と race scope を受け取り、同じ feature build / model routing / Neon UPSERT 経路で再 scoring する。per-race rescore の DO 名解決も §5.4.2 の `resolvePredictDoName()` を経由するため、`RACE_SHARDED_DO=1` の場合はこの経路も race-sharded された DO へ dispatch される。
