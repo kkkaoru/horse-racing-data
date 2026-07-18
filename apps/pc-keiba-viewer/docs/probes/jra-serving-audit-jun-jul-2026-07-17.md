@@ -715,6 +715,12 @@ team-lead 指摘（deploy-verify分析）により判明: **inline job (`plan-ru
 
 - `pc-keiba-viewer` の deploy 確認: version `b11c772c`（確信度/upset badge実装、USER決定⑥）が **2026-07-17T16:00 UTC（=07-18 01:00 JST、今朝）から100%稼働中**。
 - 函館R1 の実 `predicted_score`（n=8）で `resolveFinishPositionConfidenceTier` を再実装・実行: stddev=0.0869 → **tier='low'**（閾値1.3を大幅に下回る）。他35レースも同一レンジ（0.05-0.16）のため算術的に全て "low" に分類されるはず。
-- 実画面での最終視認は本 agent の権限では実施できず、アクセス権を持つ別 agent への引き継ぎとした。
+- 実画面での最終視認は本 agent の権限では実施できず、アクセス権を持つ別 agent への引き継ぎとした（viewer-six が表示抑止 deploy 時に兼ねる、team-lead確認済み）。
+
+### 13.10 502 の確定原因（deploy-verify）— SQL nesting-depth エラー（本 agent の timeout 仮説を訂正）
+
+deploy-verify により確定: 本 agent が §13.8 で提示した「10年履歴スキャンによる timeout」仮説は誤りで、**実際の原因は R2 SQL の nesting-depth エラー（400/40018）** だった。AND/OR の連鎖を `IN` 句に書き換えることで修理可能とのこと。**データ自体は正常**（§13.8 で確認した race-keys/race-features の健全応答と整合——カタログは健全、クエリの書き方が R2 SQL のネスト制限に抵触していた）。本日中に安全に修理できる見込み。
+
+修理が入れば pending=22〜数十件（本 agent 監視時点で変動中）が一気に流れ、健全な予測が同一 UPSERT primary key で garbage を自動上書きする設計（既存の serving 経路と同一）。以後は D1 `running_style_inference_state` の `completed` カウント（現在 jra は 0）が動き出すことを fix 成功のシグナルとして監視continue。inline job (`plan-running-style-predictions`) の再実行、FP直接forceのfallback、いずれも禁止のまま。
 
 **続報は本節に追記する。**
