@@ -697,4 +697,24 @@ team-lead 判断（10:00台）: **FP直接force focused-fullへの切替は却�
 
 **申し送り候補（未実施、deploy-verifyへ）**: (a) R2 SQL側タイムアウト設定の延長、(b) `historyStart` の窓短縮（10年→数年、running-style推論に本当に10年分必要か要検討）、(c) 10年分履歴の都度スキャンでなく事前集計/マテリアライズ済みテーブルからの参照への設計変更。即時緩和としては (b) が最も低リスクな候補と考えられる。
 
+### 13.9 全36レース garbage 確定 + post時刻との時刻関係 + 確信度badgeのコード検証
+
+team-lead 指摘（deploy-verify分析）により判明: **inline job (`plan-running-style-predictions`) が RS 生成だけでなく FP focused-full も全レース enqueue しており、RS が 502 で NULL のまま FP が走った結果、09:53:43〜09:53:52 JST の間に本日36レース全てへ garbage 予測（stddev 0.05-0.16、Cluster B と同型シグネチャ）が一括書込された**（本 agent が直接 Neon で再確認・裏付け済み）。**以後、この inline job は再実行しない**（team-lead 指示、再実行すると garbage を再生産するため）。
+
+**post 時刻との時刻関係（重要）**:
+
+| レース | post時刻 | garbage着地時刻 (JST) | 関係                                                                                          |
+| ------ | -------- | --------------------- | --------------------------------------------------------------------------------------------- |
+| 函館R1 | 09:50    | 09:53:43              | post後——発走時は予測無し、garbageは事後着地のみ（レース結果への実害は無いが記録としては残る） |
+| 小倉R1 | 09:55    | 09:53:49              | **post前**——ユーザーがpost直前にgarbage予測を閲覧できた可能性                                 |
+| 福島R1 | 10:05    | 09:53:46              | **post前**——同上                                                                              |
+
+小倉R1・福島R1 は garbage が実際に post 前に viewer 上へ表示され得た状態であり、確信度badge（低）が実際に機能したかが特に重要。
+
+**確信度badge保護のコード検証**（実画面確認は Cloudflare Access SSO によりブロックされ、本 agent の環境からは不可——`resolveFinishPositionConfidenceTier` のロジックをそのまま複製し実データで代替検証）:
+
+- `pc-keiba-viewer` の deploy 確認: version `b11c772c`（確信度/upset badge実装、USER決定⑥）が **2026-07-17T16:00 UTC（=07-18 01:00 JST、今朝）から100%稼働中**。
+- 函館R1 の実 `predicted_score`（n=8）で `resolveFinishPositionConfidenceTier` を再実装・実行: stddev=0.0869 → **tier='low'**（閾値1.3を大幅に下回る）。他35レースも同一レンジ（0.05-0.16）のため算術的に全て "low" に分類されるはず。
+- 実画面での最終視認は本 agent の権限では実施できず、アクセス権を持つ別 agent への引き継ぎとした。
+
 **続報は本節に追記する。**
