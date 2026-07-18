@@ -679,4 +679,22 @@ source=nar: completed=34  (計34、全完了)
 
 **結論**: 本日が raw-iceberg-v1 移行後で初めて JRA カテゴリがこの経路を実運用で通った日であり、これまで露呈していなかった JRA 固有の欠陥（クエリの重さ/タイムアウト、または未検証パスの何らかの不整合）が原因。deploy 起因ではなく、rollback では直らないという team-lead 判定と整合する。函館R1(09:50)・小倉R1(09:55) は post 時刻超過、福島R1(10:05) は本節記述時点でなお間に合う可能性。team-lead へ全て報告済み、`pc-keiba-r2-catalog` 側の修復は同 Worker の deploy 権限保持者に引き継ぎ中。
 
+team-lead 判断（10:00台）: **FP直接force focused-fullへの切替は却下**（RS無しのforceはstddev 0.08-0.15のgarbage予測を生み、feature_guardの50%閾値も通過してしまう=Defect G——「予測を出さない」より「garbageを本物として出す」方が有害という方針、今朝導入したfeature_guardの思想そのもの）。502の根治修復に集中する方針を維持。
+
+### 13.8 502 の原因をさらに一段特定 — `/v1/running-style-features` クエリ固有の10年履歴スキャン
+
+`pc-keiba-r2-catalog.kaoru.workers.dev`（トークン不要でパブリック到達可能と判明）に直接3エンドポイントを叩いて切り分けた:
+
+| endpoint                                                                          | 応答                                          | 所要時間 |
+| --------------------------------------------------------------------------------- | --------------------------------------------- | -------- |
+| `/v1/running-style-features?date=20260718&source=jra&keibajoCode=02&raceBango=01` | **HTTP 502** `{"error":"r2_sql_unavailable"}` | 12.5秒   |
+| `/v1/race-keys?date=20260718&source=jra`                                          | HTTP 200、本日JRA36レース全件を正しく返却     | 0.4秒    |
+| `/v1/race-features?date=20260718&source=jra&keibajoCode=02&raceBango=01`          | HTTP 200、実データ返却                        | 0.35秒   |
+
+**これにより「R2 Icebergカタログ未sync」という当初仮説（§13.7）は否定される** ——race-keys/race-featuresが本日分のJRAデータを瞬時に正しく返しており、カタログ自体は健全かつ最新。**問題は `/v1/running-style-features` クエリ自体に限定される。**
+
+`apps/pc-keiba-r2-catalog/src/running-style-sql.ts` を読解: このクエリのみが `historyStart(date)`（`kaisai_nen >= 対象年-10`）で**過去10年分**の `jvd_ra`/`jvd_se` 履歴をJOINしてスキャンする設計（race-keys/race-featuresは当日1日分のみを見る）。JRAの10年分の開催規模はNARよりはるかに大きいと見られ、このクエリだけがJRAで極端に重く/遅くなり、R2 SQL側のタイムアウト（12.5秒付近で打ち切り）→502に至っている、というのが現時点で最有力の仮説。本日が新パス移行後初のJRA実運用のため、このクエリ規模問題がこれまで露呈していなかったと考えられる。
+
+**申し送り候補（未実施、deploy-verifyへ）**: (a) R2 SQL側タイムアウト設定の延長、(b) `historyStart` の窓短縮（10年→数年、running-style推論に本当に10年分必要か要検討）、(c) 10年分履歴の都度スキャンでなく事前集計/マテリアライズ済みテーブルからの参照への設計変更。即時緩和としては (b) が最も低リスクな候補と考えられる。
+
 **続報は本節に追記する。**
