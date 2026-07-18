@@ -158,6 +158,16 @@
 
 **rollback**: `apps/finish-position-cron/wrangler.jsonc` の `vars.COORDINATOR_ENABLED` を `"1"` → `"0"` に戻して `wrangler deploy` 一回（config-only diff、commit + deploy で概ね2分以内。secret ではなく committed var なので `wrangler secret` 操作は不要）。
 
+### RACE_SHARDED_DO 有効化（USER decision 11）— リスクと rollback（2026-07-18 09:2x JST 実施）
+
+**内容**: `apps/finish-position-cron/wrangler.jsonc` の `vars.RACE_SHARDED_DO` を `"1"` に、`queues.consumers[0].max_concurrency` を `3`→`9` に変更（commit `a0eb365a`、Defect F 修正 `78076cc8` と同一 deploy、Version ID `84e51027-b08a-4b19-8a88-2c728d9a8be2`）。詳細設計・rollback runbook は `docs/finish-position-prediction-system.md` §5.4.2/§5.4.3。当初 17:00 JST の落ち着いた窓を想定していたが、USER が「max_concurrency 引き上げ OK / live 競合 OK」を追加承認したため即日実施——開催中の deploy・shard 切替となる。
+
+**リスク**: 各 category の Container DO 名が固定 1 個から最大 3 個（`RACE_SHARD_MAX_CONCURRENT` 既定値）に増える。`resolvePredictDoName()` は純粋関数で決定論的なため誤配線リスクは低いが、①各 shard は初回アクセス時に day-base cache が空の状態からコールドスタートする（`day-base-prewarm.ts` は意図的に category 単位のまま——各 shard は自身の day-base を最初のレースで遅延ビルド、精度影響なし・その 1 レースだけ遅い）、②同時に起動しうる Container instance 数が増える（最悪ケース `3 category × 3 shard = 9 <= max_instances: 10`、余裕は 1 instance のみ）。
+
+**実施した検証**: (1) 決定論的——本番 D1 から本日実際の予定レース 70 件を取得し、デプロイ済みコード（`resolvePredictDoName()` を再実装せず直接 import・実行）に通し、jra/nar/ban-ei 全 category で shard 0/1/2 全てが使われることを確認。(2) live——本日の実レース 2 件（keibajoCode=02/10、raceBango=01、それぞれ別 shard と確認済み）を admin `run-focused-full-race`（`debug=true`）で同時発火、両方 HTTP 200・`status:"accepted"`（busy 化なし）。両レースの実際の Neon 書き込み・stddev は完了後（~15-27分後）フォローアップ予定。
+
+**rollback**: `apps/finish-position-cron/wrangler.jsonc` の `vars.RACE_SHARDED_DO` を削除（または `"1"` 以外に変更）し、`queues.consumers[0].max_concurrency` を `3` に戻して `wrangler deploy` 一回（config-only diff。secret ではなく committed var なので `wrangler secret` 操作は不要）。code 変更不要。
+
 ---
 
 | ⑰ | Defect B (72 races) 修復は force 二段目 gate 修正待ちに延期（production live は無影響） — 2026-07-18 07:2x JST 追記 | day-base reuse smoke test (Hakodate R01→R02) の一次手順として `POST /run force=true` を実行したところ、6.5 時間経っても Neon 行が一切変化しなかった。`wrangler tail` + `debug=true` 再実行で即座に原因特定: `force=true` は `ackIfFocusedFullAlreadyComplete`（Neon 行数チェック、`4d2f256b` の対象）は正しく bypass するが、その次の `claimFocusedFullRace`（`apps/finish-position-cron/src/predict-run-coordinator.ts:138-158`）の `TERMINAL_STATUSES=new Set(["success"])` gate には `force` が一切伝播しておらず、一度 `status:"success"` に達した DO storage キー（`focused-full:{runYmd}:{category}:{keibajoCode}:{raceBango}`、日付/カテゴリ/場/レース番号のみで構成、リセット手段なし）を持つレースは永久に再トリガー不能と判明（詳細: `jra-serving-audit-jun-jul-2026-07-17.md` §2 Defect F）。Defect A の 72 レースは行数ベースの complete 判定を一度でも通過していれば対象になるため、実質全件がこの状態にあると推定——72 races 修復タスク全体がこの 1 点でブロックされている。**開催 2 時間前という時間帯での coverage-protected package への急ぎ修正はリスク超過と判断し本日は見送り**、17:00 JST 以降の落ち着いた窓で ⑬⑭⑮ deploy と合わせて実装・テスト・deploy する第 3 bundle 項目とする（修正案・テスト要件は Defect F 節に記載済み）。production live serving は無影響と確認済み——coordinator の近post rescore 経路 (`mode=rescore`) はこの completion gate 自体を通らない別コードパスのため。72 races 修復の再開はこの fix の deploy 後。 |
