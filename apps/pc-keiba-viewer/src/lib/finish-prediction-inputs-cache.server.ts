@@ -5,17 +5,18 @@ import type { FinishPredictionEvaluationMetrics } from "./finish-position-predic
 import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
 import type { RaceDetail } from "./race-types";
 
-// Bumped to v3 on 2026-07-18 to force-invalidate every entry as part of the
-// emergency finish-position quality gate rollout (see query-cache.ts's
-// analogous v3 -> v4 bump, same root cause): this cache holds the full
-// FinishPredictionBuildInputs (including modelPredictionFeatures ->
-// isQualityGated) for up to PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS
-// (6 hours) past each race's post time, so any race whose page had been
-// requested even once before the gate deploy landed would keep serving a
-// cached payload with no isQualityGated field for hours, independent of the
-// per-race cache-bust endpoint (different KV key scheme) and independent of
-// query-cache.ts's own namespace (this is a separate cache layer entirely).
-const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v3";
+// Bumped v2->v3 on 2026-07-18 for the emergency finish-position quality gate
+// rollout, then v3->v4 the same day when the gate was replaced with the
+// transparency/user-choice redesign (isQualityGated -> predictedScoreStddev).
+// This cache holds the full FinishPredictionBuildInputs (including
+// modelPredictionFeatures) for up to
+// PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS (6 hours) past each
+// race's post time, so any race whose page had been requested even once
+// before a shape-changing deploy landed would keep serving the old shape for
+// hours, independent of the per-race cache-bust endpoint (different KV key
+// scheme) and independent of query-cache.ts's own namespace (separate cache
+// layer entirely) -- any future change to this shape needs its own bump here.
+const CACHE_NAMESPACE = "pc-keiba-viewer:finish-prediction-inputs:v4";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/finish-prediction-inputs-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 

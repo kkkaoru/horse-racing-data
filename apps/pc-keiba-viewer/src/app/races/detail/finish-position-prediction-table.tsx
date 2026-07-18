@@ -612,14 +612,26 @@ const isFinishPredictionUpsetWarningRace = (
   gradeCode === FINISH_PREDICTION_UPSET_WARNING_GRADE_CODE &&
   FINISH_PREDICTION_UPSET_WARNING_KEIBAJO_CODES.has(keibajoCode);
 
-// Emergency quality gate (2026-07-18): when isQualityGated is true (see
-// src/db/queries.ts's derivation), the within-race predicted_score spread is
-// statistically indistinguishable from noise. Hiding the ranked table and its
-// correction controls rather than showing a de-facto random order with false
-// confidence -- the evaluation summary and race badges above stay visible
-// since neither is race-specific ranking output.
-const FINISH_PREDICTION_QUALITY_GATE_MESSAGE =
-  "予測を準備中です (品質基準未達のため一時的に非表示にしています)。";
+// Transparency + user choice (2026-07-18; replaces an earlier same-day
+// hard-hide "quality gate" per USER decision): rather than hiding the ranked
+// table whenever the within-race predicted_score spread is low, the raw
+// stddev value and a plain-language explanation are always surfaced (when
+// computable), and the table stays visible by default even for a low
+// reading. The user can opt to hide a specific race's ranking themselves via
+// a checkbox they control -- default unchecked (table visible) -- rather
+// than the viewer deciding for them.
+const FINISH_PREDICTION_LOW_RELIABILITY_MAX_STDDEV = 0.5;
+
+const FINISH_PREDICTION_STDDEV_EXPLANATION =
+  "標準偏差は、レース内の馬同士で予測スコアにどれだけ差がついているかを示す値です。値が高いほどモデルが馬の実力差を明確に区別できていることを、値が低いほど馬同士が横並びで区別できていないことを意味します。的中率を保証する数値ではありません。";
+
+const FINISH_PREDICTION_LOW_RELIABILITY_WARNING =
+  "この数値は健全なレースの分布と比べて低く、予測の信頼性が低い可能性があります。";
+
+const FINISH_PREDICTION_HIDE_TOGGLE_LABEL = "この予測を非表示にする";
+
+const FINISH_PREDICTION_HIDDEN_BY_USER_MESSAGE =
+  "選択により、この予測の順位表を非表示にしています。上のチェックボックスを外すと再表示できます。";
 
 export function FinishPositionPredictionTable({
   combinedScoreData = null,
@@ -629,6 +641,7 @@ export function FinishPositionPredictionTable({
   realtimeRequest,
 }: FinishPositionPredictionTableProps) {
   const [expandedHorseNumber, setExpandedHorseNumber] = useState<string | null>(null);
+  const [isPredictionHiddenByUser, setIsPredictionHiddenByUser] = useState(false);
   const rawToggles = useSyncExternalStore(
     subscribeCorrectionToggles,
     getCorrectionTogglesSnapshot,
@@ -775,6 +788,20 @@ export function FinishPositionPredictionTable({
     realtimeRequest.year,
   ]);
 
+  // The user's choice to hide a low-reliability race's ranking is per-race,
+  // not a global preference -- reset it (back to visible) when navigating to
+  // a different race, independent of correctionToggles/odds updates for the
+  // same race, which must not clear it.
+  useEffect(() => {
+    setIsPredictionHiddenByUser(false);
+  }, [
+    realtimeRequest.day,
+    realtimeRequest.keibajoCode,
+    realtimeRequest.month,
+    realtimeRequest.raceNumber,
+    realtimeRequest.year,
+  ]);
+
   if (displayRows.length === 0) {
     return (
       <>
@@ -785,7 +812,10 @@ export function FinishPositionPredictionTable({
   }
 
   const confidenceTier = displayRows[0]?.confidenceTier ?? null;
-  const isQualityGated = displayRows[0]?.isQualityGated ?? false;
+  const predictedScoreStddev = displayRows[0]?.predictedScoreStddev ?? null;
+  const isLowReliability =
+    predictedScoreStddev !== null &&
+    predictedScoreStddev < FINISH_PREDICTION_LOW_RELIABILITY_MAX_STDDEV;
   const isUpsetWarningRace = isFinishPredictionUpsetWarningRace(
     inputs.currentGradeCode,
     realtimeRequest.keibajoCode,
@@ -810,166 +840,191 @@ export function FinishPositionPredictionTable({
       ) : null}
     </div>
   );
-
-  if (isQualityGated) {
-    return (
-      <>
-        <WrappedFinishPredictionEvaluation evaluation={evaluation} />
-        {raceBadges}
-        <p className="finish-prediction-quality-gate-message">
-          {FINISH_PREDICTION_QUALITY_GATE_MESSAGE}
-        </p>
-      </>
+  const stddevInfo =
+    predictedScoreStddev === null ? null : (
+      <div className="finish-prediction-stddev-info">
+        <span className="finish-prediction-stddev-value">
+          予測スコアのばらつき (標準偏差): {predictedScoreStddev.toFixed(2)}
+        </span>
+        <span className="finish-prediction-stddev-explanation">
+          {FINISH_PREDICTION_STDDEV_EXPLANATION}
+        </span>
+      </div>
     );
-  }
+  const lowReliabilityControl = !isLowReliability ? null : (
+    <div className="finish-prediction-low-reliability-notice">
+      <p>{FINISH_PREDICTION_LOW_RELIABILITY_WARNING}</p>
+      <label className="finish-prediction-hide-toggle">
+        <input
+          checked={isPredictionHiddenByUser}
+          onChange={(event) => {
+            setIsPredictionHiddenByUser(event.target.checked);
+          }}
+          type="checkbox"
+        />
+        <span>{FINISH_PREDICTION_HIDE_TOGGLE_LABEL}</span>
+      </label>
+    </div>
+  );
+  const isRankingHiddenByUser = isLowReliability && isPredictionHiddenByUser;
 
   return (
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
       {raceBadges}
-      <div className="finish-prediction-odds-toggle">
-        <CorrectionMasterCheckbox rawToggles={rawToggles} />
-        <span className="correction-toggle-separator" aria-hidden="true" />
-        {CORRECTION_FLAGS.map((flag) => (
-          <label htmlFor={`correction-checkbox-${flag.key}`} key={flag.key} title={flag.title}>
-            <input
-              checked={rawToggles[flag.key]}
-              id={`correction-checkbox-${flag.key}`}
-              onChange={(event) => {
-                writeCorrectionToggles({ ...rawToggles, [flag.key]: event.target.checked });
-              }}
-              type="checkbox"
-            />
-            <span>{flag.label}</span>
-          </label>
-        ))}
-        <span className="correction-toggle-separator" aria-hidden="true" />
-        <label className="correction-strength-control" htmlFor="correction-strength-slider">
-          <span>人気・単勝の補正強度</span>
-          <input
-            aria-label="人気・単勝の補正強度"
-            aria-valuemax={ODDS_POPULARITY_MAX_STRENGTH}
-            aria-valuemin={0}
-            aria-valuenow={rawToggles.oddsPopularityStrength}
-            id="correction-strength-slider"
-            max={ODDS_POPULARITY_MAX_STRENGTH}
-            min={0}
-            step={ODDS_POPULARITY_STRENGTH_STEP}
-            type="range"
-            value={rawToggles.oddsPopularityStrength}
-            onChange={(event) => {
-              writeCorrectionToggles({
-                ...rawToggles,
-                oddsPopularityStrength: Number(event.target.value),
-              });
-            }}
-          />
-          <span className="correction-strength-value">
-            {rawToggles.oddsPopularityStrength === 0
-              ? "反映なし"
-              : formatStrength(rawToggles.oddsPopularityStrength)}
-          </span>
-        </label>
-        <span className="finish-prediction-odds-toggle-hint">
-          チェックを外すとその補正を無効化 / スライダー0で人気・単勝を反映しません
-        </span>
-      </div>
-      <div className="stats-table-wrap">
-        <table className="stats-table analysis-table finish-prediction-table">
-          <colgroup>
-            <col className="finish-prediction-col-number" />
-            <col className="finish-prediction-col-horse" />
-            <col className="finish-prediction-col-jockey" />
-            <col className="finish-prediction-col-rank" />
-            <col className="finish-prediction-col-popularity" />
-            <col className="finish-prediction-col-odds" />
-            <col className="finish-prediction-col-score" />
-            <col className="finish-prediction-col-score" />
-            <col className="finish-prediction-col-score" />
-            <col className="finish-prediction-col-rate" />
-            <col className="finish-prediction-col-rate" />
-            <col className="finish-prediction-col-rate" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>
-                <span className="finish-prediction-header-label">馬番</span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">馬名</span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">騎手名</span>
-              </th>
-              <th aria-label="予想着順">
-                <span className="finish-prediction-header-label">
-                  <span>予想</span>
-                  <span>着順</span>
-                </span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">人気</span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">単勝</span>
-              </th>
-              <th aria-label="着順予測スコア">
-                <span className="finish-prediction-header-label">
-                  <span>着順予測</span>
-                  <span>スコア</span>
-                </span>
-              </th>
-              <th aria-label="総合評価スコア">
-                <span className="finish-prediction-header-label">
-                  <span>総合評価</span>
-                  <span>スコア</span>
-                </span>
-              </th>
-              <th aria-label="パドックスコア">
-                <span className="finish-prediction-header-label">
-                  <span>パドック</span>
-                  <span>スコア</span>
-                </span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">勝率</span>
-              </th>
-              <th aria-label="3着内率">
-                <span className="finish-prediction-header-label">
-                  <span>3着内</span>
-                  <span>率</span>
-                </span>
-              </th>
-              <th>
-                <span className="finish-prediction-header-label">信頼度</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedDisplayRows.map((row) => {
-              const horseNumber = formatRunnerNumber(row.horseNumber);
-              const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
-              return (
-                <FinishPredictionTableRow
-                  combinedScore={combinedScoreByHorse.get(horseNumber) ?? null}
-                  combinedScoreLoading={combinedScoreLoading}
-                  isExpanded={expandedHorseNumber === row.horseNumber}
-                  jockeyName={getPreferredJockeyName(
-                    row.jockeyName,
-                    realtimeJockeyByHorse.get(horseNumber),
-                  )}
-                  key={row.horseNumber}
-                  paddockScore={paddockScoreByHorse.get(horseNumber) ?? null}
-                  realtimeOdds={realtimeOdds?.odds}
-                  realtimePopularity={realtimeOdds?.popularity}
-                  row={row}
-                  onToggle={toggleExpandedHorse}
+      {stddevInfo}
+      {lowReliabilityControl}
+      {isRankingHiddenByUser ? (
+        <p className="finish-prediction-hidden-by-user-message">
+          {FINISH_PREDICTION_HIDDEN_BY_USER_MESSAGE}
+        </p>
+      ) : (
+        <>
+          <div className="finish-prediction-odds-toggle">
+            <CorrectionMasterCheckbox rawToggles={rawToggles} />
+            <span className="correction-toggle-separator" aria-hidden="true" />
+            {CORRECTION_FLAGS.map((flag) => (
+              <label htmlFor={`correction-checkbox-${flag.key}`} key={flag.key} title={flag.title}>
+                <input
+                  checked={rawToggles[flag.key]}
+                  id={`correction-checkbox-${flag.key}`}
+                  onChange={(event) => {
+                    writeCorrectionToggles({ ...rawToggles, [flag.key]: event.target.checked });
+                  }}
+                  type="checkbox"
                 />
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                <span>{flag.label}</span>
+              </label>
+            ))}
+            <span className="correction-toggle-separator" aria-hidden="true" />
+            <label className="correction-strength-control" htmlFor="correction-strength-slider">
+              <span>人気・単勝の補正強度</span>
+              <input
+                aria-label="人気・単勝の補正強度"
+                aria-valuemax={ODDS_POPULARITY_MAX_STRENGTH}
+                aria-valuemin={0}
+                aria-valuenow={rawToggles.oddsPopularityStrength}
+                id="correction-strength-slider"
+                max={ODDS_POPULARITY_MAX_STRENGTH}
+                min={0}
+                step={ODDS_POPULARITY_STRENGTH_STEP}
+                type="range"
+                value={rawToggles.oddsPopularityStrength}
+                onChange={(event) => {
+                  writeCorrectionToggles({
+                    ...rawToggles,
+                    oddsPopularityStrength: Number(event.target.value),
+                  });
+                }}
+              />
+              <span className="correction-strength-value">
+                {rawToggles.oddsPopularityStrength === 0
+                  ? "反映なし"
+                  : formatStrength(rawToggles.oddsPopularityStrength)}
+              </span>
+            </label>
+            <span className="finish-prediction-odds-toggle-hint">
+              チェックを外すとその補正を無効化 / スライダー0で人気・単勝を反映しません
+            </span>
+          </div>
+          <div className="stats-table-wrap">
+            <table className="stats-table analysis-table finish-prediction-table">
+              <colgroup>
+                <col className="finish-prediction-col-number" />
+                <col className="finish-prediction-col-horse" />
+                <col className="finish-prediction-col-jockey" />
+                <col className="finish-prediction-col-rank" />
+                <col className="finish-prediction-col-popularity" />
+                <col className="finish-prediction-col-odds" />
+                <col className="finish-prediction-col-score" />
+                <col className="finish-prediction-col-score" />
+                <col className="finish-prediction-col-score" />
+                <col className="finish-prediction-col-rate" />
+                <col className="finish-prediction-col-rate" />
+                <col className="finish-prediction-col-rate" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>
+                    <span className="finish-prediction-header-label">馬番</span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">馬名</span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">騎手名</span>
+                  </th>
+                  <th aria-label="予想着順">
+                    <span className="finish-prediction-header-label">
+                      <span>予想</span>
+                      <span>着順</span>
+                    </span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">人気</span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">単勝</span>
+                  </th>
+                  <th aria-label="着順予測スコア">
+                    <span className="finish-prediction-header-label">
+                      <span>着順予測</span>
+                      <span>スコア</span>
+                    </span>
+                  </th>
+                  <th aria-label="総合評価スコア">
+                    <span className="finish-prediction-header-label">
+                      <span>総合評価</span>
+                      <span>スコア</span>
+                    </span>
+                  </th>
+                  <th aria-label="パドックスコア">
+                    <span className="finish-prediction-header-label">
+                      <span>パドック</span>
+                      <span>スコア</span>
+                    </span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">勝率</span>
+                  </th>
+                  <th aria-label="3着内率">
+                    <span className="finish-prediction-header-label">
+                      <span>3着内</span>
+                      <span>率</span>
+                    </span>
+                  </th>
+                  <th>
+                    <span className="finish-prediction-header-label">信頼度</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedDisplayRows.map((row) => {
+                  const horseNumber = formatRunnerNumber(row.horseNumber);
+                  const realtimeOdds = realtimeOddsByHorse.get(horseNumber);
+                  return (
+                    <FinishPredictionTableRow
+                      combinedScore={combinedScoreByHorse.get(horseNumber) ?? null}
+                      combinedScoreLoading={combinedScoreLoading}
+                      isExpanded={expandedHorseNumber === row.horseNumber}
+                      jockeyName={getPreferredJockeyName(
+                        row.jockeyName,
+                        realtimeJockeyByHorse.get(horseNumber),
+                      )}
+                      key={row.horseNumber}
+                      paddockScore={paddockScoreByHorse.get(horseNumber) ?? null}
+                      realtimeOdds={realtimeOdds?.odds}
+                      realtimePopularity={realtimeOdds?.popularity}
+                      row={row}
+                      onToggle={toggleExpandedHorse}
+                    />
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </>
   );
 }

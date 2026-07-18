@@ -1040,7 +1040,7 @@ test("FinishPositionPredictionTable does not render the upset warning badge for 
   expect(document.querySelector(".finish-prediction-upset-warning-badge")).toStrictEqual(null);
 });
 
-test("FinishPositionPredictionTable hides the ranked table and shows the quality gate message when isQualityGated is true", () => {
+test("FinishPositionPredictionTable renders the ranked table by default even when predictedScoreStddev is low (does not hide automatically)", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
     getItem: vi.fn<(key: string) => string | null>(() => null),
@@ -1052,9 +1052,9 @@ test("FinishPositionPredictionTable hides the ranked table and shows the quality
       {
         confidenceTier: "low",
         horseNumber: "1",
-        isQualityGated: true,
         modelVersion: "test-model",
         predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.08,
         showProbability: null,
         winProbability: null,
       },
@@ -1067,14 +1067,174 @@ test("FinishPositionPredictionTable hides the ranked table and shows the quality
       realtimeRequest={sampleRequest}
     />,
   );
+  expect(document.querySelector(".finish-prediction-table")).not.toStrictEqual(null);
+  expect(document.querySelector(".finish-prediction-odds-toggle")).not.toStrictEqual(null);
+  expect(document.querySelector(".finish-prediction-hidden-by-user-message")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable shows the raw stddev value and explanation when predictedScoreStddev is present", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.08,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-stddev-value")?.textContent).toStrictEqual(
+    "予測スコアのばらつき (標準偏差): 0.08",
+  );
   expect(
-    document.querySelector(".finish-prediction-quality-gate-message")?.textContent,
-  ).toStrictEqual("予測を準備中です (品質基準未達のため一時的に非表示にしています)。");
+    document.querySelector(".finish-prediction-stddev-explanation")?.textContent,
+  ).toStrictEqual(
+    "標準偏差は、レース内の馬同士で予測スコアにどれだけ差がついているかを示す値です。値が高いほどモデルが馬の実力差を明確に区別できていることを、値が低いほど馬同士が横並びで区別できていないことを意味します。的中率を保証する数値ではありません。",
+  );
+});
+
+test("FinishPositionPredictionTable does not show stddev info when predictedScoreStddev is null", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={sampleInputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-stddev-info")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable shows the low-reliability notice and hide toggle (unchecked by default) when predictedScoreStddev is below the floor", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.49,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const notice = document.querySelector(".finish-prediction-low-reliability-notice");
+  expect(notice?.textContent).toStrictEqual(
+    "この数値は健全なレースの分布と比べて低く、予測の信頼性が低い可能性があります。この予測を非表示にする",
+  );
+  const checkbox = document.querySelector(".finish-prediction-hide-toggle input");
+  if (!(checkbox instanceof HTMLInputElement)) {
+    throw new Error("expected hide-toggle checkbox element");
+  }
+  expect(checkbox.checked).toStrictEqual(false);
+});
+
+test("FinishPositionPredictionTable does not show the low-reliability notice when predictedScoreStddev is exactly at the floor", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-low-reliability-notice")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable hides the ranked table and shows the hidden-by-user message once the user checks the hide toggle", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.08,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  const checkbox = document.querySelector(".finish-prediction-hide-toggle input");
+  if (!(checkbox instanceof HTMLInputElement)) {
+    throw new Error("expected hide-toggle checkbox element");
+  }
+  fireEvent.click(checkbox);
+  expect(
+    document.querySelector(".finish-prediction-hidden-by-user-message")?.textContent,
+  ).toStrictEqual(
+    "選択により、この予測の順位表を非表示にしています。上のチェックボックスを外すと再表示できます。",
+  );
   expect(document.querySelector(".finish-prediction-table")).toStrictEqual(null);
   expect(document.querySelector(".finish-prediction-odds-toggle")).toStrictEqual(null);
 });
 
-test("FinishPositionPredictionTable still renders the confidence badge alongside the quality gate message", () => {
+test("FinishPositionPredictionTable shows the ranked table again once the user unchecks the hide toggle", () => {
   installMatchMediaMock(false);
   vi.stubGlobal("localStorage", {
     getItem: vi.fn<(key: string) => string | null>(() => null),
@@ -1086,9 +1246,9 @@ test("FinishPositionPredictionTable still renders the confidence badge alongside
       {
         confidenceTier: "low",
         horseNumber: "1",
-        isQualityGated: true,
         modelVersion: "test-model",
         predictedFinishNorm: 0.5,
+        predictedScoreStddev: 0.08,
         showProbability: null,
         winProbability: null,
       },
@@ -1101,38 +1261,12 @@ test("FinishPositionPredictionTable still renders the confidence badge alongside
       realtimeRequest={sampleRequest}
     />,
   );
-  expect(
-    document.querySelector(".finish-prediction-confidence-badge-low")?.textContent,
-  ).toStrictEqual("予測の自信度: 低");
-});
-
-test("FinishPositionPredictionTable renders the ranked table (not the quality gate message) when isQualityGated is false", () => {
-  installMatchMediaMock(false);
-  vi.stubGlobal("localStorage", {
-    getItem: vi.fn<(key: string) => string | null>(() => null),
-    setItem: vi.fn<(key: string, value: string) => void>(),
-  });
-  const inputs: FinishPredictionBuildInputs = {
-    ...sampleInputs,
-    modelPredictionFeatures: [
-      {
-        confidenceTier: "high",
-        horseNumber: "1",
-        isQualityGated: false,
-        modelVersion: "test-model",
-        predictedFinishNorm: 0.5,
-        showProbability: null,
-        winProbability: null,
-      },
-    ],
-  };
-  render(
-    <FinishPositionPredictionTable
-      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
-      inputs={inputs}
-      realtimeRequest={sampleRequest}
-    />,
-  );
-  expect(document.querySelector(".finish-prediction-quality-gate-message")).toStrictEqual(null);
+  const checkbox = document.querySelector(".finish-prediction-hide-toggle input");
+  if (!(checkbox instanceof HTMLInputElement)) {
+    throw new Error("expected hide-toggle checkbox element");
+  }
+  fireEvent.click(checkbox);
+  fireEvent.click(checkbox);
+  expect(document.querySelector(".finish-prediction-hidden-by-user-message")).toStrictEqual(null);
   expect(document.querySelector(".finish-prediction-table")).not.toStrictEqual(null);
 });

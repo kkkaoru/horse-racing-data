@@ -1,12 +1,13 @@
 # 確信度表示層 — 設計提案 (2026-07-17)
 
 **Status**: USER 決定⑥により (a)・(b) を実装、本番投入済み (2026-07-18)。(c) は
-保留のまま。同日、緊急ユーザー保護として恒久機能 (d) 品質ゲートを追加
-(下記セクション参照)。**Scope**: `apps/pc-keiba-viewer` の finish-position
-予測表示。**3 案とも `predicted_rank`（推薦順位）を一切変更しない** —
-既存予測結果の「見せ方」のみを変える display-layer 改善であり、§7.2
-accept gate や WF/serve accuracy の gated metrics には一切触れない
-（§5 で根拠を明示）。
+保留のまま。同日、緊急ユーザー保護として恒久機能 (d) 品質ゲート (非表示型)
+を追加したが、同日中に USER 指示で (d') 透明性+ユーザー選択型に作り替え
+(下記セクション参照、(d) は役目を終えて置き換え済み)。**Scope**:
+`apps/pc-keiba-viewer` の finish-position 予測表示。**3 案とも
+`predicted_rank`（推薦順位）を一切変更しない** — 既存予測結果の
+「見せ方」のみを変える display-layer 改善であり、§7.2 accept gate や
+WF/serve accuracy の gated metrics には一切触れない（§5 で根拠を明示）。
 
 ## (d) 品質ゲート — 緊急実装 (2026-07-18)
 
@@ -363,3 +364,71 @@ top3_box）という、**`predicted_rank` の的中率**から計算される ce
   から再算出すべきか、この暫定値で先に出して後日調整するか。
 - (c) を実装する場合、export パイプラインの運用（更新頻度、所有者）を
   誰が設計するか。
+
+## 運用注意: viewer deploy 時の 2 層 cache (2026-07-18 の教訓)
+
+`getFinishPositionLambdarankPredictions` (queries.ts) や
+`FinishPredictionBuildInputs`（`modelPredictionFeatures` を含む）を
+返す値の**形状**を変えるような viewer の表示ロジック変更をデプロイする
+ときは、以下 2 層の cache がどちらも既存の per-race cache-bust endpoint
+(`/api/internal/race-cache-bust`) の対象外であることに必ず注意する
+(2026-07-18 の品質ゲート初回デプロイで実際にこれを踏み、本番の
+pre-loaded レースが最大 6 時間 stale な形状を返し続けた):
+
+1. `src/db/query-cache.ts` の `withDbQueryCache` — content-hash キー、
+   既定 TTL は `PC_KEIBA_DB_CACHE_TTL_SECONDS`（本番 3600 秒 = 1 時間）。
+2. `src/lib/finish-prediction-inputs-cache.server.ts` — レース発走時刻 +
+   `PC_KEIBA_DETAIL_SECTION_CACHE_AFTER_START_SECONDS`（本番 21600 秒 =
+   6 時間）まで保持。**こちらの方が影響が大きい** (6 時間 vs 1 時間)。
+
+どちらも先頭の `const CACHE_NAMESPACE = "...:vN"` という文字列がキーの
+一部に折り込まれているだけなので、**表示に影響するデプロイのたびに両方の
+`vN` を 1 つ上げてコミットに含める**(`c7cf848f` / `7c5012f2` が実例)。
+リテラル文字列に依存するテストが無いことは両ファイルとも確認済みなので、
+安全に bump できる。逆に、返す値の形状を変えない (文言修正やスタイルのみの)
+デプロイでは bump 不要。
+
+## (d') 透明性+ユーザー選択への作り替え (2026-07-18、USER 指示)
+
+(d) の「品質未達なら順位テーブルを非表示にする」は同日中に USER の
+明示指示で撤回・作り替え。新方針:
+
+1. **非表示にしない** — stddev が低くても順位テーブルは**デフォルトで
+   表示**する。
+2. **標準偏差の実数値+説明を常に表示** — `predictedScoreStddev`
+   (queries.ts で confidenceTier と同じ箇所で計算済みの生値、レース
+   単位で `FinishPositionModelPredictionFeature` → `FinishPredictionRow`
+   まで confidenceTier と同じ経路で伝播) を
+   「予測スコアのばらつき (標準偏差): 0.08」の形式で表示し、直下に
+   標準偏差の意味の説明文（高い=モデルが実力差を明確に区別、低い=馬が
+   横並びで信頼性が低い、的中率を保証する数値ではない旨）を常設で表示。
+   閾値による表示・非表示の分岐はここには無い — 値が高くても低くても
+   同じ形式で常に出る。
+3. **ユーザーが選べる非表示トグル** — `predictedScoreStddev` が
+   `FINISH_PREDICTION_LOW_RELIABILITY_MAX_STDDEV`（0.5、旧 (d) の
+   閾値をそのまま流用）未満のときだけ、警告文 +「この予測を非表示にする」チェックボックスを追加表示。**既定は
+   unchecked（表示したまま）** — USER の「非表示にはしない」という
+   指示どおり、隠すかどうかは完全にユーザー任せ。チェックを入れると
+   順位テーブルと補正トグル UI が「選択により、この予測の順位表を
+   非表示にしています。上のチェックボックスを外すと再表示できます。」
+   に差し替わる。チェック状態はレース単位の React state
+   (`isPredictionHiddenByUser`) で保持し、レースが変わったら (realtime
+   request の year/month/day/keibajoCode/raceNumber が変わったら)
+   自動的に unchecked へリセットする — 別レースに前のレースの非表示
+   選択を持ち越さない。
+
+**確信度 badge (高/中/低) は変更なし** — 同じ `confidenceTier` から
+引き続き表示、標準偏差の生値表示とは独立した別要素として共存。
+
+**旧 (d) からの削除**: `isQualityGated` フィールド (queries.ts /
+race-types.ts / finish-position-prediction.ts / table component 全て)
+と、対応する env kill switch
+`PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED` は完全に削除
+(自動非表示という概念自体が無くなったため、無効化スイッチも不要に
+なった)。デプロイ時は上記「運用注意」どおり、両 cache namespace を
+再度 bump 済み。
+
+**検証**: `bun run --filter pc-keiba-viewer tsc` / `lint` / `format:check`
+/ `test:coverage` 全て成功 (176 test files / 3957 tests pass、coverage
+statements 99.36% / branches 97.36% / functions 99.14% / lines 99.39%、
+閾値 95% を全指標で超過)。

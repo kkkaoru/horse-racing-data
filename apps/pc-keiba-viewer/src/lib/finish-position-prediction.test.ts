@@ -339,7 +339,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.confidenceTier).toStrictEqual(null);
   });
 
-  it("propagates the race-level isQualityGated flag from modelPredictionFeatures onto every output row", () => {
+  it("propagates the race-level predictedScoreStddev from modelPredictionFeatures onto every output row", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "05",
@@ -349,18 +349,18 @@ describe("buildFinishPredictionRowsFromResults", () => {
         {
           confidenceTier: "low",
           horseNumber: "01",
-          isQualityGated: true,
           modelVersion: "test-model",
           predictedFinishNorm: 0.2,
+          predictedScoreStddev: 0.08,
           showProbability: null,
           winProbability: null,
         },
         {
           confidenceTier: "low",
           horseNumber: "02",
-          isQualityGated: true,
           modelVersion: "test-model",
           predictedFinishNorm: 0.8,
+          predictedScoreStddev: 0.08,
           showProbability: null,
           winProbability: null,
         },
@@ -373,11 +373,11 @@ describe("buildFinishPredictionRowsFromResults", () => {
     });
 
     expect(rows).toHaveLength(2);
-    expect(rows[0]?.isQualityGated).toStrictEqual(true);
-    expect(rows[1]?.isQualityGated).toStrictEqual(true);
+    expect(rows[0]?.predictedScoreStddev).toStrictEqual(0.08);
+    expect(rows[1]?.predictedScoreStddev).toStrictEqual(0.08);
   });
 
-  it("defaults isQualityGated to false when no model prediction features are supplied", () => {
+  it("defaults predictedScoreStddev to null when no model prediction features are supplied", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",
       currentKeibajoCode: "05",
@@ -387,7 +387,7 @@ describe("buildFinishPredictionRowsFromResults", () => {
       runners: [runner({ bamei: "モデル無し馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
     });
 
-    expect(rows[0]?.isQualityGated).toStrictEqual(false);
+    expect(rows[0]?.predictedScoreStddev).toStrictEqual(null);
   });
 
   it("uses LightGBM, LSTM, and Transformer model predictions as an ensemble", () => {

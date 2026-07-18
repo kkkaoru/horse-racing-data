@@ -2950,25 +2950,6 @@ const FINISH_POSITION_CONFIDENCE_LOW_MAX_STDDEV = 1.3;
 const FINISH_POSITION_CONFIDENCE_MID_MAX_STDDEV = 1.5;
 const FINISH_POSITION_CONFIDENCE_MIN_VALID_SCORES = 2;
 
-// Emergency quality gate (added 2026-07-18, jra-269-serve-defect follow-up):
-// a running-style serve-side generation defect (502s, under repair) wrote
-// near-random finish-position predictions for all 36 JRA races that day --
-// within-race predicted_score stddev 0.0439-0.1657, confirmed via
-// docs/probes/jra-269-serve-defect-2026-07-17.md's Cluster B measurement.
-// Every healthy population sampled there (non-Cluster-B serve, the Mac-batch
-// fallback path, and a 36-race preflight) stayed at or above ~0.5-0.7. Below
-// this floor the ranking is statistically indistinguishable from noise, not
-// merely "low confidence" -- the viewer hides the ranked table entirely
-// rather than presenting a de-facto random order with false confidence (see
-// isQualityGated in finish-position-prediction-table.tsx). Kill switch: set
-// PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED=1 to disable without a code
-// change/redeploy of this logic (still requires a redeploy to pick up the
-// env var, but no code revert).
-const FINISH_POSITION_QUALITY_GATE_MIN_STDDEV = 0.5;
-
-const isFinishPositionQualityGateDisabled = (): boolean =>
-  process.env.PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED === "1";
-
 const resolveFinishPositionConfidenceTier = (stddev: number): FinishPositionConfidenceTier => {
   if (stddev < FINISH_POSITION_CONFIDENCE_LOW_MAX_STDDEV) {
     return "low";
@@ -3003,11 +2984,6 @@ const calculateFinishPositionConfidenceTier = (
   stddev: number | null,
 ): FinishPositionConfidenceTier | null =>
   stddev === null ? null : resolveFinishPositionConfidenceTier(stddev);
-
-const calculateFinishPositionIsQualityGated = (stddev: number | null): boolean =>
-  !isFinishPositionQualityGateDisabled() &&
-  stddev !== null &&
-  stddev < FINISH_POSITION_QUALITY_GATE_MIN_STDDEV;
 
 export const getFinishPositionLambdarankPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
@@ -3166,7 +3142,6 @@ export const getFinishPositionLambdarankPredictions = cache(
             result.rows.map((row) => row.predicted_score),
           );
           const confidenceTier = calculateFinishPositionConfidenceTier(stddev);
-          const isQualityGated = calculateFinishPositionIsQualityGated(stddev);
           return result.rows.map((row) => {
             const fieldSize = Math.max(1, row.shusso_tosu ?? runners.length);
             const denominator = Math.max(1, fieldSize - 1);
@@ -3177,9 +3152,9 @@ export const getFinishPositionLambdarankPredictions = cache(
             return {
               confidenceTier,
               horseNumber: String(row.umaban),
-              isQualityGated,
               modelVersion: row.model_version,
               predictedFinishNorm,
+              predictedScoreStddev: stddev,
               showProbability: null,
               winProbability: null,
             };
