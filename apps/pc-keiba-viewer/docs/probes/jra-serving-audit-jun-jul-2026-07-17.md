@@ -723,4 +723,14 @@ deploy-verify により確定: 本 agent が §13.8 で提示した「10年履�
 
 修理が入れば pending=22〜数十件（本 agent 監視時点で変動中）が一気に流れ、健全な予測が同一 UPSERT primary key で garbage を自動上書きする設計（既存の serving 経路と同一）。以後は D1 `running_style_inference_state` の `completed` カウント（現在 jra は 0）が動き出すことを fix 成功のシグナルとして監視continue。inline job (`plan-running-style-predictions`) の再実行、FP直接forceのfallback、いずれも禁止のまま。
 
+### 13.11 RS障害の横断確認 — 単一原因（502のみ）・共通経路は健全・NAR側に別件発見
+
+team-lead 指示（USER指摘「RSも本番生成されていない」を受けた横断確認）に応え、以下を確認した:
+
+- **エラー種別の一様性**: 現在 `status='failed'` 全件の `error_message` を group化 → **`PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502` の1種類のみ**。`fetch_logs` の本日 `generate-running-style-predictions` 全履歴（status='error'）でも同一メッセージが **824件**、他のエラーパターンは皆無。JRA固有の隠れた別問題は無いと判断できる。
+- **RS生成経路の健全性**: 同ログで NAR の多数の `status=ok`（実 `neonWrittenCount`/`parquetExportedRows`/`featuresR2Key` 付き）を確認——`RUNNING_STYLE_INFERENCE_CRON`・R2書込・モデルbinding (`running-style/models/nar/latest.flatbin`) いずれも健全。JRA/NAR共有部分（cron・R2書込・モデルロード）は健全で、失敗は `PC_KEIBA_R2_CATALOG` 呼び出しの1点に限定される。
+- **fix後の自動回復見込み**: 監視中、failed/pending件数が短時間（数十秒単位）で頻繁に上下しており、システムは既に高頻度で自動リトライしている（824件のログ蓄積がこれを裏付け）。502が解消すれば次のリトライサイクルで自然に `completed` へ流れると見込まれ、手動再kickは不要と判断。
+
+**副次的発見（JRAとは別系統、深追いせず報告のみ）**: 同ログ内に、一部NARレース（`nar:20260718:54:01/02/03/05`）で `"neonError":"cannot execute ALTER TABLE in a read-only transaction"` により `finishPositionTriggerMode:"skipped"` となっているケースを複数確認。過去にも同種のNeon read-only transaction flicker実績が記録されている（`corner-features-settlement-backfill-heal-2026-07-17.md` §5.2）ため一時的な可能性もあるが、NAR側FP自動トリガーが一部スキップされている可能性がある旨、記録のみ行う。
+
 **続報は本節に追記する。**
