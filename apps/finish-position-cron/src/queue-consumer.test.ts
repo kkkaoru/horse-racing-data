@@ -371,6 +371,25 @@ test("force:true bypasses the focused full completion guard and reaches the Cont
   );
   expect(claimFocusedFullRaceMock).toHaveBeenCalledTimes(1);
   expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+});
+
+test("focused full skipDedup message without force passes force:false to the DO claim", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        category: "jra",
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260712",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimFocusedFullRaceMock).toHaveBeenCalledWith(expect.objectContaining({ force: false }));
 });
 
 test("continues to container when focused full completion guard fails", async () => {

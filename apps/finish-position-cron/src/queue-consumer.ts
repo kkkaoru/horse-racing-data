@@ -322,6 +322,7 @@ const claimFocusedFullOrRetry = async (
   const claim = await claimFocusedFullRace({
     category,
     env,
+    force: body.force === true,
     keibajoCode,
     raceBango,
     runYmd,

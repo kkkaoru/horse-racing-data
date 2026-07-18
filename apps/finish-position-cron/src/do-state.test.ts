@@ -195,8 +195,25 @@ test("claimFocusedFullRace calls DO /claim-focused-full-race with stale budget",
   const req = (fetchMock.mock.calls[0] as [Request])[0];
   expect(req.url).toBe("http://do/claim-focused-full-race");
   expect(req.method).toBe("POST");
-  const body = (await req.json()) as { staleAfterMs: number };
+  const body = (await req.json()) as { staleAfterMs: number; force: boolean };
   expect(body.staleAfterMs).toBe(2100000);
+  expect(body.force).toBe(false);
+});
+
+test("claimFocusedFullRace sends force:true through to the DO when requested", async () => {
+  fetchMock.mockResolvedValue(new Response(JSON.stringify({ proceed: true }), { status: 200 }));
+  await claimFocusedFullRace({
+    category: "jra",
+    env: makeEnv(),
+    force: true,
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  const req = (fetchMock.mock.calls[0] as [Request])[0];
+  const body = (await req.json()) as { force: boolean };
+  expect(body.force).toBe(true);
 });
 
 test("claimFocusedFullRace returns proceed:false when DO returns it", async () => {

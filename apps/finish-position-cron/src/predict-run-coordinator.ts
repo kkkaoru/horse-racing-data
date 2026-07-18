@@ -52,6 +52,7 @@ interface ClaimRaceParams {
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
   staleAfterMs: number;
+  force?: boolean;
 }
 
 interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
@@ -141,11 +142,12 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       const existing = await this.ctx.storage.get<RunRecord>(key);
       const now = Date.now();
       if (existing !== undefined) {
-        if (TERMINAL_STATUSES.has(existing.status)) {
+        const isTerminal = TERMINAL_STATUSES.has(existing.status);
+        if (isTerminal && params.force !== true) {
           return { proceed: false, state: existing.status };
         }
         const ageMs = now - existing.timestamp;
-        if (existing.status === "started" && ageMs < params.staleAfterMs) {
+        if (!isTerminal && existing.status === "started" && ageMs < params.staleAfterMs) {
           await this.ctx.storage.put<RunRecord>(key, { status: existing.status, timestamp: now });
           return { proceed: false, state: existing.status };
         }

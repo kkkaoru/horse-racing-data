@@ -362,6 +362,52 @@ test("claimFocusedFullRace returns proceed:false for a successful focused key", 
   expect(storageMock.put).not.toHaveBeenCalled();
 });
 
+test("claimFocusedFullRace with force:true bypasses a successful focused key and resets it to started", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(5_000);
+  storageMap.set("focused-full:20260621:jra:02:01", { status: "success", timestamp: 1_000 });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    force: true,
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(result).toStrictEqual({ proceed: true });
+  const [key, value] = storageMock.put.mock.calls[0] as [string, StoredRecord];
+  expect(key).toBe("focused-full:20260621:jra:02:01");
+  expect(value).toStrictEqual({ status: "started", timestamp: 5_000 });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace does not leak the stale success state after a force reset", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(5_000);
+  storageMap.set("focused-full:20260621:jra:02:01", { status: "success", timestamp: 1_000 });
+  const coordinator = makeCoordinator();
+  const forced = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    force: true,
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(forced).toStrictEqual({ proceed: true });
+  vi.setSystemTime(6_000);
+  const followUp = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260621",
+    staleAfterMs: 2100000,
+  });
+  expect(followUp).toStrictEqual({ proceed: false, state: "started" });
+  vi.useRealTimers();
+});
+
 test("completeFocusedFullRace writes terminal focused-full state", async () => {
   const coordinator = makeCoordinator();
   await coordinator.completeFocusedFullRace({

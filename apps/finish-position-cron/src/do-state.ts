@@ -43,6 +43,7 @@ interface ClaimRaceParams {
 
 interface ClaimFocusedFullRaceParams extends ClaimRaceParams {
   staleAfterMs: number;
+  force?: boolean;
 }
 
 interface CompleteFocusedFullRaceParams extends ClaimRaceParams {
@@ -119,6 +120,7 @@ export const claimFocusedFullRace = async (
     new Request(`${DO_HOST}${CLAIM_FOCUSED_FULL_RACE_PATH}`, {
       body: JSON.stringify({
         category: params.category,
+        force: params.force === true,
         keibajoCode: params.keibajoCode,
         raceBango: params.raceBango,
         runYmd: params.runYmd,

@@ -175,20 +175,27 @@ export interface PredictQueueMessage {
   // Enables verbose diagnostic logs for this message and the downstream
   // Container /predict request. Absent/false keeps production logs quiet.
   debug?: boolean;
-  // Explicit operator bypass for two independent guards, both in
-  // queue-consumer.ts: (1) the old-date guard (old-date-guard.ts) -- skips
-  // the runYmd staleness check entirely; (2) the focused-full completion
-  // guard (ackIfFocusedFullAlreadyComplete, backed by
-  // isFocusedFullPredictionComplete in focused-full-completion.ts) -- skips
-  // the "Neon already has every row for this model_version" short-circuit.
-  // The completion guard only counts rows, so it cannot tell a genuinely
-  // finished race from one whose rows are present but wrong (e.g. the
-  // 2026-07-12 degenerate-score batch -- see
-  // focused-full-completion.test.ts's "documented limitation" test); force
-  // lets an operator deliberately re-trigger such a race so the normal
-  // full-build pipeline runs and its per-(model_version, horse) UPSERT
-  // overwrites the bad row in place. Both bypasses dispatch to the
-  // Container as normal. Absent/false keeps both guards active.
+  // Explicit operator bypass for three independent guards: (1) the old-date
+  // guard (old-date-guard.ts) -- skips the runYmd staleness check entirely;
+  // (2) the focused-full completion guard (ackIfFocusedFullAlreadyComplete,
+  // backed by isFocusedFullPredictionComplete in
+  // focused-full-completion.ts) -- skips the "Neon already has every row
+  // for this model_version" short-circuit; (3) the DO-backed
+  // claimFocusedFullRace terminal-status gate (predict-run-coordinator.ts)
+  // -- lets the claim through even when a prior attempt for this exact
+  // race already reached status:"success" in Durable Object storage, which
+  // otherwise blocks every future claim for that (runYmd, category,
+  // keibajoCode, raceBango) key permanently (see
+  // apps/pc-keiba-viewer/docs/probes/jra-serving-audit-jun-jul-2026-07-17.md
+  // Defect F). Guards (2) and (3) can both reach "complete"/"success" from
+  // a row-count-only check, so neither can tell a genuinely finished race
+  // from one whose rows are present but wrong (e.g. the 2026-07-12
+  // degenerate-score batch -- see focused-full-completion.test.ts's
+  // "documented limitation" test); force lets an operator deliberately
+  // re-trigger such a race so the normal full-build pipeline runs and its
+  // per-(model_version, horse) UPSERT overwrites the bad row in place. All
+  // three bypasses dispatch to the Container as normal. Absent/false keeps
+  // all three guards active.
   force?: boolean;
 }
 
