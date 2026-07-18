@@ -382,11 +382,6 @@ const WEIGHT_RESCORE_TRIGGER_LOG_KIND = "weight-rescore-trigger";
 // category so the trigger maps those two codes to "ban-ei" instead of "nar".
 const BAN_EI_KEIBAJO_CODES: ReadonlySet<string> = new Set(["65", "83"]);
 const RACE_KEY_PART_COUNT = 5;
-// Notification grace window: if the race start has already passed by less
-// than this margin, we still send the first paddock notification (paddock
-// info is useful even shortly after gate-open). Past the window, suppress
-// only if we have already notified at least once.
-const PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS = 10 * 60 * 1000;
 // JST hours at which planRealtimeFetches fires `discover-premium-races`.
 // 20:00 prepares tomorrow's premium race links. 09:00 is the recovery slot
 // for the previous 20:00 tick when D1 overload or Hyperdrive timeout left
@@ -2187,6 +2182,9 @@ export const formatMinutesUntilRace = (raceStartAtJst: string, now: Date): strin
   return `発走から${Math.abs(diffMinutes)}分経過`;
 };
 
+const hasRaceStarted = (raceStartAtJst: string, now: Date): boolean =>
+  new Date(raceStartAtJst).getTime() <= now.getTime();
+
 export const notifyPremiumPaddockIfNeeded = async (
   env: Env,
   race: NarRaceSource,
@@ -2198,11 +2196,8 @@ export const notifyPremiumPaddockIfNeeded = async (
     env.REALTIME_DB,
     race.raceKey,
   );
-  const startedTooLongAgo =
-    new Date(race.raceStartAtJst).getTime() + PREMIUM_PADDOCK_NOTIFY_GRACE_AFTER_START_MS <=
-    getNow(env).getTime();
   const alreadyNotified = currentNotification?.lastNotifiedAt != null;
-  if (startedTooLongAgo && alreadyNotified) {
+  if (hasRaceStarted(race.raceStartAtJst, getNow(env))) {
     await recordPremiumPaddockNotificationEvent(env.REALTIME_DB, {
       fetchedAt,
       message: "race already started",
