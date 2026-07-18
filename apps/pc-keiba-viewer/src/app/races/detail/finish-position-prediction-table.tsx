@@ -612,6 +612,15 @@ const isFinishPredictionUpsetWarningRace = (
   gradeCode === FINISH_PREDICTION_UPSET_WARNING_GRADE_CODE &&
   FINISH_PREDICTION_UPSET_WARNING_KEIBAJO_CODES.has(keibajoCode);
 
+// Emergency quality gate (2026-07-18): when isQualityGated is true (see
+// src/db/queries.ts's derivation), the within-race predicted_score spread is
+// statistically indistinguishable from noise. Hiding the ranked table and its
+// correction controls rather than showing a de-facto random order with false
+// confidence -- the evaluation summary and race badges above stay visible
+// since neither is race-specific ranking output.
+const FINISH_PREDICTION_QUALITY_GATE_MESSAGE =
+  "予測を準備中です (品質基準未達のため一時的に非表示にしています)。";
+
 export function FinishPositionPredictionTable({
   combinedScoreData = null,
   combinedScoreLoading = false,
@@ -776,32 +785,48 @@ export function FinishPositionPredictionTable({
   }
 
   const confidenceTier = displayRows[0]?.confidenceTier ?? null;
+  const isQualityGated = displayRows[0]?.isQualityGated ?? false;
   const isUpsetWarningRace = isFinishPredictionUpsetWarningRace(
     inputs.currentGradeCode,
     realtimeRequest.keibajoCode,
   );
+  const raceBadges = (
+    <div className="finish-prediction-race-badges">
+      {confidenceTier === null ? null : (
+        <span
+          className={`finish-prediction-confidence-badge finish-prediction-confidence-badge-${confidenceTier}`}
+          title={FINISH_PREDICTION_CONFIDENCE_TOOLTIP}
+        >
+          予測の自信度: {FINISH_PREDICTION_CONFIDENCE_TIER_LABELS.get(confidenceTier)}
+        </span>
+      )}
+      {isUpsetWarningRace ? (
+        <span
+          className="finish-prediction-upset-warning-badge"
+          title={FINISH_PREDICTION_UPSET_WARNING_TOOLTIP}
+        >
+          {FINISH_PREDICTION_UPSET_WARNING_LABEL}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  if (isQualityGated) {
+    return (
+      <>
+        <WrappedFinishPredictionEvaluation evaluation={evaluation} />
+        {raceBadges}
+        <p className="finish-prediction-quality-gate-message">
+          {FINISH_PREDICTION_QUALITY_GATE_MESSAGE}
+        </p>
+      </>
+    );
+  }
 
   return (
     <>
       <WrappedFinishPredictionEvaluation evaluation={evaluation} />
-      <div className="finish-prediction-race-badges">
-        {confidenceTier === null ? null : (
-          <span
-            className={`finish-prediction-confidence-badge finish-prediction-confidence-badge-${confidenceTier}`}
-            title={FINISH_PREDICTION_CONFIDENCE_TOOLTIP}
-          >
-            予測の自信度: {FINISH_PREDICTION_CONFIDENCE_TIER_LABELS.get(confidenceTier)}
-          </span>
-        )}
-        {isUpsetWarningRace ? (
-          <span
-            className="finish-prediction-upset-warning-badge"
-            title={FINISH_PREDICTION_UPSET_WARNING_TOOLTIP}
-          >
-            {FINISH_PREDICTION_UPSET_WARNING_LABEL}
-          </span>
-        ) : null}
-      </div>
+      {raceBadges}
       <div className="finish-prediction-odds-toggle">
         <CorrectionMasterCheckbox rawToggles={rawToggles} />
         <span className="correction-toggle-separator" aria-hidden="true" />

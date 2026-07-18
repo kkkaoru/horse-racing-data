@@ -6884,6 +6884,16 @@ fieldset.stats-section-toggle-wrap {
   white-space: nowrap;
 }
 
+.finish-prediction-quality-gate-message {
+  background: color-mix(in srgb, var(--danger) var(--space-14pct-123), var(--surface));
+  border: var(--space-1px-7) solid
+    color-mix(in srgb, var(--danger) var(--space-42pct-124), var(--surface));
+  border-radius: var(--space-8px-28);
+  color: color-mix(in srgb, var(--danger) var(--space-72pct-125), var(--ink));
+  min-height: var(--space-64px-48);
+  padding: var(--space-20px-52);
+}
+
 .finish-prediction-odds-toggle {
   align-items: center;
   column-gap: var(--space-12px-9);

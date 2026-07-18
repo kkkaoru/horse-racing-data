@@ -1,10 +1,50 @@
 # 確信度表示層 — 設計提案 (2026-07-17)
 
 **Status**: USER 決定⑥により (a)・(b) を実装、本番投入済み (2026-07-18)。(c) は
-保留のまま。**Scope**: `apps/pc-keiba-viewer` の finish-position 予測表示。**3 案とも
-`predicted_rank`（推薦順位）を一切変更しない** — 既存予測結果の「見せ方」の
-みを変える display-layer 改善であり、§7.2 accept gate や WF/serve accuracy
-の gated metrics には一切触れない（§5 で根拠を明示）。
+保留のまま。同日、緊急ユーザー保護として恒久機能 (d) 品質ゲートを追加
+(下記セクション参照)。**Scope**: `apps/pc-keiba-viewer` の finish-position
+予測表示。**3 案とも `predicted_rank`（推薦順位）を一切変更しない** —
+既存予測結果の「見せ方」のみを変える display-layer 改善であり、§7.2
+accept gate や WF/serve accuracy の gated metrics には一切触れない
+（§5 で根拠を明示）。
+
+## (d) 品質ゲート — 緊急実装 (2026-07-18)
+
+**契機**: 同日、running-style 生成障害 (502、修復中) により本日の JRA 全
+36 レースで garbage 予測 (within-race predicted_score stddev 0.05-0.15、
+ほぼランダム) が書き込まれ、viewer で自信ありげに表示される事態が発生
+(`jra-269-serve-defect-2026-07-17.md` の Cluster B 実測と同じ signature)。
+朝導入した確信度 badge は「低」表示するが、それだけではユーザーが誤って
+信頼するリスクを十分に防げない — **順位テーブル自体を表示しない品質
+ゲート**を追加。
+
+**実装**: `queries.ts::getFinishPositionLambdarankPredictions` で既に
+計算している predicted_score stddev (confidenceTier の算出元) を再利用し、
+`FINISH_POSITION_QUALITY_GATE_MIN_STDDEV = 0.5` 未満なら
+`isQualityGated: true` をレース単位で設定 (confidenceTier と同じ
+propagation 経路: `FinishPositionModelPredictionFeature` →
+`buildFinishPredictionRowsFromResults` → `FinishPredictionRow` →
+`FinishPositionPredictionTable`)。0.5 は §2 表の「健全個体群はどれも
+0.5-0.7 以上、劣化 Cluster B は 0.0439-0.1657」という実分布の谷を根拠に
+選定。`isQualityGated` が true の場合、順位テーブルと補正トグル UI を
+非表示にし、代わりに「予測を準備中です (品質基準未達のため一時的に非表示
+にしています)。」というメッセージを表示する。確信度 badge / E-grade
+注意 badge / 検証精度サマリはレース固有の順位情報ではないため表示を維持。
+
+**即時ロールバック**: 環境変数
+`PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED=1` でゲート全体を無効化
+可能 (コード変更不要、再 deploy のみで反映)。
+
+**恒久機能としての位置づけ**: このゲートは今回の障害限定の対症療法では
+なく、今後同種の garbage 予測 (デプロイ不良、モデル破損等) が再発しても
+ユーザーに自信ありげな誤情報を見せない防波堤として恒久的に残す。502 復旧
+後、健全な予測が UPSERT されれば stddev がフロアを超えて自動的に表示が
+復帰する設計 (手動での再有効化操作は不要)。
+
+**検証**: `bun run --filter pc-keiba-viewer tsc` / `lint` / `format:check`
+/ `test:coverage` 全て成功 (176 test files / 3954 tests pass、coverage
+statements 99.36% / branches 97.36% / functions 99.14% / lines 99.39%、
+閾値 95% を全指標で超過)。
 
 ## 実装メモ (2026-07-18)
 

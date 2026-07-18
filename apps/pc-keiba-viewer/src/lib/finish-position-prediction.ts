@@ -609,11 +609,13 @@ export const buildFinishPredictionRowsFromResults = ({
   similarityFeatures = [],
 }: BuildFinishPredictionRowsParams): FinishPredictionRow[] => {
   const category = getCategory({ keibajoCode: currentKeibajoCode, source: currentSource });
-  // Race-level confidence tier: every model feature for this race repeats the same
-  // value (see getFinishPositionLambdarankPredictions in src/db/queries.ts), so
-  // reading it off the first entry is sufficient. Purely additive / display-only --
-  // never used below to influence score, confidence, or predictedRank.
+  // Race-level confidence tier / quality gate: every model feature for this race
+  // repeats the same value (see getFinishPositionLambdarankPredictions in
+  // src/db/queries.ts), so reading it off the first entry is sufficient. Purely
+  // additive / display-only -- never used below to influence score, confidence,
+  // or predictedRank.
   const confidenceTier = modelPredictionFeatures[0]?.confidenceTier ?? null;
+  const isQualityGated = modelPredictionFeatures[0]?.isQualityGated ?? false;
   const config = getConditionAdjustedConfig({
     baseConfig: CATEGORY_CONFIG[category],
     category,
@@ -811,6 +813,7 @@ export const buildFinishPredictionRowsFromResults = ({
       details: row.details,
       horseName: row.horseName,
       horseNumber: row.horseNumber,
+      isQualityGated,
       jockeyName: row.jockeyName,
       predictedRank: rank,
       score: roundScore(1 - row.score),

@@ -669,9 +669,15 @@ export interface FinishPositionSimilarityFeature extends Record<string, unknown>
 // derive a stddev from). See src/db/queries.ts for the derivation and thresholds.
 export type FinishPositionConfidenceTier = "high" | "low" | "mid";
 
+// Race-level quality gate: true when the same within-race predicted_score
+// standard deviation collapses below a healthy-population floor, meaning the
+// ranking is statistically indistinguishable from noise (not just "low
+// confidence"). See src/db/queries.ts for the derivation. Same
+// race-level/optional shape and propagation path as confidenceTier above.
 export interface FinishPositionModelPredictionFeature extends Record<string, unknown> {
   confidenceTier?: FinishPositionConfidenceTier | null;
   horseNumber: string;
+  isQualityGated?: boolean;
   modelVersion: string;
   predictedFinishNorm: number | null;
   showProbability: number | null;
@@ -690,6 +696,7 @@ export interface FinishPredictionRow extends Record<string, unknown> {
   details: FinishPredictionDetail[];
   horseName: string;
   horseNumber: string;
+  isQualityGated?: boolean;
   jockeyName: string;
   predictedRank: number;
   score: number;

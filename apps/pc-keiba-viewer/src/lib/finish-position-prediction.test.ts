@@ -339,6 +339,57 @@ describe("buildFinishPredictionRowsFromResults", () => {
     expect(rows[0]?.confidenceTier).toStrictEqual(null);
   });
 
+  it("propagates the race-level isQualityGated flag from modelPredictionFeatures onto every output row", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      modelPredictionFeatures: [
+        {
+          confidenceTier: "low",
+          horseNumber: "01",
+          isQualityGated: true,
+          modelVersion: "test-model",
+          predictedFinishNorm: 0.2,
+          showProbability: null,
+          winProbability: null,
+        },
+        {
+          confidenceTier: "low",
+          horseNumber: "02",
+          isQualityGated: true,
+          modelVersion: "test-model",
+          predictedFinishNorm: 0.8,
+          showProbability: null,
+          winProbability: null,
+        },
+      ],
+      results: [],
+      runners: [
+        runner({ bamei: "馬1", tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "01" }),
+        runner({ bamei: "馬2", tanshoNinkijun: "00", tanshoOdds: "0000", umaban: "02" }),
+      ],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.isQualityGated).toStrictEqual(true);
+    expect(rows[1]?.isQualityGated).toStrictEqual(true);
+  });
+
+  it("defaults isQualityGated to false when no model prediction features are supplied", () => {
+    const rows = buildFinishPredictionRowsFromResults({
+      currentDistance: "1600",
+      currentKeibajoCode: "05",
+      currentRaceDate: "20260514",
+      currentSource: "jra",
+      results: [],
+      runners: [runner({ bamei: "モデル無し馬", tanshoNinkijun: "00", tanshoOdds: "0000" })],
+    });
+
+    expect(rows[0]?.isQualityGated).toStrictEqual(false);
+  });
+
   it("uses LightGBM, LSTM, and Transformer model predictions as an ensemble", () => {
     const rows = buildFinishPredictionRowsFromResults({
       currentDistance: "1600",

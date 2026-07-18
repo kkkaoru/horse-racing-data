@@ -1133,6 +1133,117 @@ it("getFinishPositionLambdarankPredictions computes a high confidenceTier from a
   expect(result[1]?.confidenceTier).toBe("high");
 });
 
+it("getFinishPositionLambdarankPredictions sets isQualityGated true when predicted_score stddev collapses below the healthy floor", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "1.0",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "1.05",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result[0]?.isQualityGated).toBe(true);
+  expect(result[1]?.isQualityGated).toBe(true);
+});
+
+it("getFinishPositionLambdarankPredictions sets isQualityGated false for a low confidenceTier that still clears the healthy floor", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "1.0",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "2.0",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result[0]?.confidenceTier).toBe("low");
+  expect(result[0]?.isQualityGated).toBe(false);
+  expect(result[1]?.isQualityGated).toBe(false);
+});
+
+it("getFinishPositionLambdarankPredictions sets isQualityGated false when stddev is not computable", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "1.0",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: null,
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result[0]?.isQualityGated).toBe(false);
+  expect(result[1]?.isQualityGated).toBe(false);
+});
+
+it("getFinishPositionLambdarankPredictions honors PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED as a rollback switch", async () => {
+  vi.stubEnv("PC_KEIBA_FINISH_POSITION_QUALITY_GATE_DISABLED", "1");
+  executeMock.mockResolvedValue({
+    rows: [
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 1,
+        predicted_score: "1.0",
+        shusso_tosu: 2,
+        umaban: 1,
+      },
+      {
+        model_version: "iter23-jra-cb-ensemble-703-v8",
+        predicted_rank: 2,
+        predicted_score: "1.05",
+        shusso_tosu: 2,
+        umaban: 2,
+      },
+    ],
+  });
+  const result = await getFinishPositionLambdarankPredictions(
+    PERCLASS_703_RACE,
+    PERCLASS_703_RUNNERS,
+  );
+  expect(result[0]?.isQualityGated).toBe(false);
+  expect(result[1]?.isQualityGated).toBe(false);
+  vi.unstubAllEnvs();
+});
+
 it("getFinishPositionLambdarankPredictions returns a null confidenceTier when fewer than 2 rows have a valid predicted_score", async () => {
   executeMock.mockResolvedValue({
     rows: [

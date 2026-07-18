@@ -1039,3 +1039,100 @@ test("FinishPositionPredictionTable does not render the upset warning badge for 
   );
   expect(document.querySelector(".finish-prediction-upset-warning-badge")).toStrictEqual(null);
 });
+
+test("FinishPositionPredictionTable hides the ranked table and shows the quality gate message when isQualityGated is true", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        isQualityGated: true,
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(
+    document.querySelector(".finish-prediction-quality-gate-message")?.textContent,
+  ).toStrictEqual("予測を準備中です (品質基準未達のため一時的に非表示にしています)。");
+  expect(document.querySelector(".finish-prediction-table")).toStrictEqual(null);
+  expect(document.querySelector(".finish-prediction-odds-toggle")).toStrictEqual(null);
+});
+
+test("FinishPositionPredictionTable still renders the confidence badge alongside the quality gate message", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "low",
+        horseNumber: "1",
+        isQualityGated: true,
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(
+    document.querySelector(".finish-prediction-confidence-badge-low")?.textContent,
+  ).toStrictEqual("予測の自信度: 低");
+});
+
+test("FinishPositionPredictionTable renders the ranked table (not the quality gate message) when isQualityGated is false", () => {
+  installMatchMediaMock(false);
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn<(key: string) => string | null>(() => null),
+    setItem: vi.fn<(key: string, value: string) => void>(),
+  });
+  const inputs: FinishPredictionBuildInputs = {
+    ...sampleInputs,
+    modelPredictionFeatures: [
+      {
+        confidenceTier: "high",
+        horseNumber: "1",
+        isQualityGated: false,
+        modelVersion: "test-model",
+        predictedFinishNorm: 0.5,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  };
+  render(
+    <FinishPositionPredictionTable
+      evaluation={FINISH_POSITION_PREDICTION_EVALUATIONS.jra}
+      inputs={inputs}
+      realtimeRequest={sampleRequest}
+    />,
+  );
+  expect(document.querySelector(".finish-prediction-quality-gate-message")).toStrictEqual(null);
+  expect(document.querySelector(".finish-prediction-table")).not.toStrictEqual(null);
+});
