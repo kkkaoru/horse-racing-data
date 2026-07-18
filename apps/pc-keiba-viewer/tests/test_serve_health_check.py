@@ -14,6 +14,7 @@ import json
 import subprocess
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1642,6 +1643,53 @@ def test_query_predictions_returns_fetchall_rows() -> None:
     mock_conn = _make_mock_conn(rows)
     result = subject.query_predictions(mock_conn, "20260712", "jra")
     assert result == rows
+
+
+def test_query_predictions_coerces_decimal_predicted_score_to_float() -> None:
+    # psycopg returns a Postgres NUMERIC column (predicted_score) as
+    # decimal.Decimal, not float -- this must be coerced at the fetch
+    # boundary so every downstream consumer genuinely receives float.
+    rows = [("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("1.234"))]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_predictions(mock_conn, "20260712", "jra")
+    assert result == [("02", "01", "jra-cb-v9-sim-2013-clean", 1.234)]
+    assert isinstance(result[0][3], float)
+
+
+def test_query_predictions_preserves_none_predicted_score() -> None:
+    rows = [("02", "01", "jra-cb-v9-sim-2013-clean", None)]
+    mock_conn = _make_mock_conn(rows)
+    result = subject.query_predictions(mock_conn, "20260712", "jra")
+    assert result[0][3] is None
+
+
+def test_query_predictions_decimal_predicted_score_yields_json_serializable_report() -> None:
+    # Regression test for the incident this fix closes: --json mode crashed
+    # with "TypeError: Object of type Decimal is not JSON serializable" the
+    # instant any quality-degraded group carried a Decimal-sourced stddev
+    # (statistics.pstdev preserves the Decimal type of its inputs). Exercises
+    # the real fetch -> group -> compute -> report_to_dict -> json.dumps
+    # chain end to end with Decimal input, matching the incident's actual
+    # data shape.
+    rows = [
+        ("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("0.05")),
+        ("02", "01", "jra-cb-v9-sim-2013-clean", Decimal("0.06")),
+    ]
+    mock_conn = _make_mock_conn(rows)
+    predictions = subject.query_predictions(mock_conn, "20260712", "jra")
+    groups = subject.group_quality_rows(predictions, "2026", "0712")
+    quality_groups = tuple(subject.compute_quality_groups(groups))
+    assert isinstance(quality_groups[0].stddev, float)
+    report = subject.HealthCheckReport(
+        date_str="20260712", category="jra", checked_race_count=1,
+        coverage_gaps=(), quality_groups=quality_groups, quality_rollup=(),
+        routing_supported=True, routing_mismatches=(), burst_buckets=(),
+        d1_gap_event_count=None,
+        r2_shard_checks=(), r2_shard_gaps=(), r2_shard_access_available=True,
+    )
+    serialized = json.dumps(subject.report_to_dict(report))
+    parsed = json.loads(serialized)
+    assert parsed["quality_degraded_groups"][0]["stddev"] == pytest.approx(0.005)
 
 
 def test_query_burst_buckets_sql_uses_date_trunc_minute() -> None:

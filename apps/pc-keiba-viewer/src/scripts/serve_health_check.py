@@ -86,7 +86,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Final, Protocol, TypedDict, cast
+from typing import Final, Protocol, SupportsFloat, TypedDict, cast
 
 import boto3
 import psycopg
@@ -987,6 +987,35 @@ def query_confirmed_races(
     return cast(list[ConfirmedRaceRow], cur.fetchall())
 
 
+def _coerce_prediction_row(row: tuple[object, ...]) -> PredictionRow:
+    """Coerce one raw fetched row into a genuine ``PredictionRow``.
+
+    psycopg returns a Postgres ``NUMERIC`` column (``predicted_score``) as
+    ``decimal.Decimal``, not ``float``. The row type alias's declared
+    ``float | None`` was previously enforced only by ``cast()`` -- a
+    static-only type assertion, a no-op at runtime -- so every downstream
+    consumer actually received ``Decimal`` values. ``statistics.pstdev``
+    preserves that type (its result is ``Decimal`` when its inputs are), so
+    ``QualityGroupResult.stddev`` ended up ``Decimal`` too, and
+    ``json.dumps`` cannot serialize ``Decimal`` -- ``--json`` mode crashed
+    the instant any quality-degraded row actually carried a real
+    predicted_score, i.e. exactly when this tool is most needed. Converting
+    once, here, at the single fetch boundary is the root-cause fix: every
+    function downstream of :func:`query_predictions` already declares (and
+    now genuinely receives) ``float``.
+    """
+    keibajo_code, race_bango, model_version, predicted_score = row
+    coerced_score = (
+        None if predicted_score is None else float(cast("SupportsFloat | str", predicted_score))
+    )
+    return (
+        cast(str, keibajo_code),
+        cast(str, race_bango),
+        cast(str, model_version),
+        coerced_score,
+    )
+
+
 def query_predictions(conn: ConnectionLike, date_str: str, category: str) -> list[PredictionRow]:
     """Fetch raw (unaggregated) prediction rows for checks 1, 2, and 3.
     Every candidate row is returned -- including multiple model_versions per
@@ -1005,7 +1034,7 @@ def query_predictions(conn: ConnectionLike, date_str: str, category: str) -> lis
         """,
         (category, kaisai_nen, kaisai_tsukihi),
     )
-    return cast(list[PredictionRow], cur.fetchall())
+    return [_coerce_prediction_row(row) for row in cur.fetchall()]
 
 
 def query_burst_buckets(conn: ConnectionLike, date_str: str, category: str) -> list[BurstRow]:
