@@ -46,6 +46,53 @@ propagation 経路: `FinishPositionModelPredictionFeature` →
 statements 99.36% / branches 97.36% / functions 99.14% / lines 99.39%、
 閾値 95% を全指標で超過)。
 
+### 本番デプロイ後に発覚した 2 件の stale cache 層 (2026-07-18)
+
+commit `457e933c` を deploy (`ea6afa8f`) した直後、本日 (2026-07-18) の
+実レース (函館 02-01) を chrome-devtools で確認したところ、`isQualityGated`
+が API レスポンスに一切現れず、順位テーブルがそのまま表示され続けていた
+(confidenceTier は正しく "low" を返しており、コード自体は動いていた)。
+
+原因は本ゲートと無関係な 2 層の cache が、ゲート導入前にそのレースへ
+一度でもアクセスされていた場合、古い形状の JSON をデプロイ後も TTL 経過
+まで返し続けていたこと (`race-cache-bust` の既存 per-race cache-bust
+endpoint はどちらの層も対象外):
+
+1. `queries.ts::withDbQueryCache` — content-hash キー、既定 TTL 1 時間。
+   `CACHE_NAMESPACE` を `v3`→`v4` に bump して全エントリを即座に
+   invalidate (commit `c7cf848f`)。
+2. `finish-prediction-inputs-cache.server.ts` — `FinishPredictionBuildInputs`
+   全体 (isQualityGated を含む `modelPredictionFeatures` ごと) を各レース
+   の発走時刻から最大 6 時間キャッシュする、完全に別の namespace/KV
+   key を持つ層。今回の本丸 (発覚が遅ければ最大 6 時間ユーザーに garbage
+   順位を見せ続けるリスク) だった。`v2`→`v3` に bump (commit `7c5012f2`)。
+
+2 件とも「新しいフィールドが増えただけ」の純粋な追加的変更で、リテラル
+文字列に依存するテストは存在しないため安全に bump 可能と確認済み。両
+commit とも `tsc`/`lint`/`format:check`/`test:coverage` 実行後に deploy
+(最終 version `c938d065-9288-416a-ba84-1fdcc9c2b3d1`)。
+
+### 実データでの最終検証 (2026-07-18、chrome-devtools MCP)
+
+**Positive (garbage 抑止)**: 本日 2026-07-18 函館 1R
+(`/races/2026/07/18/02/01`, 発走済み) — DB 直接算出 stddev は本ゲート
+導入前の deploy で既に 0.05-0.16 台 (全 36 レース共通の running-style
+生成障害由来) と確認済み。deploy 後、`isQualityGated:true` が
+API レスポンスに含まれ、実画面で「予測の自信度: 低」バッジの直下に
+「予測を準備中です (品質基準未達のため一時的に非表示にしています)。」
+というメッセージが表示され、順位テーブルと補正トグル UI は非表示。
+函館(02)/福島(03) の計 5 レースを API 直接確認し、全て `isQualityGated:
+true` を確認。
+
+**Negative (健全予測の誤抑止なし、対照確認)**: 2026-06-21 阪神1R
+(`/races/2026/06/21/09/01`, ダート1400m, 3歳未勝利) — Cluster B / 本日の
+障害と無関係な健全な過去レース。predicted_score stddev を直接算出する
+と 1.46 (ゲート閾値 0.5 を大きく上回る)。API レスポンスは
+`confidenceTier:"mid"` / `isQualityGated:false`。実画面でも品質ゲート
+メッセージは表示されず、16 行の順位テーブル (スコア 1.00〜0.00、馬番・
+騎手名・オッズ・複勝率まで) と補正トグル UI が通常どおり表示されること
+を確認 — ゲートが健全な予測を誤って隠さないことを実データで確認済み。
+
 ## 実装メモ (2026-07-18)
 
 (a)/(b) は worktree branch 上で先に実装され (`commit 99af695d`)、`main` への
