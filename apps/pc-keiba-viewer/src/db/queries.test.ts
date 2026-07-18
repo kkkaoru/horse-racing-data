@@ -30,6 +30,7 @@ import {
   getFinishPositionBucketEvaluation,
   getFinishPositionLambdarankPredictions,
   getRaceRunners,
+  getRaceTrainings,
   getRunningStyleBucketEvaluation,
 } from "./queries";
 
@@ -1639,4 +1640,39 @@ it("race-runners-jra-sql-does-not-coalesce-bataiju-to-past-row", async () => {
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(/coalesce\([^)]*se\.bataiju/iu.test(queryText)).toBe(false);
+});
+
+it("get-race-trainings-non-jra-source-returns-empty-without-querying-db", async () => {
+  const trainings = await getRaceTrainings("nar", "2026", "07", "18", "44", "04");
+  expect(trainings).toStrictEqual([]);
+  expect(executeMock.mock.calls.length).toBe(0);
+});
+
+it("get-race-trainings-sql-left-joins-runners-with-no-workout-rows", async () => {
+  executeMock.mockResolvedValue({ rows: [] });
+  await getRaceTrainings("jra", "2026", "07", "18", "02", "04");
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  // jvd_hc/jvd_wc only cover Miho/Ritto training centers, so most entrants at a
+  // Hokkaido summer-circuit meet (e.g. Hakodate) have zero matching rows. Without
+  // this fallback branch the INNER JOINs above silently drop those runners instead
+  // of showing one placeholder row per entrant.
+  expect(/no_workout_runners as \(/u.test(queryText)).toBe(true);
+  expect(/from all_workouts/u.test(queryText)).toBe(true);
+});
+
+it("get-race-trainings-returns-one-row-per-entrant-including-those-without-official-workouts", async () => {
+  executeMock.mockResolvedValue({
+    rows: [
+      { chokyoNengappi: "20260715", trainingType: "ウッド", umaban: "16" },
+      { chokyoNengappi: "", trainingType: "-", umaban: "01" },
+      { chokyoNengappi: "", trainingType: "-", umaban: "02" },
+    ],
+  });
+  const trainings = await getRaceTrainings("jra", "2026", "07", "18", "02", "04");
+  expect(trainings).toStrictEqual([
+    { chokyoNengappi: "20260715", trainingType: "ウッド", umaban: "16" },
+    { chokyoNengappi: "", trainingType: "-", umaban: "01" },
+    { chokyoNengappi: "", trainingType: "-", umaban: "02" },
+  ]);
 });

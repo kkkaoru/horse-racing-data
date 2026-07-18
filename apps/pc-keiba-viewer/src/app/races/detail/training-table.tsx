@@ -482,10 +482,12 @@ export function TrainingTable({ sourceLabel, trainings }: TrainingTableProps) {
                 <td>{cleanText(training.trainingRiderName, "-")}</td>
                 <td>{cleanText(training.trainerName, "-")}</td>
                 <td className="training-date-cell">
-                  {formatDate(
-                    training.chokyoNengappi.slice(0, 4),
-                    training.chokyoNengappi.slice(4),
-                  )}
+                  {training.chokyoNengappi
+                    ? formatDate(
+                        training.chokyoNengappi.slice(0, 4),
+                        training.chokyoNengappi.slice(4),
+                      )
+                    : "-"}
                 </td>
                 <td className="training-course-cell">{getTrainingPlaceSummary(training)}</td>
                 {visibleFurlongColumns.map((column) => (

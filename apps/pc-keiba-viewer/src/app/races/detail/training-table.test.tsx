@@ -102,4 +102,24 @@ describe("training table", () => {
     expect(screen.queryByText("良い記号")).toBeNull();
     expect(screen.queryByText("速いが記号は下")).toBeNull();
   });
+
+  it("shows a dash instead of a malformed date for entrants with no official workout data", () => {
+    render(
+      <TrainingTable
+        sourceLabel="JRA"
+        trainings={[
+          training({
+            bamei: "調教データなし馬",
+            chokyoJikoku: "",
+            chokyoNengappi: "",
+            trainingType: "-",
+            umaban: "05",
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("調教データなし馬")).toBeTruthy();
+    expect(screen.getByText("-")).toBeTruthy();
+  });
 });

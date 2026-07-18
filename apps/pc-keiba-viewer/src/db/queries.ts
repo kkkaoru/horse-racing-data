@@ -3373,6 +3373,54 @@ export const getRaceTrainings = cache(
         cross join race_window rw
         where w.chokyo_nengappi between rw.start_date and rw.end_date
       ),
+      -- jvd_hc/jvd_wc only cover training done at the two JRA tracen (Miho/Ritto), so
+      -- runners stabled elsewhere during the meet (common for the Hokkaido summer
+      -- circuit) legitimately have zero matching rows above. Without this branch the
+      -- INNER JOINs in "workouts" silently drop those runners entirely instead of
+      -- showing one row per entrant with the training columns blank.
+      no_workout_runners as (
+        select
+          r.umaban,
+          r.bamei,
+          r."currentJockeyName",
+          r."trainerName",
+          null::varchar as "trainingRiderName",
+          '-' as "trainingType",
+          null::varchar as "tracenKubun",
+          ''::varchar as "chokyoNengappi",
+          ''::varchar as "chokyoJikoku",
+          null::varchar as course,
+          null::varchar as babamawari,
+          null::varchar as "timeGokei10f",
+          null::varchar as "lapTime10f",
+          null::varchar as "timeGokei9f",
+          null::varchar as "lapTime9f",
+          null::varchar as "timeGokei8f",
+          null::varchar as "lapTime8f",
+          null::varchar as "timeGokei7f",
+          null::varchar as "lapTime7f",
+          null::varchar as "timeGokei6f",
+          null::varchar as "lapTime6f",
+          null::varchar as "timeGokei5f",
+          null::varchar as "lapTime5f",
+          null::varchar as "timeGokei4f",
+          null::varchar as "lapTime4f",
+          null::varchar as "timeGokei3f",
+          null::varchar as "lapTime3f",
+          null::varchar as "timeGokei2f",
+          null::varchar as "lapTime2f",
+          null::varchar as "lapTime1f",
+          r.ketto_toroku_bango
+        from runners r
+        where not exists (
+          select 1 from workouts w where w.ketto_toroku_bango = r.ketto_toroku_bango
+        )
+      ),
+      all_workouts as (
+        select * from workouts
+        union all
+        select * from no_workout_runners
+      ),
       ranked as (
         select
           *,
@@ -3380,7 +3428,7 @@ export const getRaceTrainings = cache(
             partition by ketto_toroku_bango, "trainingType"
             order by "chokyoNengappi" desc, "chokyoJikoku" desc
           ) as rn
-        from workouts
+        from all_workouts
       )
       select
         umaban,
