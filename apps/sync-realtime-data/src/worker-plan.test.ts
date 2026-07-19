@@ -1,6 +1,6 @@
 // run with: bun run test
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { Env } from "./types";
+import type { Env, NarRaceSource } from "./types";
 
 const queueSendOk = async (): Promise<QueueSendResponse> => ({
   metadata: { metrics: { backlogCount: 0, backlogBytes: 0 } },
@@ -172,6 +172,25 @@ const buildEnv = (overrides?: Partial<Env>): Env => {
     ...overrides,
   } as unknown as Env;
 };
+
+const buildWeightRetryRace = (overrides?: Partial<NarRaceSource>): NarRaceSource => ({
+  babaCode: "08",
+  debaUrl: "https://www.jra.go.jp/race",
+  kaisaiKai: "02",
+  kaisaiNen: "2026",
+  kaisaiNichime: "06",
+  kaisaiTsukihi: "0606",
+  keibajoCode: "08",
+  lastOddsFetchAt: null,
+  lastWeightFetchAt: null,
+  oddsLinks: {},
+  raceBango: "10",
+  raceKey: "jra:2026:0606:08:10",
+  raceName: "Test",
+  raceStartAtJst: "2026-06-06T12:30:00+09:00",
+  source: "jra",
+  ...overrides,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -1649,6 +1668,30 @@ it("resolveWeightFetchCooldownMinutes does not apply near-race override when rac
   ).toBe(60);
 });
 
+it("getEmptyWeightRetryDelaySeconds returns 10min while an empty weight race is upcoming", async () => {
+  const { getEmptyWeightRetryDelaySeconds } = await import("./worker");
+  expect(
+    getEmptyWeightRetryDelaySeconds(buildWeightRetryRace(), new Date("2026-06-06T11:30:00+09:00")),
+  ).toBe(600);
+});
+
+it("getEmptyWeightRetryDelaySeconds returns 5min inside the near-race window", async () => {
+  const { getEmptyWeightRetryDelaySeconds } = await import("./worker");
+  expect(
+    getEmptyWeightRetryDelaySeconds(buildWeightRetryRace(), new Date("2026-06-06T12:05:00+09:00")),
+  ).toBe(300);
+});
+
+it("getEmptyWeightRetryDelaySeconds returns null outside the active fetch window", async () => {
+  const { getEmptyWeightRetryDelaySeconds } = await import("./worker");
+  expect(
+    getEmptyWeightRetryDelaySeconds(buildWeightRetryRace(), new Date("2026-06-06T09:00:00+09:00")),
+  ).toBe(null);
+  expect(
+    getEmptyWeightRetryDelaySeconds(buildWeightRetryRace(), new Date("2026-06-06T12:45:00+09:00")),
+  ).toBe(null);
+});
+
 it("planRealtimeFetches falls back to KV race list when Hyperdrive returns no rows", async () => {
   const { planRealtimeFetches } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, getRaceSource } = await import("./storage");
@@ -2252,7 +2295,8 @@ it("findStaleWeightFetchRaces binds the lookback, lookahead, stale and limit val
     "2026-06-07T15:00:00+09:00",
     "2026-06-07T11:55:00+09:00",
     "2026-06-07T11:45:00+09:00",
-    8,
+    "2026-06-07T12:00:00+09:00",
+    24,
   );
 });
 
@@ -2270,7 +2314,8 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
     "2026-06-13T14:13:00+09:00",
     "2026-06-13T11:08:00+09:00",
     "2026-06-13T10:58:00+09:00",
-    8,
+    "2026-06-13T11:13:00+09:00",
+    24,
   );
   // Watchdog SQL: race_start_at_jst > lookBack AND < lookAhead AND
   // (last_weight_fetch_at IS NULL OR < stale). Confirm a real stored JST
@@ -2327,8 +2372,8 @@ it("findStaleWeightFetchRaces maps the d1 rows into StaleWeightFetchRace records
 // mocked D1, so this asserts the exact query text carries the new
 // last_weight_fetch_attempt_at backoff clause in addition to the unchanged
 // last_weight_fetch_at success-only clause, and that the attempt-backoff
-// bound is bound as the 4th parameter ahead of the row limit.
-it("findStaleWeightFetchRaces gates on last_weight_fetch_attempt_at in addition to last_weight_fetch_at", async () => {
+// bound is bound ahead of the upcoming-JRA priority timestamp and row limit.
+it("findStaleWeightFetchRaces gates on attempts and prioritizes upcoming unsaved JRA races", async () => {
   const { findStaleWeightFetchRaces } = await import("./worker");
   const all = vi.fn(async () => ({ results: [] }));
   const bind = vi.fn(() => ({ all }));
@@ -2343,7 +2388,12 @@ it("findStaleWeightFetchRaces gates on last_weight_fetch_attempt_at in addition 
           and race_start_at_jst < ?
           and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
           and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
-        order by race_start_at_jst
+        order by
+          case
+            when source = 'jra' and last_weight_fetch_at is null and race_start_at_jst >= ? then 0
+            else 1
+          end,
+          race_start_at_jst
         limit ?
       `,
   );
@@ -2352,7 +2402,8 @@ it("findStaleWeightFetchRaces gates on last_weight_fetch_attempt_at in addition 
     "2026-07-03T15:00:00+09:00",
     "2026-07-03T11:55:00+09:00",
     "2026-07-03T11:45:00+09:00",
-    8,
+    "2026-07-03T12:00:00+09:00",
+    24,
   );
 });
 

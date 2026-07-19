@@ -358,6 +358,8 @@ const WEIGHT_FETCH_SAME_DAY_COOLDOWN_MINUTES = 60;
 const WEIGHT_FETCH_NEAR_RACE_COOLDOWN_MINUTES = 10;
 const WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES = 30;
 const WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES = 10;
+const WEIGHT_FETCH_EMPTY_RETRY_DELAY_SECONDS = 10 * 60;
+const WEIGHT_FETCH_EMPTY_RETRY_NEAR_RACE_DELAY_SECONDS = 5 * 60;
 const MILLISECONDS_PER_MINUTE = 60_000;
 // KV TTL for the weight-race-list fallback (used when Hyperdrive returns an
 // empty result so the plan still has something to enqueue). 24h keeps the
@@ -399,7 +401,7 @@ const WEIGHT_WATCHDOG_LOOKAHEAD_MINUTES = 180;
 const WEIGHT_WATCHDOG_LOOKBACK_MINUTES = 30;
 const WEIGHT_WATCHDOG_STALE_THRESHOLD_MINUTES = 5;
 const WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES = 15;
-const WEIGHT_WATCHDOG_MAX_PER_TICK = 8;
+const WEIGHT_WATCHDOG_MAX_PER_TICK = 24;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
   "02": "函館",
@@ -1536,6 +1538,7 @@ export const findStaleWeightFetchRaces = async (
   const attemptBackoffJst = toJstIsoString(
     new Date(now.getTime() - WEIGHT_WATCHDOG_ATTEMPT_BACKOFF_MINUTES * MILLISECONDS_PER_MINUTE),
   );
+  const nowJst = toJstIsoString(now);
   const result = await db
     .prepare(
       `
@@ -1545,11 +1548,23 @@ export const findStaleWeightFetchRaces = async (
           and race_start_at_jst < ?
           and (last_weight_fetch_at is null or last_weight_fetch_at < ?)
           and (last_weight_fetch_attempt_at is null or last_weight_fetch_attempt_at < ?)
-        order by race_start_at_jst
+        order by
+          case
+            when source = 'jra' and last_weight_fetch_at is null and race_start_at_jst >= ? then 0
+            else 1
+          end,
+          race_start_at_jst
         limit ?
       `,
     )
-    .bind(lookBackJst, lookAheadJst, staleJst, attemptBackoffJst, WEIGHT_WATCHDOG_MAX_PER_TICK)
+    .bind(
+      lookBackJst,
+      lookAheadJst,
+      staleJst,
+      attemptBackoffJst,
+      nowJst,
+      WEIGHT_WATCHDOG_MAX_PER_TICK,
+    )
     .all<StaleWeightFetchRaceRow>();
   return result.results.map((row) => ({
     lastWeightFetchAt: row.last_weight_fetch_at,
@@ -2396,6 +2411,31 @@ const retryPremiumPaddockWhileInWindow = async (env: Env, race: NarRaceSource): 
   );
 };
 
+export const getEmptyWeightRetryDelaySeconds = (race: NarRaceSource, now: Date): number | null => {
+  const minutes = minutesUntilRace(race, now);
+  if (minutes === null) return null;
+  if (minutes > WEIGHT_FETCH_LEAD_MINUTES) return null;
+  if (minutes < -WEIGHT_FETCH_NEAR_RACE_POST_LIMIT_MINUTES) return null;
+  return minutes <= WEIGHT_FETCH_NEAR_RACE_THRESHOLD_MINUTES
+    ? WEIGHT_FETCH_EMPTY_RETRY_NEAR_RACE_DELAY_SECONDS
+    : WEIGHT_FETCH_EMPTY_RETRY_DELAY_SECONDS;
+};
+
+const retryEmptyWeightsWhileInWindow = async (env: Env, race: NarRaceSource): Promise<void> => {
+  const delaySeconds = getEmptyWeightRetryDelaySeconds(race, getNow(env));
+  if (delaySeconds === null) {
+    return;
+  }
+  await env.REALTIME_JOBS.send({ raceKey: race.raceKey, type: "fetch-weights" }, { delaySeconds });
+  await logFetch(
+    env.REALTIME_DB,
+    "fetch-weights",
+    "queued:weights-empty-retry",
+    race.raceKey,
+    `delaySeconds=${delaySeconds}`,
+  );
+};
+
 export const assertJraHorseWeightsComplete = (
   raceKey: string,
   entries: Omit<RaceEntry, "fetchedAt">[],
@@ -2831,6 +2871,21 @@ export const enqueueFetchWeightsBatch = async (
   return jobs.length;
 };
 
+const parseHorseWeightsForRace = async (
+  race: NarRaceSource,
+  html: string,
+): Promise<HorseWeight[]> => {
+  if (race.source === "jra") {
+    return parseJraHorseWeights(html);
+  }
+  const primaryWeights = parseHorseWeights(html);
+  if (primaryWeights.length > 0) {
+    return primaryWeights;
+  }
+  const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
+  return parseRaceResultHorseWeights(resultHtml);
+};
+
 const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean> => {
   // Skip entirely -- no D1 write, no HTTP fetch -- when a complete snapshot
   // already exists. insertHorseWeightSnapshot is only ever reached after
@@ -2889,11 +2944,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
       race,
     );
   }
-  let weights = race.source === "jra" ? parseJraHorseWeights(html) : parseHorseWeights(html);
-  if (race.source === "nar" && weights.length === 0) {
-    const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
-    weights = parseRaceResultHorseWeights(resultHtml);
-  }
+  const weights = await parseHorseWeightsForRace(race, html);
   if (race.source === "jra") {
     assertJraHorseWeightsComplete(raceKey, entries, weights);
   }
@@ -2911,6 +2962,7 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
     return false;
   }
   if (weights.length === 0) {
+    await retryEmptyWeightsWhileInWindow(env, race);
     await logFetch(env.REALTIME_DB, "fetch-weights", SKIP_STATUS.weightsEmpty, raceKey, "count=0");
     return false;
   }

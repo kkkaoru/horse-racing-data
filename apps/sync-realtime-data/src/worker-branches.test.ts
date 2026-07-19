@@ -2021,6 +2021,41 @@ it("fetch-weights logs weights-empty without recording ok when parser returns no
   );
 });
 
+it("fetch-weights requeues an empty JRA weight fetch while the race is still upcoming", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { fetchRacePage } = await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(
+    buildJraNarRaceSource({
+      raceKey: "jra:2026:0512:08:10",
+      raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    }),
+  );
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" });
+  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
+  await handleJob(env, { raceKey: "jra:2026:0512:08:10", type: "fetch-weights" });
+  expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(sendSpy).toHaveBeenCalledWith(
+    { raceKey: "jra:2026:0512:08:10", type: "fetch-weights" },
+    { delaySeconds: 600 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "queued:weights-empty-retry",
+    "jra:2026:0512:08:10",
+    "delaySeconds=600",
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:weights-empty",
+    "jra:2026:0512:08:10",
+    "count=0",
+  );
+});
+
 it("fetch-weights broadcasts target weights before pushing weight rows to RaceTrend DO", async () => {
   const { handleJob } = await import("./worker");
   const { getRaceSource, insertHorseWeightSnapshot } = await import("./storage");
