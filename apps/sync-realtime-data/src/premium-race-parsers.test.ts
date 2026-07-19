@@ -435,6 +435,79 @@ it("parsePremiumPaddockBulletins splits row-based grouping into favorite/value h
   expect(result.bulletins.filter((b) => b.groupKey === "value")).toHaveLength(2);
 });
 
+it("parsePremiumPaddockBulletins extracts current table rows without env selectors", () => {
+  const html = `
+    <h3>人気馬</h3>
+    <table class="Paddock_Table race_table_01">
+      <thead>
+        <tr><th>枠</th><th>馬番</th><th>馬名</th><th>評価</th><th>コメント</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td nowrap="" class="Waku4">4</td>
+          <td nowrap="" class="Waku">4</td>
+          <td class="Horse_Name Txt_L"><a href="/horse/1">カラペルソナ</a></td>
+          <td class="Hyoka text-center"><div class="PaddockRank"><span class="Rank_A">A</span></div></td>
+          <td class="Comment Txt_L"><p class="Comment_Cell">いい体つきで仕上がっている。</p></td>
+        </tr>
+        <tr>
+          <td nowrap="" class="Waku5">5</td>
+          <td nowrap="" class="Waku">5</td>
+          <td class="Horse_Name Txt_L"><a href="/horse/2">エイシンビーコン</a></td>
+          <td class="Hyoka text-center"><div class="PaddockRank"><span class="Rank_B">B</span></div></td>
+          <td class="Comment Txt_L"><p class="Comment_Cell">毛ヅヤ良く歩様もいい。</p></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {});
+  expect(result).toMatchObject({ authRequired: false, pending: false, unavailable: false });
+  expect(result.bulletins).toStrictEqual([
+    {
+      commentText: "いい体つきで仕上がっている。",
+      evaluationText: "A",
+      frameNumber: "4",
+      groupKey: "favorite",
+      horseName: "カラペルソナ",
+      horseNumber: "4",
+    },
+    {
+      commentText: "毛ヅヤ良く歩様もいい。",
+      evaluationText: "B",
+      frameNumber: "5",
+      groupKey: "favorite",
+      horseName: "エイシンビーコン",
+      horseNumber: "5",
+    },
+  ]);
+});
+
+it("parsePremiumPaddockBulletins falls back to Paddock_Table when configured table class is stale", () => {
+  const html = `
+    <h3>人気馬</h3>
+    <table class="Paddock_Table race_table_01">
+      <tbody>
+        <tr>
+          <td class="Waku4">4</td>
+          <td class="Waku">4</td>
+          <td class="Horse_Name Txt_L">カラペルソナ</td>
+          <td class="Hyoka"><span class="Rank_A">A</span></td>
+          <td class="Comment"><p class="Comment_Cell">いい体つき</p></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+  const result = parsePremiumPaddockBulletins(html, {
+    PREMIUM_RACE_PADDOCK_TABLE_CLASS: "Old_Paddock_Table",
+  });
+  expect(result.bulletins).toHaveLength(1);
+  expect(result.bulletins[0]).toMatchObject({
+    evaluationText: "A",
+    horseName: "カラペルソナ",
+    horseNumber: "4",
+  });
+});
+
 it("parsePremiumTrainingReviews inherits actionComment + horseName when subsequent row has only date and rider", () => {
   const env = {
     PREMIUM_RACE_WORK_COMMENT_CLASS: "Comment_Cell",

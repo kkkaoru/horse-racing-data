@@ -121,6 +121,7 @@ describe("premium race parsing", () => {
         narOrigin: "https://nar.netkeiba.com",
         narTopPathTemplate: null,
         origin: "https://race.netkeiba.com",
+        paddockFallbackPathTemplate: null,
         paddockPathTemplate: null,
         proxyBearer: null,
         proxyUrl: null,

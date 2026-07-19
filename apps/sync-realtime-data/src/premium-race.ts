@@ -9,6 +9,7 @@ export interface PremiumRaceConfig {
   narOrigin: string | null;
   narTopPathTemplate: string | null;
   origin: string | null;
+  paddockFallbackPathTemplate: string | null;
   paddockPathTemplate: string | null;
   proxyBearer: string | null;
   proxyUrl: string | null;
@@ -83,6 +84,7 @@ type EnvLike = {
   PREMIUM_RACE_NAR_ORIGIN?: string;
   PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE?: string;
   PREMIUM_RACE_ORIGIN?: string;
+  PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE?: string;
   PREMIUM_RACE_PADDOCK_PATH_TEMPLATE?: string;
   PREMIUM_RACE_PROXY_BEARER?: string;
   PREMIUM_RACE_PROXY_URL?: string;
@@ -128,6 +130,7 @@ export const getPremiumRaceConfig = (env: EnvLike): PremiumRaceConfig => ({
   narOrigin: env.PREMIUM_RACE_NAR_ORIGIN ?? DEFAULT_NAR_PREMIUM_ORIGIN,
   narTopPathTemplate: env.PREMIUM_RACE_NAR_TOP_PATH_TEMPLATE ?? null,
   origin: env.PREMIUM_RACE_ORIGIN ?? null,
+  paddockFallbackPathTemplate: env.PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE ?? null,
   paddockPathTemplate: env.PREMIUM_RACE_PADDOCK_PATH_TEMPLATE ?? null,
   proxyBearer: env.PREMIUM_RACE_PROXY_BEARER ?? null,
   proxyUrl: env.PREMIUM_RACE_PROXY_URL ?? null,
@@ -401,6 +404,30 @@ const extractRawTableCellRows = (html: string): { html: string; text: string }[]
       ),
     )
     .filter((cells) => cells.some((cell) => cell.text || cell.html));
+
+const DEFAULT_PADDOCK_TABLE_CLASS = "Paddock_Table";
+
+const parsePaddockEvaluationText = (html: string, text: string): string | null =>
+  cleanText(html.match(/\bRank_([A-Z])\b/u)?.[1] ?? text) || null;
+
+const parsePremiumPaddockRowFromCells = (
+  row: string,
+  groupKey: PremiumPaddockBulletin["groupKey"],
+): PremiumPaddockBulletin | null => {
+  const cells = extractRawTableCellRows(`<tr>${row}</tr>`)[0] ?? [];
+  const horseNumber = normalizeHorseNumber(cells[1]?.text);
+  if (!horseNumber) {
+    return null;
+  }
+  return {
+    commentText: cleanText(cells[4]?.html) || null,
+    evaluationText: parsePaddockEvaluationText(cells[3]?.html ?? "", cells[3]?.text ?? ""),
+    frameNumber: normalizeHorseNumber(cells[0]?.text),
+    groupKey,
+    horseName: cleanText(cells[2]?.html) || null,
+    horseNumber,
+  };
+};
 
 const extractStableEvaluationGrade = (
   row: string,
@@ -836,7 +863,16 @@ export const parsePremiumPaddockBulletins = (
     (pendingText ? pageText.includes(pendingText) : false) ||
     authRequired ||
     /PaddockDummy|SampleDummy/u.test(activeHtml);
-  const tableSections = extractTablesByClass(activeHtml, env.PREMIUM_RACE_PADDOCK_TABLE_CLASS);
+  const configuredTableSections = extractTablesByClass(
+    activeHtml,
+    env.PREMIUM_RACE_PADDOCK_TABLE_CLASS,
+  );
+  const defaultTableSections =
+    env.PREMIUM_RACE_PADDOCK_TABLE_CLASS === DEFAULT_PADDOCK_TABLE_CLASS
+      ? []
+      : extractTablesByClass(activeHtml, DEFAULT_PADDOCK_TABLE_CLASS);
+  const tableSections =
+    configuredTableSections.length > 0 ? configuredTableSections : defaultTableSections;
   const rowGroups =
     tableSections.length > 0
       ? tableSections.flatMap((table) => {
@@ -864,22 +900,22 @@ export const parsePremiumPaddockBulletins = (
       const horseNumber = normalizeHorseNumber(
         extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_HORSE_NUMBER),
       );
-      if (!horseNumber) {
-        return null;
+      if (horseNumber) {
+        return {
+          commentText:
+            cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_COMMENT)) || null,
+          evaluationText:
+            cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_EVALUATION)) || null,
+          frameNumber: normalizeHorseNumber(
+            extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_FRAME),
+          ),
+          groupKey,
+          horseName:
+            cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME)) || null,
+          horseNumber,
+        };
       }
-      return {
-        commentText:
-          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_COMMENT)) || null,
-        evaluationText:
-          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_EVALUATION)) || null,
-        frameNumber: normalizeHorseNumber(
-          extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_FRAME),
-        ),
-        groupKey,
-        horseName:
-          cleanText(extractClassCell(row, env.PREMIUM_RACE_PADDOCK_LABEL_HORSE_NAME)) || null,
-        horseNumber,
-      };
+      return parsePremiumPaddockRowFromCells(row, groupKey);
     })
     .filter((row): row is PremiumPaddockBulletin => row !== null);
   return {

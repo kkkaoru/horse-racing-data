@@ -4144,6 +4144,83 @@ const resolveAuthRetryDelaySeconds = (exhausted: boolean): number =>
     ? PREMIUM_RACE_DATA_AUTH_RETRY_BACKOFF_SECONDS
     : PREMIUM_RACE_DATA_AUTH_RETRY_DELAY_SECONDS;
 
+const isPresentString = (value: string | null): value is string => value !== null;
+
+interface PremiumPaddockProxyCachePurgeConfig {
+  proxyBearer: string;
+  proxyUrl: string;
+  proxyUserId: string;
+}
+
+const hasPremiumPaddockProxyCachePurgeConfig = (
+  config: ReturnType<typeof getPremiumRaceConfig>,
+): config is ReturnType<typeof getPremiumRaceConfig> & PremiumPaddockProxyCachePurgeConfig =>
+  config.proxyBearer !== null && config.proxyUrl !== null && config.proxyUserId !== null;
+
+export const buildPremiumPaddockProxyCachePurgeRequest = (
+  config: ReturnType<typeof getPremiumRaceConfig>,
+  targetUrl: string,
+): Request | null => {
+  if (!hasPremiumPaddockProxyCachePurgeConfig(config)) {
+    return null;
+  }
+  const requestUrl = new URL(config.proxyUrl);
+  if (requestUrl.searchParams.get("cache") === "0") {
+    return null;
+  }
+  requestUrl.searchParams.set("url", targetUrl);
+  requestUrl.searchParams.set("user_id", config.proxyUserId);
+  return new Request(requestUrl.toString(), {
+    headers: { Authorization: `Bearer ${config.proxyBearer}` },
+    method: "DELETE",
+  });
+};
+
+const purgePremiumPaddockProxyCache = async (
+  config: ReturnType<typeof getPremiumRaceConfig>,
+  targetUrl: string,
+): Promise<void> => {
+  const request = buildPremiumPaddockProxyCachePurgeRequest(config, targetUrl);
+  if (!request) {
+    return;
+  }
+  await fetch(request).catch(() => undefined);
+};
+
+export const buildPremiumPaddockUrls = (
+  config: ReturnType<typeof getPremiumRaceConfig>,
+  sourceRaceId: string,
+): string[] =>
+  [
+    buildPremiumUrl(config, config.paddockPathTemplate, { sourceRaceId }),
+    buildPremiumUrl(config, config.paddockFallbackPathTemplate, { sourceRaceId }),
+  ].filter(isPresentString);
+
+const fetchPremiumPaddockHtmlAttempts = async (
+  config: ReturnType<typeof getPremiumRaceConfig>,
+  urls: readonly string[],
+  sourceRaceId: string,
+): Promise<Awaited<ReturnType<typeof fetchPremiumHtmlAttempts>>> => {
+  if (urls.length === 0) {
+    throw new Error(`premium paddock url not found: ${sourceRaceId}`);
+  }
+  const results = await Promise.allSettled(
+    urls.map(async (url) => {
+      await purgePremiumPaddockProxyCache(config, url);
+      return fetchPremiumHtmlAttempts(config, url);
+    }),
+  );
+  const fulfilledAttempts = results.flatMap((result) =>
+    result.status === "fulfilled" ? [result.value] : [],
+  );
+  const allAttempts = fulfilledAttempts.flat();
+  if (allAttempts.length > 0) {
+    return allAttempts;
+  }
+  const failure = results.find((result) => result.status === "rejected");
+  throw failure?.reason ?? new Error(`premium paddock fetch returned no attempts: ${sourceRaceId}`);
+};
+
 const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || race.source !== "jra") {
@@ -4191,10 +4268,8 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   if (!link) {
     throw new Error(`premium race link not found: ${raceKey}`);
   }
-  const paddockUrl = buildPremiumUrl(config, config.paddockPathTemplate, {
-    sourceRaceId: link.sourceRaceId,
-  });
-  if (!paddockUrl) {
+  const paddockUrls = buildPremiumPaddockUrls(config, link.sourceRaceId);
+  if (paddockUrls.length === 0) {
     await logFetch(
       env.REALTIME_DB,
       "fetch-premium-paddock",
@@ -4204,10 +4279,11 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     );
     return;
   }
-  let attempts: Awaited<ReturnType<typeof fetchPremiumHtmlAttempts>>;
-  try {
-    attempts = await fetchPremiumHtmlAttempts(config, paddockUrl);
-  } catch (error: unknown) {
+  const attempts = await fetchPremiumPaddockHtmlAttempts(
+    config,
+    paddockUrls,
+    link.sourceRaceId,
+  ).catch(async (error: unknown) => {
     const existingPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
     if (existingPayload && existingPayload.paddockBulletins.length > 0) {
       const latestFetchedAt = existingPayload.paddockBulletins.reduce<string | null>(
@@ -4230,6 +4306,9 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
       status: "failed",
     });
     throw error;
+  });
+  if (!attempts) {
+    return;
   }
   const parsedAttempts = attempts.map((attempt) => ({
     mode: attempt.mode,

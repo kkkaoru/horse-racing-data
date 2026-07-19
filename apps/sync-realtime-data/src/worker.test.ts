@@ -7,6 +7,8 @@ import {
   assertNarHorseWeightsComplete,
   buildDetailUrl,
   buildFallbackRaceRow,
+  buildPremiumPaddockProxyCachePurgeRequest,
+  buildPremiumPaddockUrls,
   buildPremiumPaddockSignature,
   enqueueJobs,
   floorToHalfHourJstSlot,
@@ -47,6 +49,7 @@ import {
   toJstSlotIso,
   truncate,
 } from "./worker";
+import { getPremiumRaceConfig } from "./premium-race";
 import type { Env, Job } from "./types";
 
 const RACE: NarRaceSource = {
@@ -73,6 +76,50 @@ it("addDaysToYyyymmdd adds positive days across month boundaries", () => {
 
 it("addDaysToYyyymmdd subtracts days correctly", () => {
   expect(addDaysToYyyymmdd("20260501", -1)).toBe("20260430");
+});
+
+it("buildPremiumPaddockUrls returns primary and fallback urls from configured templates", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ORIGIN: "https://example.test",
+    PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE: "/fallback/{sourceRaceId}",
+    PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/primary/{sourceRaceId}",
+  });
+  expect(buildPremiumPaddockUrls(config, "202605120801")).toStrictEqual([
+    "https://example.test/primary/202605120801",
+    "https://example.test/fallback/202605120801",
+  ]);
+});
+
+it("buildPremiumPaddockProxyCachePurgeRequest builds DELETE request for proxy cache", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ORIGIN: "https://example.test",
+    PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/primary/{sourceRaceId}",
+    PREMIUM_RACE_PROXY_BEARER: "token",
+    PREMIUM_RACE_PROXY_URL: "https://proxy.example/",
+    PREMIUM_RACE_PROXY_USER_ID: "user-1",
+  });
+  const request = buildPremiumPaddockProxyCachePurgeRequest(
+    config,
+    "https://example.test/primary/202605120801",
+  );
+  expect(request?.method).toBe("DELETE");
+  expect(request?.headers.get("authorization")).toBe("Bearer token");
+  const url = new URL(request?.url ?? "");
+  expect(url.searchParams.get("url")).toBe("https://example.test/primary/202605120801");
+  expect(url.searchParams.get("user_id")).toBe("user-1");
+});
+
+it("buildPremiumPaddockProxyCachePurgeRequest skips purge when proxy cache is disabled", () => {
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_ORIGIN: "https://example.test",
+    PREMIUM_RACE_PADDOCK_PATH_TEMPLATE: "/primary/{sourceRaceId}",
+    PREMIUM_RACE_PROXY_BEARER: "token",
+    PREMIUM_RACE_PROXY_URL: "https://proxy.example/playwright?cache=0",
+    PREMIUM_RACE_PROXY_USER_ID: "user-1",
+  });
+  expect(
+    buildPremiumPaddockProxyCachePurgeRequest(config, "https://example.test/primary/202605120801"),
+  ).toBeNull();
 });
 
 it("getCronJob returns discover-premium-race-links on Friday 04:00", () => {

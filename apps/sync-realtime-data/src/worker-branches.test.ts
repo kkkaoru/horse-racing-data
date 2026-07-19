@@ -1071,10 +1071,11 @@ it("fetch-premium-race-data returns early when JRA race present but config has n
 // hitting the `if (!selectedAttempt) throw` arm (line 1910 source).
 it("fetch-premium-paddock throws when fetchPremiumHtmlAttempts returns empty list", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, getPremiumRaceLink } = await import("./storage");
+  const { getRaceSource, getPremiumRaceLink, getPremiumRacePayload } = await import("./storage");
   const { fetchPremiumHtmlAttempts } = await import("./premium-race");
   vi.mocked(getRaceSource).mockResolvedValueOnce(buildJraNarRaceSource());
   vi.mocked(getPremiumRaceLink).mockResolvedValueOnce(buildPremiumRaceLink());
+  vi.mocked(getPremiumRacePayload).mockRejectedValueOnce(new Error("no payload"));
   vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValueOnce([]);
   await expect(
     handleJob(
