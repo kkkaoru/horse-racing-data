@@ -15,10 +15,10 @@
 // allowlist automatically. env.RESCORE_CATEGORIES scopes which categories are
 // enqueued (see resolveRescoreCategories below); when the coordinator is
 // disabled entirely (COORDINATOR_ENABLED !== "1") it is a shadow no-op — see
-// worker.ts gating. NAR/Ban-ei additionally only plan within a JST 14:00-21:00
-// wall-clock window (see isWithinCategoryTimeBox) as a safety margin against
-// an atypically delayed mode=full still running for that category; JRA has no
-// such restriction.
+// worker.ts gating. NAR/Ban-ei additionally only plan within category-specific
+// JST wall-clock windows (see isWithinCategoryTimeBox / CATEGORY_TIME_BOX_JST)
+// as a safety margin against an atypically delayed mode=full still running for
+// that category; JRA has no such restriction.
 
 import { claimRescoreRace } from "./do-state";
 import type { Env, PredictCategory, PredictMode, PredictQueueMessage } from "./types";
@@ -104,22 +104,26 @@ const CATEGORY_RACE_FILTERS: Readonly<Record<PredictCategory, CategoryRaceFilter
 const ALL_CATEGORIES: ReadonlyArray<PredictCategory> = ["jra", "nar", "ban-ei"];
 const ALL_CATEGORIES_SET = new Set<string>(ALL_CATEGORIES);
 
-// NAR/Ban-ei-only safety gate (JST 14:00-21:00, matching Kochi/Saga/Ban-ei's
-// own afternoon-evening card -- see docs/probes for the 2026-07-18 scope-gap
-// analysis): an EXTRA restriction beyond a race's own post-time window
-// (isWithinRescoreWindow), scoped only to categories whose per-race mode=full
-// generation has historically run as a single whole-day batch hours before
-// race hours (empirically 00:25-00:26 JST for NAR/Ban-ei), so a rescore this
-// coordinator enqueues can never race an atypically delayed mode=full still
-// running for the same category. JRA carries no time-box here (absent from
-// CATEGORY_TIME_BOX_JST): its own coordinator cron trigger
-// (COORDINATOR_CRON_RACE_HOURS) already scopes when this whole tick runs at
-// all, and JRA's per-race mode=full has no comparable single-batch-for-the-
-// whole-day pattern to guard against.
-const NAR_BAN_EI_TIME_BOX_JST: CategoryTimeBoxJst = { endHour: 21, startHour: 14 };
+// NAR/Ban-ei-only safety gate — an EXTRA restriction beyond a race's own
+// post-time window (isWithinRescoreWindow), scoped only to categories whose
+// per-race mode=full generation has historically run as a single whole-day
+// batch hours before race hours (empirically 00:25-00:26 JST for NAR/Ban-ei),
+// so a rescore this coordinator enqueues can never race an atypically delayed
+// mode=full still running for the same category. Boxes are category-specific:
+//   - nar:    JST [10:00, 21:00) — Saga (keibajo 35) opens odds sale at 10:00
+//             and posts ~35% of its 2026 card before 14:00 (audit 2026-07-19);
+//             Kochi posts after 14:00 and is unaffected by the earlier start.
+//   - ban-ei: JST [14:00, 21:00) — Ban-ei posts are all after 14:00, so the
+//             tighter afternoon box stays.
+// JRA carries no time-box here (absent from CATEGORY_TIME_BOX_JST): its own
+// coordinator cron trigger (COORDINATOR_CRON_RACE_HOURS) already scopes when
+// this whole tick runs at all, and JRA's per-race mode=full has no comparable
+// single-batch-for-the-whole-day pattern to guard against.
+const NAR_TIME_BOX_JST: CategoryTimeBoxJst = { endHour: 21, startHour: 10 };
+const BAN_EI_TIME_BOX_JST: CategoryTimeBoxJst = { endHour: 21, startHour: 14 };
 const CATEGORY_TIME_BOX_JST: Readonly<Partial<Record<PredictCategory, CategoryTimeBoxJst>>> = {
-  "ban-ei": NAR_BAN_EI_TIME_BOX_JST,
-  nar: NAR_BAN_EI_TIME_BOX_JST,
+  "ban-ei": BAN_EI_TIME_BOX_JST,
+  nar: NAR_TIME_BOX_JST,
 };
 
 interface RaceSourceRow {
@@ -535,7 +539,7 @@ export const runRaceCoordinatorTick = async (
             now: params.now,
             runYmd,
           })
-        : buildShadowSummary(category, date),
+        : Promise.resolve(buildShadowSummary(category, date)),
     ),
   );
   // Trigger a per-race rescore fan-out (fresh weight data) for categories

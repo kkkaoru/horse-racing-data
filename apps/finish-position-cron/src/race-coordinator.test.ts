@@ -118,12 +118,12 @@ test("isWithinCategoryTimeBox returns true for jra at a JST hour outside 14-21",
   expect(isWithinCategoryTimeBox("jra", new Date("2026-06-19T02:00:00.000Z"))).toBe(true);
 });
 
-test("isWithinCategoryTimeBox returns false for nar just before the JST 14:00 window start", () => {
-  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T04:59:00.000Z"))).toBe(false);
+test("isWithinCategoryTimeBox returns false for nar just before the JST 10:00 window start", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T00:59:00.000Z"))).toBe(false);
 });
 
-test("isWithinCategoryTimeBox returns true for nar at the exact JST 14:00 window start", () => {
-  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T05:00:00.000Z"))).toBe(true);
+test("isWithinCategoryTimeBox returns true for nar at the exact JST 10:00 window start", () => {
+  expect(isWithinCategoryTimeBox("nar", new Date("2026-06-19T01:00:00.000Z"))).toBe(true);
 });
 
 test("isWithinCategoryTimeBox returns true for nar in the middle of the JST window", () => {
@@ -351,12 +351,12 @@ test("runRaceCoordinatorTick plans every category listed in RESCORE_CATEGORIES",
   expect(prepareMock).toHaveBeenCalledTimes(3);
 });
 
-test("runRaceCoordinatorTick shadows nar/ban-ei outside their JST time-box while jra still plans", async () => {
+test("runRaceCoordinatorTick at JST 09:00 shadows nar and ban-ei while jra still plans", async () => {
   stubD1Rows([]);
   const summaries = await runRaceCoordinatorTick({
     env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
     leadMinutes: 25,
-    now: new Date("2026-06-19T02:00:00.000Z"), // JST 11:00 -- before the 14:00 window start
+    now: new Date("2026-06-19T00:00:00.000Z"), // JST 09:00 -- before nar 10:00 and ban-ei 14:00
   });
   expect(summaries).toStrictEqual([
     {
@@ -387,12 +387,48 @@ test("runRaceCoordinatorTick shadows nar/ban-ei outside their JST time-box while
   expect(prepareMock).toHaveBeenCalledTimes(1);
 });
 
-test("runRaceCoordinatorTick plans nar/ban-ei once inside their JST time-box", async () => {
+test("runRaceCoordinatorTick at JST 11:00 plans jra and nar while ban-ei still shadows", async () => {
+  stubD1Rows([]);
+  const summaries = await runRaceCoordinatorTick({
+    env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
+    leadMinutes: 25,
+    now: new Date("2026-06-19T02:00:00.000Z"), // JST 11:00 -- inside nar [10,21), outside ban-ei [14,21)
+  });
+  expect(summaries).toStrictEqual([
+    {
+      alreadyClaimed: 0,
+      category: "jra",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+    {
+      alreadyClaimed: 0,
+      category: "nar",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+    {
+      alreadyClaimed: 0,
+      category: "ban-ei",
+      date: "2026-06-19",
+      enqueued: 0,
+      scanned: 0,
+      withinWindow: 0,
+    },
+  ]);
+  expect(prepareMock).toHaveBeenCalledTimes(2);
+});
+
+test("runRaceCoordinatorTick at JST 18:00 plans jra, nar, and ban-ei", async () => {
   stubD1Rows([]);
   await runRaceCoordinatorTick({
     env: makeEnv({ RESCORE_CATEGORIES: "jra,nar,ban-ei" }),
     leadMinutes: 25,
-    now: new Date("2026-06-19T09:00:00.000Z"), // JST 18:00 -- inside the 14:00-21:00 window
+    now: new Date("2026-06-19T09:00:00.000Z"), // JST 18:00 -- inside both nar and ban-ei boxes
   });
   expect(prepareMock).toHaveBeenCalledTimes(3);
 });
