@@ -37,6 +37,22 @@ RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b
 BAN_EI_KEIBAJO = "83"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 FUTAN_BUCKET_BREAKS = (700, 800, 900)  # ≤700, 701-800, 801-900, 900+
+# ban-ei nvd_se stores futan_juryo/bataiju as 3-char hex strings in kg
+# (e.g. '26C'=620, '3E8'=1000); 'FFF' is the missing-value sentinel. A plain
+# decimal cast silently nulls the letter-containing values and mis-scales the
+# digit-only remainder, so decode via the '0x' prefix (matches the correct
+# handling in add-banei-futan-class-features.py). JRA/NAR store weights as
+# decimal, but this script only reads keibajo_code='83', so hex is always right.
+HEX_WEIGHT_MISSING_SENTINEL = "FFF"
+
+
+def hex_kg_sql(column: str) -> str:
+    """Return DuckDB SQL decoding a ban-ei hex weight string to integer kg."""
+    return (
+        f"case when nullif(trim({column}), '') is null "
+        f"or upper(trim({column})) = '{HEX_WEIGHT_MISSING_SENTINEL}' then null "
+        f"else try_cast('0x' || trim({column}) as integer) end"
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -64,8 +80,8 @@ def stage_nvd_se(con: duckdb.DuckDBPyConnection) -> None:
         select
           'nar' as source,
           kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-          try_cast(nullif(trim(futan_juryo), '') as double) / 10.0 as futan_juryo,
-          try_cast(nullif(trim(bataiju), '') as int) as bataiju,
+          {hex_kg_sql("futan_juryo")} as futan_juryo,
+          {hex_kg_sql("bataiju")} as bataiju,
           try_cast(nullif(trim(corner_1), '') as int) as corner_1_raw,
           try_cast(nullif(trim(corner_3), '') as int) as corner_3_raw,
           try_cast(nullif(trim(corner_4), '') as int) as corner_4_raw,
