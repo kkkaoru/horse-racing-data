@@ -13,17 +13,187 @@ The source of truth is
 `apps/finish-position-predict-container/src/predict_lib/model_meta.json` plus the
 explicit NAR transformer metadata in `predict_lib/model_meta.py`.
 
-| Category    | Production model_version                      | Notes                                                                            |
-| ----------- | --------------------------------------------- | -------------------------------------------------------------------------------- |
-| JRA         | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default.                                                       |
-| JRA cell    | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1. |
-| NAR         | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.              |
-| Ban-ei      | `banei-cb-v9-sim-2011`                        | Default.                                                                         |
-| Ban-ei cell | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                       |
+| Category     | Production model_version                      | Notes                                                                            |
+| ------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
+| JRA          | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default (Stage-2).                                             |
+| JRA cell     | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1. |
+| JRA cell     | `jra-cb-v10-prior-corner274-2013`             | Routed only for dirt, field size <=10, and `kyoso_joken_code=005`.               |
+| JRA fallback | `jra-cb-stage1-marketfree235-2013`            | Stage-1 gated fallback; see "Stage-1 Market-Free Gated Fallback" below.          |
+| NAR          | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.              |
+| Ban-ei       | `banei-cb-v9-sim-2011`                        | Default.                                                                         |
+| Ban-ei cell  | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                       |
+
+## Stage-1 Market-Free Gated Fallback (JRA)
+
+`jra-cb-stage1-marketfree235-2013` (235 feat: the champion's 250 minus the 15
+market/odds-derived features) serves in place of the champion only when
+`predict_lib.stage1_routing.resolve_stage1_gate` trips, per race, inside the
+shared `_score_and_flush_races` core (`mode=full` and `mode=rescore` both get
+it). Two independent conditions route to Stage-1, either sufficient:
+
+1. **Freshness gate**: every entry in the race lacks a real `tansho_ninkijun`
+   (the whole odds board never populated for this race — an odds-serving
+   incident, not a single horse's missing odds).
+2. **Stddev safety net**: the champion's own within-race `predicted_score`
+   population stddev falls below `stage1_routing.json`'s `stddev_threshold`
+   (0.4, independently re-validated against real 2026-07-12/07-18/07-11/07-19
+   Neon prediction data — see `predict_lib/stage1_routing.py`'s module
+   docstring for the full evidence).
+
+Config lives in `src/predict_lib/stage1_routing.json`
+(`{"jra": {"enabled": true, "model_version": "...", "feature_count": 235,
+"architecture": "catboost", "stddev_threshold": 0.4}}`) — tunable without a
+code change, mirroring `running_style_cell_routing.json`'s convention. An
+absent category means the gate never trips for it (unchanged behaviour).
+
+**Rollback** (no redeploy needed if the tracked file is already baked with
+`enabled: true` and you only need the gate OFF for the NEXT build): set
+`"enabled": false` for `"jra"` in `stage1_routing.json` and rebuild/redeploy —
+every race then serves Stage-2 (the champion) exactly as before this fallback
+existed. The Stage-1 artifact loader is also fail-closed at the code level
+(mirrors the NAR transformer / E-top2 companion-load pattern): a missing,
+corrupt, unapproved, or feature-mismatched Stage-1 artifact disables the
+fallback for that run automatically (falls back to champion-only), so a
+broken Stage-1 artifact can never block or degrade ordinary serving even
+without an operator action.
 
 Historical leaky JRA/NAR artifacts must not be selected in production. NAR
 rollback is `NAR_TRANSFORMER_BLEND_ENABLED=0`, which keeps the leak-free
 `iter12-nar-xgb-hpo-v8-clean188` base and disables only the transformer blend.
+
+## Artifact Integrity Preflight
+
+`production-artifacts.json` is the deterministic digest contract (SHA-256 +
+size) for every artifact key production selectors can reach: category-default
+and cell-routed finish-position models (`model_meta.json` +
+`predict_lib/cell_routing.json`), the conditional NAR transformer bundle, and
+the JRA/NAR running-style latest-model + calibrator pair. `predict_lib.
+artifact_integrity` derives that reachable key set and fails closed with one
+of three outcomes:
+
+- `MATCH` / exit `0`: every selected key is manifested and each observed byte
+  stream matches its declared SHA-256 and size.
+- `INTEGRITY_FAILURE` / exit `1`: invalid manifest, a selected-but-unmanifested
+  or missing artifact, or a size/hash mismatch. Do not build, upload, deploy,
+  delete, overwrite, or automatically roll back anything.
+- `INDETERMINATE` / exit `2`: bytes could not be established because a local
+  read failed (e.g. permission denied). Deployment still fails closed, but
+  this is not evidence of drift.
+
+The manifest never activates a model; `model_meta.json` / `cell_routing.json`
+/ the tracked deploy declarations below remain the sole activation authority.
+
+**This preflight is wired into both build paths so a normal deploy command
+cannot skip it:**
+
+- `apps/finish-position-cron/package.json`'s `deploy` script runs the verifier
+  against the staged `models/` build context before `wrangler deploy`:
+
+  ```sh
+  cd apps/finish-position-cron
+  bun run deploy -- --containers-rollout immediate
+  ```
+
+  A nonzero verifier exit aborts before `wrangler deploy` ever runs.
+
+- The container `Dockerfile` also runs
+  `python -m predict_lib.artifact_integrity --artifact-root /models --system
+finish-position` as a `RUN` step against the baked `/models` tree, so even a
+  direct `docker build` / `wrangler deploy` (bypassing the bun script above)
+  fails the image build on a corrupt, mismatched, or unmanifested artifact.
+  Running-style bytes are out of scope for this container-local check (they
+  are never baked into this image), but the verifier's selector-closure check
+  -- is every reachable key even manifested at all -- always runs unscoped, so
+  a newly cell-routed-but-unmanifested running-style variant (see below) still
+  fails this same `RUN` step closed.
+
+Run the verifier ad hoc any time:
+
+```sh
+bun run --filter finish-position-predict-container artifact:verify
+bun run --filter finish-position-predict-container artifact:verify -- \
+  --artifact-root models --system finish-position
+```
+
+### Tracked deploy declarations (secrets this app cannot read back)
+
+Two Cloudflare Worker secrets select artifacts that neither this container nor
+its verifier can read back from Cloudflare -- secrets are write-only from the
+CLI, there is no `wrangler secret get`:
+
+| Secret                            | Worker                 | Consumer                                                           |
+| --------------------------------- | ---------------------- | ------------------------------------------------------------------ |
+| `NAR_TRANSFORMER_BLEND_ENABLED`   | `finish-position-cron` | `predict_lib.model_meta` (container runtime)                       |
+| `RUNNING_STYLE_CELL_ROUTING_JSON` | `sync-realtime-data`   | `running-style-cell-router.ts` (out of scope for this app to edit) |
+
+Each has a tracked local declaration under `src/predict_lib/` that the
+verifier consults instead of ambient process state:
+
+- `deploy_flags.json` (`{"nar_transformer_blend_enabled": true|false}`).
+- `running_style_cell_routing.json` (mirrors `RunningStyleCellRoutingConfig`:
+  `{category: {defaultVariantId, rules: [{conditions, variantId}], variants:
+{variantId: {modelKey}}}}`; `{}` means no live cell routing, matching
+  production today).
+
+**Whoever runs `wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED` or
+`wrangler secret put RUNNING_STYLE_CELL_ROUTING_JSON` MUST update the matching
+tracked file in the SAME commit.** Otherwise local verification can again
+diverge from what is actually live -- the exact failure mode this preflight
+exists to close. The `--nar-transformer enabled|disabled` CLI flag remains
+available to explicitly override the tracked declaration (e.g. to check a
+rollback before flipping the tracked file); omit it to use the tracked value.
+
+The two divergence directions are NOT equally safe if this discipline is ever
+skipped:
+
+- Tracked file says the bundle is ON but the live secret is actually OFF
+  (e.g. `deploy_flags.json` still says `true` after someone flips the
+  Cloudflare secret to `0` without updating the file): the preflight keeps
+  requiring and checking artifacts production no longer serves. This only
+  over-blocks -- annoying (a deploy may fail on stale artifacts nobody staged
+  on purpose), never unsafe.
+- Tracked file says OFF but the live secret is actually ON (e.g.
+  `deploy_flags.json` says `false`, or `running_style_cell_routing.json` is
+  missing a variant, while the real Cloudflare secret still serves it): this
+  is the DANGEROUS direction. The preflight silently stops checking an
+  artifact that is genuinely live, so a corrupt or mismatched byte for that
+  artifact would go unnoticed and still ship. There is no automated detection
+  for this today (the Cloudflare API cannot read a secret's value back) --
+  the "update in the same commit" discipline plus code review is the only
+  safeguard, so treat any PR touching either secret as needing extra scrutiny
+  on whether the tracked file actually matches.
+
+The running-style routing declaration's reachable `variants[*].modelKey`
+values are folded into the selector closure for **all three** categories (jra,
+nar, AND ban-ei -- the config schema allows all three even though only jra/nar
+have a live artifact today), so a newly cell-routed-but-unmanifested variant
+fails closed instead of silently reporting `MATCH`. The manifest schema
+represents the real running-style topology -- N routed models per source
+sharing exactly ONE calibrator (`tryLoadCalibrators(bucket, job.source)` only
+ever loads a jra or nar calibrator, including for a Ban-ei race, whose
+`job.source` is `"nar"`) -- by validating calibrator coverage at the
+category/source level rather than requiring a model+calibrator pair inside
+every bundle, so adding a second routed model for the same source no longer
+produces a spurious duplicate-serving-key rejection.
+
+### Scope
+
+This verifier only ever reads LOCAL build-context bytes: a staged `models/`
+directory, or the container image's own `/models` tree at `docker build` time.
+It performs no network re-verification of the live R2 running-style objects
+(`running-style/models/{jra,nar}/{latest.flatbin,calibrators.json}`) -- those
+are attestation-recorded (`source_ref: "attestation://..."` in the manifest),
+not re-hashed over the network. If a future caller adds a network-based
+observer, an auth or network failure MUST report `state="unavailable"` (->
+`INDETERMINATE`), never `"missing"` (-> `INTEGRITY_FAILURE`) or a fabricated
+`"present"` (-> `MATCH`): a transient network issue must never silently block,
+nor silently pass, an ordinary offline build. The JRA running-style pair is
+pinned as one release: model
+`278690ed18e7aa1f6847ee4349b1ec98281a5633cc10bd000de55c608ffbfc76` and
+calibrator `0f23a5a40dea956b1de06699432e130beb86dc3448bd3188485e60d1a7067ee7`.
+Those live bytes are attested, but their exact durable non-`tmp` MLflow/tracked
+source remains provenance debt; this manifest records that HOLD and must not
+be used to substitute the older tracked calibrator.
 
 ## Architecture
 
@@ -117,6 +287,16 @@ For the JRA 703 cell, choose a race whose `race_entry_corner_features` rows all
 have `source='jra'` and `kyoso_joken_code='703'`. The target race must write
 `model_version='jra-cb-v9-sim-2013-clean-jockey-pedigree269'` with ranks `1..n`.
 
+The Stage-1 fallback has no dedicated forced-trigger smoke endpoint (it only
+activates during a genuine odds-serving incident or a collapsed score
+spread); the direct verification is `tests/test_stage1_routing.py` (52 unit
+cases against real gate-decision logic) plus watching for
+`model_version='jra-cb-stage1-marketfree235-2013'` rows should a real incident
+occur. Confirm the artifact loaded correctly at container startup by checking
+for a `[stage1-gate] loaded category=jra ...` line in the container logs (a
+load failure logs `... load failed -> Stage-1 fallback disabled this run: ...`
+instead and never blocks ordinary champion serving).
+
 ## Neon Verification Queries
 
 ```sql
@@ -140,12 +320,22 @@ where source = $1
 
 ## Rollback
 
+- JRA Stage-1 fallback only: set `"enabled": false` for `"jra"` in
+  `src/predict_lib/stage1_routing.json` and rebuild/redeploy. Every JRA race
+  then serves the champion (Stage-2) unconditionally, identical to
+  pre-fallback behaviour. No secret is involved (the config is a tracked
+  file baked into the image, not a Cloudflare secret).
 - NAR transformer only: set the Worker secret to `0`.
 
   ```sh
   cd apps/finish-position-cron
   printf 0 | bunx wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED
   ```
+
+  Also update `src/predict_lib/deploy_flags.json` to
+  `{"nar_transformer_blend_enabled": false}` in the SAME commit -- see
+  "Artifact Integrity Preflight" above. Skipping this desyncs the local
+  preflight from the secret you just set.
 
   This keeps production leak-free by serving the clean188 base. Do not roll back
   to historical leaky NAR artifacts.

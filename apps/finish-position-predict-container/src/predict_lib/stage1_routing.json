@@ -1,0 +1,9 @@
+{
+  "jra": {
+    "enabled": true,
+    "model_version": "jra-cb-stage1-marketfree235-2013",
+    "feature_count": 235,
+    "architecture": "catboost",
+    "stddev_threshold": 0.4
+  }
+}

@@ -1,0 +1,495 @@
+"""Tests for the JRA Stage-1 market-free gated-fallback routing module."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from predict_lib.stage1_routing import (
+    PREDICTED_SCORE_COLUMN_INDEX,
+    STAGE1_ROUTING_PATH,
+    Stage1CategoryConfig,
+    Stage1GateDecision,
+    Stage1RoutingValidationError,
+    compute_predicted_score_stddev,
+    extract_predicted_scores,
+    is_score_spread_degraded,
+    load_stage1_routing,
+    race_has_fresh_odds,
+    resolve_stage1_gate,
+)
+from predict_lib.upsert_sql import INSERT_COLUMNS
+
+_VALID_JRA_CONFIG: dict[str, object] = {
+    "enabled": True,
+    "model_version": "jra-cb-stage1-marketfree235-2013",
+    "feature_count": 235,
+    "architecture": "catboost",
+    "stddev_threshold": 0.3,
+}
+
+
+def _write(tmp_path: Path, payload: object) -> Path:
+    path = tmp_path / "stage1_routing.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------------------
+# load_stage1_routing
+# ---------------------------------------------------------------------------
+
+
+def test_stage1_routing_path_points_at_tracked_file() -> None:
+    assert STAGE1_ROUTING_PATH.name == "stage1_routing.json"
+    assert STAGE1_ROUTING_PATH.exists()
+
+
+def test_tracked_stage1_routing_loads_live_jra_config() -> None:
+    """The real tracked file must parse and describe the live JRA fallback."""
+    routing = load_stage1_routing()
+
+    assert routing["jra"] == Stage1CategoryConfig(
+        enabled=True,
+        model_version="jra-cb-stage1-marketfree235-2013",
+        feature_count=235,
+        architecture="catboost",
+        stddev_threshold=0.4,
+    )
+
+
+def test_load_stage1_routing_parses_full_shape(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"jra": _VALID_JRA_CONFIG})
+
+    routing = load_stage1_routing(path)
+
+    assert routing == {
+        "jra": Stage1CategoryConfig(
+            enabled=True,
+            model_version="jra-cb-stage1-marketfree235-2013",
+            feature_count=235,
+            architecture="catboost",
+            stddev_threshold=0.3,
+        )
+    }
+
+
+def test_load_stage1_routing_empty_object_means_no_category_configured(tmp_path: Path) -> None:
+    path = _write(tmp_path, {})
+
+    assert load_stage1_routing(path) == {}
+
+
+def test_load_stage1_routing_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(Stage1RoutingValidationError, match="not found"):
+        load_stage1_routing(tmp_path / "missing.json")
+
+
+def test_load_stage1_routing_rejects_invalid_json(tmp_path: Path) -> None:
+    path = tmp_path / "stage1_routing.json"
+    path.write_text("{", encoding="utf-8")
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"invalid stage1_routing\.json"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_object_root(tmp_path: Path) -> None:
+    path = _write(tmp_path, [])
+
+    with pytest.raises(Stage1RoutingValidationError, match="must be an object"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_unsupported_category(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"usa": _VALID_JRA_CONFIG})
+
+    with pytest.raises(Stage1RoutingValidationError, match="unsupported categories"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_object_category_entry(tmp_path: Path) -> None:
+    path = _write(tmp_path, {"jra": []})
+
+    with pytest.raises(Stage1RoutingValidationError, match="must be an object"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_missing_key(tmp_path: Path) -> None:
+    incomplete = dict(_VALID_JRA_CONFIG)
+    del incomplete["stddev_threshold"]
+    path = _write(tmp_path, {"jra": incomplete})
+
+    with pytest.raises(Stage1RoutingValidationError, match="keys differ"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_unexpected_key(tmp_path: Path) -> None:
+    extra = dict(_VALID_JRA_CONFIG)
+    extra["extra_field"] = "nope"
+    path = _write(tmp_path, {"jra": extra})
+
+    with pytest.raises(Stage1RoutingValidationError, match="keys differ"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_boolean_enabled(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["enabled"] = "yes"
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.enabled must be a boolean"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_empty_model_version(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["model_version"] = ""
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.model_version must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_string_model_version(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["model_version"] = 42
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.model_version must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_zero_feature_count(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["feature_count"] = 0
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.feature_count must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_bool_feature_count(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["feature_count"] = True
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.feature_count must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_int_feature_count(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["feature_count"] = 235.5
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.feature_count must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_unsupported_architecture(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["architecture"] = "tensorflow"
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match="unsupported value"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_empty_architecture(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["architecture"] = ""
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.architecture must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_zero_stddev_threshold(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["stddev_threshold"] = 0
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.stddev_threshold must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_negative_stddev_threshold(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["stddev_threshold"] = -0.1
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.stddev_threshold must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_bool_stddev_threshold(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["stddev_threshold"] = True
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.stddev_threshold must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_rejects_non_numeric_stddev_threshold(tmp_path: Path) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["stddev_threshold"] = "0.3"
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(Stage1RoutingValidationError, match=r"\.stddev_threshold must be"):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_accepts_int_stddev_threshold(tmp_path: Path) -> None:
+    """An integral threshold (e.g. 1) is a valid float value, not rejected."""
+    ok = dict(_VALID_JRA_CONFIG)
+    ok["stddev_threshold"] = 1
+    path = _write(tmp_path, {"jra": ok})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].stddev_threshold == 1.0
+
+
+def test_load_stage1_routing_accepts_disabled_category(tmp_path: Path) -> None:
+    disabled = dict(_VALID_JRA_CONFIG)
+    disabled["enabled"] = False
+    path = _write(tmp_path, {"jra": disabled})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].enabled is False
+
+
+# ---------------------------------------------------------------------------
+# race_has_fresh_odds
+# ---------------------------------------------------------------------------
+
+
+def test_race_has_fresh_odds_true_when_every_entry_has_ninkijun() -> None:
+    entries = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": 2}]
+
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_race_has_fresh_odds_true_when_only_some_entries_have_ninkijun() -> None:
+    """A single late-scratch-style gap is NOT the whole-race outage condition."""
+    entries = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": None}]
+
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_race_has_fresh_odds_false_when_every_entry_lacks_ninkijun() -> None:
+    entries = [{"tansho_ninkijun": None}, {"tansho_ninkijun": None}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_race_has_fresh_odds_false_when_field_absent_entirely() -> None:
+    entries = [{"umaban": 1}, {"umaban": 2}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_race_has_fresh_odds_false_for_empty_entries() -> None:
+    assert race_has_fresh_odds([]) is False
+
+
+def test_race_has_fresh_odds_coerces_string_ninkijun() -> None:
+    entries = [{"tansho_ninkijun": "3"}]
+
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_race_has_fresh_odds_treats_blank_string_as_missing() -> None:
+    entries = [{"tansho_ninkijun": ""}, {"tansho_ninkijun": None}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+# ---------------------------------------------------------------------------
+# compute_predicted_score_stddev / is_score_spread_degraded
+# ---------------------------------------------------------------------------
+
+
+def test_compute_predicted_score_stddev_healthy_spread() -> None:
+    scores = [3.0, 1.0, 2.0, 0.5, -1.0]
+
+    stddev = compute_predicted_score_stddev(scores)
+
+    assert stddev == pytest.approx(1.35647, rel=1e-4)
+
+
+def test_compute_predicted_score_stddev_collapsed_spread() -> None:
+    scores = [0.501, 0.499, 0.500, 0.502]
+
+    stddev = compute_predicted_score_stddev(scores)
+
+    assert stddev < 0.01
+
+
+def test_compute_predicted_score_stddev_empty_returns_zero() -> None:
+    assert compute_predicted_score_stddev([]) == 0.0
+
+
+def test_compute_predicted_score_stddev_single_value_returns_zero() -> None:
+    assert compute_predicted_score_stddev([1.23]) == 0.0
+
+
+def test_compute_predicted_score_stddev_identical_values_returns_zero() -> None:
+    assert compute_predicted_score_stddev([0.5, 0.5, 0.5]) == 0.0
+
+
+def test_is_score_spread_degraded_below_threshold() -> None:
+    assert is_score_spread_degraded(0.1, 0.3) is True
+
+
+def test_is_score_spread_degraded_at_threshold_is_not_degraded() -> None:
+    assert is_score_spread_degraded(0.3, 0.3) is False
+
+
+def test_is_score_spread_degraded_above_threshold() -> None:
+    assert is_score_spread_degraded(1.2, 0.3) is False
+
+
+# ---------------------------------------------------------------------------
+# extract_predicted_scores
+# ---------------------------------------------------------------------------
+
+
+def _row_with_score(score: object) -> list[object]:
+    """Build a full-width ``INSERT_COLUMNS``-shaped row with one score cell."""
+    row: list[object] = [None] * len(INSERT_COLUMNS)
+    row[PREDICTED_SCORE_COLUMN_INDEX] = score
+    return row
+
+
+def test_extract_predicted_scores_reads_predicted_score_column() -> None:
+    rows = [_row_with_score(1.5), _row_with_score(-0.75)]
+
+    assert extract_predicted_scores(rows) == [1.5, -0.75]
+
+
+def test_extract_predicted_scores_coerces_int_cell() -> None:
+    rows = [_row_with_score(2)]
+
+    assert extract_predicted_scores(rows) == [2.0]
+
+
+def test_extract_predicted_scores_empty_rows() -> None:
+    assert extract_predicted_scores([]) == []
+
+
+def test_extract_predicted_scores_rejects_bool_cell() -> None:
+    rows = [_row_with_score(True)]
+
+    with pytest.raises(TypeError, match="must not be a bool"):
+        extract_predicted_scores(rows)
+
+
+def test_extract_predicted_scores_rejects_non_numeric_cell() -> None:
+    rows = [_row_with_score("oops")]
+
+    with pytest.raises(TypeError, match="must be numeric"):
+        extract_predicted_scores(rows)
+
+
+# ---------------------------------------------------------------------------
+# resolve_stage1_gate (integration of all of the above)
+# ---------------------------------------------------------------------------
+
+_CONFIG = Stage1CategoryConfig(
+    enabled=True,
+    model_version="jra-cb-stage1-marketfree235-2013",
+    feature_count=235,
+    architecture="catboost",
+    stddev_threshold=0.3,
+)
+
+_FRESH_ENTRIES = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": 2}, {"tansho_ninkijun": 3}]
+_STALE_ENTRIES = [{"tansho_ninkijun": None}, {"tansho_ninkijun": None}]
+_HEALTHY_SCORES = [1.2, 0.4, -0.3, 0.9]
+_DEGENERATE_SCORES = [0.501, 0.500, 0.499]
+
+
+def test_resolve_stage1_gate_disabled_when_config_none() -> None:
+    decision = resolve_stage1_gate(config=None, entries=_STALE_ENTRIES, stage2_scores=[])
+
+    assert decision == Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
+
+
+def test_resolve_stage1_gate_disabled_when_config_enabled_false() -> None:
+    disabled_config = Stage1CategoryConfig(
+        enabled=False,
+        model_version="jra-cb-stage1-marketfree235-2013",
+        feature_count=235,
+        architecture="catboost",
+        stddev_threshold=0.3,
+    )
+
+    decision = resolve_stage1_gate(
+        config=disabled_config, entries=_STALE_ENTRIES, stage2_scores=[]
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
+
+
+def test_resolve_stage1_gate_passes_through_on_fresh_odds_and_healthy_spread() -> None:
+    decision = resolve_stage1_gate(
+        config=_CONFIG, entries=_FRESH_ENTRIES, stage2_scores=_HEALTHY_SCORES
+    )
+
+    assert decision.use_stage1 is False
+    assert decision.reason == "fresh"
+    assert decision.stddev is not None
+    assert decision.stddev > _CONFIG.stddev_threshold
+
+
+def test_resolve_stage1_gate_trips_on_odds_missing_regardless_of_scores() -> None:
+    decision = resolve_stage1_gate(
+        config=_CONFIG, entries=_STALE_ENTRIES, stage2_scores=_HEALTHY_SCORES
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
+
+
+def test_resolve_stage1_gate_trips_on_odds_missing_even_with_no_scores() -> None:
+    """Freshness is checked before scores are consulted at all -- an empty
+    ``stage2_scores`` (e.g. a degenerate feature matrix upstream) must not
+    prevent an odds-missing race from routing to Stage-1."""
+    decision = resolve_stage1_gate(config=_CONFIG, entries=_STALE_ENTRIES, stage2_scores=[])
+
+    assert decision == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
+
+
+def test_resolve_stage1_gate_trips_on_degraded_spread_even_when_odds_fresh() -> None:
+    """The doc's second insurance layer: odds LOOK fresh but the champion's
+    own ranking still collapsed -- the stddev safety net must still catch it."""
+    decision = resolve_stage1_gate(
+        config=_CONFIG, entries=_FRESH_ENTRIES, stage2_scores=_DEGENERATE_SCORES
+    )
+
+    assert decision.use_stage1 is True
+    assert decision.reason == "score-spread-degraded"
+    assert decision.stddev is not None
+    assert decision.stddev < _CONFIG.stddev_threshold
+
+
+def test_resolve_stage1_gate_at_exact_threshold_does_not_trip() -> None:
+    scores = [0.15, -0.15]  # pstdev == 0.15, below the doc's 0.3 default
+    boundary_config = Stage1CategoryConfig(
+        enabled=True,
+        model_version="jra-cb-stage1-marketfree235-2013",
+        feature_count=235,
+        architecture="catboost",
+        stddev_threshold=compute_predicted_score_stddev(scores),
+    )
+
+    decision = resolve_stage1_gate(
+        config=boundary_config, entries=_FRESH_ENTRIES, stage2_scores=scores
+    )
+
+    assert decision.use_stage1 is False
+    assert decision.reason == "fresh"

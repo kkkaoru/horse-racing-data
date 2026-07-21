@@ -145,6 +145,21 @@ cell-level routing を使う場合は `RUNNING_STYLE_CELL_ROUTING_JSON` に data
 
 脚質 cell model はローカルで `running_style_lightgbm.py train-cells` により **cell 単位で** 学習・評価・promotion plan 生成を行う。採用された variant は header metadata 込みの flatbin を `RUNNING_STYLE_MODELS` の R2 object として promotion し、`RUNNING_STYLE_CELL_ROUTING_JSON` はその R2 key を指す。production は Cloudflare Worker / Queue / R2 / D1 / Neon のみを参照し、ローカル端末上の model path や process に依存しない。
 
+### 2.1.2 JRA Stage-1 市場非依存 gated fallback（2026-07-22 production LIVE）
+
+JRA champion（`jra-cb-v9-sim-2013-clean`、250 feat）は 15 の market/odds 由来特徴量（`popularity_score` / `odds_score` / `tansho_odds_raw` / `tansho_ninkijun_raw` / `inverse_odds_*` / `popularity_*` / `field_dominant_favorite_indicator` / `horse_popularity_vs_field` / `sim_odds_*` 等）に within-race ranking の大半を依存している。odds-serving incident（2026-07-12 Cluster B、2026-07-18 odds-freeze、`COORDINATOR_ENABLED=0` gap）で odds board が丸ごと欠落すると、これら 15 列は `late_binding.py` の training-median fallback に落ち、champion の top1 は blind WF で ~33.6%→~9.4% まで collapse する（triple-anchored: 宛先 harness + independent `retest_wf.py` 再現 + advisor review、docs/finish-position-accuracy/history/jra-stage1-market-free-fallback-probe-2026-07-22.md）。
+
+**Stage-1（floor）/ Stage-2（既定・champion）の gated 二段構成**を 2026-07-22 に本番実装した。定常時（odds fresh）は Stage-2 = champion がそのまま serve し、精度は無変更。odds-serving incident 時のみ Stage-1（`jra-cb-stage1-marketfree235-2013`、235 feat = champion の 250 feat から上記 15 列を除いた集合、CatBoost YetiRank・iterations 300・lr 0.05・depth 8・l2 3.0・relevance 3/2/1・no_cat_features・seed 20260519・2013-01-01〜2025-12-31 full single-fit、626,798 rows / 44,907 races — champion と同一 population）へ切り替わり、blind WF で 28.89% top1（collapse 時の champion 9.44% に対し +19.45pp[LB95 +18.44] recovery）、健全時比較コストは −4.75pp。
+
+> ここでの「Stage-1 / Stage-2」は本セクション固有の命名であり、`late_binding.py` docstring の「Stage 2 of the per-race rebuild」（late-binding 特徴量再構築の 2 段目、モデルとは無関係）と混同しないこと。
+
+**ゲート実装** (`predict_lib.stage1_routing`、`predict_upcoming.score_races` の共有コア `_score_and_flush_races` に配線 — `mode=full` / `mode=rescore` 両方に同一適用):
+
+1. **Freshness gate（一次、scoring 前）**: `race_has_fresh_odds` がレース内の生 `tansho_ninkijun`（late-binding が odds snapshot からそのまま複製する値。中央値 fallback される `odds_score`/`popularity_score` とは異なり、never median-substituted）を確認する。レース内の全頭が `tansho_ninkijun is None` の場合のみ gate fail（odds board 丸ごと欠落）——一部の馬だけ欠落（例: 直前除外）では trip しない。
+2. **Stddev safety net（二次、scoring 後）**: `is_score_spread_degraded` が Stage-2 で既に計算済みの within-race `predicted_score` の母集団標準偏差（`statistics.pstdev`、ddof=0、`serve_health_check.py` の Cluster-B signature と同じ計算）を `stage1_routing.json` の `stddev_threshold` と比較する。odds board 自体は populated に見えるが ranking が別要因で collapse したケースを捕捉する。**しきい値は 0.4**（`serve_health_check.py` の提案値 0.3 から実データで再検証の上で引き上げ）: 2026-07-12 Cluster B（36/36 レース、stddev 0.048-0.160）、2026-07-18 odds-freeze（36 レース、stddev 0.114-0.354 — `COORDINATOR_ENABLED=0` による staleness は「欠落」でなく「連続的な劣化」勾配になるため、元の 0.3 では該当日の degraded レースの 7/36（~19%）を見逃していた）、2026-07-19 健全日（36 レース、stddev 0.749-1.870）、2026-07-11（別の混在インシデント日、stddev 最小 0.044）の実 Neon prediction データで検証済み。
+
+いずれかの条件を満たせば Stage-1 へ route する（両方 fresh かつ non-degraded の場合のみ Stage-2 を維持）。`stage1_routing.json` は category 別の tunable config（`running_style_cell_routing.json` と同じ「config file, not a hardcoded constant」の規約）で、対象 category が無い場合（今のところ NAR/Ban-ei は未設定）は gate が一切発火せず既存動作のまま。Stage-1 artifact のロードは他の companion artifact（NAR transformer、E-top2）と同じ fail-closed パターン（load 失敗・allowlist 未登録・leak 列混入・feature 順序不一致は Stage-1 を今回の run に限り無効化し、champion のみで serve を継続）。`model_meta.PRODUCTION_MODEL_VERSION_ALLOWLIST` に `jra-cb-stage1-marketfree235-2013` を追加済み。artifact 登録は `production-artifacts.json` / `predict_lib.artifact_integrity` の既存 manifest 規約に従う（§2.1.1）。
+
 ### 2.2 学習窓が 3 カテゴリで異なる点（重要）
 
 学習窓は ablation 検証の結果としてカテゴリごとに最適値が異なることが確定している。一律化してはならない。

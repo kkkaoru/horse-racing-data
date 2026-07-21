@@ -53,6 +53,23 @@ NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188, 2026-07-04):
   NAR to historical iter12-nar-xgb-hpo-v8 in production.
   As above, target_corner_2_norm is denied by current artifact guards if a new
   feature store exposes it.
+
+JRA Stage-1 market-free gated fallback (jra-cb-stage1-marketfree235-2013, 2026-07-22):
+  Not a category-default swap -- a FALLBACK artifact routed by
+  ``predict_lib.stage1_routing`` only when the freshness gate or stddev safety
+  net trips (odds-serving incident: the champion's 15 market/odds features
+  fall back to a training median and top1 collapses ~33.6%->~9.4%). Same
+  training recipe as jra-cb-v9-sim-2013-clean (CatBoost YetiRank, iterations
+  300, lr 0.05, depth 8, l2 3.0, relevance 3/2/1, no_cat_features, seed
+  20260519, full 2013-01-01..2025-12-31 single fit, 626,798 rows / 44,907
+  races -- identical population to the champion) with the 15 market features
+  removed (235 feat). Blind WF (triple-anchored: harness + independent
+  retest_wf.py reproduction + advisor review): 28.89% top1 in the collapsed
+  regime (+19.45pp [LB95 +18.44] recovery over the champion's ~9.44%), -4.75pp
+  vs the champion in the healthy regime -- see
+  docs/finish-position-accuracy/history/jra-stage1-market-free-fallback-probe-2026-07-22.md.
+  Steady-state (odds-healthy) accuracy is unaffected: this ADDS an incident
+  floor, it does not replace the primary model.
 """
 
 from __future__ import annotations
@@ -82,6 +99,7 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
     "jra-cb-v9-sim-2013-clean",
     "jra-cb-v9-sim-2013-clean-jockey-pedigree269",
     "jra-cb-v10-prior-corner274-2013",
+    "jra-cb-stage1-marketfree235-2013",
     "iter12-nar-xgb-hpo-v8-clean188",
     "iter40-nar-settransformer-blend-v1",
     "banei-cb-v9-sim-2011",

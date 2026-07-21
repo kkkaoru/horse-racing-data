@@ -135,6 +135,12 @@ from predict_lib.serve import (
     parse_prewarm_params,
     parse_request_path,
 )
+from predict_lib.stage1_routing import (
+    Stage1CategoryConfig,
+    extract_predicted_scores,
+    load_stage1_routing,
+    resolve_stage1_gate,
+)
 from predict_lib.transformer_scorer import (
     TransformerScorer,
     fuse_ensemble_transformer,
@@ -617,6 +623,15 @@ def score_races(
     Connection-free and CPU-bound so the caller can defer the Neon connect until
     the first write (avoiding Neon autosuspend during the long score phase).
 
+    After a race's normal (Stage-2) rows are computed, ``predict_lib.
+    stage1_routing.resolve_stage1_gate`` gets one more say per race when
+    ``stage1_routing.json`` configures a fallback for this category: an
+    odds-serving incident (freshness gate fails) or a collapsed within-race
+    score spread (stddev safety net trips) re-scores that one race with the
+    Stage-1 market-free fallback booster instead, overriding the Stage-2 rows.
+    A category absent from ``stage1_routing.json`` (or a fallback artifact
+    that fails to load) is a pure no-op -- unchanged Stage-2-only behaviour.
+
     ``card_max_race_bango`` feeds the ``is_final_race`` cell-routing dimension
     (see ``cell_router.resolve_dimension``). Two sourcing modes, chosen per
     caller shape (see ``tmp/kochi-final/cell_design.md`` section 3.2):
@@ -692,6 +707,10 @@ def score_races(
     nar_transformer: TransformerScorer | None = None
     if NAR_TRANSFORMER_BLEND_ENABLED and category == "nar":
         nar_transformer = _load_nar_transformer(models_dir, feature_names)
+    stage1_config = load_stage1_routing().get(category)
+    stage1_model: VariantModel | None = None
+    if stage1_config is not None and stage1_config.enabled:
+        stage1_model = _load_stage1_model(models_dir, category, stage1_config)
     # See this function's docstring: an explicit caller-supplied value always
     # wins; batch self-derivation only ever runs (and is only ever correct)
     # when none was supplied, i.e. this is a whole-category request whose
@@ -768,6 +787,27 @@ def score_races(
                 effective_architecture,
                 model_version_for(category),
             )
+        if stage1_model is not None and stage1_config is not None and rows:
+            gate = resolve_stage1_gate(
+                config=stage1_config,
+                entries=entries,
+                stage2_scores=extract_predicted_scores(rows),
+            )
+            if gate.use_stage1:
+                print(
+                    f"[stage1-gate] race={race_id} category={category} "
+                    f"reason={gate.reason} stddev={gate.stddev} -> {stage1_model.model_version}",
+                    file=sys.stderr,
+                )
+                rows = _score_one_race_direct(
+                    stage1_model.booster,
+                    race_id,
+                    category,
+                    entries,
+                    stage1_model.feature_names,
+                    stage1_model.architecture,
+                    stage1_model.model_version,
+                )
         scored.append(rows)
     return scored
 
@@ -1019,6 +1059,59 @@ def _load_xgb_etop2_booster(models_dir: Path) -> BoosterLike:
     from xgboost_adapter import load_xgboost_booster  # bundled in image
 
     return load_xgboost_booster(str(model_path))
+
+
+def _load_stage1_model(
+    models_dir: Path, category: Category, config: Stage1CategoryConfig
+) -> VariantModel | None:
+    """Load the Stage-1 market-free gated-fallback booster, or None to disable.
+
+    Fail-closed at startup (mirrors ``_load_nar_transformer``'s pattern): any
+    load failure, an unapproved model_version, a leak-column artifact, or a
+    feature-count/order mismatch disables the fallback for this run -- every
+    race then scores Stage-2 (the champion) unchanged, exactly as if
+    ``stage1_routing.json`` had no entry for this category. A missing or
+    broken fallback artifact must never block or degrade ordinary serving.
+    """
+    try:
+        assert_production_model_version_allowed(
+            config.model_version, context=f"stage1 fallback category={category}"
+        )
+        architecture = _as_architecture(config.architecture)
+        model_path = models_dir / build_base_model_r2_key(
+            category, config.model_version, MODEL_FILE_NAME
+        )
+        booster = _load_booster_by_arch(model_path, architecture)
+        meta_path = models_dir / build_base_model_r2_key(
+            category, config.model_version, METADATA_FILE_NAME
+        )
+        metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        fnames = [str(name) for name in metadata["feature_names"]]
+        assert_no_within_race_leak_columns(fnames, context=f"stage1 fallback category={category}")
+        assert_feature_count(fnames, config.feature_count)
+        if not _variant_booster_feature_order_matches(booster, architecture, fnames):
+            raise ValueError(
+                f"stage1 fallback category={category} version={config.model_version} "
+                "booster's own trained column order disagrees with metadata.json"
+            )
+    except BaseException as load_error:
+        print(
+            f"[stage1-gate] category={category} version={config.model_version} "
+            f"load failed -> Stage-1 fallback disabled this run: {load_error}",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"[stage1-gate] loaded category={category} version={config.model_version} "
+        f"features={config.feature_count}",
+        file=sys.stderr,
+    )
+    return VariantModel(
+        booster=booster,
+        feature_names=fnames,
+        architecture=architecture,
+        model_version=config.model_version,
+    )
 
 
 def _build_feature_rows(
