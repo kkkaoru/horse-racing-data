@@ -32,8 +32,9 @@ from predict_lib.artifact_integrity import (
 )
 from predict_lib.deploy_flags import DeployFlagsValidationError
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
+from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "bc1d9db2180b2cc099537c3cd34f91361d30508472e89bc3fd8624275fc372be"
+EXPECTED_MANIFEST_ROOT = "5344de9b3bb76991ac1550873cbfba19b0dc8590fea8b94e3405dabcc429fa92"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -77,8 +78,8 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 20
-    assert len(selected) == 20
+    assert len(manifest.artifacts) == 22
+    assert len(selected) == 22
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
@@ -128,7 +129,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 16
+    assert len(selected) == 18
     assert report.status == "MATCH"
     assert len(report.warnings) == 4
     assert report.warnings[0] == (
@@ -903,7 +904,7 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":20,"status":"MATCH","warnings":[]}'
+        '"observed_count":0,"selected_count":22,"status":"MATCH","warnings":[]}'
     )
 
 
@@ -913,7 +914,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 20
+    assert output["selected_count"] == 22
 
 
 def test_main_missing_local_artifacts_fail(
@@ -940,7 +941,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 20
+    assert output["selected_count"] == 22
 
 
 def test_main_invalid_manifest_fails(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
@@ -977,7 +978,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 16
+    assert output["selected_count"] == 18
 
 
 # ---------------------------------------------------------------------------
@@ -1183,6 +1184,116 @@ def test_nar_transformer_deploy_flags_malformed_fails_closed(tmp_path: Path) -> 
 
     with pytest.raises(DeployFlagsValidationError, match="keys differ"):
         derive_selected_artifact_keys(deploy_flags_path=flags_path)
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 market-free gated fallback: its artifact is always in the selector
+# closure whenever stage1_routing.json enables it for a category (mirrors the
+# cell-routing variant precedent: reachability does not depend on whether any
+# particular race would actually trip the gate today).
+# ---------------------------------------------------------------------------
+
+_STAGE1_JRA_KEY_PREFIX = "finish-position/jra/jra-cb-stage1-marketfree235-2013/"
+
+
+def _write_stage1_routing(tmp_path: Path, payload: object) -> Path:
+    path = tmp_path / "stage1_routing.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_tracked_stage1_routing_is_selected_by_default() -> None:
+    """The live tracked stage1_routing.json enables JRA -- its artifact must
+    always be in the selector closure, matching the live manifest bundle."""
+    selected = derive_selected_artifact_keys()
+
+    assert any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
+
+
+def test_stage1_routing_path_can_disable_selection(tmp_path: Path) -> None:
+    routing_path = _write_stage1_routing(
+        tmp_path,
+        {
+            "jra": {
+                "enabled": False,
+                "model_version": "jra-cb-stage1-marketfree235-2013",
+                "feature_count": 235,
+                "architecture": "catboost",
+                "stddev_threshold": 0.4,
+            }
+        },
+    )
+
+    selected = derive_selected_artifact_keys(stage1_routing_path=routing_path)
+
+    assert not any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
+
+
+def test_stage1_routing_path_empty_object_selects_nothing(tmp_path: Path) -> None:
+    routing_path = _write_stage1_routing(tmp_path, {})
+
+    selected = derive_selected_artifact_keys(stage1_routing_path=routing_path)
+
+    assert not any(key.startswith(_STAGE1_JRA_KEY_PREFIX) for key in selected)
+
+
+def test_stage1_routing_path_malformed_fails_closed(tmp_path: Path) -> None:
+    routing_path = _write_stage1_routing(tmp_path, {"usa": {}})
+
+    with pytest.raises(Stage1RoutingValidationError, match="unsupported categories"):
+        derive_selected_artifact_keys(stage1_routing_path=routing_path)
+
+
+def test_disabled_stage1_routing_is_unselected_warning_only(tmp_path: Path) -> None:
+    """Disabling Stage-1 via an override (e.g. to preview a rollback before
+    flipping the tracked file) makes its two manifested bundle artifacts
+    unselected -- a warning, not an INTEGRITY_FAILURE, since the manifest
+    still legitimately carries their bytes (registered, ready to flip back
+    on) -- same pattern as ``test_disabled_transformer_is_unselected_warning_only``."""
+    manifest = load_manifest()
+    routing_path = _write_stage1_routing(
+        tmp_path,
+        {
+            "jra": {
+                "enabled": False,
+                "model_version": "jra-cb-stage1-marketfree235-2013",
+                "feature_count": 235,
+                "architecture": "catboost",
+                "stddev_threshold": 0.4,
+            }
+        },
+    )
+    selected = derive_selected_artifact_keys(stage1_routing_path=routing_path)
+    report = verify_selector_closure(manifest, selected)
+
+    assert report.status == "MATCH"
+    assert any(
+        warning
+        == f"unselected manifest artifact: {_STAGE1_JRA_KEY_PREFIX}metadata.json"
+        for warning in report.warnings
+    )
+    assert any(
+        warning == f"unselected manifest artifact: {_STAGE1_JRA_KEY_PREFIX}model.json"
+        for warning in report.warnings
+    )
+
+
+def test_stage1_manifested_bundle_matches_tracked_routing_model_version() -> None:
+    """The manifest's Stage-1 bundle_id must reference the SAME model_version
+    the tracked stage1_routing.json actually routes to -- a drift here would
+    mean the artifact-integrity preflight silently verifies bytes for a
+    version that could never actually be selected at serve time."""
+    manifest = load_manifest()
+    stage1_config = load_stage1_routing()["jra"]
+    stage1_artifacts = [
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.system == "finish-position"
+        and artifact.category == "jra"
+        and artifact.model_version == stage1_config.model_version
+    ]
+
+    assert {artifact.role for artifact in stage1_artifacts} == {"metadata", "model"}
 
 
 # ---------------------------------------------------------------------------

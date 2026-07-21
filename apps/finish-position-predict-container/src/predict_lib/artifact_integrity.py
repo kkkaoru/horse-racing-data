@@ -43,6 +43,7 @@ from .running_style_routing import (
     RunningStyleCategoryRouting,
     load_running_style_cell_routing,
 )
+from .stage1_routing import STAGE1_ROUTING_PATH, load_stage1_routing
 
 IntegrityStatus = Literal["MATCH", "INTEGRITY_FAILURE", "INDETERMINATE"]
 ObservationState = Literal["present", "missing", "unavailable"]
@@ -598,6 +599,7 @@ def derive_selected_artifact_keys(
     nar_transformer_enabled: bool | None = None,
     deploy_flags_path: Path = DEPLOY_FLAGS_PATH,
     running_style_routing_path: Path = RUNNING_STYLE_ROUTING_PATH,
+    stage1_routing_path: Path = STAGE1_ROUTING_PATH,
 ) -> frozenset[str]:
     """Derive every artifact key production selectors can currently reach.
 
@@ -636,6 +638,14 @@ def derive_selected_artifact_keys(
         )
     routing = load_running_style_cell_routing(running_style_routing_path)
     selected.update(_running_style_selected_keys(routing))
+    stage1_routing = load_stage1_routing(stage1_routing_path)
+    for category, stage1_config in stage1_routing.items():
+        if not stage1_config.enabled:
+            continue
+        selected.add(_finish_position_key(category, stage1_config.model_version, MODEL_FILE_NAME))
+        selected.add(
+            _finish_position_key(category, stage1_config.model_version, METADATA_FILE_NAME)
+        )
     return frozenset(selected)
 
 
