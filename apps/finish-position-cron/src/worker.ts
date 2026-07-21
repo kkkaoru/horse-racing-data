@@ -599,13 +599,15 @@ export const handleScheduled = async (event: ScheduledEvent, env: Env): Promise<
     return;
   }
   if (shouldRunCoverageSelfHealCron(event.cron)) {
-    // Per-race coverage self-healing scan (doc §4.3,
+    // Per-race coverage self-healing + pre-race readiness scan (doc §4.3,
     // docs/cf-only-serving-architecture.md): the direct functional
     // replacement for race-prediction-guard.sh's day-wide COUNT check.
-    // Re-enqueues only the specific races whose post time is >15 min past
-    // and still missing a complete prediction, respecting the existing
-    // focused-full DO claim/heartbeat/staleness semantics -- never a
-    // day-wide re-run. See coverage-self-heal.ts.
+    // Same tick also enqueues mode=full skipDedup for incomplete races in
+    // (now, now+PRE_RACE_LEAD_MINUTES] so predictions exist before post, not
+    // only via the post-grace heal path. Post-race path still re-enqueues
+    // races whose post time is >15 min past and still missing rows, respecting
+    // focused-full DO claim/heartbeat/staleness -- never a day-wide re-run.
+    // See coverage-self-heal.ts.
     await runCoverageSelfHeal({ env, now: new Date(event.scheduledTime) });
     return;
   }

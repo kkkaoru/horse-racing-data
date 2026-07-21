@@ -1,21 +1,24 @@
-// Run with bun. Per-race coverage self-healing cron (doc §4.3,
-// docs/cf-only-serving-architecture.md). Replaces race-prediction-guard.sh's
-// day-wide COUNT check -- which could not distinguish "36 races done, 0
-// pending" from "34 races done, 2 genuinely still in flight" and periodically
-// escalated against races that were not actually stuck -- with a per-race
-// scan (feedback_production_per_race_granularity): for every race whose post
-// time is more than a grace window in the past, check the same Neon
-// completion query the queue consumer already trusts
-// (isFocusedFullPredictionComplete); for any race still incomplete, check the
-// focused-full DO claim before touching anything, and only re-enqueue a fresh
-// skipDedup focused-full message for a race with no claim (a
-// coordinator/discovery gap) or a stale/terminal-error claim (already
-// exhausted the normal retry/DLQ recovery paths). A race with a fresh
-// in-flight claim is left alone -- the coordinator's own redelivery loop or
-// the DLQ consumer (dlq-consumer.ts) will handle it if it truly dies.
+// Run with bun. Per-race coverage self-healing + pre-race readiness cron
+// (doc §4.3, docs/cf-only-serving-architecture.md).
 //
-// Not wired into worker.ts/wrangler.jsonc yet -- see the hookup diff in this
-// change's commit message / handoff report.
+// Post-race path (unchanged contract): for every race whose post time is more
+// than a grace window in the past, check the same Neon completion query the
+// queue consumer already trusts (isFocusedFullPredictionComplete); for any
+// race still incomplete, check the focused-full DO claim before touching
+// anything, and only re-enqueue a fresh skipDedup focused-full message for a
+// race with no claim (a coordinator/discovery gap) or a stale/terminal-error
+// claim. A race with a fresh in-flight claim is left alone.
+//
+// Pre-race readiness path (PRE_RACE_READY): the post-race path cannot fix
+// user-visible gaps before post by design (isPastGraceWindow). Production
+// evidence (2026-07-21 NAR) showed mode=full rows generated after post or
+// missing entirely when the primary RS→finish-position trigger lagged. This
+// module also scans races with race_start_at_jst in
+// (now, now + PRE_RACE_LEAD_MINUTES], enqueues incomplete ones as the same
+// mode=full skipDedup focused-full message, prioritised by earliest post
+// first, with a per-tick enqueue cap and a per-race pre-race budget that does
+// not burn the post-race MAX_SELF_HEAL budget (counted via recorded_at vs
+// race start -- no D1 migration).
 
 import { claimFocusedFullRace } from "./do-state";
 import { isFocusedFullPredictionComplete } from "./focused-full-completion";
@@ -33,17 +36,31 @@ import {
 // both the existing */10 per-race rescore coordinator and the */30 Neon
 // warm cron so no two race-hours crons ever fire on the same tick (mirrors
 // the offset reasoning already used for COORDINATOR_CRON_RACE_HOURS in
-// cron-decision.ts).
+// cron-decision.ts). Same tick also runs the pre-race readiness scan.
 export const COVERAGE_SELF_HEAL_CRON = "7,22,37,52 1-11 * * *";
 const SELF_HEAL_GRACE_MINUTES = 15;
+// Mirrors WEIGHT_FETCH_LEAD_MINUTES in sync-realtime-data (180): open the
+// pre-race readiness window early enough that a worst-case serialised
+// focused-full pipeline (~13-27 min/race, single container slot per category)
+// still has room to finish before post for the earliest races in the window.
+export const PRE_RACE_LEAD_MINUTES = 180;
+// Per-tick bound so a full NAR morning card of incomplete races cannot stampede
+// the predict queue / single container slot in one heal tick. Remainder is
+// picked up on the next 15-min tick, still ordered by earliest post first.
+export const PRE_RACE_ENQUEUE_CAP_PER_TICK = 16;
 const MS_PER_MINUTE = 60 * 1000;
 // Bounded lower than DLQ's MAX_DLQ_REDRIVES=1 escalation philosophy would
 // suggest at first glance, but self-heal covers a broader failure class than
 // the DLQ consumer (a genuine "never enqueued at all" discovery gap needs
 // exactly one successful trigger) -- 2 re-triggers gives one retry beyond the
 // first before treating repeated failure as a poison-pill race that needs a
-// human, not more blind re-triggering.
+// human, not more blind re-triggering. Counts only post-race enqueues (see
+// countPriorEnqueues) so pre-race attempts do not exhaust this budget.
 const MAX_SELF_HEAL_ENQUEUES_PER_RACE = 2;
+// Separate pre-race budget: two attempts inside the lead window before
+// PRE_RACE_READY escalate. Independent of MAX_SELF_HEAL so a race that was
+// retried pre-race still gets post-grace heal attempts.
+export const MAX_PRE_RACE_ENQUEUES_PER_RACE = 2;
 // Mirrors FOCUSED_FULL_IN_FLIGHT_STALE_MS in queue-consumer.ts (duplicated,
 // not imported, matching the same duplication precedent day-base-prewarm.ts
 // already established for PREDICT_CONTAINER_NAME_PREFIX -- avoids coupling
@@ -61,12 +78,23 @@ const JRA_CATEGORY: PredictCategory = "jra";
 const NAR_CATEGORY: PredictCategory = "nar";
 const BAN_EI_CATEGORY: PredictCategory = "ban-ei";
 const FULL_MODE: PredictMode = "full";
+const ISO_UTC_SECONDS_LENGTH = 19;
 const LIST_RACE_SOURCES_SQL = `select source, keibajo_code, race_bango, race_start_at_jst
    from realtime_race_sources
   where kaisai_nen = ?1 and kaisai_tsukihi = ?2
   order by race_start_at_jst, keibajo_code, race_bango`;
-const COUNT_PRIOR_ENQUEUES_SQL = `select count(*) as count from finish_position_coverage_gap_events
-  where run_ymd = ?1 and category = ?2 and keibajo_code = ?3 and race_bango = ?4 and enqueued = 1`;
+// Phase-scoped prior-enqueue counts: D1 recorded_at is UTC "YYYY-MM-DD HH:MM:SS"
+// (datetime('now')). Compare against the race post instant reformatted the same
+// way so pre-race rows (recorded before post) and post-race rows (recorded at
+// or after post) keep independent budgets without a schema migration.
+const COUNT_PRIOR_ENQUEUES_BEFORE_POST_SQL = `select count(*) as count from finish_position_coverage_gap_events
+  where run_ymd = ?1 and category = ?2 and keibajo_code = ?3 and race_bango = ?4 and enqueued = 1
+    and recorded_at < ?5`;
+const COUNT_PRIOR_ENQUEUES_ON_OR_AFTER_POST_SQL = `select count(*) as count from finish_position_coverage_gap_events
+  where run_ymd = ?1 and category = ?2 and keibajo_code = ?3 and race_bango = ?4 and enqueued = 1
+    and recorded_at >= ?5`;
+
+type HealPhase = "pre-race" | "post-race";
 
 interface RaceSourceRow {
   source: string;
@@ -84,6 +112,7 @@ export interface GapCandidate {
   keibajoCode: string;
   raceBango: string;
   raceStartAtJst: string;
+  phase: HealPhase;
 }
 
 export interface CoverageSelfHealSummary {
@@ -94,9 +123,13 @@ export interface CoverageSelfHealSummary {
   enqueued: number;
   escalated: number;
   errors: number;
+  capped: number;
+  preRaceCandidates: number;
+  preRaceEnqueued: number;
+  postRaceCandidates: number;
 }
 
-type HealOutcome = "complete" | "enqueued" | "error" | "escalated" | "in-flight";
+type HealOutcome = "capped" | "complete" | "enqueued" | "error" | "escalated" | "in-flight";
 
 interface RunCoverageSelfHealParams {
   env: Env;
@@ -106,6 +139,9 @@ interface RunCoverageSelfHealParams {
 interface HealCandidateParams {
   candidate: GapCandidate;
   env: Env;
+  // Mutable tick-local counter for the pre-race per-tick enqueue cap. Shared
+  // across sequential pre-race heals in the same runCoverageSelfHeal call.
+  preRaceEnqueuedThisTick: { count: number };
   runDate: string;
   runYmd: string;
 }
@@ -128,10 +164,14 @@ interface RecordCoverageGapEventParams {
 const EMPTY_SUMMARY: CoverageSelfHealSummary = {
   alreadyComplete: 0,
   alreadyInFlight: 0,
+  capped: 0,
   candidates: 0,
   enqueued: 0,
   errors: 0,
   escalated: 0,
+  postRaceCandidates: 0,
+  preRaceCandidates: 0,
+  preRaceEnqueued: 0,
   scanned: 0,
 };
 
@@ -140,6 +180,7 @@ const EMPTY_SUMMARY: CoverageSelfHealSummary = {
 // indexing never yields undefined -- mirrors CATEGORY_RACE_FILTERS in
 // race-coordinator.ts).
 const OUTCOME_SUMMARY_KEYS: Readonly<Record<HealOutcome, keyof CoverageSelfHealSummary>> = {
+  capped: "capped",
   complete: "alreadyComplete",
   enqueued: "enqueued",
   error: "errors",
@@ -147,7 +188,7 @@ const OUTCOME_SUMMARY_KEYS: Readonly<Record<HealOutcome, keyof CoverageSelfHealS
   "in-flight": "alreadyInFlight",
 };
 
-// Only the configured cron triggers a self-heal scan.
+// Only the configured cron triggers a self-heal / pre-race readiness scan.
 export const shouldRunCoverageSelfHealCron = (cron: string): boolean =>
   cron === COVERAGE_SELF_HEAL_CRON;
 
@@ -170,38 +211,95 @@ const listTodaysRaceSources = async (db: D1Database, runYmd: string): Promise<Ra
   return result.results;
 };
 
-// A race is a self-heal candidate once its post time is more than
+// D1 datetime('now') stores UTC as "YYYY-MM-DD HH:MM:SS". Match that shape so
+// lexicographic compare against recorded_at is a true time compare.
+const raceStartAtJstToD1Utc = (raceStartAtJst: string): string | null => {
+  const postMs = Date.parse(raceStartAtJst);
+  if (Number.isNaN(postMs)) return null;
+  return new Date(postMs).toISOString().slice(0, ISO_UTC_SECONDS_LENGTH).replace("T", " ");
+};
+
+// A race is a post-race self-heal candidate once its post time is more than
 // SELF_HEAL_GRACE_MINUTES in the past -- a genuinely on-schedule pipeline
 // (even a worst-case ~27.5 min JRA full build) should be long done by then if
-// it started anywhere near post, and a race whose post time has not yet
-// arrived or is still inside the grace window is left to the normal
-// pre-race dispatch path.
-const isPastGraceWindow = (raceStartAtJst: string, now: Date): boolean => {
+// it started anywhere near post, and a race still inside the grace window is
+// left to the normal dispatch path (and/or the pre-race readiness path if it
+// was incomplete going into post).
+export const isPastGraceWindow = (raceStartAtJst: string, now: Date): boolean => {
   const postMs = Date.parse(raceStartAtJst);
   if (Number.isNaN(postMs)) return false;
   return postMs <= now.getTime() - SELF_HEAL_GRACE_MINUTES * MS_PER_MINUTE;
 };
 
-const buildGapCandidates = (rows: readonly RaceSourceRow[], now: Date): GapCandidate[] =>
-  rows
-    .filter((row) => isPastGraceWindow(row.race_start_at_jst, now))
-    .map((row) => {
-      const keibajoCode = pad(row.keibajo_code, KEIBAJO_PAD_WIDTH);
-      return {
-        category: resolveRaceCategory(row.source, keibajoCode),
-        keibajoCode,
-        raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
-        raceStartAtJst: row.race_start_at_jst,
-      };
-    });
+// Upcoming incomplete races in (now, now + PRE_RACE_LEAD_MINUTES]: exclusive of
+// now (already-posted races are either in grace or post-heal), inclusive of the
+// lead boundary so a race exactly PRE_RACE_LEAD_MINUTES out is scanned.
+export const isWithinPreRaceLeadWindow = (raceStartAtJst: string, now: Date): boolean => {
+  const postMs = Date.parse(raceStartAtJst);
+  if (Number.isNaN(postMs)) return false;
+  const deltaMs = postMs - now.getTime();
+  return deltaMs > 0 && deltaMs <= PRE_RACE_LEAD_MINUTES * MS_PER_MINUTE;
+};
 
-const countPriorSelfHealEnqueues = async (params: CountPriorEnqueuesParams): Promise<number> => {
+const rowToCandidate = (row: RaceSourceRow, phase: HealPhase): GapCandidate => {
+  const keibajoCode = pad(row.keibajo_code, KEIBAJO_PAD_WIDTH);
+  return {
+    category: resolveRaceCategory(row.source, keibajoCode),
+    keibajoCode,
+    phase,
+    raceBango: pad(row.race_bango, RACE_BANGO_PAD_WIDTH),
+    raceStartAtJst: row.race_start_at_jst,
+  };
+};
+
+// Earliest post first so the races closest to (or already past) post time get
+// heal / readiness attempts before later ones when a tick is capacity-bound.
+const sortByRaceStartAscending = (candidates: GapCandidate[]): GapCandidate[] =>
+  [...candidates].sort((a, b) => {
+    const aMs = Date.parse(a.raceStartAtJst);
+    const bMs = Date.parse(b.raceStartAtJst);
+    if (aMs !== bMs) return aMs - bMs;
+    const keibajoCmp = a.keibajoCode.localeCompare(b.keibajoCode);
+    if (keibajoCmp !== 0) return keibajoCmp;
+    return a.raceBango.localeCompare(b.raceBango);
+  });
+
+export const buildPostRaceGapCandidates = (
+  rows: readonly RaceSourceRow[],
+  now: Date,
+): GapCandidate[] =>
+  sortByRaceStartAscending(
+    rows
+      .filter((row) => isPastGraceWindow(row.race_start_at_jst, now))
+      .map((row) => rowToCandidate(row, "post-race")),
+  );
+
+export const buildPreRaceGapCandidates = (
+  rows: readonly RaceSourceRow[],
+  now: Date,
+): GapCandidate[] =>
+  sortByRaceStartAscending(
+    rows
+      .filter((row) => isWithinPreRaceLeadWindow(row.race_start_at_jst, now))
+      .map((row) => rowToCandidate(row, "pre-race")),
+  );
+
+const countPriorEnqueues = async (params: CountPriorEnqueuesParams): Promise<number> => {
   const { candidate, env, runYmd } = params;
-  const row = await env.FINISH_POSITION_CRON_DB.prepare(COUNT_PRIOR_ENQUEUES_SQL)
-    .bind(runYmd, candidate.category, candidate.keibajoCode, candidate.raceBango)
+  const postUtc = raceStartAtJstToD1Utc(candidate.raceStartAtJst);
+  if (postUtc === null) return 0;
+  const sql =
+    candidate.phase === "pre-race"
+      ? COUNT_PRIOR_ENQUEUES_BEFORE_POST_SQL
+      : COUNT_PRIOR_ENQUEUES_ON_OR_AFTER_POST_SQL;
+  const row = await env.FINISH_POSITION_CRON_DB.prepare(sql)
+    .bind(runYmd, candidate.category, candidate.keibajoCode, candidate.raceBango, postUtc)
     .first<CountRow>();
   return row?.count ?? 0;
 };
+
+const maxEnqueuesForPhase = (phase: HealPhase): number =>
+  phase === "pre-race" ? MAX_PRE_RACE_ENQUEUES_PER_RACE : MAX_SELF_HEAL_ENQUEUES_PER_RACE;
 
 const recordCoverageGapEvent = async (params: RecordCoverageGapEventParams): Promise<void> => {
   const { candidate, enqueued, env, escalated, priorEnqueueCount, runYmd } = params;
@@ -236,9 +334,15 @@ const escalateCandidate = async (
     priorEnqueueCount,
     runYmd,
   });
-  console.error(
-    `SELF_HEAL_ESCALATE ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
-  );
+  if (candidate.phase === "pre-race") {
+    console.error(
+      `PRE_RACE_READY_ESCALATE pre_race=1 ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+    );
+  } else {
+    console.error(
+      `SELF_HEAL_ESCALATE ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+    );
+  }
   return "escalated";
 };
 
@@ -266,9 +370,16 @@ const enqueueGapFill = async (
     priorEnqueueCount,
     runYmd,
   });
-  console.warn(
-    `[coverage-self-heal] enqueued gap-fill ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
-  );
+  if (candidate.phase === "pre-race") {
+    params.preRaceEnqueuedThisTick.count += 1;
+    console.warn(
+      `[coverage-self-heal] PRE_RACE_READY enqueued gap-fill pre_race=1 ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+    );
+  } else {
+    console.warn(
+      `[coverage-self-heal] enqueued gap-fill ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+    );
+  }
   return "enqueued";
 };
 
@@ -276,7 +387,7 @@ const enqueueGapFill = async (
 // block the rest of this tick's candidates, mirroring day-base-prewarm.ts's
 // per-category isolation.
 const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> => {
-  const { candidate, env, runYmd } = params;
+  const { candidate, env, preRaceEnqueuedThisTick, runYmd } = params;
   try {
     const complete = await isFocusedFullPredictionComplete({
       category: candidate.category,
@@ -286,8 +397,8 @@ const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> 
       runYmd,
     });
     if (complete) return "complete";
-    const priorEnqueueCount = await countPriorSelfHealEnqueues({ candidate, env, runYmd });
-    if (priorEnqueueCount >= MAX_SELF_HEAL_ENQUEUES_PER_RACE) {
+    const priorEnqueueCount = await countPriorEnqueues({ candidate, env, runYmd });
+    if (priorEnqueueCount >= maxEnqueuesForPhase(candidate.phase)) {
       return await escalateCandidate(params, priorEnqueueCount);
     }
     const claim = await claimFocusedFullRace({
@@ -299,40 +410,87 @@ const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> 
       staleAfterMs: SELF_HEAL_FOCUSED_FULL_STALE_MS,
     });
     if (!claim.proceed) return "in-flight";
+    if (
+      candidate.phase === "pre-race" &&
+      preRaceEnqueuedThisTick.count >= PRE_RACE_ENQUEUE_CAP_PER_TICK
+    ) {
+      console.warn(
+        `[coverage-self-heal] PRE_RACE_READY capped pre_race=1 ${describeCandidate(candidate, runYmd)} tickEnqueued=${preRaceEnqueuedThisTick.count}`,
+      );
+      return "capped";
+    }
     return await enqueueGapFill(params, priorEnqueueCount);
   } catch (err) {
-    console.error(
-      `[coverage-self-heal] failed to heal ${describeCandidate(candidate, runYmd)}:`,
-      String(err),
-    );
+    const prefix =
+      candidate.phase === "pre-race"
+        ? `[coverage-self-heal] PRE_RACE_READY failed to heal pre_race=1`
+        : `[coverage-self-heal] failed to heal`;
+    console.error(`${prefix} ${describeCandidate(candidate, runYmd)}:`, String(err));
     return "error";
   }
 };
 
 const summarizeOutcomes = (
   scanned: number,
-  candidateCount: number,
+  preRaceCandidates: number,
+  postRaceCandidates: number,
   outcomes: readonly HealOutcome[],
+  preRaceEnqueued: number,
 ): CoverageSelfHealSummary =>
   outcomes.reduce(
     (acc, outcome) => {
       const key = OUTCOME_SUMMARY_KEYS[outcome];
       return { ...acc, [key]: acc[key] + 1 };
     },
-    { ...EMPTY_SUMMARY, candidates: candidateCount, scanned },
+    {
+      ...EMPTY_SUMMARY,
+      candidates: preRaceCandidates + postRaceCandidates,
+      postRaceCandidates,
+      preRaceCandidates,
+      preRaceEnqueued,
+      scanned,
+    },
   );
 
 const logTickSummary = (runYmd: string, summary: CoverageSelfHealSummary): void => {
   console.log(
-    `[coverage-self-heal] tick runYmd=${runYmd} scanned=${summary.scanned} candidates=${summary.candidates} enqueued=${summary.enqueued} escalated=${summary.escalated} alreadyInFlight=${summary.alreadyInFlight} alreadyComplete=${summary.alreadyComplete} errors=${summary.errors}`,
+    `[coverage-self-heal] tick runYmd=${runYmd} scanned=${summary.scanned} candidates=${summary.candidates} preRaceCandidates=${summary.preRaceCandidates} postRaceCandidates=${summary.postRaceCandidates} enqueued=${summary.enqueued} preRaceEnqueued=${summary.preRaceEnqueued} escalated=${summary.escalated} alreadyInFlight=${summary.alreadyInFlight} alreadyComplete=${summary.alreadyComplete} capped=${summary.capped} errors=${summary.errors}`,
   );
 };
 
-// Entry point: scan today's races for coverage gaps and re-trigger the
-// ones that need it. Scoped to a single JST calendar day (the day the cron
-// fires on) -- a future-dated race can never satisfy the past-grace-window
-// filter yet, so it is naturally picked up once its own day becomes "today"
-// and this cron scans it again; no multi-day lookahead scan is needed.
+// Heal post-race candidates in parallel (existing behaviour -- typically few
+// past-grace incomplete races). Heal pre-race candidates sequentially in
+// race_start ascending order so the per-tick enqueue cap is deterministic and
+// earliest posts are preferred.
+const healAllCandidates = async (params: {
+  env: Env;
+  postRaceCandidates: readonly GapCandidate[];
+  preRaceCandidates: readonly GapCandidate[];
+  runDate: string;
+  runYmd: string;
+}): Promise<{ outcomes: HealOutcome[]; preRaceEnqueued: number }> => {
+  const { env, postRaceCandidates, preRaceCandidates, runDate, runYmd } = params;
+  const preRaceEnqueuedThisTick = { count: 0 };
+  const postOutcomes = await Promise.all(
+    postRaceCandidates.map((candidate) =>
+      healCandidate({ candidate, env, preRaceEnqueuedThisTick, runDate, runYmd }),
+    ),
+  );
+  const preOutcomes: HealOutcome[] = [];
+  for (const candidate of preRaceCandidates) {
+    preOutcomes.push(
+      await healCandidate({ candidate, env, preRaceEnqueuedThisTick, runDate, runYmd }),
+    );
+  }
+  return {
+    outcomes: [...postOutcomes, ...preOutcomes],
+    preRaceEnqueued: preRaceEnqueuedThisTick.count,
+  };
+};
+
+// Entry point: scan today's races for pre-race readiness gaps and post-race
+// coverage gaps, re-triggering the ones that need it. Scoped to a single JST
+// calendar day (the day the cron fires on).
 export const runCoverageSelfHeal = async (
   params: RunCoverageSelfHealParams,
 ): Promise<CoverageSelfHealSummary> => {
@@ -344,14 +502,28 @@ export const runCoverageSelfHeal = async (
   }
   const runDate = getRunDateJst(now);
   const rows = await listTodaysRaceSources(env.REALTIME_DB, runYmd);
-  const candidates = buildGapCandidates(rows, now);
-  if (candidates.length === 0) {
-    return { ...EMPTY_SUMMARY, scanned: rows.length };
+  const postRaceCandidates = buildPostRaceGapCandidates(rows, now);
+  const preRaceCandidates = buildPreRaceGapCandidates(rows, now);
+  if (postRaceCandidates.length === 0 && preRaceCandidates.length === 0) {
+    return {
+      ...EMPTY_SUMMARY,
+      scanned: rows.length,
+    };
   }
-  const outcomes = await Promise.all(
-    candidates.map((candidate) => healCandidate({ candidate, env, runDate, runYmd })),
+  const { outcomes, preRaceEnqueued } = await healAllCandidates({
+    env,
+    postRaceCandidates,
+    preRaceCandidates,
+    runDate,
+    runYmd,
+  });
+  const summary = summarizeOutcomes(
+    rows.length,
+    preRaceCandidates.length,
+    postRaceCandidates.length,
+    outcomes,
+    preRaceEnqueued,
   );
-  const summary = summarizeOutcomes(rows.length, candidates.length, outcomes);
   logTickSummary(runYmd, summary);
   return summary;
 };

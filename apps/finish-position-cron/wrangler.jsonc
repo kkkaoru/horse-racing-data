@@ -32,13 +32,16 @@
       // the predict / warm crons, and mode=rescore shares the same model
       // resolution + cell routing as the full pass (see race-coordinator.ts).
       "*/10 1-11 * * *", // JST 10:00-20:59 — per-race rescore coordinator
-      // Coverage self-healing cron (every 15 min, JST 10:00-20:59, offset 7 min
-      // from the coordinator/warm crons above so no race-hours tick collides):
-      // per-race replacement for race-prediction-guard.sh's day-wide COUNT
-      // check (doc §4.3, docs/cf-only-serving-architecture.md). Re-enqueues
-      // only the specific races whose post time is >15 min past and still
-      // missing a complete prediction (see src/coverage-self-heal.ts).
-      "7,22,37,52 1-11 * * *", // JST 10:00-20:59 — coverage self-healing scan
+      // Coverage self-healing + pre-race readiness cron (every 15 min, JST
+      // 10:00-20:59, offset 7 min from the coordinator/warm crons above so no
+      // race-hours tick collides): per-race replacement for
+      // race-prediction-guard.sh's day-wide COUNT check (doc §4.3,
+      // docs/cf-only-serving-architecture.md). Same tick (1) re-enqueues races
+      // whose post time is >15 min past and still missing a complete prediction
+      // and (2) enqueues mode=full skipDedup for incomplete races in
+      // (now, now+PRE_RACE_LEAD_MINUTES] so user-visible predictions exist
+      // before post (see src/coverage-self-heal.ts).
+      "7,22,37,52 1-11 * * *", // JST 10:00-20:59 — coverage self-heal + pre-race readiness
       // race_entry_corner_features refresh (§4.4, src/corner-features-refresh.ts):
       // morning run populates pre-race entrant rows before the JRA pre-wake/
       // feature-build crons above read them; evening run (after the last
