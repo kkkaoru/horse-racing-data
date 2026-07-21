@@ -66,7 +66,7 @@
     "ai": "6.0.206",
     "drizzle-orm": "0.45.2",
     "horse-racing-realtime": "workspace:*",
-    "next": "16.2.9",
+    "next": "16.2.11",
     "pg": "catalog:",
     "pg-cloudflare": "catalog:",
     "react": "19.2.7",
