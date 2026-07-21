@@ -1,5 +1,10 @@
 """Tests for the deployed NAR Set-Transformer scorer (numpy-only, predict_lib
-coverage >=95 on all four metrics). File I/O is confined to tmp_path fixtures."""
+coverage >=95 on all four metrics). File I/O is confined to tmp_path fixtures,
+except test_baked_nar_transformer_artifact_is_clean_and_shape_consistent below,
+which is a deploy-time smoke check against the real gitignored models/ staging
+tree (see its own skipif guard and DEPLOY.md) -- like predict_upcoming.py
+(pyproject.toml's coverage exclusion comment), it is intentionally not
+runnable from a fresh checkout that has not staged real model artifacts."""
 
 from __future__ import annotations
 
@@ -20,6 +25,14 @@ import predict_lib.transformer_scorer as tsc
 from predict_lib.model_meta import (
     NAR_TRANSFORMER_MODEL_VERSION,
     WITHIN_RACE_LEAK_COLUMNS,
+)
+
+_BAKED_NAR_TRANSFORMER_ARTIFACT_DIR = (
+    Path(__file__).resolve().parent.parent
+    / "models"
+    / "finish-position"
+    / "nar"
+    / NAR_TRANSFORMER_MODEL_VERSION
 )
 
 # ``_present_float`` is module-private (leading underscore); accessed via
@@ -387,15 +400,15 @@ def test_load_transformer_rejects_projection_feature_count_mismatch(
         tsc.load_transformer(tmp_path)
 
 
+@pytest.mark.skipif(
+    not _BAKED_NAR_TRANSFORMER_ARTIFACT_DIR.exists(),
+    reason=(
+        "requires the real baked NAR transformer artifact under the gitignored "
+        "models/ staging tree (see DEPLOY.md) -- absent in a fresh checkout"
+    ),
+)
 def test_baked_nar_transformer_artifact_is_clean_and_shape_consistent() -> None:
-    artifact_dir = (
-        Path(__file__).resolve().parent.parent
-        / "models"
-        / "finish-position"
-        / "nar"
-        / NAR_TRANSFORMER_MODEL_VERSION
-    )
-    scorer = tsc.load_transformer(artifact_dir)
+    scorer = tsc.load_transformer(_BAKED_NAR_TRANSFORMER_ARTIFACT_DIR)
 
     assert len(scorer.feature_order) == 113
     assert WITHIN_RACE_LEAK_COLUMNS.isdisjoint(scorer.feature_order)
