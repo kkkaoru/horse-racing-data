@@ -187,36 +187,54 @@
     // "expression too deep" error for JRA (see
     // apps/pc-keiba-viewer/docs/probes/jra-serving-audit-jun-jul-2026-07-17.md
     // Defect G), so RS stays null and every rescore this coordinator fires
-    // re-scores from the same degraded feature vector. This flag does not fix
-    // that; it only stops the coordinator from re-producing (not just
-    // leaving stale) garbage while the real fix is designed for the 17:00 JST
-    // window. Re-enable once the R2 SQL query is fixed and RS generation is
-    // confirmed healthy for JRA.
-    "COORDINATOR_ENABLED": "0",
+    // re-scores from the same degraded feature vector.
+    //
+    // Re-enabled "0" -> "1" on 2026-07-22 (explicit USER authorization),
+    // deliberately scoped to NAR/Ban-ei ONLY via RESCORE_CATEGORIES below
+    // ("jra,nar,ban-ei" -> "nar,ban-ei", jra dropped): Defect G above is
+    // JRA-specific and still unresolved, so re-scoring JRA would keep
+    // overwriting its honest pre-race prediction row with the degraded null-RS
+    // vector. With jra absent from RESCORE_CATEGORIES, runRaceCoordinatorTick
+    // never plans it (resolveRescoreCategories -> [nar, ban-ei]) and JRA
+    // serving is byte-for-byte unaffected by this flip, while NAR/Ban-ei
+    // finally get their near-post odds/weight rescore (the whole reason the
+    // coordinator exists -- market favorite churns in ~28% of races between a
+    // 09:30-ish snapshot and post). Re-add "jra" to RESCORE_CATEGORIES only
+    // once Defect G is fixed and JRA RS generation is confirmed healthy.
+    // Rollback for this flip: set COORDINATOR_ENABLED back to "0" (config-only,
+    // one deploy) -- that disables the coordinator globally for all categories.
+    "COORDINATOR_ENABLED": "1",
     // Comma-separated PredictCategory list scoping the per-race coordinator
     // above. rescore for any listed category shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
     // the current champion + cell routing + production model version
     // allowlist automatically.
-    // Widened "jra" -> "jra,nar,ban-ei" 2026-07-18 evening, deploy targeted
-    // for 2026-07-19 early-morning off-hours (team-lead-approved, per
-    // do-sharding's task #40 analysis): NAR/Ban-ei (Saga/Kochi/Ban-ei) had been
-    // excluded since 2026-07-11 over a "single per-category container slot"
-    // contention concern with their morning mode=full pass -- that concern was
-    // structurally resolved by the DO-sharding fix (commit d624009b,
-    // 2026-07-18 01:11 JST, predict-do-shard.ts: each category already runs on
-    // its own Durable Object, predict-{category}[-{shardIndex}]) a week after
-    // this exclusion was written, and nobody revisited it. Confirmed via live
-    // Neon data that NAR/Ban-ei's whole-day mode=full pass empirically
-    // finishes at 00:25-00:26 JST, 14-20h before any NAR/Ban-ei post time
-    // (14:30-20:50 JST) -- no realistic overlap under current timing either.
-    // race-coordinator.ts's CATEGORY_TIME_BOX_JST additionally restricts
-    // rescore planning per category as extra margin against an atypically
-    // delayed mode=full (the one tail risk): nar JST [10:00, 21:00) (Saga
-    // morning cards), ban-ei JST [14:00, 21:00). JRA is unaffected (no
-    // time-box, same as before). Rollback: "jra,nar,ban-ei" -> "jra"
-    // (config-only, one deploy).
-    "RESCORE_CATEGORIES": "jra,nar,ban-ei",
+    // Scope history: "jra" (2026-07-11) -> "jra,nar,ban-ei" (2026-07-18
+    // evening, commit c2cccb11) -> "nar,ban-ei" (2026-07-22, this change,
+    // alongside COORDINATOR_ENABLED "0" -> "1" above). The "jra,nar,ban-ei"
+    // value never actually served any rescore: COORDINATOR_ENABLED was already
+    // "0" when it landed (disable commit 09780911 preceded it) and stayed "0"
+    // until 2026-07-22, so the coordinator was a shadow no-op the entire time
+    // it read that value.
+    // jra is deliberately absent now: Defect G (JRA-specific R2-SQL
+    // "expression too deep" -> null RS, see COORDINATOR_ENABLED comment above)
+    // is still unresolved, so re-scoring JRA would overwrite its honest
+    // pre-race row with a degraded vector. resolveRescoreCategories drops jra
+    // and runRaceCoordinatorTick never plans it.
+    // NAR/Ban-ei were long-blocked over a "single per-category container slot"
+    // contention concern that the DO-sharding fix (commit d624009b,
+    // 2026-07-18, predict-do-shard.ts: each category runs on its own Durable
+    // Object, predict-{category}[-{shardIndex}]) structurally resolved; live
+    // Neon data also shows their whole-day mode=full pass finishes 00:25-00:26
+    // JST, 14-20h before any NAR/Ban-ei post (14:30-20:50 JST), so no
+    // realistic overlap remains. race-coordinator.ts's CATEGORY_TIME_BOX_JST
+    // adds extra margin against an atypically delayed mode=full: nar JST
+    // [10:00, 21:00) (Saga morning cards), ban-ei JST [14:00, 21:00).
+    // Rollback for the re-enable: flip COORDINATOR_ENABLED back to "0"
+    // (disables all categories at once). To re-add JRA later (only after
+    // Defect G is fixed and JRA RS is confirmed healthy): "nar,ban-ei" ->
+    // "jra,nar,ban-ei".
+    "RESCORE_CATEGORIES": "nar,ban-ei",
     // Event-driven rescore from sync-realtime-data is disabled while the
     // per-race full path is the production ordering authority. Full generation
     // must not compete with post-weight rescore retries for Container capacity.
