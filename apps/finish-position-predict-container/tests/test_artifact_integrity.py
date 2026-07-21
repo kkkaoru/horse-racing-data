@@ -1218,17 +1218,27 @@ def test_deploy_script_blocks_wrangler_when_verification_fails(tmp_path: Path) -
     `deploy` script must run the artifact-integrity preflight before
     `wrangler deploy` and never reach wrangler when the preflight fails.
     Proven by executing the REAL deploy script string with a stub `wrangler`
-    on PATH that only ever writes a marker file if invoked -- in a clean
-    checkout the staged `models/` build context genuinely lacks every
-    manifest-selected artifact, so the preflight really does fail closed
-    here, the same way it would for any caller who forgot to (or could not)
-    stage a complete build context."""
+    on PATH that only ever writes a marker file if invoked. The ambient
+    `apps/finish-position-predict-container/models/` directory is gitignored
+    and may or may not be populated with real artifacts depending on the
+    checkout, so the execution proof redirects `--artifact-root` to a
+    guaranteed-empty tmp dir: this makes the preflight fail closed
+    deterministically regardless of local models/ state, while the
+    assertions above still pin the real deploy script's
+    `artifact:verify`-before-`wrangler deploy` ordering."""
     cron_package_json = json.loads(
         (REPO_ROOT / "apps/finish-position-cron/package.json").read_text(encoding="utf-8")
     )
     deploy_script = cron_package_json["scripts"]["deploy"]
     assert "artifact:verify" in deploy_script
     assert "wrangler deploy" in deploy_script
+    assert "--artifact-root models" in deploy_script
+
+    empty_artifact_root = tmp_path / "empty-models"
+    empty_artifact_root.mkdir()
+    hermetic_script = deploy_script.replace(
+        "--artifact-root models", f"--artifact-root {empty_artifact_root}"
+    )
 
     stub_bin = tmp_path / "bin"
     stub_bin.mkdir()
@@ -1238,7 +1248,7 @@ def test_deploy_script_blocks_wrangler_when_verification_fails(tmp_path: Path) -
     wrangler_stub.chmod(0o755)
 
     result = subprocess.run(
-        ["sh", "-c", deploy_script],
+        ["sh", "-c", hermetic_script],
         check=False,
         cwd=str(REPO_ROOT / "apps/finish-position-cron"),
         env={**os.environ, "PATH": f"{stub_bin}:{os.environ['PATH']}"},

@@ -13,6 +13,13 @@ const WEIGHT_TREND_MIN_RACES = 2;
 // Floor volatility (kg) so near-zero spread does not blow up the z-score.
 const WEIGHT_ZSCORE_MIN_VOLATILITY = 1;
 const WEIGHT_ZSCORE_CLAMP = 5;
+// Ban-ei (keibajo 83) stores bataiju as a hex string (e.g. '3E8'=1000kg) with
+// 'FFF' as the missing sentinel, whereas JRA/NAR store it as decimal ('470'=470kg).
+// Decode ban-ei via '0x'-equivalent bit(32) cast; keep the decimal path elsewhere.
+const BAN_EI_KEIBAJO_CODE = "83";
+const HEX_WEIGHT_MISSING_SENTINEL = "FFF";
+const HEX_PAD_WIDTH = 8;
+const HEX_BIT_WIDTH = 32;
 
 interface CategoryFilterClauses {
   historySourceFilter: string;
@@ -59,11 +66,24 @@ const bataijuJoinClause = (
       and ${alias}.ketto_toroku_bango = ${prefix}.ketto_toroku_bango
   `;
 
-const safeBataijuCast = (alias: string): string => `
-  case
+const decimalBataijuCast = (alias: string): string => `case
     when trim(coalesce(${alias}.bataiju::text, '')) ~ '^-?[0-9]+$'
       then trim(${alias}.bataiju::text)::integer
     else null
+  end`;
+
+const banEiHexBataijuCast = (alias: string): string => `case
+    when upper(trim(coalesce(${alias}.bataiju::text, ''))) in ('', '${HEX_WEIGHT_MISSING_SENTINEL}') then null
+    when upper(trim(${alias}.bataiju::text)) ~ '^[0-9A-F]+$'
+      then ('x' || lpad(upper(trim(${alias}.bataiju::text)), ${HEX_PAD_WIDTH}, '0'))::bit(${HEX_BIT_WIDTH})::integer
+    else null
+  end`;
+
+const safeBataijuCast = (alias: string): string => `
+  case
+    when ${alias}.keibajo_code = '${BAN_EI_KEIBAJO_CODE}'
+      then ${banEiHexBataijuCast(alias)}
+    else ${decimalBataijuCast(alias)}
   end
 `;
 

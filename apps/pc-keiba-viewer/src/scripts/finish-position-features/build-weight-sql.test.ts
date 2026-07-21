@@ -78,6 +78,30 @@ test("buildWeightUpdateSql safely casts JRA and NAR bataiju values", () => {
   expect(sql).toContain("coalesce(");
 });
 
+test("buildWeightUpdateSql routes bataiju through a keibajo 83 hex branch", () => {
+  const sql = buildWeightUpdateSql("ban-ei");
+  expect(sql).toContain("tn.keibajo_code = '83'");
+  expect(sql).toContain("hn.keibajo_code = '83'");
+});
+
+test("buildWeightUpdateSql decodes ban-ei hex bataiju via a bit(32) cast", () => {
+  expect(buildWeightUpdateSql("ban-ei")).toContain(
+    "('x' || lpad(upper(trim(hn.bataiju::text)), 8, '0'))::bit(32)::integer",
+  );
+});
+
+test("buildWeightUpdateSql nulls the ban-ei FFF missing-weight sentinel", () => {
+  expect(buildWeightUpdateSql("ban-ei")).toContain(
+    "upper(trim(coalesce(hn.bataiju::text, ''))) in ('', 'FFF') then null",
+  );
+});
+
+test("buildWeightUpdateSql keeps the decimal bataiju path for the history JRA alias", () => {
+  expect(buildWeightUpdateSql("jra")).toContain(
+    "trim(coalesce(hj.bataiju::text, '')) ~ '^-?[0-9]+$'",
+  );
+});
+
 test("buildWeightUpdateSql enforces strict less-than race_date for leak prevention", () => {
   expect(buildWeightUpdateSql("jra")).toContain("history.race_date < target.race_date");
 });
