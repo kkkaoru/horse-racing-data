@@ -939,6 +939,48 @@ def test_stage_horse_context_pair_requires_nonblank_curr_jockey() -> None:
     assert rows == [("01", 0, 0), ("02", 1, 1)]
 
 
+def test_stage_horse_context_pair_trims_past_jockey_name_before_comparing() -> None:
+    """Regression test: raw JVD jockey names are full/half-width-space-padded
+    (e.g. '　佐藤　', with U+3000 IDEOGRAPHIC SPACE padding). curr's jockey
+    comes from target_context, which is always trimmed
+    (nullif(trim(rec.kishumei_ryakusho), '')). past comes straight from
+    race_history, which is NEVER trimmed (stage_race_history selects
+    rec.kishumei_ryakusho as-is). Comparing curr's trimmed value against
+    past's raw, still-padded value without also trimming past would silently
+    fail to match every padded name, even though it is the exact same
+    jockey -- pre-fix, curr and past were both literally the SAME untrimmed
+    race_history table, so raw=raw happened to match; that symmetry broke
+    once curr moved to target_context's already-trimmed value, so past must
+    be trimmed inline to restore the match."""
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values ('jra', '20240201', '2024', '0201', '06', '09', 'horse_a',
+                  1600::integer, '24'::varchar, '佐藤'::varchar,
+                  cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values ('jra', '20240101', 'horse_a', '06', 1600::integer,
+                  '24'::varchar, '　佐藤　'::varchar, 2::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    row = con.execute("select pair_starts, pair_p2 from horse_context").fetchone()
+    con.close()
+    assert row == (1, 1)
+
+
 def test_stage_horse_context_full_race_key_isolation_no_cross_race_join() -> None:
     con = duckdb.connect(":memory:")
     con.execute(

@@ -337,7 +337,15 @@ def stage_horse_context(con: duckdb.DuckDBPyConnection) -> None:
     comparison let two blank track_codes ('' = '') count as a false match.
     pair additionally requires a non-blank curr (exact target-row) jockey --
     target_context already resolves blank/missing jockeys to NULL, so
-    ``curr.kishumei_ryakusho is not null`` is a sufficient guard here.
+    ``curr.kishumei_ryakusho is not null`` is a sufficient guard here. The
+    past side is trimmed inline (``nullif(trim(past.kishumei_ryakusho), '')``)
+    to match curr's already-trimmed value -- raw JVD jockey names are
+    full/half-width-space-padded, and past comes straight from race_history
+    (never trimmed there), so comparing it against curr's trimmed value
+    without also trimming past would silently fail to match every padded
+    name (curr and past used to both be the SAME untrimmed race_history
+    table pre-fix, so raw=raw happened to match; that symmetry broke once
+    curr moved to target_context's trimmed value).
     """
     con.execute(
         "create index race_history_idx_horse on race_history (source, ketto_toroku_bango, race_date)"
@@ -362,10 +370,10 @@ def stage_horse_context(con: duckdb.DuckDBPyConnection) -> None:
                        and past.finish_position = 2
                      then 1 else 0 end) as same_track_p2,
           count(case when curr.kishumei_ryakusho is not null
-                       and past.kishumei_ryakusho = curr.kishumei_ryakusho
+                       and nullif(trim(past.kishumei_ryakusho), '') = curr.kishumei_ryakusho
                      then 1 end) as pair_starts,
           sum(case when curr.kishumei_ryakusho is not null
-                       and past.kishumei_ryakusho = curr.kishumei_ryakusho
+                       and nullif(trim(past.kishumei_ryakusho), '') = curr.kishumei_ryakusho
                        and past.finish_position = 2
                      then 1 else 0 end) as pair_p2
         from target_context curr
