@@ -20,6 +20,7 @@ import json
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from types import SimpleNamespace
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 # Import the cross-module helpers directly so the tests stay I/O-free.
 import predict_lib.nar_etop2_override as nar_etop2_override
 import predict_upcoming
-from predict_lib.cell_router import build_base_model_r2_key
+from predict_lib.cell_router import CellRouter, build_base_model_r2_key
 from predict_lib.focused_full_cache import FocusedFullCachePayload, FocusedFullCacheStore
 from predict_lib.model_meta import (
     METADATA_FILE_NAME,
@@ -53,6 +54,7 @@ from predict_lib.serve import (
     iter_predict_chunks,
     parse_predict_params,
 )
+from predict_lib.stage1_routing import Stage1CategoryConfig
 from predict_upcoming import (
     VariantModel,
     execute,
@@ -65,6 +67,7 @@ from predict_upcoming import (
 
 _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
+_LOAD_STAGE1_MODEL_ATTR = "_load_stage1_model"
 _BUILD_FEATURE_ROWS_ATTR = "_build_feature_rows"
 _MAKE_PREWARM_FN_ATTR = "_make_prewarm_fn"
 _MAKE_RESCORE_FN_ATTR = "_make_rescore_fn"
@@ -77,6 +80,10 @@ _load_model_metadata = cast(
 _load_nar_transformer = cast(
     Callable[[Path, Sequence[str]], object | None],
     getattr(predict_upcoming, _LOAD_NAR_TRANSFORMER_ATTR),
+)
+_load_stage1_model = cast(
+    Callable[[Path, Category, Stage1CategoryConfig], VariantModel | None],
+    getattr(predict_upcoming, _LOAD_STAGE1_MODEL_ATTR),
 )
 _build_feature_rows = cast(
     Callable[..., Mapping[str, list[Mapping[str, object]]]],
@@ -2141,6 +2148,225 @@ def test_load_nar_transformer_accepts_clean_feature_order(tmp_path: Path) -> Non
     with patch("predict_upcoming.load_transformer", return_value=transformer):
         loaded = _load_nar_transformer(tmp_path, ["feat"])
     assert loaded is transformer
+
+
+# ---------------------------------------------------------------------------
+# Stage-1 market-free gated fallback (JRA): _load_stage1_model's fail-closed
+# loading, and score_races's end-to-end gate wiring.
+# ---------------------------------------------------------------------------
+
+_STAGE1_TEST_CONFIG = Stage1CategoryConfig(
+    enabled=True,
+    model_version="jra-cb-stage1-marketfree235-2013",
+    feature_count=1,
+    architecture="catboost",
+    stddev_threshold=0.4,
+)
+
+
+def _jra_entries_with_ninkijun(
+    ninkijun_by_umaban: Mapping[int, int | None],
+) -> list[dict[str, object]]:
+    """JRA entries (umaban keys of ``ninkijun_by_umaban``, in order) carrying a
+    single ``feat`` column plus ``tansho_ninkijun`` per the supplied map."""
+    return [
+        {
+            "ketto_toroku_bango": f"H{umaban}",
+            "umaban": umaban,
+            "feat": float(umaban) / 10,
+            "tansho_ninkijun": ninkijun,
+        }
+        for umaban, ninkijun in ninkijun_by_umaban.items()
+    ]
+
+
+def test_load_stage1_model_returns_none_on_unapproved_model_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = Stage1CategoryConfig(
+        enabled=True,
+        model_version="jra-cb-not-on-the-allowlist",
+        feature_count=1,
+        architecture="catboost",
+        stddev_threshold=0.4,
+    )
+
+    loaded = _load_stage1_model(tmp_path, "jra", config)
+
+    assert loaded is None
+    assert "load failed" in capsys.readouterr().err
+
+
+def test_load_stage1_model_returns_none_on_missing_metadata_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No metadata.json staged at all -- the booster load itself never even
+    gets a chance since ``_load_booster_by_arch`` is real here (unpatched)."""
+    loaded = _load_stage1_model(tmp_path, "jra", _STAGE1_TEST_CONFIG)
+
+    assert loaded is None
+    assert "load failed" in capsys.readouterr().err
+
+
+def test_load_stage1_model_returns_none_on_leak_column(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_variant_metadata(
+        tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["target_corner_2_norm"]
+    )
+
+    with patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])):
+        loaded = _load_stage1_model(
+            tmp_path, "jra", replace(_STAGE1_TEST_CONFIG, feature_count=1)
+        )
+
+    assert loaded is None
+    assert "load failed" in capsys.readouterr().err
+
+
+def test_load_stage1_model_returns_none_on_feature_count_mismatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_variant_metadata(
+        tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat_a", "feat_b"]
+    )
+
+    with patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])):
+        loaded = _load_stage1_model(tmp_path, "jra", _STAGE1_TEST_CONFIG)  # feature_count=1
+
+    assert loaded is None
+    assert "load failed" in capsys.readouterr().err
+
+
+def test_load_stage1_model_accepts_clean_artifact(tmp_path: Path) -> None:
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    booster = _ScoreByUmaban([0.1])
+
+    with patch("predict_upcoming._load_booster_by_arch", return_value=booster):
+        loaded = _load_stage1_model(tmp_path, "jra", _STAGE1_TEST_CONFIG)
+
+    assert loaded is not None
+    assert loaded.booster is booster
+    assert list(loaded.feature_names) == ["feat"]
+    assert loaded.architecture == "catboost"
+    assert loaded.model_version == _STAGE1_TEST_CONFIG.model_version
+
+
+def test_score_races_stage1_gate_routes_to_stage1_when_odds_missing(tmp_path: Path) -> None:
+    """Every entry lacking a real tansho_ninkijun -- the freshness gate fails
+    closed to Stage-1 regardless of how healthy the champion's own scores
+    would have looked."""
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    champion = _ScoreByUmaban([3.0, -3.0])  # a healthy spread, if it were used
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+        patch("predict_upcoming._load_booster_by_arch", return_value=stage1_booster),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == _STAGE1_TEST_CONFIG.model_version for row in rows)
+
+
+def test_score_races_stage1_gate_keeps_champion_when_odds_fresh_and_spread_healthy(
+    tmp_path: Path,
+) -> None:
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    entries = _jra_entries_with_ninkijun({1: 1, 2: 2})
+    champion = _ScoreByUmaban([3.0, -3.0])  # stddev well above the 0.4 threshold
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+        patch("predict_upcoming._load_booster_by_arch", return_value=stage1_booster),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean" for row in rows)
+
+
+def test_score_races_stage1_stddev_safety_net_trips_despite_fresh_odds(tmp_path: Path) -> None:
+    """Odds look fresh (every entry has a real tansho_ninkijun) but the
+    champion's own ranking still collapsed -- the stddev safety net must
+    still catch it and route to Stage-1."""
+    _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
+    entries = _jra_entries_with_ninkijun({1: 1, 2: 2})
+    champion = _ScoreByUmaban([0.5, 0.500001])  # collapsed spread, well under 0.4
+    stage1_booster = _ScoreByUmaban([1.0, 2.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+        patch("predict_upcoming._load_booster_by_arch", return_value=stage1_booster),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == _STAGE1_TEST_CONFIG.model_version for row in rows)
+
+
+def test_score_races_stage1_disabled_config_never_overrides_champion(tmp_path: Path) -> None:
+    """A disabled Stage-1 config must never fire, even on odds-missing races."""
+    disabled_config = replace(_STAGE1_TEST_CONFIG, enabled=False)
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    champion = _ScoreByUmaban([3.0, -3.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": disabled_config}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean" for row in rows)
+
+
+def test_score_races_stage1_absent_category_config_never_overrides(tmp_path: Path) -> None:
+    """No "jra" entry in stage1_routing.json at all -- pure no-op, matches
+    behaviour before this fallback existed."""
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    champion = _ScoreByUmaban([3.0, -3.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean" for row in rows)
+
+
+def test_score_races_stage1_broken_artifact_falls_back_to_champion(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stage-1 gate WOULD trip (odds missing) but the artifact itself fails
+    to load (no metadata.json staged) -- must fail closed to the champion,
+    never leave the race unscored."""
+    entries = _jra_entries_with_ninkijun({1: None, 2: None})
+    champion = _ScoreByUmaban([3.0, -3.0])
+
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=CellRouter({})),
+        patch("predict_upcoming.load_stage1_routing", return_value={"jra": _STAGE1_TEST_CONFIG}),
+        patch("predict_upcoming._load_booster", return_value=champion),
+    ):
+        scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
+
+    rows = scored[0]
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean" for row in rows)
+    assert "load failed" in capsys.readouterr().err
 
 
 def test_score_races_warns_when_resolved_non_default_variant_missing(
