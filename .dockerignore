@@ -12,6 +12,7 @@
 !apps/finish-position-predict-container/pyproject.toml
 !apps/finish-position-predict-container/src
 !apps/finish-position-predict-container/models
+!apps/finish-position-predict-container/production-artifacts.json
 
 # Re-include the MLflow package used by the Cloudflare MLflow Container.
 !apps/mlflow/pyproject.toml
