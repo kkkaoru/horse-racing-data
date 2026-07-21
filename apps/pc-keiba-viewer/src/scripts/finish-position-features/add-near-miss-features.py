@@ -241,34 +241,145 @@ def stage_horse_near_miss(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_horse_context(con: duckdb.DuckDBPyConnection) -> None:
-    """Context-specific (same_keibajo / same_distance / same_track / jockey-horse-pair) 2 着率を
-    self-join で計算 (lookback: past.race_date < curr.race_date)。
+def stage_target_context(
+    con: duckdb.DuckDBPyConnection, input_glob: str, focused_target: bool
+) -> None:
+    """Stage the target race's OWN key/context (curr), independent of settlement.
+
+    horse_context's self-join previously drew BOTH sides (curr and past) from
+    race_history, which is settled-only (stage_race_history filters
+    ``finish_position is not null``). An upcoming target race can never have a
+    row there, so the old exact-date join in append_features_sql's ``joined``
+    CTE (``hc.race_date = b.race_date``) always missed for a live prediction,
+    and the four support-denominator rates/counts silently became join-NULL
+    instead of an honest zero-support value.
+
+    target_context resolves curr independently of settlement:
+      - focused (serve): the base parquet's own rows already carry
+        kaisai_nen/kaisai_tsukihi/keibajo_code/race_bango/kyori/track_code
+        (result-independent, always populated -- see
+        finish_position_features_duckdb.py::base_features_select_sql), but
+        NOT the assigned jockey. The exact target-row jockey (and pedigree
+        ids) are resolved via a narrow point lookup against
+        pg.race_entry_corner_features scoped to the exact target race keys
+        already present in the input parquet -- the same small-cardinality,
+        unfiltered-by-settlement pattern stage_target_entities already relies
+        on against the SAME table. This is not a second *historical* scan:
+        cardinality is bounded by the number of target rows, not a date-range
+        scan, and it mirrors precedent already shipped in this file.
+      - offline (bulk/non-focused): race_history IS the exact current row set
+        (already staged by stage_race_history, finished-only by construction)
+        -- reused directly, no new PostgreSQL query.
     """
-    con.execute("create index race_history_idx_horse on race_history (source, ketto_toroku_bango, race_date)")
+    if focused_target:
+        con.execute(
+            f"""
+            create or replace temp table target_context as
+            select distinct
+              b.source, b.race_date, b.kaisai_nen, b.kaisai_tsukihi,
+              b.keibajo_code, b.race_bango, b.ketto_toroku_bango,
+              b.kyori, b.track_code, b.grade_code,
+              nullif(trim(rec.kishumei_ryakusho), '') as kishumei_ryakusho,
+              hp.sire_id, hp.damsire_id
+            from read_parquet('{input_glob}', hive_partitioning=true) b
+            left join pg.race_entry_corner_features rec
+              on rec.source = b.source
+              and rec.kaisai_nen = b.kaisai_nen
+              and rec.kaisai_tsukihi = b.kaisai_tsukihi
+              and rec.keibajo_code = b.keibajo_code
+              and rec.race_bango = b.race_bango
+              and rec.ketto_toroku_bango = b.ketto_toroku_bango
+            left join horse_pedigree hp
+              on hp.ketto_toroku_bango = b.ketto_toroku_bango
+            where b.ketto_toroku_bango is not null
+            """
+        )
+    else:
+        con.execute(
+            """
+            create or replace temp table target_context as
+            select
+              rh.source, rh.race_date, rh.kaisai_nen, rh.kaisai_tsukihi,
+              rh.keibajo_code, rh.race_bango, rh.ketto_toroku_bango,
+              rh.kyori, rh.track_code, rh.grade_code,
+              nullif(trim(rh.kishumei_ryakusho), '') as kishumei_ryakusho,
+              hp.sire_id, hp.damsire_id
+            from race_history rh
+            left join horse_pedigree hp
+              on hp.ketto_toroku_bango = rh.ketto_toroku_bango
+            """
+        )
+    con.execute(
+        "create index target_context_idx on target_context "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
+    )
+
+
+def stage_horse_context(con: duckdb.DuckDBPyConnection) -> None:
+    """Context-specific (same_keibajo / same_distance / same_track / jockey-horse-pair) 2 着率.
+
+    curr comes from target_context -- the target race's OWN key/context,
+    resolvable even for an upcoming race that has never appeared as a
+    finished race_history row (see stage_target_context's docstring). past is
+    aggregated from race_history (the single already-staged table, no second
+    historical scan) with a strict ``past.race_date < curr.race_date``
+    lookback.
+
+    Zero vs NULL semantics: a curr row present in target_context but with
+    zero qualifying past rows is a KNOWN context with zero support -- the
+    rate is retained as 0.0. A curr row absent from target_context entirely
+    (target-context/join failure) leaves every hc.*_starts column NULL via
+    the outer LEFT JOIN in append_features_sql's ``joined`` CTE, which must
+    propagate as NULL (unknown), never be coalesced to zero.
+
+    same_track additionally requires BOTH curr and past track_code to be
+    non-blank before comparing -- the old ``coalesce(track_code, '')``
+    comparison let two blank track_codes ('' = '') count as a false match.
+    pair additionally requires a non-blank curr (exact target-row) jockey --
+    target_context already resolves blank/missing jockeys to NULL, so
+    ``curr.kishumei_ryakusho is not null`` is a sufficient guard here.
+    """
+    con.execute(
+        "create index race_history_idx_horse on race_history (source, ketto_toroku_bango, race_date)"
+    )
     con.execute(
         """
         create or replace temp table horse_context as
         select
-          curr.source, curr.race_date, curr.ketto_toroku_bango,
+          curr.source, curr.kaisai_nen, curr.kaisai_tsukihi, curr.keibajo_code, curr.race_bango,
+          curr.ketto_toroku_bango,
           count(case when past.keibajo_code = curr.keibajo_code then 1 end) as same_keibajo_starts,
           sum(case when past.keibajo_code = curr.keibajo_code and past.finish_position = 2 then 1 else 0 end) as same_keibajo_p2,
           count(case when curr.kyori is not null and past.kyori is not null and abs(past.kyori - curr.kyori) <= 200 then 1 end) as same_distance_starts,
           sum(case when curr.kyori is not null and past.kyori is not null and abs(past.kyori - curr.kyori) <= 200 and past.finish_position = 2 then 1 else 0 end) as same_distance_p2,
-          count(case when left(coalesce(past.track_code, ''), 1) = left(coalesce(curr.track_code, ''), 1) then 1 end) as same_track_starts,
-          sum(case when left(coalesce(past.track_code, ''), 1) = left(coalesce(curr.track_code, ''), 1) and past.finish_position = 2 then 1 else 0 end) as same_track_p2,
-          count(case when past.kishumei_ryakusho = curr.kishumei_ryakusho then 1 end) as pair_starts,
-          sum(case when past.kishumei_ryakusho = curr.kishumei_ryakusho and past.finish_position = 2 then 1 else 0 end) as pair_p2
-        from race_history curr
+          count(case when nullif(trim(curr.track_code), '') is not null
+                       and nullif(trim(past.track_code), '') is not null
+                       and left(curr.track_code, 1) = left(past.track_code, 1)
+                     then 1 end) as same_track_starts,
+          sum(case when nullif(trim(curr.track_code), '') is not null
+                       and nullif(trim(past.track_code), '') is not null
+                       and left(curr.track_code, 1) = left(past.track_code, 1)
+                       and past.finish_position = 2
+                     then 1 else 0 end) as same_track_p2,
+          count(case when curr.kishumei_ryakusho is not null
+                       and past.kishumei_ryakusho = curr.kishumei_ryakusho
+                     then 1 end) as pair_starts,
+          sum(case when curr.kishumei_ryakusho is not null
+                       and past.kishumei_ryakusho = curr.kishumei_ryakusho
+                       and past.finish_position = 2
+                     then 1 else 0 end) as pair_p2
+        from target_context curr
         left join race_history past
           on past.source = curr.source
           and past.ketto_toroku_bango = curr.ketto_toroku_bango
           and past.race_date < curr.race_date
-        group by curr.source, curr.race_date, curr.ketto_toroku_bango
+        group by curr.source, curr.kaisai_nen, curr.kaisai_tsukihi, curr.keibajo_code, curr.race_bango,
+          curr.ketto_toroku_bango
         """
     )
     con.execute(
-        "create index horse_context_idx on horse_context (source, ketto_toroku_bango, race_date)"
+        "create index horse_context_idx on horse_context "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
     )
 
 
@@ -359,29 +470,47 @@ def stage_pedigree_cumulatives(con: duckdb.DuckDBPyConnection) -> None:
 def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
     """ASOF-join target × cumulative pedigree stats.
 
+    pedigree_target previously sourced its "curr" rows from race_history
+    (settled-only), the same defect family as the old horse_context: an
+    upcoming target race can never have a row there, so it silently fell out
+    of sire_distance_stats/sire_grade_stats/damsire_distance_stats entirely,
+    and the old exact-date-equality join in append_features_sql's ``joined``
+    (``hp.race_date = b.race_date``) never had a chance to match anyway.
+    pedigree_target now sources from target_context -- the same
+    settlement-independent curr resolution horse_context uses -- so this is
+    a no-op for offline/bulk builds (target_context's offline branch is
+    literally race_history + horse_pedigree, byte-identical to the old
+    source) and a real fix only for the focused/serve path.
+
     Distance tolerance (±200m) is implemented by expanding each target row to all
     matching past kyori values (typically 1-5 discrete JRA distances within ±200m),
     then ASOF-joining the cumulative row per (parent_id, exact past_kyori) with
-    target.race_date as the strict-greater inequality.
+    target.race_date as the strict-greater inequality (unchanged from before --
+    only the curr-row source changed).
 
     Grade match is exact (single bucket per target), no expansion needed.
+
+    Output keyed on the FULL race key (source, kaisai_nen, kaisai_tsukihi,
+    keibajo_code, race_bango, horse) rather than race_date alone, matching
+    horse_context's full-race-key-isolation fix and the corresponding join
+    update in append_features_sql's ``joined`` CTE.
     """
     con.execute(
         """
         create or replace temp table pedigree_target as
         select
-          h.source, h.race_date, h.ketto_toroku_bango,
-          h.kyori, coalesce(h.grade_code, '') as grade_code,
-          p.sire_id, p.damsire_id
-        from race_history h
-        left join horse_pedigree p using (ketto_toroku_bango)
+          source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+          ketto_toroku_bango, kyori, coalesce(grade_code, '') as grade_code,
+          sire_id, damsire_id
+        from target_context
         """
     )
     con.execute(
         f"""
         create or replace temp table sire_distance_stats as
         with target_expanded as (
-          select t.source, t.race_date, t.ketto_toroku_bango, t.sire_id, t.kyori as t_kyori,
+          select t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code,
+            t.race_bango, t.ketto_toroku_bango, t.sire_id, t.kyori as t_kyori,
             sk.kyori as past_kyori
           from pedigree_target t
           join (select distinct sire_id, kyori from sire_kyori_cumul) sk
@@ -389,7 +518,8 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
             and abs(sk.kyori - t.kyori) <= {DISTANCE_TOLERANCE_M}
           where t.sire_id is not null and t.kyori is not null
         )
-        select te.source, te.race_date, te.ketto_toroku_bango,
+        select te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango,
           sum(coalesce(s.cum_starts, 0)) as sire_distance_starts,
           sum(coalesce(s.cum_p2, 0)) as sire_distance_p2
         from target_expanded te
@@ -397,14 +527,16 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
           on te.sire_id = s.sire_id
           and te.past_kyori = s.kyori
           and te.race_date > s.race_date
-        group by te.source, te.race_date, te.ketto_toroku_bango
+        group by te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango
         """
     )
     con.execute(
         """
         create or replace temp table sire_grade_stats as
         select
-          t.source, t.race_date, t.ketto_toroku_bango,
+          t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango,
+          t.ketto_toroku_bango,
           coalesce(s.cum_starts, 0) as sire_grade_starts,
           coalesce(s.cum_p2, 0) as sire_grade_p2
         from pedigree_target t
@@ -419,7 +551,8 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
         f"""
         create or replace temp table damsire_distance_stats as
         with target_expanded as (
-          select t.source, t.race_date, t.ketto_toroku_bango, t.damsire_id, t.kyori as t_kyori,
+          select t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code,
+            t.race_bango, t.ketto_toroku_bango, t.damsire_id, t.kyori as t_kyori,
             dk.kyori as past_kyori
           from pedigree_target t
           join (select distinct damsire_id, kyori from damsire_kyori_cumul) dk
@@ -427,7 +560,8 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
             and abs(dk.kyori - t.kyori) <= {DISTANCE_TOLERANCE_M}
           where t.damsire_id is not null and t.kyori is not null
         )
-        select te.source, te.race_date, te.ketto_toroku_bango,
+        select te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango,
           sum(coalesce(d.cum_starts, 0)) as damsire_distance_starts,
           sum(coalesce(d.cum_p2, 0)) as damsire_distance_p2
         from target_expanded te
@@ -435,7 +569,8 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
           on te.damsire_id = d.damsire_id
           and te.past_kyori = d.kyori
           and te.race_date > d.race_date
-        group by te.source, te.race_date, te.ketto_toroku_bango
+        group by te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango
         """
     )
     con.execute(
@@ -443,28 +578,58 @@ def stage_horse_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
         create or replace temp table horse_pedigree_context as
         select
           coalesce(sd.source, sg.source, dd.source) as source,
-          coalesce(sd.race_date, sg.race_date, dd.race_date) as race_date,
+          coalesce(sd.kaisai_nen, sg.kaisai_nen, dd.kaisai_nen) as kaisai_nen,
+          coalesce(sd.kaisai_tsukihi, sg.kaisai_tsukihi, dd.kaisai_tsukihi) as kaisai_tsukihi,
+          coalesce(sd.keibajo_code, sg.keibajo_code, dd.keibajo_code) as keibajo_code,
+          coalesce(sd.race_bango, sg.race_bango, dd.race_bango) as race_bango,
           coalesce(sd.ketto_toroku_bango, sg.ketto_toroku_bango, dd.ketto_toroku_bango) as ketto_toroku_bango,
           sd.sire_distance_starts, sd.sire_distance_p2,
           sg.sire_grade_starts, sg.sire_grade_p2,
           dd.damsire_distance_starts, dd.damsire_distance_p2
         from sire_distance_stats sd
         full outer join sire_grade_stats sg
-          on sd.source = sg.source and sd.race_date = sg.race_date and sd.ketto_toroku_bango = sg.ketto_toroku_bango
+          on sd.source = sg.source
+          and sd.kaisai_nen = sg.kaisai_nen
+          and sd.kaisai_tsukihi = sg.kaisai_tsukihi
+          and sd.keibajo_code = sg.keibajo_code
+          and sd.race_bango = sg.race_bango
+          and sd.ketto_toroku_bango = sg.ketto_toroku_bango
         full outer join damsire_distance_stats dd
           on coalesce(sd.source, sg.source) = dd.source
-          and coalesce(sd.race_date, sg.race_date) = dd.race_date
+          and coalesce(sd.kaisai_nen, sg.kaisai_nen) = dd.kaisai_nen
+          and coalesce(sd.kaisai_tsukihi, sg.kaisai_tsukihi) = dd.kaisai_tsukihi
+          and coalesce(sd.keibajo_code, sg.keibajo_code) = dd.keibajo_code
+          and coalesce(sd.race_bango, sg.race_bango) = dd.race_bango
           and coalesce(sd.ketto_toroku_bango, sg.ketto_toroku_bango) = dd.ketto_toroku_bango
         """
     )
     con.execute(
-        "create index horse_pedigree_context_idx on horse_pedigree_context (source, ketto_toroku_bango, race_date)"
+        "create index horse_pedigree_context_idx on horse_pedigree_context "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
     )
 
 
 def stage_horse_distance_grade(con: duckdb.DuckDBPyConnection) -> None:
     """この馬の (kyori, grade) ペアの過去累積を pre-aggregate + ASOF で計算。
-    Distance tolerance ±200m は target row を kyori 候補で expand して ASOF join。"""
+
+    horse_daily_kyori_grade / horse_kyori_grade_cumul (the "past" cumulative
+    side) are unchanged -- they correctly aggregate only settled race_history
+    rows. The ``target`` CTE (the "curr" side) previously also sourced from
+    race_history, the same settled-only defect family as the old
+    horse_context: an upcoming target race silently had no row there, and the
+    old exact-date-equality join in append_features_sql's ``joined``
+    (``hdg.race_date = b.race_date``) never had a chance to match anyway.
+    ``target`` now sources from target_context -- the same
+    settlement-independent curr resolution horse_context uses -- a no-op for
+    offline/bulk builds and a real fix only for the focused/serve path.
+
+    Distance tolerance ±200m は target row を kyori 候補で expand して ASOF join
+    (unchanged -- only the curr-row source changed).
+
+    Output keyed on the FULL race key (source, kaisai_nen, kaisai_tsukihi,
+    keibajo_code, race_bango, horse) rather than race_date alone, matching
+    horse_context's full-race-key-isolation fix.
+    """
     con.execute(
         """
         create or replace temp table horse_daily_kyori_grade as
@@ -494,13 +659,14 @@ def stage_horse_distance_grade(con: duckdb.DuckDBPyConnection) -> None:
         f"""
         create or replace temp table horse_distance_grade as
         with target as (
-          select source, race_date, ketto_toroku_bango, kyori,
-            coalesce(grade_code, '') as grade_code
-          from race_history
+          select source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+            ketto_toroku_bango, kyori, coalesce(grade_code, '') as grade_code
+          from target_context
           where kyori is not null
         ),
         target_expanded as (
-          select t.source, t.race_date, t.ketto_toroku_bango, t.kyori as t_kyori,
+          select t.source, t.race_date, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code,
+            t.race_bango, t.ketto_toroku_bango, t.kyori as t_kyori,
             t.grade_code, hk.kyori as past_kyori
           from target t
           join (select distinct source, ketto_toroku_bango, kyori, grade_code
@@ -510,7 +676,8 @@ def stage_horse_distance_grade(con: duckdb.DuckDBPyConnection) -> None:
             and hk.grade_code = t.grade_code
             and abs(hk.kyori - t.kyori) <= {DISTANCE_TOLERANCE_M}
         )
-        select te.source, te.race_date, te.ketto_toroku_bango,
+        select te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango,
           sum(coalesce(h.cum_starts, 0)) as dg_starts,
           sum(coalesce(h.cum_p2, 0)) as dg_p2
         from target_expanded te
@@ -520,11 +687,13 @@ def stage_horse_distance_grade(con: duckdb.DuckDBPyConnection) -> None:
           and te.grade_code = h.grade_code
           and te.past_kyori = h.kyori
           and te.race_date > h.race_date
-        group by te.source, te.race_date, te.ketto_toroku_bango
+        group by te.source, te.kaisai_nen, te.kaisai_tsukihi, te.keibajo_code, te.race_bango,
+          te.ketto_toroku_bango
         """
     )
     con.execute(
-        "create index horse_distance_grade_idx on horse_distance_grade (source, ketto_toroku_bango, race_date)"
+        "create index horse_distance_grade_idx on horse_distance_grade "
+        "(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)"
     )
 
 
@@ -639,18 +808,34 @@ def append_features_sql(input_glob: str) -> str:
         f.field_dominant_favorite_indicator,
         b.tansho_ninkijun::double / nullif(b.shusso_tosu, 0)
           as horse_popularity_vs_field,
-        case when hc.same_keibajo_starts > 0
-             then hc.same_keibajo_p2::double / hc.same_keibajo_starts
-             else null end as same_keibajo_place2_rate,
-        case when hc.same_distance_starts > 0
-             then hc.same_distance_p2::double / hc.same_distance_starts
-             else null end as same_distance_place2_rate,
-        case when hc.same_track_starts > 0
-             then hc.same_track_p2::double / hc.same_track_starts
-             else null end as same_track_place2_rate,
-        case when hc.pair_starts > 0
-             then hc.pair_p2::double / hc.pair_starts
-             else null end as jockey_horse_pair_place2_rate,
+        case when hc.same_keibajo_starts is null then null
+             when hc.same_keibajo_starts = 0 then 0.0
+             else hc.same_keibajo_p2::double / hc.same_keibajo_starts
+             end as same_keibajo_place2_rate,
+        case when hc.same_keibajo_starts is null then null
+             else ln(1 + hc.same_keibajo_starts)
+             end as log1p_same_keibajo_starts,
+        case when hc.same_distance_starts is null then null
+             when hc.same_distance_starts = 0 then 0.0
+             else hc.same_distance_p2::double / hc.same_distance_starts
+             end as same_distance_place2_rate,
+        case when hc.same_distance_starts is null then null
+             else ln(1 + hc.same_distance_starts)
+             end as log1p_same_distance_starts,
+        case when hc.same_track_starts is null then null
+             when hc.same_track_starts = 0 then 0.0
+             else hc.same_track_p2::double / hc.same_track_starts
+             end as same_track_place2_rate,
+        case when hc.same_track_starts is null then null
+             else ln(1 + hc.same_track_starts)
+             end as log1p_same_track_starts,
+        case when hc.pair_starts is null then null
+             when hc.pair_starts = 0 then 0.0
+             else hc.pair_p2::double / hc.pair_starts
+             end as jockey_horse_pair_place2_rate,
+        case when hc.pair_starts is null then null
+             else ln(1 + hc.pair_starts)
+             end as log1p_pair_starts,
         case when hp.sire_distance_starts > 0
              then hp.sire_distance_p2::double / hp.sire_distance_starts
              else null end as sire_distance_place2_rate,
@@ -670,16 +855,25 @@ def append_features_sql(input_glob: str) -> str:
         and b.race_date > h.race_date
       left join horse_context hc
         on hc.source = b.source
+        and hc.kaisai_nen = b.kaisai_nen
+        and hc.kaisai_tsukihi = b.kaisai_tsukihi
+        and hc.keibajo_code = b.keibajo_code
+        and hc.race_bango = b.race_bango
         and hc.ketto_toroku_bango = b.ketto_toroku_bango
-        and hc.race_date = b.race_date
       left join horse_pedigree_context hp
         on hp.source = b.source
+        and hp.kaisai_nen = b.kaisai_nen
+        and hp.kaisai_tsukihi = b.kaisai_tsukihi
+        and hp.keibajo_code = b.keibajo_code
+        and hp.race_bango = b.race_bango
         and hp.ketto_toroku_bango = b.ketto_toroku_bango
-        and hp.race_date = b.race_date
       left join horse_distance_grade hdg
         on hdg.source = b.source
+        and hdg.kaisai_nen = b.kaisai_nen
+        and hdg.kaisai_tsukihi = b.kaisai_tsukihi
+        and hdg.keibajo_code = b.keibajo_code
+        and hdg.race_bango = b.race_bango
         and hdg.ketto_toroku_bango = b.ketto_toroku_bango
-        and hdg.race_date = b.race_date
       asof left join jockey_near_miss j
         on j.source = b.source
         and j.kishumei_ryakusho = b.kishumei_ryakusho
@@ -718,6 +912,7 @@ def main() -> None:
         stage_target_entities(con, input_glob)
     stage_race_history(con, args.from_date, args.target_race is not None)
     stage_horse_near_miss(con)
+    stage_target_context(con, input_glob, args.target_race is not None)
     stage_horse_context(con)
     stage_pedigree_cumulatives(con)
     stage_horse_pedigree_context(con)

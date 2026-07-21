@@ -177,7 +177,8 @@ def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         create or replace temp table horse_context(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           same_keibajo_starts integer, same_keibajo_p2 integer,
           same_distance_starts integer, same_distance_p2 integer,
           same_track_starts integer, same_track_p2 integer,
@@ -188,7 +189,8 @@ def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         create or replace temp table horse_pedigree_context(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           sire_distance_starts integer, sire_distance_p2 integer,
           sire_grade_starts integer, sire_grade_p2 integer,
           damsire_distance_starts integer, damsire_distance_p2 integer
@@ -198,7 +200,8 @@ def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
     con.execute(
         """
         create or replace temp table horse_distance_grade(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           dg_starts integer, dg_p2 integer
         )
         """
@@ -399,7 +402,8 @@ def test_upcoming_target_race_resolves_near_miss_features_via_asof(
     con.execute(
         """
         create or replace temp table horse_context(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           same_keibajo_starts integer, same_keibajo_p2 integer,
           same_distance_starts integer, same_distance_p2 integer,
           same_track_starts integer, same_track_p2 integer,
@@ -410,7 +414,8 @@ def test_upcoming_target_race_resolves_near_miss_features_via_asof(
     con.execute(
         """
         create or replace temp table horse_pedigree_context(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           sire_distance_starts integer, sire_distance_p2 integer,
           sire_grade_starts integer, sire_grade_p2 integer,
           damsire_distance_starts integer, damsire_distance_p2 integer
@@ -420,7 +425,8 @@ def test_upcoming_target_race_resolves_near_miss_features_via_asof(
     con.execute(
         """
         create or replace temp table horse_distance_grade(
-          source varchar, ketto_toroku_bango varchar, race_date varchar,
+          source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
+          keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar,
           dg_starts integer, dg_p2 integer
         )
         """
@@ -557,3 +563,886 @@ def test_stage_target_entities_accepts_scoped_input_without_jockey_column(
         ("horse_a", "PG_JOCKEY_A", "sire_a", "damsire_a"),
         ("horse_b", "PG_JOCKEY_B", "sire_b", "damsire_b"),
     ]
+
+
+# --- target-aware horse_context parity repair -------------------------------
+#
+# horse_context previously self-joined ONLY finished-only race_history for
+# BOTH sides (curr and past), so an upcoming target race -- which can never
+# have a settled row -- silently produced a join-NULL curr context instead of
+# an honest zero-support value. stage_target_context resolves curr
+# independently of settlement (from the target parquet's own rows in focused
+# mode, or by reusing the already-staged race_history in offline mode), and
+# stage_horse_context / append_features_sql now join on the FULL race key
+# (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, horse)
+# instead of the old race_date-only key.
+
+
+def test_stage_target_context_offline_reuses_race_history_no_new_pg_scan() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_target_context(RecordingConn(), "dummy.parquet", False)
+    body = " ".join(sql_calls)
+    # Offline mode reuses the already-staged race_history table directly --
+    # no new PostgreSQL query (no ``pg.`` reference at all) and no re-read of
+    # the input parquet.
+    assert "from race_history rh" in body
+    assert "pg." not in body
+    assert "read_parquet" not in body
+
+
+def test_stage_target_context_focused_uses_scoped_point_lookup_not_historical_scan() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_target_context(RecordingConn(), "dummy.parquet", True)
+    body = " ".join(sql_calls)
+    assert "from read_parquet" in body
+    assert "left join pg.race_entry_corner_features rec" in body
+    assert "rec.ketto_toroku_bango = b.ketto_toroku_bango" in body
+    # A narrow point lookup keyed on the exact target race(s) already present
+    # in the input parquet -- not a second *historical* scan (no date-range
+    # filter, no finish_position filter, unlike stage_race_history).
+    assert "race_date >=" not in body
+    assert "finish_position is not null" not in body
+
+
+def test_main_calls_stage_race_history_and_stage_target_context_each_once() -> None:
+    import inspect
+
+    source = inspect.getsource(subject.main)
+    assert source.count("stage_race_history(") == 1
+    assert source.count("stage_target_context(") == 1
+
+
+def test_stage_target_context_offline_builds_from_race_history_and_pedigree() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values
+            ('jra', '20240101', '2024', '0101', '06', '11', 'horse_a',
+             'J1'::varchar, 1200::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kishumei_ryakusho, kyori, track_code,
+               grade_code)
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (values ('horse_a', 'sire_a', 'damsire_a'))
+        as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    subject.stage_target_context(con, "unused.parquet", False)
+    row = con.execute(
+        """
+        select source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code, grade_code,
+               kishumei_ryakusho, sire_id, damsire_id
+        from target_context
+        """
+    ).fetchone()
+    con.close()
+    assert row == (
+        "jra", "20240101", "2024", "0101", "06", "11", "horse_a",
+        1200, "24", "A", "J1", "sire_a", "damsire_a",
+    )
+
+
+def test_stage_target_context_focused_resolves_jockey_for_unsettled_target_row(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra', '2024', '0122', '06', '14', 'horse_a', 'J9'::varchar,
+             cast(null as integer))
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position)
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (values ('horse_a', 'sire_a', 'damsire_a'))
+        as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('jra', '2024', '0122', '06', '14', 'horse_a', '20240122', 2024,
+                  1300::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_target_context(con, input_glob, True)
+    row = con.execute(
+        "select kyori, track_code, kishumei_ryakusho, sire_id, damsire_id from target_context"
+    ).fetchone()
+    con.close()
+    # The target race's own finish_position in pg is NULL (genuinely
+    # unsettled -- it has never been run) yet the jockey still resolves,
+    # because the lookup is not filtered by finish_position.
+    assert row == (1300, "24", "J9", "sire_a", "damsire_a")
+
+
+def test_stage_target_context_focused_blank_jockey_resolves_to_null(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra', '2024', '0122', '06', '14', 'horse_a', ''::varchar,
+             cast(null as integer))
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position)
+        """
+    )
+    con.execute(
+        "create temp table horse_pedigree(ketto_toroku_bango varchar, sire_id varchar, damsire_id varchar)"
+    )
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('jra', '2024', '0122', '06', '14', 'horse_a', '20240122', 2024,
+                  1300::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_target_context(con, input_glob, True)
+    row = con.execute("select kishumei_ryakusho from target_context").fetchone()
+    con.close()
+    assert row == (None,)
+
+
+def test_stage_horse_context_known_zero_support_yields_zero_not_null() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values ('jra', '20240201', '2024', '0201', '09', '05', 'horse_a',
+                  1600::integer, '24'::varchar, 'J1'::varchar,
+                  cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values ('jra', '20240101', 'horse_a', '06', 1600::integer,
+                  '24'::varchar, 'J1'::varchar, 3::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    row = con.execute(
+        "select same_keibajo_starts, same_keibajo_p2 from horse_context"
+    ).fetchone()
+    con.close()
+    # The horse's only past race was at a DIFFERENT keibajo (06) than the
+    # target's own (09) -- known context (target_context has a row for this
+    # curr key), zero qualifying prior rows -> denominator 0, not NULL.
+    assert row == (0, 0)
+
+
+def test_stage_horse_context_strict_prior_date_only_excludes_same_day() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values ('jra', '20240301', '2024', '0301', '06', '01', 'horse_a',
+                  1600::integer, '24'::varchar, 'J1'::varchar,
+                  cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values
+            -- same-day past row (race_date equal to curr's) must NOT count.
+            ('jra', '20240301', 'horse_a', '06', 1600::integer, '24'::varchar, 'J1'::varchar, 2::integer),
+            -- one day earlier must count.
+            ('jra', '20240229', 'horse_a', '06', 1600::integer, '24'::varchar, 'J1'::varchar, 1::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    row = con.execute(
+        "select same_keibajo_starts, same_keibajo_p2 from horse_context"
+    ).fetchone()
+    con.close()
+    assert row == (1, 0)
+
+
+def test_stage_horse_context_blank_track_never_matches_even_when_both_blank() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values ('jra', '20240301', '2024', '0301', '06', '01', 'horse_a',
+                  1600::integer, cast(null as varchar), 'J1'::varchar,
+                  cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values ('jra', '20240101', 'horse_a', '06', 1600::integer,
+                  cast(null as varchar), 'J1'::varchar, 2::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    row = con.execute(
+        "select same_track_starts, same_track_p2 from horse_context"
+    ).fetchone()
+    con.close()
+    # Both curr and past track_code are blank -- the old
+    # ``coalesce(track_code, '')`` comparison let '' = '' count as a match;
+    # the fix requires BOTH sides non-blank before comparing.
+    assert row == (0, 0)
+
+
+def test_stage_horse_context_same_track_matches_when_both_populated_share_first_char() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values ('jra', '20240301', '2024', '0301', '06', '01', 'horse_a',
+                  1600::integer, '24'::varchar, 'J1'::varchar,
+                  cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values ('jra', '20240101', 'horse_a', '06', 1600::integer,
+                  '23'::varchar, 'J1'::varchar, 2::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    row = con.execute(
+        "select same_track_starts, same_track_p2 from horse_context"
+    ).fetchone()
+    con.close()
+    # '24' and '23' share the first character '2' (surface) -- a genuine
+    # match despite differing full codes. Positive control proving the
+    # nonblank guard doesn't also break legitimate matches.
+    assert row == (1, 1)
+
+
+def test_stage_horse_context_pair_requires_nonblank_curr_jockey() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values
+            ('jra', '20240301', '2024', '0301', '06', '01', 'horse_a',
+              1600::integer, '24'::varchar, cast(null as varchar),
+              cast(null as varchar), cast(null as varchar)),
+            ('jra', '20240301', '2024', '0301', '06', '02', 'horse_a',
+              1600::integer, '24'::varchar, 'J1'::varchar,
+              cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values ('jra', '20240101', 'horse_a', '06', 1600::integer,
+                  '24'::varchar, 'J1'::varchar, 2::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    rows = con.execute(
+        "select race_bango, pair_starts, pair_p2 from horse_context order by race_bango"
+    ).fetchall()
+    con.close()
+    # race_bango=01's curr (target-row) jockey is blank/unknown -> pair_starts
+    # stays 0 even though race_history has a matching-jockey past row.
+    # race_bango=02's curr jockey (J1) is populated -> the same past row
+    # counts. Same race_date/horse for both -- proves the jockey guard, not
+    # a date/horse difference, drives the split.
+    assert rows == [("01", 0, 0), ("02", 1, 1)]
+
+
+def test_stage_horse_context_full_race_key_isolation_no_cross_race_join() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create or replace temp table target_context as
+        select * from (
+          values
+            ('jra', '20240301', '2024', '0301', '06', '01', 'horse_a',
+              1600::integer, '24'::varchar, 'J1'::varchar,
+              cast(null as varchar), cast(null as varchar)),
+            ('jra', '20240301', '2024', '0301', '08', '02', 'horse_a',
+              1600::integer, '31'::varchar, 'J1'::varchar,
+              cast(null as varchar), cast(null as varchar))
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code,
+               race_bango, ketto_toroku_bango, kyori, track_code,
+               kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    con.execute(
+        """
+        create or replace temp table race_history as
+        select * from (
+          values
+            ('jra', '20240101', 'horse_a', '06', 1600::integer, '24'::varchar, 'J1'::varchar, 2::integer),
+            ('jra', '20240108', 'horse_a', '08', 1600::integer, '31'::varchar, 'J1'::varchar, 2::integer)
+        ) as v(source, race_date, ketto_toroku_bango, keibajo_code, kyori,
+               track_code, kishumei_ryakusho, finish_position)
+        """
+    )
+    subject.stage_horse_context(con)
+    rows = con.execute(
+        "select race_bango, same_keibajo_starts, same_keibajo_p2 "
+        "from horse_context order by race_bango"
+    ).fetchall()
+    con.close()
+    # Two curr rows share the SAME horse and SAME race_date (the old
+    # exact-date-only join's key) but have DIFFERENT keibajo_code/race_bango.
+    # race_bango=01 (keibajo=06) must match only the 20240101 past race
+    # (also keibajo=06); race_bango=02 (keibajo=08) must match only the
+    # 20240108 past race (also keibajo=08). Neither leaks into the other.
+    assert rows == [("01", 1, 1), ("02", 1, 1)]
+
+
+def test_append_features_sql_hc_join_uses_full_race_key_not_race_date_only() -> None:
+    sql = subject.append_features_sql("dummy.parquet")
+    assert "hc.kaisai_nen = b.kaisai_nen" in sql
+    assert "hc.kaisai_tsukihi = b.kaisai_tsukihi" in sql
+    assert "hc.keibajo_code = b.keibajo_code" in sql
+    assert "hc.race_bango = b.race_bango" in sql
+    assert "hc.ketto_toroku_bango = b.ketto_toroku_bango" in sql
+    assert "hc.race_date = b.race_date" not in sql
+
+
+def test_append_features_sql_log1p_columns_present() -> None:
+    sql = subject.append_features_sql("dummy.parquet")
+    assert "as log1p_same_keibajo_starts" in sql
+    assert "as log1p_same_distance_starts" in sql
+    assert "as log1p_same_track_starts" in sql
+    assert "as log1p_pair_starts" in sql
+
+
+def test_append_features_sql_hp_hdg_joins_use_full_race_key_not_race_date_only() -> None:
+    """stage_horse_pedigree_context / stage_horse_distance_grade had the SAME
+    settled-only curr-resolution defect as the old horse_context (their
+    ``pedigree_target``/``target`` CTEs sourced from race_history), plus the
+    same race_date-only join in ``joined``. Both are fixed the same way:
+    curr resolved via target_context, joined on the full race key."""
+    sql = subject.append_features_sql("dummy.parquet")
+    assert "hp.kaisai_nen = b.kaisai_nen" in sql
+    assert "hp.kaisai_tsukihi = b.kaisai_tsukihi" in sql
+    assert "hp.keibajo_code = b.keibajo_code" in sql
+    assert "hp.race_bango = b.race_bango" in sql
+    assert "hp.ketto_toroku_bango = b.ketto_toroku_bango" in sql
+    assert "hp.race_date = b.race_date" not in sql
+    assert "hdg.kaisai_nen = b.kaisai_nen" in sql
+    assert "hdg.kaisai_tsukihi = b.kaisai_tsukihi" in sql
+    assert "hdg.keibajo_code = b.keibajo_code" in sql
+    assert "hdg.race_bango = b.race_bango" in sql
+    assert "hdg.ketto_toroku_bango = b.ketto_toroku_bango" in sql
+    assert "hdg.race_date = b.race_date" not in sql
+
+
+def test_stage_horse_pedigree_context_sources_curr_from_target_context() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_horse_pedigree_context(RecordingConn())
+    # pedigree_target must be built specifically from target_context (the
+    # first executed statement), not from a fresh join against race_history
+    # -- isolate that one statement rather than string-searching the whole
+    # concatenated body, since "race_history" is a legitimate substring
+    # elsewhere in this function's other statements (sire_kyori_cumul etc.
+    # are consumed, not rebuilt, here).
+    pedigree_target_sql = sql_calls[0]
+    assert "create or replace temp table pedigree_target as" in pedigree_target_sql
+    assert "from target_context" in pedigree_target_sql
+    assert "race_history" not in pedigree_target_sql
+
+
+def test_stage_horse_distance_grade_target_cte_sources_from_target_context() -> None:
+    sql_calls: list[str] = []
+
+    class RecordingConn:
+        def execute(self, query: str) -> None:
+            sql_calls.append(query)
+
+    subject.stage_horse_distance_grade(RecordingConn())
+    body = " ".join(sql_calls)
+    assert "from target_context\n          where kyori is not null" in body
+
+
+def test_upcoming_target_race_resolves_pedigree_and_distance_grade_context(
+    tmp_path: Path,
+) -> None:
+    """End-to-end proof that stage_horse_pedigree_context /
+    stage_horse_distance_grade resolve for a genuinely upcoming (never
+    settled) target race, via the SAME target_context table horse_context
+    uses -- the identical fix pattern extended to the other two
+    exact-date-equality joins team-lead identified as the same defect
+    family.
+
+    horse_a (sire_id='sire_x', damsire NULL) has 3 COMPLETED historical
+    races. The TARGET race (2024-02-01) is genuinely upcoming: its own row
+    in pg.race_entry_corner_features has finish_position NULL.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20240101','2024','0101','06','11','horse_a','J1',2,1600,'24','A'),
+            ('jra','20240108','2024','0108','06','12','horse_a','J1',1,1600,'24','A'),
+            ('jra','20240115','2024','0115','06','13','horse_a','J1',2,2400,'24','B'),
+            ('jra','20240201','2024','0201','06','09','horse_a','J1',cast(null as integer),1600,'24','A')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position, kyori, track_code,
+               grade_code)
+        """
+    )
+    for col, typ in (
+        ("tansho_odds", "double"),
+        ("tansho_ninkijun", "integer"),
+        ("shusso_tosu", "integer"),
+        ("time_sa", "double"),
+        ("chokyoshimei_ryakusho", "varchar"),
+        ("banushimei", "varchar"),
+    ):
+        con.execute(f"alter table pg.race_entry_corner_features add column {col} {typ}")
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (values ('horse_a', 'sire_x', cast(null as varchar)))
+        as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('jra', '2024', '0201', '06', '09', 'horse_a', '20240201', 2024,
+                  1::integer, 3.0::double, 1600::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year,
+               tansho_ninkijun, tansho_odds, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True)
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con)
+    subject.stage_horse_distance_grade(con)
+    subject.stage_jockey_near_miss(con)
+
+    sql = subject.append_features_sql(input_glob)
+    row = con.execute(
+        f"""
+        select sire_distance_place2_rate, sire_grade_place2_rate,
+          horse_distance_grade_place2_rate
+        from ({sql})
+        """
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    # sire_x's races within +/-200m of the target's kyori=1600: the
+    # 20240101 race (P2) and 20240108 race (not P2) -- the 20240115 race
+    # (kyori=2400) is excluded by distance tolerance. 2 starts, 1 P2 -> 0.5.
+    assert row[0] == pytest.approx(0.5)
+    # sire_x's races with the target's exact grade='A': the same two races
+    # -- the 20240115 race (grade='B') is excluded. 2 starts, 1 P2 -> 0.5.
+    assert row[1] == pytest.approx(0.5)
+    # horse_a's OWN (kyori,grade) pair history mirrors the sire's in this
+    # fixture (horse_a is sire_x's only contributor): same 2 starts, 1 P2.
+    assert row[2] == pytest.approx(0.5)
+
+
+def test_unknown_target_context_join_failure_yields_null_not_zero(
+    tmp_path: Path,
+) -> None:
+    """A base row whose race key has no corresponding horse_context row
+    (target-context/join failure) must propagate NULL for all four
+    rates/log1p columns -- never silently coalesced to the known-zero-support
+    value of 0.0. The SAME query also carries a horse with a resolved,
+    known-zero-support (pair) feature, so both halves of the zero-vs-NULL
+    distinction are exercised together."""
+    con = duckdb.connect(":memory:")
+    con.execute(
+        "create or replace temp table race_history(source varchar, kaisai_nen varchar, "
+        "kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar, "
+        "ketto_toroku_bango varchar, kishumei_ryakusho varchar, "
+        "tansho_ninkijun integer, shusso_tosu integer, race_date varchar)"
+    )
+    con.execute(
+        """
+        create or replace temp table horse_context as
+        select * from (
+          values ('jra', '2024', '0201', '06', '09', 'horse_a',
+                  2::integer, 1::integer, 1::integer, 1::integer,
+                  1::integer, 1::integer, 1::integer, 0::integer)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango,
+               same_keibajo_starts, same_keibajo_p2,
+               same_distance_starts, same_distance_p2,
+               same_track_starts, same_track_p2,
+               pair_starts, pair_p2)
+        """
+    )
+    con.execute(
+        "create temp table horse_near_miss(source varchar, ketto_toroku_bango varchar, "
+        "race_date varchar, past_starts integer, past_p1_count integer, "
+        "past_p2_count integer, past_p2_avg_timesa double, "
+        "recent_p2_count_5 integer, recent_p2_avg_timesa_5 double)"
+    )
+    con.execute(
+        "create temp table horse_pedigree_context(source varchar, kaisai_nen varchar, "
+        "kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar, "
+        "ketto_toroku_bango varchar, sire_distance_starts integer, sire_distance_p2 integer, "
+        "sire_grade_starts integer, sire_grade_p2 integer, "
+        "damsire_distance_starts integer, damsire_distance_p2 integer)"
+    )
+    con.execute(
+        "create temp table horse_distance_grade(source varchar, kaisai_nen varchar, "
+        "kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar, "
+        "ketto_toroku_bango varchar, dg_starts integer, dg_p2 integer)"
+    )
+    con.execute(
+        "create temp table jockey_near_miss(source varchar, kishumei_ryakusho varchar, "
+        "race_date varchar, past_rides integer, past_jockey_p2_count integer)"
+    )
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values
+            ('jra', '2024', '0201', '06', '09', 'horse_a', '20240201', 2024,
+              1::integer, 3.0::double),
+            ('jra', '2024', '0201', '06', '10', 'horse_b', '20240201', 2024,
+              2::integer, 5.0::double)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year,
+               tansho_ninkijun, tansho_odds)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    sql = subject.append_features_sql(input_glob)
+    rows = con.execute(
+        f"""
+        select ketto_toroku_bango,
+          same_keibajo_place2_rate, log1p_same_keibajo_starts,
+          same_distance_place2_rate, jockey_horse_pair_place2_rate
+        from ({sql}) order by ketto_toroku_bango
+        """
+    ).fetchall()
+    con.close()
+
+    assert rows[0][0] == "horse_a"
+    assert rows[0][1] == pytest.approx(0.5)
+    assert rows[0][2] == pytest.approx(1.0986122886681098)
+    assert rows[0][3] == pytest.approx(1.0)
+    assert rows[0][4] == pytest.approx(0.0)
+
+    assert rows[1][0] == "horse_b"
+    assert rows[1][1] is None
+    assert rows[1][2] is None
+    assert rows[1][3] is None
+    assert rows[1][4] is None
+
+
+def test_upcoming_target_race_resolves_horse_context_via_target_context(
+    tmp_path: Path,
+) -> None:
+    """End-to-end proof for the target-aware parity repair, exercising the
+    full staging chain in the same order as main().
+
+    horse_a has 5 COMPLETED historical races at various keibajo/kyori/track/
+    jockey combinations. The TARGET race (2024-02-01, keibajo=06, kyori=1600,
+    track='24', jockey='J1') is genuinely upcoming: its own row in
+    pg.race_entry_corner_features has finish_position NULL (never settled).
+    The old exact-date-equality horse_context join could never resolve this
+    target; the fix resolves curr's own keibajo/kyori/track/jockey directly
+    from the target race itself, independent of settlement, and produces
+    honest, arithmetically-verified rates for all four features plus their
+    log1p support columns.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20240101','2024','0101','06','11','horse_a','J1',2,1600,'24'),
+            ('jra','20240108','2024','0108','07','12','horse_a','J2',2,1801,'24'),
+            ('jra','20240115','2024','0115','06','13','horse_a','J1',1,2400,'10'),
+            ('jra','20240122','2024','0122','06','14','horse_a','J3',2,1550,'24'),
+            ('jra','20240129','2024','0129','09','15','horse_a','J1',2,1900,'31'),
+            ('jra','20240201','2024','0201','06','09','horse_a','J1',cast(null as integer),1600,'24')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position, kyori, track_code)
+        """
+    )
+    for col, typ in (
+        ("grade_code", "varchar"),
+        ("tansho_odds", "double"),
+        ("tansho_ninkijun", "integer"),
+        ("shusso_tosu", "integer"),
+        ("time_sa", "double"),
+        ("chokyoshimei_ryakusho", "varchar"),
+        ("banushimei", "varchar"),
+    ):
+        con.execute(f"alter table pg.race_entry_corner_features add column {col} {typ}")
+    con.execute(
+        "create temp table horse_pedigree(ketto_toroku_bango varchar, sire_id varchar, damsire_id varchar)"
+    )
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('jra', '2024', '0201', '06', '09', 'horse_a', '20240201', 2024,
+                  1::integer, 3.0::double, 1600::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year,
+               tansho_ninkijun, tansho_odds, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True)
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con)
+    subject.stage_horse_distance_grade(con)
+    subject.stage_jockey_near_miss(con)
+
+    sql = subject.append_features_sql(input_glob)
+    row = con.execute(
+        f"""
+        select
+          same_keibajo_place2_rate, log1p_same_keibajo_starts,
+          same_distance_place2_rate, log1p_same_distance_starts,
+          same_track_place2_rate, log1p_same_track_starts,
+          jockey_horse_pair_place2_rate, log1p_pair_starts
+        from ({sql})
+        """
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    # same_keibajo (target keibajo=06): matches R1(06),R3(06),R4(06) = 3
+    # starts; of these R1(fp2) is P2 and R4(fp2) is P2, R3(fp1) is not -> 2/3.
+    assert row[0] == pytest.approx(2.0 / 3.0)
+    assert row[1] == pytest.approx(1.3862943611198906)
+    # same_distance (target kyori=1600, tol 200): matches R1(1600),R4(1550);
+    # R2(1801, diff201>200) excluded. Both matches are P2 -> rate 1.0.
+    assert row[2] == pytest.approx(1.0)
+    assert row[3] == pytest.approx(1.0986122886681098)
+    # same_track (target track='24' -> '2'): matches R1,R2,R4 (all '24');
+    # all three happen to be P2 -> rate 1.0.
+    assert row[4] == pytest.approx(1.0)
+    assert row[5] == pytest.approx(1.3862943611198906)
+    # pair (target jockey='J1'): matches R1,R3,R5; R1(P2)+R5(P2) are P2,
+    # R3(fp1) is not -> rate 2/3.
+    assert row[6] == pytest.approx(2.0 / 3.0)
+    assert row[7] == pytest.approx(1.3862943611198906)
+
+
+def test_target_context_wins_over_horse_last_finished_row_when_differ(
+    tmp_path: Path,
+) -> None:
+    """curr's OWN race key (keibajo_code) must come from the TARGET race
+    itself, not be inherited from the horse's last actual (finished) race.
+    horse_a's entire history is at keibajo=01; the TARGET race is at a
+    DIFFERENT keibajo=08 the horse has never run at. If curr's keibajo were
+    (incorrectly) carried over from the horse's last finished row,
+    same_keibajo_starts would show 3 (all history matches keibajo=01);
+    resolved correctly from the target's own row, it must show 0.
+    """
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('jra','20240101','2024','0101','01','11','horse_a','J1',2,1600,'24'),
+            ('jra','20240108','2024','0108','01','12','horse_a','J1',1,1600,'24'),
+            ('jra','20240115','2024','0115','01','13','horse_a','J1',2,1600,'24'),
+            ('jra','20240201','2024','0201','08','09','horse_a','J1',cast(null as integer),1600,'24')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position, kyori, track_code)
+        """
+    )
+    for col, typ in (
+        ("grade_code", "varchar"),
+        ("tansho_odds", "double"),
+        ("tansho_ninkijun", "integer"),
+        ("shusso_tosu", "integer"),
+        ("time_sa", "double"),
+        ("chokyoshimei_ryakusho", "varchar"),
+        ("banushimei", "varchar"),
+    ):
+        con.execute(f"alter table pg.race_entry_corner_features add column {col} {typ}")
+    con.execute(
+        "create temp table horse_pedigree(ketto_toroku_bango varchar, sire_id varchar, damsire_id varchar)"
+    )
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('jra', '2024', '0201', '08', '09', 'horse_a', '20240201', 2024,
+                  1::integer, 3.0::double, 1600::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year,
+               tansho_ninkijun, tansho_odds, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True)
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con)
+    subject.stage_horse_distance_grade(con)
+    subject.stage_jockey_near_miss(con)
+
+    sql = subject.append_features_sql(input_glob)
+    row = con.execute(
+        f"select same_keibajo_place2_rate, log1p_same_keibajo_starts from ({sql})"
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert row[0] == pytest.approx(0.0)
+    assert row[1] == pytest.approx(0.0)
