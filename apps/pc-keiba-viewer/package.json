@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "3.0.208",
-    "@mediapipe/tasks-genai": "0.10.27",
+    "@mediapipe/tasks-genai": "0.10.29",
     "@opennextjs/cloudflare": "1.19.11",
     "ai": "6.0.206",
     "drizzle-orm": "0.45.2",
