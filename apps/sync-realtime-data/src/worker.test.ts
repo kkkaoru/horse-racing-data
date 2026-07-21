@@ -18,6 +18,8 @@ import {
   getCronJob,
   getCurrentOddsSlotAt,
   getJstDayStart,
+  getMissingJraHorseWeightNumbers,
+  getMissingNarHorseWeightNumbers,
   getNarOddsSaleStartForRace,
   getNarVenueLastRaceStartAtMap,
   getNarVenueMeetingKey,
@@ -947,6 +949,27 @@ it("assertJraHorseWeightsComplete throws when an active entry has no weight row"
   ).toThrow("JRA horse weight rows are sparse: k missing=2");
 });
 
+it("getMissingJraHorseWeightNumbers returns missing active horse numbers without throwing", () => {
+  expect(
+    getMissingJraHorseWeightNumbers(
+      [
+        { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+        { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+      ],
+      [{ changeAmount: 0, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 }],
+    ),
+  ).toStrictEqual(["2"]);
+});
+
+it("getMissingJraHorseWeightNumbers returns empty for empty weight sets", () => {
+  expect(
+    getMissingJraHorseWeightNumbers(
+      [{ horseName: "h1", horseNumber: "1", jockeyName: "j", status: null }],
+      [],
+    ),
+  ).toStrictEqual([]);
+});
+
 it("assertNarHorseWeightsComplete returns silently when weights array is empty", () => {
   assertNarHorseWeightsComplete(
     "k",
@@ -991,6 +1014,18 @@ it("assertNarHorseWeightsComplete throws when an active entry has no weight row"
       [{ changeAmount: 0, changeSign: null, horseName: "h6", horseNumber: "6", weight: 500 }],
     ),
   ).toThrow("NAR horse weight rows are sparse: nar:2026:0528:30:10 missing=7");
+});
+
+it("getMissingNarHorseWeightNumbers returns missing active horse numbers without throwing", () => {
+  expect(
+    getMissingNarHorseWeightNumbers(
+      [
+        { horseName: "h6", horseNumber: "6", jockeyName: "j", status: null },
+        { horseName: "h7", horseNumber: "7", jockeyName: "j", status: null },
+      ],
+      [{ changeAmount: 0, changeSign: null, horseName: "h6", horseNumber: "6", weight: 500 }],
+    ),
+  ).toStrictEqual(["7"]);
 });
 
 it("getPremiumPaddockRetryAfter returns an ISO string at now + retry delay (default)", () => {

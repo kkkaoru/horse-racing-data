@@ -133,6 +133,7 @@ vi.mock("./keiba-go", async () => {
     fetchRaceLinksFromRaceList: vi.fn(async () => []),
     parseHorseWeights: vi.fn(() => []),
     parseRaceEntries: vi.fn(() => []),
+    parseRaceResultHorseWeights: vi.fn((html: string) => actual.parseRaceResultHorseWeights(html)),
     parseRaceResults: vi.fn(() => []),
   };
 });
@@ -2474,7 +2475,8 @@ it("handleJob fetch-results NAR silently acks when results empty but expectedHor
 
 it("handleJob fetch-weights NAR + sparse weight rows (length 1) preserves existing snapshot and logs skip:weights-sparse", async () => {
   const { handleJob } = await import("./worker");
-  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch, updateLastFetch } =
+    await import("./storage");
   const { parseHorseWeights } = await import("./keiba-go");
   vi.mocked(getRaceSource).mockResolvedValueOnce({
     babaCode: "22",
@@ -2508,12 +2510,301 @@ it("handleJob fetch-weights NAR + sparse weight rows (length 1) preserves existi
   ] as never);
   await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
   expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(updateLastFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    "last_weight_fetch_at",
+    expect.anything(),
+  );
   expect(logFetch).toHaveBeenCalledWith(
     expect.anything(),
     "fetch-weights",
     "skip:weights-sparse",
     "nar:2026:0512:55:01",
     "count=1",
+  );
+  expect(logFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "error",
+    "nar:2026:0512:55:01",
+    expect.anything(),
+  );
+});
+
+// 2026-07-19..21 production: assertNarHorseWeightsComplete threw on incomplete
+// non-empty weight sets (e.g. missing=6) before the soft sparse path, so the
+// job hard-errored with no retry and last_weight_fetch_at stayed null forever.
+it("handleJob fetch-weights NAR + incomplete active entries soft-skips sparse and requeues while in window", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch, updateLastFetch } =
+    await import("./storage");
+  const { parseHorseWeights, parseRaceEntries, fetchRacePage, parseRaceResultHorseWeights } =
+    await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/DebaTable?race_id=1",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseRaceEntries).mockReturnValueOnce([
+    { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+    { horseName: "h3", horseNumber: "3", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+    { changeAmount: null, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+  ] as never);
+  // Result page also incomplete — soft path must still not throw.
+  vi.mocked(fetchRacePage).mockResolvedValue("<html></html>");
+  vi.mocked(parseRaceResultHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+    { changeAmount: null, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+  ] as never);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" });
+  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
+  await expect(
+    handleJob(env, { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" }),
+  ).resolves.toBeUndefined();
+  expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(updateLastFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    "last_weight_fetch_at",
+    expect.anything(),
+  );
+  expect(sendSpy).toHaveBeenCalledWith(
+    { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" },
+    { delaySeconds: 600 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "queued:weights-empty-retry",
+    "nar:2026:0512:55:01",
+    "delaySeconds=600",
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:weights-sparse",
+    "nar:2026:0512:55:01",
+    "count=2 missing=3",
+  );
+  expect(logFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "error",
+    expect.anything(),
+    expect.anything(),
+  );
+});
+
+it("handleJob fetch-weights JRA + incomplete active entries soft-skips sparse without throwing", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch, updateLastFetch } =
+    await import("./storage");
+  const { parseJraHorseWeights, parseJraRaceEntries } = await import("./jra");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "08",
+    debaUrl: "https://www.jra.go.jp/race",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: "02",
+    kaisaiNen: "2026",
+    kaisaiNichime: "06",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceName: "Test",
+    raceStartAtJst: "2026-05-12T13:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "jra",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseJraRaceEntries).mockReturnValueOnce([
+    { horseName: "JraA", horseNumber: "1", jockeyName: "JockeyA", status: null },
+    { horseName: "JraB", horseNumber: "2", jockeyName: "JockeyB", status: null },
+    { horseName: "JraC", horseNumber: "3", jockeyName: "JockeyC", status: null },
+  ] as never);
+  vi.mocked(parseJraHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: null, horseNumber: "1", weight: 480 },
+    { changeAmount: null, changeSign: null, horseName: null, horseNumber: "2", weight: 490 },
+  ] as never);
+  const env = buildEnv({ REALTIME_TEST_NOW: "2026-05-12T03:00:00.000Z" });
+  const sendSpy = vi.spyOn(env.REALTIME_JOBS, "send");
+  await expect(
+    handleJob(env, { raceKey: "jra:2026:0512:08:01", type: "fetch-weights" }),
+  ).resolves.toBeUndefined();
+  expect(insertHorseWeightSnapshot).not.toHaveBeenCalled();
+  expect(updateLastFetch).not.toHaveBeenCalledWith(
+    expect.anything(),
+    "jra:2026:0512:08:01",
+    "last_weight_fetch_at",
+    expect.anything(),
+  );
+  expect(sendSpy).toHaveBeenCalledWith(
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-weights" },
+    { delaySeconds: 600 },
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "skip:weights-sparse",
+    "jra:2026:0512:08:01",
+    "count=2 missing=3",
+  );
+});
+
+// Incomplete primary entry-page parse must fall back to the race-result page
+// and store the more complete set (fail-closed only when still incomplete).
+it("handleJob fetch-weights NAR prefers complete result-page weights over incomplete primary", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot, logFetch } = await import("./storage");
+  const { fetchRacePage, parseHorseWeights, parseRaceEntries, parseRaceResultHorseWeights } =
+    await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/DebaTable?race_id=1",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseRaceEntries).mockReturnValueOnce([
+    { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  vi.mocked(parseHorseWeights).mockReturnValueOnce([
+    { changeAmount: null, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+  ] as never);
+  vi.mocked(fetchRacePage)
+    .mockResolvedValueOnce("<html>primary</html>")
+    .mockResolvedValueOnce("<html>result</html>");
+  const resultWeights = [
+    { changeAmount: null, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+    { changeAmount: null, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+  ];
+  vi.mocked(parseRaceResultHorseWeights).mockReturnValueOnce(resultWeights as never);
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
+  expect(fetchRacePage).toHaveBeenCalledTimes(2);
+  expect(fetchRacePage).toHaveBeenNthCalledWith(2, "https://nar.example/RaceMarkTable?race_id=1");
+  expect(insertHorseWeightSnapshot).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    resultWeights,
+  );
+  expect(logFetch).toHaveBeenCalledWith(
+    expect.anything(),
+    "fetch-weights",
+    "ok",
+    "nar:2026:0512:55:01",
+    null,
+  );
+});
+
+it("handleJob fetch-weights NAR complete primary does not fetch result page", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, insertHorseWeightSnapshot } = await import("./storage");
+  const { fetchRacePage, parseHorseWeights, parseRaceEntries, parseRaceResultHorseWeights } =
+    await import("./keiba-go");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    babaCode: "22",
+    debaUrl: "https://nar.example/DebaTable?race_id=1",
+    discoveredAt: "2026-05-12T00:00:00+09:00",
+    kaisaiKai: null,
+    kaisaiNen: "2026",
+    kaisaiNichime: null,
+    kaisaiTsukihi: "0512",
+    keibajoCode: "55",
+    lastOddsFetchAt: null,
+    lastOddsQueuedAt: null,
+    lastResultFetchAt: null,
+    lastResultQueuedAt: null,
+    lastWeightFetchAt: null,
+    oddsFetchLockUntil: null,
+    oddsLinks: {},
+    raceBango: "01",
+    raceKey: "nar:2026:0512:55:01",
+    raceName: "T",
+    raceStartAtJst: "2026-05-12T18:00:00+09:00",
+    resultCompleteAt: null,
+    resultExpectedHorseCount: null,
+    resultFetchLockUntil: null,
+    resultSavedHorseCount: null,
+    source: "nar",
+    updatedAt: "2026-05-12T00:00:00+09:00",
+  } as never);
+  vi.mocked(parseRaceEntries).mockReturnValueOnce([
+    { horseName: "h1", horseNumber: "1", jockeyName: "j", status: null },
+    { horseName: "h2", horseNumber: "2", jockeyName: "j", status: null },
+  ] as never);
+  const primaryWeights = [
+    { changeAmount: null, changeSign: null, horseName: "h1", horseNumber: "1", weight: 500 },
+    { changeAmount: null, changeSign: null, horseName: "h2", horseNumber: "2", weight: 510 },
+  ];
+  vi.mocked(parseHorseWeights).mockReturnValueOnce(primaryWeights as never);
+  vi.mocked(fetchRacePage).mockResolvedValueOnce("<html>primary</html>");
+  await handleJob(buildEnv(), { raceKey: "nar:2026:0512:55:01", type: "fetch-weights" });
+  expect(fetchRacePage).toHaveBeenCalledTimes(1);
+  expect(parseRaceResultHorseWeights).not.toHaveBeenCalled();
+  expect(insertHorseWeightSnapshot).toHaveBeenCalledWith(
+    expect.anything(),
+    "nar:2026:0512:55:01",
+    expect.any(String),
+    primaryWeights,
   );
 });
 

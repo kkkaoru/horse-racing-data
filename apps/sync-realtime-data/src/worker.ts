@@ -2436,13 +2436,15 @@ const retryEmptyWeightsWhileInWindow = async (env: Env, race: NarRaceSource): Pr
   );
 };
 
-export const assertJraHorseWeightsComplete = (
-  raceKey: string,
+// Returns active (non-scratched) entry horse numbers missing from a non-empty
+// weight set. Empty weights intentionally return [] so the empty-retry path
+// owns count=0 rather than the sparse path.
+export const getMissingJraHorseWeightNumbers = (
   entries: Omit<RaceEntry, "fetchedAt">[],
   weights: HorseWeight[],
-): void => {
+): string[] => {
   if (weights.length === 0) {
-    return;
+    return [];
   }
   const expectedHorseNumbers = new Set(
     entries
@@ -2450,9 +2452,17 @@ export const assertJraHorseWeightsComplete = (
       .map((entry) => entry.horseNumber),
   );
   const actualHorseNumbers = new Set(weights.map((weight) => weight.horseNumber));
-  const missingHorseNumbers = Array.from(expectedHorseNumbers).filter(
+  return Array.from(expectedHorseNumbers).filter(
     (horseNumber) => !actualHorseNumbers.has(horseNumber),
   );
+};
+
+export const assertJraHorseWeightsComplete = (
+  raceKey: string,
+  entries: Omit<RaceEntry, "fetchedAt">[],
+  weights: HorseWeight[],
+): void => {
+  const missingHorseNumbers = getMissingJraHorseWeightNumbers(entries, weights);
   if (missingHorseNumbers.length > 0) {
     throw new Error(
       `JRA horse weight rows are sparse: ${raceKey} missing=${missingHorseNumbers.join(",")}`,
@@ -2466,27 +2476,42 @@ export const assertJraHorseWeightsComplete = (
 // the official site has only posted 7 of 8 horses) would mark
 // last_weight_fetch_at and the 24h cooldown blocks the retry that would pick
 // up the late-posted horse.
-export const assertNarHorseWeightsComplete = (
-  raceKey: string,
+export const getMissingNarHorseWeightNumbers = (
   entries: Omit<RaceEntry, "fetchedAt">[],
   weights: HorseWeight[],
-): void => {
+): string[] => {
   if (weights.length === 0) {
-    return;
+    return [];
   }
   const expectedHorseNumbers = new Set(
     entries.filter((entry) => !entry.status).map((entry) => entry.horseNumber),
   );
   const actualHorseNumbers = new Set(weights.map((weight) => weight.horseNumber));
-  const missingHorseNumbers = Array.from(expectedHorseNumbers).filter(
+  return Array.from(expectedHorseNumbers).filter(
     (horseNumber) => !actualHorseNumbers.has(horseNumber),
   );
+};
+
+export const assertNarHorseWeightsComplete = (
+  raceKey: string,
+  entries: Omit<RaceEntry, "fetchedAt">[],
+  weights: HorseWeight[],
+): void => {
+  const missingHorseNumbers = getMissingNarHorseWeightNumbers(entries, weights);
   if (missingHorseNumbers.length > 0) {
     throw new Error(
       `NAR horse weight rows are sparse: ${raceKey} missing=${missingHorseNumbers.join(",")}`,
     );
   }
 };
+
+const buildSparseWeightsLogDetail = (
+  weights: HorseWeight[],
+  missingHorseNumbers: readonly string[],
+): string =>
+  missingHorseNumbers.length > 0
+    ? `count=${weights.length} missing=${missingHorseNumbers.join(",")}`
+    : `count=${weights.length}`;
 
 const shouldRunHourlyDiscoveryRecovery = (now: Date): boolean => {
   const { minute } = getJstDateParts(now);
@@ -2871,30 +2896,56 @@ export const enqueueFetchWeightsBatch = async (
   return jobs.length;
 };
 
-const parseHorseWeightsForRace = async (
+// Prefer the more complete of primary entry-page weights vs race-result-page
+// weights. Incomplete primary HTML (partial late post / scraper miss) used to
+// short-circuit as soon as primaryWeights.length > 0 and never tried the
+// result page — leaving races stuck on hard sparse errors (2026-07-21 NAR).
+export const parseHorseWeightsForRace = async (
   race: NarRaceSource,
   html: string,
+  entries: Omit<RaceEntry, "fetchedAt">[] = [],
 ): Promise<HorseWeight[]> => {
   if (race.source === "jra") {
     return parseJraHorseWeights(html);
   }
   const primaryWeights = parseHorseWeights(html);
-  if (primaryWeights.length > 0) {
+  const primaryMissing =
+    primaryWeights.length > 0 ? getMissingNarHorseWeightNumbers(entries, primaryWeights) : [];
+  const shouldTryResultPage =
+    primaryWeights.length === 0 || (entries.length > 0 && primaryMissing.length > 0);
+  if (!shouldTryResultPage) {
     return primaryWeights;
   }
   const resultHtml = await fetchRacePage(buildRaceResultUrl(race.debaUrl));
-  return parseRaceResultHorseWeights(resultHtml);
+  const resultWeights = parseRaceResultHorseWeights(resultHtml);
+  if (primaryWeights.length === 0) {
+    return resultWeights;
+  }
+  if (resultWeights.length === 0) {
+    return primaryWeights;
+  }
+  const resultMissing = getMissingNarHorseWeightNumbers(entries, resultWeights);
+  if (resultMissing.length < primaryMissing.length) {
+    return resultWeights;
+  }
+  if (
+    resultMissing.length === primaryMissing.length &&
+    resultWeights.length > primaryWeights.length
+  ) {
+    return resultWeights;
+  }
+  return primaryWeights;
 };
 
 const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean> => {
   // Skip entirely -- no D1 write, no HTTP fetch -- when a complete snapshot
-  // already exists. insertHorseWeightSnapshot is only ever reached after
-  // assertJraHorseWeightsComplete / assertNarHorseWeightsComplete pass, so
-  // any stored row set already represents every expected non-scratched
-  // horse; there is no partial state to worry about missing here. This also
-  // removes one source of repeat request pressure against already-solved
-  // races (2026-07-03 incident: races whose weight was already captured
-  // were still getting re-hit every watchdog tick).
+  // already exists. insertHorseWeightSnapshot is only ever reached after the
+  // soft completeness gates below pass, so any stored row set already
+  // represents every expected non-scratched horse; there is no partial state
+  // to worry about missing here. This also removes one source of repeat
+  // request pressure against already-solved races (2026-07-03 incident:
+  // races whose weight was already captured were still getting re-hit every
+  // watchdog tick).
   const alreadyStored = await getLatestHorseWeights(env.REALTIME_DB, raceKey);
   if (alreadyStored !== null && alreadyStored.horses.length > 0) {
     await logFetch(
@@ -2944,26 +2995,33 @@ const fetchAndStoreWeights = async (env: Env, raceKey: string): Promise<boolean>
       race,
     );
   }
-  const weights = await parseHorseWeightsForRace(race, html);
-  if (race.source === "jra") {
-    assertJraHorseWeightsComplete(raceKey, entries, weights);
+  const weights = await parseHorseWeightsForRace(race, html, entries);
+  // Fail-closed soft path: incomplete non-empty weights must NOT throw and
+  // must NOT write last_weight_fetch_at / snapshot (24h cooldown would block
+  // recovery). Soft-retry while still in the lead/near-race window, same as
+  // empty weights. 2026-07-19..21: assert* throws turned sparse NAR/JRA
+  // parses into hard `error` rows with no retry (e.g. nar:2026:0721:35:04).
+  if (weights.length === 0) {
+    await retryEmptyWeightsWhileInWindow(env, race);
+    await logFetch(env.REALTIME_DB, "fetch-weights", SKIP_STATUS.weightsEmpty, raceKey, "count=0");
+    return false;
   }
-  if (race.source === "nar") {
-    assertNarHorseWeightsComplete(raceKey, entries, weights);
-  }
-  if (weights.length > 0 && weights.length < MIN_HORSE_WEIGHT_ROWS_PER_RACE) {
+  const missingHorseNumbers =
+    race.source === "jra"
+      ? getMissingJraHorseWeightNumbers(entries, weights)
+      : race.source === "nar"
+        ? getMissingNarHorseWeightNumbers(entries, weights)
+        : [];
+  const tooFewRows = weights.length < MIN_HORSE_WEIGHT_ROWS_PER_RACE;
+  if (missingHorseNumbers.length > 0 || tooFewRows) {
+    await retryEmptyWeightsWhileInWindow(env, race);
     await logFetch(
       env.REALTIME_DB,
       "fetch-weights",
       SKIP_STATUS.weightsSparse,
       raceKey,
-      `count=${weights.length}`,
+      buildSparseWeightsLogDetail(weights, missingHorseNumbers),
     );
-    return false;
-  }
-  if (weights.length === 0) {
-    await retryEmptyWeightsWhileInWindow(env, race);
-    await logFetch(env.REALTIME_DB, "fetch-weights", SKIP_STATUS.weightsEmpty, raceKey, "count=0");
     return false;
   }
   await insertHorseWeightSnapshot(env.REALTIME_DB, raceKey, fetchedAt, weights);
