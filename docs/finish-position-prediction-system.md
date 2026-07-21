@@ -1,6 +1,6 @@
 # 着順・脚質予測システム 仕様書
 
-最終更新: 2026-07-15
+最終更新: 2026-07-22
 
 本書は、競馬の着順予測システム（finish position prediction system）と、その前段で着順特徴量を供給する脚質予測システム（running-style prediction system）の全体仕様を記述する。学習基盤・特徴量パイプライン・本番推論基盤（Cloudflare Worker / Cloudflare Container）・評価方法・アンチパターンを網羅する。
 
@@ -144,6 +144,16 @@ flowchart TB
 cell-level routing を使う場合は `RUNNING_STYLE_CELL_ROUTING_JSON` に data-driven routing config を入れる。routing config が存在しないカテゴリ、または config 自体が未設定の場合は、必ず source 単位 latest model に fallback する。
 
 脚質 cell model はローカルで `running_style_lightgbm.py train-cells` により **cell 単位で** 学習・評価・promotion plan 生成を行う。採用された variant は header metadata 込みの flatbin を `RUNNING_STYLE_MODELS` の R2 object として promotion し、`RUNNING_STYLE_CELL_ROUTING_JSON` はその R2 key を指す。production は Cloudflare Worker / Queue / R2 / D1 / Neon のみを参照し、ローカル端末上の model path や process に依存しない。
+
+### 2.1.1 production artifact integrity contract
+
+`apps/finish-position-predict-container/production-artifacts.json` は、着順の category default / cell / NAR transformer と脚質 JRA/NAR latest+calibrator の、選択可能な artifact key・SHA-256・size・pairing を固定する deterministic contract である。`predict_lib.artifact_integrity` が selector から到達可能な key を導出し、manifest に無い場合・欠落・byte 不一致を `INTEGRITY_FAILURE`、local read failure（network は対象外、下記 Scope 参照）を `INDETERMINATE`、完全一致のみ `MATCH` として fail-closed する。activation authority は従来どおり `model_meta.json` / `cell_routing.json` / 下記 tracked declaration にあり、manifest 自体が model を選択することはない。
+
+この preflight は build/deploy 経路に組み込み済みで、通常の deploy コマンドではスキップできない。`apps/finish-position-cron/package.json` の `deploy` script は `wrangler deploy` の前に staged `models/` を検証し、非 0 exit で abort する。加えて container `Dockerfile` も baked 済み `/models` に対して同じ verifier を `RUN` step として実行するため、`bun run deploy` を経由しない直接の `docker build` / `wrangler deploy` も image build 時点で fail する。running-style の byte 検証はこの container には焼き込まれないため scope 外だが、selector closure（到達 key が manifest にあるか）自体は `--system` に関わらず常時実行されるため、cell-routing で新規追加されて未 manifest な running-style variant もこの同じ `RUN` step で fail-closed になる。
+
+`NAR_TRANSFORMER_BLEND_ENABLED`（finish-position-cron secret）と `RUNNING_STYLE_CELL_ROUTING_JSON`（sync-realtime-data secret、本 worktree からは編集しない）は CLI から読み戻せない write-only secret のため、`predict_lib/deploy_flags.json` と `predict_lib/running_style_cell_routing.json` を、ambient な process env の代わりに verifier が参照する tracked な単一の宣言として置く。`wrangler secret put` でどちらかを変更する operator は、同じ commit でこの対応する tracked file も更新しなければならない。running-style routing 宣言の到達可能な `variants[*].modelKey` は jra / nar / ban-ei の 3 category すべてで selector closure に反映されるため（config schema は 3 category とも許容するが、現状 live artifact があるのは jra/nar のみ）、新規 cell-routed variant が未 manifest のまま `MATCH` を返すことはない。manifest schema は「1 source の calibrator を複数 routed model が共有する」という実トポロジーを、bundle 単位ではなく category/source 単位で calibrator coverage を検証することで、重複 serving key rejection を起こさずに表現する。
+
+Scope: この verifier は local build-context のバイトのみを見る。live R2 running-style object の network re-verification は行わない（attestation 記録のみ）。将来 network-based observer を追加する場合、auth/network failure は必ず `INDETERMINATE` にマップしなければならず、`MATCH` / `INTEGRITY_FAILURE` にしてはならない（一時的な network 障害が通常の offline build を silently block/pass してはならない）。JRA running-style は `running-style/models/jra/latest.flatbin`（SHA-256 `278690ed18e7aa1f6847ee4349b1ec98281a5633cc10bd000de55c608ffbfc76`）と `running-style/models/jra/calibrators.json`（`0f23a5a40dea956b1de06699432e130beb86dc3448bd3188485e60d1a7067ee7`）を単一 release pair として扱う。これは live fixed-export / rollback-refit pair の byte 一致を固定するが、同一 byte の durable non-`tmp` MLflow/tracked artifact は未整備で provenance は HOLD である。旧 tracked v3 calibrator を代用してはならない。
 
 ### 2.2 学習窓が 3 カテゴリで異なる点（重要）
 

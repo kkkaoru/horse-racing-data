@@ -55,6 +55,11 @@ RUN python3 -c "import duckdb; connection=duckdb.connect(); connection.execute('
 # The container's own predict entrypoint + pure helpers.
 COPY apps/finish-position-predict-container/src /app/src
 
+# Tracked digest contract for the models this image is about to bake in below
+# (predict_lib.artifact_integrity.MANIFEST_PATH resolves to
+# parents[2] of artifact_integrity.py, i.e. /app here).
+COPY apps/finish-position-predict-container/production-artifacts.json /app/production-artifacts.json
+
 # Reused, unchanged feature-pipeline scripts from the viewer. predict_upcoming
 # imports pipeline_runner (a thin bundled adapter, see DEPLOY.md) which shells
 # out to these to build the v8 feature parquet for the upcoming window.
@@ -88,6 +93,25 @@ COPY apps/pc-keiba-viewer/finish-position/lookups /app/lookups
 COPY apps/finish-position-predict-container/models /models
 
 ENV PYTHONPATH=/app/src:/app/pipeline:/app/pipeline/finish-position-features
+
+# Fail-closed artifact-integrity preflight: verify every artifact production
+# selectors (model_meta.json / cell_routing.json / the tracked NAR-transformer
+# deploy flag) can reach is present under /models with the SHA-256 + size the
+# tracked manifest above declares, BEFORE this layer -- and therefore this
+# image -- can finish building. A nonzero exit here fails this RUN step, which
+# fails `docker build`, which fails `wrangler deploy --containers-rollout ...`
+# too, so a corrupt/mismatched/missing selected artifact can never reach
+# production through the container build path, even for a caller who runs
+# `wrangler deploy` (or `docker build`) directly instead of the cron package's
+# `bun run deploy` (which also runs this same verifier earlier, as a fast local
+# fail before this slower image build even starts). Running-style artifacts
+# are intentionally out of scope here (--system finish-position): they are not
+# baked into this container, and their live R2 bytes are attestation-recorded,
+# not re-hashed over the network -- see DEPLOY.md's Scope note. The verifier's
+# selector-closure check (are all reachable keys manifested at all) still
+# always covers running-style regardless of --system, only the BYTE check is
+# scoped.
+RUN python -m predict_lib.artifact_integrity --artifact-root /models --system finish-position
 
 # HTTP server mode is the default so CF Containers can probe port 8080 and the
 # queue-consumer held-fetch pattern works (container serves /predict + /ping).

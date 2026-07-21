@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "format": "oxfmt --write package.json pyproject.toml DEPLOY.md",
-    "format:check": "oxfmt --check package.json pyproject.toml DEPLOY.md",
+    "artifact:verify": "PYTHONPATH=src uv run python -m predict_lib.artifact_integrity",
+    "format": "oxfmt --write package.json pyproject.toml production-artifacts.json DEPLOY.md src/predict_lib/deploy_flags.json src/predict_lib/running_style_cell_routing.json",
+    "format:check": "oxfmt --check package.json pyproject.toml production-artifacts.json DEPLOY.md src/predict_lib/deploy_flags.json src/predict_lib/running_style_cell_routing.json",
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "python:check": "bun run python:lint && bun run python:typecheck && bun run python:test",
     "python:lint": "uv run ruff check",
