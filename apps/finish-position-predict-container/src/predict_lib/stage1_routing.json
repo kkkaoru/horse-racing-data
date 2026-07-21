@@ -4,6 +4,7 @@
     "model_version": "jra-cb-stage1-marketfree235-2013",
     "feature_count": 235,
     "architecture": "catboost",
-    "stddev_threshold": 0.4
+    "stddev_threshold": 0.4,
+    "enable_stddev_safety_net": true
   }
 }

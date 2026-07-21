@@ -2161,6 +2161,7 @@ _STAGE1_TEST_CONFIG = Stage1CategoryConfig(
     feature_count=1,
     architecture="catboost",
     stddev_threshold=0.4,
+    enable_stddev_safety_net=True,
 )
 
 
@@ -2189,6 +2190,7 @@ def test_load_stage1_model_returns_none_on_unapproved_model_version(
         feature_count=1,
         architecture="catboost",
         stddev_threshold=0.4,
+        enable_stddev_safety_net=True,
     )
 
     loaded = _load_stage1_model(tmp_path, "jra", config)

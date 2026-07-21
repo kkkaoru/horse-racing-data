@@ -28,6 +28,7 @@ _VALID_JRA_CONFIG: dict[str, object] = {
     "feature_count": 235,
     "architecture": "catboost",
     "stddev_threshold": 0.3,
+    "enable_stddev_safety_net": True,
 }
 
 
@@ -57,6 +58,7 @@ def test_tracked_stage1_routing_loads_live_jra_config() -> None:
         feature_count=235,
         architecture="catboost",
         stddev_threshold=0.4,
+        enable_stddev_safety_net=True,
     )
 
 
@@ -72,6 +74,7 @@ def test_load_stage1_routing_parses_full_shape(tmp_path: Path) -> None:
             feature_count=235,
             architecture="catboost",
             stddev_threshold=0.3,
+            enable_stddev_safety_net=True,
         )
     }
 
@@ -253,6 +256,32 @@ def test_load_stage1_routing_accepts_int_stddev_threshold(tmp_path: Path) -> Non
     assert routing["jra"].stddev_threshold == 1.0
 
 
+def test_load_stage1_routing_rejects_non_boolean_enable_stddev_safety_net(
+    tmp_path: Path,
+) -> None:
+    bad = dict(_VALID_JRA_CONFIG)
+    bad["enable_stddev_safety_net"] = "false"
+    path = _write(tmp_path, {"jra": bad})
+
+    with pytest.raises(
+        Stage1RoutingValidationError, match=r"\.enable_stddev_safety_net must be a boolean"
+    ):
+        load_stage1_routing(path)
+
+
+def test_load_stage1_routing_accepts_stddev_safety_net_disabled(tmp_path: Path) -> None:
+    """A category whose fused Stage-2 score cannot exhibit the collapse
+    signature (e.g. a within-race z-normalized blend) opts out of the second
+    gate condition explicitly, rather than via a sentinel threshold value."""
+    disabled_net = dict(_VALID_JRA_CONFIG)
+    disabled_net["enable_stddev_safety_net"] = False
+    path = _write(tmp_path, {"jra": disabled_net})
+
+    routing = load_stage1_routing(path)
+
+    assert routing["jra"].enable_stddev_safety_net is False
+
+
 def test_load_stage1_routing_accepts_disabled_category(tmp_path: Path) -> None:
     disabled = dict(_VALID_JRA_CONFIG)
     disabled["enabled"] = False
@@ -305,6 +334,38 @@ def test_race_has_fresh_odds_coerces_string_ninkijun() -> None:
 
 def test_race_has_fresh_odds_treats_blank_string_as_missing() -> None:
     entries = [{"tansho_ninkijun": ""}, {"tansho_ninkijun": None}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_race_has_fresh_odds_treats_00_placeholder_string_as_missing() -> None:
+    """Raw JVD odds/popularity columns use a non-NULL ``'00'`` placeholder for
+    "unconfirmed" (see reference_jvd_placeholder_semantics) -- not every
+    upstream SQL path strips it before casting to int, so this module must
+    treat a coerced ``0`` the same as missing, not as a real rank."""
+    entries = [{"tansho_ninkijun": "00"}, {"tansho_ninkijun": "00"}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_race_has_fresh_odds_treats_int_zero_as_missing() -> None:
+    entries = [{"tansho_ninkijun": 0}, {"tansho_ninkijun": 0}]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_race_has_fresh_odds_true_when_only_some_entries_are_00_placeholder() -> None:
+    """A single 0/'00' entry alongside a real rank is NOT the whole-race
+    outage condition -- mirrors the existing partial-None precedent."""
+    entries = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": "00"}]
+
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_race_has_fresh_odds_treats_negative_ninkijun_as_missing() -> None:
+    """Defensive: a real ninkijun is never negative; treat it the same as a
+    placeholder rather than trusting a corrupt/impossible value as fresh."""
+    entries = [{"tansho_ninkijun": -1}]
 
     assert race_has_fresh_odds(entries) is False
 
@@ -406,6 +467,7 @@ _CONFIG = Stage1CategoryConfig(
     feature_count=235,
     architecture="catboost",
     stddev_threshold=0.3,
+    enable_stddev_safety_net=True,
 )
 
 _FRESH_ENTRIES = [{"tansho_ninkijun": 1}, {"tansho_ninkijun": 2}, {"tansho_ninkijun": 3}]
@@ -427,6 +489,7 @@ def test_resolve_stage1_gate_disabled_when_config_enabled_false() -> None:
         feature_count=235,
         architecture="catboost",
         stddev_threshold=0.3,
+        enable_stddev_safety_net=True,
     )
 
     decision = resolve_stage1_gate(
@@ -485,6 +548,7 @@ def test_resolve_stage1_gate_at_exact_threshold_does_not_trip() -> None:
         feature_count=235,
         architecture="catboost",
         stddev_threshold=compute_predicted_score_stddev(scores),
+        enable_stddev_safety_net=True,
     )
 
     decision = resolve_stage1_gate(
@@ -493,3 +557,61 @@ def test_resolve_stage1_gate_at_exact_threshold_does_not_trip() -> None:
 
     assert decision.use_stage1 is False
     assert decision.reason == "fresh"
+
+
+# ---------------------------------------------------------------------------
+# resolve_stage1_gate: enable_stddev_safety_net opt-out (a category whose
+# Stage-2 score is within-race normalized, e.g. NAR's z-fusion blend, cannot
+# use the stddev signature at all -- see the module docstring)
+# ---------------------------------------------------------------------------
+
+_CONFIG_NET_DISABLED = Stage1CategoryConfig(
+    enabled=True,
+    model_version="nar-cb-stage1-marketfree-example",
+    feature_count=180,
+    architecture="xgboost",
+    stddev_threshold=0.3,
+    enable_stddev_safety_net=False,
+)
+
+
+def test_resolve_stage1_gate_net_disabled_never_trips_on_degenerate_scores() -> None:
+    """Even a maximally collapsed score spread must not trip Stage-1 when the
+    category has explicitly opted out of the stddev safety net."""
+    decision = resolve_stage1_gate(
+        config=_CONFIG_NET_DISABLED, entries=_FRESH_ENTRIES, stage2_scores=_DEGENERATE_SCORES
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=False, reason="fresh", stddev=None)
+
+
+def test_resolve_stage1_gate_net_disabled_never_trips_on_identical_scores() -> None:
+    """Zero variance (the most extreme possible collapse) still must not trip
+    when the net is disabled."""
+    decision = resolve_stage1_gate(
+        config=_CONFIG_NET_DISABLED, entries=_FRESH_ENTRIES, stage2_scores=[0.5, 0.5, 0.5]
+    )
+
+    assert decision.use_stage1 is False
+    assert decision.reason == "fresh"
+    assert decision.stddev is None
+
+
+def test_resolve_stage1_gate_net_disabled_stddev_is_never_computed() -> None:
+    """compute_predicted_score_stddev is skipped entirely (not merely
+    ignored) -- the reported stddev is None, not a computed-but-unused value."""
+    decision = resolve_stage1_gate(
+        config=_CONFIG_NET_DISABLED, entries=_FRESH_ENTRIES, stage2_scores=_HEALTHY_SCORES
+    )
+
+    assert decision.stddev is None
+
+
+def test_resolve_stage1_gate_net_disabled_freshness_gate_still_trips() -> None:
+    """Disabling the stddev safety net must not weaken the (independent)
+    freshness gate."""
+    decision = resolve_stage1_gate(
+        config=_CONFIG_NET_DISABLED, entries=_STALE_ENTRIES, stage2_scores=_HEALTHY_SCORES
+    )
+
+    assert decision == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)

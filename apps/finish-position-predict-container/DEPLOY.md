@@ -34,16 +34,21 @@ it). Two independent conditions route to Stage-1, either sufficient:
 1. **Freshness gate**: every entry in the race lacks a real `tansho_ninkijun`
    (the whole odds board never populated for this race — an odds-serving
    incident, not a single horse's missing odds).
-2. **Stddev safety net**: the champion's own within-race `predicted_score`
-   population stddev falls below `stage1_routing.json`'s `stddev_threshold`
-   (0.4, independently re-validated against real 2026-07-12/07-18/07-11/07-19
-   Neon prediction data — see `predict_lib/stage1_routing.py`'s module
-   docstring for the full evidence).
+2. **Stddev safety net** (only when `enable_stddev_safety_net` is true for the
+   category): the champion's own within-race `predicted_score` population
+   stddev falls below `stage1_routing.json`'s `stddev_threshold` (JRA: 0.4,
+   independently re-validated against real 2026-07-12/07-18/07-11/07-19 Neon
+   prediction data — see `predict_lib/stage1_routing.py`'s module docstring
+   for the full evidence). Some Stage-2 scoring paths within-race normalize
+   their score (e.g. a z-fusion blend) so this signature structurally cannot
+   apply -- such a category sets `enable_stddev_safety_net: false` and gets
+   freshness-gate-only coverage instead of a sentinel threshold value.
 
 Config lives in `src/predict_lib/stage1_routing.json`
 (`{"jra": {"enabled": true, "model_version": "...", "feature_count": 235,
-"architecture": "catboost", "stddev_threshold": 0.4}}`) — tunable without a
-code change, mirroring `running_style_cell_routing.json`'s convention. An
+"architecture": "catboost", "stddev_threshold": 0.4,
+"enable_stddev_safety_net": true}}`) — tunable without a code change,
+mirroring `running_style_cell_routing.json`'s convention. An
 absent category means the gate never trips for it (unchanged behaviour).
 
 **Rollback** (no redeploy needed if the tracked file is already baked with

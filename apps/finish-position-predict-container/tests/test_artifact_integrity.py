@@ -1220,6 +1220,7 @@ def test_stage1_routing_path_can_disable_selection(tmp_path: Path) -> None:
                 "feature_count": 235,
                 "architecture": "catboost",
                 "stddev_threshold": 0.4,
+                "enable_stddev_safety_net": True,
             }
         },
     )
@@ -1260,6 +1261,7 @@ def test_disabled_stage1_routing_is_unselected_warning_only(tmp_path: Path) -> N
                 "feature_count": 235,
                 "architecture": "catboost",
                 "stddev_threshold": 0.4,
+                "enable_stddev_safety_net": True,
             }
         },
     )

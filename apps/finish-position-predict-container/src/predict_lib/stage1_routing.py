@@ -26,9 +26,14 @@ Two independent trip conditions route a race to Stage-1, either is sufficient:
    verbatim from the realtime snapshot (never itself median-substituted, unlike
    the derived ``odds_score``/``popularity_score`` -- see
    ``late_binding.apply_late_binding_to_entry``) -- across every entry in the
-   race. A race where EVERY entry lacks a real ``tansho_ninkijun`` never
-   received odds-board data at all: the whole-race outage this fallback insures
-   against. A race where at least one entry has real data is NOT that
+   race. A real rank must be strictly positive (1-based): raw JVD odds columns
+   use a non-NULL ``'00'`` placeholder for "unconfirmed" that not every
+   upstream SQL path strips before casting to int, so a coerced ``0`` is
+   treated the same as missing, never as a real rank (confirmed against
+   2,730,085 real NAR feature-store rows: ``tansho_ninkijun`` is never 0 or
+   negative). A race where EVERY entry lacks a real (``> 0``) ``tansho_ninkijun``
+   never received odds-board data at all: the whole-race outage this fallback
+   insures against. A race where at least one entry has real data is NOT that
    condition, even if a handful of entries individually lack odds (e.g. a very
    late scratch) -- the champion's ranking is not meaningfully impaired by a
    few missing entries.
@@ -57,6 +62,19 @@ Two independent trip conditions route a race to Stage-1, either is sufficient:
    not absent -- but the resulting ranking still collapsed) by testing the
    OUTCOME instead of the (necessarily incomplete) list of known causes.
 
+   **Not every Stage-2 scoring path can use this safety net.**
+   ``Stage1CategoryConfig.enable_stddev_safety_net`` lets a category disable
+   it explicitly (see :func:`resolve_stage1_gate`'s docstring): a within-race
+   z-normalized fused score (e.g. NAR's XGBoost-base x Set-Transformer
+   score-level z-fusion) structurally cannot collapse toward this signature
+   the way JRA's raw CatBoost score does, so no threshold value would ever
+   correctly separate incident from healthy for such a category -- confirmed
+   against real NAR-served Neon data (548 races incl. the 2026-07-15..18
+   odds-freeze window: within-race stddev never dropped below ~0.36, no
+   distinct low-stddev incident signature). A category with the net disabled
+   still gets the freshness gate at full strength; ``stddev_threshold`` is
+   still a required config field for schema simplicity but is never consulted.
+
 ``stage1_routing.json`` is a tracked, git-diffable, per-category declaration
 (mirrors ``running_style_cell_routing.json`` / ``cell_routing.json``'s
 "config file, not a hardcoded constant" convention) so the stddev threshold --
@@ -81,9 +99,14 @@ from .upsert_sql import INSERT_COLUMNS
 
 STAGE1_ROUTING_PATH: Final[Path] = Path(__file__).parent / "stage1_routing.json"
 STAGE1_ROUTING_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "nar", "ban-ei"})
-_REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
-    {"enabled", "model_version", "feature_count", "architecture", "stddev_threshold"}
-)
+_REQUIRED_KEYS: Final[frozenset[str]] = frozenset({
+    "enabled",
+    "model_version",
+    "feature_count",
+    "architecture",
+    "stddev_threshold",
+    "enable_stddev_safety_net",
+})
 _ARCHITECTURES: Final[frozenset[str]] = frozenset(get_args(Architecture))
 
 PREDICTED_SCORE_COLUMN_INDEX: Final[int] = INSERT_COLUMNS.index("predicted_score")
@@ -106,6 +129,7 @@ class Stage1CategoryConfig:
     feature_count: int
     architecture: str
     stddev_threshold: float
+    enable_stddev_safety_net: bool
 
 
 @dataclass(frozen=True)
@@ -172,6 +196,7 @@ def _parse_category_config(value: object, category: str) -> Stage1CategoryConfig
         feature_count=_require_positive_int(payload, "feature_count", context),
         architecture=architecture,
         stddev_threshold=_require_positive_number(payload, "stddev_threshold", context),
+        enable_stddev_safety_net=_require_bool(payload, "enable_stddev_safety_net", context),
     )
 
 
@@ -208,9 +233,25 @@ def race_has_fresh_odds(entries: Sequence[Mapping[str, object]]) -> bool:
     See this module's docstring, condition 1 (freshness gate), for the full
     rationale. Empty ``entries`` returns False (vacuously no fresh data, though
     ``score_races`` never scores an empty race so this is defensive-only).
+
+    A coerced value must be strictly positive, NOT merely non-``None``: raw
+    JVD odds/popularity columns use a non-NULL ``'00'`` placeholder for
+    "unconfirmed" rather than SQL NULL (the same anti-pattern documented for
+    ``kakutei_chakujun``/``shusso_tosu`` -- see
+    ``reference_jvd_placeholder_semantics``), and not every SQL path that
+    produces this column strips it before casting to int (some do via
+    ``nullif(..., '00')``, some only strip the empty string). ``coerce_optional_int``
+    would turn a surviving ``"00"`` string into the int ``0``, which an
+    ``is not None`` check would wrongly treat as a real rank. Real
+    ``tansho_ninkijun`` is a 1-based popularity rank and is never 0 or negative
+    (confirmed against 2,730,085 real NAR feature-store rows: min 1, max 16,
+    zero occurrences of 0 or negative) -- so ``> 0`` is the correct, universally
+    safe predicate regardless of which upstream SQL path produced the value.
     """
     return any(
-        coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD)) is not None for entry in entries
+        (ninkijun := coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))) is not None
+        and ninkijun > 0
+        for entry in entries
     )
 
 
@@ -274,11 +315,29 @@ def resolve_stage1_gate(
     when it passes does the stddev safety net (post-scoring, needs
     ``stage2_scores``) get a chance to trip. Either condition alone is
     sufficient to route to Stage-1.
+
+    ``config.enable_stddev_safety_net`` lets a category opt out of the
+    second condition entirely (freshness-gate-only): some Stage-2 scoring
+    paths within-race normalize their score (e.g. NAR's z-normalized
+    score-level fusion of the XGBoost base and Set Transformer blend,
+    ``transformer_scorer.fuse_ensemble_transformer``) so the raw stddev
+    signature this safety net relies on cannot collapse the way JRA's champion
+    CatBoost score does even during a genuine incident -- no threshold value
+    would ever trip correctly for such a category (confirmed against real
+    NAR-served Neon data: within-race stddev never dropped below ~0.36 across
+    548 races including the 2026-07-15..18 odds-freeze window, with no
+    distinct low-stddev signature separating incident from healthy days).
+    ``compute_predicted_score_stddev`` is skipped entirely (not merely
+    unused) when the net is disabled, and the reported ``stddev`` is ``None``
+    -- there is nothing meaningful to report for a metric that structurally
+    cannot signal anything for that category.
     """
     if config is None or not config.enabled:
         return Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
     if not race_has_fresh_odds(entries):
         return Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
+    if not config.enable_stddev_safety_net:
+        return Stage1GateDecision(use_stage1=False, reason="fresh", stddev=None)
     stddev = compute_predicted_score_stddev(stage2_scores)
     if is_score_spread_degraded(stddev, config.stddev_threshold):
         return Stage1GateDecision(use_stage1=True, reason="score-spread-degraded", stddev=stddev)
