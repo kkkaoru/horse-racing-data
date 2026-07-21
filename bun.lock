@@ -20,7 +20,7 @@
         "@cloudflare/containers": "0.3.7",
         "@neondatabase/serverless": "catalog:",
         "catboost-json-tree": "workspace:*",
-        "hyparquet": "1.26.0",
+        "hyparquet": "1.26.2",
         "xgboost-json-tree": "workspace:*",
       },
       "devDependencies": {
@@ -195,7 +195,7 @@
       "dependencies": {
         "@dsnp/parquetjs": "catalog:",
         "horse-racing-realtime": "workspace:*",
-        "hyparquet": "1.26.0",
+        "hyparquet": "1.26.2",
       },
       "devDependencies": {
         "@cloudflare/vitest-pool-workers": "catalog:",
@@ -1332,7 +1332,7 @@
 
     "humanize-ms": ["humanize-ms@1.2.1", "", { "dependencies": { "ms": "^2.0.0" } }, "sha512-Fl70vYtsAFb/C06PTS9dZBo7ihau+Tu/DNCk/OyHhea07S+aeMWpFFkUaXRa8fI+ScZbEI8dfSxwY7gxZ9SAVQ=="],
 
-    "hyparquet": ["hyparquet@1.26.0", "", {}, "sha512-yxUiViPZ+z5h+xdX4rA1G+k30jXoEsG9I2xEpjaM84imGznbKjZzxuZFsdzqg6C4LxNnnAlDFvzpk4uxQWTbTQ=="],
+    "hyparquet": ["hyparquet@1.26.2", "", {}, "sha512-6qjyK7R2tZ4vnYP1J8NpcCeDPK1UIYk3xh5XgtQUnUM1iwkYbvI6Mz3xtmpMd6AfCCeoUoJVbEq29k5GReZRWA=="],
 
     "iconv-lite": ["iconv-lite@0.7.2", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw=="],
 
