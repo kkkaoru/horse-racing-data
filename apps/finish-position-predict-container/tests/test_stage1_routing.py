@@ -62,6 +62,27 @@ def test_tracked_stage1_routing_loads_live_jra_config() -> None:
     )
 
 
+def test_tracked_stage1_routing_loads_live_nar_config() -> None:
+    """The real tracked file must parse and describe the live NAR fallback.
+
+    NAR runs freshness-gate-only: its Stage-2 is a within-race znorm blend whose
+    within-race predicted_score stddev never collapses (measured floor ~0.36
+    across 548 served races), so the stddev safety net cannot separate incident
+    from healthy for NAR -- enable_stddev_safety_net is False and stddev_threshold
+    is inert.
+    """
+    routing = load_stage1_routing()
+
+    assert routing["nar"] == Stage1CategoryConfig(
+        enabled=True,
+        model_version="iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+        feature_count=184,
+        architecture="xgboost",
+        stddev_threshold=0.3,
+        enable_stddev_safety_net=False,
+    )
+
+
 def test_load_stage1_routing_parses_full_shape(tmp_path: Path) -> None:
     path = _write(tmp_path, {"jra": _VALID_JRA_CONFIG})
 
