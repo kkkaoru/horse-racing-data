@@ -203,7 +203,11 @@
     // once Defect G is fixed and JRA RS generation is confirmed healthy.
     // Rollback for this flip: set COORDINATOR_ENABLED back to "0" (config-only,
     // one deploy) -- that disables the coordinator globally for all categories.
-    "COORDINATOR_ENABLED": "1",
+    // Re-disabled "1"->"0" 2026-07-22 (team-lead+advisor approved): live check
+    // proved rescore non-functional for NAR -- per-race R2 cache empty -> every
+    // rescore CacheMiss->15-27min rebuild->exceededWallTime->retry, no write.
+    // Re-enable only after full runs confirmed seeding the per-race R2 cache.
+    "COORDINATOR_ENABLED": "0",
     // Comma-separated PredictCategory list scoping the per-race coordinator
     // above. rescore for any listed category shares the container's
     // _score_and_flush_races / score_races with the full pass, so it inherits
