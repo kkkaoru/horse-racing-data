@@ -6,13 +6,5 @@
     "architecture": "catboost",
     "stddev_threshold": 0.4,
     "enable_stddev_safety_net": true
-  },
-  "nar": {
-    "enabled": true,
-    "model_version": "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
-    "feature_count": 184,
-    "architecture": "xgboost",
-    "stddev_threshold": 0.3,
-    "enable_stddev_safety_net": false
   }
 }
