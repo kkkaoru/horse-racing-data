@@ -13,17 +13,38 @@ The source of truth is
 `apps/finish-position-predict-container/src/predict_lib/model_meta.json` plus the
 explicit NAR transformer metadata in `predict_lib/model_meta.py`.
 
-| Category     | Production model_version                      | Notes                                                                            |
-| ------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
-| JRA          | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default (Stage-2).                                             |
-| JRA cell     | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1. |
-| JRA cell     | `jra-cb-v10-prior-corner274-2013`             | Routed only for dirt, field size <=10, and `kyoso_joken_code=005`.               |
-| JRA fallback | `jra-cb-stage1-marketfree235-2013`            | Stage-1 gated fallback; see "Stage-1 Market-Free Gated Fallback" below.          |
-| NAR          | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.              |
-| Ban-ei       | `banei-cb-v9-sim-2011`                        | Default.                                                                         |
-| Ban-ei cell  | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                       |
+| Category     | Production model_version                      | Notes                                                                                         |
+| ------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| JRA          | `jra-cb-v9-sim-2013-clean`                    | Clean 250-feature default (Stage-2).                                                          |
+| JRA cell     | `jra-cb-v9-sim-2013-clean-jockey-pedigree269` | Routed only for `kyoso_joken_code=703`, where the local cell gate improved top1.              |
+| JRA cell     | `jra-cb-v10-prior-corner274-2013`             | Routed only for dirt, field size <=10, and `kyoso_joken_code=005`.                            |
+| JRA fallback | `jra-cb-stage1-marketfree235-2013`            | Stage-1 gated fallback; see "Stage-1 Market-Free Gated Fallback" below.                       |
+| NAR          | `iter40-nar-settransformer-blend-v1`          | Clean188 XGBoost base plus clean113 Set Transformer score-z fusion.                           |
+| NAR fallback | `iter12-nar-xgb-hpo-v8-stage1-marketfree-184` | Stage-1 gated fallback (freshness-gate-only); see "Stage-1 Market-Free Gated Fallback" below. |
+| Ban-ei       | `banei-cb-v9-sim-2011`                        | Default.                                                                                      |
+| Ban-ei cell  | `banei-cb-v8-window2011-wf-15y`               | Routed for `grade_code=E`.                                                                    |
 
-## Stage-1 Market-Free Gated Fallback (JRA)
+## Stage-1 Market-Free Gated Fallback (JRA + NAR)
+
+**NAR:** `iter12-nar-xgb-hpo-v8-stage1-marketfree-184` (184 feat = the champion
+`iter12-nar-xgb-hpo-v8-clean188`'s 188 minus the 4 market features
+`popularity_score` / `odds_score` / `field_dominant_favorite_indicator` /
+`horse_popularity_vs_field`). Serves in place of the `iter40` blend only when
+`resolve_stage1_gate` trips for the `nar` category. NAR runs **freshness-gate-only**
+(`stage1_routing.json` `"nar"` `enable_stddev_safety_net: false`): its Stage-2 is a
+within-race z-normalized blend (`transformer_scorer.fuse_ensemble_transformer`)
+whose within-race `predicted_score` stddev structurally cannot collapse (measured
+floor ~0.36 across 548 served races incl. the 2026-07-15..18 odds-freeze), so the
+stddev safety net can never signal for it — the freshness gate (whole-race
+`tansho_ninkijun` absent or `'00'`) is the sole trip. Probe: recovery **+12.18pp
+[LB95 +11.69]** top1 over the market-collapsed champion (blind WF, 40,710 races;
+`docs/finish-position-accuracy/history/nar-stage1-market-free-fallback-probe-2026-07-22.md`).
+**Rollback:** set `stage1_routing.json` `"nar"` `enabled: false` and redeploy — every
+NAR race then serves the `iter40` blend exactly as before this fallback existed
+(the fail-closed Stage-1 loader also disables it automatically on any
+missing/corrupt/unapproved/mismatched artifact). The JRA details below apply
+structurally to NAR too (only the removed-feature list and the freshness-gate-only
+posture differ).
 
 `jra-cb-stage1-marketfree235-2013` (235 feat: the champion's 250 minus the 15
 market/odds-derived features) serves in place of the champion only when

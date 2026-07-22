@@ -34,7 +34,7 @@ from predict_lib.deploy_flags import DeployFlagsValidationError
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "5344de9b3bb76991ac1550873cbfba19b0dc8590fea8b94e3405dabcc429fa92"
+EXPECTED_MANIFEST_ROOT = "bf286a079a9afa0f75bc2d4e10cfdf0a11accdd60a6e1696055c4b3710073879"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -78,8 +78,8 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 22
-    assert len(selected) == 22
+    assert len(manifest.artifacts) == 24
+    assert len(selected) == 24
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
@@ -129,7 +129,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 18
+    assert len(selected) == 20
     assert report.status == "MATCH"
     assert len(report.warnings) == 4
     assert report.warnings[0] == (
@@ -904,7 +904,7 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":22,"status":"MATCH","warnings":[]}'
+        '"observed_count":0,"selected_count":24,"status":"MATCH","warnings":[]}'
     )
 
 
@@ -914,7 +914,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 22
+    assert output["selected_count"] == 24
 
 
 def test_main_missing_local_artifacts_fail(
@@ -941,7 +941,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 22
+    assert output["selected_count"] == 24
 
 
 def test_main_invalid_manifest_fails(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
@@ -978,7 +978,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 18
+    assert output["selected_count"] == 20
 
 
 # ---------------------------------------------------------------------------

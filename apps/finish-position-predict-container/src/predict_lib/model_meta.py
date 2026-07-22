@@ -102,6 +102,7 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset({
     "jra-cb-stage1-marketfree235-2013",
     "iter12-nar-xgb-hpo-v8-clean188",
     "iter40-nar-settransformer-blend-v1",
+    "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
     "banei-cb-v9-sim-2011",
     "banei-cb-v8-window2011-wf-15y",
 })
