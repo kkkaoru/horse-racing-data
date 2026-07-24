@@ -69,8 +69,8 @@
     "next": "16.2.9",
     "pg": "catalog:",
     "pg-cloudflare": "catalog:",
-    "react": "19.2.7",
-    "react-dom": "19.2.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "recharts": "3.8.1",
     "sync-realtime-data-hot": "workspace:*",
     "zustand": "5.0.14"
