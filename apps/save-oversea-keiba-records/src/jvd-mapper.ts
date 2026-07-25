@@ -34,7 +34,14 @@ const ZERO_OWNER_CODE: string = "000000";
 const TOZAI_SHOZOKU_CODE_PLACEHOLDER: string = "0";
 const TANSHO_ODDS_PLACEHOLDER: string = "0000";
 const TANSHO_NINKIJUN_PLACEHOLDER: string = "00";
-const HASSO_JIKOKU_PLACEHOLDER: string = "0000";
+const HASSO_JIKOKU_WIDTH: number = 4;
+const HASSO_JIKOKU_PLACEHOLDER: string = "0".repeat(HASSO_JIKOKU_WIDTH);
+// jvd_se.wakuban is varchar(1); gates 1–9 fit, gate >= 10 cannot be stored without a schema change.
+const WAKUBAN_COLUMN_WIDTH: number = 1;
+const WAKUBAN_PLACEHOLDER: string = "0";
+const MINIMUM_WAKUBAN: number = 1;
+const MAXIMUM_WAKUBAN: number = 10 ** WAKUBAN_COLUMN_WIDTH - 1;
+const HASSO_JIKOKU_PATTERN: RegExp = /^([01]\d|2[0-3]):([0-5]\d)$/;
 // JV fixed field widths are specified in Shift-JIS bytes. Full-width characters consume 2 bytes;
 // half-width/ASCII characters consume 1 byte. Character pad lengths for pure full-width text are
 // therefore half the byte width (bamei 36→18, banushimei 64→32, race name 60→30).
@@ -189,6 +196,33 @@ const encodeTanshoNinkijun = (popularity: number | null): string => {
   return encoded.padStart(TANSHO_NINKIJUN_WIDTH, "0");
 };
 
+/**
+ * Encode published JST start time (HH:MM) into jvd_ra.hasso_jikoku as four zero-padded digits (HHMM).
+ * Missing or unparseable times stay as the JV placeholder so downstream systems keep a valid field.
+ */
+const encodeHassoJikoku = (startTime: string): string => {
+  if (!HASSO_JIKOKU_PATTERN.test(startTime)) {
+    return HASSO_JIKOKU_PLACEHOLDER;
+  }
+  // Matched HH:MM always yields exactly HASSO_JIKOKU_WIDTH digits after removing the colon.
+  return startTime.replace(":", "");
+};
+
+/**
+ * Encode published gate number into jvd_se.wakuban (varchar(WAKUBAN_COLUMN_WIDTH)).
+ * Gates MINIMUM_WAKUBAN–MAXIMUM_WAKUBAN store as a single digit. Gate >= 10 overflows the
+ * column, so fall back to the placeholder rather than silently truncating to a wrong digit.
+ */
+const encodeWakuban = (gate: number): string => {
+  if (!Number.isFinite(gate) || !Number.isInteger(gate)) {
+    return WAKUBAN_PLACEHOLDER;
+  }
+  if (gate < MINIMUM_WAKUBAN || gate > MAXIMUM_WAKUBAN) {
+    return WAKUBAN_PLACEHOLDER;
+  }
+  return String(gate);
+};
+
 const abbreviatedPersonName = (value: string): string => {
   const dotIndex: number = value.lastIndexOf(".");
   const withoutInitial: string = dotIndex < 0 ? value : value.slice(dotIndex + 1);
@@ -265,9 +299,7 @@ const mapRace = (race: ParsedRace, storageIdentity: RaceStorageIdentity): JvdRaR
     honshokin_henkomae: "0".repeat(HONSHOKIN_BEFORE_LENGTH),
     fukashokin: "0".repeat(FUKASHOKIN_LENGTH),
     fukashokin_henkomae: "0000",
-    // Real overseas JV rows (data_kubun=B) leave hasso_jikoku as the placeholder even when a
-    // published start time exists on the card; do not invent a non-JV encoding here.
-    hasso_jikoku: HASSO_JIKOKU_PLACEHOLDER,
+    hasso_jikoku: encodeHassoJikoku(race.startTime),
     hasso_jikoku_henkomae: HASSO_JIKOKU_PLACEHOLDER,
     // Overseas JV often leaves toroku_tosu as "00" while populating shusso_tosu with the field size.
     toroku_tosu: "00",
@@ -310,8 +342,7 @@ const mapRunner = ({ race, runner, storageIdentity, codes }: RunnerMappingInput)
     kaisai_kai: "00",
     kaisai_nichime: "00",
     race_bango: storageIdentity.raceNumber.padStart(2, "0"),
-    // Overseas JV sets wakuban to "0" for every runner; published gate is not stored in this column.
-    wakuban: "0",
+    wakuban: encodeWakuban(runner.gate),
     umaban: padNumber(runner.horseNumber, 2),
     ketto_toroku_bango: horseCode,
     bamei: padToJvByteWidth(horseName, BAMEI_BYTE_WIDTH),

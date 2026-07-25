@@ -111,7 +111,7 @@ test("maps parsed data and resolved codes to JV rows with fixed-width placeholde
     grade: "A",
     distance: "2390",
     track: "17",
-    start: "0000",
+    start: "2335",
     runnerCount: "02",
   });
   expect(rows.race.kyosomei_hondai.trim()).toBe("テストステークス");
@@ -140,7 +140,7 @@ test("maps parsed data and resolved codes to JV rows with fixed-width placeholde
     finish: rows.runners[0]?.kakutei_chakujun,
   }).toStrictEqual({
     horseNumber: "01",
-    gate: "0",
+    gate: "7",
     horseCode: "2021190001",
     sex: "3",
     coat: "03",
@@ -296,7 +296,90 @@ test("keeps shusso_tosu as the runner count and leaves toroku_tosu as the overse
 
   expect(rows.race.shusso_tosu).toBe("02");
   expect(rows.race.toroku_tosu).toBe("00");
-  expect(rows.race.hasso_jikoku).toBe("0000");
+});
+
+test("encodes published JST start time as four-digit hasso_jikoku", () => {
+  const rows = mapJvdRows({
+    race: RACE,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.race.hasso_jikoku).toBe("2335");
+  expect(rows.race.hasso_jikoku_henkomae).toBe("0000");
+});
+
+test("keeps hasso_jikoku placeholder when the published start time is missing or unparseable", () => {
+  const raceWithEmptyStart: ParsedRace = {
+    ...RACE,
+    startTime: "",
+  };
+  const raceWithInvalidStart: ParsedRace = {
+    ...RACE,
+    startTime: "25:99",
+  };
+  const emptyRows = mapJvdRows({
+    race: raceWithEmptyStart,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+  const invalidRows = mapJvdRows({
+    race: raceWithInvalidStart,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(emptyRows.race.hasso_jikoku).toBe("0000");
+  expect(invalidRows.race.hasso_jikoku).toBe("0000");
+});
+
+test("encodes published gate numbers into the one-character wakuban column", () => {
+  const rows = mapJvdRows({
+    race: RACE,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.wakuban).toBe("7");
+  expect(rows.runners[1]?.wakuban).toBe("3");
+});
+
+test("keeps wakuban placeholder when gate is out of the varchar(1) range", () => {
+  const raceWithOverflowGate: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        horseNumber: 1,
+        gate: 10,
+      },
+      {
+        ...BASE_RUNNER,
+        horseNumber: 2,
+        gate: 0,
+      },
+      {
+        ...BASE_RUNNER,
+        horseNumber: 3,
+        gate: 14,
+      },
+      {
+        ...BASE_RUNNER,
+        horseNumber: 4,
+        gate: Number.NaN,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceWithOverflowGate,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.wakuban).toBe("0");
+  expect(rows.runners[1]?.wakuban).toBe("0");
+  expect(rows.runners[2]?.wakuban).toBe("0");
+  expect(rows.runners[3]?.wakuban).toBe("0");
 });
 
 test("keeps odds and popularity placeholders for non-positive and non-finite published values", () => {

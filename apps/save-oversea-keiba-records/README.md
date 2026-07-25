@@ -75,20 +75,27 @@ Do not commit a real profile. Do not paste live selectors into tests, docs, or c
 
 The mapper persists every published field that has a real JV home and a verified encoding:
 
-| Published field       | JV column                   | Encoding / notes                                                                           |
-| --------------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
-| Runner count          | `jvd_ra.shusso_tosu`        | Two-digit zero-padded field size. `toroku_tosu` stays `00` to match real overseas JV rows. |
-| Coat colour           | `jvd_se.moshoku_code`       | Standard JV two-digit coat codes (e.g. 鹿 → `03`).                                         |
-| Win odds              | `jvd_se.tansho_odds`        | Odds × 10 in four zero-padded digits (1.6 → `0016`). Null/overflow → `0000`.               |
-| Popularity            | `jvd_se.tansho_ninkijun`    | Two-digit rank. Null/overflow → `00`.                                                      |
-| East/west affiliation | `jvd_se.tozai_shozoku_code` | From master resolution (`4` = overseas), not from free-text trainer country.               |
+| Published field       | JV column                   | Encoding / notes                                                                                                                           |
+| --------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runner count          | `jvd_ra.shusso_tosu`        | Two-digit zero-padded field size. `toroku_tosu` stays `00` to match real overseas JV rows.                                                 |
+| Start time (JST)      | `jvd_ra.hasso_jikoku`       | Published JST `HH:MM` encoded as four zero-padded digits (`23:35` → `2335`). Missing/unparseable → `0000`. Local start time is not stored. |
+| Coat colour           | `jvd_se.moshoku_code`       | Standard JV two-digit coat codes (e.g. 鹿 → `03`).                                                                                         |
+| Gate / stall number   | `jvd_se.wakuban`            | Published gate (JRA 「ゲート」) for gates 1–9. Column is `varchar(1)`, so gate ≥ 10 falls back to `0` (no silent truncation).              |
+| Win odds              | `jvd_se.tansho_odds`        | Odds × 10 in four zero-padded digits (1.6 → `0016`). Null/overflow → `0000`.                                                               |
+| Popularity            | `jvd_se.tansho_ninkijun`    | Two-digit rank. Null/overflow → `00`.                                                                                                      |
+| East/west affiliation | `jvd_se.tozai_shozoku_code` | From master resolution (`4` = overseas), not from free-text trainer country.                                                               |
+
+### Known column limitations
+
+| Limitation   | Detail                                                                                                                                                           |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gate ceiling | `jvd_se.wakuban` is `varchar(1)`. Overseas fields with 10+ runners cannot store gate numbers above 9 here without a schema change; those gates fall back to `0`. |
 
 ### Published but not storable in `jvd_ra` / `jvd_se`
 
 | Published field                       | Why it is not stored                                                                                                                                       |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Start time (JST / local)              | Real overseas `jvd_ra` rows leave `hasso_jikoku` as `0000` (100% of genuine `data_kubun='B'` rows).                                                        |
-| Gate / stall number                   | Real overseas `jvd_se` rows always use `wakuban='0'`. No other `jvd_se` column carries overseas gate; reserved `yobi_*` fields must not be overloaded.     |
+| Local start time                      | Only the published JST start time is written to `hasso_jikoku`.                                                                                            |
 | Form record (e.g. `10.5.1.1`)         | No form-string column on `jvd_ra` / `jvd_se`.                                                                                                              |
 | Sire / dam / damsire                  | Pedigree lives on master tables (`jvd_um` / `jvd_sk`). Unregistered runners have `ketto_toroku_bango='0000000000'`; this tool does not invent master rows. |
 | Trainer country (FR / IRE / GB / JPN) | Not a separate JV code on `jvd_se`; only east/west affiliation is stored.                                                                                  |
