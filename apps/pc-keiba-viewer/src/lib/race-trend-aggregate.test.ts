@@ -313,6 +313,20 @@ test("starterRaceKey emits the canonical 4-colon key for the 2026-06-01 venue 43
   ).toStrictEqual("nar:2026:0601:43:12");
 });
 
+test("detailFromStarter sets isResultVoid to false when resultVoidAt is absent", () => {
+  expect(detailFromStarter(baseRow).isResultVoid).toBe(false);
+});
+
+test("detailFromStarter sets isResultVoid to false when resultVoidAt is explicitly null", () => {
+  expect(detailFromStarter({ ...baseRow, resultVoidAt: null }).isResultVoid).toBe(false);
+});
+
+test("detailFromStarter sets isResultVoid to true when resultVoidAt is set", () => {
+  expect(
+    detailFromStarter({ ...baseRow, resultVoidAt: "2026-07-24T17:58:50+09:00" }).isResultVoid,
+  ).toBe(true);
+});
+
 test("detailFromStarter passes through horse weight and signed delta", () => {
   const detail = detailFromStarter(baseRow);
   expect(detail.horseWeight).toStrictEqual(498);
@@ -1543,6 +1557,24 @@ test("mergeStarterRowPair takes the newer raceName when both rows have one", () 
   expect(mergeStarterRowPair(past, newer).raceName).toStrictEqual("新規レース");
 });
 
+test("mergeStarterRowPair takes the newer resultVoidAt when the newer row has one", () => {
+  const past: RaceTrendStarterRow = { ...mergeBaseRow, resultVoidAt: null };
+  const newer: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    resultVoidAt: "2026-07-24T17:58:50+09:00",
+  };
+  expect(mergeStarterRowPair(past, newer).resultVoidAt).toStrictEqual("2026-07-24T17:58:50+09:00");
+});
+
+test("mergeStarterRowPair keeps the older resultVoidAt when the newer row lacks one", () => {
+  const past: RaceTrendStarterRow = {
+    ...mergeBaseRow,
+    resultVoidAt: "2026-07-24T17:58:50+09:00",
+  };
+  const newer: RaceTrendStarterRow = { ...mergeBaseRow, resultVoidAt: null };
+  expect(mergeStarterRowPair(past, newer).resultVoidAt).toStrictEqual("2026-07-24T17:58:50+09:00");
+});
+
 test("mergeStarterRowPair preserves all merged corner fields", () => {
   const past: RaceTrendStarterRow = {
     ...mergeBaseRow,
@@ -1743,6 +1775,7 @@ const buildDetail = (overrides: Partial<RaceTrendDetail>): RaceTrendDetail => ({
   time: null,
   horseWeight: null,
   horseWeightDelta: null,
+  isResultVoid: false,
   ...overrides,
 });
 

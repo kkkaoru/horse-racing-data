@@ -314,6 +314,7 @@ interface RawD1Row {
   bataijuInt: number | null;
   zogenFugo: string | null;
   zogenSaInt: number | null;
+  resultVoidAt: string | null;
 }
 
 interface TanshoOddsEntry {
@@ -451,7 +452,8 @@ const SELECT_SQL = `
     r.time as sohaTime,
     w.weight as bataijuInt,
     w.change_sign as zogenFugo,
-    w.change_amount as zogenSaInt
+    w.change_amount as zogenSaInt,
+    s.result_void_at as resultVoidAt
   from latest_entry e
   join realtime_race_sources s on s.race_key = e.race_key
   left join latest_result r on r.race_key = e.race_key and r.horse_number = e.horse_number
@@ -608,6 +610,7 @@ const toStarterRow = (raw: RawD1Row, oddsMap: TanshoOddsMap): RaceTrendStarterRo
     bataiju: raw.bataijuInt === null ? null : String(raw.bataijuInt),
     zogenFugo: raw.zogenFugo,
     zogenSa: raw.zogenSaInt === null ? null : String(raw.zogenSaInt),
+    resultVoidAt: raw.resultVoidAt,
   };
 };
 

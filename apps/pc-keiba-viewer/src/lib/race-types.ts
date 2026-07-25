@@ -100,6 +100,11 @@ export interface RaceTrendDetail {
   popularity: number | null;
   winOdds: number | null;
   finishPosition: number;
+  // True when the upstream result-fetch circuit breaker confirmed this race
+  // will never produce a result (see RaceTrendStarterRow.resultVoidAt).
+  // Detail rendering shows an explicit "中止" status instead of the
+  // finishPosition=0 unranked placeholder when this is true.
+  isResultVoid: boolean;
   time: string | null;
   horseWeight: number | null;
   horseWeightDelta: number | null;
