@@ -66,10 +66,11 @@ Do not commit a real profile. Do not paste live selectors into tests, docs, or c
 1. Load both documents concurrently, preferring the supplied local files and otherwise making one HTTP request per source.
 2. Parse the JRA card and the secondary source.
 3. Reconcile runners by horse number, never by row order. JRA data is authoritative for descriptive fields; the secondary source contributes only horse, jockey, and trainer entity identifiers.
-4. Verify entity identifiers against the local JV horse, jockey, trainer, and owner masters. Missing, malformed, ambiguous, or absent master matches fall back to the appropriate all-zero placeholder code.
-5. Map the reconciled race to complete `jvd_ra` and `jvd_se` rows.
-6. Compare the proposed runner rows with the current database state.
-7. Write only when `--apply` was supplied and the safety gate is `safe`.
+4. Verify entity identifiers against the local JV horse, jockey, trainer, and owner masters.
+5. **Numeric-only master backfill (option 1):** when a secondary id already has a valid JV primary-key shape (pure ASCII digits, exact width) and that code is absent from the local master, plan an insert of a minimal overseas-visitor master row (`jvd_um` / `jvd_ks` / `jvd_ch`). Never mint synthetic or alphanumeric keys. Never UPDATE or DELETE existing masters. Owner master (`jvd_bn`) is **not** inserted (secondary identity has no reliable 6-digit owner code; name-only resolution only). Placeholders (`0000000000` / `00000`) are never inserted. Alphanumeric secondary ids stay unresolved and race rows keep zero placeholders as before.
+6. Map the reconciled race to complete `jvd_ra` and `jvd_se` rows (entity resolution treats planned master inserts as present so race rows use the real codes after apply).
+7. Compare the proposed runner rows with the current database state. Dry-run also prints `=== Master backfill (numeric-only) ===`.
+8. Write only when `--apply` was supplied and the safety gate is `safe`. Masters are inserted first inside the same transaction (`INSERT … ON CONFLICT DO NOTHING`), then `jvd_ra` / `jvd_se`.
 
 ## Published fields stored in JV columns
 
@@ -93,12 +94,12 @@ The mapper persists every published field that has a real JV home and a verified
 
 ### Published but not storable in `jvd_ra` / `jvd_se`
 
-| Published field                       | Why it is not stored                                                                                                                                       |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local start time                      | Only the published JST start time is written to `hasso_jikoku`.                                                                                            |
-| Form record (e.g. `10.5.1.1`)         | No form-string column on `jvd_ra` / `jvd_se`.                                                                                                              |
-| Sire / dam / damsire                  | Pedigree lives on master tables (`jvd_um` / `jvd_sk`). Unregistered runners have `ketto_toroku_bango='0000000000'`; this tool does not invent master rows. |
-| Trainer country (FR / IRE / GB / JPN) | Not a separate JV code on `jvd_se`; only east/west affiliation is stored.                                                                                  |
+| Published field                       | Why it is not stored                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Local start time                      | Only the published JST start time is written to `hasso_jikoku`.                                                                                                                                                                                                                                                                      |
+| Form record (e.g. `10.5.1.1`)         | No form-string column on `jvd_ra` / `jvd_se`.                                                                                                                                                                                                                                                                                        |
+| Sire / dam / damsire                  | Pedigree lives on master tables (`jvd_um`). When the secondary horse id is already JV-shaped (10 digits) and missing locally, option-1 numeric-only backfill inserts a minimal `jvd_um` row with sire/dam/damsire names from the JRA card. Alphanumeric secondary ids stay on `ketto_toroku_bango='0000000000'` (no synthetic keys). |
+| Trainer country (FR / IRE / GB / JPN) | Not a separate JV code on `jvd_se`; only east/west affiliation is stored.                                                                                                                                                                                                                                                            |
 
 ## Safety gate
 

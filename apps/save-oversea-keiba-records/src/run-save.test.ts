@@ -136,6 +136,56 @@ const SECONDARY_HTML: string = `
 </tbody></table>
 `;
 
+// Alphanumeric secondary entity ids cannot be JV PKs — no master backfill, race rows stay on placeholders.
+const SECONDARY_HTML_ALPHANUMERIC: string = `
+<table><tbody>
+<tr class="RunnerList">
+  <td class="StartStall7 Txt_C "><span>7</span></td>
+  <td class="RunnerNumber1 Txt_C">1</td>
+  <td class="RunnerInfo">
+    <span class="RunnerName">
+      <a href="https://example.com/db/entity-a/000a029d48" target="_blank" title="テストホース">
+        テストホース
+      </a>
+    </span>
+  </td>
+  <td class="Pilot">
+    <a href="https://example.com/db/entity-b/a033f/" title="Pilot A">
+      <span>Pilot A</span>
+    </a>
+  </td>
+  <td class="Yard">
+    <span class="YardLabel">ForeignYard</span>
+    <a href="https://example.com/db/entity-c/b5701/" title="Yard A">
+      <span>Yard A</span>
+    </a>
+  </td>
+</tr>
+<tr class="RunnerList">
+  <td class="StartStall3 Txt_C "><span>3</span></td>
+  <td class="RunnerNumber2 Txt_C">2</td>
+  <td class="RunnerInfo">
+    <span class="RunnerName">
+      <a href="https://example.com/db/entity-a/000a029d4f" target="_blank" title="サンプルホース">
+        サンプルホース
+      </a>
+    </span>
+  </td>
+  <td class="Pilot">
+    <a href="https://example.com/db/entity-b/c5271/" title="Pilot B">
+      <span>Pilot B</span>
+    </a>
+  </td>
+  <td class="Yard">
+    <span class="YardLabel">StableHome</span>
+    <a href="https://example.com/db/entity-c/d1038/" title="Yard B">
+      <span>Yard B</span>
+    </a>
+  </td>
+</tr>
+</tbody></table>
+`;
+
 // Missing affiliation on one row surfaces a secondary parse issue without dropping the runner.
 const SECONDARY_HTML_WITH_ISSUE: string = `
 <table><tbody>
@@ -568,6 +618,16 @@ test("runSave dry-run default never writes and exits 0 when the verdict is safe"
     true,
   );
   expect(logger.infos.some((line) => line === "HTTP requests made: 2")).toBe(true);
+  // Empty master lookup + numeric secondary ids → propose horse/jockey/trainer inserts.
+  expect(logger.infos.some((line) => line === "=== Master backfill (numeric-only) ===")).toBe(true);
+  expect(logger.infos.some((line) => line.startsWith("horse code=2021190001"))).toBe(true);
+  expect(logger.infos.some((line) => line.startsWith("jockey code=05504"))).toBe(true);
+  expect(logger.infos.some((line) => line.startsWith("trainer code=05701"))).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) => line.startsWith("Would insert ") && line.includes("numeric-only master row"),
+    ),
+  ).toBe(true);
 });
 
 test("runSave with local files performs zero network fetches", async () => {
@@ -739,11 +799,28 @@ test("runSave --apply with a safe verdict writes inside one transaction", async 
     conflicts: [],
   });
   expect(transactionState.count).toBe(1);
+  // Masters insert first (ON CONFLICT DO NOTHING), then RA, then SE.
+  const insertTexts: readonly string[] = txLog.statements
+    .filter((statement) => statement.text.startsWith("INSERT INTO"))
+    .map((statement) => statement.text);
+  const firstMasterIndex: number = insertTexts.findIndex(
+    (text) =>
+      text.startsWith("INSERT INTO jvd_um") ||
+      text.startsWith("INSERT INTO jvd_ks") ||
+      text.startsWith("INSERT INTO jvd_ch"),
+  );
+  const raIndex: number = insertTexts.findIndex((text) => text.startsWith("INSERT INTO jvd_ra"));
+  const seIndex: number = insertTexts.findIndex((text) => text.startsWith("INSERT INTO jvd_se"));
+  expect(firstMasterIndex).toBeGreaterThanOrEqual(0);
+  expect(raIndex).toBeGreaterThan(firstMasterIndex);
+  expect(seIndex).toBeGreaterThan(raIndex);
   expect(
-    txLog.statements.some((statement) => statement.text.startsWith("INSERT INTO jvd_ra")),
-  ).toBe(true);
-  expect(
-    txLog.statements.some((statement) => statement.text.startsWith("INSERT INTO jvd_se")),
+    insertTexts.some(
+      (text) =>
+        text.includes("ON CONFLICT (ketto_toroku_bango) DO NOTHING") ||
+        text.includes("ON CONFLICT (kishu_code) DO NOTHING") ||
+        text.includes("ON CONFLICT (chokyoshi_code) DO NOTHING"),
+    ),
   ).toBe(true);
   expect(outerLog.statements.some((statement) => statement.text.startsWith("INSERT INTO"))).toBe(
     false,
@@ -956,6 +1033,8 @@ test("runSave --apply exits non-zero when one runner has an identity conflict an
 });
 
 test("runSave --apply with a REGRESSION aborts without writing and exits non-zero", async () => {
+  // Alphanumeric secondary ids cannot be JV PKs, so master backfill proposes nothing and
+  // entity resolution falls back to placeholders — producing a REGRESSION vs stored real codes.
   const logger = createFakeLogger();
   const fetchLog: FetchCallLog = { urls: [] };
   const fileLog: FileReadCallLog = { paths: [] };
@@ -971,7 +1050,7 @@ test("runSave --apply with a REGRESSION aborts without writing and exits non-zer
         rows: [
           {
             umaban: "01",
-            // Real stored horse code; master lookup returns empty so incoming falls back to placeholder.
+            // Real stored horse code; alphanumeric secondary id cannot backfill → placeholder.
             ketto_toroku_bango: "2021190001",
             kishu_code: "05504",
             chokyoshi_code: "05701",
@@ -994,10 +1073,9 @@ test("runSave --apply with a REGRESSION aborts without writing and exits non-zer
         fileLog,
         new Map([
           [jraPath, JRA_HTML],
-          [secondaryPath, SECONDARY_HTML],
+          [secondaryPath, SECONDARY_HTML_ALPHANUMERIC],
         ]),
       ),
-      // Empty master lookup forces placeholder codes on every entity field.
       masterLookupRunner: emptyMasterLookupRunner,
       executor: createRecordingExecutor(statementLog, regressionHandler),
       onTransaction: (): void => {
@@ -1021,6 +1099,72 @@ test("runSave --apply with a REGRESSION aborts without writing and exits non-zer
   ).toBe(true);
   expect(logger.infos.some((line) => line.startsWith("VERDICT blocked"))).toBe(true);
   expect(logger.infos.some((line) => line.startsWith("REGRESSION umaban=01"))).toBe(true);
+  // Alphanumeric ids → no master candidates.
+  expect(logger.infos.some((line) => line === "(none)")).toBe(true);
+});
+
+test("runSave dry-run reports (none) master backfill when all numeric masters already exist", async () => {
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const statementLog: StatementLog = { statements: [] };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary.html";
+
+  const allMastersPresent: MasterLookupQueryRunner = async (
+    statement: MasterLookupStatement,
+  ): Promise<MasterLookupResult> => {
+    const codes: readonly string[] = statement.values[0] ?? [];
+    if (statement.text.includes("jvd_um")) {
+      return {
+        rows: codes.map((code: string) => ({ code, canonical_name: `horse-${code}` })),
+      };
+    }
+    if (statement.text.includes("jvd_ks")) {
+      return {
+        rows: codes.map((code: string) => ({ code, canonical_name: `jockey-${code}` })),
+      };
+    }
+    if (statement.text.includes("jvd_ch")) {
+      return {
+        rows: codes.map((code: string) => ({
+          code,
+          canonical_name: `trainer-${code}`,
+          tozai_shozoku_code: "4",
+        })),
+      };
+    }
+    return { rows: [] };
+  };
+
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML],
+        ]),
+      ),
+      masterLookupRunner: allMastersPresent,
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+    }),
+  });
+
+  expect(result.exitCode).toBe(0);
+  expect(result.dryRunVerdict).toBe("safe");
+  expect(logger.infos.some((line) => line === "=== Master backfill (numeric-only) ===")).toBe(true);
+  // Header followed by (none) when every numeric code already exists.
+  const masterHeaderIndex: number = logger.infos.indexOf("=== Master backfill (numeric-only) ===");
+  expect(masterHeaderIndex).toBeGreaterThanOrEqual(0);
+  expect(logger.infos[masterHeaderIndex + 1]).toBe("(none)");
+  expect(
+    logger.infos.some((line) => line.includes("Would insert") && line.includes("master row")),
+  ).toBe(false);
 });
 
 // Horse 1 has a number and name but no gate cell → incomplete for reconcile adapter.

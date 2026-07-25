@@ -16,6 +16,13 @@ import {
   type MasterLookupPort as EntityMasterLookupPort,
 } from "./domain/entity-resolver";
 import {
+  createBackfillAwareLookup,
+  formatMasterBackfillReport,
+  planMasterBackfill,
+  type MasterBackfillCandidate,
+} from "./domain/master-backfill";
+import { buildMasterRows } from "./domain/master-row-builder";
+import {
   writeJvdSeRunnersIdempotently,
   type IdentityConflict,
   type WriteSummary,
@@ -30,6 +37,7 @@ import {
   type MasterLookupQueryRunner,
   type MasterLookupStatement,
 } from "./storage/master-lookup";
+import { buildMasterInsertStatements } from "./storage/master-upsert-sql";
 import {
   reconcileRunners,
   type JraReconcileRunner,
@@ -204,6 +212,7 @@ interface ResolvedRunnerCodes {
 interface BuildWritePathInput {
   readonly rows: JvdRows;
   readonly raceKey: JvdRaceKey;
+  readonly masterCandidates: readonly MasterBackfillCandidate[];
   readonly withTransaction: TransactionRunner;
 }
 
@@ -211,6 +220,7 @@ interface LogReportInput {
   readonly logger: LoggerPort;
   readonly diffResult: DryRunDiffResult;
   readonly reconcileResult: ReconcileResult;
+  readonly masterCandidates: readonly MasterBackfillCandidate[];
   readonly secondaryIssues: readonly SecondarySourceParseIssue[];
   readonly networkRequestCount: number;
   readonly skippedIncompleteSecondary: number;
@@ -499,10 +509,10 @@ const loadSecondaryMarkupProfile = async (input: {
   return parseSecondarySourceMarkupProfileJson(profileJson);
 };
 
-const resolveAllEntityCodes = async (input: {
+const prefetchMasterLookup = async (input: {
   readonly reconcileResult: ReconcileResult;
   readonly lookup: MasterLookupPort;
-}): Promise<ReadonlyMap<number, ResolvedEntityCodes>> => {
+}): Promise<void> => {
   const merged = input.reconcileResult.mergedRunners;
   await input.lookup.prefetch({
     horseRegistrationNumbers: nonNullIds(merged.map((runner) => runner.secondaryHorseId)),
@@ -510,8 +520,13 @@ const resolveAllEntityCodes = async (input: {
     trainerCodes: nonNullIds(merged.map((runner) => runner.secondaryTrainerId)),
     ownerNames: merged.map((runner) => runner.owner),
   });
+};
 
-  const entityLookup: EntityMasterLookupPort = input.lookup;
+const resolveAllEntityCodes = async (input: {
+  readonly reconcileResult: ReconcileResult;
+  readonly entityLookup: EntityMasterLookupPort;
+}): Promise<ReadonlyMap<number, ResolvedEntityCodes>> => {
+  const merged = input.reconcileResult.mergedRunners;
   const resolved: readonly ResolvedRunnerCodes[] = await Promise.all(
     merged.map(async (runner): Promise<ResolvedRunnerCodes> => {
       const resolution = await resolveMasterVerifiedEntityCodes({
@@ -521,7 +536,7 @@ const resolveAllEntityCodes = async (input: {
           trainerId: runner.secondaryTrainerId,
           ownerName: runner.owner,
         },
-        lookup: entityLookup,
+        lookup: input.entityLookup,
       });
       return { horseNumber: runner.horseNumber, codes: resolution.codes };
     }),
@@ -534,6 +549,8 @@ const resolveAllEntityCodes = async (input: {
     ]),
   );
 };
+
+const compactRaceDate = (date: string): string => date.replaceAll("-", "");
 
 const toDiffableRows = (runners: readonly JvdSeRow[]): readonly DiffableRow[] =>
   runners.map(
@@ -562,9 +579,18 @@ const toIdempotentExecutor = (executor: SaveSqlExecutor): IdempotentSqlExecutor 
 const applyWrites = async ({
   rows,
   raceKey,
+  masterCandidates,
   withTransaction,
 }: BuildWritePathInput): Promise<WriteSummary> =>
   withTransaction(async (txExecutor: SaveSqlExecutor): Promise<WriteSummary> => {
+    // Insert shape-valid missing masters first so SE entity codes resolve against them.
+    // INSERT ... ON CONFLICT DO NOTHING only; never UPDATE/DELETE masters.
+    const masterStatements: readonly SqlStatement[] = buildMasterInsertStatements(
+      buildMasterRows(masterCandidates),
+    );
+    for (const statement of masterStatements) {
+      await txExecutor.execute(statement);
+    }
     await txExecutor.execute(buildJvdRaUpsert(rows.race));
     return writeJvdSeRunnersIdempotently({
       raceKey,
@@ -598,12 +624,17 @@ const logReport = ({
   logger,
   diffResult,
   reconcileResult,
+  masterCandidates,
   secondaryIssues,
   networkRequestCount,
   skippedIncompleteSecondary,
 }: LogReportInput): void => {
   logger.info("=== Dry-run diff report ===");
   formatDryRunDiffReport(diffResult).forEach((line: string): void => {
+    logger.info(line);
+  });
+
+  formatMasterBackfillReport(masterCandidates).forEach((line: string): void => {
     logger.info(line);
   });
 
@@ -701,9 +732,19 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
   });
 
   const lookup: MasterLookupPort = createMasterLookupPort(ports.masterLookupRunner);
+  await prefetchMasterLookup({ reconcileResult, lookup });
+
+  const masterCandidates: readonly MasterBackfillCandidate[] = await planMasterBackfill({
+    mergedRunners: reconcileResult.mergedRunners,
+    lookup,
+    raceDateCompact: compactRaceDate(jraRace.date),
+  });
+
+  // Treat planned numeric-only inserts as present so SE mapping uses real codes on apply.
+  const entityLookup: EntityMasterLookupPort = createBackfillAwareLookup(lookup, masterCandidates);
   const resolvedCodes: ReadonlyMap<number, ResolvedEntityCodes> = await resolveAllEntityCodes({
     reconcileResult,
-    lookup,
+    entityLookup,
   });
 
   const storageIdentity: RaceStorageIdentity = {
@@ -733,6 +774,7 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     logger: ports.logger,
     diffResult,
     reconcileResult,
+    masterCandidates,
     secondaryIssues: secondaryParsed.issues,
     networkRequestCount: loaded.networkRequestCount,
     skippedIncompleteSecondary: adaptedSecondary.skippedIncompleteCount,
@@ -753,6 +795,11 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     ports.logger.info(
       `Would write jvd_ra + ${String(jvdRows.runners.length)} jvd_se runners for race key ${raceKey.kaisai_nen}/${raceKey.kaisai_tsukihi}/${raceKey.keibajo_code}/${raceKey.race_bango}.`,
     );
+    if (masterCandidates.length > 0) {
+      ports.logger.info(
+        `Would insert ${String(masterCandidates.length)} numeric-only master row(s) (ON CONFLICT DO NOTHING).`,
+      );
+    }
     return successDryRunResult({
       networkRequestCount: loaded.networkRequestCount,
       verdict: "safe",
@@ -762,6 +809,7 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
   const writeSummary: WriteSummary = await applyWrites({
     rows: jvdRows,
     raceKey,
+    masterCandidates,
     withTransaction: ports.withTransaction,
   });
 
