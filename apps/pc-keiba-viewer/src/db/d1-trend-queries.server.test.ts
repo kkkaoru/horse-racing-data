@@ -82,6 +82,7 @@ const SAMPLE_RAW_ROW = {
   bataijuInt: 480,
   zogenFugo: "+",
   zogenSaInt: 2,
+  resultVoidAt: null,
 };
 
 const SAMPLE_JRA_RAW_ROW = {
@@ -102,6 +103,7 @@ const SAMPLE_JRA_RAW_ROW = {
   bataijuInt: 466,
   zogenFugo: "-",
   zogenSaInt: 4,
+  resultVoidAt: null,
 };
 
 const buildPreparedStub = (rows: unknown[]): PreparedStub => {
@@ -237,6 +239,7 @@ it("getRaceTrendTodayStarterRows binds source and targetYmd as a single-day wind
       bataiju: "480",
       zogenFugo: "+",
       zogenSa: "2",
+      resultVoidAt: null,
     },
   ]);
   expect(prepared.bind).toHaveBeenCalledWith("nar", "20260528", "20260528", "50");
@@ -420,6 +423,29 @@ it("getRaceTrendTodayStarterRows handles null hasso / bataiju / zogen fields", a
   expect(rows[0]?.zogenSa).toBe(null);
   expect(rows[0]?.tanshoOdds).toBe(null);
   expect(rows[0]?.tanshoPopularity).toBe(null);
+});
+
+it("getRaceTrendTodayStarterRows passes through resultVoidAt when the race was confirmed void", async () => {
+  const voided = { ...SAMPLE_RAW_ROW, resultVoidAt: "2026-07-24T17:58:50+09:00" };
+  const { db } = buildD1Stub([voided]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
+  expect(rows[0]?.resultVoidAt).toBe("2026-07-24T17:58:50+09:00");
+});
+
+it("getRaceTrendTodayStarterRows leaves resultVoidAt null for a race with a normal result", async () => {
+  const { db } = buildD1Stub([SAMPLE_RAW_ROW]);
+  installContext({ cache: buildCacheStub(), db, kv: buildKvStub() });
+  const rows = await getRaceTrendTodayStarterRows({
+    keibajoCode: "50",
+    source: "nar",
+    targetYmd: "20260528",
+  });
+  expect(rows[0]?.resultVoidAt).toBeNull();
 });
 
 it("getRaceTrendTodayStarterRows treats short hassoJikoku as null", async () => {

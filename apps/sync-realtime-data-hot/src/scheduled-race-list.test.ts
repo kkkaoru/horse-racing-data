@@ -5,6 +5,10 @@ vi.mock("./postgres-pool", () => ({
   getHotPool: vi.fn(),
 }));
 
+vi.mock("./jra-overseas", () => ({
+  createJraOverseasRaceResolver: vi.fn(() => async () => null),
+}));
+
 vi.mock("./keiba-go", () => ({
   fetchRaceLinksFromRaceList: vi.fn(async () => []),
   fetchTodayRaceListUrls: vi.fn(async (targetDate: string) => [
@@ -627,6 +631,167 @@ it("listTodayRacesFromHyperdrive skips rows without a valid hasso_jikoku", async
     pool: { query } as never,
   });
   expect(rows).toStrictEqual([]);
+});
+
+it("listTodayRacesFromHyperdrive keeps a domestic JRA row on the checksum URL path", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1535",
+        kaisai_kai: "02",
+        kaisai_nen: "2026",
+        kaisai_nichime: "05",
+        kaisai_tsukihi: "0509",
+        keibajo_code: "05",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+  });
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260509", {
+    pool: { query } as never,
+  });
+  expect(rows).toStrictEqual([
+    {
+      debaUrl: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0105202602050120260509/6A",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0509",
+      keibajoCode: "05",
+      oddsLinksJson: "{}",
+      raceBango: "01",
+      raceKey: "jra:2026:0509:05:01",
+      raceStartAtJst: "2026-05-09T15:35:00+09:00",
+      source: "jra",
+    },
+  ]);
+});
+
+it("populateTodayOddsFetchState skips an unresolved overseas-shaped JRA row instead of upserting it", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "0000",
+        kaisai_kai: "00",
+        kaisai_nen: "2026",
+        kaisai_nichime: "00",
+        kaisai_tsukihi: "0725",
+        keibajo_code: "A6",
+        kyosomei_hondai: "キングジョージ６世＆クイーンエリザベスステークス",
+        race_bango: "05",
+        source: "jra",
+      },
+    ],
+  });
+  const env = buildEnv();
+  const result = await populateTodayOddsFetchState(env, new Date("2026-07-24T15:05:00Z"), {
+    pool: { query } as never,
+    resolveJraOverseasRace: async () => null,
+  });
+  expect(result).toStrictEqual({ inserted: 0, total: 0 });
+  expect(vi.mocked(env.REALTIME_HOT_DB.prepare)).not.toHaveBeenCalled();
+  expect(vi.mocked(env.ODDS_HOT_KV.delete)).not.toHaveBeenCalled();
+});
+
+it("listTodayRacesFromHyperdrive resolves an overseas JRA URL and real post time through the official resolver", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "0000",
+        kaisai_kai: "00",
+        kaisai_nen: "2026",
+        kaisai_nichime: "00",
+        kaisai_tsukihi: "0725",
+        keibajo_code: "A6",
+        kyosomei_hondai: "キングジョージ６世＆クイーンエリザベスステークス　　　　　　",
+        race_bango: "05",
+        source: "jra",
+      },
+    ],
+  });
+  const resolveJraOverseasRace = vi.fn(async () => ({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0110420260101051/32",
+    raceStartAtJst: "2026-07-25T23:35:00+09:00",
+  }));
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260725", {
+    pool: { query } as never,
+    resolveJraOverseasRace,
+  });
+  expect(rows).toStrictEqual([
+    {
+      debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0110420260101051/32",
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0725",
+      keibajoCode: "A6",
+      oddsLinksJson: "{}",
+      raceBango: "05",
+      raceKey: "jra:2026:0725:A6:05",
+      raceStartAtJst: "2026-07-25T23:35:00+09:00",
+      source: "jra",
+    },
+  ]);
+  expect(resolveJraOverseasRace).toHaveBeenCalledWith({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0725",
+    kyosomeiHondai: "キングジョージ６世＆クイーンエリザベスステークス",
+  });
+});
+
+it("listTodayRacesFromHyperdrive skips an overseas JRA row when official resolution throws", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "0000",
+        kaisai_kai: "00",
+        kaisai_nen: "2026",
+        kaisai_nichime: "00",
+        kaisai_tsukihi: "0725",
+        keibajo_code: "A6",
+        kyosomei_hondai: "キングジョージ６世＆クイーンエリザベスステークス",
+        race_bango: "05",
+        source: "jra",
+      },
+    ],
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260725", {
+    pool: { query } as never,
+    resolveJraOverseasRace: async () => {
+      throw new Error("official page unavailable");
+    },
+  });
+  expect(rows).toStrictEqual([]);
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[scheduled-race-list] JRA overseas race resolution failed, skipping raceKey=jra:2026:0725:A6:05: official page unavailable",
+  );
+});
+
+it("listTodayRacesFromHyperdrive skips overseas JRA rows without a race name", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "0000",
+        kaisai_kai: "00",
+        kaisai_nen: "2026",
+        kaisai_nichime: "00",
+        kaisai_tsukihi: "0725",
+        keibajo_code: "A6",
+        kyosomei_hondai: "   ",
+        race_bango: "05",
+        source: "jra",
+      },
+    ],
+  });
+  const resolveJraOverseasRace = vi.fn(async () => null);
+  const env = buildEnv();
+  const rows = await listTodayRacesFromHyperdrive(env, "20260725", {
+    pool: { query } as never,
+    resolveJraOverseasRace,
+  });
+  expect(rows).toStrictEqual([]);
+  expect(resolveJraOverseasRace).not.toHaveBeenCalled();
 });
 
 it("listTodayRacesFromHyperdrive falls back to getHotPool when context.pool absent", async () => {

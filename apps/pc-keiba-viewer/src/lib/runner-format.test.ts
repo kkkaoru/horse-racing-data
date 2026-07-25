@@ -6,6 +6,7 @@ import {
   formatRunnerNumber,
   formatRunnerValue,
   formatSexAge,
+  isOverseasKeibajoCode,
 } from "./runner-format";
 
 describe("runner format helpers", () => {
@@ -48,5 +49,16 @@ describe("runner format helpers", () => {
     expect(formatSexAge(null, "03")).toBe("3歳");
     expect(formatSexAge("1", null)).toBe("牡");
     expect(formatSexAge("9", null)).toBe("-");
+  });
+
+  it("identifies overseas keibajo codes (alphabetic) vs domestic (numeric)", () => {
+    expect(isOverseasKeibajoCode("A6")).toBe(true);
+    expect(isOverseasKeibajoCode("A0")).toBe(true);
+    expect(isOverseasKeibajoCode("A2")).toBe(true);
+    expect(isOverseasKeibajoCode("05")).toBe(false);
+    expect(isOverseasKeibajoCode("30")).toBe(false);
+    expect(isOverseasKeibajoCode("83")).toBe(false);
+    expect(isOverseasKeibajoCode(null)).toBe(false);
+    expect(isOverseasKeibajoCode("")).toBe(false);
   });
 });

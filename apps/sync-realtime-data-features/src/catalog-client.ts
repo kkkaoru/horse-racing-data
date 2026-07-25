@@ -14,8 +14,8 @@ export const fetchCatalogRows = async (
     throw new Error(`PC_KEIBA_R2_CATALOG ${url.pathname} failed with HTTP ${response.status}`);
   }
   const payload: unknown = await response.json();
-  if (!Array.isArray(payload)) {
+  if (!isRecord(payload) || !Array.isArray(payload.rows)) {
     throw new Error(`PC_KEIBA_R2_CATALOG ${url.pathname} returned invalid rows`);
   }
-  return payload;
+  return payload.rows;
 };

@@ -15,6 +15,7 @@ import {
   formatFinishPosition,
   RaceTrendSection,
   UNRANKED_FINISH_PLACEHOLDER,
+  VOID_RESULT_LABEL,
 } from "./race-trend-section";
 
 interface MockWebSocketLike {
@@ -835,19 +836,31 @@ test("UNRANKED_FINISH_PLACEHOLDER is rendered as the dash character", () => {
 });
 
 test("formatFinishPosition returns the numeric label when finishPosition is positive", () => {
-  expect(formatFinishPosition(1)).toStrictEqual("1");
+  expect(formatFinishPosition(1, false)).toStrictEqual("1");
 });
 
 test("formatFinishPosition returns the numeric label for double-digit finish positions", () => {
-  expect(formatFinishPosition(12)).toStrictEqual("12");
+  expect(formatFinishPosition(12, false)).toStrictEqual("12");
 });
 
 test("formatFinishPosition returns the placeholder when finishPosition is 0", () => {
-  expect(formatFinishPosition(0)).toStrictEqual("-");
+  expect(formatFinishPosition(0, false)).toStrictEqual("-");
 });
 
 test("formatFinishPosition returns the placeholder defensively for negative finishPosition", () => {
-  expect(formatFinishPosition(-1)).toStrictEqual("-");
+  expect(formatFinishPosition(-1, false)).toStrictEqual("-");
+});
+
+test("formatFinishPosition returns the void label when isResultVoid is true, regardless of finishPosition", () => {
+  expect(formatFinishPosition(0, true)).toStrictEqual("中止");
+});
+
+test("formatFinishPosition prefers the void label even when finishPosition is positive", () => {
+  expect(formatFinishPosition(3, true)).toStrictEqual("中止");
+});
+
+test("VOID_RESULT_LABEL exposes the exact rendered label", () => {
+  expect(VOID_RESULT_LABEL).toStrictEqual("中止");
 });
 
 const findTrainerCheckboxIn = (fieldset: Element): HTMLInputElement => {

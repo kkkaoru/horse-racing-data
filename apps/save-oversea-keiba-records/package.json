@@ -1,0 +1,27 @@
+{
+  "name": "save-oversea-keiba-records",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check",
+    "lint": "bunx oxlint",
+    "save": "bun run src/main.ts",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "tsc": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "pg": "8.21.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "@types/node": "25.9.3",
+    "@types/pg": "8.20.0",
+    "@vitest/coverage-v8": "4.1.9",
+    "oxfmt": "0.55.0",
+    "oxlint": "1.70.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

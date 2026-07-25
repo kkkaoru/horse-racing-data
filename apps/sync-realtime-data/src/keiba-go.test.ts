@@ -4,6 +4,7 @@ import {
   fetchRaceLinksFromRaceList,
   fetchRacePage,
   fetchTodayRaceListUrls,
+  isRaceResultDisabledOnRaceList,
   parseRaceResultTanshoOdds,
   TOP_PAGE_RETRYABLE_STATUSES,
 } from "./keiba-go";
@@ -268,6 +269,83 @@ it("fetchRaceLinksFromRaceList parses race links from a successful RaceList resp
       url: "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F07%2F04&k_raceNo=1&k_babaCode=36",
     },
   ]);
+});
+
+const buildRaceListRow = (args: { raceNumber: number; resultsDisabled: boolean }): string =>
+  `<tr class="data">
+    <td>
+      ${args.raceNumber}R
+    </td>
+    <td>
+      16:58
+    </td>
+    <td><span class="timechange"></span>
+    </td>
+    <td>
+    </td>
+    <td>
+      <a href=/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F07%2F24&amp;k_raceNo=${args.raceNumber}&amp;k_babaCode=20>３歳一 二 三</a>
+    </td>
+    <td>
+      右1400m
+    </td>
+    <td>
+      曇
+    </td>
+    <td>
+      良
+    </td>
+    <td>
+      14
+    </td>
+    <td>
+      ${
+        args.resultsDisabled
+          ? `<a class="chartBtn disable">オッズ</a>
+      <a class="chartBtn disable">映像</a>
+      <a class="chartBtn disable">成績</a>`
+          : `<a class="chartBtn" href=/KeibaWeb/TodayRaceInfo/OddsTanFuku?k_raceDate=2026%2F07%2F24&amp;k_raceNo=${args.raceNumber}&amp;k_babaCode=20>オッズ</a>
+      <a target="_blank" href=http://keiba-lv-st.jp/movie/player?date=20260724&amp;race=${args.raceNumber}&amp;track=ooi class="chartBtn">映像</a>
+      <a class="chartBtn" href=/KeibaWeb/TodayRaceInfo/RaceMarkTable?k_raceDate=2026%2F07%2F24&amp;k_raceNo=${args.raceNumber}&amp;k_babaCode=20>成績</a>`
+      }
+    </td>
+  </tr>`;
+
+it("isRaceResultDisabledOnRaceList returns false for a race whose 成績 link is enabled", () => {
+  const html = buildRaceListRow({ raceNumber: 4, resultsDisabled: false });
+  expect(isRaceResultDisabledOnRaceList(html, "04")).toBe(false);
+});
+
+it("isRaceResultDisabledOnRaceList returns true for a race whose 成績 link is disabled", () => {
+  const html = buildRaceListRow({ raceNumber: 5, resultsDisabled: true });
+  expect(isRaceResultDisabledOnRaceList(html, "05")).toBe(true);
+});
+
+it("isRaceResultDisabledOnRaceList picks the matching race out of several rows, not the first", () => {
+  const html = [
+    buildRaceListRow({ raceNumber: 4, resultsDisabled: false }),
+    buildRaceListRow({ raceNumber: 5, resultsDisabled: true }),
+    buildRaceListRow({ raceNumber: 6, resultsDisabled: true }),
+    buildRaceListRow({ raceNumber: 7, resultsDisabled: false }),
+  ].join("\n");
+  expect(isRaceResultDisabledOnRaceList(html, "04")).toBe(false);
+  expect(isRaceResultDisabledOnRaceList(html, "06")).toBe(true);
+  expect(isRaceResultDisabledOnRaceList(html, "07")).toBe(false);
+});
+
+it("isRaceResultDisabledOnRaceList accepts an un-padded race number the same as a zero-padded one", () => {
+  const html = buildRaceListRow({ raceNumber: 5, resultsDisabled: true });
+  expect(isRaceResultDisabledOnRaceList(html, "5")).toBe(true);
+});
+
+it("isRaceResultDisabledOnRaceList returns null when the race's row is not present on the page", () => {
+  const html = buildRaceListRow({ raceNumber: 4, resultsDisabled: false });
+  expect(isRaceResultDisabledOnRaceList(html, "12")).toBeNull();
+});
+
+it("isRaceResultDisabledOnRaceList returns null when the row has no 成績 link at all (layout drift)", () => {
+  const html = `<tr class="data"><td>5R</td></tr>`;
+  expect(isRaceResultDisabledOnRaceList(html, "05")).toBeNull();
 });
 
 it("parseRaceResultTanshoOdds extracts horseNumber + popularity + tanshoOdds from current layout rows", () => {

@@ -57,32 +57,34 @@ it("listTodayRaceKeysFromCatalog requests the date and maps JRA, NAR, and Ban-ei
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request): Promise<Response> => {
     requests.push(request);
-    return Response.json([
-      {
-        kaisaiNen: "2026",
-        kaisaiTsukihi: "0529",
-        keibajoCode: "05",
-        raceBango: "01",
-        raceKey: "jra:2026:0529:05:01",
-        source: "jra",
-      },
-      {
-        kaisaiNen: "2026",
-        kaisaiTsukihi: "0529",
-        keibajoCode: "30",
-        raceBango: "08",
-        raceKey: "nar:2026:0529:30:08",
-        source: "nar",
-      },
-      {
-        kaisaiNen: "2026",
-        kaisaiTsukihi: "0529",
-        keibajoCode: "83",
-        raceBango: "11",
-        raceKey: "nar:2026:0529:83:11",
-        source: "nar",
-      },
-    ]);
+    return Response.json({
+      rows: [
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0529",
+          keibajoCode: "05",
+          raceBango: "01",
+          raceKey: "jra:2026:0529:05:01",
+          source: "jra",
+        },
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0529",
+          keibajoCode: "30",
+          raceBango: "08",
+          raceKey: "nar:2026:0529:30:08",
+          source: "nar",
+        },
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0529",
+          keibajoCode: "83",
+          raceBango: "11",
+          raceKey: "nar:2026:0529:83:11",
+          source: "nar",
+        },
+      ],
+    });
   });
   const rows = await listTodayRaceKeysFromCatalog(buildEnv(fetch), "20260529");
   expect(requests[0]?.url).toBe("https://pc-keiba-r2-catalog/v1/race-keys?date=20260529");
@@ -116,7 +118,7 @@ it("listTodayRaceKeysFromCatalog requests the date and maps JRA, NAR, and Ban-ei
 
 it("listTodayRaceKeysFromCatalog uses an injected catalog binding", async () => {
   const envFetch = vi.fn();
-  const contextFetch = vi.fn(async (): Promise<Response> => Response.json([]));
+  const contextFetch = vi.fn(async (): Promise<Response> => Response.json({ rows: [] }));
   const rows = await listTodayRaceKeysFromCatalog(buildEnv(envFetch), "20260529", {
     catalog: { fetch: contextFetch },
   });
@@ -128,57 +130,59 @@ it("listTodayRaceKeysFromCatalog uses an injected catalog binding", async () => 
 it("listTodayRaceKeysFromCatalog skips malformed rows", async () => {
   const fetch = vi.fn(
     async (): Promise<Response> =>
-      Response.json([
-        null,
-        [],
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: "05",
-          raceBango: "01",
-          raceKey: "unknown:2026:0529:05:01",
-          source: "unknown",
-        },
-        {
-          kaisaiNen: null,
-          kaisaiTsukihi: "0529",
-          keibajoCode: "05",
-          raceBango: "01",
-          raceKey: "jra:2026:0529:05:01",
-          source: "jra",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: 529,
-          keibajoCode: "05",
-          raceBango: "01",
-          raceKey: "jra:2026:0529:05:01",
-          source: "jra",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: null,
-          raceBango: "01",
-          raceKey: "jra:2026:0529:05:01",
-          source: "jra",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: "05",
-          raceBango: null,
-          raceKey: "jra:2026:0529:05:01",
-          source: "jra",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: "05",
-          raceBango: "01",
-          source: "jra",
-        },
-      ]),
+      Response.json({
+        rows: [
+          null,
+          [],
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: "05",
+            raceBango: "01",
+            raceKey: "unknown:2026:0529:05:01",
+            source: "unknown",
+          },
+          {
+            kaisaiNen: null,
+            kaisaiTsukihi: "0529",
+            keibajoCode: "05",
+            raceBango: "01",
+            raceKey: "jra:2026:0529:05:01",
+            source: "jra",
+          },
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: 529,
+            keibajoCode: "05",
+            raceBango: "01",
+            raceKey: "jra:2026:0529:05:01",
+            source: "jra",
+          },
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: null,
+            raceBango: "01",
+            raceKey: "jra:2026:0529:05:01",
+            source: "jra",
+          },
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: "05",
+            raceBango: null,
+            raceKey: "jra:2026:0529:05:01",
+            source: "jra",
+          },
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: "05",
+            raceBango: "01",
+            source: "jra",
+          },
+        ],
+      }),
   );
   const rows = await listTodayRaceKeysFromCatalog(buildEnv(fetch), "20260529");
   expect(rows).toStrictEqual([]);
@@ -188,16 +192,18 @@ it("listTomorrowRaceKeysFromCatalog requests tomorrow in JST", async () => {
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request): Promise<Response> => {
     requests.push(request);
-    return Response.json([
-      {
-        kaisaiNen: "2026",
-        kaisaiTsukihi: "0530",
-        keibajoCode: "05",
-        raceBango: "11",
-        raceKey: "jra:2026:0530:05:11",
-        source: "jra",
-      },
-    ]);
+    return Response.json({
+      rows: [
+        {
+          kaisaiNen: "2026",
+          kaisaiTsukihi: "0530",
+          keibajoCode: "05",
+          raceBango: "11",
+          raceKey: "jra:2026:0530:05:11",
+          source: "jra",
+        },
+      ],
+    });
   });
   const rows = await listTomorrowRaceKeysFromCatalog(
     buildEnv(fetch),
@@ -242,24 +248,26 @@ it("listTodayRaceKeysWithKvCache returns cached entries without calling catalog"
 it("listTodayRaceKeysWithKvCache fetches catalog and populates both source caches on miss", async () => {
   const fetch = vi.fn(
     async (): Promise<Response> =>
-      Response.json([
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: "05",
-          raceBango: "01",
-          raceKey: "jra:2026:0529:05:01",
-          source: "jra",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "0529",
-          keibajoCode: "30",
-          raceBango: "08",
-          raceKey: "nar:2026:0529:30:08",
-          source: "nar",
-        },
-      ]),
+      Response.json({
+        rows: [
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: "05",
+            raceBango: "01",
+            raceKey: "jra:2026:0529:05:01",
+            source: "jra",
+          },
+          {
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0529",
+            keibajoCode: "30",
+            raceBango: "08",
+            raceKey: "nar:2026:0529:30:08",
+            source: "nar",
+          },
+        ],
+      }),
   );
   const { env, kv } = buildKvEnv({ fetch, jraCached: null, narCached: null });
   const rows = await listTodayRaceKeysWithKvCache({ context: {}, env, yyyymmdd: "20260529" });
@@ -278,7 +286,7 @@ it("listTodayRaceKeysWithKvCache fetches catalog and populates both source cache
 });
 
 it("listTodayRaceKeysWithKvCache refreshes catalog when only one source is cached", async () => {
-  const fetch = vi.fn(async (): Promise<Response> => Response.json([]));
+  const fetch = vi.fn(async (): Promise<Response> => Response.json({ rows: [] }));
   const { env, kv } = buildKvEnv({ fetch, jraCached: "[]", narCached: null });
   const rows = await listTodayRaceKeysWithKvCache({ context: {}, env, yyyymmdd: "20260529" });
   expect(fetch).toHaveBeenCalledTimes(1);

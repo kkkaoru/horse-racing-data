@@ -296,8 +296,17 @@ const sortDetailsByLatestRace = (details: RaceTrendDetail[]): RaceTrendDetail[] 
 // so unranked rows must render a placeholder instead of "0".
 export const UNRANKED_FINISH_PLACEHOLDER = "-";
 
-export const formatFinishPosition = (finishPosition: number): string =>
-  finishPosition > 0 ? String(finishPosition) : UNRANKED_FINISH_PLACEHOLDER;
+// A race the upstream result-fetch circuit breaker confirmed void (see
+// RaceTrendDetail.isResultVoid) renders this instead of the plain unranked
+// placeholder, which would otherwise be indistinguishable from "no result
+// yet" (2026-07-24 Oi 5R/6R incident: this race-trend section silently
+// showed a gap where these two races' finish positions belonged).
+export const VOID_RESULT_LABEL = "中止";
+
+export const formatFinishPosition = (finishPosition: number, isResultVoid: boolean): string => {
+  if (isResultVoid) return VOID_RESULT_LABEL;
+  return finishPosition > 0 ? String(finishPosition) : UNRANKED_FINISH_PLACEHOLDER;
+};
 
 interface RowSortContext {
   scores: Map<string, number | null>;
@@ -1106,7 +1115,7 @@ function RowFragment({
                       <td>{formatRunningStyle(detail.runningStyle)}</td>
                       <td>{detail.jockeyName ?? "-"}</td>
                       <td className="race-trend-detail-trainer">{detail.trainerName ?? "-"}</td>
-                      <td>{formatFinishPosition(detail.finishPosition)}</td>
+                      <td>{formatFinishPosition(detail.finishPosition, detail.isResultVoid)}</td>
                       <td>{formatMedian(detail.popularity)}</td>
                       <td>{formatTrendWinOdds(detail.winOdds)}</td>
                       <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>
@@ -1176,7 +1185,7 @@ function RowFragment({
                         <td>{formatRunningStyle(detail.runningStyle)}</td>
                         <td>{detail.jockeyName ?? "-"}</td>
                         <td className="race-trend-detail-trainer">{detail.trainerName ?? "-"}</td>
-                        <td>{formatFinishPosition(detail.finishPosition)}</td>
+                        <td>{formatFinishPosition(detail.finishPosition, detail.isResultVoid)}</td>
                         <td>{formatMedian(detail.popularity)}</td>
                         <td>{formatTrendWinOdds(detail.winOdds)}</td>
                         <td>{formatHorseWeight(detail.horseWeight, detail.horseWeightDelta)}</td>

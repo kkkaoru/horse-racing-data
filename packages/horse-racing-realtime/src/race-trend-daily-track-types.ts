@@ -23,6 +23,15 @@ export interface RaceTrendStarterRow extends Record<string, unknown> {
   // When absent the aggregator treats trainer as unknown and the trainer
   // filter degrades to a no-op for that row.
   chokyoshiName?: string | null;
+  // Optional so callers that predate the void-result status continue to
+  // compile. Set to the timestamp the upstream result-fetch circuit breaker
+  // confirmed this race will never produce a result (upstream cancellation
+  // or an unrecoverable publish failure -- see EMPTY_RESULT_VOID_LOG_STATUS /
+  // EMPTY_RESULT_GIVEUP_LOG_STATUS in sync-realtime-data's worker.ts),
+  // undefined/null otherwise. Distinguishes "this race has no result because
+  // it never will" from "no result yet" so the viewer can render an explicit
+  // status instead of a silent gap (2026-07-24 Oi 5R/6R incident).
+  resultVoidAt?: string | null;
   tanshoOdds: string | null;
   tanshoPopularity: string | null;
   finishPosition: number;

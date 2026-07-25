@@ -1,0 +1,4 @@
+# Operator-supplied secondary-source markup profiles.
+# Live class tokens and identity-route prefixes must never be committed.
+secondary-markup-profile.json
+*.secondary-markup-profile.json

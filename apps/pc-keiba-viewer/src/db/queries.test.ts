@@ -890,6 +890,8 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188'/u);
   expect(queryText).toMatch(/'banei-cb-v9-sim-2011'/u);
   expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
+  expect(queryText).toMatch(/'jra-cb-stage1-marketfree235-2013'/u);
+  expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-stage1-marketfree-184'/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
 });
@@ -1341,6 +1343,27 @@ it("getFinishPositionLambdarankPredictions short-circuits without SQL when only 
   const result = await getFinishPositionLambdarankPredictions(PERCLASS_703_RACE, singleRunner);
   expect(result.length).toBe(0);
   expect(executeMock).not.toHaveBeenCalled();
+});
+
+it("getFinishPositionLambdarankPredictions uses source='overseas' and category='overseas' for an overseas venue", async () => {
+  const overseasRace: RaceDetail = {
+    ...PERCLASS_703_RACE,
+    keibajoCode: "A6",
+    source: "jra",
+  };
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(overseasRace, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  // The active-model CTE must look up category='overseas', not 'jra'.
+  expect(queryText).toMatch(/where category = 'overseas'/u);
+  // Every source predicate must use 'overseas', not 'jra'.
+  expect(queryText).toMatch(/p0\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p2\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p3\.source = 'overseas'/u);
+  // Priority 0 must be gated to false (no cell-routing for overseas).
+  expect(queryText).toMatch(/where false\s+and p0\.source = 'overseas'/u);
 });
 
 it("race-runners-nar-includes-sire-name", async () => {

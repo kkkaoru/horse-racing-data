@@ -219,6 +219,7 @@ const JRA_RACE_BASE = {
   raceStartAtJst: "2026-05-12T13:00:00+09:00",
   resultCompleteAt: null,
   resultFetchLockUntil: null,
+  resultVoidAt: null,
   source: "jra",
 } satisfies SchedulableRaceSource;
 
@@ -243,6 +244,7 @@ const NAR_RACE_BASE = {
   raceStartAtJst: "2026-05-12T10:00:00+09:00",
   resultCompleteAt: null,
   resultFetchLockUntil: null,
+  resultVoidAt: null,
   source: "nar",
 } satisfies SchedulableRaceSource;
 

@@ -49,6 +49,7 @@ import type {
   TimeScoreDetail,
   TimeScoreRow,
 } from "../lib/race-types";
+import { isOverseasKeibajoCode } from "../lib/runner-format";
 import {
   type RunningStyleBucketFilter,
   type RunningStyleBucketMetrics,
@@ -2893,6 +2894,7 @@ export const getFinishPositionModelPredictionFeatures = cache(
 );
 
 const CATEGORY_FROM_RACE = (race: RaceDetail): string => {
+  if (isOverseasKeibajoCode(race.keibajoCode)) return "overseas";
   if (race.source === "jra") return "jra";
   if (race.keibajoCode === "83") return "ban-ei";
   return "nar";
@@ -2903,6 +2905,17 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   "iter12-nar-xgb-hpo-v8-clean188",
   "banei-cb-v9-sim-2011",
   "banei-cb-v8-window2011-wf-15y",
+  // stage1_routing.json market-free fallback variants (predict_upcoming.py
+  // resolve_stage1_gate): the generation side has written rows under these
+  // model_versions since 2026-07-22, but this allow-list was never updated,
+  // so every race whose freshness gate picked the fallback (all of
+  // 2026-07-24's NAR races, generated in one late catch-up batch with no
+  // fresh odds yet) had its prediction rows filtered out entirely here and
+  // showed as missing in the viewer despite existing in Neon.
+  "jra-cb-stage1-marketfree235-2013",
+  "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+  // Overseas market-free LightGBM trained on data_kubun='B' runners.
+  "overseas-lgbm-fp-v1",
 ];
 
 // The base leak-free models plus every model_version a priority-0 display
@@ -3000,6 +3013,9 @@ export const getFinishPositionLambdarankPredictions = cache(
       async () => {
         if (runners.length <= 1) return [];
         const category = CATEGORY_FROM_RACE(race);
+        // Overseas races are stored in jvd_ra (source='jra') but their
+        // prediction rows use source='overseas' in the predictions table.
+        const predictionSource = isOverseasKeibajoCode(race.keibajoCode) ? "overseas" : race.source;
         const cellVariantModelVersion = resolveFinishPositionDisplayPriorityModelVersion({
           category,
           race,
@@ -3051,7 +3067,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                     ? sql`false`
                     : sql`p0.model_version = ${cellVariantModelVersion}`
                 }
-                  and p0.source = ${race.source}
+                  and p0.source = ${predictionSource}
                   and p0.kaisai_nen = ${race.kaisaiNen}
                   and p0.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p0.keibajo_code = ${race.keibajoCode}
@@ -3062,7 +3078,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                 from race_finish_position_model_predictions p
                 join active on p.model_version =
                   active.model_version || '-rs-overlay-' || ${race.kaisaiNen} || ${race.kaisaiTsukihi}
-                where p.source = ${race.source}
+                where p.source = ${predictionSource}
                   and p.model_version in (
                     select model_version from allowed_prediction_model_versions
                   )
@@ -3078,7 +3094,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                   select 1
                   from race_finish_position_model_predictions p2
                   where p2.model_version = active.model_version
-                    and p2.source = ${race.source}
+                    and p2.source = ${predictionSource}
                     and p2.kaisai_nen = ${race.kaisaiNen}
                     and p2.kaisai_tsukihi = ${race.kaisaiTsukihi}
                     and p2.keibajo_code = ${race.keibajoCode}
@@ -3090,7 +3106,7 @@ export const getFinishPositionLambdarankPredictions = cache(
                 union all
                 select p3.model_version, 3 as priority, max(p3.prediction_generated_at) as recency
                 from race_finish_position_model_predictions p3
-                where p3.source = ${race.source}
+                where p3.source = ${predictionSource}
                   and p3.kaisai_nen = ${race.kaisaiNen}
                   and p3.kaisai_tsukihi = ${race.kaisaiTsukihi}
                   and p3.keibajo_code = ${race.keibajoCode}
@@ -3129,7 +3145,7 @@ export const getFinishPositionLambdarankPredictions = cache(
               )::integer as shusso_tosu
             from race_finish_position_model_predictions p
             join selected_model on selected_model.model_version = p.model_version
-            where p.source = ${race.source}
+            where p.source = ${predictionSource}
               and p.model_version in (
                 select model_version from allowed_prediction_model_versions
               )

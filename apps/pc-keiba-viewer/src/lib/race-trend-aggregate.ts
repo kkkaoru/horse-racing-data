@@ -280,6 +280,7 @@ export const mergeStarterRowPair = (
   bataiju: pickNonEmptyValue(b.bataiju, a.bataiju),
   zogenFugo: pickNonEmptyValue(b.zogenFugo, a.zogenFugo),
   zogenSa: pickNonEmptyValue(b.zogenSa, a.zogenSa),
+  resultVoidAt: pickNonEmptyValue(b.resultVoidAt, a.resultVoidAt),
 });
 
 // Resolve a jockey display name to its normalized comparison key. Extracted so
@@ -336,6 +337,7 @@ export const detailFromStarter = (row: RaceTrendStarterRow): RaceTrendDetail => 
   time: row.sohaTime,
   horseWeight: parseHorseWeight(row.bataiju),
   horseWeightDelta: parseHorseWeightDelta(row.zogenFugo, row.zogenSa),
+  isResultVoid: row.resultVoidAt !== null && row.resultVoidAt !== undefined,
 });
 
 const calculateMedian = (values: number[]): number | null => {

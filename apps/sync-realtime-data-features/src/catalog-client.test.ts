@@ -7,7 +7,7 @@ it("fetchCatalogRows sends a GET request and returns rows", async () => {
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request): Promise<Response> => {
     requests.push(request);
-    return Response.json([{ raceKey: "jra:2026:0529:05:01" }]);
+    return Response.json({ rows: [{ raceKey: "jra:2026:0529:05:01" }] });
   });
   const rows = await fetchCatalogRows(
     { fetch },
@@ -25,8 +25,24 @@ it("fetchCatalogRows rejects non-success catalog responses", async () => {
   ).rejects.toThrowError("PC_KEIBA_R2_CATALOG /v1/race-features failed with HTTP 503");
 });
 
-it("fetchCatalogRows rejects object payloads", async () => {
+it("fetchCatalogRows rejects a bare array payload (real API wraps rows in an object)", async () => {
+  const fetch = vi.fn(
+    async (): Promise<Response> => Response.json([{ raceKey: "jra:2026:0529:05:01" }]),
+  );
+  await expect(
+    fetchCatalogRows({ fetch }, new URL("https://pc-keiba-r2-catalog/v1/race-keys")),
+  ).rejects.toThrowError("PC_KEIBA_R2_CATALOG /v1/race-keys returned invalid rows");
+});
+
+it("fetchCatalogRows rejects an object payload whose rows field is missing", async () => {
   const fetch = vi.fn(async (): Promise<Response> => Response.json({ items: [] }));
+  await expect(
+    fetchCatalogRows({ fetch }, new URL("https://pc-keiba-r2-catalog/v1/race-keys")),
+  ).rejects.toThrowError("PC_KEIBA_R2_CATALOG /v1/race-keys returned invalid rows");
+});
+
+it("fetchCatalogRows rejects an object payload whose rows field is not an array", async () => {
+  const fetch = vi.fn(async (): Promise<Response> => Response.json({ rows: "nope" }));
   await expect(
     fetchCatalogRows({ fetch }, new URL("https://pc-keiba-r2-catalog/v1/race-keys")),
   ).rejects.toThrowError("PC_KEIBA_R2_CATALOG /v1/race-keys returned invalid rows");
