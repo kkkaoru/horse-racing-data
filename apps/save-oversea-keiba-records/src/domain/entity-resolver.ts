@@ -1,5 +1,5 @@
 // This file runs with Bun.
-import type { ResolvedEntityCodes } from "./types";
+import type { ResolvedEntityCodes } from "../types";
 
 export interface MasterEntityRecord {
   readonly exists: boolean;

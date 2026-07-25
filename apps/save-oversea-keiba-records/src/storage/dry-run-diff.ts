@@ -1,5 +1,5 @@
 // This file runs with Bun.
-import type { SqlStatement } from "./types";
+import type { SqlStatement } from "../types";
 
 export type DiffClassification = "unchanged" | "enriched" | "changed" | "REGRESSION";
 export type GateVerdict = "safe" | "blocked";

@@ -8,13 +8,13 @@ import {
   type HttpResponsePort,
   type SaveRunner,
 } from "./cli";
-import type { MasterLookupStatement } from "./master-lookup";
+import type { MasterLookupStatement } from "./storage/master-lookup";
 import type {
   ExecutableSqlStatement,
   PostgresClient,
   PostgresConnectionConfig,
   SqlExecutor,
-} from "./pg-client";
+} from "./storage/pg-client";
 import type {
   ParseSaveCliArgsResult,
   RunSaveResult,

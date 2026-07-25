@@ -1,5 +1,5 @@
 // This file runs with Bun.
-import type { ParsedJraRace, ParsedRunner, RaceGrade } from "./types";
+import type { ParsedJraRace, ParsedRunner, RaceGrade } from "../types";
 
 interface RequiredMatchInput {
   html: string;

@@ -10,32 +10,32 @@ import {
   type DryRunDiffResult,
   type DryRunRaceKey,
   type DiffableRow,
-} from "./dry-run-diff";
+} from "./storage/dry-run-diff";
 import {
   resolveMasterVerifiedEntityCodes,
   type MasterLookupPort as EntityMasterLookupPort,
-} from "./entity-resolver";
+} from "./domain/entity-resolver";
 import {
   writeJvdSeRunnersIdempotently,
   type IdentityConflict,
   type WriteSummary,
   type JvdRaceKey,
   type SqlExecutor as IdempotentSqlExecutor,
-} from "./idempotent-write";
-import { parseJraCard } from "./jra-card-parser";
-import { mapJvdRows } from "./jvd-mapper";
+} from "./storage/idempotent-write";
+import { parseJraCard } from "./sources/jra-card-parser";
+import { mapJvdRows } from "./domain/jvd-mapper";
 import {
   createMasterLookupPort,
   type MasterLookupPort,
   type MasterLookupQueryRunner,
   type MasterLookupStatement,
-} from "./master-lookup";
+} from "./storage/master-lookup";
 import {
   reconcileRunners,
   type JraReconcileRunner,
   type SecondaryReconcileRunner,
   type ReconcileResult,
-} from "./reconcile";
+} from "./domain/reconcile";
 import {
   OVERSEA_SECONDARY_MARKUP_PROFILE_PATH,
   parseSecondarySourceMarkupProfileJson,
@@ -43,7 +43,7 @@ import {
   type SecondarySourceMarkupProfile,
   type SecondarySourceParseIssue,
   type SecondarySourceRunner,
-} from "./secondary-source-parser";
+} from "./sources/secondary-source-parser";
 import {
   buildJraCardUrl,
   buildSecondaryCardUrl,
@@ -52,7 +52,7 @@ import {
   type FileReadPort,
   type HtmlFetchPort,
   type LoadedSources,
-} from "./source-loader";
+} from "./sources/source-loader";
 import type {
   JvdRaRow,
   JvdRows,
@@ -62,7 +62,7 @@ import type {
   RaceStorageIdentity,
   SqlStatement,
 } from "./types";
-import { buildJvdRaUpsert } from "./upsert-sql";
+import { buildJvdRaUpsert } from "./storage/upsert-sql";
 
 export type SaveExitCode = 0 | 1;
 

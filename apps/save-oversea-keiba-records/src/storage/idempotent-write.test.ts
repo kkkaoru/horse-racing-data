@@ -11,7 +11,7 @@ import {
   type SqlExecutor,
   type WriteSummary,
 } from "./idempotent-write";
-import type { JvdSeRow, SqlStatement } from "./types";
+import type { JvdSeRow, SqlStatement } from "../types";
 
 interface RunnerOverrides {
   readonly umaban: string;

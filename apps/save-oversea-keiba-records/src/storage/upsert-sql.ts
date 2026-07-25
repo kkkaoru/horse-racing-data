@@ -1,5 +1,5 @@
 // This file runs with Bun.
-import type { JvdRaRow, JvdSeRow, SqlStatement } from "./types";
+import type { JvdRaRow, JvdSeRow, SqlStatement } from "../types";
 
 interface UpsertConfig {
   readonly table: string;

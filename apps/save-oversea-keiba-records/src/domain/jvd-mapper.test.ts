@@ -1,7 +1,7 @@
 // This test runs with Bun and Vitest.
 import { expect, test } from "vitest";
 import { mapJvdRows, padToJvByteWidth } from "./jvd-mapper";
-import type { ParsedRace, ParsedRunner, ResolvedEntityCodes } from "./types";
+import type { ParsedRace, ParsedRunner, ResolvedEntityCodes } from "../types";
 
 const FULL_WIDTH_SPACE: string = "　";
 const ASCII_SPACE: string = " ";

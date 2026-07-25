@@ -16,7 +16,7 @@ import {
   type DryRunRaceKey,
   type DryRunSqlExecutor,
 } from "./dry-run-diff";
-import type { SqlStatement } from "./types";
+import type { SqlStatement } from "../types";
 
 const RACE_KEY: DryRunRaceKey = {
   kaisai_nen: "2026",

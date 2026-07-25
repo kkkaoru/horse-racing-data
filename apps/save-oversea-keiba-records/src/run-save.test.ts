@@ -4,7 +4,7 @@ import type {
   MasterLookupQueryRunner,
   MasterLookupResult,
   MasterLookupStatement,
-} from "./master-lookup";
+} from "./storage/master-lookup";
 import {
   createMasterLookupRunnerFromExecutor,
   parseSaveCliArgs,
@@ -18,8 +18,8 @@ import {
 import {
   OVERSEA_SECONDARY_MARKUP_PROFILE_PATH,
   type SecondarySourceMarkupProfile,
-} from "./secondary-source-parser";
-import type { FileReadPort, HtmlFetchPort } from "./source-loader";
+} from "./sources/secondary-source-parser";
+import type { FileReadPort, HtmlFetchPort } from "./sources/source-loader";
 
 const JRA_RACECARD_ID: string = "pk01dde0110420260101051";
 const SECONDARY_RACE_ID: string = "20260725A605";

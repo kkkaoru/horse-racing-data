@@ -10,7 +10,7 @@ import type {
   ParsedRunner,
   RaceStorageIdentity,
   ResolvedEntityCodes,
-} from "./types";
+} from "../types";
 
 interface MapJvdRowsInput {
   race: ParsedRace;

@@ -1,7 +1,7 @@
 // This test runs with Bun and Vitest.
 import { expect, test } from "vitest";
-import { mapJvdRows } from "./jvd-mapper";
-import type { JvdSeRow, ParsedRace } from "./types";
+import { mapJvdRows } from "../domain/jvd-mapper";
+import type { JvdSeRow, ParsedRace } from "../types";
 import { buildJvdRaUpsert, buildJvdSeUpsert } from "./upsert-sql";
 
 const RACE: ParsedRace = {

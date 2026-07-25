@@ -1,5 +1,5 @@
 // This file runs with Bun.
-import type { JvdSeRow, SqlStatement } from "./types";
+import type { JvdSeRow, SqlStatement } from "../types";
 import { buildJvdSeUpsert } from "./upsert-sql";
 
 export interface QueryOutcome {

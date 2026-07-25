@@ -5,7 +5,7 @@ import {
   type PostgresClient,
   type PostgresConnectionConfig,
   type SqlExecutor,
-} from "./pg-client";
+} from "./storage/pg-client";
 import {
   createMasterLookupRunnerFromExecutor,
   parseSaveCliArgs,
@@ -18,8 +18,8 @@ import {
   type SaveExitCode,
   type SaveSqlExecutor,
 } from "./run-save";
-import type { MasterLookupQueryRunner } from "./master-lookup";
-import type { FileReadPort, HtmlFetchPort } from "./source-loader";
+import type { MasterLookupQueryRunner } from "./storage/master-lookup";
+import type { FileReadPort, HtmlFetchPort } from "./sources/source-loader";
 
 const HTTP_OK_MINIMUM: number = 200;
 const HTTP_OK_MAXIMUM_EXCLUSIVE: number = 300;
