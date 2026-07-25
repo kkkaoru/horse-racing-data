@@ -214,7 +214,17 @@ it("markEmptyResultGiveUp binds completedAt as result_complete_at and last_resul
   const args = bind.mock.calls[0]!;
   expect(args[0]).toBe("2026-06-28T15:00:00+09:00");
   expect(args[1]).toBe("2026-06-28T15:00:00+09:00");
-  expect(args[3]).toBe("nar:2026:0628:55:11");
+  expect(args[4]).toBe("nar:2026:0628:55:11");
+});
+
+it("markEmptyResultGiveUp also binds completedAt as result_void_at", async () => {
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await markEmptyResultGiveUp(db, "nar:2026:0628:55:11", "2026-06-28T15:00:00+09:00");
+  const args = bind.mock.calls[0]!;
+  expect(args[2]).toBe("2026-06-28T15:00:00+09:00");
 });
 
 it("markEmptyResultGiveUp prepares a single UPDATE statement", async () => {
@@ -821,6 +831,7 @@ it("listSchedulableRaceSourcesByDate maps rows to SchedulableRaceSource shape", 
         result_expected_horse_count: null,
         result_fetch_lock_until: null,
         result_saved_horse_count: null,
+        result_void_at: null,
         source: "nar",
         updated_at: "now",
       },
@@ -832,6 +843,7 @@ it("listSchedulableRaceSourcesByDate maps rows to SchedulableRaceSource shape", 
   const result = await listSchedulableRaceSourcesByDate(db, "20260512");
   expect(result.length).toBe(1);
   expect(result[0]!.raceKey).toBe("nar:2026:0512:55:01");
+  expect(result[0]!.resultVoidAt).toBeNull();
 });
 
 it("listRaceSourcesForSeed returns mapped rows when results present", async () => {

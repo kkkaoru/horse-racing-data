@@ -41,7 +41,9 @@ import {
   raceTrendDailyTrackQueryFromRequest,
   computeMinutesAfterRaceStart,
   EMPTY_RESULT_GIVEUP_LOG_STATUS,
+  EMPTY_RESULT_VOID_LOG_STATUS,
   handleEmptyResultFetch,
+  isNarRaceConfirmedVoidOnRaceList,
   resolveEmptyResultGiveup,
   resolveResultFetchIsComplete,
   resolveResultFetchOutcome,
@@ -1549,13 +1551,118 @@ it("handleEmptyResultFetch returns silent-return when attempts exceed threshold 
   const env = {
     REALTIME_DB: { prepare },
   } as unknown as Env;
-  const outcome = await handleEmptyResultFetch({
-    env,
-    now: new Date("2026-05-12T13:30:00+09:00"),
-    race: RACE,
-    raceKey: "nar:2026:0512:55:01",
-  });
-  expect(outcome).toBe("silent-return");
+  // 30 minutes after RACE's start (13:00) is exactly the NAR RaceList
+  // void-check floor, so this scenario also exercises
+  // isNarRaceConfirmedVoidOnRaceList. Stub fetch to report the race's 成績
+  // link still enabled so the RaceList check agrees with the still-waiting
+  // outcome this test asserts, rather than making a real network call.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          '<tr class="data"><td>1R</td><td><a class="chartBtn" href=/x>成績</a></td></tr>',
+          { headers: { "Content-Type": "text/html; charset=utf-8" }, status: 200 },
+        ),
+    ),
+  );
+  try {
+    const outcome = await handleEmptyResultFetch({
+      env,
+      now: new Date("2026-05-12T13:30:00+09:00"),
+      race: RACE,
+      raceKey: "nar:2026:0512:55:01",
+    });
+    expect(outcome).toBe("silent-return");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("handleEmptyResultFetch gives up early when the RaceList page confirms the result link is disabled, before the count/time floor", async () => {
+  const first = vi.fn(async () => ({ count: 10 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          '<tr class="data"><td>1R</td><td><a class="chartBtn disable">成績</a></td></tr>',
+          {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            status: 200,
+          },
+        ),
+    ),
+  );
+  try {
+    const outcome = await handleEmptyResultFetch({
+      env,
+      now: new Date("2026-05-12T13:30:00+09:00"),
+      race: RACE,
+      raceKey: "nar:2026:0512:55:01",
+    });
+    expect(outcome).toBe("give-up");
+    const logBindArgs = bind.mock.calls.find(
+      (args) => args[2] === "empty_giveup:race_list_disabled",
+    );
+    expect(logBindArgs?.[0]).toBe("nar:2026:0512:55:01");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("handleEmptyResultFetch does not check the RaceList page before the void-check floor", async () => {
+  const first = vi.fn(async () => ({ count: 5 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const outcome = await handleEmptyResultFetch({
+      env,
+      now: new Date("2026-05-12T13:15:00+09:00"),
+      race: RACE,
+      raceKey: "nar:2026:0512:55:01",
+    });
+    expect(outcome).toBe("silent-return");
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("handleEmptyResultFetch does not check the RaceList page for a JRA race", async () => {
+  const first = vi.fn(async () => ({ count: 10 }));
+  const run = vi.fn(async () => ({}));
+  const bind = vi.fn((..._args: unknown[]) => ({ first, run }));
+  const prepare = vi.fn(() => ({ bind }));
+  const env = {
+    REALTIME_DB: { prepare },
+  } as unknown as Env;
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    const outcome = await handleEmptyResultFetch({
+      env,
+      now: new Date("2026-05-12T13:30:00+09:00"),
+      race: { ...RACE, source: "jra" },
+      raceKey: "jra:2026:0512:55:01",
+    });
+    expect(outcome).toBe("silent-return");
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it("handleEmptyResultFetch returns give-up when both gates pass", async () => {
@@ -1634,6 +1741,125 @@ it("handleEmptyResultFetch issues exactly two D1 statements on awaiting-publish"
 
 it("EMPTY_RESULT_GIVEUP_LOG_STATUS exposes the exact telemetry status string", () => {
   expect(EMPTY_RESULT_GIVEUP_LOG_STATUS).toBe("empty_giveup:race_count_exceeded");
+});
+
+it("EMPTY_RESULT_VOID_LOG_STATUS exposes the exact telemetry status string", () => {
+  expect(EMPTY_RESULT_VOID_LOG_STATUS).toBe("empty_giveup:race_list_disabled");
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns true when the RaceList page reports the race's 成績 link disabled", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          '<tr class="data"><td>1R</td><td><a class="chartBtn disable">成績</a></td></tr>',
+          {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            status: 200,
+          },
+        ),
+    ),
+  );
+  try {
+    await expect(isNarRaceConfirmedVoidOnRaceList({} as Env, RACE)).resolves.toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false when the RaceList page reports the race's 成績 link enabled", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          '<tr class="data"><td>1R</td><td><a class="chartBtn" href=/x>成績</a></td></tr>',
+          {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            status: 200,
+          },
+        ),
+    ),
+  );
+  try {
+    await expect(isNarRaceConfirmedVoidOnRaceList({} as Env, RACE)).resolves.toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false without fetching for a JRA race", async () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    await expect(
+      isNarRaceConfirmedVoidOnRaceList({} as Env, { ...RACE, source: "jra" }),
+    ).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false without fetching when the keibajoCode has no baba_code mapping", async () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    await expect(
+      isNarRaceConfirmedVoidOnRaceList({} as Env, { ...RACE, keibajoCode: "99" }),
+    ).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false (fails closed) when the RaceList page 404s", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("nope", { status: 404 })),
+  );
+  try {
+    await expect(isNarRaceConfirmedVoidOnRaceList({} as Env, RACE)).resolves.toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false (fails closed) when the RaceList fetch throws", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => {
+      throw new Error("network unreachable");
+    }),
+  );
+  try {
+    await expect(isNarRaceConfirmedVoidOnRaceList({} as Env, RACE)).resolves.toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("isNarRaceConfirmedVoidOnRaceList returns false (fails closed) when the race's row is absent from the RaceList page", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          '<tr class="data"><td>2R</td><td><a class="chartBtn disable">成績</a></td></tr>',
+          {
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+            status: 200,
+          },
+        ),
+    ),
+  );
+  try {
+    await expect(isNarRaceConfirmedVoidOnRaceList({} as Env, RACE)).resolves.toBe(false);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 it("horseWeightRaceKeyFromRequest parses a percent-encoded nar race key", () => {

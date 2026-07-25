@@ -226,7 +226,7 @@ export const fetchTodayRaceListUrls = async (targetDate: string): Promise<RaceLi
 // on the target day — a legitimate "no race today" signal, not a failure.
 // Only that 404 is swallowed here; 5xx / timeouts / network errors still
 // propagate so real upstream failures keep surfacing to the caller.
-const fetchRaceListPageHtml = async (url: string): Promise<string | null> => {
+export const fetchRaceListPageHtml = async (url: string): Promise<string | null> => {
   try {
     return await fetchHtml(url);
   } catch (error) {
@@ -282,6 +282,40 @@ export const fetchRaceLinksFromRaceList = async (
   }
 
   return links.sort((left, right) => Number(left.raceNumber) - Number(right.raceNumber));
+};
+
+const RACE_LIST_ROW_SPLIT_PATTERN = /<tr class="data">/gu;
+const RACE_LIST_ROW_LABEL_PATTERN = /<td>\s*(\d+)R\s*<\/td>/u;
+const RACE_LIST_RESULT_LINK_PATTERN = /<a class="chartBtn([^"]*)"[^>]*>\s*成績\s*<\/a>/u;
+
+// Parses keiba.go.jp's RaceList page (the same page fetchTodayRaceListUrls
+// reads) to determine whether a SPECIFIC race's 成績 (results) link is
+// disabled. keiba.go.jp enables this link only once results are published
+// and NEVER re-enables it for a race whose result never lands (confirmed
+// hours after the scheduled post time for the 2026-07-24 Oi 5R/6R incident,
+// while every other race that day flipped to enabled within its normal
+// publish window) -- so "still disabled a meaningful margin past the
+// expected publish window" is the best available upstream signal that a
+// race's result will never arrive, short of an explicit cancellation flag
+// keiba.go.jp does not expose anywhere on this page.
+// Returns null when the race's row cannot be found at all (page layout
+// changed, or the race is not present for this venue/date) so the caller can
+// fall back to the existing time/attempt-count-only circuit breaker instead
+// of mistaking "could not determine" for "confirmed enabled".
+export const isRaceResultDisabledOnRaceList = (
+  html: string,
+  raceNumber: string,
+): boolean | null => {
+  const targetLabel = String(Number(raceNumber));
+  const rows = html.split(RACE_LIST_ROW_SPLIT_PATTERN).slice(1);
+  for (const row of rows) {
+    const rowLabel = row.match(RACE_LIST_ROW_LABEL_PATTERN)?.[1];
+    if (rowLabel !== targetLabel) continue;
+    const resultLinkClass = row.match(RACE_LIST_RESULT_LINK_PATTERN)?.[1];
+    if (resultLinkClass === undefined) return null;
+    return resultLinkClass.includes("disable");
+  }
+  return null;
 };
 
 const collectOddsLinksFromNav = (nav: string): Partial<Record<OddsType, string>> => {

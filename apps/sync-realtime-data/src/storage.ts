@@ -97,6 +97,7 @@ interface RaceSourceRow {
   result_expected_horse_count: number | null;
   result_fetch_lock_until: string | null;
   result_saved_horse_count: number | null;
+  result_void_at: string | null;
   source: "jra" | "nar";
 }
 
@@ -260,6 +261,7 @@ export interface SchedulableRaceSource extends NarRaceSource {
   oddsFetchLockUntil: string | null;
   resultCompleteAt: string | null;
   resultFetchLockUntil: string | null;
+  resultVoidAt: string | null;
 }
 
 export interface JraVenueTrackConditionSchedule {
@@ -318,6 +320,7 @@ const toSchedulableRaceSource = (row: RaceSourceRow): SchedulableRaceSource => (
   oddsFetchLockUntil: row.odds_fetch_lock_until,
   resultCompleteAt: row.result_complete_at,
   resultFetchLockUntil: row.result_fetch_lock_until,
+  resultVoidAt: row.result_void_at,
 });
 
 const runD1Batches = async (db: D1Database, statements: D1PreparedStatement[]): Promise<void> => {
@@ -875,11 +878,15 @@ export const incrementEmptyResultAttempts = async (
   return row ? Number(row.count) : 0;
 };
 
-// Empty-result give-up (2026-06-28). Force-completes a race after the
-// circuit-breaker counter trips so the planner stops re-enqueueing it.
-// Mirrors completeResultFetch with isComplete=true but keeps the counts at
-// zero because no result rows ever landed for this race. Clears the lock so
-// follow-up SELECTs treat the row as terminal.
+// Empty-result give-up (2026-06-28, result_void_at added 2026-07-24).
+// Force-completes a race after the circuit-breaker counter trips (or the
+// RaceList early-void check confirms it, see isRaceResultDisabledOnRaceList)
+// so the planner stops re-enqueueing it. Mirrors completeResultFetch with
+// isComplete=true but keeps the counts at zero because no result rows ever
+// landed for this race. Clears the lock so follow-up SELECTs treat the row
+// as terminal. result_void_at records this same instant so downstream
+// readers (the race-trend viewer) can render an explicit "unavailable"
+// status instead of a silent gap where this race's finish positions belong.
 export const markEmptyResultGiveUp = async (
   db: D1Database,
   raceKey: string,
@@ -894,11 +901,12 @@ export const markEmptyResultGiveUp = async (
             last_result_fetch_at = ?,
             last_result_queued_at = null,
             result_fetch_lock_until = null,
+            result_void_at = ?,
             updated_at = ?
         where race_key = ?
       `,
     )
-    .bind(completedAt, completedAt, now, raceKey)
+    .bind(completedAt, completedAt, completedAt, now, raceKey)
     .run();
 };
 

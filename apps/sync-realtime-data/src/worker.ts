@@ -5,8 +5,10 @@ import {
   buildRaceKey,
   extractOddsLinks,
   fetchRaceLinksFromRaceList,
+  fetchRaceListPageHtml,
   fetchRacePage,
   fetchTodayRaceListUrls,
+  isRaceResultDisabledOnRaceList,
   parseRaceMetadata,
   parseRaceEntries,
   parseHorseWeights,
@@ -260,6 +262,23 @@ const NAR_RESULT_PUBLISH_DELAY_MINUTES = 10;
 // well before the upstream had even published, and locked the race row
 // forever.
 const RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START = 60;
+// 2026-07-24 incident (Oi 5R/6R): both races took the full 60-minute floor
+// above before force-completing with zero result rows, because keiba.go.jp
+// never returns anything the parser can tell apart from "not published yet"
+// on the per-race result page itself. Its RaceList page (the same page
+// fetchTodayRaceListUrls reads) is more informative: it disables a race's
+// 成績 link only once and never re-enables it once a result truly will not
+// land (confirmed hours later for both races that day, while every other
+// race that day flipped to enabled within its normal publish window). This
+// floor lets a NAR race give up once that upstream signal is checked and
+// confirms "disabled", well before the full RESULT_FETCH_EMPTY_GIVEUP_COUNT
+// / RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START floor would otherwise
+// require — still comfortably past NAR_RESULT_PUBLISH_DELAY_MINUTES so a
+// race that is merely running late keeps its normal grace period first.
+const NAR_RESULT_VOID_CHECK_MIN_MINUTES_AFTER_START = 30;
+// Distinguishes a RaceList-confirmed void give-up from the plain attempt-
+// count/time-floor circuit breaker in fetch_logs telemetry.
+export const EMPTY_RESULT_VOID_LOG_STATUS = "empty_giveup:race_list_disabled";
 // 2026-05-31: lowered from 3 to 2 in tandem with the result-poll cron drop
 // from "*/5" to "*/2". With the previous 5-minute cron + 3-minute throttle
 // 11R results landed in D1 up to ~5 minutes after JRA published them, and
@@ -3504,20 +3523,51 @@ export const resolveEmptyResultGiveup = (input: ResolveEmptyResultGiveupInput): 
   input.attemptCount >= RESULT_FETCH_EMPTY_GIVEUP_COUNT &&
   input.minutesAfterRaceStart >= RESULT_FETCH_EMPTY_GIVEUP_MIN_MINUTES_AFTER_START;
 
+const reverseBabaCode = (keibajoCode: string): string | null =>
+  Object.entries(BABA_CODE_TO_LOCAL_KEIBAJO).find(([, code]) => code === keibajoCode)?.[0] ?? null;
+
+// 2026-07-24: best-effort upstream cross-check for the empty-result circuit
+// breaker (see NAR_RESULT_VOID_CHECK_MIN_MINUTES_AFTER_START above). JRA is
+// out of scope -- it has no keiba.go.jp RaceList page at all -- and any
+// fetch/parse failure fails CLOSED (returns false) so an ambiguous or
+// unreachable RaceList page can never force an early give-up; the plain
+// attempt-count/time-floor breaker remains the backstop in that case.
+export const isNarRaceConfirmedVoidOnRaceList = async (
+  env: Env,
+  race: NarRaceSource,
+): Promise<boolean> => {
+  if (race.source !== "nar") return false;
+  const babaCode = reverseBabaCode(race.keibajoCode);
+  if (babaCode === null) return false;
+  try {
+    const { url } = buildRaceListUrl(`${race.kaisaiNen}${race.kaisaiTsukihi}`, babaCode);
+    const html = await fetchRaceListPageHtml(url);
+    if (html === null) return false;
+    return isRaceResultDisabledOnRaceList(html, race.raceBango) === true;
+  } catch {
+    return false;
+  }
+};
+
 // 2026-06-30: integration helper for the empty-result circuit breaker.
-// Three-way outcome:
+// Four-way outcome:
 //   - "awaiting-publish": race finished but the upstream publish window
 //     has not opened yet (now - race_start < NAR_RESULT_PUBLISH_DELAY_
 //     MINUTES). Counter NOT incremented, lock cleared via failResultFetch
 //     so the planner re-enqueues on the next cron tick, single
 //     skip:awaiting-publish row written (KV-deduped).
-//   - "silent-return": publish window open, counter incremented but
-//     either still below the giveup threshold or the giveup-floor
-//     wall-clock has not elapsed. Lock cleared via failResultFetch so the
-//     planner re-enqueues next tick. No log row (the eventual giveup row
-//     carries the attempt count; per-tick logging would blow up D1).
-//   - "give-up": both gates passed → markEmptyResultGiveUp force-completes
-//     the race + EMPTY_RESULT_GIVEUP_LOG_STATUS row.
+//   - "silent-return": publish window open, counter incremented but the
+//     giveup threshold, time floor, AND (for NAR, past its own later floor)
+//     the RaceList void cross-check all still say "keep waiting". Lock
+//     cleared via failResultFetch so the planner re-enqueues next tick. No
+//     log row (the eventual giveup row carries the attempt count; per-tick
+//     logging would blow up D1).
+//   - "give-up": either the count/time gates passed, or (NAR only, past
+//     NAR_RESULT_VOID_CHECK_MIN_MINUTES_AFTER_START) the RaceList page
+//     confirms this race's result link is disabled → markEmptyResultGiveUp
+//     force-completes the race + a give-up log row (EMPTY_RESULT_GIVEUP_
+//     LOG_STATUS for the count/time path, EMPTY_RESULT_VOID_LOG_STATUS for
+//     the RaceList-confirmed path).
 // Critically: NONE of these outcomes throw. The caller silently returns
 // (acks the queue message) so the previous 1-tick = 4-increment retry
 // storm cannot reappear.
@@ -3538,7 +3588,12 @@ export const handleEmptyResultFetch = async (
     return "awaiting-publish";
   }
   const attemptCount = await incrementEmptyResultAttempts(input.env.REALTIME_DB, input.raceKey);
-  if (!resolveEmptyResultGiveup({ attemptCount, minutesAfterRaceStart })) {
+  const countGiveup = resolveEmptyResultGiveup({ attemptCount, minutesAfterRaceStart });
+  const confirmedVoid =
+    !countGiveup &&
+    minutesAfterRaceStart >= NAR_RESULT_VOID_CHECK_MIN_MINUTES_AFTER_START &&
+    (await isNarRaceConfirmedVoidOnRaceList(input.env, input.race));
+  if (!countGiveup && !confirmedVoid) {
     await failResultFetch(input.env.REALTIME_DB, input.raceKey);
     return "silent-return";
   }
@@ -3546,7 +3601,7 @@ export const handleEmptyResultFetch = async (
   await logFetch(
     input.env.REALTIME_DB,
     "fetch-results",
-    EMPTY_RESULT_GIVEUP_LOG_STATUS,
+    confirmedVoid ? EMPTY_RESULT_VOID_LOG_STATUS : EMPTY_RESULT_GIVEUP_LOG_STATUS,
     input.raceKey,
     `attempts=${attemptCount}`,
   );

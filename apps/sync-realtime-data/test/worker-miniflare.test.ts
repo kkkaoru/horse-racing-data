@@ -171,8 +171,10 @@ beforeAll(async () => {
               export const extractOddsLinks = () => [];
               export const fetchOdds = async () => null;
               export const fetchRaceLinksFromRaceList = async () => [];
+              export const fetchRaceListPageHtml = async () => null;
               export const fetchRacePage = async () => null;
               export const fetchTodayRaceListUrls = async () => [];
+              export const isRaceResultDisabledOnRaceList = () => null;
               export const parseRaceMetadata = () => null;
               export const parseRaceEntries = () => [];
               export const parseHorseWeights = () => [];
