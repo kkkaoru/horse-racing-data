@@ -1345,6 +1345,27 @@ it("getFinishPositionLambdarankPredictions short-circuits without SQL when only 
   expect(executeMock).not.toHaveBeenCalled();
 });
 
+it("getFinishPositionLambdarankPredictions uses source='overseas' and category='overseas' for an overseas venue", async () => {
+  const overseasRace: RaceDetail = {
+    ...PERCLASS_703_RACE,
+    keibajoCode: "A6",
+    source: "jra",
+  };
+  executeMock.mockResolvedValue({ rows: [] });
+  await getFinishPositionLambdarankPredictions(overseasRace, PERCLASS_703_RUNNERS);
+  const queryArg = executeMock.mock.calls[0]?.[0];
+  const queryText = stringifyQuery(queryArg);
+  // The active-model CTE must look up category='overseas', not 'jra'.
+  expect(queryText).toMatch(/where category = 'overseas'/u);
+  // Every source predicate must use 'overseas', not 'jra'.
+  expect(queryText).toMatch(/p0\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p2\.source = 'overseas'/u);
+  expect(queryText).toMatch(/p3\.source = 'overseas'/u);
+  // Priority 0 must be gated to false (no cell-routing for overseas).
+  expect(queryText).toMatch(/where false\s+and p0\.source = 'overseas'/u);
+});
+
 it("race-runners-nar-includes-sire-name", async () => {
   executeMock.mockResolvedValue({
     rows: [

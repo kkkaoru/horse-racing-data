@@ -55,6 +55,7 @@ export const KEIBAJO_NAMES: Record<string, string> = {
   "84": "旭川(ばんえい)",
   A0: "その他の外国",
   A2: "日本",
+  A6: "アスコット",
 };
 
 export const TRACK_LABELS: Record<string, string> = {

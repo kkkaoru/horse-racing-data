@@ -9,6 +9,12 @@ const SEX_LABELS: Record<string, string> = {
 export const isBanEiKeibajoCode = (value: string | null | undefined): boolean =>
   ["81", "82", "83", "84"].includes(cleanText(value, ""));
 
+/** Overseas venues use alphabetic keibajo codes (e.g. "A6" = Ascot). */
+export const isOverseasKeibajoCode = (value: string | null | undefined): boolean => {
+  const cleaned = cleanText(value, "");
+  return cleaned.length > 0 && !/^\d+$/u.test(cleaned);
+};
+
 export const formatRunnerNumber = (value: string | null | undefined): string => {
   const parsed = Number(cleanText(value, ""));
   return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : "-";
