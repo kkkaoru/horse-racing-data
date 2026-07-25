@@ -17,19 +17,21 @@ it("buildRaceFeatures requests only the specified race from the catalog", async 
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request): Promise<Response> => {
     requests.push(request);
-    return Response.json([
-      {
-        kaisai_nen: "2026",
-        kaisai_tsukihi: "0529",
-        keibajo_code: "05",
-        ketto_toroku_bango: "2023100001",
-        kyori: "1600",
-        race_bango: "01",
-        race_date: "20260529",
-        source: "jra",
-        umaban: "3",
-      },
-    ]);
+    return Response.json({
+      rows: [
+        {
+          kaisai_nen: "2026",
+          kaisai_tsukihi: "0529",
+          keibajo_code: "05",
+          ketto_toroku_bango: "2023100001",
+          kyori: "1600",
+          race_bango: "01",
+          race_date: "20260529",
+          source: "jra",
+          umaban: "3",
+        },
+      ],
+    });
   });
   const rows = await buildRaceFeatures(JRA_JOB, { PC_KEIBA_R2_CATALOG: { fetch } });
   expect(requests[0]?.url).toBe(
@@ -91,7 +93,7 @@ it("buildRaceFeatures sends Ban-ei jobs as nar catalog requests", async () => {
   const requests: Request[] = [];
   const fetch = vi.fn(async (request: Request): Promise<Response> => {
     requests.push(request);
-    return Response.json([]);
+    return Response.json({ rows: [] });
   });
   await buildRaceFeatures(
     {
@@ -110,7 +112,7 @@ it("buildRaceFeatures sends Ban-ei jobs as nar catalog requests", async () => {
 });
 
 it("buildRaceFeatures rejects non-object catalog rows", async () => {
-  const fetch = vi.fn(async (): Promise<Response> => Response.json([null]));
+  const fetch = vi.fn(async (): Promise<Response> => Response.json({ rows: [null] }));
   await expect(buildRaceFeatures(JRA_JOB, { PC_KEIBA_R2_CATALOG: { fetch } })).rejects.toThrowError(
     "PC_KEIBA_R2_CATALOG /v1/race-features returned an invalid row",
   );
