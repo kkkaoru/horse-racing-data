@@ -22,6 +22,11 @@ import type { Pool } from "pg";
 import { formatError } from "./format-error";
 import { invalidateRaceListInKv } from "./gates/race-list-kv-cache";
 import { buildJraEntryUrlFromRace } from "./jra";
+import {
+  createJraOverseasRaceResolver,
+  type JraOverseasRaceResolver,
+  type JraOverseasRaceResolution,
+} from "./jra-overseas";
 import { fetchRaceLinksFromRaceList, fetchTodayRaceListUrls } from "./keiba-go";
 import { getHotPool } from "./postgres-pool";
 import { logFetch, upsertOddsFetchState } from "./storage";
@@ -44,11 +49,13 @@ export interface TodayRaceRow {
 
 export interface ListTodayRacesContext {
   pool?: Pool;
+  resolveJraOverseasRace?: JraOverseasRaceResolver;
   resolveNarDebaUrl?: NarDebaUrlResolver;
 }
 
 export interface PopulateTodayContext {
   pool?: Pool;
+  resolveJraOverseasRace?: JraOverseasRaceResolver;
   resolveNarDebaUrl?: NarDebaUrlResolver;
 }
 
@@ -70,6 +77,7 @@ interface SourcedRaceRow {
   hasso_jikoku: string | null;
   kaisai_kai: string | null;
   kaisai_nichime: string | null;
+  kyosomei_hondai?: string | null;
 }
 
 interface IntermediateRow {
@@ -79,9 +87,21 @@ interface IntermediateRow {
   keibajoCode: string;
   raceBango: string;
   raceKey: string;
-  raceStartAtJst: string;
+  raceStartAtJst: string | null;
   kaisaiKai: string | null;
   kaisaiNichime: string | null;
+  kyosomeiHondai: string | null;
+}
+
+interface ResolvedRaceDetails {
+  debaUrl: string;
+  raceStartAtJst: string;
+}
+
+interface AttachDebaUrlInput {
+  resolveJraOverseasRace: JraOverseasRaceResolver;
+  resolveNarDebaUrl: NarDebaUrlResolver;
+  row: IntermediateRow;
 }
 
 interface NarVenue {
@@ -126,6 +146,7 @@ const RACE_BANGO_PAD_WIDTH = 2;
 const KAISAI_KAI_PAD_WIDTH = 2;
 const KAISAI_NICHIME_PAD_WIDTH = 2;
 const HHMM_PATTERN = /^\d{4}$/u;
+const NUMERIC_KEIBAJO_CODE_PATTERN = /^\d+$/u;
 const EMPTY_ODDS_LINKS_JSON = "{}";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS_AHEAD = 2;
@@ -137,11 +158,11 @@ const POPULATE_FALLBACK_STATUS = "fallback";
 const KEIBA_GO_DEBA_TABLE_BASE_URL = "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable";
 
 const SELECT_TODAY_RACES_SQL = `
-  select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, kaisai_kai, kaisai_nichime
+  select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, kaisai_kai, kaisai_nichime, kyosomei_hondai
   from jvd_ra
   where kaisai_nen = $1 and kaisai_tsukihi = $2
   union all
-  select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, null as kaisai_kai, null as kaisai_nichime
+  select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, hasso_jikoku, null as kaisai_kai, null as kaisai_nichime, null as kyosomei_hondai
   from nvd_ra
   where kaisai_nen = $1 and kaisai_tsukihi = $2
   order by source, keibajo_code, race_bango
@@ -173,6 +194,9 @@ const buildRaceKey = (row: SourcedRaceRow): string => {
   return `${row.source}:${row.kaisai_nen}:${row.kaisai_tsukihi}:${keibajoCode}:${raceBango}`;
 };
 
+const isOverseasJraRow = (row: SourcedRaceRow): boolean =>
+  row.source === "jra" && !NUMERIC_KEIBAJO_CODE_PATTERN.test(row.keibajo_code);
+
 const buildRaceStartAtJst = (row: SourcedRaceRow): string | null => {
   const hhmm = row.hasso_jikoku;
   if (!hhmm || !HHMM_PATTERN.test(hhmm)) {
@@ -182,8 +206,13 @@ const buildRaceStartAtJst = (row: SourcedRaceRow): string | null => {
 };
 
 const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
-  const raceStartAtJst = buildRaceStartAtJst(row);
-  if (!raceStartAtJst) {
+  const overseasJra = isOverseasJraRow(row);
+  const kyosomeiHondai = row.kyosomei_hondai?.trim() || null;
+  if (overseasJra && !kyosomeiHondai) {
+    return null;
+  }
+  const raceStartAtJst = overseasJra ? null : buildRaceStartAtJst(row);
+  if (!overseasJra && !raceStartAtJst) {
     return null;
   }
   return {
@@ -192,6 +221,7 @@ const toIntermediateRow = (row: SourcedRaceRow): IntermediateRow | null => {
     kaisaiNichime: row.kaisai_nichime,
     kaisaiTsukihi: row.kaisai_tsukihi,
     keibajoCode: normaliseCode(row.keibajo_code, KEIBAJO_CODE_PAD_WIDTH),
+    kyosomeiHondai,
     raceBango: normaliseCode(row.race_bango, RACE_BANGO_PAD_WIDTH),
     raceKey: buildRaceKey(row),
     raceStartAtJst,
@@ -381,8 +411,8 @@ const prepareNarResolver = async (input: PrepareNarResolverInput): Promise<NarDe
 const padJraSegment = (value: string | null, width: number): string | null =>
   value ? value.padStart(width, "0") : null;
 
-const resolveJraDebaUrl = (row: IntermediateRow): string | null => {
-  const url = buildJraEntryUrlFromRace({
+const resolveDomesticJraDetails = (row: IntermediateRow): ResolvedRaceDetails | null => {
+  const debaUrl = buildJraEntryUrlFromRace({
     hasso_jikoku: null,
     kaisai_kai: padJraSegment(row.kaisaiKai, KAISAI_KAI_PAD_WIDTH),
     kaisai_nen: row.kaisaiNen,
@@ -392,55 +422,84 @@ const resolveJraDebaUrl = (row: IntermediateRow): string | null => {
     kyosomei_hondai: null,
     race_bango: row.raceBango,
   });
-  if (!url) {
+  if (!debaUrl) {
     console.warn(
       `[scheduled-race-list] JRA per-race entry URL build failed, skipping raceKey=${row.raceKey}`,
     );
     return null;
   }
-  return url;
+  return { debaUrl, raceStartAtJst: row.raceStartAtJst! };
 };
 
-const resolveDebaUrl = async (
+const resolveOverseasJraDetails = async (
   row: IntermediateRow,
-  resolveNarDebaUrl: NarDebaUrlResolver,
-): Promise<string | null> => {
-  if (row.source === "jra") {
-    return resolveJraDebaUrl(row);
+  resolver: JraOverseasRaceResolver,
+): Promise<JraOverseasRaceResolution | null> => {
+  try {
+    const resolution = await resolver({
+      kaisaiNen: row.kaisaiNen,
+      kaisaiTsukihi: row.kaisaiTsukihi,
+      kyosomeiHondai: row.kyosomeiHondai!,
+    });
+    if (resolution) {
+      return resolution;
+    }
+    console.warn(
+      `[scheduled-race-list] JRA overseas race URL or post time not found, skipping raceKey=${row.raceKey}`,
+    );
+    return null;
+  } catch (error) {
+    console.warn(
+      `[scheduled-race-list] JRA overseas race resolution failed, skipping raceKey=${row.raceKey}: ${formatError(error)}`,
+    );
+    return null;
   }
-  const yyyymmdd = `${row.kaisaiNen}${row.kaisaiTsukihi}`;
-  const debaUrl = await resolveNarDebaUrl({
-    keibajoCode: row.keibajoCode,
-    raceBango: row.raceBango,
+};
+
+const resolveJraDetails = async (
+  row: IntermediateRow,
+  resolver: JraOverseasRaceResolver,
+): Promise<ResolvedRaceDetails | null> =>
+  NUMERIC_KEIBAJO_CODE_PATTERN.test(row.keibajoCode)
+    ? resolveDomesticJraDetails(row)
+    : resolveOverseasJraDetails(row, resolver);
+
+const resolveRaceDetails = async (
+  input: AttachDebaUrlInput,
+): Promise<ResolvedRaceDetails | null> => {
+  if (input.row.source === "jra") {
+    return resolveJraDetails(input.row, input.resolveJraOverseasRace);
+  }
+  const yyyymmdd = `${input.row.kaisaiNen}${input.row.kaisaiTsukihi}`;
+  const debaUrl = await input.resolveNarDebaUrl({
+    keibajoCode: input.row.keibajoCode,
+    raceBango: input.row.raceBango,
     yyyymmdd,
   });
   if (!debaUrl) {
     console.warn(
-      `[scheduled-race-list] NAR per-race deba URL not found, skipping raceKey=${row.raceKey}`,
+      `[scheduled-race-list] NAR per-race deba URL not found, skipping raceKey=${input.row.raceKey}`,
     );
     return null;
   }
-  return debaUrl;
+  return { debaUrl, raceStartAtJst: input.row.raceStartAtJst! };
 };
 
-const attachDebaUrl = async (
-  row: IntermediateRow,
-  resolveNarDebaUrl: NarDebaUrlResolver,
-): Promise<TodayRaceRow | null> => {
-  const debaUrl = await resolveDebaUrl(row, resolveNarDebaUrl);
-  if (!debaUrl) {
+const attachDebaUrl = async (input: AttachDebaUrlInput): Promise<TodayRaceRow | null> => {
+  const details = await resolveRaceDetails(input);
+  if (!details) {
     return null;
   }
   return {
-    debaUrl,
-    kaisaiNen: row.kaisaiNen,
-    kaisaiTsukihi: row.kaisaiTsukihi,
-    keibajoCode: row.keibajoCode,
+    debaUrl: details.debaUrl,
+    kaisaiNen: input.row.kaisaiNen,
+    kaisaiTsukihi: input.row.kaisaiTsukihi,
+    keibajoCode: input.row.keibajoCode,
     oddsLinksJson: EMPTY_ODDS_LINKS_JSON,
-    raceBango: row.raceBango,
-    raceKey: row.raceKey,
-    raceStartAtJst: row.raceStartAtJst,
-    source: row.source,
+    raceBango: input.row.raceBango,
+    raceKey: input.row.raceKey,
+    raceStartAtJst: details.raceStartAtJst,
+    source: input.row.source,
   };
 };
 
@@ -464,8 +523,9 @@ export const listTodayRacesFromHyperdrive = async (
     override: context.resolveNarDebaUrl,
     rows: intermediates,
   });
+  const resolveJraOverseasRace = context.resolveJraOverseasRace ?? createJraOverseasRaceResolver();
   const resolved = await Promise.all(
-    intermediates.map((row) => attachDebaUrl(row, resolveNarDebaUrl)),
+    intermediates.map((row) => attachDebaUrl({ resolveJraOverseasRace, resolveNarDebaUrl, row })),
   );
   return resolved.filter((entry): entry is TodayRaceRow => entry !== null);
 };
@@ -491,6 +551,7 @@ const populateOddsFetchStateForDate = async (
 ): Promise<PopulateTodayOddsFetchStateResult> => {
   const rows = await listTodayRacesFromHyperdrive(env, yyyymmdd, {
     pool: context.pool,
+    resolveJraOverseasRace: context.resolveJraOverseasRace,
     resolveNarDebaUrl: context.resolveNarDebaUrl,
   });
   await Promise.all(
