@@ -64,6 +64,7 @@ const CALIBRATION_YEAR = 2026;
 const CHECKSUM_MODULUS = 256;
 const HEX_RADIX = 16;
 const HEX_PAD_LENGTH = 2;
+const NUMERIC_KEIBAJO_CODE_PATTERN = /^\d+$/u;
 
 const buildCnameBody = (input: JraCnameBodyInput): string =>
   `${input.dataKubun}${input.keibajoCode}${input.kaisaiNen}${input.kaisaiKai}${input.kaisaiNichime}${input.raceBango}${input.kaisaiNen}${input.kaisaiTsukihi}`;
@@ -95,7 +96,12 @@ export const buildJraRaceUrl = (
   if (input.source !== "jra") {
     return null;
   }
-  if (!input.kaisaiKai || !input.kaisaiNichime || !input.keibajoCode || !input.raceBango) {
+  if (
+    !input.kaisaiKai ||
+    !input.kaisaiNichime ||
+    !NUMERIC_KEIBAJO_CODE_PATTERN.test(input.keibajoCode) ||
+    !input.raceBango
+  ) {
     return null;
   }
   const body = buildCnameBody({

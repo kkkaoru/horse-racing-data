@@ -177,6 +177,20 @@ it("returns null when keibajo_code is empty", () => {
   ).toBeNull();
 });
 
+it("returns null when keibajo_code is an overseas alphanumeric code", () => {
+  expect(
+    buildJraRaceEntryUrl({
+      kaisaiKai: "00",
+      kaisaiNen: "2026",
+      kaisaiNichime: "00",
+      kaisaiTsukihi: "0725",
+      keibajoCode: "A6",
+      raceBango: "05",
+      source: "jra",
+    }),
+  ).toBeNull();
+});
+
 it("returns null when race_bango is empty", () => {
   expect(
     buildJraRaceResultUrl({
