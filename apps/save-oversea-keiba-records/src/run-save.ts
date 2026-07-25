@@ -17,6 +17,7 @@ import {
 } from "./entity-resolver";
 import {
   writeJvdSeRunnersIdempotently,
+  type IdentityConflict,
   type WriteSummary,
   type JvdRaceKey,
   type SqlExecutor as IdempotentSqlExecutor,
@@ -573,7 +574,25 @@ const applyWrites = async ({
   });
 
 const formatWriteSummary = (summary: WriteSummary): string =>
-  `Write summary: migrated=${String(summary.migrated)} inserted=${String(summary.inserted)} updated=${String(summary.updated)} skipped=${String(summary.skipped)}`;
+  `Write summary: migrated=${String(summary.migrated)} inserted=${String(summary.inserted)} updated=${String(summary.updated)} skipped=${String(summary.skipped)} conflicts=${String(summary.conflicts.length)}`;
+
+const formatRaceKey = (raceKey: JvdRaceKey): string =>
+  `${raceKey.kaisai_nen}/${raceKey.kaisai_tsukihi}/${raceKey.keibajo_code}/${raceKey.race_bango}`;
+
+const formatIdentityConflict = (conflict: IdentityConflict): string =>
+  `IDENTITY CONFLICT: race=${formatRaceKey(conflict.raceKey)} umaban=${conflict.umaban} stored_ketto=${conflict.storedKettoTorokuBango} incoming_ketto=${conflict.incomingKettoTorokuBango}. This runner was NOT written.`;
+
+const logIdentityConflicts = (logger: LoggerPort, conflicts: readonly IdentityConflict[]): void => {
+  logger.error(
+    `IDENTITY CONFLICTS: ${String(conflicts.length)} runner(s) refused due to ketto_toroku_bango mismatch. No automatic merge or delete was attempted; human ops must decide.`,
+  );
+  conflicts.forEach((conflict: IdentityConflict): void => {
+    logger.error(formatIdentityConflict(conflict));
+  });
+  logger.error(
+    "Apply finished with identity conflicts. Non-conflicting runners in the same batch may still have been written; conflicting runners were skipped.",
+  );
+};
 
 const logReport = ({
   logger,
@@ -747,6 +766,18 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
   });
 
   ports.logger.info(formatWriteSummary(writeSummary));
+
+  if (writeSummary.conflicts.length > 0) {
+    logIdentityConflicts(ports.logger, writeSummary.conflicts);
+    return {
+      exitCode: EXIT_FAILURE,
+      wrote: true,
+      dryRunVerdict: "safe",
+      writeSummary,
+      networkRequestCount: loaded.networkRequestCount,
+    };
+  }
+
   ports.logger.info("Apply complete.");
 
   return {

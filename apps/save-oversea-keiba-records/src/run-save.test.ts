@@ -750,10 +750,11 @@ test("runSave --apply with a safe verdict writes inside one transaction", async 
   );
   expect(
     logger.infos.some(
-      (line) => line === "Write summary: migrated=0 inserted=2 updated=0 skipped=0",
+      (line) => line === "Write summary: migrated=0 inserted=2 updated=0 skipped=0 conflicts=0",
     ),
   ).toBe(true);
   expect(logger.infos.some((line) => line === "Apply complete.")).toBe(true);
+  expect(logger.errors.some((line) => line.includes("IDENTITY CONFLICT"))).toBe(false);
 });
 
 test("runSave --apply updates existing runners when identity lookup returns ketto rows", async () => {
@@ -838,10 +839,120 @@ test("runSave --apply updates existing runners when identity lookup returns kett
   expect(transactionState.count).toBe(1);
   expect(
     logger.infos.some(
-      (line) => line === "Write summary: migrated=0 inserted=0 updated=2 skipped=0",
+      (line) => line === "Write summary: migrated=0 inserted=0 updated=2 skipped=0 conflicts=0",
     ),
   ).toBe(true);
   expect(logger.errors).toHaveLength(0);
+});
+
+test("runSave --apply exits non-zero when one runner has an identity conflict and still writes the others", async () => {
+  // umaban 01 stored under a different real ketto -> refuse that runner.
+  // umaban 02 has no identity row -> insert proceeds. Partial write must not report success.
+  const logger = createFakeLogger();
+  const fetchLog: FetchCallLog = { urls: [] };
+  const fileLog: FileReadCallLog = { paths: [] };
+  const outerLog: StatementLog = { statements: [] };
+  const txLog: StatementLog = { statements: [] };
+  const transactionState: { count: number } = { count: 0 };
+  const jraPath = "cache/jra.html";
+  const secondaryPath = "cache/secondary.html";
+  const storedConflictingKetto: string = "2020109876";
+  const incomingUmaban01Ketto: string = "2021190001";
+
+  const partialConflictHandler = async (statement: SaveSqlStatement): Promise<SaveQueryOutcome> => {
+    if (statement.text.startsWith("SELECT * FROM jvd_se")) {
+      // Empty dry-run snapshot keeps the safety gate at "safe" so write is attempted.
+      return emptyRowsOutcome;
+    }
+    if (statement.text.startsWith("SELECT ketto_toroku_bango FROM jvd_se")) {
+      const umaban: string = String(statement.values[4] ?? "");
+      if (umaban === "01") {
+        return { rowCount: 1, rows: [{ ketto_toroku_bango: storedConflictingKetto }] };
+      }
+      return emptyRowsOutcome;
+    }
+    if (statement.text.startsWith("INSERT INTO")) {
+      return { rowCount: 1, rows: [] };
+    }
+    return emptyRowsOutcome;
+  };
+
+  const verifiedHorseMasterLookup: MasterLookupQueryRunner = async (
+    statement: MasterLookupStatement,
+  ): Promise<MasterLookupResult> => {
+    if (!statement.text.includes("jvd_um")) {
+      return { rows: [] };
+    }
+    const codes: readonly string[] = statement.values[0] ?? [];
+    return {
+      rows: codes.map((code: string) => ({ code, canonical_name: `horse-${code}` })),
+    };
+  };
+
+  const result = await runSave({
+    argv: baseArgv(["--apply", "--jra-file", jraPath, "--secondary-file", secondaryPath]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort(fetchLog, new Map()),
+      fileReadPort: createFileReadPort(
+        fileLog,
+        new Map([
+          [jraPath, JRA_HTML],
+          [secondaryPath, SECONDARY_HTML],
+        ]),
+      ),
+      masterLookupRunner: verifiedHorseMasterLookup,
+      executor: createRecordingExecutor(outerLog, partialConflictHandler),
+      transactionExecutor: createRecordingExecutor(txLog, partialConflictHandler),
+      onTransaction: (): void => {
+        transactionState.count += 1;
+      },
+    }),
+  });
+
+  expect(result.exitCode).toBe(1);
+  expect(result.wrote).toBe(true);
+  expect(result.dryRunVerdict).toBe("safe");
+  expect(result.writeSummary).toStrictEqual({
+    migrated: 0,
+    inserted: 1,
+    updated: 0,
+    skipped: 0,
+    conflicts: [
+      {
+        raceKey: {
+          kaisai_nen: "2026",
+          kaisai_tsukihi: "0725",
+          keibajo_code: "A6",
+          race_bango: "05",
+        },
+        umaban: "01",
+        storedKettoTorokuBango: storedConflictingKetto,
+        incomingKettoTorokuBango: incomingUmaban01Ketto,
+      },
+    ],
+  });
+  expect(transactionState.count).toBe(1);
+  expect(
+    txLog.statements.some((statement) => statement.text.startsWith("INSERT INTO jvd_se")),
+  ).toBe(true);
+  expect(
+    logger.infos.some(
+      (line) => line === "Write summary: migrated=0 inserted=1 updated=0 skipped=0 conflicts=1",
+    ),
+  ).toBe(true);
+  expect(
+    logger.errors.some(
+      (line) =>
+        line.includes("IDENTITY CONFLICT") &&
+        line.includes("umaban=01") &&
+        line.includes(`stored_ketto=${storedConflictingKetto}`) &&
+        line.includes(`incoming_ketto=${incomingUmaban01Ketto}`) &&
+        line.includes("NOT written"),
+    ),
+  ).toBe(true);
+  expect(logger.infos.some((line) => line === "Apply complete.")).toBe(false);
 });
 
 test("runSave --apply with a REGRESSION aborts without writing and exits non-zero", async () => {

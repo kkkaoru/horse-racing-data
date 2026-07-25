@@ -81,6 +81,8 @@ There is no bypass flag.
 
 For `jvd_se`, an incoming real `ketto_toroku_bango` first promotes an existing all-zero placeholder-key row for the same race and horse number with a parameterized `UPDATE`. The runner is then upserted on the complete primary key. If an incoming key is still the placeholder while a real-key row already exists, the placeholder upsert is skipped so a second runner row is not created.
 
+If a stored real `ketto_toroku_bango` differs from the incoming real key for the same race and horse number, or a placeholder row and a real row both already exist for that horse number, that runner is **not written**. The conflict is logged in English (race key, umaban, stored key, incoming key), and the process exits non-zero. Other non-conflicting runners in the same batch may still be written. There is no automatic merge or delete; a genuine identity conflict is a human ops decision.
+
 Both `jvd_ra` and `jvd_se` upserts preserve stored data. For every non-key column, an incoming value that is blank after trimming ASCII and ideographic spaces, or consists only of zeros, keeps the existing table value; only a substantive incoming value replaces it. Re-running the same command therefore does not add duplicate race or runner rows and does not clobber enriched values with placeholders.
 
 ## Testing
