@@ -86,6 +86,12 @@ pre-commit:
     test-local-postgresql:
       glob: "apps/local-postgresql/**/*.ts"
       run: bun run --filter local-postgresql test:coverage
+    tsc-save-oversea-keiba-records:
+      glob: "apps/save-oversea-keiba-records/**/*.ts"
+      run: bun run --filter save-oversea-keiba-records tsc
+    test-save-oversea-keiba-records:
+      glob: "apps/save-oversea-keiba-records/**/*.ts"
+      run: bun run --filter save-oversea-keiba-records test:coverage
     tsc-horse-racing-realtime:
       glob: "packages/horse-racing-realtime/**/*.ts"
       run: bun run --filter horse-racing-realtime tsc
