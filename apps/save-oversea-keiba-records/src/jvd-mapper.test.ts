@@ -1,13 +1,33 @@
 // This test runs with Bun and Vitest.
 import { expect, test } from "vitest";
 import { mapJvdRows, padToJvByteWidth } from "./jvd-mapper";
-import type { ParsedRace, ResolvedEntityCodes } from "./types";
+import type { ParsedRace, ParsedRunner, ResolvedEntityCodes } from "./types";
 
 const FULL_WIDTH_SPACE: string = "　";
 const ASCII_SPACE: string = " ";
 const BAMEI_BYTE_WIDTH: number = 36;
 const BANUSHIMEI_BYTE_WIDTH: number = 64;
 const RACE_NAME_BYTE_WIDTH: number = 60;
+
+const BASE_RUNNER: ParsedRunner = {
+  horseNumber: 1,
+  gate: 7,
+  horseName: "テストホース",
+  sex: "せん",
+  age: 5,
+  coatColour: "鹿",
+  weightCarriedKg: 61,
+  jockeyAbbrev: "M.ジョッキー",
+  trainerAbbrev: "F.トレーナー",
+  trainerCountry: "FR",
+  owner: "TEST OWNER",
+  winOdds: 1.6,
+  popularity: 1,
+  formRecord: "10.5.1.1",
+  sire: "Test Sire",
+  dam: "Test Dam",
+  damsire: "Test Damsire",
+};
 
 const RACE: ParsedRace = {
   raceName: "テストステークス",
@@ -20,25 +40,7 @@ const RACE: ParsedRace = {
   direction: "右",
   startTime: "23:35",
   runners: [
-    {
-      horseNumber: 1,
-      gate: 7,
-      horseName: "テストホース",
-      sex: "せん",
-      age: 5,
-      coatColour: "鹿",
-      weightCarriedKg: 61,
-      jockeyAbbrev: "M.ジョッキー",
-      trainerAbbrev: "F.トレーナー",
-      trainerCountry: "FR",
-      owner: "TEST OWNER",
-      winOdds: 1.6,
-      popularity: 1,
-      formRecord: "10.5.1.1",
-      sire: "Test Sire",
-      dam: "Test Dam",
-      damsire: "Test Damsire",
-    },
+    BASE_RUNNER,
     {
       horseNumber: 2,
       gate: 3,
@@ -148,8 +150,8 @@ test("maps parsed data and resolved codes to JV rows with fixed-width placeholde
     affiliation: "4",
     carriedWeight: "610",
     jockeyCode: "05504",
-    odds: "0000",
-    popularity: "00",
+    odds: "0016",
+    popularity: "01",
     finish: "00",
   });
   expect(rows.runners[0]?.bamei.trim()).toBe("マスターホース");
@@ -171,6 +173,8 @@ test("maps parsed data and resolved codes to JV rows with fixed-width placeholde
     jockeyCode: rows.runners[1]?.kishu_code,
     jockeyName: rows.runners[1]?.kishumei_ryakusho,
     trainerName: rows.runners[1]?.chokyoshimei_ryakusho,
+    odds: rows.runners[1]?.tansho_odds,
+    popularity: rows.runners[1]?.tansho_ninkijun,
   }).toStrictEqual({
     horseCode: "0000000000",
     sex: "0",
@@ -181,7 +185,156 @@ test("maps parsed data and resolved codes to JV rows with fixed-width placeholde
     jockeyCode: "00000",
     jockeyName: "キーン　",
     trainerName: "手塚貴久",
+    odds: "0000",
+    popularity: "00",
   });
+});
+
+test("encodes published win odds as tenths and popularity as two digits", () => {
+  const rows = mapJvdRows({
+    race: RACE,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("0016");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("01");
+  expect(rows.runners[1]?.tansho_odds).toBe("0000");
+  expect(rows.runners[1]?.tansho_ninkijun).toBe("00");
+});
+
+test("keeps odds and popularity placeholders when published values are absent", () => {
+  const raceWithoutMarket: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        winOdds: null,
+        popularity: null,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceWithoutMarket,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("0000");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("00");
+});
+
+test("keeps odds placeholder when scaled win odds overflows the four-digit column", () => {
+  const raceWithOverflowOdds: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        winOdds: 1000,
+        popularity: 1,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceWithOverflowOdds,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("0000");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("01");
+});
+
+test("keeps popularity placeholder when the rank overflows the two-digit column", () => {
+  const raceWithOverflowPopularity: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        winOdds: 15.4,
+        popularity: 100,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceWithOverflowPopularity,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("0154");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("00");
+});
+
+test("encodes the maximum in-range win odds and a high popularity rank", () => {
+  const raceAtColumnLimits: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        winOdds: 999.9,
+        popularity: 18,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceAtColumnLimits,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("9999");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("18");
+});
+
+test("keeps shusso_tosu as the runner count and leaves toroku_tosu as the overseas placeholder", () => {
+  const rows = mapJvdRows({
+    race: RACE,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.race.shusso_tosu).toBe("02");
+  expect(rows.race.toroku_tosu).toBe("00");
+  expect(rows.race.hasso_jikoku).toBe("0000");
+});
+
+test("keeps odds and popularity placeholders for non-positive and non-finite published values", () => {
+  const raceWithInvalidMarket: ParsedRace = {
+    ...RACE,
+    runners: [
+      {
+        ...BASE_RUNNER,
+        horseNumber: 1,
+        winOdds: 0,
+        popularity: -1,
+      },
+      {
+        ...BASE_RUNNER,
+        horseNumber: 2,
+        winOdds: Number.NaN,
+        popularity: Number.POSITIVE_INFINITY,
+      },
+      {
+        ...BASE_RUNNER,
+        horseNumber: 3,
+        winOdds: 0.04,
+        popularity: 0.4,
+      },
+    ],
+  };
+  const rows = mapJvdRows({
+    race: raceWithInvalidMarket,
+    storageIdentity: { venueCode: "A6", raceNumber: "05" },
+    resolvedCodes: RESOLVED_CODES,
+  });
+
+  expect(rows.runners[0]?.tansho_odds).toBe("0000");
+  expect(rows.runners[0]?.tansho_ninkijun).toBe("00");
+  expect(rows.runners[1]?.tansho_odds).toBe("0000");
+  expect(rows.runners[1]?.tansho_ninkijun).toBe("00");
+  expect(rows.runners[2]?.tansho_odds).toBe("0000");
+  expect(rows.runners[2]?.tansho_ninkijun).toBe("00");
 });
 
 test("uses zero placeholders for explicitly unresolved codes and unsupported race metadata", () => {

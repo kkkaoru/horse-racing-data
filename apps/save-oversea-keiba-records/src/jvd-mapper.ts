@@ -32,6 +32,9 @@ const ZERO_JOCKEY_CODE: string = "00000";
 const ZERO_TRAINER_CODE: string = "00000";
 const ZERO_OWNER_CODE: string = "000000";
 const TOZAI_SHOZOKU_CODE_PLACEHOLDER: string = "0";
+const TANSHO_ODDS_PLACEHOLDER: string = "0000";
+const TANSHO_NINKIJUN_PLACEHOLDER: string = "00";
+const HASSO_JIKOKU_PLACEHOLDER: string = "0000";
 // JV fixed field widths are specified in Shift-JIS bytes. Full-width characters consume 2 bytes;
 // half-width/ASCII characters consume 1 byte. Character pad lengths for pure full-width text are
 // therefore half the byte width (bamei 36→18, banushimei 64→32, race name 60→30).
@@ -50,6 +53,11 @@ const HONSHOKIN_LENGTH: number = 56;
 const HONSHOKIN_BEFORE_LENGTH: number = 40;
 const FUKASHOKIN_LENGTH: number = 24;
 const DISTANCE_LENGTH: number = 4;
+const RUNNER_COUNT_LENGTH: number = 2;
+const TANSHO_ODDS_WIDTH: number = 4;
+const TANSHO_NINKIJUN_WIDTH: number = 2;
+// JV stores win odds as tenths of a unit in a 4-digit zero-padded field (1.6 → "0016").
+const TANSHO_ODDS_SCALE: number = 10;
 const HALF_WIDTH_UNIT: number = 1;
 const FULL_WIDTH_UNIT: number = 2;
 const ASCII_MAX_CODE_POINT: number = 0x7f;
@@ -143,6 +151,44 @@ const padNumber = (value: number, length: number): string => String(value).padSt
 
 const compactDate = (date: string): string => date.replaceAll("-", "");
 
+/**
+ * Encode published win odds into jvd_se.tansho_odds (4 chars, odds × 10).
+ * Null, non-finite, non-positive, or values that overflow the column stay as the JV placeholder.
+ */
+const encodeTanshoOdds = (winOdds: number | null): string => {
+  if (winOdds === null || !Number.isFinite(winOdds) || winOdds <= 0) {
+    return TANSHO_ODDS_PLACEHOLDER;
+  }
+  const scaled: number = Math.round(winOdds * TANSHO_ODDS_SCALE);
+  if (scaled <= 0) {
+    return TANSHO_ODDS_PLACEHOLDER;
+  }
+  const encoded: string = String(scaled);
+  if (encoded.length > TANSHO_ODDS_WIDTH) {
+    return TANSHO_ODDS_PLACEHOLDER;
+  }
+  return encoded.padStart(TANSHO_ODDS_WIDTH, "0");
+};
+
+/**
+ * Encode published popularity into jvd_se.tansho_ninkijun (2 chars).
+ * Null, non-finite, non-positive, or values that overflow the column stay as the JV placeholder.
+ */
+const encodeTanshoNinkijun = (popularity: number | null): string => {
+  if (popularity === null || !Number.isFinite(popularity) || popularity <= 0) {
+    return TANSHO_NINKIJUN_PLACEHOLDER;
+  }
+  const rank: number = Math.round(popularity);
+  if (rank <= 0) {
+    return TANSHO_NINKIJUN_PLACEHOLDER;
+  }
+  const encoded: string = String(rank);
+  if (encoded.length > TANSHO_NINKIJUN_WIDTH) {
+    return TANSHO_NINKIJUN_PLACEHOLDER;
+  }
+  return encoded.padStart(TANSHO_NINKIJUN_WIDTH, "0");
+};
+
 const abbreviatedPersonName = (value: string): string => {
   const dotIndex: number = value.lastIndexOf(".");
   const withoutInitial: string = dotIndex < 0 ? value : value.slice(dotIndex + 1);
@@ -172,7 +218,7 @@ const mapRace = (race: ParsedRace, storageIdentity: RaceStorageIdentity): JvdRaR
   const date: string = compactDate(race.date);
   const year: string = date.slice(0, 4);
   const monthDay: string = date.slice(4);
-  const runnerCount: string = padNumber(race.runners.length, 2);
+  const runnerCount: string = padNumber(race.runners.length, RUNNER_COUNT_LENGTH);
   const trackKey: string = `${race.surface}・${race.direction}`;
 
   return {
@@ -219,8 +265,11 @@ const mapRace = (race: ParsedRace, storageIdentity: RaceStorageIdentity): JvdRaR
     honshokin_henkomae: "0".repeat(HONSHOKIN_BEFORE_LENGTH),
     fukashokin: "0".repeat(FUKASHOKIN_LENGTH),
     fukashokin_henkomae: "0000",
-    hasso_jikoku: "0000",
-    hasso_jikoku_henkomae: "0000",
+    // Real overseas JV rows (data_kubun=B) leave hasso_jikoku as the placeholder even when a
+    // published start time exists on the card; do not invent a non-JV encoding here.
+    hasso_jikoku: HASSO_JIKOKU_PLACEHOLDER,
+    hasso_jikoku_henkomae: HASSO_JIKOKU_PLACEHOLDER,
+    // Overseas JV often leaves toroku_tosu as "00" while populating shusso_tosu with the field size.
     toroku_tosu: "00",
     shusso_tosu: runnerCount,
     nyusen_tosu: "00",
@@ -261,6 +310,7 @@ const mapRunner = ({ race, runner, storageIdentity, codes }: RunnerMappingInput)
     kaisai_kai: "00",
     kaisai_nichime: "00",
     race_bango: storageIdentity.raceNumber.padStart(2, "0"),
+    // Overseas JV sets wakuban to "0" for every runner; published gate is not stored in this column.
     wakuban: "0",
     umaban: padNumber(runner.horseNumber, 2),
     ketto_toroku_bango: horseCode,
@@ -303,8 +353,8 @@ const mapRunner = ({ race, runner, storageIdentity, codes }: RunnerMappingInput)
     corner_2: "00",
     corner_3: "00",
     corner_4: "00",
-    tansho_odds: "0000",
-    tansho_ninkijun: "00",
+    tansho_odds: encodeTanshoOdds(runner.winOdds),
+    tansho_ninkijun: encodeTanshoNinkijun(runner.popularity),
     kakutoku_honshokin: "00000000",
     kakutoku_fukashokin: "00000000",
     yobi_3: "000",
