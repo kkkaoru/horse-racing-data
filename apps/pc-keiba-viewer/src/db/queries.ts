@@ -2903,6 +2903,15 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   "iter12-nar-xgb-hpo-v8-clean188",
   "banei-cb-v9-sim-2011",
   "banei-cb-v8-window2011-wf-15y",
+  // stage1_routing.json market-free fallback variants (predict_upcoming.py
+  // resolve_stage1_gate): the generation side has written rows under these
+  // model_versions since 2026-07-22, but this allow-list was never updated,
+  // so every race whose freshness gate picked the fallback (all of
+  // 2026-07-24's NAR races, generated in one late catch-up batch with no
+  // fresh odds yet) had its prediction rows filtered out entirely here and
+  // showed as missing in the viewer despite existing in Neon.
+  "jra-cb-stage1-marketfree235-2013",
+  "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
 ];
 
 // The base leak-free models plus every model_version a priority-0 display

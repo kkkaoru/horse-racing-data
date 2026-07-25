@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { beforeEach, expect, test, vi } from "vitest";
-import type { Env } from "./types";
+import type { Env, PredictCategory } from "./types";
 
 interface CellRoutingRuleCondition {
   dimension: string;
@@ -324,6 +324,75 @@ test("returns false when prediction output is incomplete or malformed", async ()
   ).resolves.toBe(false);
 });
 
+test("recognizes a NAR race the stage1 market-free fallback gate routed away from the primary model_version as complete", async () => {
+  queryMock
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 12 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "01",
+      runYmd: "20260724",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledTimes(2);
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter40-nar-settransformer-blend-v1");
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-stage1-marketfree-184");
+});
+
+test("recognizes a JRA race the stage1 market-free fallback gate routed away from the primary model_version as complete", async () => {
+  queryMock
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 12 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "07",
+      runYmd: "20260613",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledTimes(2);
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("jra-cb-v9-sim-2013-clean");
+  expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("jra-cb-stage1-marketfree235-2013");
+});
+
+test("does not retry under a stage1 fallback model_version for ban-ei -- stage1_routing.json has no ban-ei entry", async () => {
+  setCatalogRows([{ ...buildCatalogRows(1)[0], grade_code: "E" }]);
+  queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "ban-ei",
+      env: makeEnv(),
+      keibajoCode: "83",
+      raceBango: "01",
+      runYmd: "20260701",
+    }),
+  ).resolves.toBe(false);
+
+  expect(queryMock).toHaveBeenCalledTimes(1);
+});
+
+test("still reports incomplete when neither the primary nor the stage1 fallback model_version has the full row count", async () => {
+  queryMock.mockResolvedValueOnce([{ actual_rows: 5 }]).mockResolvedValueOnce([{ actual_rows: 7 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "01",
+      runYmd: "20260724",
+    }),
+  ).resolves.toBe(false);
+
+  expect(queryMock).toHaveBeenCalledTimes(2);
+});
+
 test("fails closed when Catalog returns an HTTP or schema error", async () => {
   catalogFetchMock.mockResolvedValue(new Response("unavailable", { status: 503 }));
   await expect(
@@ -463,4 +532,50 @@ test("expectedModelVersion resolves rule 3 (venue=02) to the model_version cell_
     runYmd: "20260613",
   });
   expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe(expectedFromConfig);
+});
+
+// --- parity against the container's real stage1_routing.json --------------
+
+interface Stage1CategoryConfig {
+  enabled: boolean;
+  model_version: string;
+}
+
+const readContainerStage1RoutingConfig = (): Partial<Record<string, Stage1CategoryConfig>> => {
+  const containerConfigPath = resolve(
+    process.cwd(),
+    "../finish-position-predict-container/src/predict_lib/stage1_routing.json",
+  );
+  return JSON.parse(readFileSync(containerConfigPath, "utf-8")) as Partial<
+    Record<string, Stage1CategoryConfig>
+  >;
+};
+
+// Same drift-guard shape as the cell_routing.json parity tests above, for
+// STAGE1_MARKET_FREE_MODEL_VERSIONS instead of expectedModelVersion()'s JRA
+// rules: a category added to (or removed from, or re-versioned in)
+// stage1_routing.json without a matching update here silently reintroduces
+// the "stage1-gated race never observed complete" bug this file's fallback
+// check exists to fix. Observed indirectly via isFocusedFullPredictionComplete's
+// second query call, same technique as the cell-routing parity tests.
+test("STAGE1_MARKET_FREE_MODEL_VERSIONS covers every enabled category in the real stage1_routing.json (parity guard)", async () => {
+  const containerConfig = readContainerStage1RoutingConfig();
+  const enabledCategories = Object.entries(containerConfig).filter(
+    ([, config]) => config?.enabled === true,
+  );
+  expect(enabledCategories.map(([category]) => category).toSorted()).toStrictEqual(["jra", "nar"]);
+
+  for (const [category, config] of enabledCategories) {
+    queryMock
+      .mockResolvedValueOnce([{ actual_rows: 0 }])
+      .mockResolvedValueOnce([{ actual_rows: 12 }]);
+    await isFocusedFullPredictionComplete({
+      category: category as PredictCategory,
+      env: makeEnv(),
+      keibajoCode: category === "jra" ? "05" : "50",
+      raceBango: "01",
+      runYmd: "20260724",
+    });
+    expect(queryMock.mock.calls.at(-1)?.[1]?.[5]).toBe(config?.model_version);
+  }
 });

@@ -33,6 +33,27 @@ const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1";
 const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011";
 const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y";
 
+// Mirrors predict_lib/stage1_routing.json's per-category fallback
+// model_version (both entries `enabled: true` there today). resolve_stage1_gate
+// is a race-level decision -- every horse in a gated race is written under this
+// SAME model_version, never the category default -- so a race that took the
+// stage1 gate never has any rows under expectedModelVersion()'s return value.
+// Before this map existed, isFocusedFullPredictionComplete only ever checked
+// the primary/default model_version, so a stage1-gated race could never be
+// observed "complete": the redelivery poll retried until max_retries and the
+// message was dropped, and pickUpFocusedFullCache (only reachable from the
+// "already complete" branch) never ran -- the per-race R2 feat-cache was
+// never seeded for any race the freshness gate routed to stage1, which is
+// most of NAR on days a live coordinator rescore never re-touches an odds
+// column (2026-07-24 finding: this is why COORDINATOR_ENABLED's re-enable
+// attempt on 2026-07-22 always hit an empty per-race cache -- see git log for
+// this file's ONE commit around 2026-07-24 for the incident trail). ban-ei
+// has no stage1_routing.json entry, so it stays without a fallback here too.
+const STAGE1_MARKET_FREE_MODEL_VERSIONS: Partial<Record<PredictCategory, string>> = {
+  jra: "jra-cb-stage1-marketfree235-2013",
+  nar: "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -146,21 +167,19 @@ const expectedModelVersion = (params: ExpectedModelVersionParams): string => {
   return JRA_DEFAULT_MODEL_VERSION;
 };
 
-export const isFocusedFullPredictionComplete = async (
-  params: CompletionParams,
-): Promise<boolean> => {
-  const entries = await fetchExpectedEntries(params);
-  if (entries.length === 0) return false;
-  const source = sourceForCategory(params.category);
-  const kaisaiNen = params.runYmd.slice(0, RUN_YMD_YEAR_END);
-  const kaisaiTsukihi = params.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_DAY_END);
-  const modelVersion = expectedModelVersion({
-    category: params.category,
-    entries,
-    env: params.env,
-    keibajoCode: params.keibajoCode,
-  });
-  const kettoTorokuBangos = entries.map((entry) => entry.kettoTorokuBango);
+interface CountMatchParams {
+  env: Env;
+  source: string;
+  kaisaiNen: string;
+  kaisaiTsukihi: string;
+  keibajoCode: string;
+  raceBango: string;
+  modelVersion: string;
+  kettoTorokuBangos: readonly string[];
+  expectedCount: number;
+}
+
+const countMatchesModelVersion = async (params: CountMatchParams): Promise<boolean> => {
   const sql = neon(params.env.NEON_DATABASE_URL);
   const result: unknown = await sql.query(
     `select count(distinct ketto_toroku_bango)::int as actual_rows
@@ -173,15 +192,48 @@ export const isFocusedFullPredictionComplete = async (
         and model_version = $6
         and ketto_toroku_bango = any($7::text[])`,
     [
-      source,
-      kaisaiNen,
-      kaisaiTsukihi,
-      params.keibajoCode.padStart(2, "0"),
-      params.raceBango.padStart(2, "0"),
-      modelVersion,
-      kettoTorokuBangos,
+      params.source,
+      params.kaisaiNen,
+      params.kaisaiTsukihi,
+      params.keibajoCode,
+      params.raceBango,
+      params.modelVersion,
+      params.kettoTorokuBangos,
     ],
   );
   if (!Array.isArray(result) || !isRecord(result[0])) return false;
-  return toCount(result[0].actual_rows) === entries.length;
+  return toCount(result[0].actual_rows) === params.expectedCount;
+};
+
+export const isFocusedFullPredictionComplete = async (
+  params: CompletionParams,
+): Promise<boolean> => {
+  const entries = await fetchExpectedEntries(params);
+  if (entries.length === 0) return false;
+  const modelVersion = expectedModelVersion({
+    category: params.category,
+    entries,
+    env: params.env,
+    keibajoCode: params.keibajoCode,
+  });
+  const shared = {
+    env: params.env,
+    expectedCount: entries.length,
+    kaisaiNen: params.runYmd.slice(0, RUN_YMD_YEAR_END),
+    kaisaiTsukihi: params.runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_DAY_END),
+    keibajoCode: params.keibajoCode.padStart(2, "0"),
+    kettoTorokuBangos: entries.map((entry) => entry.kettoTorokuBango),
+    raceBango: params.raceBango.padStart(2, "0"),
+    source: sourceForCategory(params.category),
+  };
+  if (await countMatchesModelVersion({ ...shared, modelVersion })) return true;
+  // A race the freshness gate routed to stage1 (predict_upcoming.py's
+  // resolve_stage1_gate) never has any rows under expectedModelVersion()'s
+  // return value -- every horse in that race was written under the
+  // category's stage1_routing.json fallback model_version instead. Without
+  // this second check, such a race can never be observed "complete" here:
+  // see STAGE1_MARKET_FREE_MODEL_VERSIONS' comment for the full incident.
+  const stage1ModelVersion = STAGE1_MARKET_FREE_MODEL_VERSIONS[params.category];
+  if (stage1ModelVersion === undefined) return false;
+  return countMatchesModelVersion({ ...shared, modelVersion: stage1ModelVersion });
 };

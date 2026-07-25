@@ -890,6 +890,8 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188'/u);
   expect(queryText).toMatch(/'banei-cb-v9-sim-2011'/u);
   expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y'/u);
+  expect(queryText).toMatch(/'jra-cb-stage1-marketfree235-2013'/u);
+  expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-stage1-marketfree-184'/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
   expect(queryText).toMatch(/order by priority, recency desc nulls last/u);
 });
