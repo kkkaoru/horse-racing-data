@@ -239,13 +239,26 @@
     // Defect G is fixed and JRA RS is confirmed healthy): "nar,ban-ei" ->
     // "jra,nar,ban-ei".
     "RESCORE_CATEGORIES": "nar,ban-ei",
-    // Event-driven rescore from sync-realtime-data is disabled while the
-    // per-race full path is the production ordering authority. Full generation
-    // must not compete with post-weight rescore retries for Container capacity.
+    // Event-driven rescore gate for the weight-triggered path: after
+    // sync-realtime-data stores a horse-weight snapshot it POSTs
+    // /api/internal/rescore-race (handleInternalRescoreRace in src/worker.ts),
+    // which returns {rescoreEnabled:false} without enqueueing unless this is
+    // "1". NOTE: unlike the T-25 coordinator tick (race-coordinator.ts), this
+    // path does NOT read RESCORE_CATEGORIES — with "1" here, weight-triggered
+    // rescore fires for EVERY category including JRA. Dedup is the DO claim
+    // (claimRescoreRace, key rescore:{runYmd}:{category}:{keibajo}:{race},
+    // shared with the coordinator): at most one enqueue per race per day.
     // Was flipped "1" for a supervised window on 2026-07-12 evening (task #29,
     // ban-ei 83-08+ / nar Kochi 54-06+ picking up the sim_umaban_zone_win_rate
     // serve fix) and restored here once that window's races had posted.
-    "RESCORE_ENABLED": "0",
+    // Re-enabled "0" -> "1" on 2026-08-08 (explicit USER request
+    // 「馬体重 → 再予測も有効化してください」), deployed after the day's last
+    // race (JRA 18:30 / NAR 20:50 JST last posts; deploy ~23:40 JST) so no
+    // in-meeting container churn. COORDINATOR_ENABLED stays "0" (separate
+    // still-frozen decision) and RESCORE_CATEGORIES stays "nar,ban-ei", so
+    // only the weight-arrival path is activated. Rollback: flip back to "0"
+    // (config-only, one deploy).
+    "RESCORE_ENABLED": "1",
     // R2 bucket for the cached feature parquet GET in the container rescore path.
     // R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY are set as secrets
     // via `wrangler secret put` — never store secret values here.
