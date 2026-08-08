@@ -8,6 +8,14 @@ import type {
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{2}$/u;
+// Defensive row caps for the final SELECT. A single race's field never
+// exceeds MAX_RUNNERS_PER_RACE; a single venue never runs more than
+// MAX_RACES_PER_VENUE_DAY races in a day, so the venue-level build caps at
+// the product. Neither is a semantic truncation.
+const MAX_RUNNERS_PER_RACE = 18;
+const MAX_RACES_PER_VENUE_DAY = 12;
+const RACE_ORDER_BY_COLUMNS = "umaban";
+const VENUE_ORDER_BY_COLUMNS = "race_bango, umaban";
 
 interface RunningStyleRawSource {
   masterTable: "jvd_um" | "nvd_um";
@@ -59,7 +67,7 @@ const validateFilters = (filters: RunningStyleFeatureFilters): void => {
   if (!CODE_PATTERN.test(filters.keibajoCode)) {
     throw new Error("keibajoCode must contain two digits");
   }
-  if (!CODE_PATTERN.test(filters.raceBango)) {
+  if (filters.raceBango !== undefined && !CODE_PATTERN.test(filters.raceBango)) {
     throw new Error("raceBango must contain two digits");
   }
   if (filters.source === "ban-ei" && filters.keibajoCode !== "83") {
@@ -94,14 +102,22 @@ const historyPredicates = (
     AND ${venuePredicate(source)}`;
 };
 
+// Emitted with its own trailing newline+indent so that the surrounding
+// predicate block stays byte-identical to the single-race form when a
+// raceBango is supplied.
+const raceBangoPredicate = (raceBango: string | undefined): string =>
+  raceBango === undefined
+    ? ""
+    : `AND race_bango = '${raceBango}'
+    `;
+
 const targetPredicates = (
   filters: RunningStyleFeatureFilters,
   source: RunningStyleRawSource,
 ): string => `kaisai_nen = '${filters.date.slice(0, 4)}'
     AND kaisai_tsukihi = '${filters.date.slice(4)}'
     AND keibajo_code = '${filters.keibajoCode}'
-    AND race_bango = '${filters.raceBango}'
-    AND ${venuePredicate(source)}`;
+    ${raceBangoPredicate(filters.raceBango)}AND ${venuePredicate(source)}`;
 
 const runnerColumns = `
     kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
@@ -263,7 +279,15 @@ target_rec AS (
   ${normalisedRecSelect(source, "target_se", "target_ra")}
 ),
 ${targetCte(source)},
-${runningStyleFeatureCtesSql(master, includeOrderBy)}`;
+${runningStyleFeatureCtesSql({
+  includeOrderBy,
+  masterTable: master,
+  orderByColumns: filters.raceBango === undefined ? VENUE_ORDER_BY_COLUMNS : RACE_ORDER_BY_COLUMNS,
+  rowLimit:
+    filters.raceBango === undefined
+      ? MAX_RUNNERS_PER_RACE * MAX_RACES_PER_VENUE_DAY
+      : MAX_RUNNERS_PER_RACE,
+})}`;
 };
 
 export const buildRunningStyleExplainQuery = (

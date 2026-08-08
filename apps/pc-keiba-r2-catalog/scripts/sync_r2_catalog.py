@@ -47,6 +47,13 @@ DEFAULT_WAREHOUSE: Final[str] = f"{DEFAULT_ACCOUNT_ID}_{DEFAULT_BUCKET}"
 DEFAULT_NAMESPACE: Final[str] = "pc_keiba"
 PG_ALIAS: Final[str] = "source_pg"
 MANIFEST_TABLE: Final[str] = "_sync_manifest"
+FINGERPRINT_PROPERTY_PREFIX: Final[str] = "sync.fingerprint."
+FULL_FINGERPRINT_SLICE: Final[str] = "__full__"
+# Bump whenever anything that changes the bytes written to R2 changes -- the
+# conforming rules, the partition spec, the timestamp normalization, or the
+# fingerprint algorithm itself. The source fingerprint alone cannot notice such
+# a change, so every stored value must be invalidated by hand.
+FINGERPRINT_FORMAT_VERSION: Final[str] = "1"
 ARROW_BATCH_SIZE: Final[int] = 100_000
 DEFAULT_MASTER_MAX_ROWS: Final[int] = 2_000_000
 DEFAULT_MASTER_MAX_BYTES: Final[int] = 1_073_741_824
@@ -233,7 +240,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run", action="store_true", help="read and validate PG only"
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="rewrite every slice even when its fingerprint is unchanged",
+    )
+    parser.add_argument(
+        "--year-scope",
+        type=parse_year_scope,
+        help="restrict --full date-table work to one five-year scope, e.g. 2010-2014",
+    )
+    parsed = parser.parse_args(argv)
+    if parsed.year_scope is not None and not parsed.full:
+        parser.error("--year-scope narrows the --full plan and requires --full")
+    return parsed
+
+
+def parse_year_scope(value: str) -> YearScope:
+    match = re.fullmatch(r"(\d{4})-(\d{4})", value)
+    if match is None:
+        raise argparse.ArgumentTypeError("year scope must use YYYY-YYYY")
+    scope = five_year_scope(match.group(1))
+    if scope.label != value:
+        raise argparse.ArgumentTypeError(
+            f"{value} is not a five-year scope boundary; did you mean {scope.label}?"
+        )
+    return scope
 
 
 def sql_string(value: str) -> str:
@@ -647,6 +679,33 @@ def snapshot_properties(
     return properties
 
 
+def fingerprint_key(
+    target_date: str | None, target_scope: YearScope | None, *, full: bool
+) -> str:
+    """Stable per-slice table property key holding the last verified fingerprint.
+
+    Scope writes and date writes each own their own key. A ``--full`` master
+    rewrite replaces the whole table, so it owns a single whole-table key.
+    """
+    if target_scope is not None:
+        return FINGERPRINT_PROPERTY_PREFIX + target_scope.label
+    if target_date is not None:
+        return FINGERPRINT_PROPERTY_PREFIX + target_date
+    if full:
+        return FINGERPRINT_PROPERTY_PREFIX + FULL_FINGERPRINT_SLICE
+    raise ValueError("cannot derive a fingerprint key for a partial untargeted write")
+
+
+def stored_fingerprint_value(fingerprint: str) -> str:
+    """Version-tag a fingerprint before it is stored or compared.
+
+    Skipping is only a proof while the writer still produces the same remote
+    bytes for the same source bytes. Tagging the stored value means bumping
+    ``FINGERPRINT_FORMAT_VERSION`` forces every slice to be rewritten once.
+    """
+    return f"{FINGERPRINT_FORMAT_VERSION}:{fingerprint}"
+
+
 def validate_scope_data(
     data: pa.Table, spec: TableSpec, target_scope: YearScope
 ) -> None:
@@ -682,6 +741,7 @@ def sync_table(
     target_scope: YearScope | None = None,
     max_rows: int = PARTITION_MAX_ROWS,
     max_bytes: int = PARTITION_MAX_BYTES,
+    skip_if_unchanged: bool = False,
 ) -> SyncResult:
     if target_date is not None:
         if target_scope is None:
@@ -699,6 +759,18 @@ def sync_table(
     if target_scope is not None:
         validate_scope_data(source_data, spec, target_scope)
     source_fingerprint = arrow_fingerprint(source_data, spec.primary_key)
+    key = fingerprint_key(target_date, target_scope, full=full)
+    stored = stored_fingerprint_value(source_fingerprint)
+    if skip_if_unchanged and table.properties.get(key) == stored:
+        return SyncResult(
+            table_name=spec.name,
+            status="skipped",
+            source_rows=source_data.num_rows,
+            target_rows=source_data.num_rows,
+            source_fingerprint=source_fingerprint,
+            target_fingerprint=source_fingerprint,
+            snapshot_id=current_snapshot_id(table),
+        )
     properties = snapshot_properties(
         run_id,
         spec,
@@ -750,6 +822,7 @@ def sync_table(
     if target_fingerprint != source_fingerprint:
         raise RuntimeError(f"{spec.name}: fingerprint verification failed")
     validate_primary_key(after, spec)
+    record_table_fingerprint(table, key, stored)
     return SyncResult(
         table_name=spec.name,
         status="replaced",
@@ -759,6 +832,19 @@ def sync_table(
         target_fingerprint=target_fingerprint,
         snapshot_id=current_snapshot_id(table),
     )
+
+
+def record_table_fingerprint(table: Any, key: str, value: str) -> None:
+    """Persist a verified slice fingerprint so the next run can prove a no-op.
+
+    Committed only after the post-write read-back verified that R2 holds exactly
+    this fingerprint, so a later skip is a proof rather than an assumption. A
+    failure here leaves the property absent, which makes the next run rewrite --
+    the safe direction.
+    """
+    transaction = table.transaction()
+    transaction.set_properties({key: value})
+    transaction.commit_transaction()
 
 
 def manifest_arrow(
@@ -793,20 +879,18 @@ def manifest_arrow(
 def append_manifest(
     catalog: Any,
     namespace: str,
-    result: SyncResult,
-    spec: TableSpec,
+    rows: list[pa.Table],
     *,
     run_id: str,
-    mode: str,
-    target_date: str | None,
 ) -> None:
-    data = manifest_arrow(
-        result,
-        spec,
-        run_id=run_id,
-        mode=mode,
-        target_date=target_date,
-    )
+    """Append every manifest row of a run in one Iceberg commit.
+
+    One commit per slice used to cost a full R2 catalog round trip, which
+    dominated a run whose slices were otherwise all skipped.
+    """
+    if not rows:
+        return
+    data = pa.concat_tables(rows)
     manifest_spec = TableSpec(MANIFEST_TABLE, ("manifest_id",))
     data = require_primary_key_fields(data, manifest_spec)
     table = ensure_table(catalog, f"{namespace}.{MANIFEST_TABLE}", data, manifest_spec)
@@ -816,7 +900,7 @@ def append_manifest(
         data,
         snapshot_properties={
             "sync.run-id": run_id,
-            "sync.manifest-for": result.table_name,
+            "sync.manifest-rows": str(data.num_rows),
         },
     )
 
@@ -897,11 +981,13 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
             )
 
     connection = connect_source(settings.pg_url)
+    catalog: Any = None
+    run_id = str(uuid.uuid4())
+    manifest_rows: list[pa.Table] = []
     try:
         catalog = None if args.dry_run else create_catalog(settings)
         if catalog is not None:
             catalog.create_namespace_if_not_exists(settings.namespace)
-        run_id = str(uuid.uuid4())
 
         def process_data(
             spec: TableSpec,
@@ -947,16 +1033,17 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 target_scope=partition_scope,
                 max_rows=max_rows,
                 max_bytes=max_bytes,
+                skip_if_unchanged=not args.force,
             )
-            append_manifest(
-                catalog,
-                settings.namespace,
-                result,
-                spec,
-                run_id=run_id,
-                mode=manifest_mode,
-                target_date=partition_date
-                or (partition_scope.label if partition_scope else None),
+            manifest_rows.append(
+                manifest_arrow(
+                    result,
+                    spec,
+                    run_id=run_id,
+                    mode=manifest_mode,
+                    target_date=partition_date
+                    or (partition_scope.label if partition_scope else None),
+                )
             )
             emit(
                 "sync_complete",
@@ -970,8 +1057,12 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 snapshot_id=result.snapshot_id,
             )
 
+        only_scope: YearScope | None = args.year_scope
+        narrowed_hits = 0
         for spec in selected:
             if spec.is_master:
+                if only_scope is not None:
+                    continue
                 process_data(
                     spec,
                     None,
@@ -993,6 +1084,9 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 )
                 continue
             scopes = year_scopes(source_years(connection, spec))
+            if only_scope is not None:
+                scopes = [scope for scope in scopes if scope == only_scope]
+                narrowed_hits += len(scopes)
             emit("year_scope_plan", table=spec.name, scopes=len(scopes))
             for scope in scopes:
                 process_data(
@@ -1004,7 +1098,9 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                     max_rows=FIVE_YEAR_MAX_ROWS,
                     max_bytes=FIVE_YEAR_MAX_BYTES,
                 )
-            if catalog is not None:
+            # A narrowed plan must never drive stale-scope deletion: every scope
+            # outside --year-scope would look stale and be emptied.
+            if catalog is not None and only_scope is None:
                 target_scopes = set(
                     year_scopes(target_years(catalog, settings.namespace, spec))
                 )
@@ -1018,7 +1114,30 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                         max_rows=FIVE_YEAR_MAX_ROWS,
                         max_bytes=FIVE_YEAR_MAX_BYTES,
                     )
+        # An empty narrowed plan would otherwise exit 0 having done nothing,
+        # which reads exactly like a fast successful sync.
+        if only_scope is not None and narrowed_hits == 0:
+            raise ValueError(
+                f"--year-scope {only_scope.label} matched no source scope "
+                "in the selected tables"
+            )
+        if catalog is not None:
+            append_manifest(catalog, settings.namespace, manifest_rows, run_id=run_id)
         return 0
+    except BaseException:
+        # Best-effort audit trail for a partial run; never mask the real error.
+        if catalog is not None:
+            try:
+                append_manifest(
+                    catalog, settings.namespace, manifest_rows, run_id=run_id
+                )
+            except Exception as flush_error:
+                emit(
+                    "manifest_flush_failed",
+                    error_type=type(flush_error).__name__,
+                    error=redact_error(flush_error, settings),
+                )
+        raise
     finally:
         connection.close()
 

@@ -54,10 +54,24 @@ const entryKeyJoin = (left: string, right: string): string =>
 // cases only as a defensive cap (a single race's field size never exceeds
 // this), not as a semantic truncation, so the row *set* returned is
 // unaffected by this flag -- only where the sort happens changes.
-export const runningStyleFeatureCtesSql = (
-  masterTable: string,
-  includeOrderBy: boolean,
-): string => `target_current_bataiju as (
+// orderByColumns is the trailing ORDER BY column list ("umaban" for a single
+// race, "race_bango, umaban" for a venue-level build). rowLimit is the
+// defensive cap: MAX_FIELD_SIZE for one race, MAX_FIELD_SIZE * races for a
+// venue-level build. Both are supplied by running-style-sql.ts so this module
+// stays free of request-shape knowledge.
+export interface RunningStyleFeatureCtesParams {
+  includeOrderBy: boolean;
+  masterTable: string;
+  orderByColumns: string;
+  rowLimit: number;
+}
+
+export const runningStyleFeatureCtesSql = ({
+  includeOrderBy,
+  masterTable,
+  orderByColumns,
+  rowLimit,
+}: RunningStyleFeatureCtesParams): string => `target_current_bataiju as (
   select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
          ketto_toroku_bango, bataiju as current_bataiju
   from target
@@ -810,5 +824,5 @@ final_features as (
   left join base_feature_ranks ranks on ${entryKeyJoin("b", "ranks")}
   left join base_feature_race_aggregates aggregates on ${raceKeyJoin("b", "aggregates")}
 )
-select * from final_features${includeOrderBy ? " order by umaban" : ""} limit 18
+select * from final_features${includeOrderBy ? ` order by ${orderByColumns}` : ""} limit ${String(rowLimit)}
 `;

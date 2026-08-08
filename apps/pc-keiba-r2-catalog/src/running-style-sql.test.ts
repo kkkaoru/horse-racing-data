@@ -119,6 +119,45 @@ it("rejects unsafe filters and mismatched NAR categories", () => {
   ).toThrow("R2_SQL_NAMESPACE must be an unquoted SQL identifier");
 });
 
+it("drops the target race filter and widens the cap when raceBango is omitted", () => {
+  const venue = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", source: "jra" },
+    true,
+  );
+  expect(venue).toMatch("select * from final_features order by race_bango, umaban limit 216");
+  expect(venue).not.toMatch(/AND race_bango = /u);
+  expect(venue.match(/keibajo_code = '05'/gu)).toHaveLength(2);
+  expect(venue.match(/kaisai_tsukihi = '0715'/gu)).toHaveLength(2);
+  expect(venue).toMatch("concat(kaisai_nen, kaisai_tsukihi) >= '20160715'");
+});
+
+it("keeps the decade-wide history CTEs byte-identical between race and venue builds", () => {
+  const race = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", raceBango: "01", source: "jra" },
+    true,
+  );
+  const venue = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", source: "jra" },
+    true,
+  );
+  const historyOf = (sql: string): string => sql.slice(0, sql.indexOf("target_se AS"));
+  expect(historyOf(venue)).toBe(historyOf(race));
+  expect(race).toMatch("select * from final_features order by umaban limit 18");
+});
+
+it("omits ORDER BY but keeps the widened cap for a venue-level fallback build", () => {
+  const venue = buildRunningStyleFeaturesQuery(
+    config(),
+    { date: "20260715", keibajoCode: "05", source: "jra" },
+    false,
+  );
+  expect(venue).toMatch("select * from final_features limit 216");
+  expect(venue).not.toMatch("order by race_bango");
+});
+
 it("builds a fixed JSON EXPLAIN for the exact production query", () => {
   const explain = buildRunningStyleExplainQuery(
     config(),

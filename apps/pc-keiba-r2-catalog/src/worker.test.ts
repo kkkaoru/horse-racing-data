@@ -293,12 +293,182 @@ it("retries running-style features without ORDER BY and sorts by umaban when R2 
   });
 });
 
+it("sorts a venue-level fallback by race_bango then umaban, tolerating absent sort keys", async () => {
+  const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
+  const fetchImpl: Fetcher = async (input, init) => {
+    fetchCalls.push({ input: String(input), init });
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+        { status: 400 },
+      );
+    }
+    return Response.json({
+      result: {
+        rows: [
+          { ...featureRow(), race_bango: "02", umaban: "1" },
+          { ...featureRow(), race_bango: "01", umaban: "2" },
+          { ...featureRow(), race_bango: "01", umaban: null },
+        ],
+      },
+      success: true,
+    });
+  };
+  const env: Env = {
+    ADMIN_TOKEN: "admin-secret",
+    CACHE_TTL_SECONDS: "15",
+    CATALOG_KV: {
+      async delete() {},
+      async get() {
+        return null;
+      },
+      async put() {},
+    },
+    KV_TTL_SECONDS: "120",
+    R2_SQL_ACCOUNT_ID: "account",
+    R2_SQL_BUCKET_NAME: "pc-keiba-r2-catalog",
+    R2_SQL_NAMESPACE: "pc_keiba",
+    R2_SQL_TOKEN: "r2-secret",
+  };
+  const cache: CacheStore = {
+    async delete() {
+      return false;
+    },
+    async match() {
+      return undefined;
+    },
+    async put() {},
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05",
+    ),
+    env,
+    { cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  expect(fetchCalls).toHaveLength(2);
+  expect(String(fetchCalls[1]?.init?.body)).toMatch("limit 216");
+  await expect(response.json()).resolves.toMatchObject({
+    rows: [
+      { raceBango: "01", umaban: 0 },
+      { raceBango: "01", umaban: 2 },
+      { raceBango: "02", umaban: 1 },
+    ],
+  });
+});
+
+it("groups a venue-level fallback by race when race_bango arrives as a JSON number", async () => {
+  const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
+  const fetchImpl: Fetcher = async (input, init) => {
+    fetchCalls.push({ input: String(input), init });
+    if (fetchCalls.length === 1) {
+      return Response.json(
+        { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+        { status: 400 },
+      );
+    }
+    return Response.json({
+      result: {
+        rows: [
+          { ...featureRow(), race_bango: 2, umaban: "5" },
+          { ...featureRow(), race_bango: 1, umaban: "9" },
+          { ...featureRow(), race_bango: 2, umaban: "4" },
+        ],
+      },
+      success: true,
+    });
+  };
+  const env: Env = {
+    ADMIN_TOKEN: "admin-secret",
+    CACHE_TTL_SECONDS: "15",
+    CATALOG_KV: {
+      async delete() {},
+      async get() {
+        return null;
+      },
+      async put() {},
+    },
+    KV_TTL_SECONDS: "120",
+    R2_SQL_ACCOUNT_ID: "account",
+    R2_SQL_BUCKET_NAME: "pc-keiba-r2-catalog",
+    R2_SQL_NAMESPACE: "pc_keiba",
+    R2_SQL_TOKEN: "r2-secret",
+  };
+  const cache: CacheStore = {
+    async delete() {
+      return false;
+    },
+    async match() {
+      return undefined;
+    },
+    async put() {},
+  };
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05",
+    ),
+    env,
+    { cache, fetchImpl },
+  );
+  expect(response.status).toBe(200);
+  await expect(response.json()).resolves.toMatchObject({
+    rows: [
+      { raceBango: "01", umaban: 9 },
+      { raceBango: "02", umaban: 4 },
+      { raceBango: "02", umaban: 5 },
+    ],
+  });
+});
+
+it("sorts a venue-level fallback row with an unusable race_bango, then rejects it in normalise", async () => {
+  const harness = createHarness();
+  let calls = 0;
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05",
+    ),
+    harness.env,
+    {
+      cache: harness.dependencies.cache,
+      fetchImpl: () => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve(
+            Response.json(
+              { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+              { status: 400 },
+            ),
+          );
+        }
+        return Promise.resolve(
+          Response.json({
+            result: {
+              rows: [
+                { ...featureRow(), race_bango: null, umaban: "1" },
+                { ...featureRow(), race_bango: "02", umaban: "2" },
+              ],
+            },
+            success: true,
+          }),
+        );
+      },
+    },
+  );
+  expect(response.status).toBe(502);
+  await expect(response.json()).resolves.toMatchObject({
+    detail: "R2 SQL row is missing race_bango",
+  });
+  expect(consoleMock).toHaveBeenCalledOnce();
+});
+
 it("requires all running-style race filters and a separated source", async () => {
   const harness = createHarness();
   const urls = [
     "?date=20260715&source=all&keibajoCode=05&raceBango=01",
     "?date=20260715&source=jra&raceBango=01",
-    "?date=20260715&source=jra&keibajoCode=05",
+    "?date=20260715&source=jra&keibajoCode=05&raceBango=1x",
     "?date=20260715&source=ban-ei&keibajoCode=05&raceBango=01",
   ];
   const responses = await Promise.all(
@@ -312,6 +482,49 @@ it("requires all running-style race filters and a separated source", async () =>
   );
   expect(responses.map((response) => response.status)).toStrictEqual([400, 400, 400, 400]);
   expect(harness.fetchCalls).toHaveLength(0);
+});
+
+it("builds every race at the venue in one R2 SQL call when raceBango is omitted", async () => {
+  const harness = createHarness([
+    { ...featureRow(), race_bango: "02", umaban: "1" },
+    { ...featureRow(), race_bango: "01", umaban: "2" },
+  ]);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(1);
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch(
+    "order by race_bango, umaban limit 216",
+  );
+  expect(String(harness.fetchCalls[0]?.init?.body)).not.toMatch("AND race_bango = ");
+});
+
+it("keeps the decade-wide history CTEs identical between a race build and a venue build", async () => {
+  const harness = createHarness();
+  await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05&raceBango=01",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  const venueHarness = createHarness();
+  await handleRequest(
+    new Request(
+      "https://catalog.test/v1/running-style-features?date=20260715&source=jra&keibajoCode=05",
+    ),
+    venueHarness.env,
+    venueHarness.dependencies,
+  );
+  const raceSql = String(harness.fetchCalls[0]?.init?.body);
+  const venueSql = String(venueHarness.fetchCalls[0]?.init?.body);
+  const historyOf = (sql: string): string => sql.slice(0, sql.indexOf("target_se AS"));
+  expect(historyOf(venueSql)).toBe(historyOf(raceSql));
 });
 
 it("reads Cache API before KV and R2 SQL", async () => {
@@ -411,8 +624,66 @@ it("maps R2 SQL failures to a stable upstream error", async () => {
     harness.dependencies,
   );
   expect(response.status).toBe(502);
-  await expect(response.json()).resolves.toStrictEqual({ error: "r2_sql_unavailable" });
+  await expect(response.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "R2 SQL HTTP 403",
+    error: "r2_sql_unavailable",
+  });
   expect(consoleMock).toHaveBeenCalledOnce();
+});
+
+it("surfaces the Cloudflare R2 SQL error code and message on a 502", async () => {
+  const harness = createHarness();
+  harness.fetchState.response = Response.json(
+    { errors: [{ code: 40018, message: "query expression too deep" }], success: false },
+    { status: 400 },
+  );
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-keys?date=20260715"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(502);
+  await expect(response.json()).resolves.toStrictEqual({
+    code: 40018,
+    detail: "R2 SQL HTTP 400: 40018 query expression too deep",
+    error: "r2_sql_unavailable",
+  });
+  expect(consoleMock).toHaveBeenCalledOnce();
+});
+
+it("surfaces a non-Error throw as a string detail without a code", async () => {
+  const harness = createHarness();
+  harness.dependencies.fetchImpl = () => Promise.reject("socket reset");
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const response = await handleRequest(
+    new Request("https://catalog.test/v1/race-keys?date=20260715"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(502);
+  await expect(response.json()).resolves.toStrictEqual({
+    code: null,
+    detail: "socket reset",
+    error: "r2_sql_unavailable",
+  });
+  expect(consoleMock).toHaveBeenCalledOnce();
+});
+
+it("logs the failing path and query string alongside the error detail", async () => {
+  const harness = createHarness();
+  harness.fetchState.response = new Response("denied", { status: 403 });
+  const consoleMock = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  await handleRequest(
+    new Request("https://catalog.test/v1/race-keys?date=20260715"),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(consoleMock).toHaveBeenCalledWith(
+    "[pc-keiba-r2-catalog] request failed",
+    '{"code":null,"detail":"R2 SQL HTTP 403","path":"/v1/race-keys","search":"?date=20260715"}',
+  );
 });
 
 it("requires the internal token before purging", async () => {

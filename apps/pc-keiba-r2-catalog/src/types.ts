@@ -98,9 +98,13 @@ export interface RaceFeatureFilters {
   source: SourceScope;
 }
 
+// raceBango is optional so one query can cover every race at a venue on a
+// day. The 10-year history CTEs depend only on date + source (see
+// running-style-sql.ts::historyPredicates), so a venue-level build amortises
+// that decade scan across ~12 races instead of repeating it per race.
 export interface RunningStyleFeatureFilters {
   date: string;
   keibajoCode: string;
-  raceBango: string;
+  raceBango?: string;
   source: RunningStyleSourceScope;
 }

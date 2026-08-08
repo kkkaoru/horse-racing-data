@@ -38,6 +38,26 @@ def sample_data(*, value: tuple[str, ...] = ("a", "b")) -> pa.Table:
     )
 
 
+def sync_args(
+    *,
+    full: bool = False,
+    date: str | None = None,
+    tables: str | None = None,
+    dry_run: bool = True,
+    force: bool = False,
+    year_scope: subject.YearScope | None = None,
+) -> SimpleNamespace:
+    """Mirror the full argparse namespace so tests cannot drift from parse_args."""
+    return SimpleNamespace(
+        full=full,
+        date=date,
+        tables=tables,
+        dry_run=dry_run,
+        force=force,
+        year_scope=year_scope,
+    )
+
+
 TEST_SPEC = subject.TableSpec(
     "test_table",
     ("kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"),
@@ -63,6 +83,19 @@ class FakeSnapshot:
     snapshot_id = 1234
 
 
+class FakeTransaction:
+    def __init__(self, table: FakeTable) -> None:
+        self.table = table
+        self.pending: dict[str, str] = {}
+
+    def set_properties(self, properties: dict[str, str]) -> None:
+        self.pending.update(properties)
+
+    def commit_transaction(self) -> None:
+        self.table.properties.update(self.pending)
+        self.table.events.append("set_properties")
+
+
 class FakeTable:
     def __init__(self, data: pa.Table, spec: subject.TableSpec = TEST_SPEC) -> None:
         normalized = subject.require_primary_key_fields(data, spec)
@@ -75,6 +108,10 @@ class FakeTable:
         self.delete_calls = 0
         self.append_calls = 0
         self.events: list[str] = []
+        self.properties: dict[str, str] = {}
+
+    def transaction(self) -> FakeTransaction:
+        return FakeTransaction(self)
 
     def schema(self):
         return self._schema
@@ -116,6 +153,10 @@ class FakeCatalog:
     def __init__(self, table: FakeTable | None = None) -> None:
         self.table = table
         self.created = False
+        self.namespaces_ensured = 0
+
+    def create_namespace_if_not_exists(self, _namespace: str) -> None:
+        self.namespaces_ensured += 1
 
     def table_exists(self, _identifier: str) -> bool:
         return self.table is not None
@@ -136,6 +177,7 @@ class FakeCatalog:
         table.delete_calls = 0
         table.append_calls = 0
         table.events = []
+        table.properties = {}
         self.table = table
         return table
 
@@ -585,7 +627,19 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(table.dynamic_calls, 1)
         self.assertEqual(result.target_rows, 2)
         self.assertEqual(table.data.to_pylist(), local_year.to_pylist())
-        self.assertEqual(table.events, ["dynamic_partition_overwrite", "scan"])
+        # The fingerprint property must be committed only after the read-back
+        # scan verified the write, so a later skip is a proof.
+        self.assertEqual(
+            table.events, ["dynamic_partition_overwrite", "scan", "set_properties"]
+        )
+        self.assertEqual(
+            table.properties[
+                subject.fingerprint_key(
+                    "20260715", subject.single_year_scope("2026"), full=False
+                )
+            ],
+            subject.stored_fingerprint_value(result.source_fingerprint),
+        )
 
     def test_date_sync_rejects_source_rows_outside_containing_year(self) -> None:
         escaped = sample_data().set_column(0, "kaisai_nen", pa.array(["2026", "2027"]))
@@ -742,19 +796,49 @@ class SyncTests(unittest.TestCase):
     def test_first_manifest_creation_marks_identifier_required(self) -> None:
         catalog = FakeCatalog()
         result = subject.SyncResult("nvd_se", "replaced", 502, 502, "abc", "abc", 99)
-        subject.append_manifest(
-            catalog,
-            "pc_keiba",
+        row = subject.manifest_arrow(
             result,
             subject.TABLE_SPECS["nvd_se"],
             run_id="run",
             mode="date",
             target_date="20260715",
         )
+        subject.append_manifest(catalog, "pc_keiba", [row], run_id="run")
         self.assertIsNotNone(catalog.table)
         schema = catalog.table.schema()
         identifier = schema.find_field("manifest_id")
         self.assertTrue(identifier.required)
+
+    def test_manifest_batches_every_row_into_one_append(self) -> None:
+        catalog = FakeCatalog()
+        spec = subject.TABLE_SPECS["nvd_se"]
+        rows = [
+            subject.manifest_arrow(
+                subject.SyncResult("nvd_se", status, 1, 1, "abc", "abc", 9),
+                spec,
+                run_id="run",
+                mode="full-5year",
+                target_date=label,
+            )
+            for status, label in (
+                ("replaced", "2020-2024"),
+                ("skipped", "2015-2019"),
+                ("skipped", "2010-2014"),
+            )
+        ]
+        subject.append_manifest(catalog, "pc_keiba", rows, run_id="run")
+        self.assertEqual(catalog.table.append_calls, 1)
+        self.assertEqual(catalog.table.data.num_rows, 3)
+        self.assertEqual(
+            catalog.table.data.column("status").to_pylist(),
+            ["replaced", "skipped", "skipped"],
+        )
+
+    def test_manifest_append_is_a_noop_without_rows(self) -> None:
+        catalog = FakeCatalog()
+        subject.append_manifest(catalog, "pc_keiba", [], run_id="run")
+        self.assertIsNone(catalog.table)
+        self.assertFalse(catalog.created)
 
     def test_create_catalog_requires_token(self) -> None:
         settings = subject.Settings("pg", "uri", "warehouse", "pc_keiba", None)
@@ -815,9 +899,7 @@ class SyncTests(unittest.TestCase):
             calls.append((target_date, target_scope))
             return sample_data()
 
-        args = SimpleNamespace(
-            full=False, date="20260715", tables="nvd_ra", dry_run=True
-        )
+        args = sync_args(date="20260715", tables="nvd_ra")
         settings = subject.Settings("pg", "uri", "wh", "ns", None)
         with (
             patch.object(subject, "connect_source", return_value=connection),
@@ -850,7 +932,7 @@ class SyncTests(unittest.TestCase):
             calls.append(target_scope)
             return sample_data().slice(0, 0)
 
-        args = SimpleNamespace(full=True, date=None, tables="nvd_ra", dry_run=True)
+        args = sync_args(full=True, tables="nvd_ra")
         settings = subject.Settings("pg", "uri", "wh", "ns", None)
         output = io.StringIO()
         with (
@@ -875,15 +957,453 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(output.getvalue().count('"mode": "full-5year"'), 3)
 
     def test_date_mode_skips_masters_and_rejects_master_only(self) -> None:
-        args = SimpleNamespace(
-            full=False, date="20260715", tables="jvd_um", dry_run=True
-        )
+        args = sync_args(date="20260715", tables="jvd_um")
         settings = subject.Settings("pg", "uri", "wh", "ns", None)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             with self.assertRaisesRegex(ValueError, "masters require --full"):
                 subject.run(args, settings)
         self.assertIn("skip_master_requires_full", output.getvalue())
+
+
+class FingerprintKeyTests(unittest.TestCase):
+    def test_each_slice_kind_owns_a_distinct_property_key(self) -> None:
+        scope = subject.YearScope("2010", "2015")
+        self.assertEqual(
+            subject.fingerprint_key(None, scope, full=False),
+            subject.FINGERPRINT_PROPERTY_PREFIX + "2010-2014",
+        )
+        self.assertEqual(
+            subject.fingerprint_key("20260715", None, full=False),
+            subject.FINGERPRINT_PROPERTY_PREFIX + "20260715",
+        )
+        self.assertEqual(
+            subject.fingerprint_key(None, None, full=True),
+            subject.FINGERPRINT_PROPERTY_PREFIX + subject.FULL_FINGERPRINT_SLICE,
+        )
+
+    def test_scope_wins_over_date_so_a_date_write_never_claims_its_scope(self) -> None:
+        scope = subject.single_year_scope("2026")
+        self.assertEqual(
+            subject.fingerprint_key("20260715", scope, full=False),
+            subject.FINGERPRINT_PROPERTY_PREFIX + scope.label,
+        )
+
+    def test_untargeted_partial_write_has_no_provable_key(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot derive a fingerprint key"):
+            subject.fingerprint_key(None, None, full=False)
+
+    def test_stored_value_carries_the_writer_format_version(self) -> None:
+        self.assertEqual(
+            subject.stored_fingerprint_value("abc"),
+            f"{subject.FINGERPRINT_FORMAT_VERSION}:abc",
+        )
+
+
+class SkipUnchangedTests(unittest.TestCase):
+    """The fast path must be a proof of equality, never an optimistic guess."""
+
+    def _seeded_table(self) -> tuple[FakeTable, pa.Table, str]:
+        data = sample_data()
+        table = FakeTable(data)
+        table.data = subject.conform_to_table(data, table, TEST_SPEC)
+        conformed = subject.conform_to_table(
+            subject.require_primary_key_fields(data, TEST_SPEC), table, TEST_SPEC
+        )
+        fingerprint = subject.arrow_fingerprint(conformed, TEST_SPEC.primary_key)
+        return table, data, fingerprint
+
+    def _sync(self, table: FakeTable, data: pa.Table, **kwargs) -> subject.SyncResult:
+        return subject.sync_table(
+            FakeCatalog(table),
+            "pc_keiba",
+            TEST_SPEC,
+            data,
+            full=False,
+            target_date=None,
+            target_scope=FIVE_YEAR_SCOPE,
+            run_id="run",
+            **kwargs,
+        )
+
+    def test_matching_fingerprint_skips_read_write_and_property_commit(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        table.properties[key] = subject.stored_fingerprint_value(fingerprint)
+        result = self._sync(table, data, skip_if_unchanged=True)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.source_fingerprint, fingerprint)
+        self.assertEqual(result.target_fingerprint, fingerprint)
+        self.assertEqual(result.source_rows, 2)
+        self.assertEqual(result.target_rows, 2)
+        self.assertEqual(result.snapshot_id, FakeSnapshot.snapshot_id)
+        # No write, no verification read-back, no extra catalog commit.
+        self.assertEqual(table.events, [])
+        self.assertEqual(table.overwrite_calls, 0)
+        self.assertEqual(table.dynamic_calls, 0)
+        self.assertEqual(table.delete_calls, 0)
+        self.assertEqual(table.append_calls, 0)
+        # ensure_table still refreshes metadata -- that read is what supplies
+        # the stored fingerprint -- but nothing beyond it happens.
+        self.assertEqual(table.refresh_calls, 1)
+
+    def test_mismatched_fingerprint_rewrites_and_restores_the_property(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        table.properties[key] = subject.stored_fingerprint_value("stale-fingerprint")
+        result = self._sync(table, data, skip_if_unchanged=True)
+        self.assertEqual(result.status, "replaced")
+        self.assertEqual(table.overwrite_calls, 1)
+        self.assertEqual(
+            table.properties[key], subject.stored_fingerprint_value(fingerprint)
+        )
+
+    def test_absent_property_rewrites(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        result = self._sync(table, data, skip_if_unchanged=True)
+        self.assertEqual(result.status, "replaced")
+        self.assertEqual(table.overwrite_calls, 1)
+        self.assertEqual(
+            table.properties[
+                subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+            ],
+            subject.stored_fingerprint_value(fingerprint),
+        )
+
+    def test_force_rewrites_even_though_the_fingerprint_matches(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        table.properties[key] = subject.stored_fingerprint_value(fingerprint)
+        result = self._sync(table, data, skip_if_unchanged=False)
+        self.assertEqual(result.status, "replaced")
+        self.assertEqual(table.overwrite_calls, 1)
+        self.assertIn("scan", table.events)
+
+    def test_property_written_by_an_older_writer_format_is_not_trusted(self) -> None:
+        """A bare, unversioned hash must not authorize a skip.
+
+        Anything that changes the bytes we write to R2 -- conforming rules,
+        partition spec, timestamp normalization -- leaves the *source*
+        fingerprint identical, so the version tag is the only invalidation
+        mechanism available.
+        """
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        table.properties[key] = fingerprint
+        result = self._sync(table, data, skip_if_unchanged=True)
+        self.assertEqual(result.status, "replaced")
+        self.assertEqual(table.overwrite_calls, 1)
+
+    def test_default_is_conservative_so_callers_must_opt_into_skipping(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        table.properties[key] = subject.stored_fingerprint_value(fingerprint)
+        result = self._sync(table, data)
+        self.assertEqual(result.status, "replaced")
+
+    def test_master_full_write_skips_on_its_whole_table_key(self) -> None:
+        spec = subject.TABLE_SPECS["nvd_um"]
+        data = pa.table({"ketto_toroku_bango": pa.array(["0001", "0002"])})
+        table = FakeTable(data, spec)
+        table.data = subject.conform_to_table(data, table, spec)
+        fingerprint = subject.arrow_fingerprint(table.data, spec.primary_key)
+        key = subject.fingerprint_key(None, None, full=True)
+        table.properties[key] = subject.stored_fingerprint_value(fingerprint)
+        result = subject.sync_table(
+            FakeCatalog(table),
+            "pc_keiba",
+            spec,
+            data,
+            full=True,
+            target_date=None,
+            run_id="run",
+            skip_if_unchanged=True,
+        )
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(table.overwrite_calls, 0)
+
+
+class YearScopeArgumentTests(unittest.TestCase):
+    def test_parse_year_scope_accepts_a_real_boundary(self) -> None:
+        self.assertEqual(
+            subject.parse_year_scope("2010-2014"), subject.YearScope("2010", "2015")
+        )
+
+    def test_parse_year_scope_rejects_a_malformed_value(self) -> None:
+        with self.assertRaisesRegex(argparse.ArgumentTypeError, "must use YYYY-YYYY"):
+            subject.parse_year_scope("2010")
+
+    def test_parse_year_scope_rejects_a_non_boundary_window(self) -> None:
+        with self.assertRaisesRegex(
+            argparse.ArgumentTypeError, "did you mean 2010-2014"
+        ):
+            subject.parse_year_scope("2011-2015")
+
+    def test_year_scope_requires_full_mode(self) -> None:
+        with (
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            subject.parse_args(["--date", "20260715", "--year-scope", "2010-2014"])
+        self.assertIn("requires --full", stderr.getvalue())
+
+    def test_full_mode_accepts_year_scope_and_force(self) -> None:
+        parsed = subject.parse_args(
+            ["--full", "--year-scope", "2010-2014", "--force", "--tables", "nvd_ra"]
+        )
+        self.assertEqual(parsed.year_scope, subject.YearScope("2010", "2015"))
+        self.assertTrue(parsed.force)
+
+    def test_force_defaults_off_so_a_plain_run_uses_the_fast_path(self) -> None:
+        self.assertFalse(subject.parse_args(["--full"]).force)
+        self.assertIsNone(subject.parse_args(["--full"]).year_scope)
+
+
+class NarrowedPlanTests(unittest.TestCase):
+    """``--year-scope`` must narrow work without narrowing what stays alive."""
+
+    class Connection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def _run(
+        self,
+        *,
+        year_scope: subject.YearScope | None,
+        tables: str,
+        source_years: set[str],
+        stale_years: set[str] | None = None,
+    ) -> tuple[list[subject.YearScope | None], list[str], bool, str]:
+        scopes: list[subject.YearScope | None] = []
+        modes: list[str] = []
+        target_years_called = False
+
+        def extract_source(_c, _spec, _date, *, target_scope, max_rows, max_bytes):
+            scopes.append(target_scope)
+            return sample_data()
+
+        def sync_table(_catalog, _ns, spec, data, **kwargs):
+            modes.append(
+                kwargs["target_scope"].label if kwargs["target_scope"] else "full"
+            )
+            return subject.SyncResult(spec.name, "skipped", 2, 2, "abc", "abc", 1)
+
+        def target_years(*_args, **_kwargs) -> set[str]:
+            nonlocal target_years_called
+            target_years_called = True
+            return stale_years or set()
+
+        args = sync_args(full=True, tables=tables, dry_run=False, year_scope=year_scope)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        output = io.StringIO()
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog()),
+            patch.object(subject, "extract_source", side_effect=extract_source),
+            patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(subject, "source_years", return_value=source_years),
+            patch.object(subject, "target_years", side_effect=target_years),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        return scopes, modes, target_years_called, output.getvalue()
+
+    def test_narrowed_plan_touches_only_the_requested_scope(self) -> None:
+        _, modes, _, log = self._run(
+            year_scope=subject.YearScope("2010", "2015"),
+            tables="nvd_ra",
+            source_years={"2008", "2012", "2024"},
+        )
+        self.assertEqual(modes, ["2010-2014"])
+        self.assertIn('"scopes": 1', log)
+
+    def test_narrowed_plan_never_deletes_the_scopes_it_did_not_look_at(self) -> None:
+        _, modes, target_years_called, _ = self._run(
+            year_scope=subject.YearScope("2010", "2015"),
+            tables="nvd_ra",
+            source_years={"2012"},
+            stale_years={"1995", "2000"},
+        )
+        self.assertFalse(target_years_called)
+        self.assertEqual(modes, ["2010-2014"])
+
+    def test_unnarrowed_plan_still_deletes_stale_scopes(self) -> None:
+        _, modes, target_years_called, _ = self._run(
+            year_scope=None,
+            tables="nvd_ra",
+            source_years={"2012"},
+            stale_years={"1995"},
+        )
+        self.assertTrue(target_years_called)
+        self.assertEqual(modes, ["2010-2014", "1995-1999"])
+
+    def test_narrowed_plan_skips_masters_entirely(self) -> None:
+        _, modes, _, _ = self._run(
+            year_scope=subject.YearScope("2010", "2015"),
+            tables="nvd_ra,nvd_um",
+            source_years={"2012"},
+        )
+        self.assertEqual(modes, ["2010-2014"])
+
+    def test_narrowed_plan_matching_nothing_fails_instead_of_reporting_success(
+        self,
+    ) -> None:
+        args = sync_args(
+            full=True,
+            tables="nvd_ra",
+            dry_run=False,
+            year_scope=subject.YearScope("1800", "1805"),
+        )
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog()),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "matched no source scope"),
+        ):
+            subject.run(args, settings)
+
+
+class ManifestFlushTests(unittest.TestCase):
+    class Connection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def _failing_run(
+        self, *, append_manifest_side_effect: BaseException | None = None
+    ) -> tuple[list[int], str]:
+        appended: list[int] = []
+        calls = {"n": 0}
+
+        def sync_table(_catalog, _ns, spec, _data, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("nvd_ra: fingerprint verification failed")
+            return subject.SyncResult(spec.name, "replaced", 2, 2, "abc", "abc", 1)
+
+        def append_manifest(_catalog, _ns, rows, *, run_id):
+            appended.append(len(rows))
+            if append_manifest_side_effect is not None:
+                raise append_manifest_side_effect
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        output = io.StringIO()
+        connection = self.Connection()
+        with (
+            patch.object(subject, "connect_source", return_value=connection),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog()),
+            patch.object(subject, "extract_source", return_value=sample_data()),
+            patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(subject, "source_years", return_value={"2012", "2018"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest", side_effect=append_manifest),
+            contextlib.redirect_stdout(output),
+            self.assertRaisesRegex(RuntimeError, "fingerprint verification"),
+        ):
+            subject.run(args, settings)
+        self.assertTrue(connection.closed)
+        return appended, output.getvalue()
+
+    def test_partial_run_still_flushes_the_rows_it_completed(self) -> None:
+        appended, log = self._failing_run()
+        self.assertEqual(appended, [1])
+        self.assertNotIn("manifest_flush_failed", log)
+
+    def test_flush_failure_is_reported_without_masking_the_real_error(self) -> None:
+        appended, log = self._failing_run(
+            append_manifest_side_effect=RuntimeError("catalog unreachable")
+        )
+        self.assertEqual(appended, [1])
+        self.assertIn("manifest_flush_failed", log)
+        self.assertIn("catalog unreachable", log)
+
+    def test_flush_is_skipped_when_the_catalog_never_opened(self) -> None:
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", side_effect=ValueError("no token")),
+            patch.object(subject, "append_manifest") as append_manifest,
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaisesRegex(ValueError, "no token"),
+        ):
+            subject.run(args, settings)
+        append_manifest.assert_not_called()
+
+
+class ForcePropagationTests(unittest.TestCase):
+    class Connection:
+        def close(self) -> None:
+            pass
+
+    def _skip_flag_for(self, *, force: bool) -> bool:
+        seen: list[bool] = []
+
+        def sync_table(_catalog, _ns, spec, _data, **kwargs):
+            seen.append(kwargs["skip_if_unchanged"])
+            return subject.SyncResult(spec.name, "skipped", 2, 2, "abc", "abc", 1)
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False, force=force)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog()),
+            patch.object(subject, "extract_source", return_value=sample_data()),
+            patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_default_run_asks_sync_table_to_skip_unchanged_slices(self) -> None:
+        self.assertTrue(self._skip_flag_for(force=False))
+
+    def test_force_run_disables_skipping(self) -> None:
+        self.assertFalse(self._skip_flag_for(force=True))
+
+    def test_skipped_status_reaches_the_json_log_and_the_manifest(self) -> None:
+        rows: list[pa.Table] = []
+
+        def append_manifest(_catalog, _ns, manifest_rows, *, run_id):
+            rows.extend(manifest_rows)
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        output = io.StringIO()
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog()),
+            patch.object(subject, "extract_source", return_value=sample_data()),
+            patch.object(
+                subject,
+                "sync_table",
+                return_value=subject.SyncResult(
+                    "nvd_ra", "skipped", 2, 2, "abc", "abc", 1
+                ),
+            ),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest", side_effect=append_manifest),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        self.assertIn('"status": "skipped"', output.getvalue())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].column("status").to_pylist(), ["skipped"])
 
 
 if __name__ == "__main__":

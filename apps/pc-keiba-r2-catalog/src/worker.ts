@@ -10,6 +10,7 @@ import {
   readKvRows,
   type CacheDescriptor,
 } from "./cache";
+import { coalesce } from "./inflight";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRow } from "./normalise";
 import {
   buildRaceFeaturesQuery,
@@ -36,6 +37,13 @@ const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-e
 // includeOrderBy docstring for why this happens and only for large-enough
 // source data volumes.
 const R2_SQL_EXPRESSION_TOO_DEEP_CODE = 40018;
+
+// Operator-facing description of a failed upstream call. `code` is the
+// Cloudflare R2 SQL error code when one was returned, null otherwise.
+interface CatalogFailure {
+  code: number | string | null;
+  detail: string;
+}
 
 const jsonResponse = (value: unknown, status = 200): Response =>
   Response.json(value, {
@@ -86,12 +94,18 @@ const requireCode = (url: URL, name: string): string => {
   return code;
 };
 
+// raceBango is optional: omitting it builds every race at the venue in one
+// pass. The decade-wide history CTEs depend only on date + source, so a
+// venue-level build pays that scan once instead of once per race.
 const parseRunningStyleFilters = (url: URL): RunningStyleFeatureFilters => ({
   date: requireDate(url),
   keibajoCode: requireCode(url, "keibajoCode"),
-  raceBango: requireCode(url, "raceBango"),
+  raceBango: parseCode(url, "raceBango"),
   source: parseRunningStyleSource(url),
 });
+
+const runningStyleCoalesceKey = (filters: RunningStyleFeatureFilters): string =>
+  `running-style:${filters.source}:${filters.date}:${filters.keibajoCode}:${filters.raceBango ?? "all"}`;
 
 const cachedArrayResponse = async (
   descriptor: CacheDescriptor,
@@ -168,8 +182,64 @@ const handleRaceFeatures = (
 const isExpressionTooDeepError = (error: unknown): boolean =>
   error instanceof R2SqlQueryError && error.code === R2_SQL_EXPRESSION_TOO_DEEP_CODE;
 
-const compareByUmaban = (left: Record<string, unknown>, right: Record<string, unknown>): number =>
-  (numberOrNull(left.umaban) ?? 0) - (numberOrNull(right.umaban) ?? 0);
+const failureCode = (error: unknown): number | string | null => {
+  if (!(error instanceof R2SqlQueryError)) return null;
+  return error.code ?? null;
+};
+
+const describeFailure = (error: unknown): CatalogFailure => ({
+  code: failureCode(error),
+  detail: error instanceof Error ? error.message : String(error),
+});
+
+// R2 SQL may project race_bango as a JSON number rather than a zero-padded
+// string. Collapsing every numeric value to "" would put all races in one
+// bucket and interleave them by umaban, so normalise both shapes to the same
+// zero-padded string form before comparing.
+const raceBangoKey = (row: Record<string, unknown>): string => {
+  const value = row.race_bango;
+  if (typeof value === "string" || typeof value === "number") return String(value).padStart(2, "0");
+  return "";
+};
+
+// Matches the server-side "race_bango, umaban" ordering. For a single-race
+// build every race_bango is identical, so this degrades to umaban order.
+const compareByRaceThenUmaban = (
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): number => {
+  const byRace = raceBangoKey(left).localeCompare(raceBangoKey(right));
+  if (byRace !== 0) return byRace;
+  return (numberOrNull(left.umaban) ?? 0) - (numberOrNull(right.umaban) ?? 0);
+};
+
+const runningStyleBody = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: RunningStyleFeatureFilters,
+): Promise<string> => {
+  try {
+    const rows = await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, true),
+      dependencies.fetchImpl,
+    );
+    return JSON.stringify(normaliseRunningStyleRows(rows));
+  } catch (error) {
+    if (!isExpressionTooDeepError(error)) throw error;
+    // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
+    // the plan-depth protocol limit for a data volume as large as JRA's --
+    // retry once without ORDER BY (still LIMIT) and sort the small result
+    // here instead. Identical row set and values; only where the sort
+    // happens changes.
+    const rows = await executeR2Sql(
+      env,
+      buildRunningStyleFeaturesQuery(env, filters, false),
+      dependencies.fetchImpl,
+    );
+    return JSON.stringify(normaliseRunningStyleRows([...rows].sort(compareByRaceThenUmaban)));
+  }
+};
 
 const handleRunningStyleFeatures = async (
   url: URL,
@@ -177,27 +247,12 @@ const handleRunningStyleFeatures = async (
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseRunningStyleFilters(url);
-  try {
-    const rows = await executeR2Sql(
-      env,
-      buildRunningStyleFeaturesQuery(env, filters, true),
-      dependencies.fetchImpl,
-    );
-    return jsonResponse(normaliseRunningStyleRows(rows));
-  } catch (error) {
-    if (!isExpressionTooDeepError(error)) throw error;
-    // R2 SQL's distributed Top-K sort (ORDER BY + LIMIT together) can exceed
-    // the plan-depth protocol limit for a data volume as large as JRA's --
-    // retry once without ORDER BY (still LIMIT 18) and sort the small
-    // (<=18 rows) result here instead. Identical row set and values; only
-    // where the sort happens changes.
-    const rows = await executeR2Sql(
-      env,
-      buildRunningStyleFeaturesQuery(env, filters, false),
-      dependencies.fetchImpl,
-    );
-    return jsonResponse(normaliseRunningStyleRows([...rows].sort(compareByUmaban)));
-  }
+  const body = await coalesce(runningStyleCoalesceKey(filters), () =>
+    runningStyleBody(env, dependencies, filters),
+  );
+  return new Response(body, {
+    headers: { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+  });
 };
 
 const purgeTargets = (url: URL): CacheDescriptor[] => {
@@ -267,8 +322,26 @@ export const handleRequest = async (
     ) {
       return jsonResponse({ error: error.message }, 400);
     }
-    console.error("[pc-keiba-r2-catalog] request failed", error);
-    return jsonResponse({ error: "r2_sql_unavailable" }, 502);
+    // Surface the underlying R2 SQL failure. Without this the only operator
+    // signal is "HTTP 502", which is what made the 2026-08-08 running-style
+    // stall undiagnosable. Neither field can carry credentials: `detail` is
+    // built from Cloudflare's own error payload plus this Worker's own
+    // messages, and the bearer token is never interpolated into either
+    // (see r2-sql.ts::executeR2Sql).
+    const failure = describeFailure(error);
+    console.error(
+      "[pc-keiba-r2-catalog] request failed",
+      JSON.stringify({
+        code: failure.code,
+        detail: failure.detail,
+        path: url.pathname,
+        search: url.search,
+      }),
+    );
+    return jsonResponse(
+      { code: failure.code, detail: failure.detail, error: "r2_sql_unavailable" },
+      502,
+    );
   }
 };
 
