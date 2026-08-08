@@ -247,6 +247,103 @@ it("triggerRescoreAfterWeights forwards a NAR race key payload when binding is w
   });
 });
 
+it("triggerRescoreAfterWeights logs skip:rescore-disabled when the cron reports rescoreEnabled false", async () => {
+  const { triggerRescoreAfterWeights } = await import("./worker");
+  const fetchStub = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ claimed: false, ok: true, rescoreEnabled: false }), {
+        status: 200,
+      }),
+  );
+  await triggerRescoreAfterWeights(
+    buildRescoreEnv({ fetchImpl: fetchStub }),
+    "jra:2026:0512:05:11",
+  );
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "skip:rescore-disabled",
+    "jra:2026:0512:05:11",
+    null,
+  );
+});
+
+it("triggerRescoreAfterWeights logs skip:not-claimed on a claim collision", async () => {
+  const { triggerRescoreAfterWeights } = await import("./worker");
+  const fetchStub = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ claimed: false, ok: true }), { status: 200 }),
+  );
+  await triggerRescoreAfterWeights(
+    buildRescoreEnv({ fetchImpl: fetchStub }),
+    "jra:2026:0512:05:11",
+  );
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "skip:not-claimed",
+    "jra:2026:0512:05:11",
+    null,
+  );
+});
+
+it("triggerRescoreAfterWeights logs an error with the status code when the cron rejects the token", async () => {
+  const { triggerRescoreAfterWeights } = await import("./worker");
+  const fetchStub = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      new Response(JSON.stringify({ error: "unauthorized", ok: false }), { status: 401 }),
+  );
+  await triggerRescoreAfterWeights(
+    buildRescoreEnv({ fetchImpl: fetchStub }),
+    "jra:2026:0512:05:11",
+  );
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "error",
+    "jra:2026:0512:05:11",
+    "http 401",
+  );
+});
+
+it("triggerRescoreAfterWeights logs an error when the cron response body is not an object", async () => {
+  const { triggerRescoreAfterWeights } = await import("./worker");
+  const fetchStub = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      new Response("null", { status: 200 }),
+  );
+  await triggerRescoreAfterWeights(
+    buildRescoreEnv({ fetchImpl: fetchStub }),
+    "jra:2026:0512:05:11",
+  );
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "error",
+    "jra:2026:0512:05:11",
+    "unparsable response body",
+  );
+});
+
+it("triggerRescoreAfterWeights logs an error when the cron response JSON cannot be parsed", async () => {
+  const { triggerRescoreAfterWeights } = await import("./worker");
+  const fetchStub = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      new Response("<html>bad gateway</html>", { status: 200 }),
+  );
+  await triggerRescoreAfterWeights(
+    buildRescoreEnv({ fetchImpl: fetchStub }),
+    "jra:2026:0512:05:11",
+  );
+  expect(logFetchMock).toHaveBeenCalledWith(
+    expect.anything(),
+    "weight-rescore-trigger",
+    "error",
+    "jra:2026:0512:05:11",
+    "unparsable response body",
+  );
+});
+
 it("triggerRescoreAfterWeights forwards a ban-ei race key payload when keibajoCode is 83", async () => {
   const { triggerRescoreAfterWeights } = await import("./worker");
   const fetchStub = vi.fn(

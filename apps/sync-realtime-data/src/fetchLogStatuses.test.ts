@@ -17,6 +17,8 @@ it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () =>
     notFinished: "skip:not-finished",
     paddockUrlMissing: "skip:paddock-url-missing",
     raceNotFound: "skip:race-not-found",
+    rescoreDisabled: "skip:rescore-disabled",
+    rescoreNotClaimed: "skip:not-claimed",
     weightsAlreadyStored: "skip:weights-already-stored",
     weightsEmpty: "skip:weights-empty",
     weightsSparse: "skip:weights-sparse",
@@ -25,6 +27,14 @@ it("SKIP_STATUS exposes every silent-return status with the skip: prefix", () =>
 
 it("SKIP_STATUS.weightsAlreadyStored is the literal used for the fetch-weights already-captured short-circuit", () => {
   expect(SKIP_STATUS.weightsAlreadyStored).toBe("skip:weights-already-stored");
+});
+
+it("SKIP_STATUS.rescoreDisabled is the literal used when finish-position-cron reports rescoreEnabled false", () => {
+  expect(SKIP_STATUS.rescoreDisabled).toBe("skip:rescore-disabled");
+});
+
+it("SKIP_STATUS.rescoreNotClaimed is the literal used on a rescore claim collision", () => {
+  expect(SKIP_STATUS.rescoreNotClaimed).toBe("skip:not-claimed");
 });
 
 it("SKIP_STATUS.awaitingPublish is the literal used for NAR result publish-window logs", () => {

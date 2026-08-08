@@ -20,7 +20,11 @@ import {
   type KeibaGoRaceLink,
   type RaceResultTanshoOddsRow,
 } from "./keiba-go";
-import { PLAN_RESULT_FETCHES_SUMMARY_STATUS, SKIP_STATUS } from "./fetchLogStatuses";
+import {
+  FETCH_LOG_SUCCESS,
+  PLAN_RESULT_FETCHES_SUMMARY_STATUS,
+  SKIP_STATUS,
+} from "./fetchLogStatuses";
 import { formatError } from "./format-error";
 import { QUEUE_HANDLER_TIMEOUT_MS, withHandlerTimeout } from "./handler-timeout";
 import { mergeJsonHeaders } from "./http";
@@ -3106,6 +3110,11 @@ interface RescoreTriggerRequest {
   runYmd: string;
 }
 
+interface RescoreTriggerOutcome {
+  detail: string | null;
+  status: string;
+}
+
 const resolveRescoreCategory = (
   source: string,
   keibajoCode: string,
@@ -3137,14 +3146,32 @@ const postRescoreTriggerRequest = async (
   binding: { fetch: typeof fetch },
   token: string,
   target: RescoreTriggerRequest,
-): Promise<void> => {
-  await binding.fetch(
+): Promise<Response> =>
+  binding.fetch(
     new Request(FINISH_POSITION_CRON_INTERNAL_RESCORE_RACE_URL, {
       body: JSON.stringify(target),
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       method: "POST",
     }),
   );
+
+// Map a finish-position-cron /api/internal/rescore-race response onto the
+// fetch_logs status that actually describes what happened. The endpoint answers
+// 401 on token mismatch, 200 {rescoreEnabled:false} when RESCORE_ENABLED != "1",
+// 200 {claimed:false} on a DO claim collision, and 202 {claimed:true} when the
+// per-race rescore message was really enqueued.
+const readRescoreTriggerOutcome = async (response: Response): Promise<RescoreTriggerOutcome> => {
+  if (!response.ok) return { detail: `http ${response.status}`, status: "error" };
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { detail: "unparsable response body", status: "error" };
+  }
+  if (!isObjectRecord(body)) return { detail: "unparsable response body", status: "error" };
+  if (body.rescoreEnabled === false) return { detail: null, status: SKIP_STATUS.rescoreDisabled };
+  if (body.claimed !== true) return { detail: null, status: SKIP_STATUS.rescoreNotClaimed };
+  return { detail: null, status: FETCH_LOG_SUCCESS.okStatus };
 };
 
 // Fire-and-forget event-driven trigger fired right after a successful horse
@@ -3167,8 +3194,15 @@ export const triggerRescoreAfterWeights = async (env: Env, raceKey: string): Pro
     return;
   }
   try {
-    await postRescoreTriggerRequest(binding, token, target);
-    await logFetch(env.REALTIME_DB, WEIGHT_RESCORE_TRIGGER_LOG_KIND, "ok", raceKey, null);
+    const response = await postRescoreTriggerRequest(binding, token, target);
+    const outcome = await readRescoreTriggerOutcome(response);
+    await logFetch(
+      env.REALTIME_DB,
+      WEIGHT_RESCORE_TRIGGER_LOG_KIND,
+      outcome.status,
+      raceKey,
+      outcome.detail,
+    );
   } catch (error) {
     await logFetch(
       env.REALTIME_DB,

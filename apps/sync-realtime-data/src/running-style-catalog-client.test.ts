@@ -2,6 +2,8 @@
 import { expect, it, vi } from "vitest";
 import type { RunningStyleRaceParams } from "./running-style-features";
 
+const CATALOG_ERROR_STATUS = 502;
+
 const RACE: RunningStyleRaceParams = {
   kaisaiNen: "2026",
   kaisaiTsukihi: "0715",
@@ -52,6 +54,12 @@ const catalogReturning = (payload: unknown, status = 200) => ({
   ),
 });
 
+const catalogReturningBody = (body: string) => ({
+  fetch: vi.fn<(request: Request) => Promise<Response>>(
+    async () => new Response(body, { status: CATALOG_ERROR_STATUS }),
+  ),
+});
+
 it("fetchRunningStyleFeaturesFromCatalog validates and maps the fixed generation", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   const catalog = catalogReturning({
@@ -76,6 +84,97 @@ it("rejects Catalog HTTP errors", async () => {
   await expect(
     fetchRunningStyleFeaturesFromCatalog(catalogReturning({}, 502), RACE, ["f1"]),
   ).rejects.toThrow("failed with HTTP 502");
+});
+
+it("appends the Catalog structured code and detail to the HTTP error", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(
+      catalogReturningBody(
+        '{"code":7003,"detail":"R2 SQL query failed","error":"r2_sql_unavailable"}',
+      ),
+      RACE,
+      ["f1"],
+    ),
+  ).rejects.toThrow(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: code=7003 R2 SQL query failed",
+  );
+});
+
+it("appends a string Catalog code when the detail field is absent", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(catalogReturningBody('{"code":"ETIMEDOUT"}'), RACE, [
+      "f1",
+    ]),
+  ).rejects.toThrow("failed with HTTP 502: code=ETIMEDOUT");
+});
+
+it("appends the Catalog detail alone when the code is null", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(
+      catalogReturningBody('{"code":null,"detail":"binding is not configured"}'),
+      RACE,
+      ["f1"],
+    ),
+  ).rejects.toThrow("failed with HTTP 502: binding is not configured");
+});
+
+it("appends the raw body slice when the Catalog error body is not JSON", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(
+      catalogReturningBody("<html>error 502 bad gateway</html>\n"),
+      RACE,
+      ["f1"],
+    ),
+  ).rejects.toThrow("failed with HTTP 502: <html>error 502 bad gateway</html>");
+});
+
+it("appends the raw body slice when the Catalog error JSON carries no code or detail", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(
+      catalogReturningBody('{"error":"r2_sql_unavailable"}'),
+      RACE,
+      ["f1"],
+    ),
+  ).rejects.toThrow('failed with HTTP 502: {"error":"r2_sql_unavailable"}');
+});
+
+it("keeps the bare message when the Catalog error body is empty", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  await expect(
+    fetchRunningStyleFeaturesFromCatalog(catalogReturningBody(""), RACE, ["f1"]),
+  ).rejects.toThrow("PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502");
+});
+
+it("keeps the bare message when the Catalog error body cannot be read", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const catalog = {
+    fetch: vi.fn<(request: Request) => Promise<Response>>(async () => {
+      const response = new Response("unreachable", { status: 502 });
+      vi.spyOn(response, "text").mockRejectedValue(new Error("stream disturbed"));
+      return response;
+    }),
+  };
+  const failure: unknown = await fetchRunningStyleFeaturesFromCatalog(catalog, RACE, ["f1"]).catch(
+    (error: unknown) => error,
+  );
+  expect(failure instanceof Error ? failure.message : "").toBe(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502",
+  );
+});
+
+it("truncates an oversized Catalog error detail to the bounded cap", async () => {
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const catalog = catalogReturningBody(JSON.stringify({ code: 7003, detail: "x".repeat(1000) }));
+  const failure: unknown = await fetchRunningStyleFeaturesFromCatalog(catalog, RACE, ["f1"]).catch(
+    (error: unknown) => error,
+  );
+  expect(failure instanceof Error ? failure.message.length : 0).toBe(572);
+  expect(failure instanceof Error ? failure.message.slice(-3) : "").toBe("...");
 });
 
 it("requests the dedicated ban-ei Catalog scope while preserving NAR row source", async () => {

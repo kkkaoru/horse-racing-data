@@ -8,6 +8,11 @@ import type { CatalogServiceBinding } from "./types";
 
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 export const RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1";
+// Bounded slice of a failing Catalog response body appended to the thrown error so
+// the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
+// HTTP status. Never echoes request headers or env values.
+const CATALOG_ERROR_DETAIL_MAX_CHARS = 500;
+const CATALOG_ERROR_DETAIL_ELLIPSIS = "...";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -90,10 +95,41 @@ const parseFeatureRow = (value: unknown): RaceHorseFeatureRow => {
   };
 };
 
+const parseJsonOrNull = (text: string): unknown => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+const formatErrorCode = (code: unknown): string =>
+  typeof code === "string" || typeof code === "number" ? `code=${String(code)}` : "";
+
+const structuredErrorParts = (payload: Record<string, unknown>): string[] =>
+  [formatErrorCode(payload.code), typeof payload.detail === "string" ? payload.detail : ""].filter(
+    (part) => part.length > 0,
+  );
+
+const truncateErrorDetail = (detail: string): string =>
+  detail.length > CATALOG_ERROR_DETAIL_MAX_CHARS
+    ? `${detail.slice(0, CATALOG_ERROR_DETAIL_MAX_CHARS)}${CATALOG_ERROR_DETAIL_ELLIPSIS}`
+    : detail;
+
+const catalogErrorDetail = (body: string): string => {
+  const parsed = parseJsonOrNull(body);
+  const parts = isRecord(parsed) ? structuredErrorParts(parsed) : [];
+  return truncateErrorDetail(parts.length > 0 ? parts.join(" ") : body.trim());
+};
+
 const fetchCatalogJson = async (catalog: CatalogServiceBinding, url: URL): Promise<unknown> => {
   const response = await catalog.fetch(new Request(url, { method: "GET" }));
   if (!response.ok) {
-    throw new Error(`PC_KEIBA_R2_CATALOG ${url.pathname} failed with HTTP ${response.status}`);
+    // Safe: the ok path below returns before this branch, so the body stream is
+    // read at most once. A body that cannot be read degrades to the bare message.
+    const detail = catalogErrorDetail(await response.text().catch(() => ""));
+    const message = `PC_KEIBA_R2_CATALOG ${url.pathname} failed with HTTP ${response.status}`;
+    throw new Error(detail.length > 0 ? `${message}: ${detail}` : message);
   }
   return response.json();
 };
