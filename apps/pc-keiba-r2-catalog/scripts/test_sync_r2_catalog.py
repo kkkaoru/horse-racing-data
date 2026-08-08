@@ -154,6 +154,7 @@ class FakeCatalog:
         self.table = table
         self.created = False
         self.namespaces_ensured = 0
+        self.load_calls = 0
 
     def create_namespace_if_not_exists(self, _namespace: str) -> None:
         self.namespaces_ensured += 1
@@ -163,6 +164,7 @@ class FakeCatalog:
 
     def load_table(self, _identifier: str) -> FakeTable:
         assert self.table is not None
+        self.load_calls += 1
         return self.table
 
     def create_table(self, _identifier: str, *, schema, partition_spec, properties):
@@ -999,6 +1001,23 @@ class FingerprintKeyTests(unittest.TestCase):
             f"{subject.FINGERPRINT_FORMAT_VERSION}:abc",
         )
 
+    def test_source_marker_key_shares_the_slice_but_not_the_prefix(self) -> None:
+        scope = subject.YearScope("2010", "2015")
+        self.assertEqual(
+            subject.source_fingerprint_key(None, scope, full=False),
+            subject.SOURCE_FINGERPRINT_PROPERTY_PREFIX + "2010-2014",
+        )
+        self.assertEqual(
+            subject.slice_label(None, scope, full=False),
+            "2010-2014",
+        )
+        self.assertEqual(
+            subject.parsed_arrow_fingerprint("1:deadbeef"),
+            "deadbeef",
+        )
+        self.assertEqual(subject.parsed_arrow_fingerprint("deadbeef"), "deadbeef")
+        self.assertEqual(subject.parsed_arrow_fingerprint(None), "")
+
 
 class SkipUnchangedTests(unittest.TestCase):
     """The fast path must be a proof of equality, never an optimistic guess."""
@@ -1100,6 +1119,63 @@ class SkipUnchangedTests(unittest.TestCase):
         table.properties[key] = subject.stored_fingerprint_value(fingerprint)
         result = self._sync(table, data)
         self.assertEqual(result.status, "replaced")
+
+    def test_arrow_skip_records_a_missing_source_marker(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        key = subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        marker_key = subject.source_fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+        marker = "1:2|a|b|h"
+        table.properties[key] = subject.stored_fingerprint_value(fingerprint)
+        result = self._sync(table, data, skip_if_unchanged=True, source_marker=marker)
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(table.overwrite_calls, 0)
+        self.assertEqual(table.properties[marker_key], marker)
+
+    def test_replace_records_arrow_and_source_markers_together(self) -> None:
+        table, data, fingerprint = self._seeded_table()
+        marker = "1:2|a|b|h"
+        result = self._sync(table, data, skip_if_unchanged=True, source_marker=marker)
+        self.assertEqual(result.status, "replaced")
+        self.assertEqual(
+            table.properties[subject.fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)],
+            subject.stored_fingerprint_value(fingerprint),
+        )
+        self.assertEqual(
+            table.properties[
+                subject.source_fingerprint_key(None, FIVE_YEAR_SCOPE, full=False)
+            ],
+            marker,
+        )
+
+    def test_table_cache_avoids_a_second_catalog_load(self) -> None:
+        table, data, _fingerprint = self._seeded_table()
+        catalog = FakeCatalog(table)
+        cache: dict[str, FakeTable] = {}
+        subject.sync_table(
+            catalog,
+            "pc_keiba",
+            TEST_SPEC,
+            data,
+            full=False,
+            target_date=None,
+            target_scope=FIVE_YEAR_SCOPE,
+            run_id="run",
+            table_cache=cache,
+        )
+        loads = catalog.load_calls
+        subject.sync_table(
+            catalog,
+            "pc_keiba",
+            TEST_SPEC,
+            data,
+            full=False,
+            target_date=None,
+            target_scope=FIVE_YEAR_SCOPE,
+            run_id="run",
+            skip_if_unchanged=True,
+            table_cache=cache,
+        )
+        self.assertEqual(catalog.load_calls, loads)
 
     def test_master_full_write_skips_on_its_whole_table_key(self) -> None:
         spec = subject.TABLE_SPECS["nvd_um"]
@@ -1204,6 +1280,9 @@ class NarrowedPlanTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", side_effect=extract_source),
             patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(
+                subject, "compute_source_marker", return_value=(2, "1:2|||0")
+            ),
             patch.object(subject, "source_years", return_value=source_years),
             patch.object(subject, "target_years", side_effect=target_years),
             patch.object(subject, "append_manifest"),
@@ -1304,6 +1383,9 @@ class ManifestFlushTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", return_value=sample_data()),
             patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(
+                subject, "compute_source_marker", return_value=(2, "1:2|||0")
+            ),
             patch.object(subject, "source_years", return_value={"2012", "2018"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest", side_effect=append_manifest),
@@ -1360,6 +1442,9 @@ class ForcePropagationTests(unittest.TestCase):
             patch.object(subject, "create_catalog", return_value=FakeCatalog()),
             patch.object(subject, "extract_source", return_value=sample_data()),
             patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(
+                subject, "compute_source_marker", return_value=(2, "1:2|||0")
+            ),
             patch.object(subject, "source_years", return_value={"2012"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest"),
@@ -1395,6 +1480,9 @@ class ForcePropagationTests(unittest.TestCase):
                     "nvd_ra", "skipped", 2, 2, "abc", "abc", 1
                 ),
             ),
+            patch.object(
+                subject, "compute_source_marker", return_value=(2, "1:2|||0")
+            ),
             patch.object(subject, "source_years", return_value={"2012"}),
             patch.object(subject, "target_years", return_value=set()),
             patch.object(subject, "append_manifest", side_effect=append_manifest),
@@ -1404,6 +1492,248 @@ class ForcePropagationTests(unittest.TestCase):
         self.assertIn('"status": "skipped"', output.getvalue())
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].column("status").to_pylist(), ["skipped"])
+
+
+class SourceMarkerTests(unittest.TestCase):
+    def test_predicate_uses_bound_year_or_hc_range_or_true(self) -> None:
+        self.assertEqual(
+            subject.pg_slice_predicate(
+                subject.TABLE_SPECS["nvd_ra"], None, target_scope=FIVE_YEAR_SCOPE
+            ),
+            '"kaisai_nen" >= \'2025\' AND "kaisai_nen" < \'2030\'',
+        )
+        self.assertEqual(
+            subject.pg_slice_predicate(
+                subject.TABLE_SPECS["jvd_hc"], None, target_scope=FIVE_YEAR_SCOPE
+            ),
+            '"chokyo_nengappi" >= \'20250101\' AND "chokyo_nengappi" < \'20300101\'',
+        )
+        self.assertEqual(
+            subject.pg_slice_predicate(subject.TABLE_SPECS["nvd_um"], None),
+            "TRUE",
+        )
+        self.assertEqual(
+            subject.pg_slice_predicate(subject.TABLE_SPECS["nvd_ra"], "20260715"),
+            '"kaisai_nen" = \'2026\' AND "kaisai_tsukihi" = \'0715\'',
+        )
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            subject.pg_slice_predicate(
+                subject.TABLE_SPECS["nvd_ra"],
+                "20260715",
+                target_scope=FIVE_YEAR_SCOPE,
+            )
+
+    def test_marker_sql_aliases_aggregates_and_hashes_primary_key(self) -> None:
+        sql = subject.source_marker_sql(
+            subject.TABLE_SPECS["nvd_se"],
+            '"kaisai_nen" >= \'2010\' AND "kaisai_nen" < \'2015\'',
+        )
+        self.assertIn("AS row_count", sql)
+        self.assertIn("AS min_sakusei", sql)
+        self.assertIn("AS max_sakusei", sql)
+        self.assertIn("AS pk_hash", sql)
+        self.assertIn("bit_xor(hashtextextended(", sql)
+        self.assertIn("ketto_toroku_bango", sql)
+        self.assertIn('FROM public."nvd_se"', sql)
+        self.assertNotIn("SELECT *", sql)
+
+    def test_marker_sql_rejects_a_non_identifier_table_name(self) -> None:
+        spec = subject.TableSpec('nvd_se"; drop table x', ("id",))
+        with self.assertRaisesRegex(ValueError, "unsupported table"):
+            subject.source_marker_sql(spec, "TRUE")
+
+    def test_stored_source_marker_is_versioned_and_order_stable(self) -> None:
+        self.assertEqual(
+            subject.stored_source_marker(12, "20100101", "20141231", "-9"),
+            "1:12|20100101|20141231|-9",
+        )
+
+    def test_compute_source_marker_runs_through_postgres_query(self) -> None:
+        executed: list[str] = []
+
+        class Connection:
+            @staticmethod
+            def execute(sql: str):
+                executed.append(sql)
+
+                class Result:
+                    @staticmethod
+                    def fetchone() -> tuple[int, str, str, str]:
+                        return (18084, "20100106", "20180918", "42")
+
+                return Result()
+
+        count, marker = subject.compute_source_marker(
+            Connection(),
+            subject.TABLE_SPECS["jvd_ra"],
+            None,
+            target_scope=subject.YearScope("2010", "2015"),
+        )
+        self.assertEqual(count, 18084)
+        self.assertEqual(marker, "1:18084|20100106|20180918|42")
+        self.assertEqual(len(executed), 1)
+        self.assertIn("postgres_query('source_pg'", executed[0])
+        self.assertIn("AS pk_hash", executed[0])
+
+    def test_connect_source_caps_duckdb_memory_and_threads(self) -> None:
+        executed: list[str] = []
+
+        class FakeConnection:
+            def execute(self, sql: str) -> None:
+                executed.append(sql)
+
+        with patch.object(subject.duckdb, "connect", return_value=FakeConnection()):
+            subject.connect_source("postgresql://u:p@127.0.0.1:15432/db")
+        self.assertIn("SET memory_limit='6GB'", executed)
+        self.assertIn("SET threads TO 4", executed)
+
+
+class SkipBeforeExtractTests(unittest.TestCase):
+    class Connection:
+        def close(self) -> None:
+            pass
+
+    def test_matching_source_marker_skips_extract(self) -> None:
+        extracts: list[int] = []
+        syncs: list[int] = []
+        spec = subject.TABLE_SPECS["nvd_ra"]
+        data = sample_data().select(
+            ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"]
+        )
+        table = FakeTable(data, spec)
+        table.data = subject.conform_to_table(data, table, spec)
+        scope = subject.YearScope("2010", "2015")
+        marker = "1:2|a|b|h"
+        table.properties[subject.source_fingerprint_key(None, scope, full=False)] = (
+            marker
+        )
+        table.properties[subject.fingerprint_key(None, scope, full=False)] = (
+            subject.stored_fingerprint_value("abc")
+        )
+
+        def extract_source(*_args, **_kwargs):
+            extracts.append(1)
+            return data
+
+        def sync_table(*_args, **_kwargs):
+            syncs.append(1)
+            raise AssertionError("sync_table must not run when source marker matches")
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        output = io.StringIO()
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog(table)),
+            patch.object(subject, "compute_source_marker", return_value=(2, marker)),
+            patch.object(subject, "extract_source", side_effect=extract_source),
+            patch.object(subject, "sync_table", side_effect=sync_table),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        self.assertEqual(extracts, [])
+        self.assertEqual(syncs, [])
+        self.assertIn('"status": "skipped"', output.getvalue())
+        self.assertIn('"phase": "skip_extract"', output.getvalue())
+        self.assertIn('"event": "run_summary"', output.getvalue())
+
+    def test_mismatched_source_marker_still_extracts(self) -> None:
+        extracts: list[int] = []
+        spec = subject.TABLE_SPECS["nvd_ra"]
+        data = sample_data().select(
+            ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"]
+        )
+        table = FakeTable(data, spec)
+        table.data = subject.conform_to_table(data, table, spec)
+        scope = subject.YearScope("2010", "2015")
+        table.properties[subject.source_fingerprint_key(None, scope, full=False)] = (
+            "1:stale"
+        )
+
+        def extract_source(*_args, **_kwargs):
+            extracts.append(1)
+            return data
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog(table)),
+            patch.object(
+                subject, "compute_source_marker", return_value=(2, "1:fresh")
+            ),
+            patch.object(subject, "extract_source", side_effect=extract_source),
+            patch.object(
+                subject,
+                "sync_table",
+                return_value=subject.SyncResult(
+                    "nvd_ra", "replaced", 2, 2, "abc", "abc", 1
+                ),
+            ),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        self.assertEqual(extracts, [1])
+
+    def test_force_extracts_even_when_source_marker_matches(self) -> None:
+        extracts: list[int] = []
+        spec = subject.TABLE_SPECS["nvd_ra"]
+        data = sample_data().select(
+            ["kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango"]
+        )
+        table = FakeTable(data, spec)
+        table.data = subject.conform_to_table(data, table, spec)
+        scope = subject.YearScope("2010", "2015")
+        marker = "1:2|a|b|h"
+        table.properties[subject.source_fingerprint_key(None, scope, full=False)] = (
+            marker
+        )
+
+        def extract_source(*_args, **_kwargs):
+            extracts.append(1)
+            return data
+
+        args = sync_args(full=True, tables="nvd_ra", dry_run=False, force=True)
+        settings = subject.Settings("pg", "uri", "wh", "ns", None)
+        with (
+            patch.object(subject, "connect_source", return_value=self.Connection()),
+            patch.object(subject, "create_catalog", return_value=FakeCatalog(table)),
+            patch.object(subject, "compute_source_marker", return_value=(2, marker)),
+            patch.object(subject, "extract_source", side_effect=extract_source),
+            patch.object(
+                subject,
+                "sync_table",
+                return_value=subject.SyncResult(
+                    "nvd_ra", "replaced", 2, 2, "abc", "abc", 1
+                ),
+            ),
+            patch.object(subject, "source_years", return_value={"2012"}),
+            patch.object(subject, "target_years", return_value=set()),
+            patch.object(subject, "append_manifest"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(subject.run(args, settings), 0)
+        self.assertEqual(extracts, [1])
+
+    def test_target_years_reuses_the_table_cache(self) -> None:
+        table = FakeTable(sample_data())
+        partitions = pa.Table.from_pylist(
+            [{"partition": {"kaisai_nen": "2012"}}]
+        )
+        table.inspect = SimpleNamespace(partitions=lambda: partitions)
+        catalog = FakeCatalog(table)
+        cache = {"pc_keiba.test_table": table}
+        self.assertEqual(
+            subject.target_years(catalog, "pc_keiba", TEST_SPEC, cache=cache),
+            {"2012"},
+        )
+        self.assertEqual(catalog.load_calls, 0)
 
 
 if __name__ == "__main__":

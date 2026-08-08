@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -48,12 +49,16 @@ DEFAULT_NAMESPACE: Final[str] = "pc_keiba"
 PG_ALIAS: Final[str] = "source_pg"
 MANIFEST_TABLE: Final[str] = "_sync_manifest"
 FINGERPRINT_PROPERTY_PREFIX: Final[str] = "sync.fingerprint."
+SOURCE_FINGERPRINT_PROPERTY_PREFIX: Final[str] = "sync.source-fingerprint."
 FULL_FINGERPRINT_SLICE: Final[str] = "__full__"
 # Bump whenever anything that changes the bytes written to R2 changes -- the
 # conforming rules, the partition spec, the timestamp normalization, or the
 # fingerprint algorithm itself. The source fingerprint alone cannot notice such
 # a change, so every stored value must be invalidated by hand.
 FINGERPRINT_FORMAT_VERSION: Final[str] = "1"
+# Independent of the Arrow writer version. Bump when the PG-side marker SQL
+# changes; stored source markers then miss once and fall back to extract.
+SOURCE_MARKER_FORMAT_VERSION: Final[str] = "1"
 ARROW_BATCH_SIZE: Final[int] = 100_000
 DEFAULT_MASTER_MAX_ROWS: Final[int] = 2_000_000
 DEFAULT_MASTER_MAX_BYTES: Final[int] = 1_073_741_824
@@ -65,6 +70,8 @@ R2_S3_CONNECT_TIMEOUT_SECONDS: Final[int] = 30
 R2_S3_REQUEST_TIMEOUT_SECONDS: Final[int] = 120
 IDENTIFIER_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z_][a-z0-9_]*$")
 LOCAL_PG_HOSTS: Final[frozenset[str]] = frozenset({"127.0.0.1", "::1", "localhost"})
+DUCKDB_MEMORY_LIMIT: Final[str] = "6GB"
+DUCKDB_THREADS: Final[int] = 4
 
 
 @dataclass(frozen=True)
@@ -350,6 +357,8 @@ def connect_source(pg_url: str) -> duckdb.DuckDBPyConnection:
     connection = duckdb.connect()
     connection.execute("INSTALL postgres")
     connection.execute("LOAD postgres")
+    connection.execute(f"SET memory_limit={sql_string(DUCKDB_MEMORY_LIMIT)}")
+    connection.execute(f"SET threads TO {DUCKDB_THREADS}")
     connection.execute(
         f"ATTACH {sql_string(pg_url)} AS {PG_ALIAS} (TYPE postgres, READ_ONLY)"
     )
@@ -607,21 +616,49 @@ def validate_existing_table(table: Any, spec: TableSpec, *, full: bool) -> None:
             )
 
 
-def ensure_table(catalog: Any, identifier: str, data: pa.Table, spec: TableSpec) -> Any:
+def ensure_table(
+    catalog: Any,
+    identifier: str,
+    data: pa.Table,
+    spec: TableSpec,
+    *,
+    cache: dict[str, Any] | None = None,
+) -> Any:
+    if cache is not None and identifier in cache:
+        return cache[identifier]
     if catalog.table_exists(identifier):
         table = catalog.load_table(identifier)
         table.refresh()
-        return table
-    schema = build_iceberg_schema(data, spec)
-    return catalog.create_table(
-        identifier,
-        schema=schema,
-        partition_spec=build_partition_spec(schema, spec),
-        properties={
-            "format-version": "2",
-            "write.parquet.compression-codec": "zstd",
-        },
-    )
+    else:
+        schema = build_iceberg_schema(data, spec)
+        table = catalog.create_table(
+            identifier,
+            schema=schema,
+            partition_spec=build_partition_spec(schema, spec),
+            properties={
+                "format-version": "2",
+                "write.parquet.compression-codec": "zstd",
+            },
+        )
+    if cache is not None:
+        cache[identifier] = table
+    return table
+
+
+def load_existing_table(
+    catalog: Any,
+    identifier: str,
+    *,
+    cache: dict[str, Any],
+) -> Any | None:
+    if identifier in cache:
+        return cache[identifier]
+    if not catalog.table_exists(identifier):
+        return None
+    table = catalog.load_table(identifier)
+    table.refresh()
+    cache[identifier] = table
+    return table
 
 
 def read_target(
@@ -679,6 +716,19 @@ def snapshot_properties(
     return properties
 
 
+def slice_label(
+    target_date: str | None, target_scope: YearScope | None, *, full: bool
+) -> str:
+    """Stable per-slice identity shared by Arrow and source-marker properties."""
+    if target_scope is not None:
+        return target_scope.label
+    if target_date is not None:
+        return target_date
+    if full:
+        return FULL_FINGERPRINT_SLICE
+    raise ValueError("cannot derive a fingerprint key for a partial untargeted write")
+
+
 def fingerprint_key(
     target_date: str | None, target_scope: YearScope | None, *, full: bool
 ) -> str:
@@ -687,13 +737,18 @@ def fingerprint_key(
     Scope writes and date writes each own their own key. A ``--full`` master
     rewrite replaces the whole table, so it owns a single whole-table key.
     """
-    if target_scope is not None:
-        return FINGERPRINT_PROPERTY_PREFIX + target_scope.label
-    if target_date is not None:
-        return FINGERPRINT_PROPERTY_PREFIX + target_date
-    if full:
-        return FINGERPRINT_PROPERTY_PREFIX + FULL_FINGERPRINT_SLICE
-    raise ValueError("cannot derive a fingerprint key for a partial untargeted write")
+    return FINGERPRINT_PROPERTY_PREFIX + slice_label(
+        target_date, target_scope, full=full
+    )
+
+
+def source_fingerprint_key(
+    target_date: str | None, target_scope: YearScope | None, *, full: bool
+) -> str:
+    """Property key for the PG-side marker that can skip extract entirely."""
+    return SOURCE_FINGERPRINT_PROPERTY_PREFIX + slice_label(
+        target_date, target_scope, full=full
+    )
 
 
 def stored_fingerprint_value(fingerprint: str) -> str:
@@ -704,6 +759,94 @@ def stored_fingerprint_value(fingerprint: str) -> str:
     ``FINGERPRINT_FORMAT_VERSION`` forces every slice to be rewritten once.
     """
     return f"{FINGERPRINT_FORMAT_VERSION}:{fingerprint}"
+
+
+def stored_source_marker(
+    row_count: int, min_sakusei: str, max_sakusei: str, pk_hash: str
+) -> str:
+    """Version-tag a PG aggregate marker used to skip extract+Arrow hashing."""
+    return (
+        f"{SOURCE_MARKER_FORMAT_VERSION}:{row_count}|{min_sakusei}|"
+        f"{max_sakusei}|{pk_hash}"
+    )
+
+
+def parsed_arrow_fingerprint(stored: str | None) -> str:
+    prefix = f"{FINGERPRINT_FORMAT_VERSION}:"
+    if stored and stored.startswith(prefix):
+        return stored[len(prefix) :]
+    return stored or ""
+
+
+def pg_slice_predicate(
+    spec: TableSpec,
+    target_date: str | None,
+    *,
+    target_scope: YearScope | None = None,
+) -> str:
+    if target_date is not None and target_scope is not None:
+        raise ValueError("target_date and target_scope are mutually exclusive")
+    if target_date is not None:
+        values = date_values(spec, target_date)
+        return " AND ".join(
+            f'"{column}" = {sql_string(value)}'
+            for column, value in zip(spec.date_columns, values, strict=True)
+        )
+    if target_scope is not None:
+        if spec.date_columns == ("kaisai_nen", "kaisai_tsukihi"):
+            return (
+                f'"kaisai_nen" >= {sql_string(target_scope.start)} AND '
+                f'"kaisai_nen" < {sql_string(target_scope.end_exclusive)}'
+            )
+        if spec.date_columns == ("chokyo_nengappi",):
+            return (
+                f'"chokyo_nengappi" >= {sql_string(target_scope.start + "0101")} AND '
+                f'"chokyo_nengappi" < {sql_string(target_scope.end_exclusive + "0101")}'
+            )
+        raise ValueError(f"{spec.name}: cannot query non-date table by year")
+    return "TRUE"
+
+
+def source_marker_sql(spec: TableSpec, predicate: str) -> str:
+    if not IDENTIFIER_RE.fullmatch(spec.name):
+        raise ValueError(f"unsupported table {spec.name!r}")
+    pk_concat = " || chr(31) || ".join(
+        f"coalesce(\"{column}\"::text, '')" for column in spec.primary_key
+    )
+    return f"""
+SELECT count(*)::bigint AS row_count,
+       coalesce(min(data_sakusei_nengappi), '') AS min_sakusei,
+       coalesce(max(data_sakusei_nengappi), '') AS max_sakusei,
+       coalesce(bit_xor(hashtextextended(
+         coalesce(record_id::text, '') || chr(31) ||
+         coalesce(data_sakusei_nengappi, '') || chr(31) ||
+         {pk_concat},
+         0
+       )), 0)::text AS pk_hash
+FROM public."{spec.name}"
+WHERE {predicate}
+"""
+
+
+def compute_source_marker(
+    connection: duckdb.DuckDBPyConnection,
+    spec: TableSpec,
+    target_date: str | None,
+    *,
+    target_scope: YearScope | None = None,
+) -> tuple[int, str]:
+    sql = source_marker_sql(
+        spec,
+        pg_slice_predicate(spec, target_date, target_scope=target_scope),
+    )
+    row = connection.execute(
+        "SELECT * FROM postgres_query("
+        f"{sql_string(PG_ALIAS)}, {sql_string(sql)})"
+    ).fetchone()
+    row_count = int(row[0])
+    return row_count, stored_source_marker(
+        row_count, str(row[1] or ""), str(row[2] or ""), str(row[3] or "0")
+    )
 
 
 def validate_scope_data(
@@ -742,6 +885,8 @@ def sync_table(
     max_rows: int = PARTITION_MAX_ROWS,
     max_bytes: int = PARTITION_MAX_BYTES,
     skip_if_unchanged: bool = False,
+    source_marker: str | None = None,
+    table_cache: dict[str, Any] | None = None,
 ) -> SyncResult:
     if target_date is not None:
         if target_scope is None:
@@ -752,16 +897,51 @@ def sync_table(
             )
     source_data = require_primary_key_fields(source_data, spec)
     identifier = f"{namespace}.{spec.name}"
-    table = ensure_table(catalog, identifier, source_data, spec)
+    load_started = time.perf_counter()
+    cached = table_cache is not None and identifier in table_cache
+    table = ensure_table(
+        catalog, identifier, source_data, spec, cache=table_cache
+    )
     validate_existing_table(table, spec, full=full)
+    emit(
+        "phase_timing",
+        phase="load_table",
+        table=spec.name,
+        ms=0 if cached else elapsed_ms(load_started),
+        cached=cached,
+        year_scope=target_scope.label if target_scope else None,
+        date=target_date,
+    )
     source_data = conform_to_table(source_data, table, spec)
     validate_primary_key(source_data, spec)
     if target_scope is not None:
         validate_scope_data(source_data, spec, target_scope)
+    fingerprint_started = time.perf_counter()
     source_fingerprint = arrow_fingerprint(source_data, spec.primary_key)
+    emit(
+        "phase_timing",
+        phase="arrow_fingerprint",
+        table=spec.name,
+        ms=elapsed_ms(fingerprint_started),
+        rows=source_data.num_rows,
+        year_scope=target_scope.label if target_scope else None,
+        date=target_date,
+    )
     key = fingerprint_key(target_date, target_scope, full=full)
     stored = stored_fingerprint_value(source_fingerprint)
+    marker_key = source_fingerprint_key(target_date, target_scope, full=full)
+    extra_properties = {marker_key: source_marker} if source_marker else {}
     if skip_if_unchanged and table.properties.get(key) == stored:
+        if extra_properties and table.properties.get(marker_key) != source_marker:
+            record_table_properties(table, extra_properties)
+        emit(
+            "phase_timing",
+            phase="skip_write",
+            table=spec.name,
+            ms=0,
+            year_scope=target_scope.label if target_scope else None,
+            date=target_date,
+        )
         return SyncResult(
             table_name=spec.name,
             status="skipped",
@@ -780,6 +960,7 @@ def sync_table(
         source_data.num_rows,
         target_scope=target_scope,
     )
+    write_started = time.perf_counter()
     if full:
         table.overwrite(source_data, snapshot_properties=properties)
     elif not source_data.num_rows:
@@ -800,7 +981,17 @@ def sync_table(
     else:
         table.dynamic_partition_overwrite(source_data, snapshot_properties=properties)
     table.refresh()
+    emit(
+        "phase_timing",
+        phase="r2_put",
+        table=spec.name,
+        ms=elapsed_ms(write_started),
+        rows=source_data.num_rows,
+        year_scope=target_scope.label if target_scope else None,
+        date=target_date,
+    )
 
+    verify_started = time.perf_counter()
     after = conform_to_table(
         read_target(
             table,
@@ -814,6 +1005,15 @@ def sync_table(
         spec,
     )
     target_fingerprint = arrow_fingerprint(after, spec.primary_key)
+    emit(
+        "phase_timing",
+        phase="r2_verify",
+        table=spec.name,
+        ms=elapsed_ms(verify_started),
+        rows=after.num_rows,
+        year_scope=target_scope.label if target_scope else None,
+        date=target_date,
+    )
     if after.num_rows != source_data.num_rows:
         raise RuntimeError(
             f"{spec.name}: row-count verification failed: "
@@ -822,7 +1022,16 @@ def sync_table(
     if target_fingerprint != source_fingerprint:
         raise RuntimeError(f"{spec.name}: fingerprint verification failed")
     validate_primary_key(after, spec)
-    record_table_fingerprint(table, key, stored)
+    property_started = time.perf_counter()
+    record_table_properties(table, {key: stored, **extra_properties})
+    emit(
+        "phase_timing",
+        phase="record_fingerprint",
+        table=spec.name,
+        ms=elapsed_ms(property_started),
+        year_scope=target_scope.label if target_scope else None,
+        date=target_date,
+    )
     return SyncResult(
         table_name=spec.name,
         status="replaced",
@@ -834,17 +1043,23 @@ def sync_table(
     )
 
 
-def record_table_fingerprint(table: Any, key: str, value: str) -> None:
-    """Persist a verified slice fingerprint so the next run can prove a no-op.
+def record_table_properties(table: Any, properties: dict[str, str]) -> None:
+    """Persist verified slice markers so the next run can prove a no-op.
 
     Committed only after the post-write read-back verified that R2 holds exactly
     this fingerprint, so a later skip is a proof rather than an assumption. A
     failure here leaves the property absent, which makes the next run rewrite --
     the safe direction.
     """
+    if not properties:
+        return
     transaction = table.transaction()
-    transaction.set_properties({key: value})
+    transaction.set_properties(properties)
     transaction.commit_transaction()
+
+
+def record_table_fingerprint(table: Any, key: str, value: str) -> None:
+    record_table_properties(table, {key: value})
 
 
 def manifest_arrow(
@@ -905,12 +1120,22 @@ def append_manifest(
     )
 
 
-def target_years(catalog: Any, namespace: str, spec: TableSpec) -> set[str]:
+def target_years(
+    catalog: Any,
+    namespace: str,
+    spec: TableSpec,
+    *,
+    cache: dict[str, Any] | None = None,
+) -> set[str]:
     identifier = f"{namespace}.{spec.name}"
-    if not catalog.table_exists(identifier):
-        return set()
-    table = catalog.load_table(identifier)
-    table.refresh()
+    table = cache.get(identifier) if cache is not None else None
+    if table is None:
+        if not catalog.table_exists(identifier):
+            return set()
+        table = catalog.load_table(identifier)
+        table.refresh()
+        if cache is not None:
+            cache[identifier] = table
     validate_existing_table(table, spec, full=False)
     years: set[str] = set()
     for row in table.inspect.partitions().to_pylist():
@@ -951,6 +1176,10 @@ def emit(event: str, **fields: Any) -> None:
     print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
 
 
+def elapsed_ms(started: float) -> float:
+    return round((time.perf_counter() - started) * 1000, 1)
+
+
 def redact_error(exc: BaseException, settings: Settings) -> str:
     message = str(exc)
     secrets = [settings.token, settings.pg_url]
@@ -984,10 +1213,42 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
     catalog: Any = None
     run_id = str(uuid.uuid4())
     manifest_rows: list[pa.Table] = []
+    table_cache: dict[str, Any] = {}
+    run_started = time.perf_counter()
     try:
         catalog = None if args.dry_run else create_catalog(settings)
         if catalog is not None:
             catalog.create_namespace_if_not_exists(settings.namespace)
+
+        def emit_result(
+            spec: TableSpec,
+            result: SyncResult,
+            *,
+            partition_date: str | None,
+            partition_scope: YearScope | None,
+            manifest_mode: str,
+        ) -> None:
+            manifest_rows.append(
+                manifest_arrow(
+                    result,
+                    spec,
+                    run_id=run_id,
+                    mode=manifest_mode,
+                    target_date=partition_date
+                    or (partition_scope.label if partition_scope else None),
+                )
+            )
+            emit(
+                "sync_complete",
+                table=result.table_name,
+                status=result.status,
+                mode=manifest_mode,
+                date=partition_date,
+                year_scope=partition_scope.label if partition_scope else None,
+                rows=result.target_rows,
+                fingerprint=result.target_fingerprint,
+                snapshot_id=result.snapshot_id,
+            )
 
         def process_data(
             spec: TableSpec,
@@ -999,17 +1260,113 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
             max_rows: int,
             max_bytes: int,
         ) -> None:
+            marker_date = None if partition_scope is not None else partition_date
+            source_marker: str | None = None
+            source_count: int | None = None
+            if not args.dry_run:
+                marker_started = time.perf_counter()
+                source_count, source_marker = compute_source_marker(
+                    connection,
+                    spec,
+                    marker_date,
+                    target_scope=partition_scope,
+                )
+                emit(
+                    "phase_timing",
+                    phase="source_marker",
+                    table=spec.name,
+                    ms=elapsed_ms(marker_started),
+                    rows=source_count,
+                    year_scope=partition_scope.label if partition_scope else None,
+                    date=partition_date,
+                )
+                identifier = f"{settings.namespace}.{spec.name}"
+                load_started = time.perf_counter()
+                cached = identifier in table_cache
+                table = load_existing_table(catalog, identifier, cache=table_cache)
+                emit(
+                    "phase_timing",
+                    phase="load_table",
+                    table=spec.name,
+                    ms=0 if cached else elapsed_ms(load_started),
+                    cached=cached,
+                    year_scope=partition_scope.label if partition_scope else None,
+                    date=partition_date,
+                )
+                if (
+                    table is not None
+                    and not args.force
+                    and source_marker is not None
+                ):
+                    validate_existing_table(table, spec, full=full_write)
+                    marker_key = source_fingerprint_key(
+                        partition_date, partition_scope, full=full_write
+                    )
+                    if table.properties.get(marker_key) == source_marker:
+                        arrow_fp = parsed_arrow_fingerprint(
+                            table.properties.get(
+                                fingerprint_key(
+                                    partition_date, partition_scope, full=full_write
+                                )
+                            )
+                        )
+                        emit(
+                            "phase_timing",
+                            phase="skip_extract",
+                            table=spec.name,
+                            ms=0,
+                            year_scope=partition_scope.label
+                            if partition_scope
+                            else None,
+                            date=partition_date,
+                        )
+                        emit_result(
+                            spec,
+                            SyncResult(
+                                spec.name,
+                                "skipped",
+                                source_count or 0,
+                                source_count or 0,
+                                arrow_fp or source_marker,
+                                arrow_fp or source_marker,
+                                current_snapshot_id(table),
+                            ),
+                            partition_date=partition_date,
+                            partition_scope=partition_scope,
+                            manifest_mode=manifest_mode,
+                        )
+                        return
+            extract_started = time.perf_counter()
             data = extract_source(
                 connection,
                 spec,
-                None if partition_scope is not None else partition_date,
+                marker_date,
                 target_scope=partition_scope,
                 max_rows=max_rows,
                 max_bytes=max_bytes,
             )
             data = require_primary_key_fields(data, spec)
-            fingerprint = arrow_fingerprint(data, spec.primary_key)
+            emit(
+                "phase_timing",
+                phase="extract_source",
+                table=spec.name,
+                ms=elapsed_ms(extract_started),
+                rows=data.num_rows,
+                year_scope=partition_scope.label if partition_scope else None,
+                date=partition_date,
+            )
             if args.dry_run:
+                fingerprint_started = time.perf_counter()
+                fingerprint = arrow_fingerprint(data, spec.primary_key)
+                emit(
+                    "phase_timing",
+                    phase="arrow_fingerprint_precheck",
+                    table=spec.name,
+                    ms=elapsed_ms(fingerprint_started),
+                    rows=data.num_rows,
+                    year_scope=partition_scope.label if partition_scope else None,
+                    date=partition_date,
+                )
                 emit(
                     "dry_run",
                     table=spec.name,
@@ -1034,27 +1391,15 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 max_rows=max_rows,
                 max_bytes=max_bytes,
                 skip_if_unchanged=not args.force,
+                source_marker=source_marker,
+                table_cache=table_cache,
             )
-            manifest_rows.append(
-                manifest_arrow(
-                    result,
-                    spec,
-                    run_id=run_id,
-                    mode=manifest_mode,
-                    target_date=partition_date
-                    or (partition_scope.label if partition_scope else None),
-                )
-            )
-            emit(
-                "sync_complete",
-                table=result.table_name,
-                status=result.status,
-                mode=manifest_mode,
-                date=partition_date,
-                year_scope=partition_scope.label if partition_scope else None,
-                rows=result.target_rows,
-                fingerprint=result.target_fingerprint,
-                snapshot_id=result.snapshot_id,
+            emit_result(
+                spec,
+                result,
+                partition_date=partition_date,
+                partition_scope=partition_scope,
+                manifest_mode=manifest_mode,
             )
 
         only_scope: YearScope | None = args.year_scope
@@ -1102,7 +1447,14 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
             # outside --year-scope would look stale and be emptied.
             if catalog is not None and only_scope is None:
                 target_scopes = set(
-                    year_scopes(target_years(catalog, settings.namespace, spec))
+                    year_scopes(
+                        target_years(
+                            catalog,
+                            settings.namespace,
+                            spec,
+                            cache=table_cache,
+                        )
+                    )
                 )
                 for stale_scope in sorted(target_scopes - set(scopes)):
                     process_data(
@@ -1121,6 +1473,16 @@ def run(args: argparse.Namespace, settings: Settings) -> int:
                 f"--year-scope {only_scope.label} matched no source scope "
                 "in the selected tables"
             )
+        statuses = [
+            row.column("status").to_pylist()[0] for row in manifest_rows
+        ]
+        emit(
+            "run_summary",
+            slices=len(statuses),
+            replaced=statuses.count("replaced"),
+            skipped=statuses.count("skipped"),
+            ms=elapsed_ms(run_started),
+        )
         if catalog is not None:
             append_manifest(catalog, settings.namespace, manifest_rows, run_id=run_id)
         return 0

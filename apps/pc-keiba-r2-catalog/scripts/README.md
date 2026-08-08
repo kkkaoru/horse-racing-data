@@ -74,23 +74,29 @@ properties.
 
 ## Skipping unchanged slices
 
-After a write is read back and verified, the slice's fingerprint is stored on
-the Iceberg table as a `sync.fingerprint.<slice>` property — one key per
-five-year scope, per date, or `__full__` for a whole-table master rewrite. The
-next run extracts and fingerprints the source as usual, and when the fingerprint
-matches the stored one it reports `"status": "skipped"` and performs no write,
-no read-back, and no property commit. Because the property is only written after
-verification, a skip is a proof that R2 already holds exactly these bytes rather
-than an assumption that nothing changed.
+Two layered proofs, both stored as Iceberg table properties after a verified
+write:
 
-Stored values are prefixed with `FINGERPRINT_FORMAT_VERSION`. The source
-fingerprint cannot notice a change in how the _writer_ serializes data, so bump
-that constant whenever the conforming rules, the partition spec, the timestamp
-normalization, or the fingerprint algorithm changes; every stored value is then
-invalidated and every slice is rewritten once. Anything unrecognized — including
-a bare, unversioned hash — is not trusted and triggers a rewrite.
+1. `sync.source-fingerprint.<slice>` — a PostgreSQL aggregate marker
+   (`count(*)`, min/max `data_sakusei_nengappi`, and `bit_xor(hashtextextended)`
+   over `record_id` + sakusei + primary key). Computed via `postgres_query`
+   without `SELECT *`. When it matches, the run reports `"status": "skipped"`
+   and performs no extract, no Arrow fingerprint, no write, and no read-back.
+2. `sync.fingerprint.<slice>` — the Arrow IPC SHA-256 used to verify that R2
+   actually holds those bytes. Used when the source marker is absent (first run
+   after a writer change) so a matching extract can still skip the R2 PUT.
 
-Measured on `jvd_ra` `2010-2014` (18,084 rows), a rewrite is ~24.6s wall clock
-and the subsequent skip is ~8.9s. The marginal cost of an additional skipped
-scope within one run is only the ~1s Iceberg `load_table`; the remainder is
-per-run fixed cost (catalog handshake and the single manifest commit).
+Slice keys are one per five-year scope, per date, or `__full__` for a
+whole-table master rewrite. Iceberg `load_table` is cached per table within a
+run so a 15-scope plan does not pay 15 catalog round trips.
+
+`--force` still rewrites every slice. Source-marker values are prefixed with
+`SOURCE_MARKER_FORMAT_VERSION`; bump that when the PG SQL changes. Arrow values
+are prefixed with `FINGERPRINT_FORMAT_VERSION`; bump that when the writer
+serialization changes. Anything unrecognized — including a bare, unversioned
+hash — is not trusted and triggers a rewrite.
+
+DuckDB is capped at `memory_limit=6GB` and `threads=4`. Phase timings are
+emitted as `phase_timing` JSON lines (`source_marker`, `load_table`,
+`extract_source`, `arrow_fingerprint`, `r2_put`, `r2_verify`, `skip_extract`,
+`skip_write`) plus a final `run_summary`.
