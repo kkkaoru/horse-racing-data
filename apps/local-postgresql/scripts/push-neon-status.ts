@@ -2,7 +2,7 @@
 /**
  * Progress / status checker for push-neon-sync.
  *
- * - Side-by-side row count diff between docker (local) and Neon for key tables.
+ * - Side-by-side row count diff between Apple local PostgreSQL and Neon for key tables.
  * - Tails the last N lines of the sync log if present.
  * - Optional --watch refreshes every N seconds.
  *
@@ -16,6 +16,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { buildLocalContainerPsqlArgs, buildNeonPsqlArgs } from "../src/replica-push/core";
 
 const KEY_TABLES = [
   "finish_position_active_models",
@@ -53,7 +54,7 @@ interface CommandResult {
 
 interface RowCountSummary {
   tableName: string;
-  dockerRows: number | null;
+  localRows: number | null;
   neonRows: number | null;
   diff: number | null;
 }
@@ -66,7 +67,7 @@ interface ActiveModelRow {
 
 interface ActiveModelComparison {
   category: string;
-  docker: string;
+  local: string;
   neon: string;
   same: boolean;
 }
@@ -234,60 +235,35 @@ async function runCommand(
   });
 }
 
-function dockerComposeArgs(env: Record<string, string | undefined>, sql: string): string[] {
-  return [
-    "compose",
-    "--env-file",
-    envPath,
-    "--project-directory",
-    appDir,
-    "exec",
-    "-T",
-    "postgres",
-    "psql",
-    "-U",
-    env.POSTGRES_USER ?? "",
-    "-d",
-    env.POSTGRES_DB ?? "",
-    "-At",
-    "-F",
-    "\t",
-    "-c",
-    sql,
-  ];
+function localContainerPsqlArgs(env: Record<string, string | undefined>, sql: string): string[] {
+  return buildLocalContainerPsqlArgs({
+    user: env.POSTGRES_USER,
+    database: env.POSTGRES_DB,
+    extraArgs: ["-At", "-F", "\t", "-c", sql],
+  });
 }
 
 function neonPsqlArgs(env: Record<string, string | undefined>, sql: string): string[] {
-  const neonUrl = env.NEON_DIRECT_DATABASE_URL;
-  if (!neonUrl) {
-    throw new Error("NEON_DIRECT_DATABASE_URL is required (set in .env.replica)");
-  }
-  return [
-    "run",
-    "--rm",
-    "-i",
-    "postgres:18-alpine",
-    "psql",
-    neonUrl,
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-At",
-    "-F",
-    "\t",
-    "-c",
-    sql,
-  ];
+  return buildNeonPsqlArgs({
+    neonUrl: env.NEON_DIRECT_DATABASE_URL,
+    containerName: env.REPLICA_SYNC_NEON_PSQL_CONTAINER,
+    extraArgs: ["-v", "ON_ERROR_STOP=1", "-At", "-F", "\t", "-c", sql],
+  });
 }
 
-async function queryDockerSingleColumn(
+async function queryLocalSingleColumn(
   env: Record<string, string | undefined>,
   sql: string,
 ): Promise<string[]> {
-  const { stdout, exitCode, stderr } = await runCommand("docker", dockerComposeArgs(env, sql), {
-    timeoutSeconds: PSQL_CONNECT_TIMEOUT_SECONDS,
-  });
+  const { stdout, exitCode, stderr } = await runCommand(
+    "container",
+    localContainerPsqlArgs(env, sql),
+    {
+      timeoutSeconds: PSQL_CONNECT_TIMEOUT_SECONDS,
+    },
+  );
   if (exitCode !== 0) {
-    throw new Error(`docker psql failed: ${stderr.trim()}`);
+    throw new Error(`local psql failed: ${stderr.trim()}`);
   }
   return stdout
     .split("\n")
@@ -299,7 +275,7 @@ async function queryNeonSingleColumn(
   env: Record<string, string | undefined>,
   sql: string,
 ): Promise<string[]> {
-  const { stdout, exitCode, stderr } = await runCommand("docker", neonPsqlArgs(env, sql), {
+  const { stdout, exitCode, stderr } = await runCommand("container", neonPsqlArgs(env, sql), {
     timeoutSeconds: PSQL_CONNECT_TIMEOUT_SECONDS,
   });
   if (exitCode !== 0) {
@@ -329,19 +305,19 @@ async function loadRowCounts(
   env: Record<string, string | undefined>,
   tables: readonly string[],
 ): Promise<RowCountSummary[]> {
-  const [dockerExisting, neonExisting] = await Promise.all([
-    loadExistingTables(env, tables, "docker"),
+  const [localExisting, neonExisting] = await Promise.all([
+    loadExistingTables(env, tables, "local"),
     loadExistingTables(env, tables, "neon"),
   ]);
-  const dockerCounts = await loadCounts(env, [...dockerExisting], "docker");
+  const localCounts = await loadCounts(env, [...localExisting], "local");
   const neonCounts = await loadCounts(env, [...neonExisting], "neon");
   return tables.map((table) => {
-    const dockerCount = dockerExisting.has(table) ? (dockerCounts.get(table) ?? null) : null;
+    const localCount = localExisting.has(table) ? (localCounts.get(table) ?? null) : null;
     const neonCount = neonExisting.has(table) ? (neonCounts.get(table) ?? null) : null;
-    const diff = dockerCount === null || neonCount === null ? null : neonCount - dockerCount;
+    const diff = localCount === null || neonCount === null ? null : neonCount - localCount;
     return {
       tableName: table,
-      dockerRows: dockerCount,
+      localRows: localCount,
       neonRows: neonCount,
       diff,
     };
@@ -351,13 +327,13 @@ async function loadRowCounts(
 async function loadExistingTables(
   env: Record<string, string | undefined>,
   tables: readonly string[],
-  target: "docker" | "neon",
+  target: "local" | "neon",
 ): Promise<Set<string>> {
   if (tables.length === 0) return new Set();
   const sql = buildExistsAndCountSql(tables);
   const lines =
-    target === "docker"
-      ? await queryDockerSingleColumn(env, sql)
+    target === "local"
+      ? await queryLocalSingleColumn(env, sql)
       : await queryNeonSingleColumn(env, sql);
   const result = new Set<string>();
   for (const line of lines) {
@@ -373,7 +349,7 @@ async function loadExistingTables(
 async function loadCounts(
   env: Record<string, string | undefined>,
   tables: string[],
-  target: "docker" | "neon",
+  target: "local" | "neon",
 ): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   if (tables.length === 0) {
@@ -386,8 +362,8 @@ async function loadCounts(
     )
     .join(" union all ");
   const lines =
-    target === "docker"
-      ? await queryDockerSingleColumn(env, unionSql)
+    target === "local"
+      ? await queryLocalSingleColumn(env, unionSql)
       : await queryNeonSingleColumn(env, unionSql);
   for (const line of lines) {
     const [name, value] = line.split("\t");
@@ -405,25 +381,25 @@ async function loadActiveModels(
 ): Promise<ActiveModelComparison[]> {
   const sql =
     "select category, model_version, activated_at::text from public.finish_position_active_models order by category";
-  const [dockerLines, neonLines] = await Promise.all([
-    queryDockerSingleColumn(env, sql),
+  const [localLines, neonLines] = await Promise.all([
+    queryLocalSingleColumn(env, sql),
     queryNeonSingleColumn(env, sql),
   ]);
-  const dockerModels = parseActiveModelLines(dockerLines);
+  const localModels = parseActiveModelLines(localLines);
   const neonModels = parseActiveModelLines(neonLines);
   const categories = Array.from(
-    new Set([...dockerModels.map((row) => row.category), ...neonModels.map((row) => row.category)]),
+    new Set([...localModels.map((row) => row.category), ...neonModels.map((row) => row.category)]),
   ).sort();
   return categories.map((category) => {
-    const dockerRow = dockerModels.find((row) => row.category === category);
+    const localRow = localModels.find((row) => row.category === category);
     const neonRow = neonModels.find((row) => row.category === category);
-    const dockerVersion = dockerRow?.modelVersion ?? "—";
+    const localVersion = localRow?.modelVersion ?? "—";
     const neonVersion = neonRow?.modelVersion ?? "—";
     return {
       category,
-      docker: dockerVersion,
+      local: localVersion,
       neon: neonVersion,
-      same: dockerVersion === neonVersion,
+      same: localVersion === neonVersion,
     };
   });
 }
@@ -461,13 +437,13 @@ function formatDiff(diff: number | null): string {
 
 function renderRowCountTable(rows: RowCountSummary[]): string {
   const tableHeader = "table";
-  const dockerHeader = "docker";
+  const localHeader = "local";
   const neonHeader = "neon";
   const diffHeader = "diff";
   const tableWidth = Math.max(tableHeader.length, ...rows.map((row) => row.tableName.length));
-  const dockerWidth = Math.max(
-    dockerHeader.length,
-    ...rows.map((row) => formatNullableNumber(row.dockerRows).length),
+  const localWidth = Math.max(
+    localHeader.length,
+    ...rows.map((row) => formatNullableNumber(row.localRows).length),
   );
   const neonWidth = Math.max(
     neonHeader.length,
@@ -476,14 +452,14 @@ function renderRowCountTable(rows: RowCountSummary[]): string {
   const diffWidth = Math.max(diffHeader.length, ...rows.map((row) => formatDiff(row.diff).length));
   const lines: string[] = [];
   lines.push(
-    `${padRight(tableHeader, tableWidth)}  ${padLeft(dockerHeader, dockerWidth)}  ${padLeft(neonHeader, neonWidth)}  ${padLeft(diffHeader, diffWidth)}`,
+    `${padRight(tableHeader, tableWidth)}  ${padLeft(localHeader, localWidth)}  ${padLeft(neonHeader, neonWidth)}  ${padLeft(diffHeader, diffWidth)}`,
   );
   lines.push(
-    `${"-".repeat(tableWidth)}  ${"-".repeat(dockerWidth)}  ${"-".repeat(neonWidth)}  ${"-".repeat(diffWidth)}`,
+    `${"-".repeat(tableWidth)}  ${"-".repeat(localWidth)}  ${"-".repeat(neonWidth)}  ${"-".repeat(diffWidth)}`,
   );
   for (const row of rows) {
     lines.push(
-      `${padRight(row.tableName, tableWidth)}  ${padLeft(formatNullableNumber(row.dockerRows), dockerWidth)}  ${padLeft(formatNullableNumber(row.neonRows), neonWidth)}  ${padLeft(formatDiff(row.diff), diffWidth)}`,
+      `${padRight(row.tableName, tableWidth)}  ${padLeft(formatNullableNumber(row.localRows), localWidth)}  ${padLeft(formatNullableNumber(row.neonRows), neonWidth)}  ${padLeft(formatDiff(row.diff), diffWidth)}`,
     );
   }
   return lines.join("\n");
@@ -491,12 +467,12 @@ function renderRowCountTable(rows: RowCountSummary[]): string {
 
 function renderActiveModels(rows: ActiveModelComparison[]): string {
   const headerLines = [
-    "category  docker_active                    neon_active                      status",
+    "category  local_active                     neon_active                      status",
   ];
   for (const row of rows) {
     const status = row.same ? "✓ same" : "⚠ drift";
     headerLines.push(
-      `${padRight(row.category, 8)}  ${padRight(row.docker, 32)}  ${padRight(row.neon, 32)}  ${status}`,
+      `${padRight(row.category, 8)}  ${padRight(row.local, 32)}  ${padRight(row.neon, 32)}  ${status}`,
     );
   }
   return headerLines.join("\n");
@@ -540,7 +516,7 @@ async function printReport(options: CliOptions): Promise<void> {
   console.log("--- active models (jra / nar / ban-ei) ---");
   console.log(renderActiveModels(activeModels));
   console.log("");
-  console.log("--- row counts (docker vs neon) ---");
+  console.log("--- row counts (local vs neon) ---");
   console.log(renderRowCountTable(rowCounts));
   console.log("");
   const logFile = options.logFile ?? defaultLogFile;

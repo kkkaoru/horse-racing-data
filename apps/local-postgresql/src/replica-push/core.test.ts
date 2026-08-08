@@ -57,6 +57,7 @@ import {
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
+  buildLocalContainerPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
   DEFAULT_REINCREMENTAL_ROLLBACK_STEPS,
   LOCAL_CONTAINER_NAME,
@@ -1075,6 +1076,60 @@ describe("parallel push runner", () => {
         },
       ),
     ).rejects.toThrow("No primary-key tables matched");
+  });
+});
+
+describe("buildLocalContainerPsqlArgs", () => {
+  it("execs psql inside the Apple local PostgreSQL container", () => {
+    expect(
+      buildLocalContainerPsqlArgs({
+        user: "horse_racing",
+        database: "horse_racing",
+      }),
+    ).toStrictEqual([
+      "exec",
+      "horse-racing-local-postgresql",
+      "psql",
+      "-U",
+      "horse_racing",
+      "-d",
+      "horse_racing",
+    ]);
+  });
+
+  it("uses empty user and database when they are undefined", () => {
+    expect(buildLocalContainerPsqlArgs({ user: undefined, database: undefined })).toStrictEqual([
+      "exec",
+      "horse-racing-local-postgresql",
+      "psql",
+      "-U",
+      "",
+      "-d",
+      "",
+    ]);
+  });
+
+  it("appends extra args after user and database", () => {
+    expect(
+      buildLocalContainerPsqlArgs({
+        user: "horse_racing",
+        database: "horse_racing",
+        extraArgs: ["-At", "-F", "\t", "-c", "select 1"],
+      }),
+    ).toStrictEqual([
+      "exec",
+      "horse-racing-local-postgresql",
+      "psql",
+      "-U",
+      "horse_racing",
+      "-d",
+      "horse_racing",
+      "-At",
+      "-F",
+      "\t",
+      "-c",
+      "select 1",
+    ]);
   });
 });
 

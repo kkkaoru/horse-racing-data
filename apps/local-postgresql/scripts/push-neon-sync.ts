@@ -45,6 +45,7 @@ import {
   runPushSync,
   runWithRetry,
   buildNeonPsqlArgs,
+  buildLocalContainerPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
   LOCAL_CONTAINER_NAME,
   shouldRefreshInclusiveIncrementalMarker,
@@ -535,20 +536,11 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
 }
 
 function containerExecArgs(env: Record<string, string | undefined>, sql: string): string[] {
-  return [
-    "exec",
-    LOCAL_CONTAINER_NAME,
-    "psql",
-    "-U",
-    env.POSTGRES_USER ?? "",
-    "-d",
-    env.POSTGRES_DB ?? "",
-    "-At",
-    "-F",
-    "\t",
-    "-c",
-    sql,
-  ];
+  return buildLocalContainerPsqlArgs({
+    user: env.POSTGRES_USER,
+    database: env.POSTGRES_DB,
+    extraArgs: ["-At", "-F", "\t", "-c", sql],
+  });
 }
 
 function neonPsqlArgs(env: Record<string, string | undefined>, extraArgs: string[] = []): string[] {

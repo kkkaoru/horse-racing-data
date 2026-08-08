@@ -1140,6 +1140,25 @@ export async function runPushSync(
 export const LOCAL_CONTAINER_NAME = "horse-racing-local-postgresql";
 export const DEFAULT_NEON_PSQL_CONTAINER = LOCAL_CONTAINER_NAME;
 
+export type LocalContainerPsqlArgsInput = {
+  user: string | undefined;
+  database: string | undefined;
+  extraArgs?: readonly string[];
+};
+
+export function buildLocalContainerPsqlArgs(input: LocalContainerPsqlArgsInput): string[] {
+  return [
+    "exec",
+    LOCAL_CONTAINER_NAME,
+    "psql",
+    "-U",
+    input.user ?? "",
+    "-d",
+    input.database ?? "",
+    ...(input.extraArgs ?? []),
+  ];
+}
+
 export type NeonPsqlArgsInput = {
   neonUrl: string | undefined;
   containerName: string | undefined;

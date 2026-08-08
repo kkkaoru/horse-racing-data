@@ -56,6 +56,19 @@ services:
       - jit=on
       - -c
       - default_statistics_target=200
+      # === Durability / corruption forensics (bind-mounted data on macOS) ===
+      - -c
+      - fsync=on
+      - -c
+      - full_page_writes=on
+      - -c
+      - synchronous_commit=on
+      - -c
+      - wal_log_hints=on
+      - -c
+      - log_checkpoints=on
+      - -c
+      - log_statement=ddl
     deploy:
       resources:
         limits:

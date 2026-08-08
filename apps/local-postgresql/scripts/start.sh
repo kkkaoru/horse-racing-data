@@ -156,18 +156,38 @@ run_new_container() {
       -c max_parallel_workers_per_gather=8 \
       -c max_parallel_maintenance_workers=4 \
       -c jit=on \
-      -c default_statistics_target=200
+      -c default_statistics_target=200 \
+      -c fsync=on \
+      -c full_page_writes=on \
+      -c synchronous_commit=on \
+      -c wal_log_hints=on \
+      -c log_checkpoints=on \
+      -c log_statement=ddl
 
   wait_for_healthy
+}
+
+run_index_health_repair() {
+  if ! command -v bun >/dev/null 2>&1; then
+    echo "bun not found; skipping index-health repair. Install bun or run: bun --cwd $APP_DIR indexes:repair:quick" >&2
+    return 0
+  fi
+  echo "Running quick index-health repair (amcheck + REINDEX, never DROP INDEX)..."
+  (
+    cd "$APP_DIR"
+    bun run indexes:repair:quick
+  )
 }
 
 ensure_container_system
 
 if start_existing_container_if_possible; then
+  run_index_health_repair
   container list
   exit 0
 fi
 
 delete_existing_container
 run_new_container
+run_index_health_repair
 container list

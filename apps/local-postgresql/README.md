@@ -43,7 +43,32 @@ bun --cwd apps/local-postgresql stop
 bun --cwd apps/local-postgresql logs
 bun --cwd apps/local-postgresql psql
 bun --cwd apps/local-postgresql status
+
+# Index corruption guard (amcheck + REINDEX, never DROP INDEX)
+bun --cwd apps/local-postgresql indexes:check:quick
+bun --cwd apps/local-postgresql indexes:repair:quick
+bun --cwd apps/local-postgresql indexes:check
+bun --cwd apps/local-postgresql indexes:repair
 ```
+
+`start` runs `indexes:repair:quick` after PostgreSQL is healthy.
+`replica:push` also runs `indexes:repair:quick` before R2/Neon sync so XX002
+corruption cannot silently break ingest or push.
+
+### Index corruption background
+
+PC-KEIBA ingest has repeatedly hit PostgreSQL B-tree corruption (`XX002`,
+amcheck invariant violations) on indexes such as `nvd_bn_pk` / `jvd_ra_*`.
+Symptoms include unique indexes that stop enforcing uniqueness. The guard:
+
+1. Scans btree indexes with `amcheck`
+2. Removes heap duplicates that slipped past a corrupted unique index
+3. Rebuilds broken indexes with `REINDEX INDEX` (in-place rebuild; **never**
+   `DROP INDEX`)
+4. Cleans corrupt orphan temp catalog rows that block autovacuum
+
+Run `indexes:repair:quick` before retrying PC-KEIBA 通常データ登録 after any
+`XX002` / Npgsql index error.
 
 Default Mac connection string:
 
