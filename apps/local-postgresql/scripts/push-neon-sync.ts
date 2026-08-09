@@ -44,7 +44,6 @@ import {
   rollbackTimestampMarker,
   runPushSync,
   runWithRetry,
-  buildNeonPsqlArgs,
   buildLocalContainerPsqlArgs,
   DEFAULT_NEON_PSQL_CONTAINER,
   LOCAL_CONTAINER_NAME,
@@ -77,6 +76,185 @@ const MAX_ATTEMPTS_ENV_KEY = "REPLICA_SYNC_MAX_ATTEMPTS";
 const JSONL_LOG_ENV_KEY = "REPLICA_SYNC_LOG_JSONL";
 const TIMEOUT_WARN_INTERVAL_MS = 30_000;
 const DEFAULT_RANGE_RECONCILE_MAX_ROWS = 500_000;
+type NeonLibpqEnvKey =
+  | "PGHOST"
+  | "PGPORT"
+  | "PGUSER"
+  | "PGDATABASE"
+  | "PGPASSWORD"
+  | "PGSSLMODE"
+  | "PGCHANNELBINDING"
+  | "PGKEEPALIVES"
+  | "PGKEEPALIVESIDLE"
+  | "PGKEEPALIVESINTERVAL"
+  | "PGKEEPALIVESCOUNT";
+const NEON_LIBPQ_ENV_KEY_ORDER: readonly NeonLibpqEnvKey[] = [
+  "PGHOST",
+  "PGPORT",
+  "PGUSER",
+  "PGDATABASE",
+  "PGPASSWORD",
+  "PGSSLMODE",
+  "PGCHANNELBINDING",
+  "PGKEEPALIVES",
+  "PGKEEPALIVESIDLE",
+  "PGKEEPALIVESINTERVAL",
+  "PGKEEPALIVESCOUNT",
+];
+const NEON_LIBPQ_QUERY_ENV = {
+  sslmode: "PGSSLMODE",
+  channel_binding: "PGCHANNELBINDING",
+  keepalives: "PGKEEPALIVES",
+  keepalives_idle: "PGKEEPALIVESIDLE",
+  keepalives_interval: "PGKEEPALIVESINTERVAL",
+  keepalives_count: "PGKEEPALIVESCOUNT",
+} satisfies Record<string, NeonLibpqEnvKey>;
+// Apple container exec -e KEY appends without replacing the image PG* values
+// (PGHOST=127.0.0.1). libpq getenv() keeps the first duplicate; a shell exec
+// keeps the last, so psql must be launched via sh -c rather than directly.
+const NEON_PSQL_SH_COMMAND = 'exec psql "$@"';
+
+export interface NeonConnection {
+  dsn: string;
+  containerName: string;
+}
+
+export function resolveNeonConnection(env: Record<string, string | undefined>): NeonConnection {
+  const dsn = env.NEON_DIRECT_DATABASE_URL;
+  if (dsn === undefined || dsn === "") {
+    throw new Error("NEON_DIRECT_DATABASE_URL is required");
+  }
+  const configuredContainer = env.REPLICA_SYNC_NEON_PSQL_CONTAINER;
+  const containerName =
+    configuredContainer !== undefined && configuredContainer !== ""
+      ? configuredContainer
+      : DEFAULT_NEON_PSQL_CONTAINER;
+  return { dsn, containerName };
+}
+
+export function parseNeonLibpqEnv(dsn: string): Record<string, string> {
+  const parsed = parsePostgresUrl(dsn);
+  const database = parsed.pathname.replace(/^\//, "");
+  if (parsed.hostname === "") {
+    throw new Error("NEON_DIRECT_DATABASE_URL must include a host");
+  }
+  if (database === "") {
+    throw new Error("NEON_DIRECT_DATABASE_URL must include a database name");
+  }
+  const env: Record<string, string> = {
+    PGHOST: parsed.hostname,
+    PGDATABASE: database,
+  };
+  if (parsed.port !== "") env.PGPORT = parsed.port;
+  if (parsed.username !== "") env.PGUSER = decodeUrlComponent(parsed.username);
+  if (parsed.password !== "") env.PGPASSWORD = decodeUrlComponent(parsed.password);
+  for (const [queryKey, envKey] of Object.entries(NEON_LIBPQ_QUERY_ENV)) {
+    const value = parsed.searchParams.get(queryKey);
+    if (value !== null && value !== "") env[envKey] = value;
+  }
+  return env;
+}
+
+export function neonLibpqEnvKeys(env: Record<string, string>): string[] {
+  return NEON_LIBPQ_ENV_KEY_ORDER.filter((key) => env[key] !== undefined);
+}
+
+export function buildNeonPsqlEnv(connection: NeonConnection): Record<string, string> {
+  return parseNeonLibpqEnv(connection.dsn);
+}
+
+export function buildNeonContainerPsqlArgs(input: {
+  connection: NeonConnection;
+  extraArgs?: readonly string[];
+}): string[] {
+  const envKeys = neonLibpqEnvKeys(buildNeonPsqlEnv(input.connection));
+  return [
+    "exec",
+    ...envKeys.flatMap((key) => ["-e", key]),
+    "-i",
+    input.connection.containerName,
+    "sh",
+    "-c",
+    NEON_PSQL_SH_COMMAND,
+    "psql",
+    ...(input.extraArgs ?? []),
+  ];
+}
+
+export function buildCopyPipelineBashCommand(envKeys: readonly string[]): string {
+  return [
+    "container",
+    "exec",
+    '"$LOCAL_CONTAINER_NAME"',
+    "psql",
+    "-U",
+    '"$POSTGRES_USER"',
+    "-d",
+    '"$POSTGRES_DB"',
+    "-At",
+    "-F",
+    "\"$(printf '\\t')\"",
+    "-c",
+    '"$LOCAL_COPY_SQL"',
+    "|",
+    "container",
+    "exec",
+    ...envKeys.flatMap((key) => ["-e", key]),
+    "-i",
+    '"$NEON_PSQL_CONTAINER"',
+    "sh",
+    "-c",
+    `'${NEON_PSQL_SH_COMMAND}'`,
+    "psql",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-c",
+    '"$NEON_COPY_SQL"',
+  ].join(" ");
+}
+
+export function neonArgvLeaksSecret(args: readonly string[], dsn: string): boolean {
+  if (args.some((arg) => arg.includes(dsn))) return true;
+  try {
+    const password = parseNeonLibpqEnv(dsn).PGPASSWORD;
+    if (password === undefined || password === "") return false;
+    const encodedPassword = encodeURIComponent(password);
+    return args.some((arg) => arg.includes(password) || arg.includes(encodedPassword));
+  } catch {
+    return false;
+  }
+}
+
+export function assertNeonArgsSafe(args: readonly string[], dsn: string): void {
+  if (!neonArgvLeaksSecret(args, dsn)) return;
+  throw new Error("Neon psql argv must not contain the database password");
+}
+
+function parsePostgresUrl(dsn: string): URL {
+  try {
+    const parsed = new URL(dsn);
+    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") {
+      throw new Error("NEON_DIRECT_DATABASE_URL must be a postgres URL");
+    }
+    return parsed;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === "NEON_DIRECT_DATABASE_URL must be a postgres URL"
+    ) {
+      throw error;
+    }
+    throw new Error("NEON_DIRECT_DATABASE_URL must be a valid postgres URL");
+  }
+}
+
+function decodeUrlComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 type CommandResult = {
   stdout: string;
@@ -398,6 +576,17 @@ function emitTimeoutWarning(input: TimeoutWarningInput): void {
 interface RunCommandOptions {
   input?: string;
   tableName?: string | null;
+  env?: Record<string, string | undefined>;
+}
+
+function spawnEnvFrom(
+  optionsEnv: Record<string, string | undefined> | undefined,
+): NodeJS.ProcessEnv | undefined {
+  if (!optionsEnv) return undefined;
+  return {
+    ...process.env,
+    ...Object.fromEntries(Object.entries(optionsEnv).filter(([, value]) => value !== undefined)),
+  };
 }
 
 function runCommand(
@@ -407,6 +596,7 @@ function runCommand(
 ): Promise<CommandResult> {
   return new Promise((resolveCommand, reject) => {
     const child = spawn(command, args, {
+      env: spawnEnvFrom(options.env),
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
@@ -463,43 +653,21 @@ interface RunCopyPipelineOptions {
 function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
   return new Promise((resolvePipeline, reject) => {
     const { env, localCopySql, neonCopySql, tableName } = options;
-    const command = [
-      "container",
-      "exec",
-      '"$LOCAL_CONTAINER_NAME"',
-      "psql",
-      "-U",
-      '"$POSTGRES_USER"',
-      "-d",
-      '"$POSTGRES_DB"',
-      "-At",
-      "-F",
-      "\"$(printf '\\t')\"",
-      "-c",
-      '"$LOCAL_COPY_SQL"',
-      "|",
-      "container",
-      "exec",
-      "-i",
-      '"$NEON_PSQL_CONTAINER"',
-      "psql",
-      '"$NEON_DIRECT_DATABASE_URL"',
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-c",
-      '"$NEON_COPY_SQL"',
-    ].join(" ");
+    const connection = resolveNeonConnection(env);
+    const neonEnv = buildNeonPsqlEnv(connection);
+    const command = buildCopyPipelineBashCommand(neonLibpqEnvKeys(neonEnv));
+    assertNeonArgsSafe([command], connection.dsn);
 
     const child = spawn("bash", ["-o", "pipefail", "-c", command], {
       env: {
         ...process.env,
+        ...neonEnv,
         POSTGRES_USER: env.POSTGRES_USER ?? "",
         POSTGRES_DB: env.POSTGRES_DB ?? "",
-        NEON_DIRECT_DATABASE_URL: env.NEON_DIRECT_DATABASE_URL ?? "",
         LOCAL_COPY_SQL: localCopySql,
         NEON_COPY_SQL: neonCopySql,
         LOCAL_CONTAINER_NAME,
-        NEON_PSQL_CONTAINER: env.REPLICA_SYNC_NEON_PSQL_CONTAINER ?? DEFAULT_NEON_PSQL_CONTAINER,
+        NEON_PSQL_CONTAINER: connection.containerName,
       },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -528,7 +696,9 @@ function runCopyPipeline(options: RunCopyPipelineOptions): Promise<void> {
       }
       reject(
         new Error(
-          `COPY pipeline exited with code ${code}\n${Buffer.concat(stderrChunks).toString("utf8")}`,
+          redactSecrets(
+            `COPY pipeline exited with code ${code}\n${Buffer.concat(stderrChunks).toString("utf8")}`,
+          ),
         ),
       );
     });
@@ -544,11 +714,16 @@ function containerExecArgs(env: Record<string, string | undefined>, sql: string)
 }
 
 function neonPsqlArgs(env: Record<string, string | undefined>, extraArgs: string[] = []): string[] {
-  return buildNeonPsqlArgs({
-    neonUrl: env.NEON_DIRECT_DATABASE_URL,
-    containerName: env.REPLICA_SYNC_NEON_PSQL_CONTAINER,
-    extraArgs,
-  });
+  const connection = resolveNeonConnection(env);
+  const args = buildNeonContainerPsqlArgs({ connection, extraArgs });
+  assertNeonArgsSafe(args, connection.dsn);
+  return args;
+}
+
+function neonEnvForExec(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  return buildNeonPsqlEnv(resolveNeonConnection(env));
 }
 
 async function loadTableMetadata(
@@ -622,6 +797,9 @@ Environment:
                                   of spawning a disposable one per query, avoiding the cleanup
                                   hangs that previously accumulated zombie containers under the
                                   Apple container pipeline. Default: horse-racing-local-postgresql.
+                                  Neon credentials are inherited via libpq environment variables
+                                  (-e PGHOST -e PGPASSWORD ...) and expanded by sh -c before psql;
+                                  they are never placed in argv.
   REPLICA_SYNC_MAX_ATTEMPTS       Max per-table COPY attempts before giving up on a single
                                   table. Retries are scoped to the failing COPY only — the
                                   whole script is no longer respawned on transient TLS errors.
@@ -683,6 +861,9 @@ async function checkNeonReady(env: Record<string, string | undefined>): Promise<
     await runCommand(
       "container",
       neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAtc", "select 1"]),
+      {
+        env: neonEnvForExec(env),
+      },
     );
     return true;
   } catch {
@@ -723,6 +904,9 @@ async function loadTableChecksum(
       : await runCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+          {
+            env: neonEnvForExec(env),
+          },
         );
 
   return result.stdout.trim();
@@ -773,6 +957,9 @@ async function loadFingerprint(
       : await runCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+          {
+            env: neonEnvForExec(env),
+          },
         );
   return parseFingerprintLine(result.stdout);
 }
@@ -790,6 +977,9 @@ async function loadTimestampCounts(
       : await runCommand(
           "container",
           neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-qAt", "-F", "\t", "-c", sql]),
+          {
+            env: neonEnvForExec(env),
+          },
         );
   return parseTimestampCountRows(result.stdout);
 }
@@ -1001,6 +1191,7 @@ async function runIncrementalCopyWithRetry(
       await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
         input: incSql.preCopySql,
         tableName: table.tableName,
+        env: neonEnvForExec(env),
       });
       try {
         await runCopyPipeline({
@@ -1015,6 +1206,7 @@ async function runIncrementalCopyWithRetry(
         await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
           input: incSql.postCopySql,
           tableName: table.tableName,
+          env: neonEnvForExec(env),
         });
       } catch (error) {
         await runCleanupIgnoringFailure({
@@ -1107,6 +1299,7 @@ async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<v
   await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
     input: neonSql.preCopySql,
     tableName: table.tableName,
+    env: neonEnvForExec(env),
   });
 
   try {
@@ -1120,6 +1313,7 @@ async function runFullReplaceOnce(options: RunFullReplaceOnceOptions): Promise<v
     await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1", "-q"]), {
       input: neonSql.postCopySql,
       tableName: table.tableName,
+      env: neonEnvForExec(env),
     });
   } catch (error) {
     await runCleanupIgnoringFailure({
@@ -1141,6 +1335,7 @@ async function runCleanupIgnoringFailure(options: RunCleanupIgnoringFailureOptio
   await runCommand("container", neonPsqlArgs(options.env, ["-q"]), {
     input: options.cleanupSql,
     tableName: options.tableName,
+    env: neonEnvForExec(options.env),
   }).catch((error: unknown) => {
     writeLine(
       `[${formatNow()}] ⚠ ${options.tableName}: cleanup after failure raised ${describeError(error)} — preCopySql DROP IF EXISTS will self-heal on retry`,
@@ -1362,6 +1557,7 @@ async function syncAnalyticsIndexes(env: Record<string, string | undefined>): Pr
   await runCommand("container", neonPsqlArgs(env, ["-v", "ON_ERROR_STOP=1"]), {
     input: sql,
     tableName: "(analytics-indexes)",
+    env: neonEnvForExec(env),
   });
   console.log(`[${formatNow()}] Applied analytics indexes to Neon`);
 }
@@ -1742,12 +1938,13 @@ async function runSync(cliOptions: CliOptions): Promise<void> {
   }
 
   const config = buildConfig(env);
-  const tables = filterDefaultExcludedLogTables(
-    await loadTableMetadata(env),
-    cliOptions.allowLogTables,
-  );
-  const dependencyEdges = filterDependencyEdgesByTables(await loadDependencyEdges(env), tables);
-  const profileMap = await loadTableProfileMap(env, config);
+  const [tablesRaw, dependencyEdgesRaw, profileMap] = await Promise.all([
+    loadTableMetadata(env),
+    loadDependencyEdges(env),
+    loadTableProfileMap(env, config),
+  ]);
+  const tables = filterDefaultExcludedLogTables(tablesRaw, cliOptions.allowLogTables);
+  const dependencyEdges = filterDependencyEdgesByTables(dependencyEdgesRaw, tables);
   logStrategySummary(profileMap, tables);
 
   const maxAttempts = resolveMaxAttempts(cliOptions.maxAttempts, env);
@@ -1862,7 +2059,9 @@ function logStrategySummary(profileMap: Map<string, TableProfile>, tables: Table
   );
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

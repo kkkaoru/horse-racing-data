@@ -19,8 +19,8 @@
     "indexes:repair": "bun run ./scripts/check-and-repair-indexes.ts --repair",
     "indexes:repair:quick": "bun run ./scripts/check-and-repair-indexes.ts --repair --quick",
     "status": "container list --all",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "vitest run && vitest run --config scripts/vitest.config.ts",
+    "test:coverage": "vitest run --coverage && vitest run --config scripts/vitest.config.ts",
     "lint": "bunx oxlint",
     "format": "bunx oxfmt",
     "format:check": "bunx oxfmt --check"
