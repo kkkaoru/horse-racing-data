@@ -38,7 +38,7 @@
     is bypassed: even when fp_actual >= expected_count the pipeline is
     re-kicked so predictions incorporate the latest bataiju/odds. The
     concurrent-run lock (/tmp/finish-position-predict.lock) is still
-    respected — two docker runs never race each other.
+    respected — two Apple container runs never race each other.
 
   CATCH-UP / IDEMPOTENCY:
     StartCalendarInterval queues missed firings while the Mac is asleep and
@@ -140,10 +140,9 @@
 
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- PATH so the wrapper finds bunx / wrangler / jq / docker / colima / uv
+    <!-- PATH so the wrapper finds bunx / wrangler / jq / container / uv
          / date without relying on the user's interactive shell init.
-         /opt/homebrew/bin is Apple-Silicon Homebrew (where bun, jq, uv,
-         docker, colima all live). -->
+         /usr/local/bin is Apple Container CLI; /opt/homebrew/bin is Homebrew. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

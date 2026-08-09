@@ -28,7 +28,7 @@
 #      (/tmp/race-prediction-guard-cf-trigger/) recording that this date was
 #      already CF-triggered, then returns — NO in-tick wait/verify: the next
 #      ~20-min guard tick's own coverage check is the verifier.
-#   2. Local docker (finish-position-predict-daily.sh): LAST resort only,
+#   2. Local Apple container (finish-position-predict-daily.sh): LAST resort only,
 #      logged as "cf-trigger-failed->local" or "cf-already-tried->local" —
 #      TRIGGER_TOKEN unavailable, the CF trigger POST itself failed (any
 #      category non-2xx), or a PREVIOUS tick already sent a CF trigger for
@@ -63,12 +63,12 @@
 #   DRY_RUN=1 FORCE_HOUR=05 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 bash ...  # CF-offload coverage MISS, non-race hours -> no fallback (next tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=12 bash ... # CF-offload coverage OK -> stays offloaded (no local kick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
-#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # cf-trigger-sent for nar only (marker written, no local docker this tick)
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 bash ...  # cf-trigger-sent for nar only (marker written, no local Apple container this tick)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 \
-#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # cf-trigger-failed->local (CF POST fails -> immediate local docker; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
-#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local docker (last resort; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
+#     FORCE_FP_CATEGORY_EXPECTED=jra:5,nar:4,ban-ei:3 FORCE_FP_CATEGORY_ACTUAL=jra:5,nar:2,ban-ei:3 FORCE_CF_TRIGGER_FAIL=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # cf-trigger-failed->local (CF POST fails -> immediate local Apple container; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
+#   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 GUARD_LOCAL_FALLBACK_ENABLED=1 bash ...  # TRIGGER_TOKEN unavailable -> immediate local Apple container (last resort; requires GUARD_LOCAL_FALLBACK_ENABLED=1)
 #   # second-tick example: run the "cf-trigger-sent" command above once (leaves a marker), then run the SAME command again (add GUARD_LOCAL_FALLBACK_ENABLED=1) ->
-#   # cf-already-tried->local (previous tick's CF trigger didn't clear coverage -> local docker last resort)
+#   # cf-already-tried->local (previous tick's CF trigger didn't clear coverage -> local Apple container last resort)
 #   DRY_RUN=1 FORCE_HOUR=14 FORCE_TARGET_DATE=20300101 FORCE_EXPECTED_COUNT=12 FORCE_RS_ACTUAL=12 FORCE_FP_ACTUAL=5 FORCE_TRIGGER_TOKEN_MISSING=1 bash ...  # GUARD_LOCAL_FALLBACK_ENABLED unset (default 0) -> "local fallback disabled by design 2026-07-11" logged, no exec
 set -euo pipefail
 
@@ -107,7 +107,7 @@ ROOT_ENV_FILE="$REPO_ROOT/.env"
 # Marker directory recording "a CF trigger was already sent for this date" so
 # the NEXT guard tick (~20 min later during race hours) can tell "first miss,
 # just triggered CF" apart from "already tried CF last tick, still incomplete
-# -> escalate to local docker". No fixed wait/verify window — the next tick's
+# -> escalate to local Apple container". No fixed wait/verify window — the next tick's
 # own coverage re-check is the verifier, per team-lead's simplified design.
 CF_TRIGGER_MARKER_DIR="/tmp/race-prediction-guard-cf-trigger"
 
@@ -372,7 +372,7 @@ kick_worker_job() {
 # named; same file + convention finish-position-predict-daily.sh already uses
 # for R2 credentials). Returns empty (not an error) when the file or key is
 # missing — callers must treat empty as "CF trigger unavailable" and degrade
-# to the local docker fallback rather than sending an empty/garbage
+# to the local Apple container fallback rather than sending an empty/garbage
 # Authorization header. DRY_RUN=1 FORCE_TRIGGER_TOKEN_MISSING=1 simulates a
 # missing token without touching the real .env.
 read_trigger_token() {
@@ -522,7 +522,7 @@ fp_incomplete_categories() {
 # Returns 0 only when every POST succeeds (HTTP 2xx). Under DRY_RUN the real
 # HTTP call is never made (same convention as kick_worker_job) —
 # FORCE_CF_TRIGGER_FAIL=1 simulates every category failing so the local-
-# docker-fallback branch can be exercised offline.
+# Apple-container-fallback branch can be exercised offline.
 #
 # Args: $1 comma-separated categories  $2 target_date (YYYYMMDD)  $3 token
 cf_trigger_categories() {
@@ -814,7 +814,7 @@ guard_target() {
   #   shift. We therefore re-kick the pipeline during race hours, even when
   #   fp_actual >= expected_count, after running-style completion has been
   #   confirmed, so predictions incorporate the latest bataiju/odds. The
-  #   concurrent-run lock (FINISH_LOCK_DIR) is still checked — two docker runs
+  #   concurrent-run lock (FINISH_LOCK_DIR) is still checked — two Apple container runs
   #   never overlap.
   #
   #   Outside race hours (0-9, 21-23) the old "skip when complete" logic is
@@ -826,7 +826,7 @@ guard_target() {
   #   running-style prerequisite is complete without the expected race count.
 
   # CF cutover: when finish-position is offloaded to the Cloudflare Worker +
-  # container per-race pipeline, the local docker kick is normally skipped —
+  # container per-race pipeline, the local Apple container kick is normally skipped —
   # this guard still ran every running-style / discover-urls / coverage duty
   # above. Fully reversible via the env var.
   #
@@ -835,7 +835,7 @@ guard_target() {
   # day undetected. We now verify actual coverage in Neon (the same check the
   # non-offloaded branch below performs) before staying offloaded. Only when
   # coverage is INCOMPLETE and we are in race hours do we fall back to the
-  # local docker kick; otherwise the previous offloaded-trust behavior holds.
+  # local Apple container kick; otherwise the previous offloaded-trust behavior holds.
   if [ "$FINISH_POSITION_OFFLOADED_TO_CF" = "1" ]; then
     if [ "$d1_unavailable" = "1" ]; then
       log "finish-position[$label] OFFLOADED to Cloudflare (FINISH_POSITION_OFFLOADED_TO_CF=1) — D1 unavailable, cannot verify CF coverage; keeping offloaded"
@@ -866,7 +866,7 @@ guard_target() {
 
     if [ "$fp_actual" -ge "$expected_count" ]; then
       rm -f "$(cf_trigger_marker_path "$label" "$target_date")"
-      log "finish-position[$label] OFFLOADED to Cloudflare — coverage OK, skip local docker kick"
+      log "finish-position[$label] OFFLOADED to Cloudflare — coverage OK, skip local Apple container kick"
       log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0)"
       return 0
     fi
@@ -877,7 +877,7 @@ guard_target() {
       return 0
     fi
 
-    log "finish-position[$label] CF-offload coverage miss (actual=$fp_actual expected=$expected_count) — attempting Cloudflare trigger before local docker (see header fallback order)"
+    log "finish-position[$label] CF-offload coverage miss (actual=$fp_actual expected=$expected_count) — attempting Cloudflare trigger before local Apple container (see header fallback order)"
 
     local marker_path
     marker_path="$(cf_trigger_marker_path "$label" "$target_date")"
@@ -895,18 +895,18 @@ guard_target() {
       local trigger_token
       trigger_token="$(read_trigger_token)"
       if [ -z "$trigger_token" ]; then
-        log "finish-position[$label] TRIGGER_TOKEN unset (checked $ROOT_ENV_FILE) — CF trigger unavailable, falling back to local docker kick"
+        log "finish-position[$label] TRIGGER_TOKEN unset (checked $ROOT_ENV_FILE) — CF trigger unavailable, falling back to local Apple container kick"
         cf_trigger_status="token_unavailable"
       else
         local incomplete_categories
         incomplete_categories="$(fp_incomplete_categories "$target_date_iso" "$target_nen" "$target_tsukihi" | tr '\n' ',' | sed 's/,$//')"
         if [ -z "$incomplete_categories" ]; then
-          log "WARN: finish-position[$label] could not determine incomplete categories from D1/Neon per-category query — falling back to local docker kick"
+          log "WARN: finish-position[$label] could not determine incomplete categories from D1/Neon per-category query — falling back to local Apple container kick"
           cf_trigger_status="categories_unknown"
         elif cf_trigger_categories "$incomplete_categories" "$target_date" "$trigger_token"; then
           mkdir -p "$CF_TRIGGER_MARKER_DIR"
           date -u +%s > "$marker_path"
-          log "finish-position[$label] cf-trigger-sent for categories=$incomplete_categories — skip local docker kick this tick, next tick's coverage check is the verifier"
+          log "finish-position[$label] cf-trigger-sent for categories=$incomplete_categories — skip local Apple container kick this tick, next tick's coverage check is the verifier"
           log "guard_target done (label=$label target=$target_date_iso expected=$expected_count rs=${rs_actual:-skipped} fp=$fp_actual cf_ok=$corner_features_ok is_race_hours=$is_race_hours d1_unavailable=$d1_unavailable offload_fallback=0 cf_trigger=sent)"
           return 0
         else
@@ -939,7 +939,7 @@ guard_target() {
 
   if [ "$rs_complete_for_finish" != "1" ]; then
     if [ "$rs_kicked_this_tick" = "1" ]; then
-      log "finish-position[$label] SKIPPED — running-style was kicked asynchronously in this tick; next tick will re-check completion before docker"
+      log "finish-position[$label] SKIPPED — running-style was kicked asynchronously in this tick; next tick will re-check completion before Apple container"
     else
       log "finish-position[$label] SKIPPED — running-style is not confirmed complete for expected=$expected_count"
     fi

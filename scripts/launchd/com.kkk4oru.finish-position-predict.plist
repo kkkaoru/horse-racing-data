@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Deprecated LaunchAgent for the local finish-position-prediction docker pipeline.
+  Deprecated LaunchAgent for the local finish-position-prediction Apple container pipeline.
 
   DEPRECATED LOCAL/MANUAL TOOLING:
     Production prediction scheduling is Cloudflare-only. This LaunchAgent is
@@ -9,7 +9,7 @@
     fallback, or ordering dependency. It uses the same Dockerfile
     (apps/finish-position-predict-container/Dockerfile), same image
     (finish-position-predict-local:split2), and similar env vars
-    (SOURCE_DATABASE_URL = local Colima PG, NEON_DATABASE_URL = Neon write
+    (SOURCE_DATABASE_URL = local Apple container PG, NEON_DATABASE_URL = Neon write
     target, RUN_DATE = today JST in YYYYMMDD form), idempotent UPSERT into
     race_finish_position_model_predictions.
 
@@ -105,9 +105,9 @@
     <string>auto</string>
     <key>PREDICT_DAYS_AHEAD</key>
     <string>0</string>
-    <!-- PATH so the wrapper finds docker / colima / awk / date without
-         relying on the user's interactive shell init. /opt/homebrew/bin is
-         Apple-Silicon Homebrew (docker, colima, bun all live there). -->
+    <!-- PATH so the wrapper finds container / awk / date / bun without
+         relying on the user's interactive shell init. /usr/local/bin is
+         Apple Container CLI; /opt/homebrew/bin is Homebrew bun. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

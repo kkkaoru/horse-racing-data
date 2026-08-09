@@ -10,13 +10,13 @@ Two deprecated LaunchAgents live here:
 1. `com.kkk4oru.finish-position-predict` — **two** daily JST fires (not a
    single fire, despite older wording here): 03:00 (NAR + Ban-ei only, JRA
    mirror not yet available) and 09:30 (all categories, once JRA mirror +
-   real advance odds are available). Both can run the legacy local Docker
+   real advance odds are available). Both can run the legacy local Apple container
    pipeline for finish-position predictions. This is not the production
    path. **DISABLED as of 2026-07-11 — see "Status" below.**
 2. `com.kkk4oru.race-prediction-guard` — hourly completeness guard that
    compares D1 `realtime_race_sources` against Neon prediction tables and
    can exercise legacy local/manual recovery checks. **Still loaded**, but
-   its local-Docker last-resort escalation is now off by default — see
+   its local Apple container last-resort escalation is now off by default — see
    "Status" below.
 
 See `apps/finish-position-predict-container/DEPLOY.md` for the architecture
@@ -28,7 +28,7 @@ Production prediction generation must not run on this Mac (user directive,
 2026-07-11 night, so that 2026-07-12's races are served by Cloudflare only).
 This converges the actual runtime state to the CF-only policy documented in
 `docs/finish-position-prediction-system.md` §1.1/§1.2 and §9 — a real local
-Docker fallback had been running via both the direct launchd fires and
+Apple container fallback had been running via both the direct launchd fires and
 `race-prediction-guard.sh`'s escalation, and per the 2026-07-11
 serving-latency-audit it had been load-bearing (a same-day 10:47 JST batch
 run rescued 28/36 races that Cloudflare had not yet served).
@@ -49,7 +49,7 @@ run rescued 28/36 races that Cloudflare had not yet served).
   corner-features prerequisite build, prewarm ticks) and keeps the
   Cloudflare-trigger escalation (`POST finish-position-cron.../run`, the
   same production trigger surface `sync-realtime-data` uses) as the sole
-  fallback tier. Only the local-Docker "last resort" branch
+  fallback tier. Only the local Apple container "last resort" branch
   (`cf-trigger-failed->local` / `cf-already-tried->local`) is now gated by
   `GUARD_LOCAL_FALLBACK_ENABLED="${GUARD_LOCAL_FALLBACK_ENABLED:-0}"`
   (default off, logs `local fallback disabled by design 2026-07-11 — CF-only
@@ -72,9 +72,13 @@ Worker / Container and `sync-realtime-data` coordination.
 
 ## Files
 
+- `../ensure-apple-container.sh` — start Apple Container CLI for local PG /
+  predict batch / local image rebuild.
+- `../ensure-docker-compat.sh` — start colima only when wrangler Containers
+  need a Docker API. Stops any docker shadow of local PG on `:15432`.
 - `com.kkk4oru.finish-position-predict.plist` — LaunchAgent definition.
 - `finish-position-predict-daily.sh` — wrapper script that runs the legacy
-  local Docker pipeline (`finish-position-predict-local:split2`) once. Reads
+  local Apple container pipeline (`finish-position-predict-local:split2`) once. Reads
   `NEON_DATABASE_URL` from `apps/local-postgresql/.env.replica`,
   defaults `SOURCE_DATABASE_URL` to `r2-catalog://pc-keiba`, and computes
   `RUN_DATE` as **today in JST** (`date -u -v+9H +%Y%m%d`). Catalog credentials
@@ -247,7 +251,7 @@ exits without kicking. No state file is needed.
 - `/tmp/race-prediction-guard.lock` — guard-level single-writer lock.
 - `/tmp/finish-position-predict.lock` — **shared** with
   `finish-position-predict-daily.sh` so local/manual fires and any guard tick
-  can't run two Docker pipelines concurrently.
+  can't run two Apple container pipelines concurrently.
 
 ### Install
 

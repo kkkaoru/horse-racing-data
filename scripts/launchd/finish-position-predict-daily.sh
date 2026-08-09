@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deprecated local finish-position-prediction Docker runner.
+# Deprecated local finish-position-prediction Apple container runner.
 #
 # Production feature generation, running-style prediction, and finish-position
 # prediction are Cloudflare-side. This script is retained only for local/manual
@@ -39,7 +39,7 @@
 #     every category is still incomplete (never runs blind).
 #
 # Lock coordination:
-#   Holds /tmp/finish-position-predict.lock for the duration of the docker run
+#   Holds /tmp/finish-position-predict.lock for the duration of the container run
 #   so local manual runs cannot overlap. The lock is a plain directory (mkdir
 #   is atomic on macOS — flock is not shipped with macOS).
 set -euo pipefail
@@ -75,7 +75,7 @@ mkdir -p "$LOG_DIR"
 
 # Single-writer lock for local/manual runs. mkdir is atomic on macOS
 # (test-and-set in one syscall). If lock is held, exit 0 with a log; a
-# concurrent Docker run would race the same UPSERT and waste local capacity.
+# concurrent container run would race the same UPSERT and waste local capacity.
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   printf '%s [finish-position-predict-daily] lock %s held; another run in progress, skipping\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$LOCK_DIR" >> "$LOG_DIR/lock-skips.log"
@@ -282,7 +282,7 @@ running_style_preflight() {
   local target_tsukihi="${RUN_DATE:4:4}"
   local expected_count=""
 
-  log "running-style preflight: checking D1 expected race count for $RUN_DATE_ISO before finish-position docker"
+  log "running-style preflight: checking D1 expected race count for $RUN_DATE_ISO before finish-position Apple container"
   if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${FORCE_EXPECTED_COUNT:-}" ]; then
     expected_count="$FORCE_EXPECTED_COUNT"
     log "DRY_RUN: FORCE_EXPECTED_COUNT=$FORCE_EXPECTED_COUNT override (skipping D1 query)"
@@ -390,7 +390,7 @@ running_style_preflight() {
 
 log "RUN_DATE=$RUN_DATE RUN_DATE_ISO=$RUN_DATE_ISO REPO_ROOT=$REPO_ROOT"
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  log "DRY_RUN=1 — docker/colima actions will be logged but not executed"
+  log "DRY_RUN=1 — Apple container actions will be logged but not executed"
 fi
 
 # Pre-flight 1: read NEON_DATABASE_URL from .env.replica (single-quoted by
@@ -424,23 +424,19 @@ if ! running_style_preflight; then
   fail "running-style preflight failed: $RUNNING_STYLE_PREFLIGHT_REASON"
 fi
 
-# Pre-flight 3: Colima must be running (docker daemon).
-log "checking colima status..."
+# Pre-flight 3: Apple container runtime must be running.
+log "checking Apple container system status..."
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  log "DRY_RUN: would check colima status and start it if needed"
-elif ! colima status >/dev/null 2>&1; then
-  log "colima not running; attempting to start..."
-  if ! colima start >/dev/null 2>&1; then
-    fail "colima start failed; cannot reach docker"
-  fi
-  log "colima started"
+  log "DRY_RUN: would check container system status and start it if needed"
+elif ! "$REPO_ROOT/scripts/ensure-apple-container.sh"; then
+  fail "Apple container system start failed"
 fi
 
-# Pre-flight 4: docker reachable.
+# Pre-flight 4: container CLI reachable.
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  log "DRY_RUN: would check docker info"
-elif ! docker info >/dev/null 2>&1; then
-  fail "docker info failed (colima up but docker unreachable)"
+  log "DRY_RUN: would check container system status"
+elif ! container system status >/dev/null 2>&1; then
+  fail "container system status failed after start"
 fi
 
 # Pre-flight 5: always rebuild the image so a stale cache can never survive a
@@ -462,8 +458,8 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   log "DRY_RUN: would build image $IMAGE_TAG from $DOCKERFILE_PATH"
 else
   log "building image $IMAGE_TAG from $DOCKERFILE_PATH (always-rebuild, cache-accelerated)..."
-  if ! docker build -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$REPO_ROOT"; then
-    fail "docker build $IMAGE_TAG failed"
+  if ! container build -f "$DOCKERFILE_PATH" -t "$IMAGE_TAG" "$REPO_ROOT"; then
+    fail "container build $IMAGE_TAG failed"
   fi
   log "image $IMAGE_TAG built"
 fi
@@ -475,12 +471,12 @@ fi
 # in the same docker run succeeded. The container retry path now treats
 # EAI_AGAIN as transient (see apps/finish-position-predict-container/src/
 # db_driver.py _TRANSIENT_ERROR_TOKENS), but a host-side prewarm gives the
-# system resolver a fresh cache entry BEFORE docker starts — eliminating
-# most EAI_AGAIN windows entirely for this local Docker runner.
+# system resolver a fresh cache entry BEFORE the container starts — eliminating
+# most EAI_AGAIN windows entirely for this local Apple container runner.
 #
-# Mac scutil and the Colima VM share DNS via ``--network=host``, so resolving
-# on the Mac side warms the path the container will use. Failure here is
-# non-fatal — the in-container retry layer handles the residual case.
+# Resolving on the Mac side warms the system resolver cache before the
+# container starts. Failure here is non-fatal — the in-container retry
+# layer handles the residual case.
 NEON_HOST="$(printf '%s' "$NEON_DATABASE_URL" \
   | sed -nE 's#^[a-zA-Z]+://[^@]*@([^/:?]+).*#\1#p')"
 if [ -n "$NEON_HOST" ]; then
@@ -588,13 +584,13 @@ fi
 # back at "1" the Mac fallback batch writes the same blended rows CF does;
 # apps/pc-keiba-viewer/src/lib/finish-position-cell-routing.ts makes the
 # viewer prefer them over the plain iter12 base regardless of write order.
-log "starting docker run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>}..."
+log "starting container run $IMAGE_TAG RUN_DATE=$RUN_DATE PREDICT_DAYS_AHEAD=$DAYS_AHEAD PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>}..."
 set +e
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  log "DRY_RUN: would docker run --rm --network=host -e RUN_DATE=$RUN_DATE -e RUN_DATE_ISO=$RUN_DATE_ISO -e PREDICT_DAYS_AHEAD=$DAYS_AHEAD -e PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>} $IMAGE_TAG"
-  docker_exit=0
+  log "DRY_RUN: would container run --rm -e RUN_DATE=$RUN_DATE -e RUN_DATE_ISO=$RUN_DATE_ISO -e PREDICT_DAYS_AHEAD=$DAYS_AHEAD -e PREDICT_CATEGORIES=${PREDICT_CATEGORIES:-<all>} $IMAGE_TAG"
+  container_exit=0
 else
-  docker run --rm --network=host \
+  container run --rm \
     -e SOURCE_DATABASE_URL="$SRC" \
     -e NEON_DATABASE_URL="$NEON_DATABASE_URL" \
     -e RUN_DATE="$RUN_DATE" \
@@ -613,10 +609,10 @@ else
     -e PREDICT_SERVE_MODE="" \
     ${PREDICT_CATEGORIES:+-e PREDICT_CATEGORIES="$PREDICT_CATEGORIES"} \
     "$IMAGE_TAG"
-  docker_exit=$?
+  container_exit=$?
 fi
 set -e
-log "docker run exited with code=$docker_exit"
+log "container run exited with code=$container_exit"
 
 # Sanity check: did any credential leak into the dated log? If so, sanitize
 # in-place (still emit a warning). Patterns: Neon role prefix "npg_", local
@@ -632,8 +628,8 @@ if grep -E 'npg_[A-Za-z0-9]+|horse_racing:horse_racing|://[^:@/]+:[^@]+@' "$DATE
   mv "$tmp" "$DATED_LOG"
 fi
 
-if [ "$docker_exit" -ne 0 ]; then
-  fail "docker run exited non-zero ($docker_exit) — see $DATED_LOG"
+if [ "$container_exit" -ne 0 ]; then
+  fail "container run exited non-zero ($container_exit) — see $DATED_LOG"
 fi
 
 log "SUCCESS RUN_DATE=$RUN_DATE"
