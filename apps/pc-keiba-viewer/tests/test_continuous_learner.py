@@ -1478,7 +1478,7 @@ def test_update_model_meta_json_handles_non_dict_feature_counts(
 # ---------------------------------------------------------------------------
 
 
-def test_rebuild_docker_calls_docker_build_with_tag() -> None:
+def test_rebuild_docker_calls_container_build_with_tag() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         learner = _make_learner(
             registry=reg,
@@ -1487,10 +1487,12 @@ def test_rebuild_docker_calls_docker_build_with_tag() -> None:
         )
         with patch("subprocess.run") as mock_run:
             learner._rebuild_docker()
-        cmd = mock_run.call_args.args[0]
-        assert "docker" in cmd
-        assert "build" in cmd
-        assert "my-image:latest" in cmd
+        ensure_cmd = mock_run.call_args_list[0].args[0]
+        build_cmd = mock_run.call_args.args[0]
+        assert ensure_cmd == ["bash", "/repo/scripts/ensure-apple-container.sh"]
+        assert "container" in build_cmd
+        assert "build" in build_cmd
+        assert "my-image:latest" in build_cmd
 
 
 def test_rebuild_docker_passes_dockerfile_and_build_context() -> None:
@@ -3822,7 +3824,10 @@ def test_deploy_cf_container_runs_wrangler_deploy_in_container_dir() -> None:
         )
         with patch("subprocess.run") as mock_run:
             learner._deploy_cf_container()
+        ensure_cmd = mock_run.call_args_list[0].args[0]
         cmd = mock_run.call_args.args[0]
+        assert ensure_cmd == ["bash", "/repo/scripts/ensure-docker-compat.sh"]
+        assert mock_run.call_args_list[0].kwargs["timeout"] == subject.DEFAULT_DOCKER_COMPAT_TIMEOUT_S
         assert cmd == ["bunx", "wrangler", "deploy"]
         assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-predict-container"
         assert mock_run.call_args.kwargs["check"] is True
@@ -5222,7 +5227,9 @@ def test_deploy_cf_container_uses_cf_deploy_dir_when_set() -> None:
         )
         with patch("subprocess.run") as mock_run:
             learner._deploy_cf_container()
+        ensure_cmd = mock_run.call_args_list[0].args[0]
         cmd = mock_run.call_args.args[0]
+        assert ensure_cmd == ["bash", "/repo/scripts/ensure-docker-compat.sh"]
         assert cmd == ["bunx", "wrangler", "deploy"]
         assert mock_run.call_args.kwargs["cwd"] == "/repo/apps/finish-position-cron"
         assert mock_run.call_args.kwargs["check"] is True

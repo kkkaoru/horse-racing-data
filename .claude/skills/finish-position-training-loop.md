@@ -192,7 +192,7 @@ uv run python src/scripts/continuous_learner.py \
 
 ## §5. メモリ予算ルール (HARD)
 
-固定値ではなく、その時点の macOS / Colima resource snapshot から決める。
+固定値ではなく、その時点の macOS / Apple container resource snapshot から決める。
 
 1. heavy 学習・feature generation は `auto` resource control を既定にする。
 2. DuckDB / LightGBM の threads、memory_limit、chunk concurrency は load average、available memory、compressor 使用量から実行時に解決する。
@@ -339,7 +339,7 @@ PER_CLASS_MODEL_VERSIONS = {
 ## §11. DB 接続情報
 
 ```bash
-# Local PostgreSQL (Colima Docker)
+# Local PostgreSQL (Apple container)
 PG_URL="postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
 
 # Neon (本番)

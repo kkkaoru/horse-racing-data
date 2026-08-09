@@ -24,7 +24,9 @@ apps/pc-keiba-viewer/src/scripts/learning/
 3. **大幅に負の結果を検出 → inverse 手法を自動試行** — `feature_trials` から
    `delta_pp ≤ -1.0pp` の trial を抽出し、未試行の inverse approach を実行
 4. **閾値超えの改善を自動デプロイ** — NDCG@3 が `--deploy-threshold` を超えたら
-   model 再学習 → staging → `model_meta.json` 更新 → Docker rebuild
+   model 再学習 → staging → `model_meta.json` 更新 → Apple container rebuild
+   (`container build`)。CF Containers への `--cf-deploy` だけ colima
+   (`scripts/ensure-docker-compat.sh`) を使う。
 5. **inverse を含む全試行を `inverse_trials` テーブルへ累積記録** — UNIQUE 制約で重複排除
 
 最適化指標は **NDCG@3** (relevance: 1着=3.0 / 2着=2.0 / 3着=1.0)。
@@ -51,7 +53,7 @@ apps/pc-keiba-viewer/src/scripts/learning/
   | `--category`         | ✅   | —                                      | `jra` / `nar` / `ban-ei`                   |
   | `--repo-root`        | ✅   | —                                      | `model_meta.json` 特定用のリポジトリルート |
   | `--registry-path`    | —    | `feature_registry.duckdb`              | DuckDB registry パス                       |
-  | `--docker-tag`       | —    | `finish-position-predict-local:split2` | rebuild する image tag                     |
+  | `--docker-tag`       | —    | `finish-position-predict-local:split2` | Apple `container build` する image tag     |
   | `--n-trials`         | —    | `20`                                   | 1 ラウンドの基本 Optuna 試行数             |
   | `--min-trials`       | —    | `5`                                    | 高負荷時の下限 (AdaptiveLoadController)    |
   | `--max-trials`       | —    | `50`                                   | 低負荷時の上限 (AdaptiveLoadController)    |
@@ -208,7 +210,7 @@ uv run python src/scripts/learning/continuous_learner.py \
 
 ```bash
 uv --version                                    # uv 利用可
-docker info --format '{{.ServerVersion}}'       # Docker/Colima 起動済
+container system status                         # Apple Container CLI 起動済
 ls <features-parquet>                            # parquet 存在
 ls <repo-root>/apps/finish-position-predict-container/src/predict_lib/model_meta.json
 memory_pressure                                  # free ≥ 30% (heavy 学習前、§5 of training-loop)
@@ -222,14 +224,14 @@ memory_pressure                                  # free ≥ 30% (heavy 学習前
 
 ### トラブルシューティング
 
-| エラー                                   | 対処                                                   |
-| ---------------------------------------- | ------------------------------------------------------ |
-| `model_meta.json not found`              | `--repo-root` を確認                                   |
-| `model.json not found in fold directory` | `--resume-from-checkpoint` なしで fold を再学習        |
-| `docker: command not found`              | `colima start`                                         |
-| `No parquet files found`                 | `--features-parquet` のパス / parquet 生成を確認       |
-| `ModuleNotFoundError`                    | `uv sync`                                              |
-| 全ラウンド改善しない                     | `--deploy-threshold` を下げる or `--n-trials` を増やす |
+| エラー                                   | 対処                                                       |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| `model_meta.json not found`              | `--repo-root` を確認                                       |
+| `model.json not found in fold directory` | `--resume-from-checkpoint` なしで fold を再学習            |
+| `container: command not found`           | Install Apple Container CLI, then `container system start` |
+| `No parquet files found`                 | `--features-parquet` のパス / parquet 生成を確認           |
+| `ModuleNotFoundError`                    | `uv sync`                                                  |
+| 全ラウンド改善しない                     | `--deploy-threshold` を下げる or `--n-trials` を増やす     |
 
 ---
 

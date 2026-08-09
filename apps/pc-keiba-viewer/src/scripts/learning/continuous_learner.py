@@ -108,6 +108,8 @@ DEFAULT_DOCKER_TAG: Final[str] = "finish-position-predict-local:split2"
 DEFAULT_DEPLOY_THRESHOLD: Final[float] = 0.005
 DEFAULT_N_TRIALS: Final[int] = 20
 DEFAULT_DOCKER_BUILD_TIMEOUT_S: Final[int] = 3600
+DEFAULT_APPLE_CONTAINER_START_TIMEOUT_S: Final[int] = 120
+DEFAULT_DOCKER_COMPAT_TIMEOUT_S: Final[int] = 180
 DEFAULT_TRAINING_TIMEOUT_S: Final[int] = 7200
 STRONG_NEGATIVE_THRESHOLD_PP: Final[float] = -1.0
 MAX_INVERSE_PER_ROUND: Final[int] = 3
@@ -140,6 +142,8 @@ _MODEL_META_JSON_PATH: Final[str] = (
     "apps/finish-position-predict-container/src/predict_lib/model_meta.json"
 )
 _CONTAINER_APP_DIR: Final[str] = "apps/finish-position-predict-container"
+_ENSURE_APPLE_CONTAINER_SCRIPT: Final[str] = "scripts/ensure-apple-container.sh"
+_ENSURE_DOCKER_COMPAT_SCRIPT: Final[str] = "scripts/ensure-docker-compat.sh"
 DEFAULT_CF_DEPLOY_TIMEOUT_S: Final[int] = 300
 
 _LOCAL_PG_URL: Final[str] = (
@@ -1924,7 +1928,7 @@ class ContinuousLearner:
             _logger.info("│  [4/5] updating model_meta.json ...")
             prev_meta_content = self._update_model_meta_json(model_version, len(feature_names))
             if self._docker_build:
-                _logger.info("│  [5/5] rebuilding Docker image ...")
+                _logger.info("│  [5/5] rebuilding Apple container image ...")
                 self._rebuild_docker()
             if self._cf_deploy:
                 _logger.info("│  [5/5] deploying to Cloudflare Container ...")
@@ -2023,8 +2027,13 @@ class ContinuousLearner:
         )
         _logger.info("│    building image: %s", self._docker_image_tag)
         subprocess.run(
+            ["bash", str(self._repo_root / _ENSURE_APPLE_CONTAINER_SCRIPT)],
+            check=True,
+            timeout=DEFAULT_APPLE_CONTAINER_START_TIMEOUT_S,
+        )
+        subprocess.run(
             [
-                "docker",
+                "container",
                 "build",
                 "-f",
                 str(dockerfile),
@@ -2035,13 +2044,19 @@ class ContinuousLearner:
             check=True,
             timeout=DEFAULT_DOCKER_BUILD_TIMEOUT_S,
         )
-        _logger.info("│    Docker build succeeded")
+        _logger.info("│    Apple container build succeeded")
 
     def _deploy_cf_container(self) -> None:
         container_dir = (
             self._cf_deploy_dir
             if self._cf_deploy_dir is not None
             else self._repo_root / _CONTAINER_APP_DIR
+        )
+        _logger.info("│    ensuring Docker daemon (colima) for wrangler Containers")
+        subprocess.run(
+            ["bash", str(self._repo_root / _ENSURE_DOCKER_COMPAT_SCRIPT)],
+            check=True,
+            timeout=DEFAULT_DOCKER_COMPAT_TIMEOUT_S,
         )
         _logger.info("│    deploying from: %s", container_dir)
         subprocess.run(
@@ -2131,10 +2146,15 @@ def main(argv: list[str] | None = None) -> None:
             "model_meta.json and stages model artifacts without the multi-metric "
             "(top1/place2/place3/place4-6/top3_box per cell) gate, cell routing, or "
             "sim/E-top2 awareness. Off by default; readiness is logged but deployment "
-            "stays manual. --docker-build / --cf-deploy are ignored unless this is set."
+            "stays manual. --docker-build (Apple container image) / --cf-deploy "
+            "(wrangler + colima) are ignored unless this is set."
         ),
     )
-    parser.add_argument("--docker-build", action="store_true")
+    parser.add_argument(
+        "--docker-build",
+        action="store_true",
+        help="Rebuild the local predict image with Apple Container CLI (`container build`).",
+    )
     parser.add_argument("--cf-deploy", action="store_true")
     parser.add_argument("--cf-deploy-dir", type=Path, default=None)
     parser.add_argument("--log-subgroup", action="store_true")
