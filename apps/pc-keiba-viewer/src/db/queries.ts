@@ -13,6 +13,11 @@ import {
   type FinishPositionBucketFilter,
   type FinishPositionBucketMetrics,
 } from "../lib/finish-prediction-dimensions";
+import {
+  buildFinishPositionPredictionKvKey,
+  parsePredictionFinishPositionFeatures,
+} from "../lib/prediction-kv-cache";
+import { readPredictionKvText, writePredictionKvText } from "../lib/prediction-kv-cache.server";
 import type {
   AbilityTest,
   BloodlineStatsRow,
@@ -3185,9 +3190,44 @@ export const getFinishPositionLambdarankPredictions = cache(
 
 export const getActiveFinishPositionPredictions = cache(
   async (race: RaceDetail, runners: Runner[]): Promise<FinishPositionModelPredictionFeature[]> => {
+    // Prediction KV/Cache-API tier. Serves yesterday/today/tomorrow races
+    // without querying Neon; the race-day today TTL is short (30s) and
+    // finish-position-cron overwrites the same key after a weight rescore, so
+    // an updated score replaces the stale one instead of being suppressed.
+    // Any parse failure falls through to the DB path below.
+    const predictionWindowYmd = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+    const predictionKey = buildFinishPositionPredictionKvKey({
+      keibajoCode: race.keibajoCode,
+      mmdd: race.kaisaiTsukihi,
+      raceBango: race.raceBango,
+      year: race.kaisaiNen,
+    });
+    const predictionBody = await readPredictionKvText(predictionKey, predictionWindowYmd);
+    if (predictionBody !== null) {
+      const predictionFeatures = parsePredictionFinishPositionFeatures(predictionBody);
+      if (predictionFeatures !== null) {
+        return predictionFeatures;
+      }
+    }
+
     const lambdaRows = await getFinishPositionLambdarankPredictions(race, runners);
-    if (lambdaRows.length > 0) return lambdaRows;
-    return getFinishPositionModelPredictionFeatures(race, runners);
+    if (lambdaRows.length > 0) {
+      await writePredictionKvText({
+        body: JSON.stringify(lambdaRows),
+        cacheKey: predictionKey,
+        raceYmd: predictionWindowYmd,
+      }).catch(() => undefined);
+      return lambdaRows;
+    }
+    const modelFeatures = await getFinishPositionModelPredictionFeatures(race, runners);
+    if (modelFeatures.length > 0) {
+      await writePredictionKvText({
+        body: JSON.stringify(modelFeatures),
+        cacheKey: predictionKey,
+        raceYmd: predictionWindowYmd,
+      }).catch(() => undefined);
+    }
+    return modelFeatures;
   },
 );
 

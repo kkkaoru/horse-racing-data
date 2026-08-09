@@ -14,7 +14,10 @@ import {
   getPredictionCacheApiTtlSeconds,
   getPredictionKvTtlSeconds,
   isPredictionCacheEligibleYmd,
+  parseCachedRunningStyleRows,
   parseFinishPositionPredictionKvKey,
+  parsePredictionFinishPositionFeatures,
+  parsePredictionRunningStyleText,
   parseRunningStylePredictionKvKey,
   raceYmdFromPredictionRaceId,
   resolvePredictionCacheWindow,
@@ -197,4 +200,167 @@ it("raceYmdFromPredictionRaceId concatenates year and mmdd", () => {
       year: "2026",
     }),
   ).toBe("20260809");
+});
+const SAMPLE_RS_ROW = {
+  bamei: "サンプル",
+  category: "マイル",
+  horseNumber: 5,
+  kaisaiNen: "2026",
+  kettoTorokuBango: "1234567890",
+  modelVersion: "prod-v3",
+  p_nige: 0.1,
+  p_oikomi: 0.3,
+  p_sashi: 0.2,
+  p_senkou: 0.4,
+  predictedAt: "2026-07-22T03:00:00+09:00",
+  predictedLabel: "senkou",
+  raceKey: "jra:2026:0809:05:11",
+};
+
+it("parseCachedRunningStyleRows parses a full row array", () => {
+  expect(parseCachedRunningStyleRows([SAMPLE_RS_ROW])).toStrictEqual([SAMPLE_RS_ROW]);
+});
+
+it("parseCachedRunningStyleRows returns null for a non-array payload", () => {
+  expect(parseCachedRunningStyleRows({ rows: [SAMPLE_RS_ROW] })).toBeNull();
+});
+
+it("parseCachedRunningStyleRows returns null for an empty array", () => {
+  expect(parseCachedRunningStyleRows([])).toBeNull();
+});
+
+it("parseCachedRunningStyleRows rejects a non-object row", () => {
+  expect(parseCachedRunningStyleRows([42])).toBeNull();
+});
+
+it("parseCachedRunningStyleRows rejects a row with an invalid predictedLabel", () => {
+  expect(parseCachedRunningStyleRows([{ ...SAMPLE_RS_ROW, predictedLabel: "bogus" }])).toBeNull();
+});
+
+it("parseCachedRunningStyleRows rejects a row with a non-numeric probability", () => {
+  expect(
+    parseCachedRunningStyleRows([
+      {
+        ...SAMPLE_RS_ROW,
+        p_nige: "not-a-number",
+      },
+    ]),
+  ).toBeNull();
+});
+
+it("parsePredictionRunningStyleText parses valid JSON rows", () => {
+  expect(parsePredictionRunningStyleText(JSON.stringify([SAMPLE_RS_ROW]))).toStrictEqual([
+    SAMPLE_RS_ROW,
+  ]);
+});
+
+it("parsePredictionRunningStyleText returns null for malformed JSON", () => {
+  expect(parsePredictionRunningStyleText("{oops")).toBeNull();
+});
+
+it("parsePredictionRunningStyleText returns null for JSON that is not an array", () => {
+  expect(parsePredictionRunningStyleText('{"rows":[]}')).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures parses a feature array", () => {
+  const body = JSON.stringify([
+    {
+      confidenceTier: "high",
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: 0.25,
+      predictedScoreStddev: 1.4,
+      showProbability: 0.12,
+      winProbability: 0.05,
+    },
+  ]);
+  expect(parsePredictionFinishPositionFeatures(body)).toStrictEqual([
+    {
+      confidenceTier: "high",
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: 0.25,
+      predictedScoreStddev: 1.4,
+      showProbability: 0.12,
+      winProbability: 0.05,
+    },
+  ]);
+});
+
+it("parsePredictionFinishPositionFeatures accepts a {features:[]} envelope", () => {
+  const body = JSON.stringify({
+    features: [
+      {
+        horseNumber: "3",
+        modelVersion: "jra-cb-v9-sim-2013-clean",
+        predictedFinishNorm: 0.25,
+        showProbability: null,
+        winProbability: null,
+      },
+    ],
+  });
+  expect(parsePredictionFinishPositionFeatures(body)).toStrictEqual([
+    {
+      confidenceTier: null,
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: 0.25,
+      predictedScoreStddev: null,
+      showProbability: null,
+      winProbability: null,
+    },
+  ]);
+});
+
+it("parsePredictionFinishPositionFeatures returns null for malformed JSON", () => {
+  expect(parsePredictionFinishPositionFeatures("{oops")).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures returns null when neither array nor features envelope", () => {
+  expect(parsePredictionFinishPositionFeatures('{"k":"v"}')).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures returns null when features is not an array", () => {
+  expect(parsePredictionFinishPositionFeatures('{"features":"x"}')).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures returns null for an empty array", () => {
+  expect(parsePredictionFinishPositionFeatures("[]")).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures rejects a non-object element", () => {
+  expect(parsePredictionFinishPositionFeatures("[42]")).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures rejects an element missing horseNumber", () => {
+  expect(
+    parsePredictionFinishPositionFeatures(
+      JSON.stringify([{ modelVersion: "jra-cb-v9-sim-2013-clean" }]),
+    ),
+  ).toBeNull();
+});
+
+it("parsePredictionFinishPositionFeatures maps non-number and unknown fields to null", () => {
+  const body = JSON.stringify([
+    {
+      confidenceTier: "mystery",
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: "0.25",
+      predictedScoreStddev: null,
+      showProbability: "0.12",
+      winProbability: null,
+    },
+  ]);
+  expect(parsePredictionFinishPositionFeatures(body)).toStrictEqual([
+    {
+      confidenceTier: null,
+      horseNumber: "3",
+      modelVersion: "jra-cb-v9-sim-2013-clean",
+      predictedFinishNorm: null,
+      predictedScoreStddev: null,
+      showProbability: null,
+      winProbability: null,
+    },
+  ]);
 });

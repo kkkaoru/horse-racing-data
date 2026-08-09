@@ -1,11 +1,13 @@
 import "server-only";
-import {
-  isRunningStyleLabel,
-  numericOrNull,
-  type RaceRunningStyleRow,
-} from "../db/corner-running-style-parsers";
+import { type RaceRunningStyleRow } from "../db/corner-running-style-parsers";
 import { readD1QueryCache } from "../db/d1-query-cache.server";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
+import {
+  buildRunningStylePredictionCacheKeyFromRace,
+  parseCachedRunningStyleRows,
+  parsePredictionRunningStyleText,
+} from "./prediction-kv-cache";
+import { readPredictionKvText, writePredictionKvText } from "./prediction-kv-cache.server";
 import { fetchProductionApi, useProductionApiProxy } from "./production-api-proxy.server";
 import {
   buildProductionRunningStylesPath,
@@ -36,59 +38,6 @@ const getCacheOrigin = (env: CloudflareEnv | null): string => {
 
 const uniqueNonEmptyStrings = (values: ReadonlyArray<string>): string[] =>
   Array.from(new Set(values.filter((value) => value.length > 0)));
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
-
-const stringOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
-
-const requireString = (value: unknown, field: string): string => {
-  if (typeof value === "string") return value;
-  throw new Error(`cached running-style row missing ${field}`);
-};
-
-const requireNumber = (value: unknown, field: string): number => {
-  const parsed = numericOrNull(value);
-  if (parsed === null) throw new Error(`cached running-style row missing ${field}`);
-  return parsed;
-};
-
-const parseCachedRunningStyleRow = (raw: unknown): RaceRunningStyleRow => {
-  if (!isRecord(raw)) {
-    throw new Error("cached running-style row is not an object");
-  }
-  const predictedLabel = raw.predictedLabel;
-  if (typeof predictedLabel !== "string" || !isRunningStyleLabel(predictedLabel)) {
-    throw new Error("cached running-style row has an invalid predictedLabel");
-  }
-  return {
-    bamei: stringOrNull(raw.bamei),
-    category: requireString(raw.category, "category"),
-    horseNumber: requireNumber(raw.horseNumber, "horseNumber"),
-    kaisaiNen: requireString(raw.kaisaiNen, "kaisaiNen"),
-    kettoTorokuBango: requireString(raw.kettoTorokuBango, "kettoTorokuBango"),
-    modelVersion: requireString(raw.modelVersion, "modelVersion"),
-    p_nige: requireNumber(raw.p_nige, "p_nige"),
-    p_oikomi: requireNumber(raw.p_oikomi, "p_oikomi"),
-    p_sashi: requireNumber(raw.p_sashi, "p_sashi"),
-    p_senkou: requireNumber(raw.p_senkou, "p_senkou"),
-    predictedAt: requireString(raw.predictedAt, "predictedAt"),
-    predictedLabel,
-    raceKey: requireString(raw.raceKey, "raceKey"),
-  };
-};
-
-const parseCachedRunningStyleRows = (payload: unknown): RaceRunningStyleRow[] | null => {
-  if (!Array.isArray(payload)) {
-    return null;
-  }
-  try {
-    const rows = payload.map(parseCachedRunningStyleRow);
-    return rows.length > 0 ? rows : null;
-  } catch {
-    return null;
-  }
-};
 
 const readCachedRows = async (response: Response): Promise<RaceRunningStyleRow[] | null> => {
   try {
@@ -182,6 +131,28 @@ export const getRaceRunningStylesWithCache = async (
   const { env } = await safeGetCloudflareRuntime();
   const raceKey = buildRaceKey(race);
 
+  // Prediction KV/Cache-API tier. Serves yesterday/today/tomorrow races
+  // without hitting the URL cache, hash cache, or production API; on race day
+  // the today TTL is short (30s) so a weight-rescore overwrite from
+  // finish-position-cron/sync-realtime-data shows up at the edge quickly.
+  const predictionKey = buildRunningStylePredictionCacheKeyFromRace({
+    kaisaiNen: race.kaisaiNen,
+    kaisaiTsukihi: race.kaisaiTsukihi,
+    keibajoCode: race.keibajoCode,
+    raceBango: race.raceBango,
+    source: race.source,
+  });
+  const predictionWindowYmd = `${race.kaisaiNen}${race.kaisaiTsukihi}`;
+  if (predictionKey !== null) {
+    const predictionBody = await readPredictionKvText(predictionKey, predictionWindowYmd);
+    if (predictionBody !== null) {
+      const predictionRows = parsePredictionRunningStyleText(predictionBody);
+      if (predictionRows !== null) {
+        return predictionRows;
+      }
+    }
+  }
+
   const [urlCached, hashCached] = await Promise.all([
     readUrlCachedRunningStyles(race, env),
     readHashCachedRunningStyles(raceKey),
@@ -191,7 +162,15 @@ export const getRaceRunningStylesWithCache = async (
     return cached;
   }
 
-  return fetchRunningStylesFromProduction(race);
+  const productionRows = await fetchRunningStylesFromProduction(race);
+  if (predictionKey !== null && productionRows.length > 0) {
+    await writePredictionKvText({
+      body: JSON.stringify(productionRows),
+      cacheKey: predictionKey,
+      raceYmd: predictionWindowYmd,
+    }).catch(() => undefined);
+  }
+  return productionRows;
 };
 
 export const getRaceRunningStylesByRaceKeysWithCache = async (

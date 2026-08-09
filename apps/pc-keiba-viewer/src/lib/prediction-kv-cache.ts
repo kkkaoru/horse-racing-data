@@ -18,7 +18,18 @@
 //   pred:fp:v1:{YYYYMMDD}:{keibajo}:{raceBango}
 //   pred:rs:v1:{source}:{YYYYMMDD}:{keibajo}:{raceBango}
 
+import {
+  isRunningStyleLabel,
+  requireNumber,
+  requireString,
+  stringOrNull,
+  type RaceRunningStyleRow,
+} from "../db/corner-running-style-parsers";
 import type { RaceSource } from "./codes";
+import type {
+  FinishPositionConfidenceTier,
+  FinishPositionModelPredictionFeature,
+} from "./race-types";
 
 export type PredictionCacheKind = "fp" | "rs";
 export type PredictionCacheWindow = "yesterday" | "today" | "tomorrow" | "outside";
@@ -225,3 +236,115 @@ export const buildPredictionCacheBustKeys = (race: RunningStylePredictionCacheRa
 
 export const raceYmdFromPredictionRaceId = (race: PredictionCacheRaceId): string =>
   `${race.year}${padRacePart(race.mmdd, 4)}`;
+
+// ---------------------------------------------------------------------------
+// Payload parse/validate helpers. The canonical KV body for the `pred:fp` and
+// `pred:rs` keys is a JSON array of the exact rows the viewer serves
+// (FinishPositionModelPredictionFeature[] and RaceRunningStyleRow[]). Parsing
+// is strict-but-non-throwing: any malformed value returns null so the caller
+// falls back to the original DB / production-API source instead of serving a
+// partial or corrupt prediction. `pred:fp` also tolerates an `{features:[]}`
+// envelope so a producer that wraps the array still round-trips.
+// ---------------------------------------------------------------------------
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const parseCachedRunningStyleRow = (raw: unknown): RaceRunningStyleRow => {
+  if (!isRecord(raw)) {
+    throw new Error("cached running-style row is not an object");
+  }
+  const predictedLabel = raw.predictedLabel;
+  if (typeof predictedLabel !== "string" || !isRunningStyleLabel(predictedLabel)) {
+    throw new Error("cached running-style row has an invalid predictedLabel");
+  }
+  return {
+    bamei: stringOrNull(raw.bamei),
+    category: requireString(raw.category, "category"),
+    horseNumber: requireNumber(raw.horseNumber, "horseNumber"),
+    kaisaiNen: requireString(raw.kaisaiNen, "kaisaiNen"),
+    kettoTorokuBango: requireString(raw.kettoTorokuBango, "kettoTorokuBango"),
+    modelVersion: requireString(raw.modelVersion, "modelVersion"),
+    p_nige: requireNumber(raw.p_nige, "p_nige"),
+    p_oikomi: requireNumber(raw.p_oikomi, "p_oikomi"),
+    p_sashi: requireNumber(raw.p_sashi, "p_sashi"),
+    p_senkou: requireNumber(raw.p_senkou, "p_senkou"),
+    predictedAt: requireString(raw.predictedAt, "predictedAt"),
+    predictedLabel,
+    raceKey: requireString(raw.raceKey, "raceKey"),
+  };
+};
+
+export const parseCachedRunningStyleRows = (payload: unknown): RaceRunningStyleRow[] | null => {
+  if (!Array.isArray(payload)) {
+    return null;
+  }
+  try {
+    const rows = payload.map(parseCachedRunningStyleRow);
+    return rows.length > 0 ? rows : null;
+  } catch {
+    return null;
+  }
+};
+
+export const parsePredictionRunningStyleText = (text: string): RaceRunningStyleRow[] | null => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parseCachedRunningStyleRows(parsed);
+  } catch {
+    return null;
+  }
+};
+
+const toNullableNumber = (value: unknown): number | null =>
+  typeof value === "number" ? value : null;
+
+const toConfidenceTier = (value: unknown): FinishPositionConfidenceTier | null =>
+  value === "low" || value === "mid" || value === "high" ? value : null;
+
+const getFinishFeaturesArray = (parsed: unknown): unknown[] | null => {
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  if (!isRecord(parsed)) {
+    return null;
+  }
+  const features = parsed.features;
+  return Array.isArray(features) ? features : null;
+};
+
+export const parsePredictionFinishPositionFeatures = (
+  text: string,
+): FinishPositionModelPredictionFeature[] | null => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const array = getFinishFeaturesArray(parsed);
+  if (array === null) {
+    return null;
+  }
+  const features: FinishPositionModelPredictionFeature[] = [];
+  for (const raw of array) {
+    if (!isRecord(raw)) {
+      return null;
+    }
+    const horseNumber = raw.horseNumber;
+    const modelVersion = raw.modelVersion;
+    if (typeof horseNumber !== "string" || typeof modelVersion !== "string") {
+      return null;
+    }
+    features.push({
+      confidenceTier: toConfidenceTier(raw.confidenceTier),
+      horseNumber,
+      modelVersion,
+      predictedFinishNorm: toNullableNumber(raw.predictedFinishNorm),
+      predictedScoreStddev: toNullableNumber(raw.predictedScoreStddev),
+      showProbability: toNullableNumber(raw.showProbability),
+      winProbability: toNullableNumber(raw.winProbability),
+    });
+  }
+  return features.length > 0 ? features : null;
+};

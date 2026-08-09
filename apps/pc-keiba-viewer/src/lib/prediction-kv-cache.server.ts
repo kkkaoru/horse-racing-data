@@ -97,12 +97,21 @@ export const writePredictionKvText = async ({
 };
 
 export const deletePredictionKvText = async (cacheKey: string): Promise<void> => {
-  const defaultCache = getDefaultCache();
   const { env } = await safeGetCloudflareRuntime();
   await Promise.all([
-    defaultCache?.delete(createPredictionKvCacheRequest(cacheKey)).catch(swallowCacheRejection),
+    deletePredictionCacheApiCopy(cacheKey),
     env?.DETAIL_SECTION_CACHE_KV?.delete(cacheKey).catch(swallowCacheRejection),
   ]);
+};
+
+// Cache-API-tier-only delete. The KV tier holds the fresh value after a
+// producer overwrite, so a rescore notification must purge only the colo
+// Cache API copy -- deleting KV here would remove the just-written score and
+// force a fallback to the stale Neon source.
+export const deletePredictionCacheApiCopy = async (cacheKey: string): Promise<void> => {
+  await getDefaultCache()
+    ?.delete(createPredictionKvCacheRequest(cacheKey))
+    .catch(swallowCacheRejection);
 };
 
 export const bustPredictionCachesForRace = async ({
@@ -127,5 +136,32 @@ export const bustPredictionCachesForRace = async ({
     year,
   });
   await Promise.all(keys.map((key) => deletePredictionKvText(key)));
+  return { busted: keys.length };
+};
+
+// Purges only the Cache API tier for both prediction keys of a race. Safe to
+// call before OR after a producer writes the KV tier.
+export const bustPredictionCacheApiForRace = async ({
+  keibajoCode,
+  mmdd,
+  raceBango,
+  source,
+  year,
+}: {
+  keibajoCode: string;
+  mmdd: string;
+  raceBango: string;
+  source: "jra" | "nar";
+  year: string;
+}): Promise<{ busted: number }> => {
+  const { buildPredictionCacheBustKeys } = await import("./prediction-kv-cache");
+  const keys = buildPredictionCacheBustKeys({
+    keibajoCode,
+    mmdd,
+    raceBango,
+    source,
+    year,
+  });
+  await Promise.all(keys.map((key) => deletePredictionCacheApiCopy(key)));
   return { busted: keys.length };
 };
