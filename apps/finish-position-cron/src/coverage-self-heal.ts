@@ -61,6 +61,12 @@ const MAX_SELF_HEAL_ENQUEUES_PER_RACE = 2;
 // PRE_RACE_READY escalate. Independent of MAX_SELF_HEAL so a race that was
 // retried pre-race still gets post-grace heal attempts.
 export const MAX_PRE_RACE_ENQUEUES_PER_RACE = 2;
+// After the pre-race budget is exhausted, keep retrying incomplete races that
+// are still before post -- 2026-08-09 Ban-ei 83/06-12 were left at 0 rows once
+// PRE_RACE_READY_ESCALATE fired at prior=2. Interval is 2x the 15-min tick so
+// a dead container is not stampeded every tick, while a 180-min lead window
+// still gets several more attempts before post.
+export const PRE_RACE_ESCALATED_RETRY_MINUTES = 30;
 // Mirrors FOCUSED_FULL_IN_FLIGHT_STALE_MS in queue-consumer.ts (duplicated,
 // not imported, matching the same duplication precedent day-base-prewarm.ts
 // already established for PREDICT_CONTAINER_NAME_PREFIX -- avoids coupling
@@ -93,6 +99,9 @@ const COUNT_PRIOR_ENQUEUES_BEFORE_POST_SQL = `select count(*) as count from fini
 const COUNT_PRIOR_ENQUEUES_ON_OR_AFTER_POST_SQL = `select count(*) as count from finish_position_coverage_gap_events
   where run_ymd = ?1 and category = ?2 and keibajo_code = ?3 and race_bango = ?4 and enqueued = 1
     and recorded_at >= ?5`;
+const SELECT_LAST_PRE_RACE_ENQUEUE_AT_SQL = `select max(recorded_at) as last_enqueued_at from finish_position_coverage_gap_events
+  where run_ymd = ?1 and category = ?2 and keibajo_code = ?3 and race_bango = ?4 and enqueued = 1
+    and recorded_at < ?5`;
 
 type HealPhase = "pre-race" | "post-race";
 
@@ -105,6 +114,10 @@ interface RaceSourceRow {
 
 interface CountRow {
   count: number;
+}
+
+interface LastEnqueueRow {
+  last_enqueued_at: string | null;
 }
 
 export interface GapCandidate {
@@ -139,6 +152,7 @@ interface RunCoverageSelfHealParams {
 interface HealCandidateParams {
   candidate: GapCandidate;
   env: Env;
+  now: Date;
   // Mutable tick-local counter for the pre-race per-tick enqueue cap. Shared
   // across sequential pre-race heals in the same runCoverageSelfHeal call.
   preRaceEnqueuedThisTick: { count: number };
@@ -239,6 +253,20 @@ export const isWithinPreRaceLeadWindow = (raceStartAtJst: string, now: Date): bo
   if (Number.isNaN(postMs)) return false;
   const deltaMs = postMs - now.getTime();
   return deltaMs > 0 && deltaMs <= PRE_RACE_LEAD_MINUTES * MS_PER_MINUTE;
+};
+
+// D1 datetime('now') is UTC "YYYY-MM-DD HH:MM:SS" with no timezone suffix.
+export const isEscalatedRetryDue = (
+  lastEnqueuedAtUtc: string | null | undefined,
+  now: Date,
+  intervalMinutes: number,
+): boolean => {
+  if (lastEnqueuedAtUtc === undefined || lastEnqueuedAtUtc === null || lastEnqueuedAtUtc === "") {
+    return true;
+  }
+  const lastMs = Date.parse(`${lastEnqueuedAtUtc.replace(" ", "T")}Z`);
+  if (Number.isNaN(lastMs)) return true;
+  return now.getTime() - lastMs >= intervalMinutes * MS_PER_MINUTE;
 };
 
 const rowToCandidate = (row: RaceSourceRow, phase: HealPhase): GapCandidate => {
@@ -349,8 +377,10 @@ const escalateCandidate = async (
 const enqueueGapFill = async (
   params: HealCandidateParams,
   priorEnqueueCount: number,
+  options?: { escalated?: boolean },
 ): Promise<HealOutcome> => {
   const { candidate, env, runDate, runYmd } = params;
+  const escalated = options?.escalated === true;
   await enqueuePredict({
     category: candidate.category,
     daysAhead: Number(env.PREDICT_DAYS_AHEAD),
@@ -366,15 +396,21 @@ const enqueueGapFill = async (
     candidate,
     enqueued: true,
     env,
-    escalated: false,
+    escalated,
     priorEnqueueCount,
     runYmd,
   });
   if (candidate.phase === "pre-race") {
     params.preRaceEnqueuedThisTick.count += 1;
-    console.warn(
-      `[coverage-self-heal] PRE_RACE_READY enqueued gap-fill pre_race=1 ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
-    );
+    if (escalated) {
+      console.warn(
+        `[coverage-self-heal] PRE_RACE_READY_ESCALATED_RETRY pre_race=1 ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+      );
+    } else {
+      console.warn(
+        `[coverage-self-heal] PRE_RACE_READY enqueued gap-fill pre_race=1 ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
+      );
+    }
   } else {
     console.warn(
       `[coverage-self-heal] enqueued gap-fill ${describeCandidate(candidate, runYmd)} priorEnqueueCount=${priorEnqueueCount}`,
@@ -383,11 +419,21 @@ const enqueueGapFill = async (
   return "enqueued";
 };
 
+const readLastPreRaceEnqueueAt = async (params: HealCandidateParams): Promise<string | null> => {
+  const { candidate, env, runYmd } = params;
+  const postUtc = raceStartAtJstToD1Utc(candidate.raceStartAtJst);
+  if (postUtc === null) return null;
+  const row = await env.FINISH_POSITION_CRON_DB.prepare(SELECT_LAST_PRE_RACE_ENQUEUE_AT_SQL)
+    .bind(runYmd, candidate.category, candidate.keibajoCode, candidate.raceBango, postUtc)
+    .first<LastEnqueueRow>();
+  return row?.last_enqueued_at ?? null;
+};
+
 // Never throws: a per-race failure here (Neon, D1, DO, or Queue) must not
 // block the rest of this tick's candidates, mirroring day-base-prewarm.ts's
 // per-category isolation.
 const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> => {
-  const { candidate, env, preRaceEnqueuedThisTick, runYmd } = params;
+  const { candidate, env, now, preRaceEnqueuedThisTick, runYmd } = params;
   try {
     const complete = await isFocusedFullPredictionComplete({
       category: candidate.category,
@@ -398,8 +444,15 @@ const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> 
     });
     if (complete) return "complete";
     const priorEnqueueCount = await countPriorEnqueues({ candidate, env, runYmd });
-    if (priorEnqueueCount >= maxEnqueuesForPhase(candidate.phase)) {
+    const overBudget = priorEnqueueCount >= maxEnqueuesForPhase(candidate.phase);
+    if (overBudget && candidate.phase !== "pre-race") {
       return await escalateCandidate(params, priorEnqueueCount);
+    }
+    if (overBudget && candidate.phase === "pre-race") {
+      const lastEnqueuedAt = await readLastPreRaceEnqueueAt(params);
+      if (!isEscalatedRetryDue(lastEnqueuedAt, now, PRE_RACE_ESCALATED_RETRY_MINUTES)) {
+        return await escalateCandidate(params, priorEnqueueCount);
+      }
     }
     const claim = await claimFocusedFullRace({
       category: candidate.category,
@@ -419,7 +472,7 @@ const healCandidate = async (params: HealCandidateParams): Promise<HealOutcome> 
       );
       return "capped";
     }
-    return await enqueueGapFill(params, priorEnqueueCount);
+    return await enqueueGapFill(params, priorEnqueueCount, { escalated: overBudget });
   } catch (err) {
     const prefix =
       candidate.phase === "pre-race"
@@ -464,22 +517,23 @@ const logTickSummary = (runYmd: string, summary: CoverageSelfHealSummary): void 
 // earliest posts are preferred.
 const healAllCandidates = async (params: {
   env: Env;
+  now: Date;
   postRaceCandidates: readonly GapCandidate[];
   preRaceCandidates: readonly GapCandidate[];
   runDate: string;
   runYmd: string;
 }): Promise<{ outcomes: HealOutcome[]; preRaceEnqueued: number }> => {
-  const { env, postRaceCandidates, preRaceCandidates, runDate, runYmd } = params;
+  const { env, now, postRaceCandidates, preRaceCandidates, runDate, runYmd } = params;
   const preRaceEnqueuedThisTick = { count: 0 };
   const postOutcomes = await Promise.all(
     postRaceCandidates.map((candidate) =>
-      healCandidate({ candidate, env, preRaceEnqueuedThisTick, runDate, runYmd }),
+      healCandidate({ candidate, env, now, preRaceEnqueuedThisTick, runDate, runYmd }),
     ),
   );
   const preOutcomes: HealOutcome[] = [];
   for (const candidate of preRaceCandidates) {
     preOutcomes.push(
-      await healCandidate({ candidate, env, preRaceEnqueuedThisTick, runDate, runYmd }),
+      await healCandidate({ candidate, env, now, preRaceEnqueuedThisTick, runDate, runYmd }),
     );
   }
   return {
@@ -512,6 +566,7 @@ export const runCoverageSelfHeal = async (
   }
   const { outcomes, preRaceEnqueued } = await healAllCandidates({
     env,
+    now,
     postRaceCandidates,
     preRaceCandidates,
     runDate,

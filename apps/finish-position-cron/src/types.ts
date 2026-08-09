@@ -194,6 +194,18 @@ export interface PredictQueueMessage {
   // at most once instead of bouncing between the two queues forever. Absent
   // on every message that has not yet been dead-lettered.
   dlqRedriveCount?: number;
+  // Last predict/container failure snapshot. Cloudflare Queues
+  // message.retry() cannot mutate the original body, so the primary consumer
+  // normally persists this to finish_position_predict_retry_errors instead.
+  // Present when a fresh send() (busy requeue / DLQ redrive) carries the
+  // snapshot forward so the DLQ consumer can copy it without a D1 lookup.
+  lastFailure?: {
+    errorName?: string | null;
+    errorMessage?: string | null;
+    errorStack?: string | null;
+    httpStatus?: number | null;
+    httpBodyExcerpt?: string | null;
+  };
   // Enables verbose diagnostic logs for this message and the downstream
   // Container /predict request. Absent/false keeps production logs quiet.
   debug?: boolean;

@@ -1,6 +1,7 @@
 // Run with bun. Tests for the dead-letter queue consumer.
 
 import { beforeEach, expect, test, vi } from "vitest";
+import type { RetryErrorLookupRow } from "./retry-errors";
 import type { Env, PredictQueueMessage } from "./types";
 
 const { completeFocusedFullRaceMock } = vi.hoisted(() => {
@@ -18,7 +19,8 @@ const ackMock = vi.fn();
 const retryMock = vi.fn();
 const sendMock = vi.fn();
 const runMock = vi.fn(async () => ({ success: true }));
-const bindMock = vi.fn(() => ({ run: runMock }));
+const firstMock = vi.fn(async (): Promise<RetryErrorLookupRow | null> => null);
+const bindMock = vi.fn(() => ({ first: firstMock, run: runMock }));
 const prepareMock = vi.fn(() => ({ bind: bindMock }));
 
 const makeEnv = (): Env =>
@@ -30,6 +32,7 @@ const makeEnv = (): Env =>
 const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<PredictQueueMessage> =>
   ({
     ack: ackMock,
+    attempts: 16,
     body: {
       category: "jra",
       daysAhead: 0,
@@ -39,11 +42,14 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<Pred
       runYmd: "20260712",
       ...overrides,
     } satisfies PredictQueueMessage,
+    id: "dlq-msg-1",
     retry: retryMock,
   }) as unknown as Message<PredictQueueMessage>;
 
 const makeBatch = (messages: Message<PredictQueueMessage>[]): MessageBatch<PredictQueueMessage> =>
   ({ messages, queue: DLQ_QUEUE_NAME }) as unknown as MessageBatch<PredictQueueMessage>;
+
+const nullFailureBindTail = [null, null, null, null, null, 16] as const;
 
 beforeEach(() => {
   ackMock.mockClear();
@@ -52,6 +58,8 @@ beforeEach(() => {
   sendMock.mockResolvedValue(undefined);
   runMock.mockClear();
   runMock.mockResolvedValue({ success: true });
+  firstMock.mockClear();
+  firstMock.mockResolvedValue(null);
   bindMock.mockClear();
   prepareMock.mockClear();
   completeFocusedFullRaceMock.mockClear();
@@ -74,8 +82,17 @@ test("records a durable event row for a focused-full message", async () => {
     ]),
     makeEnv(),
   );
-  expect(prepareMock).toHaveBeenCalledTimes(1);
-  expect(bindMock).toHaveBeenCalledWith("20260712", "jra", "full", "02", "01", 0, 1);
+  expect(prepareMock).toHaveBeenCalled();
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "02",
+    "01",
+    0,
+    1,
+    ...nullFailureBindTail,
+  );
   expect(runMock).toHaveBeenCalledTimes(1);
 });
 
@@ -140,7 +157,190 @@ test("still records the event row with redriven=false when the budget is exhaust
     makeBatch([makeMessage({ dlqRedriveCount: 1, keibajoCode: "02", raceBango: "01" })]),
     makeEnv(),
   );
-  expect(bindMock).toHaveBeenCalledWith("20260712", "jra", "full", "02", "01", 1, 0);
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "02",
+    "01",
+    1,
+    0,
+    ...nullFailureBindTail,
+  );
+});
+
+test("copies lastFailure from the message body onto the dlq event row", async () => {
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "83",
+        lastFailure: {
+          errorMessage: "Container DO returned 503: no instance",
+          errorName: "Error",
+          errorStack: "Error: Container DO returned 503: no instance",
+          httpBodyExcerpt: "no instance",
+          httpStatus: 503,
+        },
+        raceBango: "06",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "83",
+    "06",
+    0,
+    1,
+    "Error",
+    "Container DO returned 503: no instance",
+    "Error: Container DO returned 503: no instance",
+    503,
+    "no instance",
+    16,
+  );
+  expect(firstMock).not.toHaveBeenCalled();
+});
+
+test("looks up the latest retry error by message id when the body has no lastFailure", async () => {
+  firstMock.mockResolvedValueOnce({
+    errorMessage: "network timeout",
+    errorName: "Error",
+    errorStack: "Error: network timeout",
+    httpBodyExcerpt: null,
+    httpStatus: null,
+    queueAttempts: 12,
+  });
+  await handleDlqQueue(makeBatch([makeMessage({ keibajoCode: "05", raceBango: "11" })]), makeEnv());
+  expect(bindMock).toHaveBeenCalledWith("dlq-msg-1");
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "05",
+    "11",
+    0,
+    1,
+    "Error",
+    "network timeout",
+    "Error: network timeout",
+    null,
+    null,
+    16,
+  );
+});
+
+test("treats an empty lastFailure object as absent and falls back to D1 lookup", async () => {
+  firstMock.mockResolvedValueOnce({
+    errorMessage: "from d1",
+    errorName: "Error",
+    errorStack: null,
+    httpBodyExcerpt: null,
+    httpStatus: 502,
+    queueAttempts: 9,
+  });
+  await handleDlqQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "83",
+        lastFailure: {},
+        raceBango: "11",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(firstMock).toHaveBeenCalled();
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "83",
+    "11",
+    0,
+    1,
+    "Error",
+    "from d1",
+    null,
+    502,
+    null,
+    16,
+  );
+});
+
+test("uses retry-error queueAttempts when the DLQ message has no attempts", async () => {
+  firstMock.mockResolvedValueOnce({
+    errorMessage: "Empty response from predict DO",
+    errorName: "Error",
+    errorStack: null,
+    httpBodyExcerpt: null,
+    httpStatus: null,
+    queueAttempts: 8,
+  });
+  const message = {
+    ...makeMessage({ keibajoCode: "44", raceBango: "08" }),
+    attempts: undefined,
+  } as unknown as Message<PredictQueueMessage>;
+  await handleDlqQueue(makeBatch([message]), makeEnv());
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "44",
+    "08",
+    0,
+    1,
+    "Error",
+    "Empty response from predict DO",
+    null,
+    null,
+    null,
+    8,
+  );
+});
+
+test("falls back to race-key retry-error lookup when message id is absent", async () => {
+  firstMock.mockResolvedValueOnce({
+    errorMessage: "Empty response from predict DO",
+    errorName: "Error",
+    errorStack: null,
+    httpBodyExcerpt: null,
+    httpStatus: null,
+    queueAttempts: 8,
+  });
+  const message = {
+    ack: ackMock,
+    attempts: 16,
+    body: {
+      category: "jra",
+      daysAhead: 0,
+      keibajoCode: "44",
+      mode: "full",
+      raceBango: "07",
+      runDate: "2026-07-12",
+      runDateIso: "2026-07-12",
+      runYmd: "20260712",
+    },
+    retry: retryMock,
+  } as unknown as Message<PredictQueueMessage>;
+  await handleDlqQueue(makeBatch([message]), makeEnv());
+  expect(bindMock).toHaveBeenCalledWith("20260712", "jra", "full", "44", "07");
+  expect(bindMock).toHaveBeenCalledWith(
+    "20260712",
+    "jra",
+    "full",
+    "44",
+    "07",
+    0,
+    1,
+    "Error",
+    "Empty response from predict DO",
+    null,
+    null,
+    null,
+    16,
+  );
 });
 
 test("retries (does not ack) when the D1 insert throws", async () => {
@@ -181,6 +381,6 @@ test("processes every message in the batch independently", async () => {
     ]),
     makeEnv(),
   );
-  expect(prepareMock).toHaveBeenCalledTimes(2);
+  expect(runMock).toHaveBeenCalledTimes(2);
   expect(ackMock).toHaveBeenCalledTimes(2);
 });

@@ -155,6 +155,7 @@ const makeEnv = (): Env => ({
 const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<PredictQueueMessage> =>
   ({
     ack: ackMock,
+    attempts: 3,
     body: {
       category: "jra",
       daysAhead: 2,
@@ -164,6 +165,7 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<Pred
       runYmd: "20260603",
       ...overrides,
     } satisfies PredictQueueMessage,
+    id: "predict-msg-1",
     retry: retryMock,
   }) as unknown as Message<PredictQueueMessage>;
 
@@ -720,6 +722,47 @@ test("calls completeRun with error and retries when container DO returns 502", a
   );
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(ackMock).not.toHaveBeenCalled();
+  errorSpy.mockRestore();
+});
+
+test("persists a retry-error row before retrying a container 502", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockResolvedValue(
+    Response.json({ error: "Container start failed", detail: "timeout" }, { status: 502 }),
+  );
+  await handleQueue(makeBatch([makeMessage({ keibajoCode: "83", raceBango: "06" })]), makeEnv());
+  expect(prepareMock).toHaveBeenCalledWith(
+    expect.stringContaining("insert into finish_position_predict_retry_errors"),
+  );
+  expect(bindMock).toHaveBeenCalledWith(
+    "predict-msg-1",
+    "20260603",
+    "jra",
+    "full",
+    "83",
+    "06",
+    "Error",
+    'Container DO returned 502: {"error":"Container start failed","detail":"timeout"}',
+    expect.stringContaining("Container DO returned 502:"),
+    502,
+    '{"error":"Container start failed","detail":"timeout"}',
+    3,
+  );
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
+});
+
+test("still retries when persisting the retry-error row fails", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  stubFetchMock.mockRejectedValue(new Error("network timeout"));
+  runMock.mockRejectedValue(new Error("d1 unavailable"));
+  await handleQueue(makeBatch([makeMessage()]), makeEnv());
+  expect(retryMock).toHaveBeenCalledTimes(1);
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(errorSpy).toHaveBeenCalledWith(
+    expect.stringContaining("[predict-queue] failed to persist retry error"),
+    "Error: d1 unavailable",
+  );
   errorSpy.mockRestore();
 });
 
@@ -1489,6 +1532,20 @@ test("retries toward the DLQ instead of re-enqueueing once the busy requeue budg
   expect(retryMock).toHaveBeenCalledTimes(1);
   expect(retryMock).toHaveBeenCalledWith();
   expect(ackMock).not.toHaveBeenCalled();
+  expect(bindMock).toHaveBeenCalledWith(
+    "predict-msg-1",
+    "20260629",
+    "nar",
+    "full",
+    "35",
+    "01",
+    "BusyRequeueExhausted",
+    "Focused full slot busy budget exhausted busyRequeueCount=45",
+    expect.stringContaining("Focused full slot busy budget exhausted busyRequeueCount=45"),
+    null,
+    null,
+    3,
+  );
   consoleWarn.mockRestore();
 });
 

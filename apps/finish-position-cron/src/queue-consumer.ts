@@ -25,8 +25,14 @@ import {
   publishFinishPositionPredictionCacheForCategory,
   type PredictionKvPublishResult,
 } from "./prediction-kv-writer";
+import { parsePredictFailure } from "./predict-failure";
 import { resolvePredictDoName } from "./predict-do-shard";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
+import {
+  buildRetryErrorBindParams,
+  buildRetryErrorInsertSql,
+  buildRetryErrorRecord,
+} from "./retry-errors";
 import type { Env, PredictQueueMessage } from "./types";
 
 const RUN_YMD_YEAR_START = 0;
@@ -400,6 +406,52 @@ const describePredictMessage = (body: PredictQueueMessage): string =>
     `busyRequeueCount=${body.busyRequeueCount ?? BUSY_REQUEUE_COUNT_ZERO}`,
   ].join(" ") + raceScopeSuffix(body.keibajoCode, body.raceBango);
 
+const optionalQueueAttempts = (message: Message<PredictQueueMessage>): number | undefined =>
+  typeof message.attempts === "number" ? message.attempts : undefined;
+
+const optionalQueueMessageId = (message: Message<PredictQueueMessage>): string | undefined =>
+  typeof message.id === "string" && message.id.length > 0 ? message.id : undefined;
+
+// Cloudflare Queues message.retry() redelivers the original body unchanged, so
+// the failure that will eventually dead-letter this message must be persisted
+// out-of-band. Best-effort: a D1 hiccup must not itself block the retry.
+const persistRetryError = async (
+  env: Env,
+  message: Message<PredictQueueMessage>,
+  err: unknown,
+): Promise<void> => {
+  try {
+    const failure = parsePredictFailure(err);
+    const record = buildRetryErrorRecord({
+      ...failure,
+      category: message.body.category,
+      keibajoCode: message.body.keibajoCode,
+      mode: message.body.mode,
+      queueAttempts: optionalQueueAttempts(message),
+      queueMessageId: optionalQueueMessageId(message),
+      raceBango: message.body.raceBango,
+      runYmd: message.body.runYmd,
+    });
+    await env.FINISH_POSITION_CRON_DB.prepare(buildRetryErrorInsertSql())
+      .bind(...buildRetryErrorBindParams(record))
+      .run();
+  } catch (persistErr) {
+    console.error(
+      `[predict-queue] failed to persist retry error ${describePredictMessage(message.body)}:`,
+      String(persistErr),
+    );
+  }
+};
+
+const retryAfterFailure = async (
+  message: Message<PredictQueueMessage>,
+  env: Env,
+  err: unknown,
+): Promise<void> => {
+  await persistRetryError(env, message, err);
+  message.retry();
+};
+
 // Grows the busy re-enqueue delay with how many times this message has already
 // been requeued busy, capped at BUSY_REQUEUE_DELAY_MAX_SECONDS.
 const computeBusyRequeueDelaySeconds = (busyRequeueCount: number): number =>
@@ -421,7 +473,11 @@ const requeueBusyFocusedFull = async (
     console.warn(
       `Focused full slot busy budget exhausted category=${category} runYmd=${runYmd}${suffix} busyRequeueCount=${currentCount} -- retrying toward DLQ`,
     );
-    message.retry();
+    const busyExhausted = new Error(
+      `Focused full slot busy budget exhausted busyRequeueCount=${currentCount}`,
+    );
+    busyExhausted.name = "BusyRequeueExhausted";
+    await retryAfterFailure(message, env, busyExhausted);
     return;
   }
   const nextCount = currentCount + BUSY_REQUEUE_COUNT_INCREMENT;
@@ -588,7 +644,7 @@ const processContainerPerRaceRescore = async (
       }:`,
       String(err),
     );
-    message.retry();
+    await retryAfterFailure(message, env, err);
   }
 };
 
@@ -812,7 +868,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         status: "error",
       });
     }
-    message.retry();
+    await retryAfterFailure(message, env, err);
   }
 };
 

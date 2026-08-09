@@ -68,9 +68,11 @@ import {
   COVERAGE_SELF_HEAL_CRON,
   MAX_PRE_RACE_ENQUEUES_PER_RACE,
   PRE_RACE_ENQUEUE_CAP_PER_TICK,
+  PRE_RACE_ESCALATED_RETRY_MINUTES,
   PRE_RACE_LEAD_MINUTES,
   buildPostRaceGapCandidates,
   buildPreRaceGapCandidates,
+  isEscalatedRetryDue,
   isPastGraceWindow,
   isWithinPreRaceLeadWindow,
   runCoverageSelfHeal,
@@ -82,9 +84,20 @@ const realtimeBindMock = vi.fn(() => ({ all: realtimeAllMock }));
 const realtimePrepareMock = vi.fn(() => ({ bind: realtimeBindMock }));
 
 const cronFirstMock = vi.fn(async (): Promise<{ count: number } | null> => null);
+const lastEnqueuedAtMock = vi.fn(
+  async (): Promise<{ last_enqueued_at: string | null } | null> => null,
+);
 const cronRunMock = vi.fn(async () => ({ success: true }));
 const cronBindMock = vi.fn((..._args: unknown[]) => ({ first: cronFirstMock, run: cronRunMock }));
-const cronPrepareMock = vi.fn(() => ({ bind: cronBindMock }));
+const cronPrepareMock = vi.fn((sql: string) => ({
+  bind: (...args: unknown[]) => {
+    cronBindMock(...args);
+    return {
+      first: sql.includes("max(recorded_at)") ? lastEnqueuedAtMock : cronFirstMock,
+      run: cronRunMock,
+    };
+  },
+}));
 
 const makeEnv = (): Env => ({
   FEATURES_CACHE: {} as unknown as R2Bucket,
@@ -124,9 +137,11 @@ beforeEach(() => {
   realtimeBindMock.mockClear();
   realtimePrepareMock.mockClear();
   cronFirstMock.mockClear();
+  lastEnqueuedAtMock.mockClear();
   cronRunMock.mockClear();
   cronBindMock.mockClear();
   cronPrepareMock.mockClear();
+  lastEnqueuedAtMock.mockResolvedValue(null);
   claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
   enqueuePredictMock.mockResolvedValue(["jra"]);
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
@@ -143,6 +158,26 @@ test("pre-race readiness constants mirror weight lead and keep separate budgets"
   expect(PRE_RACE_LEAD_MINUTES).toBe(180);
   expect(PRE_RACE_ENQUEUE_CAP_PER_TICK).toBe(16);
   expect(MAX_PRE_RACE_ENQUEUES_PER_RACE).toBe(2);
+  expect(PRE_RACE_ESCALATED_RETRY_MINUTES).toBe(30);
+});
+
+test("isEscalatedRetryDue is true when last enqueue is missing or unparseable", () => {
+  expect(isEscalatedRetryDue(null, NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(true);
+  expect(isEscalatedRetryDue(undefined, NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(true);
+  expect(isEscalatedRetryDue("", NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(true);
+  expect(isEscalatedRetryDue("not-a-date", NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(true);
+});
+
+test("isEscalatedRetryDue respects the backoff interval against D1 UTC timestamps", () => {
+  expect(isEscalatedRetryDue("2026-07-12 05:45:00", NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(
+    false,
+  );
+  expect(isEscalatedRetryDue("2026-07-12 05:30:00", NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(
+    true,
+  );
+  expect(isEscalatedRetryDue("2026-07-12 05:29:59", NOW, PRE_RACE_ESCALATED_RETRY_MINUTES)).toBe(
+    true,
+  );
 });
 
 test("shouldRunCoverageSelfHealCron matches the configured cron", () => {
@@ -758,6 +793,7 @@ test("runCoverageSelfHeal escalates pre-race with PRE_RACE_READY_ESCALATE once p
   });
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   cronFirstMock.mockResolvedValue({ count: MAX_PRE_RACE_ENQUEUES_PER_RACE });
+  lastEnqueuedAtMock.mockResolvedValue({ last_enqueued_at: "2026-07-12 05:45:00" });
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
   expect(enqueuePredictMock).not.toHaveBeenCalled();
@@ -772,6 +808,83 @@ test("runCoverageSelfHeal escalates pre-race with PRE_RACE_READY_ESCALATE once p
     scanned: 1,
   });
   errorSpy.mockRestore();
+});
+
+test("runCoverageSelfHeal keeps retrying an incomplete pre-race race after escalate once backoff elapses", async () => {
+  realtimeAllMock.mockResolvedValue({
+    results: [
+      {
+        keibajo_code: "83",
+        race_bango: "06",
+        race_start_at_jst: "2026-07-12T16:30:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
+  cronFirstMock.mockResolvedValue({ count: MAX_PRE_RACE_ENQUEUES_PER_RACE });
+  lastEnqueuedAtMock.mockResolvedValue({ last_enqueued_at: "2026-07-12 05:25:00" });
+  claimFocusedFullRaceMock.mockResolvedValue({ proceed: true });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
+  expect(enqueuePredictMock).toHaveBeenCalledTimes(1);
+  expect(enqueuePredictMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      category: "ban-ei",
+      keibajoCode: "83",
+      mode: "full",
+      raceBango: "06",
+      skipDedup: true,
+    }),
+  );
+  expect(warnSpy).toHaveBeenCalledWith(
+    "[coverage-self-heal] PRE_RACE_READY_ESCALATED_RETRY pre_race=1 category=ban-ei runYmd=20260712 keibajo=83 race=06 priorEnqueueCount=2",
+  );
+  expect(cronBindMock).toHaveBeenCalledWith(
+    "20260712",
+    "ban-ei",
+    "83",
+    "06",
+    "2026-07-12T16:30:00+09:00",
+    2,
+    1,
+    1,
+  );
+  expect(summary).toStrictEqual({
+    ...EMPTY_SUMMARY,
+    candidates: 1,
+    enqueued: 1,
+    preRaceCandidates: 1,
+    preRaceEnqueued: 1,
+    scanned: 1,
+  });
+  warnSpy.mockRestore();
+});
+
+test("runCoverageSelfHeal does not enqueue an escalated pre-race retry while the DO claim is in flight", async () => {
+  realtimeAllMock.mockResolvedValue({
+    results: [
+      {
+        keibajo_code: "83",
+        race_bango: "07",
+        race_start_at_jst: "2026-07-12T16:45:00+09:00",
+        source: "nar",
+      },
+    ],
+  });
+  isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
+  cronFirstMock.mockResolvedValue({ count: MAX_PRE_RACE_ENQUEUES_PER_RACE });
+  lastEnqueuedAtMock.mockResolvedValue({ last_enqueued_at: "2026-07-12 05:20:00" });
+  claimFocusedFullRaceMock.mockResolvedValue({ proceed: false, state: "started" });
+  const summary = await runCoverageSelfHeal({ env: makeEnv(), now: NOW });
+  expect(enqueuePredictMock).not.toHaveBeenCalled();
+  expect(summary).toStrictEqual({
+    ...EMPTY_SUMMARY,
+    alreadyInFlight: 1,
+    candidates: 1,
+    preRaceCandidates: 1,
+    scanned: 1,
+  });
 });
 
 test("runCoverageSelfHeal does not let a pre-race failure block post-race heal", async () => {

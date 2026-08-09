@@ -9,9 +9,21 @@
 // re-enqueues it once, bounded by dlqRedriveCount on the message body so a
 // poison-pill message cannot bounce between the two queues forever.
 
-import { buildDlqEventBindParams, buildDlqEventInsertSql, buildDlqEventRecord } from "./dlq-events";
+import {
+  buildDlqEventBindParams,
+  buildDlqEventInsertSql,
+  buildDlqEventRecord,
+  emptyPredictFailure,
+} from "./dlq-events";
 import { completeFocusedFullRace } from "./do-state";
+import type { PredictFailureSnapshot } from "./predict-failure";
 import { isFocusedSkipDedupMessage } from "./queue-consumer";
+import {
+  buildRetryErrorLookupByMessageIdSql,
+  buildRetryErrorLookupByRaceSql,
+  retryErrorLookupRowToSnapshot,
+  type RetryErrorLookupRow,
+} from "./retry-errors";
 import type { Env, PredictQueueMessage } from "./types";
 
 export const DLQ_QUEUE_NAME = "finish-position-predict-dlq";
@@ -24,16 +36,88 @@ const describeDlqMessage = (body: PredictQueueMessage): string =>
     body.keibajoCode ?? "-"
   } race=${body.raceBango ?? "-"}`;
 
-const recordDlqEvent = async (
+const optionalQueueAttempts = (message: Message<PredictQueueMessage>): number | null =>
+  typeof message.attempts === "number" ? message.attempts : null;
+
+const optionalQueueMessageId = (message: Message<PredictQueueMessage>): string | null =>
+  typeof message.id === "string" && message.id.length > 0 ? message.id : null;
+
+const snapshotFromMessageBody = (body: PredictQueueMessage): PredictFailureSnapshot | null => {
+  const lastFailure = body.lastFailure;
+  if (lastFailure === undefined) return null;
+  if (
+    lastFailure.errorName == null &&
+    lastFailure.errorMessage == null &&
+    lastFailure.errorStack == null &&
+    lastFailure.httpStatus == null &&
+    lastFailure.httpBodyExcerpt == null
+  ) {
+    return null;
+  }
+  return {
+    errorMessage: lastFailure.errorMessage ?? null,
+    errorName: lastFailure.errorName ?? null,
+    errorStack: lastFailure.errorStack ?? null,
+    httpBodyExcerpt: lastFailure.httpBodyExcerpt ?? null,
+    httpStatus: lastFailure.httpStatus ?? null,
+  };
+};
+
+const lookupRetryErrorByMessageId = async (
+  env: Env,
+  messageId: string,
+): Promise<RetryErrorLookupRow | null> =>
+  env.FINISH_POSITION_CRON_DB.prepare(buildRetryErrorLookupByMessageIdSql())
+    .bind(messageId)
+    .first<RetryErrorLookupRow>();
+
+const lookupRetryErrorByRace = async (
   env: Env,
   body: PredictQueueMessage,
+): Promise<RetryErrorLookupRow | null> =>
+  env.FINISH_POSITION_CRON_DB.prepare(buildRetryErrorLookupByRaceSql())
+    .bind(body.runYmd, body.category, body.mode, body.keibajoCode ?? null, body.raceBango ?? null)
+    .first<RetryErrorLookupRow>();
+
+const resolveDlqFailure = async (
+  env: Env,
+  message: Message<PredictQueueMessage>,
+): Promise<{ failure: PredictFailureSnapshot; queueAttempts: number | null }> => {
+  const queueAttempts = optionalQueueAttempts(message);
+  const fromBody = snapshotFromMessageBody(message.body);
+  if (fromBody !== null) {
+    return { failure: fromBody, queueAttempts };
+  }
+  const messageId = optionalQueueMessageId(message);
+  const byId = messageId === null ? null : await lookupRetryErrorByMessageId(env, messageId);
+  const row = byId ?? (await lookupRetryErrorByRace(env, message.body));
+  if (row === null) {
+    return { failure: emptyPredictFailure(), queueAttempts };
+  }
+  return {
+    failure: retryErrorLookupRowToSnapshot(row),
+    queueAttempts: queueAttempts ?? row.queueAttempts,
+  };
+};
+
+const recordDlqEvent = async (
+  env: Env,
+  message: Message<PredictQueueMessage>,
   redriveCount: number,
   redriven: boolean,
 ): Promise<void> => {
+  const { failure, queueAttempts } = await resolveDlqFailure(env, message);
+  const body = message.body;
   const record = buildDlqEventRecord({
     category: body.category,
+    errorMessage: failure.errorMessage,
+    errorName: failure.errorName,
+    errorStack: failure.errorStack,
+    httpBodyExcerpt: failure.httpBodyExcerpt,
+    httpStatus: failure.httpStatus,
     keibajoCode: body.keibajoCode,
     mode: body.mode,
+    queueAttempts,
     raceBango: body.raceBango,
     redriveCount,
     redriven,
@@ -86,7 +170,7 @@ const processDlqMessage = async (
   const redriveCount = body.dlqRedriveCount ?? DLQ_REDRIVE_COUNT_ZERO;
   const shouldRedrive = redriveCount < MAX_DLQ_REDRIVES;
   try {
-    await recordDlqEvent(env, body, redriveCount, shouldRedrive);
+    await recordDlqEvent(env, message, redriveCount, shouldRedrive);
     await unstickFocusedFullClaim(env, body);
     if (shouldRedrive) {
       await redriveMessage(env, body);
