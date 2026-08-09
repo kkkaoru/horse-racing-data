@@ -10,7 +10,11 @@ vi.mock("@opennextjs/cloudflare", () => ({
   getCloudflareContext: getCloudflareContextMock,
 }));
 
-import { deleteFinishPredictionInputsCache } from "./finish-prediction-inputs-cache.server";
+import {
+  buildFinishPredictionInputsCacheKey,
+  buildFinishPredictionInputsCacheKeyFromRaceParts,
+  deleteFinishPredictionInputsCache,
+} from "./finish-prediction-inputs-cache.server";
 
 type CacheDeleteFn = (request: Request) => Promise<boolean>;
 type KvDeleteFn = (key: string) => Promise<void>;
@@ -44,6 +48,51 @@ beforeEach(() => {
 
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "caches");
+});
+
+it("buildFinishPredictionInputsCacheKey zero-pads month day venue and race", () => {
+  expect(
+    buildFinishPredictionInputsCacheKey({
+      day: "9",
+      keibajoCode: "5",
+      month: "8",
+      raceNumber: "1",
+      year: "2026",
+    }),
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:01:inputs");
+});
+
+it("buildFinishPredictionInputsCacheKeyFromRaceParts matches the section key", () => {
+  expect(
+    buildFinishPredictionInputsCacheKeyFromRaceParts({
+      keibajoCode: "05",
+      mmdd: "0809",
+      raceBango: "11",
+      year: "2026",
+    }),
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:11:inputs");
+});
+
+it("buildFinishPredictionInputsCacheKeyFromRaceParts pads unpadded producer values", () => {
+  expect(
+    buildFinishPredictionInputsCacheKeyFromRaceParts({
+      keibajoCode: "5",
+      mmdd: "809",
+      raceBango: "1",
+      year: "2026",
+    }),
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:01:inputs");
+});
+
+it("buildFinishPredictionInputsCacheKeyFromRaceParts keeps Ban-ei venue 83 distinct", () => {
+  expect(
+    buildFinishPredictionInputsCacheKeyFromRaceParts({
+      keibajoCode: "83",
+      mmdd: "0809",
+      raceBango: "12",
+      year: "2026",
+    }),
+  ).toBe("pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:83:12:inputs");
 });
 
 it("deletes both the edge cache entry and the kv entry", async () => {

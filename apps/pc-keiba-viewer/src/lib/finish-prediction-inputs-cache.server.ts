@@ -68,6 +68,11 @@ export const getFinishPredictionInputsCacheTtlSeconds = (
   return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
 };
 
+const CACHE_KEY_PART_WIDTH = 2;
+const CACHE_KEY_MMDD_WIDTH = 4;
+
+const padCacheKeyPart = (value: string, width: number): string => value.padStart(width, "0");
+
 export const buildFinishPredictionInputsCacheKey = ({
   day,
   keibajoCode,
@@ -80,7 +85,40 @@ export const buildFinishPredictionInputsCacheKey = ({
   month: string;
   raceNumber: string;
   year: string;
-}): string => [CACHE_NAMESPACE, year, month, day, keibajoCode, raceNumber, "inputs"].join(":");
+}): string =>
+  [
+    CACHE_NAMESPACE,
+    year,
+    padCacheKeyPart(month, CACHE_KEY_PART_WIDTH),
+    padCacheKeyPart(day, CACHE_KEY_PART_WIDTH),
+    padCacheKeyPart(keibajoCode, CACHE_KEY_PART_WIDTH),
+    padCacheKeyPart(raceNumber, CACHE_KEY_PART_WIDTH),
+    "inputs",
+  ].join(":");
+
+// Same v4 inputs key the finish-prediction section reads, derived from the
+// prediction-cache-bust body (year + mmdd + venue + race). Padding keeps
+// unpadded producer values aligned with the zero-padded URL route params.
+export const buildFinishPredictionInputsCacheKeyFromRaceParts = ({
+  keibajoCode,
+  mmdd,
+  raceBango,
+  year,
+}: {
+  keibajoCode: string;
+  mmdd: string;
+  raceBango: string;
+  year: string;
+}): string => {
+  const paddedMmdd = padCacheKeyPart(mmdd, CACHE_KEY_MMDD_WIDTH);
+  return buildFinishPredictionInputsCacheKey({
+    day: paddedMmdd.slice(CACHE_KEY_PART_WIDTH),
+    keibajoCode,
+    month: paddedMmdd.slice(0, CACHE_KEY_PART_WIDTH),
+    raceNumber: raceBango,
+    year,
+  });
+};
 
 const getCacheRequest = (cacheKey: string): Request =>
   new Request(`${CACHE_URL_BASE}${encodeURIComponent(cacheKey)}`);

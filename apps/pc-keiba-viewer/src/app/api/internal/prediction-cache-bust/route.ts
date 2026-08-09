@@ -1,10 +1,17 @@
 // Run with bun (Next.js route). Re-score notification endpoint hit by
 // finish-position-cron / sync-realtime-data after they rewrite the `pred:fp` /
-// `pred:rs` KV entries for a race. Purges only the colo Cache API tier so the
-// just-written KV value (the fresh, post-weight-rescore score) is served on
-// the next request; the KV tier itself is left untouched.
+// `pred:rs` KV entries for a race. Purges:
+//   1. colo Cache API copies of pred:fp / pred:rs (KV tier left intact so the
+//      just-written score is served on the next request)
+//   2. finish-prediction-inputs v4 (KV + Cache API). That layer is read
+//      before pred:fp on the finish-prediction section and can otherwise keep
+//      serving pre-rescore modelPredictionFeatures for up to 6h after post.
 import { NextResponse } from "next/server";
 
+import {
+  buildFinishPredictionInputsCacheKeyFromRaceParts,
+  deleteFinishPredictionInputsCache,
+} from "../../../../lib/finish-prediction-inputs-cache.server";
 import { bustPredictionCacheApiForRace } from "../../../../lib/prediction-kv-cache.server";
 
 export const dynamic = "force-dynamic";
@@ -62,6 +69,10 @@ export async function POST(request: Request): Promise<Response> {
   if (!body) {
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
-  const outcome = await bustPredictionCacheApiForRace(body);
-  return NextResponse.json({ busted: outcome.busted, ok: true });
+  const inputsCacheKey = buildFinishPredictionInputsCacheKeyFromRaceParts(body);
+  const [outcome] = await Promise.all([
+    bustPredictionCacheApiForRace(body),
+    deleteFinishPredictionInputsCache(inputsCacheKey),
+  ]);
+  return NextResponse.json({ busted: outcome.busted + 1, ok: true });
 }

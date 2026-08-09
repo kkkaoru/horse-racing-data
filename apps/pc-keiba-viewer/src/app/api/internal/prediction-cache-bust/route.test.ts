@@ -5,13 +5,25 @@ vi.mock("server-only", () => ({}));
 
 const mocks = vi.hoisted(() => ({
   bustPredictionCacheApiForRaceMock: vi.fn<(...args: never[]) => unknown>(),
+  buildFinishPredictionInputsCacheKeyFromRacePartsMock: vi.fn<(...args: never[]) => unknown>(),
+  deleteFinishPredictionInputsCacheMock: vi.fn<(...args: never[]) => unknown>(),
 }));
 
 vi.mock("../../../../lib/prediction-kv-cache.server", () => ({
   bustPredictionCacheApiForRace: mocks.bustPredictionCacheApiForRaceMock,
 }));
 
-const { bustPredictionCacheApiForRaceMock } = mocks;
+vi.mock("../../../../lib/finish-prediction-inputs-cache.server", () => ({
+  buildFinishPredictionInputsCacheKeyFromRaceParts:
+    mocks.buildFinishPredictionInputsCacheKeyFromRacePartsMock,
+  deleteFinishPredictionInputsCache: mocks.deleteFinishPredictionInputsCacheMock,
+}));
+
+const {
+  bustPredictionCacheApiForRaceMock,
+  buildFinishPredictionInputsCacheKeyFromRacePartsMock,
+  deleteFinishPredictionInputsCacheMock,
+} = mocks;
 
 import { POST } from "./route";
 
@@ -82,8 +94,14 @@ const buildRequestWithRawBody = (rawBody: string): Request =>
 
 beforeEach(() => {
   bustPredictionCacheApiForRaceMock.mockReset();
+  buildFinishPredictionInputsCacheKeyFromRacePartsMock.mockReset();
+  deleteFinishPredictionInputsCacheMock.mockReset();
   vi.stubEnv("PC_KEIBA_INTERNAL_TOKEN", INTERNAL_TOKEN);
   bustPredictionCacheApiForRaceMock.mockResolvedValue({ busted: 2 });
+  buildFinishPredictionInputsCacheKeyFromRacePartsMock.mockReturnValue(
+    "pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:11:inputs",
+  );
+  deleteFinishPredictionInputsCacheMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -104,6 +122,7 @@ it("POST returns 403 when auth header is missing", async () => {
   const body = await readError(response);
   expect(body).toStrictEqual({ error: "forbidden" });
   expect(bustPredictionCacheApiForRaceMock).not.toHaveBeenCalled();
+  expect(deleteFinishPredictionInputsCacheMock).not.toHaveBeenCalled();
 });
 
 it("POST returns 403 when auth header value does not match", async () => {
@@ -126,6 +145,7 @@ it("POST returns 403 when auth header value does not match", async () => {
   const body = await readError(response);
   expect(body).toStrictEqual({ error: "forbidden" });
   expect(bustPredictionCacheApiForRaceMock).not.toHaveBeenCalled();
+  expect(deleteFinishPredictionInputsCacheMock).not.toHaveBeenCalled();
 });
 
 it("POST returns 403 when PC_KEIBA_INTERNAL_TOKEN env is unset even with header present", async () => {
@@ -150,6 +170,7 @@ it("POST returns 400 when body is not valid JSON", async () => {
   expect(response.status).toBe(400);
   const body = await readError(response);
   expect(body).toStrictEqual({ error: "invalid body" });
+  expect(deleteFinishPredictionInputsCacheMock).not.toHaveBeenCalled();
 });
 
 it("POST returns 400 when body is JSON null", async () => {
@@ -200,7 +221,7 @@ it("POST returns 200 with busted for a valid JRA body", async () => {
   );
   expect(response.status).toBe(200);
   const body = await readSuccess(response);
-  expect(body).toStrictEqual({ busted: 2, ok: true });
+  expect(body).toStrictEqual({ busted: 3, ok: true });
   expect(bustPredictionCacheApiForRaceMock).toHaveBeenCalledWith({
     keibajoCode: "05",
     mmdd: "0809",
@@ -208,10 +229,23 @@ it("POST returns 200 with busted for a valid JRA body", async () => {
     source: "jra",
     year: "2026",
   });
+  expect(buildFinishPredictionInputsCacheKeyFromRacePartsMock).toHaveBeenCalledWith({
+    keibajoCode: "05",
+    mmdd: "0809",
+    raceBango: "11",
+    source: "jra",
+    year: "2026",
+  });
+  expect(deleteFinishPredictionInputsCacheMock).toHaveBeenCalledWith(
+    "pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:05:11:inputs",
+  );
 });
 
 it("POST returns 200 with busted for a valid NAR body", async () => {
   bustPredictionCacheApiForRaceMock.mockResolvedValue({ busted: 2 });
+  buildFinishPredictionInputsCacheKeyFromRacePartsMock.mockReturnValue(
+    "pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:50:07:inputs",
+  );
   const response = await POST(
     buildAuthedRequest({
       keibajoCode: "50",
@@ -223,5 +257,15 @@ it("POST returns 200 with busted for a valid NAR body", async () => {
   );
   expect(response.status).toBe(200);
   const body = await readSuccess(response);
-  expect(body).toStrictEqual({ busted: 2, ok: true });
+  expect(body).toStrictEqual({ busted: 3, ok: true });
+  expect(buildFinishPredictionInputsCacheKeyFromRacePartsMock).toHaveBeenCalledWith({
+    keibajoCode: "50",
+    mmdd: "0809",
+    raceBango: "07",
+    source: "nar",
+    year: "2026",
+  });
+  expect(deleteFinishPredictionInputsCacheMock).toHaveBeenCalledWith(
+    "pc-keiba-viewer:finish-prediction-inputs:v4:2026:08:09:50:07:inputs",
+  );
 });
