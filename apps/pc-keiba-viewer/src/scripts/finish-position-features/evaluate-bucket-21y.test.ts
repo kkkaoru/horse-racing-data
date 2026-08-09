@@ -23,11 +23,11 @@ import {
   buildUsageText,
   buildYearDateWindow,
   chunkYears,
-  ensureColimaCapacity,
+  ensureContainerRuntimeCapacity,
   isWithinNightWindow,
   numericFromRow,
   parseArgs,
-  parseColimaStatusJson,
+  parseContainerRuntimeStatusJson,
   processCategoryChunk,
   processYear,
   runBucketEval,
@@ -71,8 +71,8 @@ const baseOptions = (overrides: Partial<BucketEvalCliOptions>): BucketEvalCliOpt
   ignoreNightWindow: false,
   perYearSleepMs: 0,
   perCategorySleepMs: 0,
-  minColimaCpu: 8,
-  minColimaMemoryGb: 24,
+  minContainerRuntimeCpu: 8,
+  minContainerRuntimeMemoryGb: 24,
   predictionsRoot: "/tmp/parquet",
   ...overrides,
 });
@@ -205,46 +205,52 @@ test("isWithinNightWindow returns true when ignoreNightWindow is set even outsid
   expect(isWithinNightWindow({ hourJst: 12, ignoreNightWindow: true })).toBe(true);
 });
 
-test("ensureColimaCapacity passes when cpu and memory satisfy minimum", () => {
-  expect(() => ensureColimaCapacity({ cpu: 8, memory: 24 }, 8, 24)).not.toThrowError();
+test("ensureContainerRuntimeCapacity passes when cpu and memory satisfy minimum", () => {
+  expect(() => ensureContainerRuntimeCapacity({ cpu: 8, memory: 24 }, 8, 24)).not.toThrowError();
 });
 
-test("ensureColimaCapacity throws when cpu is below minimum", () => {
-  expect(() => ensureColimaCapacity({ cpu: 4, memory: 24 }, 8, 24)).toThrowError(
-    "Colima CPU is below required minimum: 4 < 8. Run 'colima start --cpu 8 --memory 24'.",
+test("ensureContainerRuntimeCapacity throws when cpu is below minimum", () => {
+  expect(() => ensureContainerRuntimeCapacity({ cpu: 4, memory: 24 }, 8, 24)).toThrowError(
+    "Host CPU is below required minimum: 4 < 8. Need at least 8 CPUs / 24GB.",
   );
 });
 
-test("ensureColimaCapacity throws when memory is below minimum", () => {
-  expect(() => ensureColimaCapacity({ cpu: 8, memory: 16 }, 8, 24)).toThrowError(
-    "Colima memory is below required minimum: 16GB < 24GB. Run 'colima start --cpu 8 --memory 24'.",
+test("ensureContainerRuntimeCapacity throws when memory is below minimum", () => {
+  expect(() => ensureContainerRuntimeCapacity({ cpu: 8, memory: 16 }, 8, 24)).toThrowError(
+    "Host memory is below required minimum: 16GB < 24GB. Need at least 8 CPUs / 24GB.",
   );
 });
 
-test("parseColimaStatusJson interprets numeric cpu and gigabyte memory", () => {
-  expect(parseColimaStatusJson('{"cpu":8,"memory":24}')).toStrictEqual({ cpu: 8, memory: 24 });
-});
-
-test("parseColimaStatusJson converts byte memory above 1024 to gigabytes", () => {
-  const bytes = 24 * 1024 * 1024 * 1024;
-  expect(parseColimaStatusJson(`{"cpu":8,"memory":${bytes}}`)).toStrictEqual({
+test("parseContainerRuntimeStatusJson interprets numeric cpu and gigabyte memory", () => {
+  expect(parseContainerRuntimeStatusJson('{"cpu":8,"memory":24}')).toStrictEqual({
     cpu: 8,
     memory: 24,
   });
 });
 
-test("parseColimaStatusJson throws on non-object JSON", () => {
-  expect(() => parseColimaStatusJson('"oops"')).toThrowError(
-    "Colima status JSON is not an object.",
+test("parseContainerRuntimeStatusJson converts byte memory above 1024 to gigabytes", () => {
+  const bytes = 24 * 1024 * 1024 * 1024;
+  expect(parseContainerRuntimeStatusJson(`{"cpu":8,"memory":${bytes}}`)).toStrictEqual({
+    cpu: 8,
+    memory: 24,
+  });
+});
+
+test("parseContainerRuntimeStatusJson throws on non-object JSON", () => {
+  expect(() => parseContainerRuntimeStatusJson('"oops"')).toThrowError(
+    "Container runtime status JSON is not an object.",
   );
 });
 
-test("parseColimaStatusJson coerces non-numeric cpu via Number()", () => {
-  expect(parseColimaStatusJson('{"cpu":"8","memory":24}')).toStrictEqual({ cpu: 8, memory: 24 });
+test("parseContainerRuntimeStatusJson coerces non-numeric cpu via Number()", () => {
+  expect(parseContainerRuntimeStatusJson('{"cpu":"8","memory":24}')).toStrictEqual({
+    cpu: 8,
+    memory: 24,
+  });
 });
 
-test("parseColimaStatusJson defaults missing memory to zero", () => {
-  expect(parseColimaStatusJson('{"cpu":8}')).toStrictEqual({ cpu: 8, memory: 0 });
+test("parseContainerRuntimeStatusJson defaults missing memory to zero", () => {
+  expect(parseContainerRuntimeStatusJson('{"cpu":8}')).toStrictEqual({ cpu: 8, memory: 0 });
 });
 
 test("numericFromRow returns '0' for null", () => {
@@ -288,8 +294,8 @@ test("parseArgs accepts a fully specified argv", () => {
     ignoreNightWindow: true,
     perYearSleepMs: 2_000,
     perCategorySleepMs: 5_000,
-    minColimaCpu: 8,
-    minColimaMemoryGb: 24,
+    minContainerRuntimeCpu: 8,
+    minContainerRuntimeMemoryGb: 24,
     predictionsRoot: "/tmp/p",
   });
 });

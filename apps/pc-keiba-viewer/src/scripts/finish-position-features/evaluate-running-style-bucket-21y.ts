@@ -31,8 +31,8 @@ export interface RunningStyleBucketEvalCliOptions {
   ignoreNightWindow: boolean;
   perYearSleepMs: number;
   perCategorySleepMs: number;
-  minColimaCpu: number;
-  minColimaMemoryGb: number;
+  minContainerRuntimeCpu: number;
+  minContainerRuntimeMemoryGb: number;
   predictionsRoot: string;
   categoryFilter: RunningStyleBucketCategory | null;
   chunkConcurrency: number;
@@ -94,7 +94,7 @@ export interface RunningStyleAggregateRow {
   finish_pair_score_count: string | number;
 }
 
-export interface ColimaResources {
+export interface ContainerRuntimeResources {
   cpu: number;
   memory: number;
 }
@@ -175,8 +175,8 @@ const DEFAULT_MAX_YEARS_PER_RUN = 5;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 900_000;
 const DEFAULT_PER_YEAR_SLEEP_MS = 2_000;
 const DEFAULT_PER_CATEGORY_SLEEP_MS = 5_000;
-const DEFAULT_MIN_COLIMA_CPU = 8;
-const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
+const DEFAULT_MIN_CONTAINER_RUNTIME_CPU = 8;
+const DEFAULT_MIN_CONTAINER_RUNTIME_MEMORY_GB = 24;
 const DEFAULT_CHUNK_CONCURRENCY = 0;
 const DEFAULT_CATEGORY_CONCURRENCY = 0;
 const DEFAULT_WORK_MEM_MB = 0;
@@ -236,8 +236,8 @@ export const initialOptions = (): RunningStyleBucketEvalCliOptions => ({
   ignoreNightWindow: false,
   perYearSleepMs: DEFAULT_PER_YEAR_SLEEP_MS,
   perCategorySleepMs: DEFAULT_PER_CATEGORY_SLEEP_MS,
-  minColimaCpu: DEFAULT_MIN_COLIMA_CPU,
-  minColimaMemoryGb: DEFAULT_MIN_COLIMA_MEMORY_GB,
+  minContainerRuntimeCpu: DEFAULT_MIN_CONTAINER_RUNTIME_CPU,
+  minContainerRuntimeMemoryGb: DEFAULT_MIN_CONTAINER_RUNTIME_MEMORY_GB,
   predictionsRoot: DEFAULT_PREDICTIONS_ROOT,
   categoryFilter: null,
   chunkConcurrency: DEFAULT_CHUNK_CONCURRENCY,
@@ -260,7 +260,7 @@ export const parseChunkConcurrency = (raw: string): number => {
 };
 
 export const resolveAutoChunkConcurrency = (
-  resources: ColimaResources,
+  resources: ContainerRuntimeResources,
   snapshot: LocalResourceSnapshot,
 ): number =>
   resolveAutoPhaseAConcurrency(
@@ -270,7 +270,7 @@ export const resolveAutoChunkConcurrency = (
   );
 
 export const resolveAutoCategoryConcurrency = (
-  resources: ColimaResources,
+  resources: ContainerRuntimeResources,
   snapshot: LocalResourceSnapshot,
 ): number => {
   const cpuCount = Math.max(1, Math.min(resources.cpu, snapshot.cpuCount));
@@ -284,7 +284,7 @@ export const resolveAutoCategoryConcurrency = (
 };
 
 export const resolveAutoWorkMemMb = (
-  resources: ColimaResources,
+  resources: ContainerRuntimeResources,
   snapshot: LocalResourceSnapshot,
   chunkConcurrency: number,
   categoryConcurrency: number,
@@ -420,24 +420,24 @@ export const isWithinNightWindow = (input: NightWindowInput): boolean => {
   return NIGHT_WINDOW_HOURS_JST.has(input.hourJst);
 };
 
-export const ensureColimaCapacity = (
-  resources: ColimaResources,
+export const ensureContainerRuntimeCapacity = (
+  resources: ContainerRuntimeResources,
   minCpu: number,
   minMemoryGb: number,
 ): void => {
   if (resources.cpu < minCpu) {
     throw new Error(
-      `Colima CPU is below required minimum: ${resources.cpu} < ${minCpu}. Run 'colima start --cpu ${minCpu} --memory ${minMemoryGb}'.`,
+      `Host CPU is below required minimum: ${resources.cpu} < ${minCpu}. Need at least ${minCpu} CPUs / ${minMemoryGb}GB.`,
     );
   }
   if (resources.memory < minMemoryGb) {
     throw new Error(
-      `Colima memory is below required minimum: ${resources.memory}GB < ${minMemoryGb}GB. Run 'colima start --cpu ${minCpu} --memory ${minMemoryGb}'.`,
+      `Host memory is below required minimum: ${resources.memory}GB < ${minMemoryGb}GB. Need at least ${minCpu} CPUs / ${minMemoryGb}GB.`,
     );
   }
 };
 
-const parseColimaMemoryBytes = (raw: unknown): number => {
+const parseContainerRuntimeMemoryBytes = (raw: unknown): number => {
   const num = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(num)) return 0;
   return num;
@@ -446,14 +446,14 @@ const parseColimaMemoryBytes = (raw: unknown): number => {
 const isStringObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object";
 
-export const parseColimaStatusJson = (raw: string): ColimaResources => {
+export const parseContainerRuntimeStatusJson = (raw: string): ContainerRuntimeResources => {
   const parsed: unknown = JSON.parse(raw);
   if (!isStringObject(parsed)) {
-    throw new Error("Colima status JSON is not an object.");
+    throw new Error("Container runtime status JSON is not an object.");
   }
   const cpu = typeof parsed["cpu"] === "number" ? parsed["cpu"] : Number(parsed["cpu"] ?? 0);
   const memoryRaw = parsed["memory"] ?? 0;
-  const memoryBytes = parseColimaMemoryBytes(memoryRaw);
+  const memoryBytes = parseContainerRuntimeMemoryBytes(memoryRaw);
   const memoryGb = memoryBytes > 1024 ? memoryBytes / 1024 / 1024 / 1024 : memoryBytes;
   return { cpu, memory: memoryGb };
 };
@@ -841,22 +841,41 @@ export const getJstHour = (date: Date): number => {
   return jstDate.getHours();
 };
 
-const loadColimaResources = async (): Promise<ColimaResources> => {
-  const proc = Bun.spawn(["colima", "status", "--json"], { stdout: "pipe", stderr: "pipe" });
+const loadContainerRuntimeResources = async (): Promise<ContainerRuntimeResources> => {
+  const proc = Bun.spawn(["container", "system", "status", "--format", "json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
   if (proc.exitCode !== 0) {
-    throw new Error("colima status --json failed; ensure colima is running.");
+    throw new Error("container system status failed; run `container system start`.");
   }
-  return parseColimaStatusJson(stdout);
+  const parsed: unknown = JSON.parse(stdout);
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    (parsed as { status?: unknown }).status !== "running"
+  ) {
+    throw new Error("Apple container runtime is not running; run `container system start`.");
+  }
+  const snapshot = collectLocalResourceSnapshot();
+  return {
+    cpu: snapshot.cpuCount,
+    memory: snapshot.totalMemoryBytes / 1024 / 1024 / 1024,
+  };
 };
 
 export const resolveRuntimeResourcePlan = (
   options: RunningStyleBucketEvalCliOptions,
-  resources: ColimaResources,
+  resources: ContainerRuntimeResources,
   snapshot: LocalResourceSnapshot,
 ): RuntimeResourcePlan => {
-  ensureColimaCapacity(resources, options.minColimaCpu, options.minColimaMemoryGb);
+  ensureContainerRuntimeCapacity(
+    resources,
+    options.minContainerRuntimeCpu,
+    options.minContainerRuntimeMemoryGb,
+  );
   const chunkConcurrency =
     options.chunkConcurrency <= 0
       ? resolveAutoChunkConcurrency(resources, snapshot)
@@ -949,7 +968,7 @@ const main = async (): Promise<void> => {
   }
   const resourcePlan = resolveRuntimeResourcePlan(
     options,
-    await loadColimaResources(),
+    await loadContainerRuntimeResources(),
     collectLocalResourceSnapshot(),
   );
   options.chunkConcurrency = resourcePlan.chunkConcurrency;

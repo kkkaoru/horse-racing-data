@@ -81,14 +81,14 @@ interface SleepRunner {
   (durationMs: number): Promise<void>;
 }
 
-interface ColimaResource {
+interface ContainerRuntimeResource {
   cpu: number;
   memoryGiB: number;
   diskGiB: number;
 }
 
-interface ColimaProbe {
-  (): Promise<ColimaResource>;
+interface ContainerRuntimeProbe {
+  (): Promise<ContainerRuntimeResource>;
 }
 
 export interface LocalResourceSnapshot {
@@ -201,7 +201,7 @@ interface Manifest {
 interface RunDeps {
   spawn: SpawnRunner;
   sleep: SleepRunner;
-  probeColima: ColimaProbe;
+  probeContainerRuntime: ContainerRuntimeProbe;
   probeLocalResources?: LocalResourceProbe;
   now: NowProvider;
   log: Logger;
@@ -224,9 +224,9 @@ interface YearMonth {
   month: number;
 }
 
-export const COLIMA_MIN_CPU = 8;
-export const COLIMA_MIN_MEMORY_GIB = 24;
-export const COLIMA_MIN_DISK_GIB = 100;
+export const CONTAINER_RUNTIME_MIN_CPU = 8;
+export const CONTAINER_RUNTIME_MIN_MEMORY_GIB = 24;
+export const CONTAINER_RUNTIME_MIN_DISK_GIB = 100;
 export const NIGHT_WINDOW_HOURS_JST: readonly number[] = [23, 0, 1, 2, 3, 4];
 export const PER_YEAR_SLEEP_MS = 2000;
 export const PER_CATEGORY_SLEEP_MS = 5000;
@@ -411,18 +411,18 @@ export const isInsideNightWindow = (now: Date): boolean => {
   return NIGHT_WINDOW_SET.has(jstHour);
 };
 
-export const assertColimaCapacity = (resource: ColimaResource): void => {
-  if (resource.cpu < COLIMA_MIN_CPU) {
-    throw new Error(`Colima CPU ${resource.cpu} below minimum ${COLIMA_MIN_CPU}.`);
+export const assertContainerRuntimeCapacity = (resource: ContainerRuntimeResource): void => {
+  if (resource.cpu < CONTAINER_RUNTIME_MIN_CPU) {
+    throw new Error(`Host CPU ${resource.cpu} below minimum ${CONTAINER_RUNTIME_MIN_CPU}.`);
   }
-  if (resource.memoryGiB < COLIMA_MIN_MEMORY_GIB) {
+  if (resource.memoryGiB < CONTAINER_RUNTIME_MIN_MEMORY_GIB) {
     throw new Error(
-      `Colima memory ${resource.memoryGiB} GiB below minimum ${COLIMA_MIN_MEMORY_GIB} GiB.`,
+      `Host memory ${resource.memoryGiB} GiB below minimum ${CONTAINER_RUNTIME_MIN_MEMORY_GIB} GiB.`,
     );
   }
-  if (resource.diskGiB < COLIMA_MIN_DISK_GIB) {
+  if (resource.diskGiB < CONTAINER_RUNTIME_MIN_DISK_GIB) {
     throw new Error(
-      `Colima disk ${resource.diskGiB} GiB below minimum ${COLIMA_MIN_DISK_GIB} GiB.`,
+      `Host disk ${resource.diskGiB} GiB below minimum ${CONTAINER_RUNTIME_MIN_DISK_GIB} GiB.`,
     );
   }
 };
@@ -479,11 +479,11 @@ export const collectMacVmStatResourceSnapshot = (
 const bytesToGiB = (bytes: number): number => bytes / 1024 ** 3;
 
 export const resolveAutoMemoryLimit = (
-  resource: ColimaResource,
+  resource: ContainerRuntimeResource,
   snapshot?: LocalResourceSnapshot,
 ): string => {
-  const halfColimaMemory = Math.floor(resource.memoryGiB * 0.5);
-  const capacityLimit = Math.max(1, halfColimaMemory);
+  const halfRuntimeMemory = Math.floor(resource.memoryGiB * 0.5);
+  const capacityLimit = Math.max(1, halfRuntimeMemory);
   if (snapshot === undefined || snapshot.totalMemoryBytes <= 0) {
     return `${Math.max(6, capacityLimit)}GB`;
   }
@@ -499,7 +499,7 @@ export const resolveAutoMemoryLimit = (
 };
 
 export const resolveAutoThreads = (
-  resource: ColimaResource,
+  resource: ContainerRuntimeResource,
   snapshot: LocalResourceSnapshot,
 ): number => {
   const cpuCount = Math.max(1, Math.min(resource.cpu, snapshot.cpuCount));
@@ -519,7 +519,7 @@ export const resolveAutoThreads = (
 };
 
 export const resolveAutoPhaseAConcurrency = (
-  resource: ColimaResource,
+  resource: ContainerRuntimeResource,
   snapshot: LocalResourceSnapshot,
   resolvedThreads: number,
 ): number => {
@@ -541,7 +541,7 @@ export const resolveAutoPhaseAConcurrency = (
 };
 
 export const resolveAutoCategoryConcurrency = (
-  resource: ColimaResource,
+  resource: ContainerRuntimeResource,
   snapshot: LocalResourceSnapshot,
 ): number => {
   const cpuCount = Math.max(1, Math.min(resource.cpu, snapshot.cpuCount));
@@ -556,7 +556,7 @@ export const resolveAutoCategoryConcurrency = (
 
 export const resolveRuntimeResourceOptions = (
   options: GenerateRunningStyleLocalOptions,
-  resource: ColimaResource,
+  resource: ContainerRuntimeResource,
   snapshot: LocalResourceSnapshot,
 ): GenerateRunningStyleLocalOptions => {
   const memoryLimit =
@@ -1062,8 +1062,8 @@ export const runGenerateRunningStyleLocal = async (
   if (!options.ignoreNightWindow && !isInsideNightWindow(deps.now())) {
     throw new Error("Outside JST night window 23-04. Pass --ignore-night-window 1 to bypass.");
   }
-  const resource = await deps.probeColima();
-  assertColimaCapacity(resource);
+  const resource = await deps.probeContainerRuntime();
+  assertContainerRuntimeCapacity(resource);
   const snapshot =
     deps.probeLocalResources === undefined
       ? collectLocalResourceSnapshot()
@@ -1086,16 +1086,40 @@ const buildBunSpawnRunner = (): SpawnRunner => async (command) => {
 const buildBunSleepRunner = (): SleepRunner => (durationMs) =>
   new Promise((resolve) => setTimeout(resolve, durationMs));
 
-const buildColimaProbe = (): ColimaProbe => async () => {
-  const proc = Bun.spawn({ cmd: ["colima", "status", "--json"], stdout: "pipe", stderr: "pipe" });
-  const stdout = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
-  if (exitCode !== 0) throw new Error("colima status command failed.");
-  const parsed: { cpu?: number; memory?: number; disk?: number } = JSON.parse(stdout);
+const parseDfTotalGib = (raw: string): number => {
+  const line = raw.trim().split("\n")[1] ?? "";
+  const blocks = Number(line.trim().split(/\s+/)[1] ?? 0);
+  if (!Number.isFinite(blocks) || blocks <= 0) return 0;
+  return Math.floor(blocks / 1024 / 1024);
+};
+
+const buildContainerRuntimeProbe = (): ContainerRuntimeProbe => async () => {
+  const statusProc = Bun.spawn({
+    cmd: ["container", "system", "status", "--format", "json"],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const statusOut = await new Response(statusProc.stdout).text();
+  const statusExit = await statusProc.exited;
+  if (statusExit !== 0) {
+    throw new Error("container system status failed; run `container system start`.");
+  }
+  const statusParsed: unknown = JSON.parse(statusOut);
+  if (
+    statusParsed === null ||
+    typeof statusParsed !== "object" ||
+    (statusParsed as { status?: unknown }).status !== "running"
+  ) {
+    throw new Error("Apple container runtime is not running; run `container system start`.");
+  }
+  const snapshot = collectLocalResourceSnapshot();
+  const dfProc = Bun.spawn({ cmd: ["df", "-k", "/"], stdout: "pipe", stderr: "pipe" });
+  const dfOut = await new Response(dfProc.stdout).text();
+  await dfProc.exited;
   return {
-    cpu: parsed.cpu ?? 0,
-    memoryGiB: parsed.memory ?? 0,
-    diskGiB: parsed.disk ?? 0,
+    cpu: snapshot.cpuCount,
+    memoryGiB: Math.floor(snapshot.totalMemoryBytes / 1024 / 1024 / 1024),
+    diskGiB: parseDfTotalGib(dfOut),
   };
 };
 
@@ -1116,7 +1140,7 @@ if (import.meta.main) {
   const deps: RunDeps = {
     spawn: buildBunSpawnRunner(),
     sleep: buildBunSleepRunner(),
-    probeColima: buildColimaProbe(),
+    probeContainerRuntime: buildContainerRuntimeProbe(),
     now: buildBunNowProvider(),
     log: buildConsoleLogger(),
     listDirectoryEntries: buildFsListDirectoryEntries(),

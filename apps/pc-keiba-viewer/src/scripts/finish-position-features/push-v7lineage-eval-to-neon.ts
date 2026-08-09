@@ -3,7 +3,7 @@
 //   [--batch-size 500]
 //
 // Stage 4 workaround sync: the heavy bucket-eval aggregate runs against the local
-// Colima PostgreSQL replica (no connection time limit), then this script copies the
+// Apple container PostgreSQL replica (no connection time limit), then this script copies the
 // small aggregated result rows for the v7-lineage walk-forward 21y model versions
 // from that local replica into Neon so the viewer can read them via Hyperdrive.
 // It SELECTs the wf-21y rows from model_prediction_bucket_evaluations and

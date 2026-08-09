@@ -4,7 +4,7 @@
 
 メモリ検出の優先順位:
   1. macOS: `sysctl -n hw.memsize`
-  2. Linux container: `/sys/fs/cgroup/memory.max` (cgroup v2 — docker --memory= がここを設定)
+  2. Linux container: `/sys/fs/cgroup/memory.max` (cgroup v2 — `container run -m` / docker `--memory=` がここを設定)
   3. Linux fallback: `/proc/meminfo` MemTotal (VM 全体なので cgroup 制限は反映されない)
 
 memory_limit: 検出メモリの 50% を上限にしつつ、macOS の available memory /
@@ -239,7 +239,7 @@ def default_threads() -> int:
 
     DuckDB's parallel hash join / aggregate operators allocate per-thread
     intermediate buffers. On memory-constrained environments (e.g. CF container
-    standard-4 = 12 GiB → 6 GiB memory_limit) using all CPUs (12 in Colima)
+    standard-4 = 12 GiB → 6 GiB memory_limit) using all CPUs (12 on host / Apple container)
     causes the peak to exceed the limit even with disk spill because each
     thread's active partition must fit in memory before it can spill.
 

@@ -2,7 +2,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import {
-  assertColimaCapacity,
+  assertContainerRuntimeCapacity,
   buildCategoryFeaturesDir,
   buildCategoryLogitsDir,
   buildCategoryPredictionsDir,
@@ -33,7 +33,7 @@ import {
   ALL_MONTHS,
   AUTO_RESOURCE_VALUE,
   CHUNK_GRANULARITIES,
-  COLIMA_MIN_CPU,
+  CONTAINER_RUNTIME_MIN_CPU,
   DEFAULT_CATEGORY_CONCURRENCY,
   DEFAULT_CHUNK_GRANULARITY,
   DEFAULT_FORCE,
@@ -89,7 +89,7 @@ describe("generate-running-style-local", () => {
     expect(options.rsPFromFlatbinJra).toBe("");
   });
 
-  test("resolveAutoMemoryLimit uses half of Colima memory with a 6GB floor", () => {
+  test("resolveAutoMemoryLimit uses half of runtime memory with a 6GB floor", () => {
     expect(resolveAutoMemoryLimit({ cpu: 12, memoryGiB: 24, diskGiB: 100 })).toBe("12GB");
     expect(resolveAutoMemoryLimit({ cpu: 4, memoryGiB: 8, diskGiB: 100 })).toBe("6GB");
   });
@@ -430,26 +430,28 @@ describe("generate-running-style-local", () => {
     expect(isInsideNightWindow(FIXED_DAY_DATE)).toBe(false);
   });
 
-  test("assertColimaCapacity throws when CPU below minimum", () => {
-    expect(() => assertColimaCapacity({ cpu: 2, memoryGiB: 24, diskGiB: 100 })).toThrowError(
-      `Colima CPU 2 below minimum ${COLIMA_MIN_CPU}.`,
-    );
+  test("assertContainerRuntimeCapacity throws when CPU below minimum", () => {
+    expect(() =>
+      assertContainerRuntimeCapacity({ cpu: 2, memoryGiB: 24, diskGiB: 100 }),
+    ).toThrowError(`Host CPU 2 below minimum ${CONTAINER_RUNTIME_MIN_CPU}.`);
   });
 
-  test("assertColimaCapacity throws when memory below minimum", () => {
-    expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 4, diskGiB: 100 })).toThrowError(
-      "Colima memory 4 GiB below minimum 24 GiB.",
-    );
+  test("assertContainerRuntimeCapacity throws when memory below minimum", () => {
+    expect(() =>
+      assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 4, diskGiB: 100 }),
+    ).toThrowError("Host memory 4 GiB below minimum 24 GiB.");
   });
 
-  test("assertColimaCapacity throws when disk below minimum", () => {
-    expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 10 })).toThrowError(
-      "Colima disk 10 GiB below minimum 100 GiB.",
-    );
+  test("assertContainerRuntimeCapacity throws when disk below minimum", () => {
+    expect(() =>
+      assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 10 }),
+    ).toThrowError("Host disk 10 GiB below minimum 100 GiB.");
   });
 
-  test("assertColimaCapacity passes when all minimums met", () => {
-    expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 100 })).not.toThrowError();
+  test("assertContainerRuntimeCapacity passes when all minimums met", () => {
+    expect(() =>
+      assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+    ).not.toThrowError();
   });
 
   test("chunkYears splits 5-year range into 2 chunks with size 3", () => {
@@ -888,7 +890,8 @@ describe("generate-running-style-local", () => {
   test("runGenerateRunningStyleLocal aborts outside night window when guard active", async () => {
     const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>();
+    const probeContainerRuntime =
+      vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>();
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -902,7 +905,7 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_DAY_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
@@ -914,12 +917,12 @@ describe("generate-running-style-local", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  test("runGenerateRunningStyleLocal aborts when Colima resources insufficient", async () => {
+  test("runGenerateRunningStyleLocal aborts when host resources insufficient", async () => {
     const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 2, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 2, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -933,13 +936,13 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_DAY_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
         statFile: () => Promise.reject(new Error("ENOENT")),
       }),
-    ).rejects.toThrowError("Colima CPU 2 below minimum 8.");
+    ).rejects.toThrowError("Host CPU 2 below minimum 8.");
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -955,9 +958,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -971,7 +974,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () =>
         Promise.resolve({
           cpuCount: 15,
@@ -1008,9 +1011,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1024,7 +1027,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1051,9 +1054,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1067,7 +1070,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1093,9 +1096,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1109,7 +1112,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1132,9 +1135,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1148,7 +1151,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1171,9 +1174,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1188,7 +1191,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1213,9 +1216,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1230,7 +1233,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1254,9 +1257,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1270,7 +1273,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1292,9 +1295,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1308,7 +1311,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1325,9 +1328,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 1 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1341,7 +1344,7 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
@@ -1358,9 +1361,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1374,7 +1377,7 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
@@ -1391,9 +1394,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1407,7 +1410,7 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
@@ -1565,9 +1568,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1581,7 +1584,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1602,9 +1605,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1620,7 +1623,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1641,9 +1644,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1658,7 +1661,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1691,9 +1694,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -1710,7 +1713,7 @@ describe("generate-running-style-local", () => {
     const runPromise = runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -1834,9 +1837,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(["data_0.parquet"]),
@@ -1855,7 +1858,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -1872,9 +1875,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(["data_0.parquet"]),
@@ -1893,7 +1896,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -1910,9 +1913,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(["data_0.parquet"]),
@@ -1931,7 +1934,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -1948,9 +1951,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve([]),
@@ -1968,7 +1971,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -2256,9 +2259,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2272,7 +2275,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2292,9 +2295,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2308,7 +2311,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2328,9 +2331,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2345,7 +2348,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2366,9 +2369,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2382,7 +2385,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2403,9 +2406,9 @@ describe("generate-running-style-local", () => {
       },
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2420,7 +2423,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2448,9 +2451,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(twelveParquet),
@@ -2468,7 +2471,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -2499,9 +2502,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(twelveParquet),
@@ -2519,7 +2522,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -2537,9 +2540,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const listDirectoryEntries = vi.fn<(path: string) => Promise<readonly string[]>>(() =>
       Promise.resolve(onlyOneParquet),
@@ -2557,7 +2560,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries,
@@ -2574,9 +2577,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 1 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const options = {
       ...buildDefaultOptions(),
       pgUrl: "u",
@@ -2590,7 +2593,7 @@ describe("generate-running-style-local", () => {
       runGenerateRunningStyleLocal(options, {
         spawn,
         sleep,
-        probeColima,
+        probeContainerRuntime,
         now: () => FIXED_NIGHT_DATE,
         log: () => undefined,
         listDirectoryEntries: () => Promise.resolve([]),
@@ -2628,9 +2631,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
       Promise.resolve({ size: 56_623_104 }),
     );
@@ -2647,7 +2650,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),
@@ -2664,9 +2667,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const log = vi.fn<(message: string) => void>(() => undefined);
     const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
       Promise.resolve({ size: 56_623_104 }),
@@ -2684,7 +2687,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log,
       listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),
@@ -2701,9 +2704,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
       Promise.reject(new Error("ENOENT")),
     );
@@ -2720,7 +2723,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2737,9 +2740,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
       Promise.resolve({ size: 0 }),
     );
@@ -2756,7 +2759,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve([]),
@@ -2773,9 +2776,9 @@ describe("generate-running-style-local", () => {
       Promise.resolve({ exitCode: 0 }),
     );
     const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-    const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-      () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-    );
+    const probeContainerRuntime = vi.fn<
+      () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+    >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
     const statFile = vi.fn<(path: string) => Promise<{ size: number }>>(() =>
       Promise.resolve({ size: 56_623_104 }),
     );
@@ -2793,7 +2796,7 @@ describe("generate-running-style-local", () => {
     await runGenerateRunningStyleLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       now: () => FIXED_NIGHT_DATE,
       log: () => undefined,
       listDirectoryEntries: () => Promise.resolve(["data_0.parquet"]),

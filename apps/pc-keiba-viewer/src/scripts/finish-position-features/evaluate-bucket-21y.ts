@@ -1,6 +1,8 @@
 // Run with: bun run src/scripts/finish-position-features/evaluate-bucket-21y.ts \
 //   --pg-url $DATABASE_URL_LOCAL --running-style-feature-version v1 --finish-position-version v1
 
+import { cpus, totalmem } from "node:os";
+
 import { Pool } from "pg";
 
 import { createBucketEvalRpcClient } from "./bucket-eval-rpc-client";
@@ -23,8 +25,8 @@ export interface BucketEvalCliOptions {
   ignoreNightWindow: boolean;
   perYearSleepMs: number;
   perCategorySleepMs: number;
-  minColimaCpu: number;
-  minColimaMemoryGb: number;
+  minContainerRuntimeCpu: number;
+  minContainerRuntimeMemoryGb: number;
   predictionsRoot: string;
 }
 
@@ -60,7 +62,7 @@ export interface AggregateRow {
   ndcg_at_3_race_count: string | number;
 }
 
-export interface ColimaResources {
+export interface ContainerRuntimeResources {
   cpu: number;
   memory: number;
 }
@@ -114,8 +116,8 @@ const DEFAULT_MAX_YEARS_PER_RUN = 5;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 900_000;
 const DEFAULT_PER_YEAR_SLEEP_MS = 2_000;
 const DEFAULT_PER_CATEGORY_SLEEP_MS = 5_000;
-const DEFAULT_MIN_COLIMA_CPU = 8;
-const DEFAULT_MIN_COLIMA_MEMORY_GB = 24;
+const DEFAULT_MIN_CONTAINER_RUNTIME_CPU = 8;
+const DEFAULT_MIN_CONTAINER_RUNTIME_MEMORY_GB = 24;
 const DEFAULT_MODEL_VERSION_SENTINEL = "active";
 const DEFAULT_PREDICTIONS_ROOT =
   "apps/pc-keiba-viewer/tmp/bucket-eval/finish-position/v1/predictions";
@@ -165,8 +167,8 @@ const initialOptions = (): BucketEvalCliOptions => ({
   ignoreNightWindow: false,
   perYearSleepMs: DEFAULT_PER_YEAR_SLEEP_MS,
   perCategorySleepMs: DEFAULT_PER_CATEGORY_SLEEP_MS,
-  minColimaCpu: DEFAULT_MIN_COLIMA_CPU,
-  minColimaMemoryGb: DEFAULT_MIN_COLIMA_MEMORY_GB,
+  minContainerRuntimeCpu: DEFAULT_MIN_CONTAINER_RUNTIME_CPU,
+  minContainerRuntimeMemoryGb: DEFAULT_MIN_CONTAINER_RUNTIME_MEMORY_GB,
   predictionsRoot: DEFAULT_PREDICTIONS_ROOT,
 });
 
@@ -245,24 +247,24 @@ export const isWithinNightWindow = (input: NightWindowInput): boolean => {
   return NIGHT_WINDOW_HOURS_JST.has(input.hourJst);
 };
 
-export const ensureColimaCapacity = (
-  resources: ColimaResources,
+export const ensureContainerRuntimeCapacity = (
+  resources: ContainerRuntimeResources,
   minCpu: number,
   minMemoryGb: number,
 ): void => {
   if (resources.cpu < minCpu) {
     throw new Error(
-      `Colima CPU is below required minimum: ${resources.cpu} < ${minCpu}. Run 'colima start --cpu ${minCpu} --memory ${minMemoryGb}'.`,
+      `Host CPU is below required minimum: ${resources.cpu} < ${minCpu}. Need at least ${minCpu} CPUs / ${minMemoryGb}GB.`,
     );
   }
   if (resources.memory < minMemoryGb) {
     throw new Error(
-      `Colima memory is below required minimum: ${resources.memory}GB < ${minMemoryGb}GB. Run 'colima start --cpu ${minCpu} --memory ${minMemoryGb}'.`,
+      `Host memory is below required minimum: ${resources.memory}GB < ${minMemoryGb}GB. Need at least ${minCpu} CPUs / ${minMemoryGb}GB.`,
     );
   }
 };
 
-const parseColimaMemoryBytes = (raw: unknown): number => {
+const parseContainerRuntimeMemoryBytes = (raw: unknown): number => {
   const num = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(num)) return 0;
   return num;
@@ -271,14 +273,14 @@ const parseColimaMemoryBytes = (raw: unknown): number => {
 const isStringObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object";
 
-export const parseColimaStatusJson = (raw: string): ColimaResources => {
+export const parseContainerRuntimeStatusJson = (raw: string): ContainerRuntimeResources => {
   const parsed: unknown = JSON.parse(raw);
   if (!isStringObject(parsed)) {
-    throw new Error("Colima status JSON is not an object.");
+    throw new Error("Container runtime status JSON is not an object.");
   }
   const cpu = typeof parsed["cpu"] === "number" ? parsed["cpu"] : Number(parsed["cpu"] ?? 0);
   const memoryRaw = parsed["memory"] ?? 0;
-  const memoryBytes = parseColimaMemoryBytes(memoryRaw);
+  const memoryBytes = parseContainerRuntimeMemoryBytes(memoryRaw);
   const memoryGb = memoryBytes > 1024 ? memoryBytes / 1024 / 1024 / 1024 : memoryBytes;
   return { cpu, memory: memoryGb };
 };
@@ -607,15 +609,39 @@ const getJstHour = (date: Date): number => {
   return jstDate.getHours();
 };
 
-const checkColima = async (options: BucketEvalCliOptions): Promise<void> => {
-  const proc = Bun.spawn(["colima", "status", "--json"], { stdout: "pipe", stderr: "pipe" });
+const GIB = 1024 * 1024 * 1024;
+
+const assertAppleContainerRunning = async (): Promise<void> => {
+  const proc = Bun.spawn(["container", "system", "status", "--format", "json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
   if (proc.exitCode !== 0) {
-    throw new Error("colima status --json failed; ensure colima is running.");
+    throw new Error("container system status failed; run `container system start`.");
   }
-  const resources = parseColimaStatusJson(stdout);
-  ensureColimaCapacity(resources, options.minColimaCpu, options.minColimaMemoryGb);
+  const parsed: unknown = JSON.parse(stdout);
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    (parsed as { status?: unknown }).status !== "running"
+  ) {
+    throw new Error("Apple container runtime is not running; run `container system start`.");
+  }
+};
+
+const checkContainerRuntime = async (options: BucketEvalCliOptions): Promise<void> => {
+  await assertAppleContainerRunning();
+  const resources: ContainerRuntimeResources = {
+    cpu: cpus().length || 1,
+    memory: totalmem() / GIB,
+  };
+  ensureContainerRuntimeCapacity(
+    resources,
+    options.minContainerRuntimeCpu,
+    options.minContainerRuntimeMemoryGb,
+  );
 };
 
 export const buildPredictionsParquetGlob = (predictionsRoot: string): string =>
@@ -695,7 +721,7 @@ const main = async (): Promise<void> => {
   if (!isWithinNightWindow({ hourJst: hour, ignoreNightWindow: options.ignoreNightWindow })) {
     throw new Error("Outside night window (JST 23-04). Pass --ignore-night-window to override.");
   }
-  await checkColima(options);
+  await checkContainerRuntime(options);
   const pool = new Pool({ connectionString: options.pgUrl });
   try {
     const result = await runBucketEval(

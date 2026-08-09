@@ -2,7 +2,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import {
-  assertColimaCapacity,
+  assertContainerRuntimeCapacity,
   assertRunningStyleManifestMatches,
   AUTO_RESOURCE_VALUE,
   buildDefaultOptions,
@@ -15,7 +15,7 @@ import {
   buildRunningStyleManifestPath,
   buildRunningStylePredictionsDir,
   chunkYears,
-  COLIMA_MIN_CPU,
+  CONTAINER_RUNTIME_MIN_CPU,
   isInsideNightWindow,
   parseArgs,
   PER_CATEGORY_SLEEP_MS,
@@ -173,26 +173,28 @@ test("isInsideNightWindow returns false for 14:00 JST", () => {
   expect(isInsideNightWindow(FIXED_DAY_DATE)).toBe(false);
 });
 
-test("assertColimaCapacity throws when CPU below minimum", () => {
-  expect(() => assertColimaCapacity({ cpu: 2, memoryGiB: 24, diskGiB: 100 })).toThrowError(
-    `Colima CPU 2 below minimum ${COLIMA_MIN_CPU}.`,
+test("assertContainerRuntimeCapacity throws when CPU below minimum", () => {
+  expect(() =>
+    assertContainerRuntimeCapacity({ cpu: 2, memoryGiB: 24, diskGiB: 100 }),
+  ).toThrowError(`Host CPU 2 below minimum ${CONTAINER_RUNTIME_MIN_CPU}.`);
+});
+
+test("assertContainerRuntimeCapacity throws when memory below minimum", () => {
+  expect(() => assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 4, diskGiB: 100 })).toThrowError(
+    "Host memory 4 GiB below minimum 24 GiB.",
   );
 });
 
-test("assertColimaCapacity throws when memory below minimum", () => {
-  expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 4, diskGiB: 100 })).toThrowError(
-    "Colima memory 4 GiB below minimum 24 GiB.",
+test("assertContainerRuntimeCapacity throws when disk below minimum", () => {
+  expect(() => assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 10 })).toThrowError(
+    "Host disk 10 GiB below minimum 100 GiB.",
   );
 });
 
-test("assertColimaCapacity throws when disk below minimum", () => {
-  expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 10 })).toThrowError(
-    "Colima disk 10 GiB below minimum 100 GiB.",
-  );
-});
-
-test("assertColimaCapacity passes when all minimums met", () => {
-  expect(() => assertColimaCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 100 })).not.toThrowError();
+test("assertContainerRuntimeCapacity passes when all minimums met", () => {
+  expect(() =>
+    assertContainerRuntimeCapacity({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
+  ).not.toThrowError();
 });
 
 test("chunkYears splits 5-year range into 2 chunks with size 3", () => {
@@ -402,13 +404,14 @@ test("assertRunningStyleManifestMatches throws on version mismatch", () => {
 test("runGenerateFinishPositionLocal aborts outside night window when guard active", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>();
+  const probeContainerRuntime =
+    vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>();
   const options = { ...buildRunOptions(), ignoreNightWindow: false };
   await expect(
     runGenerateFinishPositionLocal(options, {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_DAY_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
@@ -417,36 +420,36 @@ test("runGenerateFinishPositionLocal aborts outside night window when guard acti
   expect(spawn).not.toHaveBeenCalled();
 });
 
-test("runGenerateFinishPositionLocal aborts when Colima resources insufficient", async () => {
+test("runGenerateFinishPositionLocal aborts when host resources insufficient", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 2, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 2, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_DAY_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
     }),
-  ).rejects.toThrowError("Colima CPU 2 below minimum 8.");
+  ).rejects.toThrowError("Host CPU 2 below minimum 8.");
   expect(spawn).not.toHaveBeenCalled();
 });
 
 test("runGenerateFinishPositionLocal aborts when Agent F predictions dir missing", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', false, true),
@@ -458,14 +461,14 @@ test("runGenerateFinishPositionLocal aborts when Agent F predictions dir missing
 test("runGenerateFinishPositionLocal aborts when Agent F manifest missing", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, false),
@@ -477,14 +480,14 @@ test("runGenerateFinishPositionLocal aborts when Agent F manifest missing", asyn
 test("runGenerateFinishPositionLocal aborts on Agent F manifest version mismatch", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>();
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v2"}', true, true),
@@ -502,13 +505,13 @@ test("runGenerateFinishPositionLocal spawns Phase A before Phase B", async () =>
     return Promise.resolve({ exitCode: 0 });
   });
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await runGenerateFinishPositionLocal(buildRunOptions(), {
     spawn,
     sleep,
-    probeColima,
+    probeContainerRuntime,
     probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
     now: () => FIXED_NIGHT_DATE,
     fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
@@ -526,14 +529,14 @@ test("runGenerateFinishPositionLocal spawns Phase A before Phase B", async () =>
 test("runGenerateFinishPositionLocal throws when Phase A spawn returns non-zero", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>(() => Promise.resolve({ exitCode: 1 }));
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
@@ -549,14 +552,14 @@ test("runGenerateFinishPositionLocal throws when Phase B spawn returns non-zero"
     return Promise.resolve({ exitCode });
   });
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   await expect(
     runGenerateFinishPositionLocal(buildRunOptions(), {
       spawn,
       sleep,
-      probeColima,
+      probeContainerRuntime,
       probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
       now: () => FIXED_NIGHT_DATE,
       fs: buildFakeFs('{"featureVersion":"v1"}', true, true),
@@ -568,14 +571,14 @@ test("runGenerateFinishPositionLocal throws when Phase B spawn returns non-zero"
 test("runGenerateFinishPositionLocal writes manifest.json with both versions after both phases", async () => {
   const spawn = vi.fn<() => Promise<{ exitCode: number }>>(() => Promise.resolve({ exitCode: 0 }));
   const sleep = vi.fn<() => Promise<void>>(() => Promise.resolve());
-  const probeColima = vi.fn<() => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>>(
-    () => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }),
-  );
+  const probeContainerRuntime = vi.fn<
+    () => Promise<{ cpu: number; memoryGiB: number; diskGiB: number }>
+  >(() => Promise.resolve({ cpu: 8, memoryGiB: 24, diskGiB: 100 }));
   const fs = buildFakeFs('{"featureVersion":"v1"}', true, true);
   await runGenerateFinishPositionLocal(buildRunOptions(), {
     spawn,
     sleep,
-    probeColima,
+    probeContainerRuntime,
     probeLocalResources: () => Promise.resolve(CALM_LOCAL_SNAPSHOT),
     now: () => FIXED_NIGHT_DATE,
     fs,
