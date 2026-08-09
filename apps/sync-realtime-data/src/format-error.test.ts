@@ -1,7 +1,7 @@
 // Run with bun.
 import { expect, it } from "vitest";
 
-import { errorLogFields, formatError } from "./format-error";
+import { errorLogFields, formatError, formatErrorLogLine } from "./format-error";
 
 it("returns the message of an Error instance", () => {
   expect(formatError(new Error("boom"))).toBe("boom");
@@ -50,4 +50,21 @@ it("errorLogFields stringifies non-Error values", () => {
     name: "unknown",
     stack: "",
   });
+});
+
+it("formatErrorLogLine keeps prefix extra fields and Error details in one string", () => {
+  const error = new Error("boom");
+  expect(
+    formatErrorLogLine("Queue job failed", { type: "generate-running-style-predictions" }, error),
+  ).toBe(
+    `Queue job failed type=generate-running-style-predictions name=Error message=boom stack=${error.stack}`,
+  );
+});
+
+it("formatErrorLogLine stringifies non-Error values", () => {
+  expect(
+    formatErrorLogLine("Running-style cache/sync failed", { raceKey: "nar:20260810:42:03" }, null),
+  ).toBe(
+    "Running-style cache/sync failed raceKey=nar:20260810:42:03 name=unknown message=null stack=",
+  );
 });

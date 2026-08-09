@@ -2,9 +2,13 @@
 // local-PostgreSQL-sourced raw Iceberg tables exposed by the catalog Worker.
 
 import { formatError } from "./format-error";
-import { fetchRunningStyleFeaturesFromCatalog } from "./running-style-catalog-client";
+import {
+  fetchRunningStyleFeaturesFromCatalog,
+  isCatalogUnavailableError,
+} from "./running-style-catalog-client";
 import {
   buildRunningStyleFeatureParquetKey,
+  loadRunningStyleFeatureParquet,
   putRunningStyleFeatureParquet,
   validateFeatureCoverage,
 } from "./running-style-feature-parquet";
@@ -84,6 +88,25 @@ const buildAndPutRunningStyleFeatureParquetInternal = async (
   return { builtRowCount: rows.length, bytesWritten, featuresR2Key, rows };
 };
 
+const tryLoadCachedRunningStyleFeatureParquet = async (
+  params: LoadOrBuildRunningStyleFeatureParquetParams,
+): Promise<LoadOrBuildRunningStyleFeatureParquetResult | null> => {
+  const featuresR2Key = buildRunningStyleFeatureParquetKey(params.race);
+  try {
+    const rows = await loadRunningStyleFeatureParquet(
+      params.env.RUNNING_STYLE_MODELS,
+      featuresR2Key,
+      params.featureNames,
+    );
+    if (rows.length === 0) return null;
+    const coverage = validateFeatureCoverage(rows, params.featureNames);
+    if (coverage.missingFeatureNames.length > 0) return null;
+    return { featuresR2Key, rebuilt: false, rows };
+  } catch {
+    return null;
+  }
+};
+
 export const loadOrBuildRunningStyleFeatureParquet = async (
   params: LoadOrBuildRunningStyleFeatureParquetParams,
 ): Promise<LoadOrBuildRunningStyleFeatureParquetResult> => {
@@ -93,12 +116,22 @@ export const loadOrBuildRunningStyleFeatureParquet = async (
   // isolate. The internal builder now hands the in-memory rows back so the
   // round-trip is skipped — the file in R2 is identical to the rows we just
   // assembled, so the second load was pure overhead.
-  const built = await buildAndPutRunningStyleFeatureParquetInternal({
-    env: params.env,
-    featureNames: params.featureNames,
-    race: params.race,
-  });
-  return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows: built.rows };
+  try {
+    const built = await buildAndPutRunningStyleFeatureParquetInternal({
+      env: params.env,
+      featureNames: params.featureNames,
+      race: params.race,
+    });
+    return { featuresR2Key: built.featuresR2Key, rebuilt: true, rows: built.rows };
+  } catch (error) {
+    if (!isCatalogUnavailableError(error)) throw error;
+    const cached = await tryLoadCachedRunningStyleFeatureParquet(params);
+    if (cached === null) throw error;
+    console.error(
+      `Running-style features catalog unavailable, using R2 parquet fallback ${cached.featuresR2Key}: ${formatError(error)}`,
+    );
+    return cached;
+  }
 };
 
 export const materializeRunningStyleFeatureParquetForRace = async (

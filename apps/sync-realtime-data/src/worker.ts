@@ -25,7 +25,7 @@ import {
   PLAN_RESULT_FETCHES_SUMMARY_STATUS,
   SKIP_STATUS,
 } from "./fetchLogStatuses";
-import { errorLogFields, formatError } from "./format-error";
+import { formatError, formatErrorLogLine } from "./format-error";
 import { QUEUE_HANDLER_TIMEOUT_MS, withHandlerTimeout } from "./handler-timeout";
 import { mergeJsonHeaders } from "./http";
 import {
@@ -5519,14 +5519,22 @@ export default {
         await handleJob(env, message.body);
         message.ack();
       } catch (error) {
-        console.error("Queue job failed", {
-          type: message.body.type,
-          ...errorLogFields(error),
-        });
+        console.error(formatErrorLogLine("Queue job failed", { type: message.body.type }, error));
         const delaySeconds = isD1OverloadError(error)
           ? buildPlanRealtimeOverloadRetryDelaySeconds()
           : QUEUE_RETRY_DELAY_SECONDS;
-        message.retry({ delaySeconds });
+        try {
+          message.retry({ delaySeconds });
+        } catch (retryError) {
+          console.error(
+            formatErrorLogLine(
+              "Queue delayed retry failed",
+              { type: message.body.type },
+              retryError,
+            ),
+          );
+          message.retry();
+        }
       }
     }
   },

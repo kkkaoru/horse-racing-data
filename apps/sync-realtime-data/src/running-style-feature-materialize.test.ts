@@ -4,9 +4,13 @@ import type { RunningStyleRaceParams } from "./running-style-features";
 import type { RaceHorseFeatureRow } from "./running-style-r2";
 import type { Env } from "./types";
 
-vi.mock("./running-style-catalog-client", () => ({
-  fetchRunningStyleFeaturesFromCatalog: vi.fn(),
-}));
+vi.mock("./running-style-catalog-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./running-style-catalog-client")>();
+  return {
+    ...actual,
+    fetchRunningStyleFeaturesFromCatalog: vi.fn(),
+  };
+});
 vi.mock("./running-style-feature-parquet", () => ({
   buildRunningStyleFeatureParquetKey: vi.fn(() => "features.parquet"),
   loadRunningStyleFeatureParquet: vi.fn(),
@@ -109,6 +113,109 @@ it("does not fall back to a stale processed object when Catalog fails", async ()
     }),
   ).rejects.toThrow("Catalog unavailable");
   expect(loadRunningStyleFeatureParquet).not.toHaveBeenCalled();
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
+it("falls back to R2 parquet when Catalog is unavailable and coverage is complete", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 0,
+    missingFeatureNames: [],
+  });
+  const result = await loadOrBuildRunningStyleFeatureParquet({
+    env: makeEnv("1"),
+    featureNames: ["f1"],
+    race: RACE,
+  });
+  expect(result).toStrictEqual({
+    featuresR2Key: "features.parquet",
+    rebuilt: false,
+    rows: rows(),
+  });
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style features catalog unavailable, using R2 parquet fallback features.parquet: PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+});
+
+it("keeps the Catalog error when fallback parquet is missing", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet } =
+    await import("./running-style-feature-parquet");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 503",
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+  vi.mocked(loadRunningStyleFeatureParquet).mockRejectedValue(new Error("R2 object not found"));
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow("PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 503");
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
+it("keeps the Catalog error when fallback parquet misses model features", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet, validateFeatureCoverage } =
+    await import("./running-style-feature-parquet");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue(rows());
+  vi.mocked(validateFeatureCoverage).mockReturnValue({
+    missingCells: 1,
+    missingFeatureNames: ["f1"],
+  });
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
+});
+
+it("keeps the Catalog error when fallback parquet has no rows", async () => {
+  const { loadOrBuildRunningStyleFeatureParquet } =
+    await import("./running-style-feature-materialize");
+  const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
+  const { loadRunningStyleFeatureParquet, putRunningStyleFeatureParquet } =
+    await import("./running-style-feature-parquet");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  vi.mocked(fetchRunningStyleFeaturesFromCatalog).mockRejectedValue(catalogError);
+  vi.mocked(loadRunningStyleFeatureParquet).mockResolvedValue([]);
+  await expect(
+    loadOrBuildRunningStyleFeatureParquet({
+      env: makeEnv("1"),
+      featureNames: ["f1"],
+      race: RACE,
+    }),
+  ).rejects.toThrow(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
   expect(putRunningStyleFeatureParquet).not.toHaveBeenCalled();
 });
 

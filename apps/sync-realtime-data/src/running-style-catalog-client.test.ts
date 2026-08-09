@@ -400,3 +400,24 @@ it("fetchRunningStyleFeatureCountsFromCatalog rejects malformed responses", asyn
     fetchRunningStyleFeatureCountsFromCatalog(catalogReturning({ rows: [null] }), "20260715"),
   ).rejects.toThrow("invalid row");
 });
+
+it("isCatalogUnavailableError detects r2_sql_unavailable and Catalog HTTP 5xx", async () => {
+  const { isCatalogUnavailableError } = await import("./running-style-catalog-client");
+  expect(
+    isCatalogUnavailableError(
+      new Error(
+        "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+      ),
+    ),
+  ).toBe(true);
+  expect(
+    isCatalogUnavailableError(
+      new Error("PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 503"),
+    ),
+  ).toBe(true);
+  expect(isCatalogUnavailableError("r2_sql_unavailable")).toBe(true);
+  expect(isCatalogUnavailableError(new Error("Catalog unavailable"))).toBe(false);
+  expect(isCatalogUnavailableError(new Error("no active running-style feature rows found"))).toBe(
+    false,
+  );
+});

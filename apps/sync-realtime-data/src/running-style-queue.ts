@@ -5,7 +5,7 @@
 // the viewer can read predictions without a separate sync step.
 
 import { markFinishPositionFeaturesCached } from "./finish-position-d1";
-import { errorLogFields, formatError } from "./format-error";
+import { formatError, formatErrorLogLine } from "./format-error";
 import { putFinishPositionInputsCache } from "./finish-position-inputs-cache";
 import { getFinishPositionWritePool } from "./finish-position-lite-pool";
 import {
@@ -66,8 +66,14 @@ const tryLoadCalibrators = async (
 ): Promise<RunningStyleCalibrationTable | undefined> => {
   try {
     return await loadCalibratorsFromR2(bucket, buildCalibrationR2Key(source));
-  } catch {
-    console.error("Failed to load running-style calibrators, falling back to uncalibrated");
+  } catch (error) {
+    console.error(
+      formatErrorLogLine(
+        "Failed to load running-style calibrators, falling back to uncalibrated",
+        { source },
+        error,
+      ),
+    );
     return undefined;
   }
 };
@@ -354,6 +360,13 @@ const cacheAndSyncCompletedRunningStyles = async (
       parquetExportedRows: parquetExportFailed ? 0 : parquetExportResult,
     };
   } catch (error) {
+    console.error(
+      formatErrorLogLine(
+        "Running-style cache/sync failed",
+        { raceKey: buildRunningStyleRaceKey(job) },
+        error,
+      ),
+    );
     return {
       cacheError: formatError(error),
       cacheWritten: false,
@@ -500,10 +513,7 @@ export const handleRunningStylePredictionJob = async (
       writtenCount: summary.writtenCount,
     };
   } catch (error) {
-    console.error("Running-style prediction failed", {
-      raceKey,
-      ...errorLogFields(error),
-    });
+    console.error(formatErrorLogLine("Running-style prediction failed", { raceKey }, error));
     await markRunningStyleInferenceFailed(env.REALTIME_DB, raceKey, error);
     throw error;
   }

@@ -109,12 +109,16 @@
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 2,
+        "max_retries": 3,
+        "retry_delay": 60,
       },
       {
         "queue": "sync-realtime-data-premium-race-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 4,
+        "max_retries": 3,
+        "retry_delay": 60,
       },
       {
         // 2026-06-09: lowered from 3 to 1 after wrangler tail reported
@@ -129,12 +133,16 @@
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 1,
+        "max_retries": 3,
+        "retry_delay": 60,
       },
       {
         "queue": "sync-realtime-data-win5-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
         "max_concurrency": 2,
+        "max_retries": 3,
+        "retry_delay": 60,
       },
     ],
   },

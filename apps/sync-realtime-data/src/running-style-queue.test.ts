@@ -793,14 +793,9 @@ it("logs error name message stack and rethrows catalog feature load failures", a
     "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
   );
   expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe("Running-style prediction failed");
-  expect(vi.mocked(console.error).mock.calls[0]?.[1]).toStrictEqual({
-    message:
-      "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
-    name: "Error",
-    raceKey: "jra:20260512:08:01",
-    stack: catalogError.stack,
-  });
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Running-style prediction failed raceKey=jra:20260512:08:01 name=Error message=PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable stack=${catalogError.stack}`,
+  );
 });
 
 it("skips cacheCompletedRunningStyles when written count is less than expected horse count", async () => {
@@ -910,7 +905,9 @@ it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
     await import("./running-style-d1");
+  const cacheError = new Error("d1 read failure");
   vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue({
     expectedHorseCount: 5,
     featuresR2Key: "features.parquet",
@@ -918,11 +915,14 @@ it("captures cacheCompletedRunningStyles errors via cacheError", async () => {
     status: "completed",
     writtenHorseCount: 5,
   } as never);
-  vi.mocked(listRaceRunningStylesForRace).mockRejectedValue(new Error("d1 read failure"));
+  vi.mocked(listRaceRunningStylesForRace).mockRejectedValue(cacheError);
 
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.cacheError).toBe("d1 read failure");
   expect(summary?.cacheWritten).toBe(false);
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Running-style cache/sync failed raceKey=jra:20260512:08:01 name=Error message=d1 read failure stack=${cacheError.stack}`,
+  );
 });
 
 it("returns neonWrittenCount when Neon write succeeds", async () => {
@@ -1104,12 +1104,17 @@ it("falls back to uncalibrated inference when loadCalibratorsFromR2 rejects", as
     modelVersion: "v7-lineage",
     writtenCount: 1,
   } as never);
-  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(new Error("R2 not found"));
+  const calibratorError = new Error("R2 not found");
+  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(calibratorError);
   vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([{}] as never);
+  vi.spyOn(console, "error").mockImplementation(() => {});
 
   const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
   expect(summary?.writtenCount).toBe(1);
   expect(
     vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1]?.calibrators,
   ).toBeUndefined();
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Failed to load running-style calibrators, falling back to uncalibrated source=jra name=Error message=R2 not found stack=${calibratorError.stack}`,
+  );
 });

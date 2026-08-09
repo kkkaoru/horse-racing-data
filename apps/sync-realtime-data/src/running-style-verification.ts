@@ -1,6 +1,7 @@
 // Run with bun. Admin-only verification flow for Worker-side 117 feature
 // Parquet generation and D1 persistence.
 
+import { formatErrorLogLine } from "./format-error";
 import { buildRunningStyleRaceKey, type RunningStyleRaceParams } from "./running-style-features";
 import {
   fetchRunningStyleFeaturesFromCatalog,
@@ -30,8 +31,14 @@ const tryLoadCalibrators = async (
 ): Promise<RunningStyleCalibrationTable | undefined> => {
   try {
     return await loadCalibratorsFromR2(bucket, buildCalibrationR2Key(source));
-  } catch {
-    console.error("Failed to load running-style calibrators, falling back to uncalibrated");
+  } catch (error) {
+    console.error(
+      formatErrorLogLine(
+        "Failed to load running-style calibrators, falling back to uncalibrated",
+        { source },
+        error,
+      ),
+    );
     return undefined;
   }
 };

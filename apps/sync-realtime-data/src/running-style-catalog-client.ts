@@ -8,6 +8,7 @@ import type { CatalogServiceBinding } from "./types";
 
 const CATALOG_ORIGIN = "https://pc-keiba-r2-catalog.internal";
 export const RUNNING_STYLE_CATALOG_GENERATION = "raw-iceberg-v1";
+const CATALOG_HTTP_5XX_PATTERN = /PC_KEIBA_R2_CATALOG \S+ failed with HTTP 5\d\d/;
 // Bounded slice of a failing Catalog response body appended to the thrown error so
 // the operator-visible D1 state carries the Catalog `code`/`detail` instead of a bare
 // HTTP status. Never echoes request headers or env values.
@@ -122,6 +123,11 @@ const catalogErrorDetail = (body: string): string => {
   const parsed = parseJsonOrNull(body);
   const parts = isRecord(parsed) ? structuredErrorParts(parsed) : [];
   return truncateErrorDetail(parts.length > 0 ? parts.join(" ") : body.trim());
+};
+
+export const isCatalogUnavailableError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("r2_sql_unavailable") || CATALOG_HTTP_5XX_PATTERN.test(message);
 };
 
 const fetchCatalogJson = async (catalog: CatalogServiceBinding, url: URL): Promise<unknown> => {

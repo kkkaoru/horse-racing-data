@@ -193,7 +193,9 @@ it("verification remains available without optional calibrators", async () => {
   const { loadCalibratorsFromR2 } = await import("./running-style-calibration");
   const { runRunningStyleInferenceRowsWithFlatModel } = await import("./running-style-inference");
   await prepareSuccessfulVerification();
-  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(new Error("not found"));
+  const calibratorError = new Error("not found");
+  vi.mocked(loadCalibratorsFromR2).mockRejectedValue(calibratorError);
+  vi.spyOn(console, "error").mockImplementation(() => {});
   await runRunningStyleWorkerPostgresVerification(makeEnv(), {
     kaisaiNen: "2026",
     kaisaiTsukihi: "0512",
@@ -204,4 +206,7 @@ it("verification remains available without optional calibrators", async () => {
   expect(
     vi.mocked(runRunningStyleInferenceRowsWithFlatModel).mock.calls[0]?.[1].calibrators,
   ).toBeUndefined();
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    `Failed to load running-style calibrators, falling back to uncalibrated source=jra name=Error message=not found stack=${calibratorError.stack}`,
+  );
 });
