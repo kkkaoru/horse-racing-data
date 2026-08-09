@@ -5,7 +5,6 @@ import {
   PREDICTION_CACHE_BUST_INTERNAL_PATH,
   PREDICTION_KV_CACHE_URL_BASE,
   buildFinishPositionPredictionKvKey,
-  buildFinishPredictionInputsCacheKey,
   buildPredictionCacheBustKeys,
   buildRaceYmd,
   buildRunningStylePredictionCacheKeyFromRace,
@@ -100,18 +99,6 @@ it("buildRunningStylePredictionKvKey includes source", () => {
       year: "2026",
     }),
   ).toBe("pred:rs:v1:nar:20260809:83:12");
-});
-
-it("buildFinishPredictionInputsCacheKey matches the pred:fp key", () => {
-  expect(
-    buildFinishPredictionInputsCacheKey({
-      day: "9",
-      keibajoCode: "05",
-      month: "8",
-      raceNumber: "11",
-      year: "2026",
-    }),
-  ).toBe("pred:fp:v1:20260809:05:11");
 });
 
 it("buildRunningStylePredictionCacheKeyFromRace returns null for an unknown source", () => {

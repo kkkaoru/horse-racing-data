@@ -152,26 +152,6 @@ export const buildRunningStylePredictionKvKey = (race: RunningStylePredictionCac
     padRacePart(race.raceBango, RACE_BANGO_WIDTH),
   ].join(":");
 
-export const buildFinishPredictionInputsCacheKey = ({
-  day,
-  keibajoCode,
-  month,
-  raceNumber,
-  year,
-}: {
-  day: string;
-  keibajoCode: string;
-  month: string;
-  raceNumber: string;
-  year: string;
-}): string =>
-  buildFinishPositionPredictionKvKey({
-    keibajoCode,
-    mmdd: `${padRacePart(month, 2)}${padRacePart(day, 2)}`,
-    raceBango: raceNumber,
-    year,
-  });
-
 export const buildRunningStylePredictionCacheKeyFromRace = ({
   kaisaiNen,
   kaisaiTsukihi,
