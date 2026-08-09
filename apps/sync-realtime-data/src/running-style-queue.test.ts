@@ -798,6 +798,85 @@ it("logs error name message stack and rethrows catalog feature load failures", a
   );
 });
 
+it("marks failed with structured logs when early inference-state lookup throws", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const {
+    getRunningStyleInferenceState,
+    markRunningStyleInferenceFailed,
+    markRunningStyleInferenceProcessing,
+  } = await import("./running-style-d1");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const stateError = new Error("D1 inference state lookup failed");
+  stateError.stack = "Error: D1 inference state lookup failed\n    at test";
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockRejectedValueOnce(stateError);
+
+  await expect(handleRunningStylePredictionJob(env, JOB)).rejects.toThrow(
+    "D1 inference state lookup failed",
+  );
+  expect(markRunningStyleInferenceProcessing).toHaveBeenCalledTimes(0);
+  expect(loadFlatLightGBMModelFromR2).toHaveBeenCalledTimes(0);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledWith(
+    env.REALTIME_DB,
+    "jra:20260512:08:01",
+    stateError,
+  );
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style prediction failed raceKey=jra:20260512:08:01 name=Error message=D1 inference state lookup failed stack=Error: D1 inference state lookup failed\n    at test",
+  );
+});
+
+it("marks failed with structured logs when marking inference processing throws", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const {
+    getRunningStyleInferenceState,
+    markRunningStyleInferenceFailed,
+    markRunningStyleInferenceProcessing,
+  } = await import("./running-style-d1");
+  const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
+  const processingError = new Error("D1 inference processing mark failed");
+  processingError.stack = "Error: D1 inference processing mark failed\n    at test";
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
+  vi.mocked(markRunningStyleInferenceProcessing).mockRejectedValueOnce(processingError);
+
+  await expect(handleRunningStylePredictionJob(env, JOB)).rejects.toThrow(
+    "D1 inference processing mark failed",
+  );
+  expect(loadFlatLightGBMModelFromR2).toHaveBeenCalledTimes(0);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledWith(
+    env.REALTIME_DB,
+    "jra:20260512:08:01",
+    processingError,
+  );
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style prediction failed raceKey=jra:20260512:08:01 name=Error message=D1 inference processing mark failed stack=Error: D1 inference processing mark failed\n    at test",
+  );
+});
+
+it("does not mark processing or failed when completed inference-state short-circuits", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const {
+    getRunningStyleInferenceState,
+    listRaceRunningStylesForRace,
+    markRunningStyleInferenceFailed,
+    markRunningStyleInferenceProcessing,
+  } = await import("./running-style-d1");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(1));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW]);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(1);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.skipped).toBe(true);
+  expect(markRunningStyleInferenceProcessing).toHaveBeenCalledTimes(0);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(0);
+});
+
 it("skips cacheCompletedRunningStyles when written count is less than expected horse count", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =

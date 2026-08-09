@@ -384,41 +384,41 @@ export const handleRunningStylePredictionJob = async (
     return null;
   }
   const raceKey = buildRunningStyleRaceKey(job);
-  const state = await getRunningStyleInferenceState(env.REALTIME_DB, raceKey);
-  if (
-    state?.status === "completed" &&
-    state.expectedHorseCount !== null &&
-    state.writtenHorseCount !== null &&
-    state.writtenHorseCount >= state.expectedHorseCount
-  ) {
-    const cacheResult = await cacheAndSyncCompletedRunningStyles(env, job);
-    const route = resolveRunningStyleCellRoute(
-      routeInputFromJob(job),
-      runningStyleCellRoutingConfig(env),
-    );
-    const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
-      env,
-      job,
-      route.cell.category,
-      cacheResult,
-      state.expectedHorseCount,
-      state.writtenHorseCount,
-    );
-    return {
-      ...cacheResult,
-      cellModelKey: state.cellModelKey ?? route.modelKey,
-      cellVariantId: state.cellVariantId ?? route.variantId,
-      featuresR2Key: state.featuresR2Key ?? "",
-      ...finishPositionTrigger,
-      horseCount: state.expectedHorseCount,
-      modelVersion: state.modelVersion ?? "completed",
-      raceKey,
-      skipped: true,
-      writtenCount: state.writtenHorseCount,
-    };
-  }
-  await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
   try {
+    const state = await getRunningStyleInferenceState(env.REALTIME_DB, raceKey);
+    if (
+      state?.status === "completed" &&
+      state.expectedHorseCount !== null &&
+      state.writtenHorseCount !== null &&
+      state.writtenHorseCount >= state.expectedHorseCount
+    ) {
+      const cacheResult = await cacheAndSyncCompletedRunningStyles(env, job);
+      const route = resolveRunningStyleCellRoute(
+        routeInputFromJob(job),
+        runningStyleCellRoutingConfig(env),
+      );
+      const finishPositionTrigger = await triggerFinishPositionFullRunWhenReady(
+        env,
+        job,
+        route.cell.category,
+        cacheResult,
+        state.expectedHorseCount,
+        state.writtenHorseCount,
+      );
+      return {
+        ...cacheResult,
+        cellModelKey: state.cellModelKey ?? route.modelKey,
+        cellVariantId: state.cellVariantId ?? route.variantId,
+        featuresR2Key: state.featuresR2Key ?? "",
+        ...finishPositionTrigger,
+        horseCount: state.expectedHorseCount,
+        modelVersion: state.modelVersion ?? "completed",
+        raceKey,
+        skipped: true,
+        writtenCount: state.writtenHorseCount,
+      };
+    }
+    await markRunningStyleInferenceProcessing(env.REALTIME_DB, job, new Date().toISOString());
     const routingConfig = runningStyleCellRoutingConfig(env);
     const latestEntries = await getLatestRaceEntries(
       env.REALTIME_DB,

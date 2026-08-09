@@ -20,10 +20,13 @@ const getConnectionString = (env: Env): string => {
   throw new Error("HYPERDRIVE or DATABASE_URL_NEON is required for finish-position pool");
 };
 
-const getWriteConnectionString = (env: Env): string | null => {
+const WRITE_CONNECTION_REQUIRED_ERROR =
+  "DATABASE_URL_NEON or NEON_DATABASE_URL is required for finish-position write pool";
+
+const getWriteConnectionString = (env: Env): string => {
   if (env.DATABASE_URL_NEON) return env.DATABASE_URL_NEON;
   if (env.NEON_DATABASE_URL) return env.NEON_DATABASE_URL;
-  return null;
+  throw new Error(WRITE_CONNECTION_REQUIRED_ERROR);
 };
 
 export const getFinishPositionPool = (env: Env): Pool => {
@@ -37,10 +40,8 @@ export const getFinishPositionPool = (env: Env): Pool => {
 
 export const getFinishPositionWritePool = (env: Env): Pool => {
   if (writePool !== null) return writePool;
-  const connectionString = getWriteConnectionString(env);
-  if (connectionString === null) return getFinishPositionPool(env);
   writePool = new Pool({
-    connectionString,
+    connectionString: getWriteConnectionString(env),
     max: DEFAULT_POOL_SIZE,
   });
   return writePool;

@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 
 import {
+  ensureRunningStylePredictionNeonSchema,
   listRaceRunningStylePredictionCountsByDate,
   upsertRunningStylePredictionsToNeon,
 } from "./running-style-neon";
@@ -51,10 +52,7 @@ it("upserts a single valid row and returns 1", async () => {
   const row = buildRow();
   const result = await upsertRunningStylePredictionsToNeon(pool, [row]);
   expect(result).toBe(1);
-  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(queryFn).mock.calls[0]?.[0]).toMatch(
-    /add column if not exists predicted_corner_front_score/,
-  );
+  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(1);
   const [sql, values = []] = lastQueryCall(queryFn);
   expect(sql.startsWith("insert into race_running_style_model_predictions")).toBe(true);
   expect(sql.indexOf("on conflict") > -1).toBe(true);
@@ -127,7 +125,19 @@ it("batches large row sets into NEON_BATCH_SIZE chunks", async () => {
     buildRow({ horseNumber: index + 1, kettoTorokuBango: String(2022100000 + index) }),
   );
   await upsertRunningStylePredictionsToNeon(pool, rows);
-  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(4);
+  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(3);
+  expect(vi.mocked(queryFn).mock.calls.every(([sql]) => !String(sql).includes("alter table"))).toBe(
+    true,
+  );
+});
+
+it("ensureRunningStylePredictionNeonSchema still runs DDL when called explicitly", async () => {
+  const queryFn: QueryFn = vi.fn(async () => {});
+  await ensureRunningStylePredictionNeonSchema(buildPool(queryFn));
+  expect(vi.mocked(queryFn)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(queryFn).mock.calls[0]?.[0]).toMatch(
+    /add column if not exists predicted_corner_front_score/,
+  );
 });
 
 it("parses source from race_key correctly", async () => {

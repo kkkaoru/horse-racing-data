@@ -121,7 +121,11 @@ export const upsertRunningStylePredictionsToNeon = async (
     return parsed !== null && LABEL_CLASS_INDEX[row.predictedLabel] !== undefined;
   });
   if (validRows.length === 0) return 0;
-  await ensureRunningStylePredictionNeonSchema(pool);
+  // Hot-path upserts must not run DDL. Hyperdrive/replica connections reject
+  // ALTER TABLE with "cannot execute ALTER TABLE in a read-only transaction",
+  // which previously aborted the entire Neon write and skipped finish-position
+  // triggers even when DML would have succeeded. Schema ensure stays in the
+  // explicit backfill script.
   for (let start = 0; start < validRows.length; start += NEON_BATCH_SIZE) {
     await upsertNeonBatch(pool, validRows.slice(start, start + NEON_BATCH_SIZE));
   }
