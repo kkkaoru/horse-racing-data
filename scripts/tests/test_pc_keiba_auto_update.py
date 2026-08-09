@@ -322,7 +322,9 @@ def test_connect_main(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_app = MagicMock()
     fake_app.window.return_value = fake_main
     monkeypatch.setattr(
-        mod, "Application", MagicMock(return_value=MagicMock(connect=MagicMock(return_value=fake_app)))
+        mod,
+        "Application",
+        MagicMock(return_value=MagicMock(connect=MagicMock(return_value=fake_app))),
     )
     _app, main = mod.connect_main(123, timeout=1)
     fake_main.wait.assert_called_once()
@@ -353,7 +355,9 @@ def _mk_window_with(
 
 def test_find_progress_window_match(monkeypatch: pytest.MonkeyPatch) -> None:
     close_btn = _mk_element(automation_id=mod.PROGRESS_CLOSE_BUTTON_AUTO_ID)
-    win = _mk_window_with(pid=1, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=True)
+    win = _mk_window_with(
+        pid=1, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=True
+    )
     other = _mk_window_with(pid=2, title="other", buttons=[], has_progress=False)
     fake_desktop = MagicMock()
     fake_desktop.windows.return_value = [other, win]
@@ -363,7 +367,9 @@ def test_find_progress_window_match(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_find_progress_window_no_progressbar(monkeypatch: pytest.MonkeyPatch) -> None:
     close_btn = _mk_element(automation_id=mod.PROGRESS_CLOSE_BUTTON_AUTO_ID)
-    win = _mk_window_with(pid=1, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=False)
+    win = _mk_window_with(
+        pid=1, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=False
+    )
     fake_desktop = MagicMock()
     fake_desktop.windows.return_value = [win]
     monkeypatch.setattr(mod, "Desktop", MagicMock(return_value=fake_desktop))
@@ -372,14 +378,18 @@ def test_find_progress_window_no_progressbar(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_find_progress_window_skips_other_pid(monkeypatch: pytest.MonkeyPatch) -> None:
     close_btn = _mk_element(automation_id=mod.PROGRESS_CLOSE_BUTTON_AUTO_ID)
-    win = _mk_window_with(pid=999, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=True)
+    win = _mk_window_with(
+        pid=999, title=mod.PROGRESS_WINDOW_TITLE, buttons=[close_btn], has_progress=True
+    )
     fake_desktop = MagicMock()
     fake_desktop.windows.return_value = [win]
     monkeypatch.setattr(mod, "Desktop", MagicMock(return_value=fake_desktop))
     assert mod.find_progress_window(1) is None
 
 
-def test_find_progress_window_swallows_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_find_progress_window_swallows_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bad = MagicMock()
     type(bad.element_info).process_id = property(
         lambda _self: (_ for _ in ()).throw(RuntimeError("boom"))
@@ -478,7 +488,9 @@ def test_open_dialog_if_needed_opens_via_menu(monkeypatch: pytest.MonkeyPatch) -
     visible_reg.click_input.assert_called_once()
 
 
-def test_open_dialog_if_needed_fallback_to_offscreen(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_open_dialog_if_needed_fallback_to_offscreen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     main = MagicMock()
     main.child_window.return_value = MagicMock()
     offscreen = _mk_element(name=mod.NORMAL_REG_MENU_TITLE, is_offscreen=True)
@@ -651,33 +663,41 @@ def test_wait_for_completion_success_via_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     main = MagicMock()
+    main.element_info.process_id = 1
     btn_states = [
         _mk_element(is_enabled=False),  # 進行中
         _mk_element(is_enabled=False),
         _mk_element(is_enabled=True),  # 完了
     ]
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=btn_states))
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
 
 
-def test_wait_for_completion_button_disappears(
+def test_wait_for_completion_button_disappears_is_not_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """StartButton 不在だけでは完了にしない (偽完了回帰防止)。"""
     main = MagicMock()
+    main.element_info.process_id = 1
     monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
+    monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
-    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+    assert mod.wait_for_completion(main, max_minutes=1, poll_sec=1) is False
 
 
 def test_wait_for_completion_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     main = MagicMock()
+    main.element_info.process_id = 1
     btn = _mk_element(is_enabled=False)
     monkeypatch.setattr(mod, "find_start_button", lambda _w: btn)
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
-    # time.time が即座に deadline を越えるよう細工
     fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
     monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
@@ -687,20 +707,115 @@ def test_wait_for_completion_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_wait_for_completion_is_enabled_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """1 回目: is_enabled が例外 → enabled=True と解釈、started=False のため継続
-    2 回目: started=False & enabled=True → started=False のまま (initially not started case)
-            ※コードロジック: not started and not enabled → started=True 設定
-            ここでは enabled=True なので started に変化なし → continue ループ
-    3 回目: btn=None で 完了とみなす
-    """
+    """is_enabled 例外は enabled 扱い。started 前なので継続し、disabled→enabled で完了。"""
     main = MagicMock()
+    main.element_info.process_id = 1
     btn_raise = MagicMock()
     btn_raise.is_enabled.side_effect = RuntimeError("boom")
-    seq: list[MagicMock | None] = [btn_raise, _mk_element(is_enabled=True), None]
+    seq: list[MagicMock | None] = [
+        btn_raise,
+        _mk_element(is_enabled=False),
+        _mk_element(is_enabled=True),
+    ]
     monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=seq))
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: None)
     monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
     monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
     assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+
+
+def test_wait_for_completion_progress_appears_then_vanishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 1
+    progress = iter([MagicMock(), MagicMock(), None])
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: next(progress))
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
+    monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+
+
+def test_wait_for_completion_absent_while_progress_open_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """進捗ウィンドウ表示中に StartButton が消えても完了にしない。"""
+    main = MagicMock()
+    main.element_info.process_id = 1
+    monkeypatch.setattr(mod, "find_start_button", lambda _w: None)
+    monkeypatch.setattr(mod, "find_progress_window", lambda _pid: MagicMock())
+    monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
+    monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.wait_for_completion(main, max_minutes=1, poll_sec=1) is False
+
+
+def test_wait_for_completion_pid_lookup_fails_falls_back_to_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main = MagicMock()
+    type(main.element_info).process_id = property(
+        lambda _self: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    btn_states = [_mk_element(is_enabled=False), _mk_element(is_enabled=True)]
+    monkeypatch.setattr(mod, "find_start_button", MagicMock(side_effect=btn_states))
+    monkeypatch.setattr(mod, "_dismiss_popups", lambda _w: None)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.wait_for_completion(main, max_minutes=5, poll_sec=1) is True
+
+
+def test_wait_for_progress_window_to_finish_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    states = iter([True, True, False])
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: next(states))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.wait_for_progress_window_to_finish(42, max_minutes=5, poll_sec=1) is True
+
+
+def test_wait_for_progress_window_to_finish_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: True)
+    fake_times = itertools.chain([0.0, 1.0, 1.0], itertools.repeat(100000.0))
+    monkeypatch.setattr(mod.time, "time", lambda: next(fake_times))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert (
+        mod.wait_for_progress_window_to_finish(42, max_minutes=1, poll_sec=1) is False
+    )
+
+
+def test_wait_for_progress_window_to_finish_already_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: False)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    assert mod.wait_for_progress_window_to_finish(42, max_minutes=5, poll_sec=1) is True
+
+
+def test_dismiss_popups_skips_progress_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    main = MagicMock()
+    main.element_info.process_id = 1
+    main.element_info.handle = 999
+    close_btn = _mk_element(
+        automation_id=mod.PROGRESS_CLOSE_BUTTON_AUTO_ID, is_enabled=True, exists=True
+    )
+    progress = _mk_window_with(
+        pid=1,
+        title=mod.PROGRESS_WINDOW_TITLE,
+        buttons=[close_btn],
+        has_progress=True,
+    )
+    progress.element_info.handle = 111
+    progress.child_window.return_value = close_btn
+    fake_desktop = MagicMock()
+    fake_desktop.windows.return_value = [progress]
+    monkeypatch.setattr(mod, "Desktop", MagicMock(return_value=fake_desktop))
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    mod._dismiss_popups(main)
+    close_btn.click_input.assert_not_called()
 
 
 def test_dismiss_popups_clicks_ok(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -921,8 +1036,53 @@ def test_main_wait_timeout_skips_close(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mod, "wait_for_completion", lambda _w, max_minutes: False)
     safe_close = MagicMock()
     monkeypatch.setattr(mod, "safe_close_app", safe_close)
-    assert mod.main() == 0
+    assert mod.main() == 3
     safe_close.assert_not_called()
+
+
+def test_main_in_progress_with_wait_until_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["prog", "--wait"])
+    monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
+    monkeypatch.setattr(mod, "release_lock", lambda: None)
+    monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: True)
+    wait_fn = MagicMock(return_value=True)
+    monkeypatch.setattr(mod, "wait_for_progress_window_to_finish", wait_fn)
+    assert mod.main() == 0
+    wait_fn.assert_called_once()
+
+
+def test_main_in_progress_with_wait_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["prog", "--wait"])
+    monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
+    monkeypatch.setattr(mod, "release_lock", lambda: None)
+    monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
+    monkeypatch.setattr(mod, "is_update_in_progress_by_pid", lambda _pid: True)
+    monkeypatch.setattr(
+        mod, "wait_for_progress_window_to_finish", lambda *_a, **_k: False
+    )
+    assert mod.main() == 3
+
+
+def test_main_connect_in_progress_with_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["prog", "--wait"])
+    monkeypatch.setattr(mod, "acquire_lock", lambda _stale: True)
+    monkeypatch.setattr(mod, "release_lock", lambda: None)
+    monkeypatch.setattr(mod, "ensure_app_running", lambda: 42)
+    progress_states = iter([False, True])
+    monkeypatch.setattr(
+        mod, "is_update_in_progress_by_pid", lambda _pid: next(progress_states)
+    )
+
+    def _cm(*_a: object, **_k: object) -> object:
+        raise mod.ElementNotFoundError("x")
+
+    monkeypatch.setattr(mod, "connect_main", _cm)
+    monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+    wait_fn = MagicMock(return_value=True)
+    monkeypatch.setattr(mod, "wait_for_progress_window_to_finish", wait_fn)
+    assert mod.main() == 0
+    wait_fn.assert_called_once()
 
 
 def test_main_wait_without_close(monkeypatch: pytest.MonkeyPatch) -> None:

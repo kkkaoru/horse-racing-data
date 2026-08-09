@@ -12,8 +12,10 @@ PC-KEIBA Database の「データ → 通常データ登録 → 開始」を pyw
 
 安全装置 (アプリ強制終了の防止):
   - 本スクリプトはどの実行パスでも、更新処理中のアプリを終了させない。
-  - --close-when-done が指定されていても、完了検出 (StartButton が enabled に戻る)
-    を取れていなければクローズしない。
+  - --close-when-done が指定されていても、完了検出 (進捗ウィンドウ消滅、または
+    StartButton が disabled→enabled) を取れていなければクローズしない。
+  - StartButton 不在だけでは完了とみなさない (進捗ダイアログ中の偽完了を防止)。
+  - --wait タイムアウトは成功扱いにしない (非 0 exit)。
   - また close 直前に必ず is_update_in_progress() で再確認する。
 
 ログ:
@@ -430,29 +432,80 @@ def _probe_start_button(main_window: UiWindow) -> StartButtonState:
         return "enabled"  # 取れない場合は enabled 扱い (started に進ませる)
 
 
+def _window_pid(main_window: UiWindow) -> int | None:
+    """main window の PID。取得失敗時は None。"""
+    try:
+        return int(main_window.element_info.process_id)
+    except Exception:
+        return None
+
+
+def _progress_visible(pid: int | None) -> bool:
+    return pid is not None and find_progress_window(pid) is not None
+
+
+def _log_first(already: bool, message: str) -> bool:
+    """初回だけ INFO を出し、以降は静かに True を返す。"""
+    if not already:
+        logging.info(message)
+    return True
+
+
+def wait_for_progress_window_to_finish(
+    pid: int, max_minutes: int = 180, poll_sec: int = 15
+) -> bool:
+    """進捗ウィンドウの消滅だけを待つ (main window 未接続でも可)。
+    タイムアウト時は False (成功扱いにしない)。"""
+    deadline = time.time() + max_minutes * 60
+    logging.info(
+        "進捗ウィンドウ完了待機開始 (最大 %d 分, poll %d 秒, PID=%d)",
+        max_minutes,
+        poll_sec,
+        pid,
+    )
+    while time.time() < deadline:
+        if not is_update_in_progress_by_pid(pid):
+            logging.info("進捗ウィンドウ消滅 → 完了")
+            return True
+        time.sleep(poll_sec)
+    logging.warning("進捗ウィンドウ完了待機タイムアウト (%d 分)", max_minutes)
+    return False
+
+
 def wait_for_completion(
     main_window: UiWindow, max_minutes: int = 180, poll_sec: int = 15
 ) -> bool:
-    """StartButton state machine:
-        idle (enabled) → 進行中 (disabled) → 再 idle (enabled / absent) で完了。
-    started フラグで disabled → enabled の遷移を待つ。"""
+    """実際の完了を待つ。成功条件:
+      1. 進捗ウィンドウが出現したあと消滅する
+      2. StartButton が disabled → enabled に戻る (進捗ウィンドウが出ない短時間更新)
+    StartButton 不在だけでは完了にしない (進捗ダイアログ中の偽完了を防止)。
+    タイムアウト時は False (成功扱いにしない)。"""
     deadline = time.time() + max_minutes * 60
     logging.info("完了待機開始 (最大 %d 分, poll %d 秒)", max_minutes, poll_sec)
-    started = False
+    started_via_button = False
+    saw_progress = False
+    pid = _window_pid(main_window)
     while time.time() < deadline:
-        time.sleep(poll_sec)
         _dismiss_popups(main_window)
-        state = _probe_start_button(main_window)
-        if state == "absent":
-            logging.info("StartButton 消滅 → 完了とみなす")
-            return True
-        if state == "disabled" and not started:
-            started = True
-            logging.info("更新進行中を確認")
+        if _progress_visible(pid):
+            saw_progress = _log_first(saw_progress, "進捗ウィンドウを検出 — 更新進行中")
+            time.sleep(poll_sec)
             continue
-        if state == "enabled" and started:
+        if saw_progress:
+            logging.info("進捗ウィンドウ消滅 → 完了")
+            _dismiss_popups(main_window)
+            return True
+        state = _probe_start_button(main_window)
+        if state == "disabled":
+            started_via_button = _log_first(
+                started_via_button, "更新進行中を確認 (StartButton disabled)"
+            )
+            time.sleep(poll_sec)
+            continue
+        if started_via_button and state == "enabled":
             logging.info("StartButton が再 enabled → 完了")
             return True
+        time.sleep(poll_sec)
     logging.warning("完了待機タイムアウト (%d 分)", max_minutes)
     return False
 
@@ -503,12 +556,15 @@ def _try_dismiss_popup(window: UiWindow) -> bool:
 
 
 def _dismiss_popups(main_window: UiWindow) -> None:
-    """OK / はい などのデフォルトボタンを持つ確認/完了ダイアログがあれば閉じる。"""
+    """OK / はい などのデフォルトボタンを持つ確認/完了ダイアログがあれば閉じる。
+    進捗ウィンドウ (CloseButton) は閉じない。"""
     identity = _main_window_identity(main_window)
     if identity is None:
         return
     pid, handle = identity
     for popup in _iter_sibling_windows(pid, handle):
+        if _is_progress_window(popup, pid):
+            continue
         _try_dismiss_popup(popup)
 
 
@@ -517,6 +573,10 @@ def _dismiss_popups(main_window: UiWindow) -> None:
 # ---------------------------------------------------------------------------
 class _UpdateInProgress(Exception):
     """接続前後で進行中状態を検出した際の内部シグナル。"""
+
+
+class _WaitTimedOut(Exception):
+    """`--wait` が完了を検出できずタイムアウトした。"""
 
 
 def _connect_main_with_retry(pid: int) -> UiWindow:
@@ -538,25 +598,37 @@ def _connect_main_with_retry(pid: int) -> UiWindow:
 
 
 def _finalize_wait(main_window: UiWindow, args: argparse.Namespace) -> None:
-    """`--wait` 後処理。完了検出時のみ `--close-when-done` を尊重する。"""
+    """`--wait` 後処理。完了検出時のみ `--close-when-done` を尊重する。
+    タイムアウトは成功扱いにしない。"""
     done = wait_for_completion(main_window, max_minutes=args.wait_minutes)
-    if not args.close_when_done:
-        return
     if not done:
         logging.warning("完了未検出のためアプリを閉じません (--close-when-done 無視)")
+        raise _WaitTimedOut("完了待機がタイムアウトしました")
+    if args.close_when_done:
+        safe_close_app(main_window)
+
+
+def _handle_already_in_progress(pid: int, args: argparse.Namespace) -> None:
+    """既存の進捗ウィンドウを検出したとき。`--wait` なら消滅まで待つ。"""
+    logging.info("進捗ウィンドウを検出 - 更新進行中 (PID=%d)", pid)
+    if not args.wait:
+        logging.info("更新進行中とみなしスキップ")
         return
-    safe_close_app(main_window)
+    if not wait_for_progress_window_to_finish(pid, max_minutes=args.wait_minutes):
+        raise _WaitTimedOut("完了待機がタイムアウトしました")
 
 
 def _run_workflow(args: argparse.Namespace) -> None:
-    """主処理。短絡で in-progress を検出したら早期 return。"""
+    """主処理。短絡で in-progress を検出したら早期 return。
+    `--wait` 時は既存進捗の消滅まで待つ。"""
     pid = ensure_app_running()
     if is_update_in_progress_by_pid(pid):
-        logging.info("進捗ウィンドウを検出 - 更新進行中とみなしスキップ (PID=%d)", pid)
+        _handle_already_in_progress(pid, args)
         return
     try:
         main_window = _connect_main_with_retry(pid)
     except _UpdateInProgress:
+        _handle_already_in_progress(pid, args)
         return
     open_dialog_if_needed(main_window)
     clicked = click_start(main_window, dry_run=args.dry_run)
@@ -570,17 +642,13 @@ def _run_workflow(args: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="PC-KEIBA Database 自動データ更新")
     ap.add_argument("--wait", action="store_true", help="完了まで待機")
-    ap.add_argument(
-        "--wait-minutes", type=int, default=180, help="完了待機の最大分数"
-    )
+    ap.add_argument("--wait-minutes", type=int, default=180, help="完了待機の最大分数")
     ap.add_argument(
         "--close-when-done",
         action="store_true",
         help="完了後にアプリを閉じる (--wait と併用)",
     )
-    ap.add_argument(
-        "--dry-run", action="store_true", help="開始ボタンを押さずに終了"
-    )
+    ap.add_argument("--dry-run", action="store_true", help="開始ボタンを押さずに終了")
     ap.add_argument(
         "--lock-stale-min",
         type=int,
@@ -603,6 +671,9 @@ def main() -> int:
         _run_workflow(args)
         logging.info("=== 正常終了 ===")
         return 0
+    except _WaitTimedOut as e:
+        logging.error("%s", e)
+        return 3
     except Exception:
         logging.exception("エラー発生")
         return 1
