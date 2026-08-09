@@ -2,6 +2,7 @@
 
 import { beforeEach, expect, test, vi } from "vitest";
 import type { ParseNdjsonStreamOptions, PredictResultLine } from "./ndjson-stream";
+import type { PredictionKvPublishResult } from "./prediction-kv-writer";
 import type { Env, PredictQueueMessage } from "./types";
 
 interface ClaimResult {
@@ -57,7 +58,7 @@ const {
   const warmPredictionCacheForRace = vi.fn(async (): Promise<boolean> => true);
   const warmPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
   const publishFinishPositionPredictionCache = vi.fn(
-    async (): Promise<{ busted: boolean; status: "written" }> => ({
+    async (): Promise<PredictionKvPublishResult> => ({
       busted: false,
       status: "written",
     }),
@@ -1672,6 +1673,108 @@ test("warms the viewer cache for the race after a JRA per-race rescore succeeds"
     raceBango: "11",
     runYmd: "20260619",
   });
+  consoleSpy.mockRestore();
+});
+
+test("awaits per-race KV publish before the rescore handler returns", async () => {
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let publishStarted!: () => void;
+  const publishStartedPromise = new Promise<void>((resolve) => {
+    publishStarted = resolve;
+  });
+  publishFinishPositionPredictionCacheMock.mockImplementation(async () => {
+    publishStarted();
+    await gate;
+    return { busted: true, status: "written" };
+  });
+  let handlerDone = false;
+  const running = handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "04",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260809",
+      }),
+    ]),
+    makeEnv(),
+  ).then(() => {
+    handlerDone = true;
+  });
+  await publishStartedPromise;
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(handlerDone).toBe(false);
+  release();
+  await running;
+  expect(handlerDone).toBe(true);
+  consoleSpy.mockRestore();
+});
+
+test("logs per-race KV publish status after a successful rescore", async () => {
+  const logs: string[] = [];
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  });
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: true,
+    status: "written",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "04",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260809",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(
+    logs.some(
+      (line) =>
+        line.includes("prediction kv fp publish") &&
+        line.includes("category=jra") &&
+        line.includes("runYmd=20260809") &&
+        line.includes("keibajo=04") &&
+        line.includes("race=01") &&
+        line.includes("status=written") &&
+        line.includes("busted=true"),
+    ),
+  ).toBe(true);
+  consoleSpy.mockRestore();
+});
+
+test("acks a successful rescore even when KV publish returns skipped-empty", async () => {
+  const logs: string[] = [];
+  const consoleSpy = vi.spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+    logs.push(args.map(String).join(" "));
+  });
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "skipped-empty",
+  });
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "04",
+        mode: "rescore",
+        raceBango: "01",
+        runYmd: "20260809",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(logs.some((line) => line.includes("status=skipped-empty"))).toBe(true);
   consoleSpy.mockRestore();
 });
 

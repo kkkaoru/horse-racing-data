@@ -23,6 +23,7 @@ import {
 import {
   publishFinishPositionPredictionCache,
   publishFinishPositionPredictionCacheForCategory,
+  type PredictionKvPublishResult,
 } from "./prediction-kv-writer";
 import { resolvePredictDoName } from "./predict-do-shard";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
@@ -242,7 +243,7 @@ const warmPredictionCacheForFocusedRace = (message: FocusedFullSkipDedupMessage)
   });
 };
 
-const publishPredictionKvForRace = (
+const publishPredictionKvForRace = async (
   env: Env,
   params: {
     bustCacheApi: boolean;
@@ -251,15 +252,19 @@ const publishPredictionKvForRace = (
     raceBango: string;
     runYmd: string;
   },
-): void => {
-  void publishFinishPositionPredictionCache({ env, ...params });
+): Promise<PredictionKvPublishResult> => {
+  const result = await publishFinishPositionPredictionCache({ env, ...params });
+  console.log(
+    `prediction kv fp publish category=${params.category} runYmd=${params.runYmd} keibajo=${params.keibajoCode} race=${params.raceBango} status=${result.status} busted=${result.busted}`,
+  );
+  return result;
 };
 
 const publishPredictionKvForFocusedRace = (
   env: Env,
   message: FocusedFullSkipDedupMessage,
   bustCacheApi: boolean,
-): void => {
+): Promise<PredictionKvPublishResult> =>
   publishPredictionKvForRace(env, {
     bustCacheApi,
     category: message.category,
@@ -267,7 +272,6 @@ const publishPredictionKvForFocusedRace = (
     raceBango: message.raceBango,
     runYmd: message.runYmd,
   });
-};
 
 const ackIfFocusedFullAlreadyComplete = async (
   message: Message<PredictQueueMessage>,
@@ -330,7 +334,7 @@ const ackIfFocusedFullAlreadyComplete = async (
     );
     message.ack();
     warmPredictionCacheForFocusedRace(message.body);
-    publishPredictionKvForFocusedRace(env, message.body, false);
+    await publishPredictionKvForFocusedRace(env, message.body, false);
     return true;
   } catch (err) {
     console.warn(
@@ -478,7 +482,7 @@ const handleFocusedFullStatus = async (
     message.ack();
     if (isFocusedSkipDedupMessage(message.body)) {
       warmPredictionCacheForFocusedRace(message.body);
-      publishPredictionKvForFocusedRace(env, message.body, false);
+      await publishPredictionKvForFocusedRace(env, message.body, false);
     }
     return true;
   }
@@ -509,7 +513,8 @@ const logPredictProgress = (message: PredictQueueMessage, line: PredictProgressL
 // successful ack the viewer Cache API is warmed for the same race so the
 // event-driven horse-weight trigger surfaces fresh predictions on the race
 // detail page without waiting for cache TTL. Warm is fire-and-forget: failures
-// are swallowed inside the warm helper.
+// are swallowed inside the warm helper. KV write-through is awaited so the
+// queue isolate cannot exit before pred:fp settles; publish status is logged.
 const processContainerPerRaceRescore = async (
   message: Message<PerRaceRescoreMessage>,
   env: Env,
@@ -569,7 +574,7 @@ const processContainerPerRaceRescore = async (
       raceNumber: raceBango,
       year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
     });
-    publishPredictionKvForRace(env, {
+    await publishPredictionKvForRace(env, {
       bustCacheApi: true,
       category,
       keibajoCode,
@@ -764,7 +769,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     );
     if (isFocusedSkipDedup) {
       warmPredictionCacheForFocusedRace(message.body);
-      publishPredictionKvForFocusedRace(env, message.body, false);
+      await publishPredictionKvForFocusedRace(env, message.body, false);
     }
     if (shouldWarmCategoryCache) {
       void warmPredictionCacheForCategory({
