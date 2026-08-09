@@ -20,6 +20,10 @@ import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
 } from "./prediction-cache-warm";
+import {
+  publishFinishPositionPredictionCache,
+  publishFinishPositionPredictionCacheForCategory,
+} from "./prediction-kv-writer";
 import { resolvePredictDoName } from "./predict-do-shard";
 import { resolveCardMaxRaceBangoForKochi } from "./race-coordinator";
 import type { Env, PredictQueueMessage } from "./types";
@@ -238,6 +242,33 @@ const warmPredictionCacheForFocusedRace = (message: FocusedFullSkipDedupMessage)
   });
 };
 
+const publishPredictionKvForRace = (
+  env: Env,
+  params: {
+    bustCacheApi: boolean;
+    category: PredictQueueMessage["category"];
+    keibajoCode: string;
+    raceBango: string;
+    runYmd: string;
+  },
+): void => {
+  void publishFinishPositionPredictionCache({ env, ...params });
+};
+
+const publishPredictionKvForFocusedRace = (
+  env: Env,
+  message: FocusedFullSkipDedupMessage,
+  bustCacheApi: boolean,
+): void => {
+  publishPredictionKvForRace(env, {
+    bustCacheApi,
+    category: message.category,
+    keibajoCode: message.keibajoCode,
+    raceBango: message.raceBango,
+    runYmd: message.runYmd,
+  });
+};
+
 const ackIfFocusedFullAlreadyComplete = async (
   message: Message<PredictQueueMessage>,
   env: Env,
@@ -299,6 +330,7 @@ const ackIfFocusedFullAlreadyComplete = async (
     );
     message.ack();
     warmPredictionCacheForFocusedRace(message.body);
+    publishPredictionKvForFocusedRace(env, message.body, false);
     return true;
   } catch (err) {
     console.warn(
@@ -446,6 +478,7 @@ const handleFocusedFullStatus = async (
     message.ack();
     if (isFocusedSkipDedupMessage(message.body)) {
       warmPredictionCacheForFocusedRace(message.body);
+      publishPredictionKvForFocusedRace(env, message.body, false);
     }
     return true;
   }
@@ -535,6 +568,13 @@ const processContainerPerRaceRescore = async (
       month: runYmd.slice(RUN_YMD_MONTH_START, RUN_YMD_MONTH_END),
       raceNumber: raceBango,
       year: runYmd.slice(RUN_YMD_YEAR_START, RUN_YMD_YEAR_END),
+    });
+    publishPredictionKvForRace(env, {
+      bustCacheApi: true,
+      category,
+      keibajoCode,
+      raceBango,
+      runYmd,
     });
   } catch (err) {
     console.error(
@@ -723,12 +763,19 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
     );
     if (isFocusedSkipDedup) {
       warmPredictionCacheForFocusedRace(message.body);
+      publishPredictionKvForFocusedRace(env, message.body, false);
     }
     if (shouldWarmCategoryCache) {
       void warmPredictionCacheForCategory({
         category,
         env,
         runDate: message.body.runDateIso ?? message.body.runDate,
+        runYmd,
+      });
+      void publishFinishPositionPredictionCacheForCategory({
+        bustCacheApi: mode === RESCORE_MODE,
+        category,
+        env,
         runYmd,
       });
     }

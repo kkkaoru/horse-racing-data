@@ -26,6 +26,8 @@ const {
   rescoreJraRaceMock,
   warmPredictionCacheForRaceMock,
   warmPredictionCacheForCategoryMock,
+  publishFinishPositionPredictionCacheMock,
+  publishFinishPositionPredictionCacheForCategoryMock,
   isFocusedFullPredictionCompleteMock,
 } = vi.hoisted(() => {
   const claimFocusedFullRace = vi.fn(async (): Promise<ClaimResult> => ({ proceed: true }));
@@ -54,6 +56,13 @@ const {
   );
   const warmPredictionCacheForRace = vi.fn(async (): Promise<boolean> => true);
   const warmPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
+  const publishFinishPositionPredictionCache = vi.fn(
+    async (): Promise<{ busted: boolean; status: "written" }> => ({
+      busted: false,
+      status: "written",
+    }),
+  );
+  const publishFinishPositionPredictionCacheForCategory = vi.fn(async (): Promise<number> => 0);
   const isFocusedFullPredictionComplete = vi.fn(async (): Promise<boolean> => false);
   return {
     claimFocusedFullRaceMock: claimFocusedFullRace,
@@ -63,6 +72,9 @@ const {
     isFocusedFullPredictionCompleteMock: isFocusedFullPredictionComplete,
     isOldDateRunYmdMock: isOldDateRunYmd,
     parseNdjsonStreamMock: parseNdjsonStream,
+    publishFinishPositionPredictionCacheForCategoryMock:
+      publishFinishPositionPredictionCacheForCategory,
+    publishFinishPositionPredictionCacheMock: publishFinishPositionPredictionCache,
     rescoreJraRaceMock: rescoreJraRace,
     warmPredictionCacheForCategoryMock: warmPredictionCacheForCategory,
     warmPredictionCacheForRaceMock: warmPredictionCacheForRace,
@@ -92,6 +104,12 @@ vi.mock("./scoring/rescore-consumer", () => ({
 vi.mock("./prediction-cache-warm", () => ({
   warmPredictionCacheForCategory: warmPredictionCacheForCategoryMock,
   warmPredictionCacheForRace: warmPredictionCacheForRaceMock,
+}));
+
+vi.mock("./prediction-kv-writer", () => ({
+  publishFinishPositionPredictionCache: publishFinishPositionPredictionCacheMock,
+  publishFinishPositionPredictionCacheForCategory:
+    publishFinishPositionPredictionCacheForCategoryMock,
 }));
 
 vi.mock("./focused-full-completion", () => ({
@@ -173,9 +191,16 @@ beforeEach(() => {
   rescoreJraRaceMock.mockClear();
   warmPredictionCacheForRaceMock.mockClear();
   warmPredictionCacheForCategoryMock.mockClear();
+  publishFinishPositionPredictionCacheMock.mockClear();
+  publishFinishPositionPredictionCacheForCategoryMock.mockClear();
   isFocusedFullPredictionCompleteMock.mockClear();
   warmPredictionCacheForRaceMock.mockResolvedValue(true);
   warmPredictionCacheForCategoryMock.mockResolvedValue(0);
+  publishFinishPositionPredictionCacheMock.mockResolvedValue({
+    busted: false,
+    status: "written",
+  });
+  publishFinishPositionPredictionCacheForCategoryMock.mockResolvedValue(0);
   isFocusedFullPredictionCompleteMock.mockResolvedValue(false);
   rescoreJraRaceMock.mockResolvedValue({
     etop2Fired: false,
@@ -343,6 +368,14 @@ test("acks focused full skipDedup messages without container when Neon already h
     month: "07",
     raceNumber: "12",
     year: "2026",
+  });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: false,
+    category: "nar",
+    env: expect.anything(),
+    keibajoCode: "50",
+    raceBango: "12",
+    runYmd: "20260701",
   });
 });
 
@@ -1192,6 +1225,14 @@ test("warms only the race cache for focused per-race skipDedup full messages", a
     raceNumber: "01",
     year: "2026",
   });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: false,
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260628",
+  });
 });
 
 test("warms the category cache for category-level skipDedup full messages", async () => {
@@ -1210,6 +1251,13 @@ test("warms the category cache for category-level skipDedup full messages", asyn
   expect(ackMock).toHaveBeenCalledTimes(1);
   expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "jra", runDate: "2026-06-28", runYmd: "20260628" }),
+  );
+  expect(publishFinishPositionPredictionCacheForCategoryMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      bustCacheApi: false,
+      category: "jra",
+      runYmd: "20260628",
+    }),
   );
 });
 
@@ -1477,6 +1525,14 @@ test("acks focused skipDedup full messages when result status is already-complet
     raceNumber: "01",
     year: "2026",
   });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: false,
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260628",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1511,6 +1567,14 @@ test("falls through focused skipDedup full messages with result status success t
     month: "06",
     raceNumber: "01",
     year: "2026",
+  });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: false,
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "02",
+    raceBango: "01",
+    runYmd: "20260628",
   });
 });
 
@@ -1600,6 +1664,14 @@ test("warms the viewer cache for the race after a JRA per-race rescore succeeds"
     raceNumber: "11",
     year: "2026",
   });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: true,
+    category: "jra",
+    env: expect.anything(),
+    keibajoCode: "05",
+    raceBango: "11",
+    runYmd: "20260619",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1619,6 +1691,7 @@ test("does not warm the race cache when a JRA container per-race rescore fetch t
     makeEnv(),
   );
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
 
@@ -1637,6 +1710,13 @@ test("warms the viewer cache for the category after a skipDedup rescore succeeds
   );
   expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
     expect.objectContaining({ category: "nar", runDate: "2026-06-19", runYmd: "20260619" }),
+  );
+  expect(publishFinishPositionPredictionCacheForCategoryMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      bustCacheApi: true,
+      category: "nar",
+      runYmd: "20260619",
+    }),
   );
 });
 
@@ -1686,6 +1766,14 @@ test("warms the viewer cache for the race after a NAR container per-race rescore
     raceNumber: "01",
     year: "2026",
   });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: true,
+    category: "nar",
+    env: expect.anything(),
+    keibajoCode: "44",
+    raceBango: "01",
+    runYmd: "20260629",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1711,6 +1799,14 @@ test("warms the viewer cache for the race after a Ban-ei container per-race resc
     raceNumber: "07",
     year: "2026",
   });
+  expect(publishFinishPositionPredictionCacheMock).toHaveBeenCalledWith({
+    bustCacheApi: true,
+    category: "ban-ei",
+    env: expect.anything(),
+    keibajoCode: "83",
+    raceBango: "07",
+    runYmd: "20260629",
+  });
   consoleSpy.mockRestore();
 });
 
@@ -1731,6 +1827,7 @@ test("does not warm the race cache when a container per-race rescore fetch throw
     makeEnv(),
   );
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
 
@@ -1751,6 +1848,7 @@ test("does not warm the race cache when a container per-race rescore response bo
     makeEnv(),
   );
   expect(warmPredictionCacheForRaceMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
   errorSpy.mockRestore();
 });
 
