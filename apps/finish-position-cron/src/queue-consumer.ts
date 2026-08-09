@@ -663,7 +663,8 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
   const startedAt = Date.now();
   const isFocusedSkipDedup = isFocusedSkipDedupMessage(message.body);
   const shouldCompleteCategoryRun = !isFocusedSkipDedup;
-  const shouldWarmCategoryCache = skipDedup === true && shouldCompleteCategoryRun;
+  const shouldWarmCategoryCache =
+    skipDedup === true && shouldCompleteCategoryRun && mode !== RESCORE_MODE;
   if (await ackIfFocusedFullAlreadyComplete(message, env)) return;
   if (
     isFocusedSkipDedupMessage(message.body) &&
@@ -773,7 +774,7 @@ const processMessage = async (message: Message<PredictQueueMessage>, env: Env): 
         runYmd,
       });
       void publishFinishPositionPredictionCacheForCategory({
-        bustCacheApi: mode === RESCORE_MODE,
+        bustCacheApi: false,
         category,
         env,
         runYmd,

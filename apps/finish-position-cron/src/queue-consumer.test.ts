@@ -1695,7 +1695,7 @@ test("does not warm the race cache when a JRA container per-race rescore fetch t
   errorSpy.mockRestore();
 });
 
-test("warms the viewer cache for the category after a skipDedup rescore succeeds", async () => {
+test("does not warm the category cache after a skipDedup rescore succeeds", async () => {
   await handleQueue(
     makeBatch([
       makeMessage({
@@ -1708,16 +1708,10 @@ test("warms the viewer cache for the category after a skipDedup rescore succeeds
     ]),
     makeEnv(),
   );
-  expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
-    expect.objectContaining({ category: "nar", runDate: "2026-06-19", runYmd: "20260619" }),
-  );
-  expect(publishFinishPositionPredictionCacheForCategoryMock).toHaveBeenCalledWith(
-    expect.objectContaining({
-      bustCacheApi: true,
-      category: "nar",
-      runYmd: "20260619",
-    }),
-  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
 });
 
 test("does not warm the category cache for a non-skipDedup container run", async () => {
