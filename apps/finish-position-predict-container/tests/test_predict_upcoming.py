@@ -50,6 +50,7 @@ from predict_lib.serve import (
     PredictCategoryFn,
     PredictParams,
     R2Config,
+    activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_race_key,
     iter_predict_chunks,
     parse_predict_params,
@@ -2218,9 +2219,7 @@ def test_load_stage1_model_returns_none_on_leak_column(
     )
 
     with patch("predict_upcoming._load_booster_by_arch", return_value=_ScoreByUmaban([0.1])):
-        loaded = _load_stage1_model(
-            tmp_path, "jra", replace(_STAGE1_TEST_CONFIG, feature_count=1)
-        )
+        loaded = _load_stage1_model(tmp_path, "jra", replace(_STAGE1_TEST_CONFIG, feature_count=1))
 
     assert loaded is None
     assert "load failed" in capsys.readouterr().err
@@ -2835,6 +2834,95 @@ def test_full_predict_fn_target_race_none_without_scope() -> None:
     assert written == 0
 
 
+def test_predict_category_filters_to_target_race_before_score_and_flush(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scoped predict_category must score/UPSERT only the named race."""
+    captured: dict[str, object] = {}
+
+    def fake_build(
+        category: Category,
+        window: predict_upcoming.PredictWindow,
+        target_race: str | None = None,
+        r2_config: object = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        return {
+            "jra:2026:0712:05:11": [{"umaban": 1}],
+            "jra:2026:0712:05:12": [{"umaban": 2}],
+        }
+
+    def fake_score_and_flush(
+        database_url: str,
+        category: Category,
+        models_dir: Path,
+        races: Mapping[str, Sequence[Mapping[str, object]]],
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        captured["races"] = dict(races)
+        return len(races)
+
+    monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
+    monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", fake_score_and_flush)
+
+    written = predict_upcoming.predict_category(
+        _DB_URL,
+        "jra",
+        Path("/models"),
+        predict_upcoming.PredictWindow(target_date="20260712", days_ahead=0, database_url=_DB_URL),
+        target_race="05:11",
+    )
+
+    assert written == 1
+    scored = captured["races"]
+    assert isinstance(scored, dict)
+    assert list(scored.keys()) == ["jra:2026:0712:05:11"]
+
+
+def test_predict_category_without_target_race_keeps_all_races(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build(
+        category: Category,
+        window: predict_upcoming.PredictWindow,
+        target_race: str | None = None,
+        r2_config: object = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        return {
+            "jra:2026:0712:05:11": [{"umaban": 1}],
+            "jra:2026:0712:05:12": [{"umaban": 2}],
+        }
+
+    def fake_score_and_flush(
+        database_url: str,
+        category: Category,
+        models_dir: Path,
+        races: Mapping[str, Sequence[Mapping[str, object]]],
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        captured["races"] = dict(races)
+        return len(races)
+
+    monkeypatch.setattr(predict_upcoming, "_build_feature_rows", fake_build)
+    monkeypatch.setattr(predict_upcoming, "_score_and_flush_races", fake_score_and_flush)
+
+    written = predict_upcoming.predict_category(
+        _DB_URL,
+        "jra",
+        Path("/models"),
+        predict_upcoming.PredictWindow(target_date="20260712", days_ahead=0, database_url=_DB_URL),
+    )
+
+    assert written == 2
+    scored = captured["races"]
+    assert isinstance(scored, dict)
+    assert sorted(scored.keys()) == [
+        "jra:2026:0712:05:11",
+        "jra:2026:0712:05:12",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _make_predict_fn's focused-full cache populate closure (explicit-args,
 # NOT the _last_run-based path -- see FocusedFullCachePopulateFn's docstring
@@ -2884,12 +2972,16 @@ def test_populate_focused_full_cache_stores_payload_for_this_race(
 
     payload = store.pop(build_focused_full_race_key(params))
     assert payload is not None
-    assert payload.parquet_base64 == base64.b64encode(b"not-real-parquet-bytes").decode("ascii")
-    assert payload.parquet_key == "feat-cache/catalog-v1/jra/20260712/features.parquet"
-    # The dummy bytes are not real parquet, so the DuckDB race_id split fails
-    # and gracefully yields None -- a missing per-race cache must never fail
-    # the (already-successful) whole-day payload above.
-    assert payload.per_race_parquets is None
+    # Focused-full must not overwrite the whole-day feat-cache key with a
+    # single-race parquet. Seed the per-race object so scoped rescore can hit it.
+    assert payload.parquet_base64 is None
+    assert payload.parquet_key is None
+    assert payload.per_race_parquets == [
+        {
+            "parquetBase64": base64.b64encode(b"not-real-parquet-bytes").decode("ascii"),
+            "parquetKey": "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet",
+        }
+    ]
 
 
 def test_populate_focused_full_cache_stores_nothing_when_no_parquet_exists(
@@ -2942,8 +3034,18 @@ def test_populate_focused_full_cache_two_races_do_not_cross_contaminate(
     nar_payload = store.pop(build_focused_full_race_key(nar_params))
     assert jra_payload is not None
     assert nar_payload is not None
-    assert jra_payload.parquet_base64 == base64.b64encode(b"jra-bytes").decode("ascii")
-    assert nar_payload.parquet_base64 == base64.b64encode(b"nar-bytes").decode("ascii")
+    assert jra_payload.per_race_parquets == [
+        {
+            "parquetBase64": base64.b64encode(b"jra-bytes").decode("ascii"),
+            "parquetKey": "feat-cache/catalog-v1/jra/20260712/05/09/features.parquet",
+        }
+    ]
+    assert nar_payload.per_race_parquets == [
+        {
+            "parquetBase64": base64.b64encode(b"nar-bytes").decode("ascii"),
+            "parquetKey": "feat-cache/catalog-v1/nar/20260712/44/02/features.parquet",
+        }
+    ]
 
 
 def test_parse_predict_params_full_mode_keeps_race_scope() -> None:
@@ -3116,3 +3218,39 @@ def test_build_feature_rows_skips_split_when_target_race_none(
     result = _build_feature_rows("jra", window)
 
     assert result == {"race-4": []}
+
+
+def test_build_feature_rows_skips_split_during_scoped_rescore_cache_miss_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scoped CacheMiss recovery must not inline-build a whole-day day-base."""
+    import pipeline_runner
+
+    monkeypatch.setenv("DAY_BASE_SPLIT_ENABLED", "jra")
+
+    def fake_split(*args: object, **kwargs: object) -> Mapping[str, list[Mapping[str, object]]]:
+        raise AssertionError("split path must not run during scoped CacheMiss fallback")
+
+    full_called: list[str | None] = []
+
+    def fake_full(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        target_race: str | None = None,
+    ) -> Mapping[str, list[Mapping[str, object]]]:
+        full_called.append(target_race)
+        return {"jra:2026:0712:05:11": [{"umaban": 1}]}
+
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows_split", fake_split)
+    monkeypatch.setattr(pipeline_runner, "build_upcoming_feature_rows", fake_full)
+
+    window = predict_upcoming.PredictWindow(
+        target_date="20260712", days_ahead=0, database_url="postgresql://u:p@h/db"
+    )
+    with activate_scoped_rescore_cache_miss_fallback():
+        result = _build_feature_rows("jra", window, target_race="05:11")
+
+    assert result == {"jra:2026:0712:05:11": [{"umaban": 1}]}
+    assert full_called == ["05:11"]

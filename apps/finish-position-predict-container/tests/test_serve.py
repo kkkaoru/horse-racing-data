@@ -46,6 +46,7 @@ from predict_lib.serve import (
     R2Config,
     SleepFn,
     TimeFn,
+    activate_scoped_rescore_cache_miss_fallback,
     build_focused_full_cache_response_body,
     build_focused_full_race_key,
     build_prewarm_result_line,
@@ -54,7 +55,9 @@ from predict_lib.serve import (
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
     build_result_line,
+    has_single_race_scope,
     is_focused_full_request,
+    is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
     mask_error_message,
@@ -766,6 +769,13 @@ def test_build_r2_per_race_feat_cache_key_deterministic() -> None:
     assert key1 == key2
 
 
+def test_build_r2_per_race_feat_cache_key_zero_pads_unpadded_codes() -> None:
+    """Unpadded Worker codes must land on the same key as zero-padded race_id parts."""
+    assert build_r2_per_race_feat_cache_key("jra", "20260619", "5", "9") == (
+        "feat-cache/catalog-v1/jra/20260619/05/09/features.parquet"
+    )
+
+
 # ---------------------------------------------------------------------------
 # build_r2_day_base_key
 # ---------------------------------------------------------------------------
@@ -1024,6 +1034,72 @@ def test_iter_predict_chunks_rescore_non_cache_miss_propagates_as_error() -> Non
     last = json.loads(chunks[-1].decode())
     assert last["status"] == "error"
     assert "RuntimeError" in last["error"]
+
+
+def test_iter_predict_chunks_scoped_rescore_cache_miss_sets_fallback_flag() -> None:
+    """Scoped CacheMiss fallback must mark the predict_fn call as scoped recovery."""
+    seen: list[bool] = []
+
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        seen.append(is_scoped_rescore_cache_miss_fallback())
+        return 1
+
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="09",
+    )
+    chunks = list(
+        iter_predict_chunks(
+            params, _full_fn, rescore_fn=_mock_rescore_cache_miss, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["status"] == "success"
+    assert seen == [True]
+    assert is_scoped_rescore_cache_miss_fallback() is False
+
+
+def test_iter_predict_chunks_unscoped_rescore_cache_miss_does_not_set_fallback_flag() -> None:
+    """Whole-day CacheMiss fallback must keep day-base split available."""
+    seen: list[bool] = []
+
+    def _full_fn(
+        category: str,
+        run_date: str,
+        days_ahead: int,
+        keibajo_code: str | None = None,
+        race_bango: str | None = None,
+        card_max_race_bango: int | None = None,
+    ) -> int:
+        seen.append(is_scoped_rescore_cache_miss_fallback())
+        return 1
+
+    params = PredictParams(category="jra", run_date="20260619", days_ahead=0, mode="rescore")
+    list(
+        iter_predict_chunks(
+            params, _full_fn, rescore_fn=_mock_rescore_cache_miss, sleep_fn=_noop_sleep
+        )
+    )
+    assert seen == [False]
+    assert is_scoped_rescore_cache_miss_fallback() is False
+
+
+def test_activate_scoped_rescore_cache_miss_fallback_resets_after_block() -> None:
+    assert is_scoped_rescore_cache_miss_fallback() is False
+    with activate_scoped_rescore_cache_miss_fallback():
+        assert is_scoped_rescore_cache_miss_fallback() is True
+    assert is_scoped_rescore_cache_miss_fallback() is False
 
 
 def test_iter_predict_chunks_rescore_non_cache_miss_does_not_call_full_fn() -> None:
@@ -1759,8 +1835,31 @@ def test_iter_predict_chunks_keepalive_fallback_exception_yields_error() -> None
 
 
 # ---------------------------------------------------------------------------
-# is_focused_full_request
+# has_single_race_scope / is_focused_full_request
 # ---------------------------------------------------------------------------
+
+
+def test_has_single_race_scope_true_when_both_fields_set() -> None:
+    params = PredictParams(
+        category="jra",
+        run_date="20260619",
+        days_ahead=0,
+        mode="rescore",
+        keibajo_code="05",
+        race_bango="09",
+    )
+    assert has_single_race_scope(params) is True
+
+
+def test_has_single_race_scope_false_when_either_field_missing() -> None:
+    only_keibajo = PredictParams(
+        category="jra", run_date="20260619", days_ahead=0, keibajo_code="05"
+    )
+    only_bango = PredictParams(category="jra", run_date="20260619", days_ahead=0, race_bango="09")
+    neither = PredictParams(category="jra", run_date="20260619", days_ahead=0)
+    assert has_single_race_scope(only_keibajo) is False
+    assert has_single_race_scope(only_bango) is False
+    assert has_single_race_scope(neither) is False
 
 
 def test_is_focused_full_request_true_for_full_with_both_scope_fields() -> None:

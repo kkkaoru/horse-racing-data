@@ -73,6 +73,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Generator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, final
@@ -223,6 +224,11 @@ class PredictParams:
         self.force: bool = force
 
 
+def has_single_race_scope(params: PredictParams) -> bool:
+    """Return True when *params* names exactly one race (keibajo + bango)."""
+    return params.keibajo_code is not None and params.race_bango is not None
+
+
 def is_focused_full_request(params: PredictParams) -> bool:
     """Return True when *params* targets exactly one race with ``mode=full``.
 
@@ -234,9 +240,7 @@ def is_focused_full_request(params: PredictParams) -> bool:
     (no race scope) and ``mode="rescore"`` requests (even with race scope)
     both return False and keep the original blocking behaviour.
     """
-    return (
-        params.mode == "full" and params.keibajo_code is not None and params.race_bango is not None
-    )
+    return params.mode == "full" and has_single_race_scope(params)
 
 
 def parse_predict_params(query_string: str) -> PredictParams | str:
@@ -652,6 +656,14 @@ def build_r2_feat_cache_key(category: str, run_date: str) -> str:
     )
 
 
+R2_PER_RACE_KEY_PAD_WIDTH: Final[int] = 2
+"""Zero-pad width for keibajo_code / race_bango segments of a per-race R2 key.
+
+Matches ``predict_lib.rescore.RACE_KEY_PAD_WIDTH`` so a focused-full seed and a
+later scoped rescore lookup agree even when the Worker sent unpadded codes.
+"""
+
+
 def build_r2_per_race_feat_cache_key(
     category: str, run_date: str, keibajo_code: str, race_bango: str
 ) -> str:
@@ -659,10 +671,16 @@ def build_r2_per_race_feat_cache_key(
 
     Key format: ``feat-cache/catalog-v1/{category}/{runDate}/``
     ``{keibajoCode}/{raceBango}/features.parquet``
+
+    ``keibajo_code`` / ``race_bango`` are zero-padded to
+    :data:`R2_PER_RACE_KEY_PAD_WIDTH` so write (focused-full seed) and read
+    (scoped rescore) share one key even when the request used unpadded codes.
     """
+    padded_keibajo = keibajo_code.strip().zfill(R2_PER_RACE_KEY_PAD_WIDTH)
+    padded_bango = race_bango.strip().zfill(R2_PER_RACE_KEY_PAD_WIDTH)
     return (
         f"{R2_FEAT_CACHE_PREFIX}/{R2_RAW_CATALOG_GENERATION}/{category}/{run_date}/"
-        f"{keibajo_code}/{race_bango}/features.parquet"
+        f"{padded_keibajo}/{padded_bango}/features.parquet"
     )
 
 
@@ -720,6 +738,42 @@ class CacheMissError(Exception):
         if not cached_parquet_exists(category, run_date):
             raise CacheMissError(f"no cache for {category}/{run_date}")
     """
+
+
+_SCOPED_RESCORE_CACHE_MISS_FALLBACK_LOCK: Final[threading.Lock] = threading.Lock()
+_scoped_rescore_cache_miss_fallback_depth: int = 0
+"""Process-wide depth while a scoped ``mode=rescore`` CacheMiss falls back to full.
+
+``threading.Thread`` does not copy ContextVars, and ``predict_fn`` runs in the
+keepalive worker thread, so this flag is a lock-guarded integer instead. The
+fallback ``with`` stays open until ``_iter_keepalive`` joins that thread;
+``_PIPELINE_EXEC_LOCK`` already serializes predict_fn bodies, so a focused-full
+build cannot observe this flag mid-run.
+"""
+
+
+def is_scoped_rescore_cache_miss_fallback() -> bool:
+    """True while a scoped ``mode=rescore`` CacheMiss is falling back to full."""
+    with _SCOPED_RESCORE_CACHE_MISS_FALLBACK_LOCK:
+        return _scoped_rescore_cache_miss_fallback_depth > 0
+
+
+@contextmanager
+def activate_scoped_rescore_cache_miss_fallback() -> Generator[None]:
+    """Mark the process as a scoped rescore CacheMiss -> full fallback.
+
+    :func:`iter_predict_chunks` wraps the fallback keepalive in this manager so
+    the worker thread sees the flag. Focused-full ``mode=full`` never enters it,
+    so it can still use a prewarmed day-base.
+    """
+    global _scoped_rescore_cache_miss_fallback_depth
+    with _SCOPED_RESCORE_CACHE_MISS_FALLBACK_LOCK:
+        _scoped_rescore_cache_miss_fallback_depth += 1
+    try:
+        yield
+    finally:
+        with _SCOPED_RESCORE_CACHE_MISS_FALLBACK_LOCK:
+            _scoped_rescore_cache_miss_fallback_depth -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -1233,7 +1287,11 @@ def iter_predict_chunks(
     - ``mode=full`` (default) -- always calls *predict_fn*.
     - ``mode=rescore`` with *rescore_fn* provided -- calls *rescore_fn* first;
       on ``CacheMissError`` falls back to *predict_fn* after emitting a
-      ``rescore-fallback-to-full`` progress line.
+      ``rescore-fallback-to-full`` progress line. When the rescore request
+      already carried a single-race scope, the fallback runs under
+      :func:`activate_scoped_rescore_cache_miss_fallback` so the full path
+      rebuilds only that race (target-race ``LAYER_CHAIN``) instead of
+      inline-building a whole-day day-base.
     - ``mode=rescore`` without *rescore_fn* -- falls back to *predict_fn*
       immediately (same as ``mode=full``; emits fallback progress line).
 
@@ -1449,15 +1507,25 @@ def iter_predict_chunks(
             def _fallback_call() -> int:
                 return _run_predict_fn(predict_fn, params)
 
-            fb_result, fb_error, last_progress = yield from _iter_keepalive(
-                _fallback_call,
-                "predict",
-                time_fn=time_fn,
-                sleep_fn=sleep_fn,
-                progress_interval_s=progress_interval_s,
-                elapsed_fn=_elapsed,
-                last_progress=last_progress,
+            # Scoped rescore miss: rebuild only the named race. Do not let
+            # `_build_feature_rows` inline-build a whole-day day-base (the
+            # split path's ensure_day_base miss -> build_day_base). Whole-day
+            # rescore miss keeps the existing day-base-capable full fallback.
+            fallback_cm = (
+                activate_scoped_rescore_cache_miss_fallback()
+                if has_single_race_scope(params)
+                else nullcontext()
             )
+            with fallback_cm:
+                fb_result, fb_error, last_progress = yield from _iter_keepalive(
+                    _fallback_call,
+                    "predict",
+                    time_fn=time_fn,
+                    sleep_fn=sleep_fn,
+                    progress_interval_s=progress_interval_s,
+                    elapsed_fn=_elapsed,
+                    last_progress=last_progress,
+                )
 
             if fb_error is not None:
                 fallback_exc = fb_error

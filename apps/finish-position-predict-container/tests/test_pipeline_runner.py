@@ -1140,9 +1140,7 @@ def test_compute_source_watermark_returns_none_on_query_exception(
 
 
 def test_compute_source_watermark_returns_none_when_zero_rows(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        pipeline_runner, "_query_source_rows", lambda *_a, **_k: [(None, 0)]
-    )
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", lambda *_a, **_k: [(None, 0)])
 
     result = _compute_source_watermark("jra", "20260712", "r2-catalog://pc-keiba")
 
@@ -1678,7 +1676,14 @@ def test_build_upcoming_feature_rows_split_success_reads_grouped_rows(
     ) -> bool:
         final_dir.mkdir(parents=True, exist_ok=True)
         frame = pd.DataFrame(
-            {"race_id": ["jra:2026:0712:05:11", "jra:2026:0712:05:11"], "umaban": [1, 2]}
+            {
+                "race_id": [
+                    "jra:2026:0712:05:11",
+                    "jra:2026:0712:05:11",
+                    "jra:2026:0712:05:12",
+                ],
+                "umaban": [1, 2, 3],
+            }
         )
         frame.to_parquet(final_dir / "data.parquet")
         return True
@@ -1692,7 +1697,7 @@ def test_build_upcoming_feature_rows_split_success_reads_grouped_rows(
     )
 
     assert result is not None
-    assert "jra:2026:0712:05:11" in result
+    assert list(result.keys()) == ["jra:2026:0712:05:11"]
     assert len(result["jra:2026:0712:05:11"]) == 2
 
 
@@ -1767,3 +1772,48 @@ def test_build_upcoming_feature_rows_split_returns_none_on_exception(
     )
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _group_parquet_rows
+# ---------------------------------------------------------------------------
+
+_GROUP_PARQUET_ROWS_ATTR = "_group_parquet_rows"
+_group_parquet_rows = cast(
+    Callable[..., dict[str, list[dict[str, object]]]],
+    getattr(pipeline_runner, _GROUP_PARQUET_ROWS_ATTR),
+)
+
+
+def test_group_parquet_rows_without_target_race_keeps_all() -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "race_id": ["jra:2026:0712:05:11", "jra:2026:0712:05:12"],
+            "umaban": [1, 2],
+        }
+    )
+    grouped = _group_parquet_rows(frame)
+    assert sorted(grouped.keys()) == ["jra:2026:0712:05:11", "jra:2026:0712:05:12"]
+
+
+def test_group_parquet_rows_with_target_race_keeps_only_that_race() -> None:
+    import pandas as pd
+
+    frame = pd.DataFrame(
+        {
+            "race_id": ["jra:2026:0712:05:11", "jra:2026:0712:05:12", "jra:2026:0712:06:01"],
+            "umaban": [1, 2, 3],
+        }
+    )
+    grouped = _group_parquet_rows(frame, target_race="05:11")
+    assert list(grouped.keys()) == ["jra:2026:0712:05:11"]
+    assert grouped["jra:2026:0712:05:11"] == [
+        {"race_id": "jra:2026:0712:05:11", "umaban": 1},
+    ]
+
+
+def test_group_parquet_rows_rejects_non_dataframe() -> None:
+    with pytest.raises(TypeError, match=r"pandas\.DataFrame"):
+        _group_parquet_rows([{"race_id": "jra:2026:0712:05:11"}])

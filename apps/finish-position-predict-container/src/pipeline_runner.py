@@ -58,6 +58,7 @@ from predict_lib.pipeline_args import (
     race_chain_for,
 )
 from predict_lib.r2_client import r2_get_parquet
+from predict_lib.rescore import RaceScope, race_matches_scope
 from predict_lib.serve import R2Config, build_r2_day_base_key
 
 PIPELINE_DIR: Final[Path] = Path("/app/pipeline")
@@ -65,6 +66,34 @@ DUCKDB_BUILDER: Final[Path] = PIPELINE_DIR / "finish_position_features_duckdb.py
 LAYER_DIR: Final[Path] = PIPELINE_DIR / "finish-position-features"
 WORK_DIR: Final[Path] = Path("/tmp/predict-upcoming")
 RACE_ID_FIELD: Final[str] = "race_id"
+
+
+def _group_parquet_rows(
+    frame: object, target_race: str | None = None
+) -> dict[str, list[Mapping[str, object]]]:
+    """Group a feature parquet frame by ``race_id``, optionally to one race.
+
+    When ``target_race`` (``keibajo:bango``) is set, extra races that leaked
+    into the category work dir / day-base output are dropped before scoring.
+    """
+    import pandas as pd
+
+    if not isinstance(frame, pd.DataFrame):
+        raise TypeError(f"expected pandas.DataFrame, got {type(frame)!r}")
+    grouped: dict[str, list[Mapping[str, object]]] = {}
+    for race_id, race_frame in frame.groupby(RACE_ID_FIELD):
+        grouped[str(race_id)] = list(race_frame.to_dict(orient="records"))
+    if target_race is None:
+        return grouped
+    keibajo_code, race_bango = target_race.split(":", 1)
+    scope = RaceScope(keibajo_code=keibajo_code, race_bango=race_bango)
+    return {
+        race_id: entries
+        for race_id, entries in grouped.items()
+        if race_matches_scope(race_id, scope)
+    }
+
+
 STDERR_TAIL_BYTES: Final[int] = 4000
 PG_URL_USERINFO_RE: Final[re.Pattern[str]] = re.compile(r"(postgresql://)[^@]+@")
 PG_URL_REDACTED: Final[str] = r"\1<redacted>@"
@@ -422,7 +451,9 @@ def _se_table_and_filter(category: Category) -> tuple[str, str]:
 
 
 def _compute_source_watermark(
-    category: Category, target_date: str, database_url: str,
+    category: Category,
+    target_date: str,
+    database_url: str,
 ) -> tuple[str, int] | None:
     """Return ``(max_data_sakusei_nengappi, row_count)`` for category+day's raw
     entrant/result source (``jvd_se`` / ``nvd_se``), or ``None`` on any failure.
@@ -637,10 +668,7 @@ def build_upcoming_feature_rows(
     if not built:
         return {}
     frame = pd.read_parquet(final_dir)
-    grouped: dict[str, list[Mapping[str, object]]] = {}
-    for race_id, race_frame in frame.groupby(RACE_ID_FIELD):
-        grouped[str(race_id)] = list(race_frame.to_dict(orient="records"))
-    return grouped
+    return _group_parquet_rows(frame, target_race=target_race)
 
 
 def has_parquet_output(directory: Path) -> bool:
@@ -1430,10 +1458,7 @@ def build_upcoming_feature_rows_split(
         import pandas as pd
 
         frame = pd.read_parquet(final_dir)
-        grouped: dict[str, list[Mapping[str, object]]] = {}
-        for race_id, race_frame in frame.groupby(RACE_ID_FIELD):
-            grouped[str(race_id)] = list(race_frame.to_dict(orient="records"))
-        return grouped
+        return _group_parquet_rows(frame, target_race=target_race)
     except Exception as exc:
         _log_pipeline_progress(
             f"build_upcoming_feature_rows_split failed category={category} "

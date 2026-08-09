@@ -120,6 +120,17 @@ def filter_races_by_scope(races: Races, scope: RaceScope) -> dict[str, list[Entr
     }
 
 
+def race_scope_from_target_race(target_race: str) -> RaceScope:
+    """Parse a ``keibajo:bango`` target-race string into a single-race scope.
+
+    This is the container's focused-scope shape (DuckDB ``--target-race``,
+    ``predict_category(target_race=...)``). Padding is applied later by
+    :func:`filter_races_by_scope`, so unpadded worker input still matches.
+    """
+    keibajo_code, race_bango = target_race.split(":", 1)
+    return RaceScope(keibajo_code=keibajo_code, race_bango=race_bango)
+
+
 def _snapshot_for_entry(
     entry: Entry,
     snapshot: RaceFreshSnapshot | None,

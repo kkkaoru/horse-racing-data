@@ -18,6 +18,7 @@ from predict_lib.rescore import (
     apply_fresh_snapshots,
     filter_races_by_scope,
     race_matches_scope,
+    race_scope_from_target_race,
 )
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,27 @@ def test_filter_races_by_scope_wildcard_keeps_all() -> None:
     }
     result = filter_races_by_scope(races, RaceScope())
     assert sorted(result.keys()) == [_RACE_ID_NAR_30_01, _RACE_ID_NAR_44_01]
+
+
+# ---------------------------------------------------------------------------
+# race_scope_from_target_race
+# ---------------------------------------------------------------------------
+
+
+def test_race_scope_from_target_race_splits_keibajo_and_bango() -> None:
+    scope = race_scope_from_target_race("05:11")
+    assert scope == RaceScope(keibajo_code="05", race_bango="11")
+
+
+def test_race_scope_from_target_race_keeps_unpadded_parts() -> None:
+    scope = race_scope_from_target_race("5:1")
+    assert scope == RaceScope(keibajo_code="5", race_bango="1")
+    races: dict[str, list[dict[str, object]]] = {
+        _RACE_ID_NAR_44_01: [{"umaban": 1}],
+        _RACE_ID_NAR_44_02: [{"umaban": 2}],
+    }
+    filtered = filter_races_by_scope(races, race_scope_from_target_race("44:1"))
+    assert list(filtered.keys()) == [_RACE_ID_NAR_44_01]
 
 
 # ---------------------------------------------------------------------------

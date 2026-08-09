@@ -110,6 +110,7 @@ from predict_lib.rescore import (
     RaceScope,
     apply_fresh_snapshots,
     filter_races_by_scope,
+    race_scope_from_target_race,
 )
 from predict_lib.scorer import BoosterLike, assert_feature_count, build_feature_matrix, score_matrix
 from predict_lib.serve import (
@@ -128,6 +129,7 @@ from predict_lib.serve import (
     build_r2_day_base_key,
     build_r2_feat_cache_key,
     build_r2_per_race_feat_cache_key,
+    is_scoped_rescore_cache_miss_fallback,
     iter_predict_chunks,
     iter_prewarm_chunks,
     parse_focused_full_cache_query,
@@ -1017,7 +1019,14 @@ def predict_category(
     # enabled for this category) can fetch a prewarmed day-base from R2 --
     # unused by the unmodified full-pipeline fallback. ``card_max_race_bango``
     # is forwarded to :func:`_score_and_flush_races` untouched.
+    # Even when the builder is asked for one race, the on-disk parquet / groupby
+    # can still contain extra races (day-base leftover, RACE_CHAIN passthrough).
+    # Filter before score + UPSERT so a scoped run never writes other races.
     races = _build_feature_rows(category, window, target_race=target_race, r2_config=r2_config)
+    if target_race is not None:
+        races = filter_races_by_scope(
+            _as_entry_map(races), race_scope_from_target_race(target_race)
+        )
     return _score_and_flush_races(
         database_url, category, models_dir, races, card_max_race_bango=card_max_race_bango
     )
@@ -1139,6 +1148,12 @@ def _build_feature_rows(
     through unchanged to the existing full ``build_upcoming_feature_rows``
     call below -- the split path is purely an opt-in fast path, never a
     behavioural change to the fallback.
+
+    A scoped ``mode=rescore`` CacheMiss fallback
+    (:func:`predict_lib.serve.is_scoped_rescore_cache_miss_fallback`) skips the
+    split entirely: ``build_upcoming_feature_rows_split`` would otherwise
+    inline-``build_day_base`` for the whole card. The fallback must rebuild
+    only the named race via ``LAYER_CHAIN`` + ``--target-race``.
     """
     from pipeline_runner import (  # bundled in image
         build_upcoming_feature_rows,
@@ -1146,7 +1161,11 @@ def _build_feature_rows(
     )
     from predict_lib.pipeline_args import is_day_base_split_enabled
 
-    if target_race is not None and is_day_base_split_enabled(category):
+    if (
+        target_race is not None
+        and is_day_base_split_enabled(category)
+        and not is_scoped_rescore_cache_miss_fallback()
+    ):
         split_rows = build_upcoming_feature_rows_split(
             category,
             window.target_date,
@@ -1317,6 +1336,54 @@ def _split_parquet_by_race(
     return payloads
 
 
+def _seed_focused_full_per_race_payloads(
+    category_str: str,
+    run_date: str,
+    keibajo_code: str,
+    race_bango: str,
+) -> list[dict[str, str]] | None:
+    """Build the per-race R2 payload for one focused-full race.
+
+    A focused-full run must seed
+    ``feat-cache/catalog-v1/{category}/{runDate}/{keibajo}/{race}/features.parquet``
+    so the next scoped ``mode=rescore`` can watermark-read it instead of
+    CacheMissing into a full rebuild. Prefer a DuckDB ``race_id`` split when
+    the local parquet is readable (drops any extra races that leaked into the
+    category work dir); fall back to the whole local file as this race's
+    object when the split fails (dummy / unreadable bytes must still seed).
+    Never writes the day-level ``feat-cache/.../{runDate}/features.parquet``
+    key -- a single-race parquet must not overwrite the whole-day cache.
+    """
+    from pipeline_runner import WORK_DIR  # bundled in image
+
+    final_dir = WORK_DIR / f"feat-{category_str}-v7-final"
+    parquet_files = list(final_dir.rglob("*.parquet"))
+    if not parquet_files:
+        return None
+    expected_key = build_r2_per_race_feat_cache_key(
+        category_str, run_date, keibajo_code, race_bango
+    )
+    try:
+        split = _split_parquet_by_race(final_dir, category_str, run_date)
+    except BaseException as split_error:
+        print(
+            f"[predict-serve] focused-full per-race split failed: {split_error}",
+            file=sys.stderr,
+        )
+        split = None
+    if split:
+        matched = [item for item in split if item["parquetKey"] == expected_key]
+        if matched:
+            return matched
+    data = parquet_files[0].read_bytes()
+    encoded = base64.b64encode(data).decode("ascii")
+    print(
+        f"[predict-serve] focused-full per-race seed key={expected_key} bytes={len(data)}",
+        file=sys.stderr,
+    )
+    return [{"parquetBase64": encoded, "parquetKey": expected_key}]
+
+
 def _write_refreshed_to_parquet(
     final_dir: Path,
     refreshed: dict[str, list[dict[str, object]]],
@@ -1362,10 +1429,10 @@ def _make_predict_fn(
     - ``focused_full_cache_populate_fn``: the
       :data:`predict_lib.serve.FocusedFullCachePopulateFn` injected into
       ``iter_predict_chunks`` for the detached focused-full path (see that
-      type's docstring for why this exists at all). Computes the SAME payload
-      shape as the two functions above but from *params* directly, not from
-      ``_last_run`` — see ``_build_parquet_payload``/``_build_per_race_payloads``
-      below.
+      type's docstring for why this exists at all). Seeds the per-race
+      ``feat-cache/catalog-v1/{category}/{runDate}/{keibajo}/{race}/features.parquet``
+      payload from *params* directly (not ``_last_run``) so a later scoped
+      rescore can watermark-read it. Does not write the whole-day cache key.
 
     ``parquet_payload_fn`` / ``per_race_parquet_payload_fn`` share a
     thread-safe ``_last_run`` state box (guarded by ``_last_run_lock``, a lock
@@ -1513,16 +1580,21 @@ def _make_predict_fn(
             return
         category_str = params.category
         run_date = params.run_date
-        payload = _build_parquet_payload(category_str, run_date)
-        per_race = _build_per_race_payloads(category_str, run_date)
-        if payload is None and per_race is None:
+        per_race: list[dict[str, str]] | None = None
+        if params.keibajo_code is not None and params.race_bango is not None:
+            per_race = _seed_focused_full_per_race_payloads(
+                category_str, run_date, params.keibajo_code, params.race_bango
+            )
+        if per_race is None:
+            per_race = _build_per_race_payloads(category_str, run_date)
+        if per_race is None:
             return
         race_key = build_focused_full_race_key(params)
         focused_full_cache_store.put(
             race_key,
             FocusedFullCachePayload(
-                parquet_base64=payload[0] if payload is not None else None,
-                parquet_key=payload[1] if payload is not None else None,
+                parquet_base64=None,
+                parquet_key=None,
                 per_race_parquets=per_race,
             ),
         )
