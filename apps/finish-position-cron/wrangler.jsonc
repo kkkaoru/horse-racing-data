@@ -375,6 +375,16 @@
   // KV namespace (id: d984fba531804927ac1b551200d4b3cb) is orphaned — binding removed.
   // The namespace data is retained as-is; no deletion required.
   // DO-backed strong-consistency coordinator (PREDICT_RUN_COORDINATOR) replaces it.
+  "kv_namespaces": [
+    {
+      // Shared with pc-keiba-viewer / sync-realtime-data (id a013fdf6e7224c3ab0c227be3c899073).
+      // Producer write-through for pred:fp:v1 / pred:rs:v1 prediction cache keys
+      // after generation or weight rescore. Deploy required before the binding
+      // is live; do not deploy during JRA race hours.
+      "binding": "DETAIL_SECTION_CACHE_KV",
+      "id": "a013fdf6e7224c3ab0c227be3c899073",
+    },
+  ],
   "r2_buckets": [
     {
       // Feature parquet cache written by "full" runs and read by "rescore" runs.

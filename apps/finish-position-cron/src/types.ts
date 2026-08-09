@@ -23,6 +23,19 @@ export interface Env {
   // only ever SELECTs from it.
   REALTIME_DB: D1Database;
   NEON_DATABASE_URL: string;
+  // Shared with pc-keiba-viewer / sync-realtime-data. Optional so existing
+  // callers/tests need not set it -- publishFinishPositionPredictionCache
+  // no-ops with skipped-no-kv when the binding is absent.
+  DETAIL_SECTION_CACHE_KV?: KVNamespace;
+  // Same secret value as sync-realtime-data's PC_KEIBA_VIEWER_INTERNAL_TOKEN
+  // (viewer's PC_KEIBA_INTERNAL_TOKEN). Used to POST
+  // /api/internal/prediction-cache-bust after a weight-rescore KV overwrite.
+  // Set via `wrangler secret put PC_KEIBA_VIEWER_INTERNAL_TOKEN`. Optional so
+  // existing callers/tests need not set it -- bust is skipped when unset.
+  PC_KEIBA_VIEWER_INTERNAL_TOKEN?: string;
+  // Optional viewer origin override for prediction-cache-bust. Unset/blank
+  // falls back to https://pc-keiba-viewer.kkk4oru.com.
+  PC_KEIBA_VIEWER_ORIGIN?: string;
   // Backward window (days) the corner-features-refresh.ts evening/morning
   // crons additionally sweep, so a day whose settlement columns were still
   // NULL on a prior visit gets re-upserted instead of staying permanently
