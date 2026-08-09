@@ -13,12 +13,15 @@ set -a
 . "$APP_DIR/.env"
 set +a
 
-exec_args=()
+# macOS bash 3.2 + `set -u` treats `"${empty_array[@]}"` as unbound.
 if [[ -t 0 && $# -eq 0 ]]; then
-  exec_args=(-i -t)
+  exec container exec -i -t horse-racing-local-postgresql psql \
+    -U "${POSTGRES_USER}" \
+    -d "${POSTGRES_DB}" \
+    "$@"
 fi
 
-container exec "${exec_args[@]}" horse-racing-local-postgresql psql \
+exec container exec horse-racing-local-postgresql psql \
   -U "${POSTGRES_USER}" \
   -d "${POSTGRES_DB}" \
   "$@"

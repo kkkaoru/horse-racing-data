@@ -621,7 +621,7 @@ Environment:
                                   for Neon connections. The script reuses this container instead
                                   of spawning a disposable one per query, avoiding the cleanup
                                   hangs that previously accumulated zombie containers under the
-                                  docker-based pipeline. Default: horse-racing-local-postgresql.
+                                  Apple container pipeline. Default: horse-racing-local-postgresql.
   REPLICA_SYNC_MAX_ATTEMPTS       Max per-table COPY attempts before giving up on a single
                                   table. Retries are scoped to the failing COPY only — the
                                   whole script is no longer respawned on transient TLS errors.

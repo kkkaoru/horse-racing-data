@@ -1,20 +1,24 @@
 # local-postgresql
 
-Local PostgreSQL for development. It runs with Docker Compose and exposes
-PostgreSQL on `0.0.0.0:5432` by default so a Parallels Desktop Windows VM can
-connect to the Mac host.
+Local PostgreSQL for development. It runs with Apple Container CLI
+(`https://github.com/apple/container`) and exposes PostgreSQL on
+`0.0.0.0:5432` by default so a Parallels Desktop Windows VM can connect to
+the Mac host.
 
 ## Prerequisites
 
 - `bun`
-- Docker CLI with Compose plugin
-- A Docker-compatible daemon, such as Colima or Docker Desktop
-
-With Colima:
+- Apple Container CLI (`container`)
 
 ```sh
-colima start --cpu 2 --memory 2 --disk 100
+container system start
 ```
+
+Local PostgreSQL always runs on Apple Container CLI. `compose.yml` is a
+legacy Docker Compose reference only — do not start it with colima/docker.
+Cloudflare Containers deploy (`wrangler deploy` in `finish-position-cron` /
+`mlflow-ui-proxy`) still needs a Docker API and uses colima via
+`scripts/ensure-docker-compat.sh`.
 
 If another PostgreSQL is already listening on port `5432`, stop it or change
 `POSTGRES_PORT` in `apps/local-postgresql/.env`.
@@ -32,8 +36,8 @@ PostgreSQL data is stored on the Mac filesystem at:
 apps/local-postgresql/data/postgres
 ```
 
-The `data/` directory is ignored by Git. This avoids filling Colima's Docker
-named-volume storage when loading large local datasets.
+The `data/` directory is ignored by Git so large local datasets stay on the
+Mac filesystem instead of inside the container writable layer.
 
 ## Commands
 

@@ -1,8 +1,13 @@
+# Legacy Docker Compose reference only. Local runtime is Apple Container CLI
+# (`scripts/start.sh` / `bun --cwd apps/local-postgresql start`). Do not
+# `docker compose up` this file — it creates a colima shadow twin on :15432.
+# `restart: "no"` so a later colima start for wrangler Containers cannot
+# resurrect that shadow automatically.
 services:
   postgres:
     image: pgvector/pgvector:0.8.1-pg18
     container_name: horse-racing-local-postgresql
-    restart: unless-stopped
+    restart: "no"
     env_file:
       - .env
     environment:
@@ -15,7 +20,7 @@ services:
       - max_wal_senders=10
       - -c
       - max_replication_slots=10
-      # === Memory tuning (colima VM = 24 GiB) ===
+      # === Memory tuning (host / Apple container = 24 GiB class) ===
       - -c
       - shared_buffers=6GB
       - -c
@@ -42,7 +47,7 @@ services:
       - checkpoint_completion_target=0.9
       - -c
       - wal_compression=lz4
-      # === Parallel query (colima 12 CPU) ===
+      # === Parallel query (Apple container 12 CPU) ===
       - -c
       - max_worker_processes=16
       - -c
