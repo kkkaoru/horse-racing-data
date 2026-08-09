@@ -3,6 +3,7 @@
 export const SHARED_D1_QUERY_CACHE_NAMESPACE = "horse-racing-data:d1-query:v1";
 export const SHARED_D1_QUERY_CACHE_URL_BASE = "https://horse-racing-data.local/d1-query-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
+const MIN_KV_EXPIRATION_TTL_SECONDS = 60;
 
 export type D1QueryCacheProfile =
   | "horse-running-style-history"
@@ -143,7 +144,7 @@ export const putD1QueryCache = async <T>(
   if (cache !== null) {
     writes.push(cache.put(createCacheRequest(cacheKey), buildResponseForCache(body, ttlSeconds)));
   }
-  if (options?.kv !== undefined) {
+  if (options?.kv !== undefined && ttlSeconds >= MIN_KV_EXPIRATION_TTL_SECONDS) {
     writes.push(options.kv.put(cacheKey, body, { expirationTtl: ttlSeconds }));
   }
   if (writes.length === 0) {
