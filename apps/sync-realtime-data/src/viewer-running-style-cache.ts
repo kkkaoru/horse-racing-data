@@ -1,6 +1,13 @@
 // Run with bun. Writes pc-keiba-viewer compatible running-style caches after D1 inference.
 
 import { putD1QueryCache } from "./d1-query-cache";
+import { formatError } from "./format-error";
+import {
+  buildRunningStylePredictionKvKey,
+  getPredictionKvTtlSeconds,
+  raceYmdFromRunningStyle,
+  resolvePredictionCacheWindow,
+} from "./prediction-kv-keys";
 import { evaluateRunningStyleCacheCoverage } from "./running-style-entry-coverage";
 import { putRunningStyleCache } from "./running-style-cache";
 import type { RaceRunningStyleRow, RunningStyleInferenceRace } from "./running-style-d1";
@@ -43,6 +50,34 @@ const toViewerRunningStyleRow = (row: RaceRunningStyleRow): ViewerRunningStyleRo
   raceKey: row.raceKey,
 });
 
+export const putRunningStylePredictionKv = async ({
+  env,
+  nowMs = Date.now(),
+  race,
+  rows,
+}: {
+  env: Env;
+  nowMs?: number;
+  race: RunningStyleInferenceRace;
+  rows: ReadonlyArray<ViewerRunningStyleRow>;
+}): Promise<boolean> => {
+  if (rows.length === 0) return false;
+  const kv = env.DETAIL_SECTION_CACHE_KV;
+  if (!kv) return false;
+  const raceYmd = raceYmdFromRunningStyle(race.kaisaiNen, race.kaisaiTsukihi);
+  const ttlSeconds = getPredictionKvTtlSeconds(resolvePredictionCacheWindow(raceYmd, nowMs));
+  if (ttlSeconds <= 0) return false;
+  const cacheKey = buildRunningStylePredictionKvKey({
+    keibajoCode: race.keibajoCode,
+    mmdd: race.kaisaiTsukihi,
+    raceBango: race.raceBango,
+    source: race.source,
+    year: race.kaisaiNen,
+  });
+  await kv.put(cacheKey, JSON.stringify(rows), { expirationTtl: ttlSeconds });
+  return true;
+};
+
 export const putViewerRunningStyleRaceCache = async ({
   ctx,
   env,
@@ -66,6 +101,11 @@ export const putViewerRunningStyleRaceCache = async ({
     return false;
   }
   const viewerRows = coverage.cacheableRows.map(toViewerRunningStyleRow);
+  try {
+    await putRunningStylePredictionKv({ env, race, rows: viewerRows });
+  } catch (error) {
+    console.warn("prediction kv rs write failed", formatError(error));
+  }
   const urlWritten = await putRunningStyleCache({ env, race, rows: coverage.cacheableRows });
   await putD1QueryCache(
     "running-style-race",

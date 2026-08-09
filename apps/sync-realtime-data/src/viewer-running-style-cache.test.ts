@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RaceRunningStyleRow, RunningStyleInferenceRace } from "./running-style-d1";
 import type { Env } from "./types";
+import type { ViewerRunningStyleRow } from "./viewer-running-style-cache";
 
 vi.mock("./d1-query-cache", () => ({
   putD1QueryCache: vi.fn(async () => {}),
@@ -89,6 +90,150 @@ it("putViewerRunningStyleRaceCache returns false when coverage rejects caching",
   expect(result).toBe(false);
 });
 
+it("putRunningStylePredictionKv returns false when rows is empty", async () => {
+  const { putRunningStylePredictionKv } = await import("./viewer-running-style-cache");
+  const put = vi.fn(async () => undefined);
+  const result = await putRunningStylePredictionKv({
+    env: { DETAIL_SECTION_CACHE_KV: { put } } as unknown as Env,
+    nowMs: Date.parse("2026-08-09T12:00:00+09:00"),
+    race: RACE,
+    rows: [],
+  });
+  expect(result).toBe(false);
+  expect(put).not.toHaveBeenCalled();
+});
+
+it("putRunningStylePredictionKv returns false when KV binding is absent", async () => {
+  const { putRunningStylePredictionKv } = await import("./viewer-running-style-cache");
+  const result = await putRunningStylePredictionKv({
+    env: {} as unknown as Env,
+    nowMs: Date.parse("2026-08-09T12:00:00+09:00"),
+    race: { ...RACE, kaisaiNen: "2026", kaisaiTsukihi: "0809" },
+    rows: [
+      {
+        bamei: "サンプル",
+        category: "jra",
+        horseNumber: 1,
+        kaisaiNen: "2026",
+        kettoTorokuBango: "2024100001",
+        modelVersion: "v7-lineage",
+        p_nige: 0.1,
+        p_oikomi: 0.2,
+        p_sashi: 0.3,
+        p_senkou: 0.4,
+        predictedAt: "2026-08-09T11:30:00+09:00",
+        predictedLabel: "senkou",
+        raceKey: "jra:2026:0809:08:01",
+      } satisfies ViewerRunningStyleRow,
+    ],
+  });
+  expect(result).toBe(false);
+});
+
+it("putRunningStylePredictionKv returns false outside the 3-day window", async () => {
+  const { putRunningStylePredictionKv } = await import("./viewer-running-style-cache");
+  const put = vi.fn(async () => undefined);
+  const result = await putRunningStylePredictionKv({
+    env: { DETAIL_SECTION_CACHE_KV: { put } } as unknown as Env,
+    nowMs: Date.parse("2026-08-09T12:00:00+09:00"),
+    race: RACE,
+    rows: [
+      {
+        bamei: "サンプル",
+        category: "jra",
+        horseNumber: 1,
+        kaisaiNen: "2026",
+        kettoTorokuBango: "2024100001",
+        modelVersion: "v7-lineage",
+        p_nige: 0.1,
+        p_oikomi: 0.2,
+        p_sashi: 0.3,
+        p_senkou: 0.4,
+        predictedAt: "2026-05-12T11:30:00+09:00",
+        predictedLabel: "senkou",
+        raceKey: "jra:2026:0512:08:01",
+      } satisfies ViewerRunningStyleRow,
+    ],
+  });
+  expect(result).toBe(false);
+  expect(put).not.toHaveBeenCalled();
+});
+
+it("putRunningStylePredictionKv writes pred:rs key with yesterday TTL", async () => {
+  const { putRunningStylePredictionKv } = await import("./viewer-running-style-cache");
+  const put = vi.fn(async () => undefined);
+  const viewerRow: ViewerRunningStyleRow = {
+    bamei: "サンプル",
+    category: "nar",
+    horseNumber: 2,
+    kaisaiNen: "2026",
+    kettoTorokuBango: "2024100002",
+    modelVersion: "v7-lineage",
+    p_nige: 0.4,
+    p_oikomi: 0.1,
+    p_sashi: 0.2,
+    p_senkou: 0.3,
+    predictedAt: "2026-08-08T11:30:00+09:00",
+    predictedLabel: "nige",
+    raceKey: "nar:2026:0808:50:07",
+  };
+  const result = await putRunningStylePredictionKv({
+    env: { DETAIL_SECTION_CACHE_KV: { put } } as unknown as Env,
+    nowMs: Date.parse("2026-08-09T12:00:00+09:00"),
+    race: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0808",
+      keibajoCode: "50",
+      raceBango: "07",
+      raceKey: "nar:20260808:50:07",
+      source: "nar",
+    },
+    rows: [viewerRow],
+  });
+  expect(result).toBe(true);
+  expect(put).toHaveBeenCalledWith("pred:rs:v1:nar:20260808:50:07", JSON.stringify([viewerRow]), {
+    expirationTtl: 86400,
+  });
+});
+
+it("putRunningStylePredictionKv writes pred:rs key with today TTL", async () => {
+  const { putRunningStylePredictionKv } = await import("./viewer-running-style-cache");
+  const put = vi.fn(async () => undefined);
+  const viewerRow: ViewerRunningStyleRow = {
+    bamei: "サンプル",
+    category: "jra",
+    horseNumber: 1,
+    kaisaiNen: "2026",
+    kettoTorokuBango: "2024100001",
+    modelVersion: "v7-lineage",
+    p_nige: 0.1,
+    p_oikomi: 0.2,
+    p_sashi: 0.3,
+    p_senkou: 0.4,
+    predictedAt: "2026-08-09T11:30:00+09:00",
+    predictedLabel: "senkou",
+    raceKey: "jra:2026:0809:08:01",
+  };
+  const result = await putRunningStylePredictionKv({
+    env: { DETAIL_SECTION_CACHE_KV: { put } } as unknown as Env,
+    nowMs: Date.parse("2026-08-09T12:00:00+09:00"),
+    race: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0809",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:20260809:08:01",
+      source: "jra",
+    },
+    rows: [viewerRow],
+  });
+  expect(result).toBe(true);
+  expect(put).toHaveBeenCalledTimes(1);
+  expect(put).toHaveBeenCalledWith("pred:rs:v1:jra:20260809:08:01", JSON.stringify([viewerRow]), {
+    expirationTtl: 129600,
+  });
+});
+
 it("putViewerRunningStyleRaceCache writes cache when coverage is acceptable", async () => {
   const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
   const { evaluateRunningStyleCacheCoverage } = await import("./running-style-entry-coverage");
@@ -102,8 +247,9 @@ it("putViewerRunningStyleRaceCache writes cache when coverage is acceptable", as
   } as never);
   vi.mocked(putRunningStyleCache).mockResolvedValue(true);
 
+  const put = vi.fn(async () => undefined);
   const env = {
-    DETAIL_SECTION_CACHE_KV: {},
+    DETAIL_SECTION_CACHE_KV: { put },
     REALTIME_DB: {},
   } as unknown as Env;
   const result = await putViewerRunningStyleRaceCache({
@@ -118,6 +264,42 @@ it("putViewerRunningStyleRaceCache writes cache when coverage is acceptable", as
     "getRaceRunningStylesFromD1",
     "jra:2026:0512:08:01",
   ]);
+});
+
+it("putViewerRunningStyleRaceCache still succeeds when prediction KV put throws", async () => {
+  const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
+  const { evaluateRunningStyleCacheCoverage } = await import("./running-style-entry-coverage");
+  const { getLatestRaceEntries } = await import("./storage");
+  const { putRunningStyleCache } = await import("./running-style-cache");
+  vi.mocked(getLatestRaceEntries).mockResolvedValue({ fetchedAt: "x", horses: [] });
+  vi.mocked(evaluateRunningStyleCacheCoverage).mockReturnValue({
+    cacheable: true,
+    cacheableRows: [ROW],
+  } as never);
+  vi.mocked(putRunningStyleCache).mockResolvedValue(true);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const put = vi.fn(async () => {
+    throw new Error("kv write failed");
+  });
+  const env = {
+    DETAIL_SECTION_CACHE_KV: { put },
+    REALTIME_DB: {},
+  } as unknown as Env;
+  const result = await putViewerRunningStyleRaceCache({
+    env,
+    race: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0809",
+      keibajoCode: "08",
+      raceBango: "01",
+      raceKey: "jra:20260809:08:01",
+      source: "jra",
+    },
+    rows: [ROW],
+  });
+  expect(result).toBe(true);
+  expect(warnSpy).toHaveBeenCalledTimes(1);
+  warnSpy.mockRestore();
 });
 
 it("putViewerRunningStyleRaceCache writes nar race under the 4-colon viewer raceKey", async () => {
