@@ -817,6 +817,7 @@ it("scheduled result-poll cron logs plan-premium-paddock error when paddock plan
 it("queue retries with long delay when handleJob throws a D1 overload error", async () => {
   const { default: worker } = await import("./worker");
   const { handleWin5PredictionJob } = await import("./win5-queue");
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(
     new Error("D1_ERROR: D1 DB is overloaded. Please try again later."),
   );
@@ -846,7 +847,9 @@ it("queue retries with long delay when handleJob throws a D1 overload error", as
 it("queue retries with standard delay when handleJob throws a non-overload error", async () => {
   const { default: worker } = await import("./worker");
   const { handleWin5PredictionJob } = await import("./win5-queue");
-  vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(new Error("unrelated boom"));
+  const boom = new Error("unrelated boom");
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleWin5PredictionJob).mockRejectedValueOnce(boom);
   const ack = vi.fn();
   const retry = vi.fn();
   const message = {
@@ -864,6 +867,53 @@ it("queue retries with standard delay when handleJob throws a non-overload error
     buildEnv(),
   );
   expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe("Queue job failed");
+  expect(vi.mocked(console.error).mock.calls[0]?.[1]).toStrictEqual({
+    message: "unrelated boom",
+    name: "Error",
+    stack: boom.stack,
+    type: "generate-win5-predictions",
+  });
+});
+
+it("queue logs catalog 502 details and retries running-style prediction failures", async () => {
+  const { default: worker } = await import("./worker");
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(handleRunningStylePredictionJob).mockRejectedValueOnce(catalogError);
+  const ack = vi.fn();
+  const retry = vi.fn();
+  const message = {
+    ack,
+    body: {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      keibajoCode: "08",
+      predictedAt: "2026-05-12T11:00:00.000Z",
+      raceBango: "01",
+      raceKey: "jra:20260512:08:01",
+      source: "jra",
+      type: "generate-running-style-predictions",
+    } satisfies Job,
+    retry,
+  };
+  await worker.queue(
+    { messages: [message], queue: "q", retryAll: () => {}, ackAll: () => {} } as never,
+    buildEnv(),
+  );
+  expect(ack).not.toHaveBeenCalled();
+  expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 });
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe("Queue job failed");
+  expect(vi.mocked(console.error).mock.calls[0]?.[1]).toStrictEqual({
+    message:
+      "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+    name: "Error",
+    stack: catalogError.stack,
+    type: "generate-running-style-predictions",
+  });
 });
 
 it("scheduled triggers the weight watchdog for the every-minute cron", async () => {

@@ -5,7 +5,7 @@
 // the viewer can read predictions without a separate sync step.
 
 import { markFinishPositionFeaturesCached } from "./finish-position-d1";
-import { formatError } from "./format-error";
+import { errorLogFields, formatError } from "./format-error";
 import { putFinishPositionInputsCache } from "./finish-position-inputs-cache";
 import { getFinishPositionWritePool } from "./finish-position-lite-pool";
 import {
@@ -500,6 +500,10 @@ export const handleRunningStylePredictionJob = async (
       writtenCount: summary.writtenCount,
     };
   } catch (error) {
+    console.error("Running-style prediction failed", {
+      raceKey,
+      ...errorLogFields(error),
+    });
     await markRunningStyleInferenceFailed(env.REALTIME_DB, raceKey, error);
     throw error;
   }

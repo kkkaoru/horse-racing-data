@@ -754,6 +754,7 @@ it("throws when filterRunningStyleFeatureRowsByActiveEntries leaves no rows", as
     await import("./running-style-feature-materialize");
   const { filterRunningStyleFeatureRowsByActiveEntries } =
     await import("./running-style-expected-horses");
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["x"], model_version: "v7-lineage" },
@@ -771,25 +772,35 @@ it("throws when filterRunningStyleFeatureRowsByActiveEntries leaves no rows", as
   expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
 });
 
-it("marks the job failed and rethrows when loadOrBuildRunningStyleFeatureParquet rejects", async () => {
+it("logs error name message stack and rethrows catalog feature load failures", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, markRunningStyleInferenceFailed } =
     await import("./running-style-d1");
   const { loadFlatLightGBMModelFromR2 } = await import("./running-style-model-binary");
   const { loadOrBuildRunningStyleFeatureParquet } =
     await import("./running-style-feature-materialize");
+  const catalogError = new Error(
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+  );
+  vi.spyOn(console, "error").mockImplementation(() => {});
   vi.mocked(getRunningStyleInferenceState).mockResolvedValue(null);
   vi.mocked(loadFlatLightGBMModelFromR2).mockResolvedValue({
     header: { feature_names: ["x"], model_version: "v7-lineage" },
   } as never);
-  vi.mocked(loadOrBuildRunningStyleFeatureParquet).mockRejectedValue(
-    new Error("hyperdrive pool exhausted"),
-  );
+  vi.mocked(loadOrBuildRunningStyleFeatureParquet).mockRejectedValue(catalogError);
 
   await expect(handleRunningStylePredictionJob(buildEnv(), JOB)).rejects.toThrow(
-    "hyperdrive pool exhausted",
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
   );
   expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe("Running-style prediction failed");
+  expect(vi.mocked(console.error).mock.calls[0]?.[1]).toStrictEqual({
+    message:
+      "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable",
+    name: "Error",
+    raceKey: "jra:20260512:08:01",
+    stack: catalogError.stack,
+  });
 });
 
 it("skips cacheCompletedRunningStyles when written count is less than expected horse count", async () => {

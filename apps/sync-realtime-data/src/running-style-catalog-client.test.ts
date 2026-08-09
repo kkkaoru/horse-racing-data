@@ -97,7 +97,7 @@ it("appends the Catalog structured code and detail to the HTTP error", async () 
       ["f1"],
     ),
   ).rejects.toThrow(
-    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: code=7003 R2 SQL query failed",
+    "PC_KEIBA_R2_CATALOG /v1/running-style-features failed with HTTP 502: r2_sql_unavailable code=7003 R2 SQL query failed",
   );
 });
 
@@ -132,7 +132,7 @@ it("appends the raw body slice when the Catalog error body is not JSON", async (
   ).rejects.toThrow("failed with HTTP 502: <html>error 502 bad gateway</html>");
 });
 
-it("appends the raw body slice when the Catalog error JSON carries no code or detail", async () => {
+it("appends the Catalog error field when code and detail are absent", async () => {
   const { fetchRunningStyleFeaturesFromCatalog } = await import("./running-style-catalog-client");
   await expect(
     fetchRunningStyleFeaturesFromCatalog(
@@ -140,7 +140,7 @@ it("appends the raw body slice when the Catalog error JSON carries no code or de
       RACE,
       ["f1"],
     ),
-  ).rejects.toThrow('failed with HTTP 502: {"error":"r2_sql_unavailable"}');
+  ).rejects.toThrow("failed with HTTP 502: r2_sql_unavailable");
 });
 
 it("keeps the bare message when the Catalog error body is empty", async () => {

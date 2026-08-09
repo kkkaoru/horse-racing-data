@@ -107,9 +107,11 @@ const formatErrorCode = (code: unknown): string =>
   typeof code === "string" || typeof code === "number" ? `code=${String(code)}` : "";
 
 const structuredErrorParts = (payload: Record<string, unknown>): string[] =>
-  [formatErrorCode(payload.code), typeof payload.detail === "string" ? payload.detail : ""].filter(
-    (part) => part.length > 0,
-  );
+  [
+    typeof payload.error === "string" ? payload.error : "",
+    formatErrorCode(payload.code),
+    typeof payload.detail === "string" ? payload.detail : "",
+  ].filter((part) => part.length > 0);
 
 const truncateErrorDetail = (detail: string): string =>
   detail.length > CATALOG_ERROR_DETAIL_MAX_CHARS
