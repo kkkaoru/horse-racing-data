@@ -144,6 +144,7 @@ import { handleRunningStylePredictionJob } from "./running-style-queue";
 import { DAILY_FEATURE_BUILD_CRON } from "./daily-feature-build";
 import { WIN5_DISCOVER_CRON, logWin5CronResult } from "./win5-cron";
 import { handleWin5PredictionJob } from "./win5-queue";
+import { probeNeonWritePool } from "./neon-write-pool-probe";
 import {
   parseRunningStylePostgresVerificationParams,
   runRunningStyleWorkerPostgresVerification,
@@ -194,6 +195,70 @@ const QUEUE_SEND_BATCH_SIZE = 100;
 // upstream rarely publishes results > 25 minutes after post time, so a row
 // stale > 30 min is a signal something is wrong, not a normal late publish.
 const QUEUE_HEALTH_STUCK_THRESHOLD_MINUTES = 30;
+const NEON_WRITE_POOL_HEALTH_CACHE_CONTROL = "private, no-store";
+
+type NeonWritePoolSource = "DATABASE_URL_NEON" | "NEON_DATABASE_URL";
+type NeonWritePoolQueryErrorClass = "auth" | "network" | "read_only" | "unknown";
+
+interface NeonWritePoolProbeSuccess {
+  canInsertFinishPosition: boolean;
+  canInsertRunningStyle: boolean;
+  canUpsertFinishPosition: boolean;
+  canUpsertRunningStyle: boolean;
+  defaultTransactionReadOnly: boolean;
+  fpTablePresent: boolean;
+  inRecovery: boolean;
+  ok: true;
+  rsTablePresent: boolean;
+  source: NeonWritePoolSource;
+  transactionReadOnly: boolean;
+  writablePrimary: boolean;
+}
+
+interface NeonWritePoolUnconfiguredResult {
+  errorClass: "unconfigured";
+  ok: false;
+}
+
+interface NeonWritePoolQueryFailure {
+  errorClass: NeonWritePoolQueryErrorClass;
+  ok: false;
+  source: NeonWritePoolSource;
+}
+
+type NeonWritePoolProbeResult =
+  | NeonWritePoolProbeSuccess
+  | NeonWritePoolUnconfiguredResult
+  | NeonWritePoolQueryFailure;
+
+interface NeonWritePoolHealthOkResult {
+  canInsertFinishPosition: boolean;
+  canInsertRunningStyle: boolean;
+  canUpsertFinishPosition: boolean;
+  canUpsertRunningStyle: boolean;
+  defaultTransactionReadOnly: boolean;
+  fpTablePresent: boolean;
+  inRecovery: boolean;
+  rsTablePresent: boolean;
+  source: NeonWritePoolSource;
+  transactionReadOnly: boolean;
+  writablePrimary: boolean;
+}
+
+interface NeonWritePoolHealthOkBody {
+  result: NeonWritePoolHealthOkResult;
+  status: "ok";
+}
+
+interface NeonWritePoolHealthQueryErrorBody {
+  result: { source: NeonWritePoolSource };
+  status: NeonWritePoolQueryErrorClass;
+}
+
+interface NeonWritePoolHealthUnconfiguredBody {
+  status: "unconfigured";
+}
+
 // True at most once per hour so the discover-urls fallback only fires off
 // the first result-poller tick of each JST hour. Without this guard the
 // cron would re-discover every 2 minutes, which is wasteful.
@@ -458,6 +523,45 @@ const json = (body: unknown, init?: ResponseInit): Response =>
     })(),
     status: init?.status ?? 200,
   });
+
+const buildNeonWritePoolHealthResponse = (probe: NeonWritePoolProbeResult): Response => {
+  if (probe.ok) {
+    const body: NeonWritePoolHealthOkBody = {
+      result: {
+        canInsertFinishPosition: probe.canInsertFinishPosition,
+        canInsertRunningStyle: probe.canInsertRunningStyle,
+        canUpsertFinishPosition: probe.canUpsertFinishPosition,
+        canUpsertRunningStyle: probe.canUpsertRunningStyle,
+        defaultTransactionReadOnly: probe.defaultTransactionReadOnly,
+        fpTablePresent: probe.fpTablePresent,
+        inRecovery: probe.inRecovery,
+        rsTablePresent: probe.rsTablePresent,
+        source: probe.source,
+        transactionReadOnly: probe.transactionReadOnly,
+        writablePrimary: probe.writablePrimary,
+      },
+      status: "ok",
+    };
+    return json(body, {
+      headers: { "cache-control": NEON_WRITE_POOL_HEALTH_CACHE_CONTROL },
+    });
+  }
+  if (probe.errorClass === "unconfigured") {
+    const body: NeonWritePoolHealthUnconfiguredBody = { status: "unconfigured" };
+    return json(body, {
+      headers: { "cache-control": NEON_WRITE_POOL_HEALTH_CACHE_CONTROL },
+      status: 503,
+    });
+  }
+  const body: NeonWritePoolHealthQueryErrorBody = {
+    result: { source: probe.source },
+    status: probe.errorClass,
+  };
+  return json(body, {
+    headers: { "cache-control": NEON_WRITE_POOL_HEALTH_CACHE_CONTROL },
+    status: 502,
+  });
+};
 
 const HOT_WORKER_ORIGIN = "https://sync-realtime-data-hot.kkk4oru.com";
 const FEATURES_WORKER_ORIGIN = "https://sync-realtime-data-features.kkk4oru.com";
@@ -5123,6 +5227,14 @@ export default {
         yesterdayYmd: addDaysToYyyymmdd(todayYmd, -1),
       });
       return json(metrics);
+    }
+
+    if (url.pathname === "/api/internal/neon-write-pool-health" && request.method === "GET") {
+      const expectedToken = env.REALTIME_ADMIN_TOKEN;
+      if (!expectedToken || request.headers.get("authorization") !== `Bearer ${expectedToken}`) {
+        return json({ error: "forbidden" }, { status: 403 });
+      }
+      return buildNeonWritePoolHealthResponse(await probeNeonWritePool(env));
     }
 
     if (url.pathname === "/api/internal/export-odds-chunk" && request.method === "POST") {

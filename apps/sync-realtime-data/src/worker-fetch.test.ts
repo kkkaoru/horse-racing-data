@@ -2,6 +2,37 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Env } from "./types";
 
+interface NeonWritePoolProbeMockSuccess {
+  canInsertFinishPosition: boolean;
+  canInsertRunningStyle: boolean;
+  canUpsertFinishPosition: boolean;
+  canUpsertRunningStyle: boolean;
+  defaultTransactionReadOnly: boolean;
+  fpTablePresent: boolean;
+  inRecovery: boolean;
+  ok: true;
+  rsTablePresent: boolean;
+  source: "DATABASE_URL_NEON" | "NEON_DATABASE_URL";
+  transactionReadOnly: boolean;
+  writablePrimary: boolean;
+}
+
+interface NeonWritePoolProbeMockUnconfigured {
+  errorClass: "unconfigured";
+  ok: false;
+}
+
+interface NeonWritePoolProbeMockQueryFailure {
+  errorClass: "auth" | "network" | "read_only" | "unknown";
+  ok: false;
+  source: "DATABASE_URL_NEON" | "NEON_DATABASE_URL";
+}
+
+type NeonWritePoolProbeMockResult =
+  | NeonWritePoolProbeMockSuccess
+  | NeonWritePoolProbeMockUnconfigured
+  | NeonWritePoolProbeMockQueryFailure;
+
 vi.mock("./storage", () => ({
   logFetch: vi.fn(async () => {}),
   upsertNarRaceSource: vi.fn(async () => {}),
@@ -167,6 +198,27 @@ vi.mock("./premium-race", async () => {
 vi.mock("./running-style-verification", () => ({
   parseRunningStylePostgresVerificationParams: vi.fn(() => null),
   runRunningStyleWorkerPostgresVerification: vi.fn(async () => ({ ok: true })),
+}));
+
+const neonWritePoolProbeMocks = vi.hoisted(() => ({
+  probeNeonWritePool: vi.fn<(env: Env) => Promise<NeonWritePoolProbeMockResult>>(async () => ({
+    canInsertFinishPosition: true,
+    canInsertRunningStyle: true,
+    canUpsertFinishPosition: true,
+    canUpsertRunningStyle: true,
+    defaultTransactionReadOnly: false,
+    fpTablePresent: true,
+    inRecovery: false,
+    ok: true,
+    rsTablePresent: true,
+    source: "DATABASE_URL_NEON",
+    transactionReadOnly: false,
+    writablePrimary: true,
+  })),
+}));
+
+vi.mock("./neon-write-pool-probe", () => ({
+  probeNeonWritePool: neonWritePoolProbeMocks.probeNeonWritePool,
 }));
 
 const buildDb = (): D1Database => {
@@ -1973,5 +2025,272 @@ it("fetch GET /api/internal/queue-health returns the four queue-health fields wh
     lastSuccessfulFetchWeightsAt: "2026-06-28T15:35:00+09:00",
     racesQueuedNotFetchedToday: 7,
     racesStuckOverThirtyMin: 3,
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 403 when authorization mismatches", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer wrong" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+  expect(response.headers.get("cache-control")).toBe("public, max-age=0");
+  expect(await response.json()).toStrictEqual({ error: "forbidden" });
+  expect(neonWritePoolProbeMocks.probeNeonWritePool).not.toHaveBeenCalled();
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 403 when REALTIME_ADMIN_TOKEN is unset", async () => {
+  const { default: worker } = await import("./worker");
+  const env = buildEnv();
+  const envWithoutToken = { ...env, REALTIME_ADMIN_TOKEN: undefined } as unknown as Env;
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    envWithoutToken,
+    buildCtx(),
+  );
+  expect(response.status).toBe(403);
+  expect(response.headers.get("cache-control")).toBe("public, max-age=0");
+  expect(await response.json()).toStrictEqual({ error: "forbidden" });
+  expect(neonWritePoolProbeMocks.probeNeonWritePool).not.toHaveBeenCalled();
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns safe status/result when auth matches", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    canInsertFinishPosition: true,
+    canInsertRunningStyle: true,
+    canUpsertFinishPosition: true,
+    canUpsertRunningStyle: true,
+    defaultTransactionReadOnly: false,
+    fpTablePresent: true,
+    inRecovery: false,
+    ok: true,
+    rsTablePresent: true,
+    source: "DATABASE_URL_NEON",
+    transactionReadOnly: false,
+    writablePrimary: true,
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: {
+      canInsertFinishPosition: true,
+      canInsertRunningStyle: true,
+      canUpsertFinishPosition: true,
+      canUpsertRunningStyle: true,
+      defaultTransactionReadOnly: false,
+      fpTablePresent: true,
+      inRecovery: false,
+      rsTablePresent: true,
+      source: "DATABASE_URL_NEON",
+      transactionReadOnly: false,
+      writablePrimary: true,
+    },
+    status: "ok",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health exposes independent upsert capability flags", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    canInsertFinishPosition: true,
+    canInsertRunningStyle: true,
+    canUpsertFinishPosition: false,
+    canUpsertRunningStyle: false,
+    defaultTransactionReadOnly: false,
+    fpTablePresent: true,
+    inRecovery: false,
+    ok: true,
+    rsTablePresent: true,
+    source: "DATABASE_URL_NEON",
+    transactionReadOnly: false,
+    writablePrimary: true,
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: {
+      canInsertFinishPosition: true,
+      canInsertRunningStyle: true,
+      canUpsertFinishPosition: false,
+      canUpsertRunningStyle: false,
+      defaultTransactionReadOnly: false,
+      fpTablePresent: true,
+      inRecovery: false,
+      rsTablePresent: true,
+      source: "DATABASE_URL_NEON",
+      transactionReadOnly: false,
+      writablePrimary: true,
+    },
+    status: "ok",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health exposes mixed RS/FP upsert flags", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    canInsertFinishPosition: true,
+    canInsertRunningStyle: false,
+    canUpsertFinishPosition: true,
+    canUpsertRunningStyle: false,
+    defaultTransactionReadOnly: false,
+    fpTablePresent: true,
+    inRecovery: false,
+    ok: true,
+    rsTablePresent: true,
+    source: "NEON_DATABASE_URL",
+    transactionReadOnly: false,
+    writablePrimary: true,
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: {
+      canInsertFinishPosition: true,
+      canInsertRunningStyle: false,
+      canUpsertFinishPosition: true,
+      canUpsertRunningStyle: false,
+      defaultTransactionReadOnly: false,
+      fpTablePresent: true,
+      inRecovery: false,
+      rsTablePresent: true,
+      source: "NEON_DATABASE_URL",
+      transactionReadOnly: false,
+      writablePrimary: true,
+    },
+    status: "ok",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 503 when probe is unconfigured", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    errorClass: "unconfigured",
+    ok: false,
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(503);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({ status: "unconfigured" });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 502 when probe classifies a query error", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    errorClass: "read_only",
+    ok: false,
+    source: "NEON_DATABASE_URL",
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: { source: "NEON_DATABASE_URL" },
+    status: "read_only",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 502 for auth query classification", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    errorClass: "auth",
+    ok: false,
+    source: "DATABASE_URL_NEON",
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: { source: "DATABASE_URL_NEON" },
+    status: "auth",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 502 for network query classification", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    errorClass: "network",
+    ok: false,
+    source: "DATABASE_URL_NEON",
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: { source: "DATABASE_URL_NEON" },
+    status: "network",
+  });
+});
+
+it("fetch GET /api/internal/neon-write-pool-health returns 502 for unknown query classification", async () => {
+  const { default: worker } = await import("./worker");
+  neonWritePoolProbeMocks.probeNeonWritePool.mockResolvedValueOnce({
+    errorClass: "unknown",
+    ok: false,
+    source: "DATABASE_URL_NEON",
+  });
+  const response = await worker.fetch(
+    new Request("https://x.test/api/internal/neon-write-pool-health", {
+      headers: { authorization: "Bearer secret" },
+    }),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(502);
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toStrictEqual({
+    result: { source: "DATABASE_URL_NEON" },
+    status: "unknown",
   });
 });
