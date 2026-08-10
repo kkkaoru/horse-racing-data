@@ -1091,6 +1091,83 @@ it("sets neonError when Neon write fails but does not throw", async () => {
   );
 });
 
+it("logs structured cache write failures with raceKey name message and stack", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const cacheError = new Error("cache write failed");
+  cacheError.stack = "Error: cache write failed\n    at test";
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(2));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW]);
+  vi.mocked(putViewerRunningStyleRaceCache).mockRejectedValueOnce(cacheError);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockResolvedValue(2);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.cacheWritten).toBe(false);
+  expect(summary?.neonWrittenCount).toBe(2);
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style cache write failed raceKey=jra:20260512:08:01 name=Error message=cache write failed stack=Error: cache write failed\n    at test",
+  );
+});
+
+it("logs structured Neon write failures with raceKey name message and stack", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =
+    await import("./running-style-d1");
+  const { putViewerRunningStyleRaceCache } = await import("./viewer-running-style-cache");
+  const { upsertRunningStylePredictionsToNeon } = await import("./running-style-neon");
+  const neonError = new Error("neon connection refused");
+  neonError.stack = "Error: neon connection refused\n    at test";
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockResolvedValue(completedState(2));
+  vi.mocked(listRaceRunningStylesForRace).mockResolvedValue([STYLE_ROW, STYLE_ROW]);
+  vi.mocked(putViewerRunningStyleRaceCache).mockResolvedValue(true);
+  vi.mocked(upsertRunningStylePredictionsToNeon).mockRejectedValue(neonError);
+
+  const summary = await handleRunningStylePredictionJob(buildEnv(), JOB);
+  expect(summary?.neonWrittenCount).toBe(0);
+  expect(summary?.neonError).toBe("neon connection refused");
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style Neon write failed raceKey=jra:20260512:08:01 name=Error message=neon connection refused stack=Error: neon connection refused\n    at test",
+  );
+});
+
+it("rethrows the original error when marking inference failed itself rejects", async () => {
+  const { handleRunningStylePredictionJob } = await import("./running-style-queue");
+  const {
+    getRunningStyleInferenceState,
+    markRunningStyleInferenceFailed,
+    markRunningStyleInferenceProcessing,
+  } = await import("./running-style-d1");
+  const originalError = new Error("D1 inference state lookup failed");
+  originalError.stack = "Error: D1 inference state lookup failed\n    at test";
+  const stateUpdateError = new Error("D1 failed-state write failed");
+  stateUpdateError.stack = "Error: D1 failed-state write failed\n    at test";
+  const env = buildEnv();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.mocked(getRunningStyleInferenceState).mockRejectedValueOnce(originalError);
+  vi.mocked(markRunningStyleInferenceFailed).mockRejectedValueOnce(stateUpdateError);
+
+  await expect(handleRunningStylePredictionJob(env, JOB)).rejects.toBe(originalError);
+  expect(markRunningStyleInferenceProcessing).toHaveBeenCalledTimes(0);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledTimes(1);
+  expect(markRunningStyleInferenceFailed).toHaveBeenCalledWith(
+    env.REALTIME_DB,
+    "jra:20260512:08:01",
+    originalError,
+  );
+  expect(vi.mocked(console.error).mock.calls[0]?.[0]).toBe(
+    "Running-style prediction failed raceKey=jra:20260512:08:01 name=Error message=D1 inference state lookup failed stack=Error: D1 inference state lookup failed\n    at test",
+  );
+  expect(vi.mocked(console.error).mock.calls[1]?.[0]).toBe(
+    "Running-style inference state update failed raceKey=jra:20260512:08:01 name=Error message=D1 failed-state write failed stack=Error: D1 failed-state write failed\n    at test",
+  );
+});
+
 it("sets cacheWritten false when putViewerRunningStyleRaceCache rejects", async () => {
   const { handleRunningStylePredictionJob } = await import("./running-style-queue");
   const { getRunningStyleInferenceState, listRaceRunningStylesForRace } =

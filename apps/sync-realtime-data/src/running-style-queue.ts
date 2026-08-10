@@ -327,25 +327,22 @@ const cacheAndSyncCompletedRunningStyles = async (
   env: Env,
   job: RunningStylePredictionJob,
 ): Promise<CacheAndSyncRunningStylesResult> => {
+  const raceKey = buildRunningStyleRaceKey(job);
   try {
-    const rows = await listRaceRunningStylesForRace(
-      env.REALTIME_DB,
-      buildRunningStyleRaceKey(job),
-      {
-        bypassCache: true,
-      },
-    );
+    const rows = await listRaceRunningStylesForRace(env.REALTIME_DB, raceKey, {
+      bypassCache: true,
+    });
     if (rows.length === 0) {
       return { cacheWritten: false, neonWrittenCount: 0, parquetExportedRows: 0 };
     }
     await upsertRaceRunningStyles(env.REALTIME_DB, rows);
     const [cacheWritten, neonResult, parquetExportResult] = await Promise.all([
       putViewerRunningStyleRaceCache({ env, race: job, rows }).catch((error: unknown) => {
-        console.error("Running-style cache write failed:", formatError(error));
+        console.error(formatErrorLogLine("Running-style cache write failed", { raceKey }, error));
         return false;
       }),
       upsertRunningStylesToNeonWithRetry(env, rows).catch((error: unknown) => {
-        console.error("Running-style Neon write failed:", formatError(error));
+        console.error(formatErrorLogLine("Running-style Neon write failed", { raceKey }, error));
         return formatError(error);
       }),
       exportRunningStylesToR2(env, job),
@@ -360,13 +357,7 @@ const cacheAndSyncCompletedRunningStyles = async (
       parquetExportedRows: parquetExportFailed ? 0 : parquetExportResult,
     };
   } catch (error) {
-    console.error(
-      formatErrorLogLine(
-        "Running-style cache/sync failed",
-        { raceKey: buildRunningStyleRaceKey(job) },
-        error,
-      ),
-    );
+    console.error(formatErrorLogLine("Running-style cache/sync failed", { raceKey }, error));
     return {
       cacheError: formatError(error),
       cacheWritten: false,
@@ -514,7 +505,17 @@ export const handleRunningStylePredictionJob = async (
     };
   } catch (error) {
     console.error(formatErrorLogLine("Running-style prediction failed", { raceKey }, error));
-    await markRunningStyleInferenceFailed(env.REALTIME_DB, raceKey, error);
+    try {
+      await markRunningStyleInferenceFailed(env.REALTIME_DB, raceKey, error);
+    } catch (stateUpdateError) {
+      console.error(
+        formatErrorLogLine(
+          "Running-style inference state update failed",
+          { raceKey },
+          stateUpdateError,
+        ),
+      );
+    }
     throw error;
   }
 };
