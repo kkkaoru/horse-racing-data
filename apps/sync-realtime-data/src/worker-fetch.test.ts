@@ -8,6 +8,7 @@ interface NeonWritePoolProbeMockSuccess {
   canUpsertFinishPosition: boolean;
   canUpsertRunningStyle: boolean;
   defaultTransactionReadOnly: boolean;
+  defaultTransactionReadOnlySource: string;
   fpTablePresent: boolean;
   inRecovery: boolean;
   ok: true;
@@ -207,6 +208,7 @@ const neonWritePoolProbeMocks = vi.hoisted(() => ({
     canUpsertFinishPosition: true,
     canUpsertRunningStyle: true,
     defaultTransactionReadOnly: false,
+    defaultTransactionReadOnlySource: "session",
     fpTablePresent: true,
     inRecovery: false,
     ok: true,
@@ -2068,6 +2070,7 @@ it("fetch GET /api/internal/neon-write-pool-health returns safe status/result wh
     canUpsertFinishPosition: true,
     canUpsertRunningStyle: true,
     defaultTransactionReadOnly: false,
+    defaultTransactionReadOnlySource: "database",
     fpTablePresent: true,
     inRecovery: false,
     ok: true,
@@ -2092,6 +2095,7 @@ it("fetch GET /api/internal/neon-write-pool-health returns safe status/result wh
       canUpsertFinishPosition: true,
       canUpsertRunningStyle: true,
       defaultTransactionReadOnly: false,
+      defaultTransactionReadOnlySource: "database",
       fpTablePresent: true,
       inRecovery: false,
       rsTablePresent: true,
@@ -2111,6 +2115,7 @@ it("fetch GET /api/internal/neon-write-pool-health exposes independent upsert ca
     canUpsertFinishPosition: false,
     canUpsertRunningStyle: false,
     defaultTransactionReadOnly: false,
+    defaultTransactionReadOnlySource: "session",
     fpTablePresent: true,
     inRecovery: false,
     ok: true,
@@ -2135,6 +2140,7 @@ it("fetch GET /api/internal/neon-write-pool-health exposes independent upsert ca
       canUpsertFinishPosition: false,
       canUpsertRunningStyle: false,
       defaultTransactionReadOnly: false,
+      defaultTransactionReadOnlySource: "session",
       fpTablePresent: true,
       inRecovery: false,
       rsTablePresent: true,
@@ -2154,6 +2160,7 @@ it("fetch GET /api/internal/neon-write-pool-health exposes mixed RS/FP upsert fl
     canUpsertFinishPosition: true,
     canUpsertRunningStyle: false,
     defaultTransactionReadOnly: false,
+    defaultTransactionReadOnlySource: "session",
     fpTablePresent: true,
     inRecovery: false,
     ok: true,
@@ -2178,6 +2185,7 @@ it("fetch GET /api/internal/neon-write-pool-health exposes mixed RS/FP upsert fl
       canUpsertFinishPosition: true,
       canUpsertRunningStyle: false,
       defaultTransactionReadOnly: false,
+      defaultTransactionReadOnlySource: "session",
       fpTablePresent: true,
       inRecovery: false,
       rsTablePresent: true,

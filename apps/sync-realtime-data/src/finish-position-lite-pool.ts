@@ -3,14 +3,16 @@
 // connection limit can be tuned independently.
 
 import "pg-cloudflare";
-import { Pool } from "pg";
+import { Pool, type ClientBase } from "pg";
 
+import { formatErrorLogLine } from "./format-error";
 import type { Env } from "./types";
 
 // Raised from 12 → 24 (2026-06-04 incident) to absorb concurrent
 // running-style inference + retry storms. Hyperdrive fan-in caps upstream
 // PG connection usage, so 24 here is safe against Neon's plan max.
 const DEFAULT_POOL_SIZE = 24;
+const SET_DEFAULT_TRANSACTION_READ_ONLY_SQL = "SET default_transaction_read_only TO off";
 let pool: Pool | null = null;
 let writePool: Pool | null = null;
 
@@ -29,6 +31,22 @@ const getWriteConnectionString = (env: Env): string => {
   throw new Error(WRITE_CONNECTION_REQUIRED_ERROR);
 };
 
+// Belt-and-suspenders only: clear session default_transaction_read_only on new
+// TCP connects. Do not throw from onConnect — pg-pool destroys the client.
+const onWritePoolConnect = async (client: ClientBase): Promise<void> => {
+  try {
+    await client.query(SET_DEFAULT_TRANSACTION_READ_ONLY_SQL);
+  } catch (error: unknown) {
+    console.error(
+      formatErrorLogLine(
+        "Finish-position write pool SET failed",
+        { setting: "default_transaction_read_only" },
+        error,
+      ),
+    );
+  }
+};
+
 export const getFinishPositionPool = (env: Env): Pool => {
   if (pool !== null) return pool;
   pool = new Pool({
@@ -43,6 +61,7 @@ export const getFinishPositionWritePool = (env: Env): Pool => {
   writePool = new Pool({
     connectionString: getWriteConnectionString(env),
     max: DEFAULT_POOL_SIZE,
+    onConnect: onWritePoolConnect,
   });
   return writePool;
 };

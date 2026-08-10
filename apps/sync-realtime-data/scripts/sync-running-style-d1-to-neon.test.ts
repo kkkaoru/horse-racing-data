@@ -1,17 +1,114 @@
 // run with: bun run test
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
+import * as runningStyleNeon from "../src/running-style-neon";
 import {
   ensureRunningStylePredictionNeonSchema,
   mapD1RowsToNeonRows,
+  upsertNeonRows,
+  upsertRunningStylePredictionsToNeon,
 } from "./sync-running-style-d1-to-neon";
 
-it("ensureRunningStylePredictionNeonSchema adds predicted corner columns idempotently", async () => {
-  const query = vi.fn(async () => {});
-  await ensureRunningStylePredictionNeonSchema({ query } as never);
-  expect(query).toHaveBeenCalledTimes(1);
-  expect(query.mock.calls[0]?.[0]).toMatch(/add column if not exists predicted_corner_front_score/);
-  expect(query.mock.calls[0]?.[0]).toMatch(/add column if not exists predicted_corner_rank/);
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+it("ensureRunningStylePredictionNeonSchema is the src writable-client helper", () => {
+  expect(ensureRunningStylePredictionNeonSchema).toBe(
+    runningStyleNeon.ensureRunningStylePredictionNeonSchema,
+  );
+});
+
+it("upsertRunningStylePredictionsToNeon is the src writable-client helper", () => {
+  expect(upsertRunningStylePredictionsToNeon).toBe(
+    runningStyleNeon.upsertRunningStylePredictionsToNeon,
+  );
+});
+
+it("upsertNeonRows calls src upsert without local pool.query DML", async () => {
+  const upsert = vi
+    .spyOn(runningStyleNeon, "upsertRunningStylePredictionsToNeon")
+    .mockResolvedValue(1);
+  const query = vi.fn();
+  const pool = { query };
+  const rows = mapD1RowsToNeonRows([
+    {
+      cell_model_key: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      cell_variant_id: "tokyo-turf",
+      horse_number: 1,
+      kaisai_nen: "2026",
+      ketto_toroku_bango: "2022101234",
+      model_version: "v7",
+      p_nige: 0.5,
+      p_oikomi: 0.1,
+      p_sashi: 0.2,
+      p_senkou: 0.2,
+      predicted_at: "2026-06-19T00:00:00.000Z",
+      predicted_corner_front_score: 0.9,
+      predicted_corner_rank: 3,
+      predicted_label: "nige",
+      race_key: "jra:20260619:08:01",
+    },
+  ]);
+  const count = await upsertNeonRows(pool as never, rows);
+  expect(count).toBe(1);
+  expect(upsert).toHaveBeenCalledTimes(1);
+  expect(upsert.mock.calls[0]?.[0]).toBe(pool);
+  expect(upsert.mock.calls[0]?.[1]).toStrictEqual([
+    {
+      bamei: null,
+      category: "jra",
+      cellModelKey: "running-style/models/jra/cells/tokyo-turf.flatbin",
+      cellVariantId: "tokyo-turf",
+      horseNumber: 1,
+      kaisaiNen: "2026",
+      kettoTorokuBango: "2022101234",
+      modelVersion: "v7",
+      pNige: 0.5,
+      pOikomi: 0.1,
+      pSashi: 0.2,
+      pSenkou: 0.2,
+      predictedAt: "2026-06-19T00:00:00.000Z",
+      predictedCornerFrontScore: 0.9,
+      predictedCornerRank: 3,
+      predictedLabel: "nige",
+      raceKey: "jra:20260619:08:01",
+    },
+  ]);
+  expect(query).not.toHaveBeenCalled();
+});
+
+it("upsertNeonRows drops invalid predicted labels before src upsert", async () => {
+  const upsert = vi
+    .spyOn(runningStyleNeon, "upsertRunningStylePredictionsToNeon")
+    .mockResolvedValue(0);
+  const query = vi.fn();
+  const rows = mapD1RowsToNeonRows([
+    {
+      cell_model_key: null,
+      cell_variant_id: null,
+      horse_number: 1,
+      kaisai_nen: "2026",
+      ketto_toroku_bango: "2022101234",
+      model_version: "v7",
+      p_nige: 0.5,
+      p_oikomi: 0.1,
+      p_sashi: 0.2,
+      p_senkou: 0.2,
+      predicted_at: "2026-06-19T00:00:00.000Z",
+      predicted_corner_front_score: 0.9,
+      predicted_corner_rank: 1,
+      predicted_label: "nige",
+      race_key: "jra:20260619:08:01",
+    },
+  ]);
+  const count = await upsertNeonRows({ query } as never, [
+    { ...rows[0]!, predicted_label: "unknown" },
+  ]);
+  expect(count).toBe(0);
+  expect(upsert).toHaveBeenCalledTimes(1);
+  expect(upsert.mock.calls[0]?.[1]).toStrictEqual([]);
+  expect(query).not.toHaveBeenCalled();
 });
 
 it("mapD1RowsToNeonRows preserves stored predicted corner score and rank", () => {

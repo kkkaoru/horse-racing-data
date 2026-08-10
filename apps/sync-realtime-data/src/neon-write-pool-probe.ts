@@ -21,6 +21,7 @@ export interface NeonWritePoolProbeSuccess {
   canUpsertFinishPosition: boolean;
   canUpsertRunningStyle: boolean;
   defaultTransactionReadOnly: boolean;
+  defaultTransactionReadOnlySource: string;
   fpTablePresent: boolean;
   inRecovery: boolean;
   ok: true;
@@ -54,6 +55,7 @@ interface NeonWritePoolProbeRow {
   can_update_finish_position: boolean;
   can_update_running_style: boolean;
   default_transaction_read_only: boolean;
+  default_transaction_read_only_source: string;
   fp_table_present: boolean;
   in_recovery: boolean;
   rs_table_present: boolean;
@@ -66,7 +68,7 @@ interface MessageErrorClassPattern {
 }
 
 const NEON_WRITE_POOL_PROBE_SQL =
-  "select pg_is_in_recovery() as in_recovery, current_setting('transaction_read_only') = 'on' as transaction_read_only, current_setting('default_transaction_read_only') = 'on' as default_transaction_read_only, to_regclass('public.race_running_style_model_predictions') is not null as rs_table_present, to_regclass('public.race_finish_position_model_predictions') is not null as fp_table_present, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'INSERT'), false)) as can_insert_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'INSERT'), false)) as can_insert_finish_position, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'SELECT'), false)) as can_select_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'SELECT'), false)) as can_select_finish_position, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'UPDATE'), false)) as can_update_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'UPDATE'), false)) as can_update_finish_position";
+  "select pg_is_in_recovery() as in_recovery, current_setting('transaction_read_only') = 'on' as transaction_read_only, current_setting('default_transaction_read_only') = 'on' as default_transaction_read_only, (select pg_settings.source from pg_settings where pg_settings.name = 'default_transaction_read_only') as default_transaction_read_only_source, to_regclass('public.race_running_style_model_predictions') is not null as rs_table_present, to_regclass('public.race_finish_position_model_predictions') is not null as fp_table_present, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'INSERT'), false)) as can_insert_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'INSERT'), false)) as can_insert_finish_position, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'SELECT'), false)) as can_select_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'SELECT'), false)) as can_select_finish_position, (to_regclass('public.race_running_style_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_running_style_model_predictions'), 'UPDATE'), false)) as can_update_running_style, (to_regclass('public.race_finish_position_model_predictions') is not null and coalesce(has_table_privilege(to_regclass('public.race_finish_position_model_predictions'), 'UPDATE'), false)) as can_update_finish_position";
 
 const QUERY_ERROR_CLASS_BY_CODE: ReadonlyMap<string, NeonWritePoolQueryErrorClass> = new Map([
   ["08001", "network"],
@@ -114,6 +116,14 @@ const readBooleanField = (
   return typeof value === "boolean" ? value : null;
 };
 
+const readStringField = (
+  row: Record<string, unknown>,
+  field: keyof NeonWritePoolProbeRow,
+): string | null => {
+  const value: unknown = row[field];
+  return typeof value === "string" ? value : null;
+};
+
 const parseProbeRow = (value: unknown): NeonWritePoolProbeRow | null => {
   if (!isRecord(value)) return null;
   const canInsertFinishPosition: boolean | null = readBooleanField(
@@ -135,6 +145,10 @@ const parseProbeRow = (value: unknown): NeonWritePoolProbeRow | null => {
     value,
     "default_transaction_read_only",
   );
+  const defaultTransactionReadOnlySource: string | null = readStringField(
+    value,
+    "default_transaction_read_only_source",
+  );
   const fpTablePresent: boolean | null = readBooleanField(value, "fp_table_present");
   const inRecovery: boolean | null = readBooleanField(value, "in_recovery");
   const rsTablePresent: boolean | null = readBooleanField(value, "rs_table_present");
@@ -147,6 +161,7 @@ const parseProbeRow = (value: unknown): NeonWritePoolProbeRow | null => {
     canUpdateFinishPosition === null ||
     canUpdateRunningStyle === null ||
     defaultTransactionReadOnly === null ||
+    defaultTransactionReadOnlySource === null ||
     fpTablePresent === null ||
     inRecovery === null ||
     rsTablePresent === null ||
@@ -162,6 +177,7 @@ const parseProbeRow = (value: unknown): NeonWritePoolProbeRow | null => {
     can_update_finish_position: canUpdateFinishPosition,
     can_update_running_style: canUpdateRunningStyle,
     default_transaction_read_only: defaultTransactionReadOnly,
+    default_transaction_read_only_source: defaultTransactionReadOnlySource,
     fp_table_present: fpTablePresent,
     in_recovery: inRecovery,
     rs_table_present: rsTablePresent,
@@ -258,6 +274,7 @@ export const probeNeonWritePool = async (env: Env): Promise<NeonWritePoolProbeRe
         row.can_update_running_style,
       ),
       defaultTransactionReadOnly: row.default_transaction_read_only,
+      defaultTransactionReadOnlySource: row.default_transaction_read_only_source,
       fpTablePresent: row.fp_table_present,
       inRecovery: row.in_recovery,
       ok: true,

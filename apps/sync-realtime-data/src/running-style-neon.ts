@@ -3,8 +3,9 @@
 // Failures are non-fatal — D1 remains the source of truth and the cron will
 // retry the Neon write on the next tick via the backfill path.
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 
+import { withWritableClient } from "./neon-writable-client";
 import type { RaceRunningStyleRow } from "./running-style-d1";
 import type { RunningStyleClassLabel } from "./running-style-lightgbm-tree";
 
@@ -47,16 +48,18 @@ const buildPlaceholders = (rowCount: number, colCount: number): string =>
   ).join(", ");
 
 export const ensureRunningStylePredictionNeonSchema = async (pool: Pool): Promise<void> => {
-  await pool.query(`
+  await withWritableClient(pool, async (client) => {
+    await client.query(`
     alter table race_running_style_model_predictions
       add column if not exists predicted_corner_front_score numeric;
     alter table race_running_style_model_predictions
       add column if not exists predicted_corner_rank integer;
   `);
+  });
 };
 
 const upsertNeonBatch = async (
-  pool: Pool,
+  client: PoolClient,
   rows: ReadonlyArray<RaceRunningStyleRow>,
 ): Promise<void> => {
   const COL_COUNT = 18;
@@ -86,7 +89,7 @@ const upsertNeonBatch = async (
   });
   const actualRows = values.length / COL_COUNT;
   const actualPlaceholders = buildPlaceholders(actualRows, COL_COUNT);
-  await pool.query(
+  await client.query(
     `insert into race_running_style_model_predictions
        (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
         ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
@@ -125,10 +128,13 @@ export const upsertRunningStylePredictionsToNeon = async (
   // ALTER TABLE with "cannot execute ALTER TABLE in a read-only transaction",
   // which previously aborted the entire Neon write and skipped finish-position
   // triggers even when DML would have succeeded. Schema ensure stays in the
-  // explicit backfill script.
-  for (let start = 0; start < validRows.length; start += NEON_BATCH_SIZE) {
-    await upsertNeonBatch(pool, validRows.slice(start, start + NEON_BATCH_SIZE));
-  }
+  // explicit backfill script. One checkout covers every INSERT so SET
+  // TRANSACTION READ WRITE applies to the same txn; pool.query would not.
+  await withWritableClient(pool, async (client) => {
+    for (let start = 0; start < validRows.length; start += NEON_BATCH_SIZE) {
+      await upsertNeonBatch(client, validRows.slice(start, start + NEON_BATCH_SIZE));
+    }
+  });
   return validRows.length;
 };
 

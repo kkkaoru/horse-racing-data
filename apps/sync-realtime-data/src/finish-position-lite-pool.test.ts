@@ -3,8 +3,18 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 import type { Env } from "./types";
 
+interface MockPoolClient {
+  query: (sql: string) => Promise<unknown>;
+}
+
+interface MockPoolOptions {
+  connectionString: string;
+  max: number;
+  onConnect?: (client: MockPoolClient) => unknown;
+}
+
 const pgMock = vi.hoisted(() => ({
-  Pool: vi.fn(function Pool(options: { connectionString: string; max: number }) {
+  Pool: vi.fn(function Pool(options: MockPoolOptions) {
     return { options };
   }),
 }));
@@ -33,6 +43,19 @@ it("keeps the read pool on Hyperdrive when a writable Neon secret is also presen
   });
 });
 
+it("does not attach onConnect to the Hyperdrive read pool", async () => {
+  const query = vi.fn(async () => undefined);
+  const { getFinishPositionPool } = await import("./finish-position-lite-pool");
+  const env = {
+    HYPERDRIVE: { connectionString: "postgres://readonly-hyperdrive" },
+  } as unknown as Env;
+
+  getFinishPositionPool(env);
+
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBeUndefined();
+  expect(query).not.toHaveBeenCalled();
+});
+
 it("reuses the existing write pool after the first Neon connection", async () => {
   const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
   const env = {
@@ -44,10 +67,9 @@ it("reuses the existing write pool after the first Neon connection", async () =>
 
   expect(secondPool).toBe(firstPool);
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
-  expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
-    connectionString: "postgres://writable-neon",
-    max: 24,
-  });
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 
 it("uses DATABASE_URL_NEON for the write pool before Hyperdrive", async () => {
@@ -60,10 +82,9 @@ it("uses DATABASE_URL_NEON for the write pool before Hyperdrive", async () => {
   getFinishPositionWritePool(env);
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
-  expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
-    connectionString: "postgres://writable-neon",
-    max: 24,
-  });
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 
 it("prefers DATABASE_URL_NEON over NEON_DATABASE_URL for the write pool", async () => {
@@ -76,10 +97,9 @@ it("prefers DATABASE_URL_NEON over NEON_DATABASE_URL for the write pool", async 
   getFinishPositionWritePool(env);
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
-  expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
-    connectionString: "postgres://writable-neon",
-    max: 24,
-  });
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe("postgres://writable-neon");
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
 });
 
 it("uses NEON_DATABASE_URL for the write pool when DATABASE_URL_NEON is absent", async () => {
@@ -92,10 +112,73 @@ it("uses NEON_DATABASE_URL for the write pool when DATABASE_URL_NEON is absent",
   getFinishPositionWritePool(env);
 
   expect(pgMock.Pool).toHaveBeenCalledTimes(1);
-  expect(pgMock.Pool.mock.calls[0]?.[0]).toStrictEqual({
-    connectionString: "postgres://secondary-writable-neon",
-    max: 24,
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.connectionString).toBe(
+    "postgres://secondary-writable-neon",
+  );
+  expect(pgMock.Pool.mock.calls[0]?.[0]?.max).toBe(24);
+  expect(typeof pgMock.Pool.mock.calls[0]?.[0]?.onConnect).toBe("function");
+});
+
+it("sets default_transaction_read_only off on new write-pool connects", async () => {
+  const query = vi.fn(async () => undefined);
+  const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
+  const env = {
+    DATABASE_URL_NEON: "postgres://writable-neon",
+  } as unknown as Env;
+
+  getFinishPositionWritePool(env);
+  await pgMock.Pool.mock.calls[0]?.[0]?.onConnect?.({ query });
+
+  expect(query.mock.calls).toStrictEqual([["SET default_transaction_read_only TO off"]]);
+});
+
+it("swallows Error from write-pool onConnect SET without throwing", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const query = vi.fn(async () => {
+    throw new Error("cannot set");
   });
+  const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
+  const env = {
+    DATABASE_URL_NEON: "postgres://writable-neon",
+  } as unknown as Env;
+
+  getFinishPositionWritePool(env);
+  await expect(pgMock.Pool.mock.calls[0]?.[0]?.onConnect?.({ query })).resolves.toBeUndefined();
+
+  const line = String(errorSpy.mock.calls[0]?.[0]);
+  expect(
+    line.slice(
+      0,
+      "Finish-position write pool SET failed setting=default_transaction_read_only name=Error message=cannot set stack="
+        .length,
+    ),
+  ).toBe(
+    "Finish-position write pool SET failed setting=default_transaction_read_only name=Error message=cannot set stack=",
+  );
+  expect(line.split("postgres://")).toStrictEqual([line]);
+  errorSpy.mockRestore();
+});
+
+it("swallows non-Error from write-pool onConnect SET without throwing", async () => {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const query = vi.fn(async () => {
+    throw "cannot set";
+  });
+  const { getFinishPositionWritePool } = await import("./finish-position-lite-pool");
+  const env = {
+    DATABASE_URL_NEON: "postgres://writable-neon",
+  } as unknown as Env;
+
+  getFinishPositionWritePool(env);
+  await expect(pgMock.Pool.mock.calls[0]?.[0]?.onConnect?.({ query })).resolves.toBeUndefined();
+
+  expect(errorSpy.mock.calls[0]?.[0]).toBe(
+    "Finish-position write pool SET failed setting=default_transaction_read_only name=unknown message=cannot set stack=",
+  );
+  expect(String(errorSpy.mock.calls[0]?.[0]).split("postgres://")).toStrictEqual([
+    "Finish-position write pool SET failed setting=default_transaction_read_only name=unknown message=cannot set stack=",
+  ]);
+  errorSpy.mockRestore();
 });
 
 it("fails fast for DML when Hyperdrive exists but no writable Neon secret is configured", async () => {

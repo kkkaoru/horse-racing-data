@@ -206,6 +206,7 @@ interface NeonWritePoolProbeSuccess {
   canUpsertFinishPosition: boolean;
   canUpsertRunningStyle: boolean;
   defaultTransactionReadOnly: boolean;
+  defaultTransactionReadOnlySource: string;
   fpTablePresent: boolean;
   inRecovery: boolean;
   ok: true;
@@ -237,6 +238,7 @@ interface NeonWritePoolHealthOkResult {
   canUpsertFinishPosition: boolean;
   canUpsertRunningStyle: boolean;
   defaultTransactionReadOnly: boolean;
+  defaultTransactionReadOnlySource: string;
   fpTablePresent: boolean;
   inRecovery: boolean;
   rsTablePresent: boolean;
@@ -533,6 +535,7 @@ const buildNeonWritePoolHealthResponse = (probe: NeonWritePoolProbeResult): Resp
         canUpsertFinishPosition: probe.canUpsertFinishPosition,
         canUpsertRunningStyle: probe.canUpsertRunningStyle,
         defaultTransactionReadOnly: probe.defaultTransactionReadOnly,
+        defaultTransactionReadOnlySource: probe.defaultTransactionReadOnlySource,
         fpTablePresent: probe.fpTablePresent,
         inRecovery: probe.inRecovery,
         rsTablePresent: probe.rsTablePresent,

@@ -11,10 +11,18 @@
 import { spawn } from "node:child_process";
 import { Pool } from "pg";
 
+import type { RaceRunningStyleRow } from "../src/running-style-d1";
+import type { RunningStyleClassLabel } from "../src/running-style-lightgbm-tree";
+import * as runningStyleNeon from "../src/running-style-neon";
+
 const WRANGLER_COMMAND = "bunx";
 const DATABASE_NAME = "sync-realtime-data";
 const D1_BATCH_SIZE = 500;
-const NEON_BATCH_SIZE = 200;
+
+export const ensureRunningStylePredictionNeonSchema =
+  runningStyleNeon.ensureRunningStylePredictionNeonSchema;
+export const upsertRunningStylePredictionsToNeon =
+  runningStyleNeon.upsertRunningStylePredictionsToNeon;
 
 const LABEL_CLASS_INDEX: Record<string, number> = {
   nige: 0,
@@ -164,14 +172,8 @@ const getPredictedCornerFrontScore = (row: D1Row): number =>
     ? computePredictedCornerFrontScore(row)
     : Number(row.predicted_corner_front_score);
 
-export const ensureRunningStylePredictionNeonSchema = async (pool: Pool): Promise<void> => {
-  await pool.query(`
-    alter table race_running_style_model_predictions
-      add column if not exists predicted_corner_front_score numeric;
-    alter table race_running_style_model_predictions
-      add column if not exists predicted_corner_rank integer;
-  `);
-};
+const isRunningStyleClassLabel = (label: string): label is RunningStyleClassLabel =>
+  label === "nige" || label === "oikomi" || label === "sashi" || label === "senkou";
 
 const toNeonRow = (row: D1Row, predictedCornerRank: number): NeonRow | null => {
   const parsed = parseRaceKey(row.race_key);
@@ -230,60 +232,34 @@ export const mapD1RowsToNeonRows = (rows: readonly D1Row[]): NeonRow[] => {
   });
 };
 
-const upsertNeonBatch = async (pool: Pool, rows: NeonRow[]): Promise<number> => {
-  if (rows.length === 0) return 0;
-  const colCount = 18;
-  const placeholders = rows
-    .map(
-      (_, rowIndex) =>
-        `(${Array.from({ length: colCount }, (__, colIndex) => `$${rowIndex * colCount + colIndex + 1}`).join(", ")})`,
-    )
-    .join(", ");
-  const values = rows.flatMap((row) => [
-    row.model_version,
-    row.source,
-    row.kaisai_nen,
-    row.kaisai_tsukihi,
-    row.keibajo_code,
-    row.race_bango,
-    row.ketto_toroku_bango,
-    row.umaban,
-    row.cell_model_key,
-    row.cell_variant_id,
-    row.p_nige,
-    row.p_senkou,
-    row.p_sashi,
-    row.p_oikomi,
-    row.predicted_corner_front_score,
-    row.predicted_corner_rank,
-    row.predicted_label,
-    row.predicted_class,
-  ]);
-  await pool.query(
-    `insert into race_running_style_model_predictions
-       (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-        ketto_toroku_bango, umaban, cell_model_key, cell_variant_id,
-        p_nige, p_senkou, p_sashi, p_oikomi,
-        predicted_corner_front_score, predicted_corner_rank, predicted_label, predicted_class)
-     values ${placeholders}
-     on conflict (model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)
-     do update set
-       umaban = excluded.umaban,
-       cell_model_key = excluded.cell_model_key,
-       cell_variant_id = excluded.cell_variant_id,
-       p_nige = excluded.p_nige,
-       p_senkou = excluded.p_senkou,
-       p_sashi = excluded.p_sashi,
-       p_oikomi = excluded.p_oikomi,
-       predicted_corner_front_score = excluded.predicted_corner_front_score,
-       predicted_corner_rank = excluded.predicted_corner_rank,
-       predicted_label = excluded.predicted_label,
-       predicted_class = excluded.predicted_class,
-       prediction_generated_at = now()`,
-    values,
-  );
-  return rows.length;
-};
+const toRaceRunningStyleRows = (rows: readonly NeonRow[]): RaceRunningStyleRow[] =>
+  rows.flatMap((row) => {
+    if (!isRunningStyleClassLabel(row.predicted_label)) return [];
+    return [
+      {
+        bamei: null,
+        category: row.source,
+        cellModelKey: row.cell_model_key,
+        cellVariantId: row.cell_variant_id,
+        horseNumber: row.umaban,
+        kaisaiNen: row.kaisai_nen,
+        kettoTorokuBango: row.ketto_toroku_bango,
+        modelVersion: row.model_version,
+        pNige: row.p_nige,
+        pOikomi: row.p_oikomi,
+        pSashi: row.p_sashi,
+        pSenkou: row.p_senkou,
+        predictedAt: row.predicted_at,
+        predictedCornerFrontScore: row.predicted_corner_front_score,
+        predictedCornerRank: row.predicted_corner_rank,
+        predictedLabel: row.predicted_label,
+        raceKey: `${row.source}:${row.kaisai_nen}${row.kaisai_tsukihi}:${row.keibajo_code}:${row.race_bango}`,
+      },
+    ];
+  });
+
+export const upsertNeonRows = async (pool: Pool, rows: readonly NeonRow[]): Promise<number> =>
+  runningStyleNeon.upsertRunningStylePredictionsToNeon(pool, toRaceRunningStyleRows(rows));
 
 const buildDatePatterns = (fromDate: string, toDate: string): string[] => {
   const from = new Date(`${fromDate.slice(0, 4)}-${fromDate.slice(4, 6)}-${fromDate.slice(6, 8)}`);
@@ -308,11 +284,7 @@ const syncDate = async (pool: Pool, pattern: string): Promise<number> => {
     const d1Rows = await fetchD1Batch(pattern, offset);
     if (d1Rows.length === 0) break;
     const neonRows = mapD1RowsToNeonRows(d1Rows);
-    for (let batchStart = 0; batchStart < neonRows.length; batchStart += NEON_BATCH_SIZE) {
-      const batch = neonRows.slice(batchStart, batchStart + NEON_BATCH_SIZE);
-      const upserted = await upsertNeonBatch(pool, batch);
-      totalUpserted += upserted;
-    }
+    totalUpserted += await upsertNeonRows(pool, neonRows);
     offset += D1_BATCH_SIZE;
     if (d1Rows.length < D1_BATCH_SIZE) break;
   }
@@ -326,7 +298,7 @@ const run = async (): Promise<void> => {
   console.log(`[sync] dates=${patterns.length} from=${args.fromDate} to=${args.toDate}`);
   const pool = new Pool({ connectionString: args.neonUrl, ssl: { rejectUnauthorized: false } });
   try {
-    await ensureRunningStylePredictionNeonSchema(pool);
+    await runningStyleNeon.ensureRunningStylePredictionNeonSchema(pool);
     let total = 0;
     for (const pattern of patterns) {
       total += await syncDate(pool, pattern);
