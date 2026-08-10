@@ -19,7 +19,7 @@
     "@types/node": "25.9.3",
     "@types/pg": "8.20.0",
     "@vitest/coverage-v8": "4.1.9",
-    "oxfmt": "0.55.0",
+    "oxfmt": "0.63.0",
     "oxlint": "1.70.0",
     "typescript": "6.0.3",
     "vitest": "4.1.9"
