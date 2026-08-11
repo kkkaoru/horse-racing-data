@@ -30,6 +30,7 @@
   "module": "index.ts",
   "scripts": {
     "start:local": "./scripts/start-db-and-viewer.sh",
+    "scrape:keiba-go": "bun run --filter local-postgresql scrape:keiba-go",
     "shellcheck": "shellcheck **/*.sh"
   },
   "dependencies": {},

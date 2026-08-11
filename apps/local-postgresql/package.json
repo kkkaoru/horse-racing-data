@@ -18,6 +18,7 @@
     "indexes:check:quick": "bun run ./scripts/check-and-repair-indexes.ts --quick",
     "indexes:repair": "bun run ./scripts/check-and-repair-indexes.ts --repair",
     "indexes:repair:quick": "bun run ./scripts/check-and-repair-indexes.ts --repair --quick",
+    "scrape:keiba-go": "python3 ./scripts/keiba_go_scrape_import.py",
     "status": "container list --all",
     "test": "vitest run && vitest run --config scripts/vitest.config.ts",
     "test:coverage": "vitest run --coverage && vitest run --config scripts/vitest.config.ts",
