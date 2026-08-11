@@ -91,7 +91,7 @@ _build_feature_rows = cast(
     getattr(predict_upcoming, _BUILD_FEATURE_ROWS_ATTR),
 )
 _make_prewarm_fn = cast(
-    Callable[[str], Callable[[str, str, int], Path | None]],
+    Callable[[str, R2Config | None], Callable[[str, str, int], Path | None]],
     getattr(predict_upcoming, _MAKE_PREWARM_FN_ATTR),
 )
 _make_rescore_fn = cast(
@@ -102,7 +102,7 @@ _make_rescore_fn = cast(
     getattr(predict_upcoming, _MAKE_RESCORE_FN_ATTR),
 )
 _prewarm_parquet_payload = cast(
-    Callable[[str, str, Path], tuple[str, str] | None],
+    Callable[[str, str, Path], tuple[str, str, Mapping[str, str | int] | None] | None],
     getattr(predict_upcoming, _PREWARM_PARQUET_PAYLOAD_ATTR),
 )
 _ensure_cached_parquet = cast(
@@ -928,8 +928,8 @@ def _fake_prewarm(category: str, run_date: str, days_ahead: int) -> Path | None:
 
 def _fake_prewarm_parquet_payload(
     category: str, run_date: str, day_base_dir: Path
-) -> tuple[str, str] | None:
-    return "cGF5bG9hZA==", f"feat-daybase/{category}/{run_date}/features.parquet"
+) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    return "cGF5bG9hZA==", f"feat-daybase/{category}/{run_date}/features.parquet", None
 
 
 def test_make_handler_class_prewarm_fn_callable_without_instance() -> None:
@@ -975,7 +975,7 @@ def test_make_handler_class_prewarm_parquet_payload_fn_callable_without_instance
     payload_fn = handler_cls.prewarm_parquet_payload_fn
     assert payload_fn is not None
     result = payload_fn("jra", "20260712", Path("/tmp/x"))
-    assert result == ("cGF5bG9hZA==", "feat-daybase/jra/20260712/features.parquet")
+    assert result == ("cGF5bG9hZA==", "feat-daybase/jra/20260712/features.parquet", None)
 
 
 def test_make_handler_class_prewarm_fn_not_bound_method() -> None:
@@ -1093,17 +1093,19 @@ def test_make_prewarm_fn_resolves_category_and_calls_build_day_base(
         database_url: str,
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
+        r2_config: R2Config | None = None,
     ) -> Path | None:
-        captured.append((category, target_date, days_ahead, database_url))
+        captured.append((category, target_date, days_ahead, database_url, r2_config))
         return Path("/tmp/daybase-final")
 
     monkeypatch.setattr(pipeline_runner, "build_day_base", fake_build_day_base)
+    r2 = R2Config(account_id="a", access_key_id="k", secret_access_key="s", bucket="b")
 
-    prewarm_fn = _make_prewarm_fn("postgresql://u:p@h/db")
+    prewarm_fn = _make_prewarm_fn("postgresql://u:p@h/db", r2)
     result = prewarm_fn("nar", "20260712", 2)
 
     assert result == Path("/tmp/daybase-final")
-    assert captured == [("nar", "20260712", 2, "postgresql://u:p@h/db")]
+    assert captured == [("nar", "20260712", 2, "postgresql://u:p@h/db", r2)]
 
 
 def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) -> None:
@@ -1114,11 +1116,42 @@ def test_prewarm_parquet_payload_reads_parquet_and_builds_key(tmp_path: Path) ->
     result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
 
     assert result is not None
-    encoded, key = result
+    encoded, key, watermark = result
     import base64
 
     assert base64.b64decode(encoded) == b"PARQUET-DATA"
     assert key == "feat-daybase/catalog-v1/jra/20260712/features.parquet"
+    assert watermark is None
+
+
+def test_prewarm_parquet_payload_reads_watermark_sidecar_when_present(tmp_path: Path) -> None:
+    day_dir = tmp_path / "daybase-jra-20260712"
+    day_base_dir = day_dir / "final"
+    day_base_dir.mkdir(parents=True)
+    (day_base_dir / "data.parquet").write_bytes(b"PARQUET-DATA")
+    import pipeline_runner
+
+    # ``_write_watermark`` is module-private; accessed via getattr + cast
+    # (same pattern ``tests/test_pipeline_runner.py`` uses) so strict
+    # basedpyright does not flag ``reportPrivateUsage``.
+    write_watermark_attr = "_write_watermark"
+    write_watermark = cast(
+        "Callable[[Path, tuple[str, int, str, int]], None]",
+        getattr(pipeline_runner, write_watermark_attr),
+    )
+
+    write_watermark(day_dir, ("20260712", 946, "2026-07-18T09:00:00", 12))
+
+    result = _prewarm_parquet_payload("jra", "20260712", day_base_dir)
+
+    assert result is not None
+    _encoded, _key, watermark = result
+    assert watermark == {
+        "maxDataSakuseiNengappi": "20260712",
+        "rowCount": 946,
+        "rsPredictedAtMax": "2026-07-18T09:00:00",
+        "rsRowCount": 12,
+    }
 
 
 def test_ensure_cached_parquet_fetches_only_catalog_generation(

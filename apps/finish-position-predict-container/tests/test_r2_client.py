@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from predict_lib.r2_client import r2_get_parquet
+from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
 from predict_lib.serve import R2Config
 
 _R2 = R2Config(
@@ -179,3 +179,174 @@ def test_r2_get_parquet_logs_success_to_stderr(
     assert "r2-client" in captured.err
     assert "feat-daybase/jra/20260712/features.parquet" in captured.err
     assert "bytes=5" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# r2_head_watermark (task #32 -- R2 day-base watermark sidecar)
+# ---------------------------------------------------------------------------
+
+
+@final
+class _FakeHeadResponse:
+    """Minimal context-manager stand-in for a HEAD ``http.client.HTTPResponse``
+    -- only ``.headers`` (case-insensitive ``.get``) is ever read, no body."""
+
+    def __init__(self, headers: dict[str, str]) -> None:
+        message = email.message.Message()
+        for key, value in headers.items():
+            message.add_header(key, value)
+        self.headers = message
+
+    def __enter__(self) -> _FakeHeadResponse:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+
+_FULL_WATERMARK_HEADERS = {
+    "x-amz-meta-max-data-sakusei-nengappi": "20260712",
+    "x-amz-meta-row-count": "946",
+    "x-amz-meta-rs-predicted-at-max": "2026-07-18T09:00:00",
+    "x-amz-meta-rs-row-count": "12",
+}
+
+
+def test_r2_head_watermark_success_returns_four_tuple(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        assert timeout == 30.0
+        return _FakeHeadResponse(_FULL_WATERMARK_HEADERS)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "feat-daybase/catalog-v1/jra/20260712/features.parquet")
+
+    assert result == ("20260712", 946, "2026-07-18T09:00:00", 12)
+
+
+def test_r2_head_watermark_request_method_is_head_no_body_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[urllib.request.Request] = []
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        captured.append(req)
+        return _FakeHeadResponse(_FULL_WATERMARK_HEADERS)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    r2_head_watermark(_R2, "some/key")
+
+    assert len(captured) == 1
+    assert captured[0].get_method() == "HEAD"
+
+
+def test_r2_head_watermark_authorization_header_is_sigv4_shaped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[urllib.request.Request] = []
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        captured.append(req)
+        return _FakeHeadResponse(_FULL_WATERMARK_HEADERS)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    r2_head_watermark(_R2, "feat-daybase/catalog-v1/nar/20260712/features.parquet")
+
+    req = captured[0]
+    auth = req.get_header("Authorization")
+    assert auth is not None
+    assert auth.startswith("AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/")
+    assert "SignedHeaders=host;x-amz-content-sha256;x-amz-date" in auth
+
+
+def test_r2_head_watermark_missing_object_returns_none(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", email.message.Message(), None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "missing/key")
+
+    assert result is None
+    assert "head watermark failed" in capsys.readouterr().err
+
+
+def test_r2_head_watermark_other_exception_returns_none(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        raise TimeoutError("connect timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None
+    assert "head watermark failed" in capsys.readouterr().err
+
+
+def test_r2_head_watermark_missing_metadata_header_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incomplete = dict(_FULL_WATERMARK_HEADERS)
+    del incomplete["x-amz-meta-rs-row-count"]
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        return _FakeHeadResponse(incomplete)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None
+
+
+def test_r2_head_watermark_no_metadata_at_all_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        return _FakeHeadResponse({})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None
+
+
+def test_r2_head_watermark_malformed_row_count_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malformed = dict(_FULL_WATERMARK_HEADERS)
+    malformed["x-amz-meta-row-count"] = "not-a-number"
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        return _FakeHeadResponse(malformed)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None
+
+
+def test_r2_head_watermark_malformed_rs_row_count_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    malformed = dict(_FULL_WATERMARK_HEADERS)
+    malformed["x-amz-meta-rs-row-count"] = "not-a-number"
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 0) -> _FakeHeadResponse:
+        return _FakeHeadResponse(malformed)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    result = r2_head_watermark(_R2, "some/key")
+
+    assert result is None

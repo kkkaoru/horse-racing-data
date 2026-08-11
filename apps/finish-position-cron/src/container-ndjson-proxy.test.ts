@@ -157,6 +157,60 @@ test("proxyParquetFromNdjson streams chunks before upstream closes and proxies r
   );
 });
 
+test("proxyParquetFromNdjson attaches the daybase watermark as R2 customMetadata on the single parquet only", async () => {
+  const { env, put } = makeR2Mock();
+  const { tasks, waitUntil } = makeWaitUntil();
+  const resultLine = JSON.stringify({
+    type: "result",
+    racesPredicted: 1,
+    category: "jra",
+    parquetBase64: "bWFpbg==",
+    parquetKey: "feat-daybase/catalog-v1/jra/20260712/features.parquet",
+    daybaseWatermark: {
+      maxDataSakuseiNengappi: "20260712",
+      rowCount: 946,
+      rsPredictedAtMax: "2026-07-18T09:00:00",
+      rsRowCount: 12,
+    },
+    perRaceParquets: [
+      { parquetBase64: "cmFjZTE=", parquetKey: "feat-cache/jra/20260712/01.parquet" },
+    ],
+  });
+  const response = ndjsonResponse(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(resultLine));
+        controller.close();
+      },
+    }),
+  );
+
+  await expect(proxyParquetFromNdjson(response, env, waitUntil).text()).resolves.toBe(resultLine);
+  await Promise.all(tasks);
+
+  expect(put).toHaveBeenCalledTimes(2);
+  expect(put).toHaveBeenNthCalledWith(
+    1,
+    "feat-daybase/catalog-v1/jra/20260712/features.parquet",
+    encoder.encode("main").buffer,
+    {
+      httpMetadata: { contentType: "application/octet-stream" },
+      customMetadata: {
+        "max-data-sakusei-nengappi": "20260712",
+        "row-count": "946",
+        "rs-predicted-at-max": "2026-07-18T09:00:00",
+        "rs-row-count": "12",
+      },
+    },
+  );
+  expect(put).toHaveBeenNthCalledWith(
+    2,
+    "feat-cache/jra/20260712/01.parquet",
+    encoder.encode("race1").buffer,
+    { httpMetadata: { contentType: "application/octet-stream" } },
+  );
+});
+
 test("proxyParquetFromNdjson logs successful R2 proxy only when debug is enabled", async () => {
   const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const { env } = makeR2Mock();

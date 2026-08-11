@@ -136,7 +136,7 @@ test("runDayBasePrewarm continues warming other categories when one category's D
     "[day-base-prewarm] failed category=jra runYmd=20260628: Error: boom",
   );
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] success category=nar runYmd=20260628 status=success parquetKey=nar/20260628/day-base.parquet error=-",
+    "[day-base-prewarm] success category=nar runYmd=20260628 status=success parquetKey=nar/20260628/day-base.parquet watermark=absent error=-",
   );
   errorSpy.mockRestore();
   logSpy.mockRestore();
@@ -170,7 +170,7 @@ test("prewarmCategory logs a success outcome when the container returns status s
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] success category=jra runYmd=20260628 status=success parquetKey=jra/20260628/day-base.parquet error=-",
+    "[day-base-prewarm] success category=jra runYmd=20260628 status=success parquetKey=jra/20260628/day-base.parquet watermark=absent error=-",
   );
   logSpy.mockRestore();
 });
@@ -186,7 +186,36 @@ test("prewarmCategory logs an empty outcome when the container returns status em
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   await prewarmCategory({ category: "nar", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
   expect(logSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] empty category=nar runYmd=20260628 status=empty parquetKey=- error=-",
+    "[day-base-prewarm] empty category=nar runYmd=20260628 status=empty parquetKey=- watermark=absent error=-",
+  );
+  logSpy.mockRestore();
+});
+
+test("prewarmCategory logs watermark=present when the result line carries a daybaseWatermark", async () => {
+  containerDoFetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        `${JSON.stringify({
+          category: "jra",
+          daybaseWatermark: {
+            maxDataSakuseiNengappi: "20260712",
+            rowCount: 946,
+            rsPredictedAtMax: "2026-07-18T09:00:00",
+            rsRowCount: 12,
+          },
+          parquetKey: "jra/20260628/day-base.parquet",
+          runDate: "20260628",
+          status: "success",
+          type: "result",
+        })}\n`,
+        { status: 200 },
+      ),
+    ),
+  );
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
+  expect(logSpy).toHaveBeenCalledWith(
+    "[day-base-prewarm] success category=jra runYmd=20260628 status=success parquetKey=jra/20260628/day-base.parquet watermark=present error=-",
   );
   logSpy.mockRestore();
 });
@@ -208,7 +237,7 @@ test("prewarmCategory logs a warning when the container returns status error ins
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] failed category=jra runYmd=20260628 status=error parquetKey=- error=boom",
+    "[day-base-prewarm] failed category=jra runYmd=20260628 status=error parquetKey=- watermark=absent error=boom",
   );
   warnSpy.mockRestore();
 });
@@ -248,7 +277,7 @@ test("prewarmCategory logs a failed outcome with the status placeholder when the
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await prewarmCategory({ category: "jra", daysAhead: 2, env: makeEnv(), runYmd: "20260628" });
   expect(warnSpy).toHaveBeenCalledWith(
-    "[day-base-prewarm] failed category=jra runYmd=20260628 status=- parquetKey=- error=-",
+    "[day-base-prewarm] failed category=jra runYmd=20260628 status=- parquetKey=- watermark=absent error=-",
   );
   warnSpy.mockRestore();
 });

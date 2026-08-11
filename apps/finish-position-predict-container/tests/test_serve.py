@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
@@ -2959,6 +2959,23 @@ def test_build_prewarm_result_line_without_parquet_fields() -> None:
     assert "parquetKey" not in parsed
 
 
+def test_build_prewarm_result_line_with_daybase_watermark() -> None:
+    line = build_prewarm_result_line(
+        "jra",
+        "20260712",
+        status="success",
+        daybase_watermark={"maxDataSakuseiNengappi": "20260712", "rowCount": 946},
+    )
+    parsed = json.loads(line.decode())
+    assert parsed["daybaseWatermark"] == {"maxDataSakuseiNengappi": "20260712", "rowCount": 946}
+
+
+def test_build_prewarm_result_line_without_daybase_watermark() -> None:
+    line = build_prewarm_result_line("jra", "20260712", status="success")
+    parsed = json.loads(line.decode())
+    assert "daybaseWatermark" not in parsed
+
+
 def test_build_prewarm_result_line_empty_status() -> None:
     line = build_prewarm_result_line("jra", "20260712", status=PREWARM_EMPTY_STATUS)
     parsed = json.loads(line.decode())
@@ -3058,9 +3075,11 @@ def test_iter_prewarm_chunks_forwards_category_run_date_days_ahead() -> None:
 def test_iter_prewarm_chunks_calls_parquet_payload_fn_with_day_base_dir() -> None:
     captured: list[tuple[str, str, Path]] = []
 
-    def _payload(category: str, run_date: str, day_base_dir: Path) -> tuple[str, str] | None:
+    def _payload(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
         captured.append((category, run_date, day_base_dir))
-        return "dGVzdA==", "feat-daybase/jra/20260712/features.parquet"
+        return "dGVzdA==", "feat-daybase/jra/20260712/features.parquet", None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     chunks = list(
@@ -3072,14 +3091,37 @@ def test_iter_prewarm_chunks_calls_parquet_payload_fn_with_day_base_dir() -> Non
     assert last["status"] == "success"
     assert last["parquetBase64"] == "dGVzdA=="
     assert last["parquetKey"] == "feat-daybase/jra/20260712/features.parquet"
+    assert "daybaseWatermark" not in last
     assert len(captured) == 1
     assert captured[0][0] == "jra"
     assert captured[0][1] == "20260712"
     assert captured[0][2] == Path("/tmp/daybase-jra-20260712")
 
 
+def test_iter_prewarm_chunks_forwards_daybase_watermark_when_present() -> None:
+    def _payload(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+        return (
+            "dGVzdA==",
+            "feat-daybase/jra/20260712/features.parquet",
+            {"maxDataSakuseiNengappi": "20260712", "rowCount": 946},
+        )
+
+    params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
+    chunks = list(
+        iter_prewarm_chunks(
+            params, _mock_build_ok, parquet_payload_fn=_payload, sleep_fn=_noop_sleep
+        )
+    )
+    last = json.loads(chunks[-1].decode())
+    assert last["daybaseWatermark"] == {"maxDataSakuseiNengappi": "20260712", "rowCount": 946}
+
+
 def test_iter_prewarm_chunks_parquet_payload_fn_none_result() -> None:
-    def _no_parquet(category: str, run_date: str, day_base_dir: Path) -> tuple[str, str] | None:
+    def _no_parquet(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
         return None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
@@ -3096,7 +3138,7 @@ def test_iter_prewarm_chunks_parquet_payload_fn_none_result() -> None:
 def test_iter_prewarm_chunks_parquet_payload_fn_error_swallowed() -> None:
     def _failing_payload(
         category: str, run_date: str, day_base_dir: Path
-    ) -> tuple[str, str] | None:
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
         raise RuntimeError("disk read failed")
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
@@ -3121,9 +3163,11 @@ def test_iter_prewarm_chunks_no_parquet_payload_fn_no_fields() -> None:
 def test_iter_prewarm_chunks_empty_build_skips_parquet_payload_fn() -> None:
     called: list[bool] = []
 
-    def _payload(category: str, run_date: str, day_base_dir: Path) -> tuple[str, str] | None:
+    def _payload(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
         called.append(True)
-        return "x", "y"
+        return "x", "y", None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     list(
@@ -3137,9 +3181,11 @@ def test_iter_prewarm_chunks_empty_build_skips_parquet_payload_fn() -> None:
 def test_iter_prewarm_chunks_error_skips_parquet_payload_fn() -> None:
     called: list[bool] = []
 
-    def _payload(category: str, run_date: str, day_base_dir: Path) -> tuple[str, str] | None:
+    def _payload(
+        category: str, run_date: str, day_base_dir: Path
+    ) -> tuple[str, str, Mapping[str, str | int] | None] | None:
         called.append(True)
-        return "x", "y"
+        return "x", "y", None
 
     params = PrewarmParams(category="jra", run_date="20260712", days_ahead=0)
     list(

@@ -1,12 +1,21 @@
 // Run with bun. Streaming NDJSON response proxy for the Container Durable Object.
 
-import type { PredictResultLine } from "./ndjson-stream";
+import type { DaybaseWatermark, PredictResultLine } from "./ndjson-stream";
 import type { Env } from "./types";
 
 const RESULT_LINE_TYPE = "result";
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
 const SINGLE_PARQUET_KIND = "single";
 const PER_RACE_PARQUET_KIND = "per-race";
+const PARQUET_CONTENT_TYPE = "application/octet-stream";
+// R2 custom metadata key names (no "x-amz-meta-" prefix -- R2's S3-compatible
+// API adds that automatically on GET/HEAD). Must stay in sync with
+// predict_lib.r2_client's own `_WATERMARK_META_*` header name constants on
+// the Container side.
+const WATERMARK_META_MAX_UPDATED = "max-data-sakusei-nengappi";
+const WATERMARK_META_ROW_COUNT = "row-count";
+const WATERMARK_META_RS_PREDICTED_AT_MAX = "rs-predicted-at-max";
+const WATERMARK_META_RS_ROW_COUNT = "rs-row-count";
 
 type R2ProxyEnv = Pick<Env, "FEATURES_CACHE">;
 type WaitUntil = (promise: Promise<void>) => void;
@@ -17,6 +26,7 @@ interface ParquetProxyEntry {
   base64: string;
   key: string;
   kind: ParquetProxyKind;
+  customMetadata?: Record<string, string>;
 }
 
 interface LastLineTracker {
@@ -27,6 +37,26 @@ interface LastLineTracker {
 const logLabel = (kind: ParquetProxyKind): string =>
   kind === SINGLE_PARQUET_KIND ? "R2 proxy" : "R2 per-race proxy";
 
+// Translates the day-base watermark (task #32) into R2 customMetadata keys.
+// Only the single day-base parquet ever carries a watermark -- per-race
+// feature parquets have no day-base freshness concept of their own.
+const buildWatermarkCustomMetadata = (
+  watermark: DaybaseWatermark | undefined,
+): Record<string, string> | undefined => {
+  if (watermark === undefined) return undefined;
+  return {
+    [WATERMARK_META_MAX_UPDATED]: watermark.maxDataSakuseiNengappi,
+    [WATERMARK_META_ROW_COUNT]: String(watermark.rowCount),
+    [WATERMARK_META_RS_PREDICTED_AT_MAX]: watermark.rsPredictedAtMax,
+    [WATERMARK_META_RS_ROW_COUNT]: String(watermark.rsRowCount),
+  };
+};
+
+const buildR2PutOptions = (customMetadata: Record<string, string> | undefined): R2PutOptions => {
+  if (customMetadata === undefined) return { httpMetadata: { contentType: PARQUET_CONTENT_TYPE } };
+  return { httpMetadata: { contentType: PARQUET_CONTENT_TYPE }, customMetadata };
+};
+
 const putParquetToR2 = async (
   entry: ParquetProxyEntry,
   env: R2ProxyEnv,
@@ -34,9 +64,7 @@ const putParquetToR2 = async (
 ): Promise<void> => {
   try {
     const bytes = Uint8Array.from(atob(entry.base64), (c) => c.charCodeAt(0));
-    await env.FEATURES_CACHE.put(entry.key, bytes.buffer, {
-      httpMetadata: { contentType: "application/octet-stream" },
-    });
+    await env.FEATURES_CACHE.put(entry.key, bytes.buffer, buildR2PutOptions(entry.customMetadata));
     if (debug) {
       console.log(
         `[container-class] ${logLabel(entry.kind)} ok key=${entry.key} bytes=${bytes.length}`,
@@ -53,7 +81,12 @@ const buildParquetProxyEntries = (result: PredictResultLine): ParquetProxyEntry[
   const entries: ParquetProxyEntry[] = [];
   const { parquetBase64, parquetKey } = result;
   if (parquetBase64 && parquetKey) {
-    entries.push({ base64: parquetBase64, key: parquetKey, kind: SINGLE_PARQUET_KIND });
+    entries.push({
+      base64: parquetBase64,
+      key: parquetKey,
+      kind: SINGLE_PARQUET_KIND,
+      customMetadata: buildWatermarkCustomMetadata(result.daybaseWatermark),
+    });
   }
   for (const entry of result.perRaceParquets ?? []) {
     entries.push({

@@ -53,8 +53,15 @@ def _signing_key(secret_access_key: str, datestamp: str) -> bytes:
     )
 
 
-def _build_signed_get_request(r2: R2Config, object_key: str) -> urllib.request.Request:
-    """Build a SigV4-signed unsigned-payload GET request for one R2 object."""
+def _build_signed_request(r2: R2Config, object_key: str, method: str) -> urllib.request.Request:
+    """Build a SigV4-signed unsigned-payload request for one R2 object.
+
+    ``method`` is either ``"GET"`` (fetch the object body,
+    :func:`r2_get_parquet`) or ``"HEAD"`` (fetch only headers/metadata,
+    :func:`r2_head_watermark`) -- both have an empty request body, so the
+    signing math (payload hash of the empty string) is identical; only the
+    HTTP verb embedded in the canonical request's first line differs.
+    """
     now = datetime.now(UTC)
     amzdate = now.strftime("%Y%m%dT%H%M%SZ")
     datestamp = now.strftime("%Y%m%d")
@@ -65,7 +72,7 @@ def _build_signed_get_request(r2: R2Config, object_key: str) -> urllib.request.R
         f"host:{host}\nx-amz-content-sha256:{_EMPTY_BODY_SHA256}\nx-amz-date:{amzdate}\n"
     )
     canonical_request = (
-        f"GET\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n"
+        f"{method}\n/{r2.bucket}/{object_key}\n\n{canonical_headers}\n"
         f"{_SIGNED_HEADERS}\n{_EMPTY_BODY_SHA256}"
     )
 
@@ -83,13 +90,18 @@ def _build_signed_get_request(r2: R2Config, object_key: str) -> urllib.request.R
     )
     return urllib.request.Request(
         url,
-        method="GET",
+        method=method,
         headers={
             "Authorization": auth_header,
             "x-amz-date": amzdate,
             "x-amz-content-sha256": _EMPTY_BODY_SHA256,
         },
     )
+
+
+def _build_signed_get_request(r2: R2Config, object_key: str) -> urllib.request.Request:
+    """Build a SigV4-signed unsigned-payload GET request for one R2 object."""
+    return _build_signed_request(r2, object_key, "GET")
 
 
 def r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
@@ -118,3 +130,66 @@ def r2_get_parquet(r2: R2Config, object_key: str, dest_path: Path) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Day-base watermark sidecar (2026-07-19, task #32 -- cross-process day-base
+# reuse for catalog sources). The watermark is carried as R2 custom metadata
+# on the day-base parquet object itself (not a second sidecar object) --
+# one PUT, no two-object consistency hazard, and a signed HEAD (no body
+# download) is enough to check it before paying for the full GET.
+# ---------------------------------------------------------------------------
+
+# Metadata key names as PUT by the Worker (container-ndjson-proxy.ts) --
+# surfaced back on GET/HEAD as ``x-amz-meta-{key}`` response headers per the
+# S3-compatible API R2 implements. Must stay in sync with that file's own
+# ``customMetadata`` object keys.
+_WATERMARK_META_MAX_UPDATED: str = "x-amz-meta-max-data-sakusei-nengappi"
+_WATERMARK_META_ROW_COUNT: str = "x-amz-meta-row-count"
+_WATERMARK_META_RS_PREDICTED_AT_MAX: str = "x-amz-meta-rs-predicted-at-max"
+_WATERMARK_META_RS_ROW_COUNT: str = "x-amz-meta-rs-row-count"
+
+
+def r2_head_watermark(r2: R2Config, object_key: str) -> tuple[str, int, str, int] | None:
+    """Return the day-base watermark from an R2 object's custom metadata via
+    a signed HEAD request (no body download), or ``None`` on ANY ambiguity --
+    missing object, network/auth failure, or a present object whose custom
+    metadata is missing/malformed (e.g. written by a container image from
+    before this metadata existed). Fail-closed, matching every other
+    watermark helper in this codebase
+    (``pipeline_runner._compute_source_watermark`` /
+    ``_compute_rs_watermark``) -- the caller must never trust an R2 day-base
+    it cannot positively verify as fresh.
+
+    Args:
+        r2:         R2 credentials and bucket name.
+        object_key: R2 object key (the day-base parquet's own key, per
+                    ``pipeline_runner.build_r2_day_base_key``).
+    """
+    req = _build_signed_request(r2, object_key, "HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
+            headers = resp.headers
+    except Exception as exc:  # fail-closed, never crash the caller
+        print(
+            f"[r2-client] head watermark failed key={object_key} error={exc!r}",
+            file=sys.stderr,
+        )
+        return None
+    max_updated = headers.get(_WATERMARK_META_MAX_UPDATED)
+    row_count_raw = headers.get(_WATERMARK_META_ROW_COUNT)
+    rs_predicted_at_max = headers.get(_WATERMARK_META_RS_PREDICTED_AT_MAX)
+    rs_row_count_raw = headers.get(_WATERMARK_META_RS_ROW_COUNT)
+    if (
+        max_updated is None
+        or row_count_raw is None
+        or rs_predicted_at_max is None
+        or rs_row_count_raw is None
+    ):
+        return None
+    try:
+        row_count = int(row_count_raw)
+        rs_row_count = int(rs_row_count_raw)
+    except ValueError:
+        return None
+    return (max_updated, row_count, rs_predicted_at_max, rs_row_count)

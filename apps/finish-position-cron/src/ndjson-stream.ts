@@ -26,6 +26,19 @@ export interface PerRaceParquetEntry {
   parquetKey: string;
 }
 
+// Freshness signal the day-base build recorded alongside its parquet output
+// (predict_lib.pipeline_runner.DayBaseWatermark on the Container side) --
+// carried through the prewarm result line so the Worker DO can attach it as
+// R2 custom metadata on the parquet PUT (task #32: a later shard/race reading
+// the SAME category+day can then verify freshness via a cheap signed HEAD
+// before trusting the cached day-base, instead of always rebuilding).
+export interface DaybaseWatermark {
+  maxDataSakuseiNengappi: string;
+  rowCount: number;
+  rsPredictedAtMax: string;
+  rsRowCount: number;
+}
+
 // "accepted" is the focused-full in-progress status for same-race redelivery:
 // the original focused request is still in flight, so this delivery should poll
 // Neon completion later instead of launching a duplicate pipeline.
@@ -53,6 +66,8 @@ export interface PredictResultLine extends NdjsonLine {
   // Per-race feature parquets embedded by the Container; the Worker DO PUTs each
   // to FEATURES_CACHE (R2) for the same reason as the single-parquet fields above.
   perRaceParquets?: PerRaceParquetEntry[];
+  // Only present on the /prewarm-day-base result line (see DaybaseWatermark).
+  daybaseWatermark?: DaybaseWatermark;
 }
 
 const isResultLine = (line: NdjsonLine): line is PredictResultLine => line.type === RESULT_TYPE;

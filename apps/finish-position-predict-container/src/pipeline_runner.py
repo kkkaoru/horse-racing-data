@@ -57,7 +57,7 @@ from predict_lib.pipeline_args import (
     layer_chain_for,
     race_chain_for,
 )
-from predict_lib.r2_client import r2_get_parquet
+from predict_lib.r2_client import r2_get_parquet, r2_head_watermark
 from predict_lib.rescore import RaceScope, race_matches_scope
 from predict_lib.serve import R2Config, build_r2_day_base_key
 
@@ -511,12 +511,129 @@ def _compute_source_watermark(
     return (str(max_updated).strip() if max_updated is not None else "", count_value)
 
 
+_RS_PREDICTIONS_R2_PREFIX: Final[str] = "running-style/predictions/by-day/raw-iceberg-v1"
+"""Object-key prefix for the by-day running-style prediction shards this
+watermark checks for freshness. Must stay in sync with ``R2_PREDICTIONS_PREFIX``
+in ``apps/pc-keiba-viewer/src/scripts/finish-position-features/
+add-pacestyle-features.py`` -- that script's own R2 read
+(``stage_rs_predictions_from_r2``) and this watermark must agree on where the
+by-day shards live, or this watermark could report "fresh" while the actual
+feature build reads a shard from a different location."""
+
+_RS_WATERMARK_CATEGORIES: Final[frozenset[Category]] = frozenset({"jra", "nar"})
+"""Categories with a by-day running-style R2 shard (mirrors
+``PACESTYLE_CATEGORY_BY_CATEGORY``'s keys in ``predict_lib.pipeline_args``) --
+``ban-ei`` predictions are not split out by day the same way, so its day-base
+has no RS freshness signal to check."""
+
+DayBaseWatermark = tuple[str, int, str, int]
+"""``(max_data_sakusei_nengappi, entrant_row_count, rs_predicted_at_max,
+rs_row_count)`` -- the combined freshness signal :func:`ensure_day_base`
+trusts a cached day-base against."""
+
+
+def _compute_rs_watermark(
+    category: Category, target_date: str, r2_config: R2Config | None
+) -> tuple[str, int] | None:
+    """Freshness signal for the day's running-style predictions in R2.
+
+    Returns ``("", 0)`` -- a STABLE, valid watermark value, never the
+    fail-closed ``None`` sentinel -- both when RS predictions don't apply to
+    ``category`` (no by-day shard, e.g. ``ban-ei``) and when the day's shard
+    simply has not been written yet (a normal, expected state early in the
+    day). Either case is a real "no RS yet" state: a day-base built while it
+    holds has no RS features to offer, which is correct, and the watermark
+    only changes -- forcing a rebuild -- once real predictions with a higher
+    row count / later ``predicted_at`` actually appear. This deliberately
+    avoids rebuilding on every single call while genuinely waiting for RS to
+    land for the day.
+
+    Returns ``None`` (matching :func:`_compute_source_watermark`'s
+    fail-closed contract) on any OTHER error -- missing R2 credentials,
+    network failure, unexpected schema -- so the caller cannot verify
+    freshness and must not trust the cache.
+    """
+    if category not in _RS_WATERMARK_CATEGORIES:
+        return ("", 0)
+    if r2_config is None:
+        return None
+    import duckdb
+
+    yyyy, mm, dd = target_date[:4], target_date[4:6], target_date[6:8]
+    glob = (
+        f"s3://{r2_config.bucket}/{_RS_PREDICTIONS_R2_PREFIX}/"
+        f"{yyyy}/{mm}/{dd}/{category}/*.parquet"
+    )
+    try:
+        connection = duckdb.connect(":memory:")
+        try:
+            connection.execute("install httpfs; load httpfs;")
+            connection.execute(
+                f"""
+                create or replace secret r2_secret (
+                  type s3,
+                  key_id '{r2_config.access_key_id}',
+                  secret '{r2_config.secret_access_key}',
+                  endpoint '{r2_config.account_id}.r2.cloudflarestorage.com',
+                  region 'auto',
+                  url_style 'path'
+                )
+                """
+            )
+            row = connection.execute(
+                f"select max(predicted_at), count(*) from read_parquet('{glob}')"
+            ).fetchone()
+        finally:
+            connection.close()
+    except duckdb.IOException as exc:
+        if "No files found that match" not in str(exc):
+            print(
+                f"[day-base] rs watermark query failed category={category} "
+                f"target_date={target_date} error={exc}",
+                file=sys.stderr,
+            )
+            return None
+        return ("", 0)
+    except Exception as exc:
+        print(
+            f"[day-base] rs watermark setup failed category={category} "
+            f"target_date={target_date} error={exc}",
+            file=sys.stderr,
+        )
+        return None
+    if not row or not row[1]:
+        return ("", 0)
+    max_predicted_at, row_count = row
+    count_value = row_count if isinstance(row_count, int) else int(str(row_count))
+    predicted_at_value = str(max_predicted_at).strip() if max_predicted_at is not None else ""
+    return (predicted_at_value, count_value)
+
+
+def _combine_watermarks(
+    entrant: tuple[str, int] | None, rs: tuple[str, int] | None
+) -> DayBaseWatermark | None:
+    """Merge the entrant + RS freshness signals into one comparable value.
+
+    ``None`` propagates from either side -- if EITHER signal cannot be
+    verified, the combined watermark is unverifiable too, matching both
+    components' own fail-closed contract.
+    """
+    if entrant is None or rs is None:
+        return None
+    return (entrant[0], entrant[1], rs[0], rs[1])
+
+
 def _watermark_path(day_dir: Path) -> Path:
     return day_dir / "watermark.json"
 
 
-def _write_watermark(day_dir: Path, watermark: tuple[str, int]) -> None:
-    payload = {"max_data_sakusei_nengappi": watermark[0], "row_count": watermark[1]}
+def _write_watermark(day_dir: Path, watermark: DayBaseWatermark) -> None:
+    payload = {
+        "max_data_sakusei_nengappi": watermark[0],
+        "row_count": watermark[1],
+        "rs_predicted_at_max": watermark[2],
+        "rs_row_count": watermark[3],
+    }
     try:
         _watermark_path(day_dir).write_text(json.dumps(payload), encoding="utf-8")
     except OSError as exc:
@@ -527,10 +644,15 @@ def _write_watermark(day_dir: Path, watermark: tuple[str, int]) -> None:
         print(f"[day-base] watermark write failed dir={day_dir} error={exc}", file=sys.stderr)
 
 
-def _read_watermark(day_dir: Path) -> tuple[str, int] | None:
+def _read_watermark(day_dir: Path) -> DayBaseWatermark | None:
     try:
         payload = json.loads(_watermark_path(day_dir).read_text(encoding="utf-8"))
-        return (str(payload["max_data_sakusei_nengappi"]), int(payload["row_count"]))
+        return (
+            str(payload["max_data_sakusei_nengappi"]),
+            int(payload["row_count"]),
+            str(payload["rs_predicted_at_max"]),
+            int(payload["rs_row_count"]),
+        )
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -925,6 +1047,7 @@ def build_day_base(
     database_url: str,
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
+    r2_config: R2Config | None = None,
 ) -> Path | None:
     """Run the DuckDB base build + DAY_CHAIN layers once per category+day.
 
@@ -1124,12 +1247,16 @@ def build_day_base(
     if is_catalog_source_url(database_url):
         # Record the freshness signal THIS build's source data had at
         # completion time, so a later ensure_day_base call (same process,
-        # next race of the day) can verify the source hasn't changed before
+        # next race of the day, OR a different shard reading this build's
+        # R2 upload -- task #32) can verify the source hasn't changed before
         # trusting this day-base instead of rebuilding. Best-effort: a
         # failed watermark compute/write here degrades the NEXT call to
         # "no watermark found" (safe fail-closed rebuild), never this
         # build's own success.
-        watermark = _compute_source_watermark(category, target_date, database_url)
+        watermark = _combine_watermarks(
+            _compute_source_watermark(category, target_date, database_url),
+            _compute_rs_watermark(category, target_date, r2_config),
+        )
         if watermark is not None:
             _write_watermark(day_dir, watermark)
     _log_pipeline_progress(
@@ -1152,31 +1279,33 @@ def ensure_day_base(
     fetch/materialize/fallback shape:
 
     1. Catalog source watermark gate -- production ``r2-catalog://`` reads
-       only trust an existing LOCAL-DISK day-base (this same container
-       process already built it for an earlier race of the same category+
-       day) when a FRESH watermark (:func:`_compute_source_watermark`: max
+       first try a LOCAL-DISK day-base (this same container process already
+       built it for an earlier race of the same category+day) when a FRESH
+       watermark (:func:`_compute_source_watermark`: max
        ``data_sakusei_nengappi`` + row count of the day's raw ``jvd_se`` /
        ``nvd_se`` rows) matches the watermark :func:`build_day_base` wrote
-       alongside it. A watermark that cannot be computed, is missing, or
-       does not match means the caller rebuilds from current raw Catalog
-       data -- this is a REPLACEMENT for the previous unconditional bypass
-       (every catalog-source call always returned ``None`` here, forcing a
-       full day-base rebuild for literally every race), not a relaxation of
-       its fail-closed contract: any ambiguity still returns ``None``.
+       alongside it. A watermark that cannot be computed means the caller
+       must not trust ANY cache (local or R2) and rebuilds from current raw
+       Catalog data -- this is a REPLACEMENT for the previous unconditional
+       bypass (every catalog-source call always returned ``None`` here,
+       forcing a full day-base rebuild for literally every race), not a
+       relaxation of its fail-closed contract: any ambiguity still returns
+       ``None``.
 
-       R2 cross-process reuse (a day-base built by a DIFFERENT container
-       process, or by the ``/prewarm-day-base`` job, fetched from R2) is
-       deliberately NOT attempted for catalog sources yet -- the R2 upload
-       for that path happens in the Cloudflare Worker/DO layer
-       (``predict_lib.serve.iter_prewarm_chunks`` returns the parquet bytes
-       for the Worker to PUT; this container has no write-capable R2
-       token), which does not yet carry a watermark sidecar object. Wiring
-       that up is explicit follow-up work, not attempted here under time
-       pressure -- see the day-base-redesign doc. Until then, a
-       catalog-source day-base is only trusted from THIS process's own
-       local disk (the already-built-this-request case: race 2+ of the day
-       served by the same long-lived container process, the single most
-       common case per this docstring's own step 2 below).
+       R2 cross-process reuse (task #32, 2026-07-19: a day-base built by a
+       DIFFERENT container process -- another ``RACE_SHARDED_DO`` shard --
+       or by the ``/prewarm-day-base`` job) is attempted NEXT, when the
+       local-disk check misses and a watermark WAS computable: a cheap
+       signed HEAD (:func:`predict_lib.r2_client.r2_head_watermark`) checks
+       the R2 object's custom metadata against the freshly-computed
+       watermark BEFORE paying for the full parquet GET. A mismatch,
+       missing metadata (e.g. an object written before this metadata
+       existed), or any HEAD failure all resolve to "untrusted" -- fall
+       through to the existing ``return None`` unchanged, same fail-closed
+       contract as every other branch here. This lets a shard's first race
+       skip the day-base build entirely when the 09:30 JST prewarm already
+       populated R2 for this category+day, instead of every shard paying
+       the full rebuild cost on its own first race.
     2. Offline local disk fast path -- if this container process already built (or
        downloaded) the day-base for this category+day, return it immediately.
        This is the common case for the 2nd+ race of the day served by the same
@@ -1184,6 +1313,10 @@ def ensure_day_base(
     3. Offline R2 fast path -- when ``r2_config`` is provided, GET
        ``build_r2_day_base_key(category, target_date)`` (the prewarm job's
        upload target) into the local day-base dir and return it on success.
+       Unconditional (no watermark check) -- this branch only runs for
+       NON-catalog (offline/Postgres) sources, which never exercise the
+       live-staleness concern the catalog-source watermark gate above
+       guards against.
     4. Otherwise return ``None`` -- the caller decides whether to build the
        day-base synchronously via :func:`build_day_base` or fall back to the
        full :func:`build_pipeline` / ``LAYER_CHAIN`` path for this race. This
@@ -1192,11 +1325,28 @@ def ensure_day_base(
     day_dir = _day_base_dir(category, target_date)
     final_dir = day_dir / "final"
     if is_catalog_source_url(database_url):
-        watermark = _compute_source_watermark(category, target_date, database_url)
+        watermark = _combine_watermarks(
+            _compute_source_watermark(category, target_date, database_url),
+            _compute_rs_watermark(category, target_date, r2_config),
+        )
         if watermark is None:
             return None
         if has_parquet_output(final_dir) and _read_watermark(day_dir) == watermark:
             return final_dir
+        if r2_config is not None:
+            object_key = build_r2_day_base_key(category, target_date)
+            try:
+                r2_watermark = r2_head_watermark(r2_config, object_key)
+                if r2_watermark == watermark:
+                    dest_path = final_dir / "features.parquet"
+                    if r2_get_parquet(r2_config, object_key, dest_path):
+                        return final_dir
+            except Exception as exc:
+                print(
+                    f"[day-base] ensure_day_base r2 watermark fetch failed category={category} "
+                    f"target_date={target_date} key={object_key} error={exc}",
+                    file=sys.stderr,
+                )
         return None
     if has_parquet_output(final_dir):
         return final_dir
@@ -1436,7 +1586,13 @@ def build_upcoming_feature_rows_split(
     try:
         day_base_dir = ensure_day_base(category, target_date, days_ahead, database_url, r2_config)
         if day_base_dir is None:
-            day_base_dir = build_day_base(category, target_date, days_ahead, database_url)
+            day_base_dir = build_day_base(
+                category,
+                target_date,
+                days_ahead,
+                database_url,
+                r2_config=r2_config,
+            )
         if day_base_dir is None:
             return None
         if not day_base_covers_entry_list(

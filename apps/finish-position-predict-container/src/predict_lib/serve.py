@@ -72,7 +72,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -592,6 +592,7 @@ def build_prewarm_result_line(
     error: str | None = None,
     parquet_base64: str | None = None,
     parquet_key: str | None = None,
+    daybase_watermark: Mapping[str, str | int] | None = None,
 ) -> bytes:
     """Return a single UTF-8 NDJSON result line for ``GET /prewarm-day-base``.
 
@@ -600,6 +601,19 @@ def build_prewarm_result_line(
     ``parquetKey``) minus ``racesPredicted`` -- prewarm builds the day-base
     cache, it does not score or write any predictions. ``status`` is one of
     ``"success"``, ``"error"``, or :data:`PREWARM_EMPTY_STATUS` (``"empty"``).
+
+    ``daybase_watermark`` (task #32, 2026-07-19): when provided alongside
+    ``parquet_base64``/``parquet_key``, emitted as a ``daybaseWatermark``
+    object field so the Worker DO proxy (``container-ndjson-proxy.ts``) can
+    attach it as R2 custom metadata on the day-base parquet PUT -- letting a
+    DIFFERENT container process (a different ``RACE_SHARDED_DO`` shard, or
+    this same prewarm job on its next run) verify freshness via a cheap
+    signed HEAD before trusting the cached object
+    (``pipeline_runner.ensure_day_base`` / ``predict_lib.r2_client.
+    r2_head_watermark``). Absent when the day-base build didn't write a
+    local ``watermark.json`` (e.g. an offline/Postgres source day-base,
+    which never populates one) -- a missing field here is the Worker's
+    signal to PUT the parquet without ``customMetadata``, not an error.
     """
     payload: dict[str, object] = {
         "type": "result",
@@ -613,6 +627,8 @@ def build_prewarm_result_line(
         payload["parquetBase64"] = parquet_base64
     if parquet_key is not None:
         payload["parquetKey"] = parquet_key
+    if daybase_watermark is not None:
+        payload["daybaseWatermark"] = dict(daybase_watermark)
     return (json.dumps(payload, ensure_ascii=False) + "\n").encode()
 
 
@@ -1617,15 +1633,23 @@ Raises:
     :func:`iter_prewarm_chunks` and encoded as an error result line.
 """
 
-PrewarmParquetPayloadFn = Callable[[str, str, Path], tuple[str, str] | None]
+PrewarmParquetPayloadFn = Callable[
+    [str, str, Path], tuple[str, str, Mapping[str, str | int] | None] | None
+]
 """Reads the day-base parquet under the given directory for (category,
-run_date) and returns ``(parquet_base64, parquet_key)``, or ``None`` when no
-parquet file is found. Injected so :func:`iter_prewarm_chunks` stays I/O-free
-(mirrors :data:`ParquetPayloadFn` for ``/predict``); the real file read lives
-in ``predict_upcoming.py``. Unlike :data:`ParquetPayloadFn` (which reads
-mutable ``_last_run`` state because it takes zero args), this callable
-receives the day-base directory directly from the just-completed build
-result, so no shared state box is needed.
+run_date) and returns ``(parquet_base64, parquet_key, daybase_watermark)``,
+or ``None`` when no parquet file is found. Injected so
+:func:`iter_prewarm_chunks` stays I/O-free (mirrors :data:`ParquetPayloadFn`
+for ``/predict``); the real file read lives in ``predict_upcoming.py``.
+Unlike :data:`ParquetPayloadFn` (which reads mutable ``_last_run`` state
+because it takes zero args), this callable receives the day-base directory
+directly from the just-completed build result, so no shared state box is
+needed.
+
+``daybase_watermark`` (task #32, 2026-07-19) is the day-base's own
+``watermark.json`` sidecar (``pipeline_runner._read_watermark``), or
+``None`` when that file is absent -- see :func:`build_prewarm_result_line`
+for why a missing watermark is not an error.
 """
 
 
@@ -1665,10 +1689,12 @@ def iter_prewarm_chunks(
         params:              Parsed request parameters.
         build_fn:            Day-base build callable matching :data:`PrewarmBuildFn`.
         parquet_payload_fn:  Optional callable invoked after a successful build.
-                             Returns ``(parquet_base64, parquet_key)`` or ``None``
-                             when no parquet is available. Embedded in the success
-                             result line so the Worker DO can proxy the bytes to R2
-                             without a write-capable S3 token in the Container.
+                             Returns ``(parquet_base64, parquet_key,
+                             daybase_watermark)`` or ``None`` when no parquet is
+                             available. Embedded in the success result line so the
+                             Worker DO can proxy the bytes (and watermark, as R2
+                             custom metadata) to R2 without a write-capable S3
+                             token in the Container.
         time_fn:             Monotonic clock (injectable for deterministic tests).
         sleep_fn:            Sleep callable (injectable for deterministic tests).
         progress_interval_s: Minimum seconds between progress keepalive lines.
@@ -1717,11 +1743,12 @@ def iter_prewarm_chunks(
 
     parquet_b64: str | None = None
     parquet_key_val: str | None = None
+    daybase_watermark_val: Mapping[str, str | int] | None = None
     if parquet_payload_fn is not None:
         try:
             payload_result = parquet_payload_fn(params.category, params.run_date, day_base_dir)
             if payload_result is not None:
-                parquet_b64, parquet_key_val = payload_result
+                parquet_b64, parquet_key_val, daybase_watermark_val = payload_result
         except BaseException:
             pass
 
@@ -1731,4 +1758,5 @@ def iter_prewarm_chunks(
         status="success",
         parquet_base64=parquet_b64,
         parquet_key=parquet_key_val,
+        daybase_watermark=daybase_watermark_val,
     )

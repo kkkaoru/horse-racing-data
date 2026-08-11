@@ -18,6 +18,7 @@
 // try/catch that logs and returns rather than rethrows.
 
 import { enumerateTodaysRaces, type RaceEntry } from "./cron-decision";
+import type { DaybaseWatermark } from "./ndjson-stream";
 import { PREDICT_DO_NAME_PREFIX } from "./predict-do-shard";
 import type { Env, PredictCategory } from "./types";
 
@@ -46,6 +47,7 @@ interface PrewarmResultLine extends PrewarmNdjsonLine {
   parquetKey?: string;
   runDate?: string;
   status?: string;
+  daybaseWatermark?: DaybaseWatermark;
 }
 
 interface PrewarmCategoryParams {
@@ -85,9 +87,9 @@ const parsePrewarmResultLine = (text: string): PrewarmResultLine | null => {
 };
 
 const describePrewarmResult = (result: PrewarmResultLine): string =>
-  `status=${result.status ?? NONE_LABEL} parquetKey=${result.parquetKey ?? NONE_LABEL} error=${
-    result.error ?? NONE_LABEL
-  }`;
+  `status=${result.status ?? NONE_LABEL} parquetKey=${result.parquetKey ?? NONE_LABEL} watermark=${
+    result.daybaseWatermark ? "present" : "absent"
+  } error=${result.error ?? NONE_LABEL}`;
 
 const logPrewarmResult = (
   category: PredictCategory,

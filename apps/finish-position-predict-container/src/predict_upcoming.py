@@ -1602,13 +1602,21 @@ def _make_predict_fn(
     return _predict, _parquet_payload, _per_race_parquet_payloads, _populate_focused_full_cache
 
 
-def _make_prewarm_fn(database_url: str) -> PrewarmBuildFn:
+def _make_prewarm_fn(database_url: str, r2_config: R2Config | None = None) -> PrewarmBuildFn:
     """Build the ``GET /prewarm-day-base`` build callable bound to ``database_url``.
 
     Mirrors ``_make_predict_fn``'s closure-binding pattern: ``serve.py`` stays
     I/O-free, so the real Neon URL is bound here (not passed through the query
     string) and ``pipeline_runner.build_day_base`` does the actual DuckDB base
     build + DAY_CHAIN layers.
+
+    ``r2_config`` (task #32, 2026-07-19) is forwarded to ``build_day_base`` so
+    the RS-freshness component of its watermark
+    (``pipeline_runner._compute_rs_watermark``) can be computed -- the SAME
+    combined watermark this prewarm job's own local-disk / cross-process
+    trust checks already use, so the R2 metadata this job's parquet upload
+    carries (via ``_prewarm_parquet_payload`` reading back
+    ``watermark.json``) agrees with what a reader later compares against.
     """
 
     def _prewarm(category_str: str, run_date: str, days_ahead: int) -> Path | None:
@@ -1616,19 +1624,47 @@ def _make_prewarm_fn(database_url: str) -> PrewarmBuildFn:
         from predict_lib.model_meta import resolve_category
 
         category = resolve_category(category_str)
-        return build_day_base(category, run_date, days_ahead, database_url)
+        return build_day_base(category, run_date, days_ahead, database_url, r2_config=r2_config)
 
     return _prewarm
 
 
 def _prewarm_parquet_payload(
     category_str: str, run_date: str, day_base_dir: Path
-) -> tuple[str, str] | None:
-    """Read the day-base parquet and return ``(base64, R2 key)`` for the Worker
-    DO proxy -- the ``PrewarmParquetPayloadFn`` injected into
-    :func:`predict_lib.serve.iter_prewarm_chunks`. Returns ``None`` (non-blocking)
-    when no parquet file is found under ``day_base_dir``.
+) -> tuple[str, str, Mapping[str, str | int] | None] | None:
+    """Read the day-base parquet and return ``(base64, R2 key, watermark)``
+    for the Worker DO proxy -- the ``PrewarmParquetPayloadFn`` injected into
+    :func:`predict_lib.serve.iter_prewarm_chunks`. Returns ``None``
+    (non-blocking) when no parquet file is found under ``day_base_dir``.
+
+    ``day_base_dir`` is ``build_day_base``'s own return value -- the day
+    dir's ``final`` subdirectory (``pipeline_runner._day_base_dir(...) /
+    "final"``). The watermark ``build_day_base`` writes (task #24's
+    RS-aware watermark, task #32's R2 sidecar) lives one level up, at
+    ``day_base_dir.parent / "watermark.json"``
+    (``pipeline_runner._watermark_path``) -- read via the same
+    ``_read_watermark`` helper ``ensure_day_base`` uses for the local-disk
+    fast path, so the R2 metadata and the local-disk trust check are always
+    built from an identical value. Missing/unreadable (offline/Postgres
+    source day-bases never write one) degrades to ``None`` -- the Worker
+    then PUTs the parquet without ``customMetadata``, not an error (see
+    :func:`predict_lib.serve.build_prewarm_result_line`).
     """
+    import pipeline_runner  # bundled in image
+
+    # ``_read_watermark`` is module-private (leading underscore); accessed via
+    # getattr + cast (same pattern ``tests/test_pipeline_runner.py`` already
+    # uses for this module's other private helpers) so strict basedpyright
+    # does not flag ``reportPrivateUsage`` on a static
+    # ``pipeline_runner._read_watermark`` expression, and the attribute name
+    # is read from a variable (not a string literal) so ruff's B009 does not
+    # fire either.
+    read_watermark_attr = "_read_watermark"
+    read_watermark = cast(
+        "Callable[[Path], tuple[str, int, str, int] | None]",
+        getattr(pipeline_runner, read_watermark_attr),
+    )
+
     parquet_files = list(day_base_dir.rglob("*.parquet"))
     if not parquet_files:
         print(
@@ -1639,11 +1675,22 @@ def _prewarm_parquet_payload(
     data = parquet_files[0].read_bytes()
     encoded = base64.b64encode(data).decode("ascii")
     parquet_key = build_r2_day_base_key(category_str, run_date)
+    watermark_tuple = read_watermark(day_base_dir.parent)
+    watermark: Mapping[str, str | int] | None = None
+    if watermark_tuple is not None:
+        max_updated, row_count, rs_predicted_at_max, rs_row_count = watermark_tuple
+        watermark = {
+            "maxDataSakuseiNengappi": max_updated,
+            "rowCount": row_count,
+            "rsPredictedAtMax": rs_predicted_at_max,
+            "rsRowCount": rs_row_count,
+        }
     print(
-        f"[predict-serve] prewarm_parquet_payload ready key={parquet_key} bytes={len(data)}",
+        f"[predict-serve] prewarm_parquet_payload ready key={parquet_key} bytes={len(data)} "
+        f"watermark={'present' if watermark is not None else 'absent'}",
         file=sys.stderr,
     )
-    return encoded, parquet_key
+    return encoded, parquet_key, watermark
 
 
 def _ensure_cached_parquet(
@@ -2482,7 +2529,7 @@ def main() -> int:
         )
         rescore_factory = _make_rescore_factory(database_url, models_dir, source_url, r2)
         focused_full_completion_fn = _make_focused_full_completion_fn(database_url)
-        prewarm_fn = _make_prewarm_fn(source_url)
+        prewarm_fn = _make_prewarm_fn(source_url, r2)
         serve_http(
             HTTP_PORT,
             predict_fn,
