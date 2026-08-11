@@ -105,6 +105,7 @@ test("uses raw Catalog entries and only queries Neon prediction output", async (
       "12",
       "iter40-nar-settransformer-blend-v1",
       buildCatalogRows().map((row) => row.ketto_toroku_bango),
+      "2026-06-30T15:00:00",
     ],
   );
 });
@@ -276,6 +277,59 @@ test("returns false without querying Neon when raw Catalog has no entries", asyn
       runYmd: "20260628",
     }),
   ).resolves.toBe(false);
+  expect(queryMock).not.toHaveBeenCalled();
+});
+
+test("returns true when prediction rows are fresh (generated on the target race day)", async () => {
+  setCatalogRows(buildCatalogRows(12));
+  queryMock.mockResolvedValue([{ actual_rows: 12 }]);
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260801",
+    }),
+  ).resolves.toBe(true);
+
+  const queryCall = queryMock.mock.calls[0];
+  expect(queryCall?.[0]).toContain("prediction_generated_at >= $8::timestamp");
+  expect(queryCall?.[1]?.[7]).toBe("2026-07-31T15:00:00");
+});
+
+test("returns false when prediction rows are stale (generated on a prior day)", async () => {
+  setCatalogRows(buildCatalogRows(12));
+  queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "nar",
+      env: makeEnv(),
+      keibajoCode: "50",
+      raceBango: "12",
+      runYmd: "20260811",
+    }),
+  ).resolves.toBe(false);
+
+  const queryCall = queryMock.mock.calls[0];
+  expect(queryCall?.[1]?.[7]).toBe("2026-08-10T15:00:00");
+});
+
+test("rejects invalid runYmd and returns false without querying", async () => {
+  setCatalogRows(buildCatalogRows(12));
+
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "01",
+      runYmd: "2026080",
+    }),
+  ).resolves.toBe(false);
+
   expect(queryMock).not.toHaveBeenCalled();
 });
 

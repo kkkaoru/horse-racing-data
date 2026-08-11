@@ -177,10 +177,24 @@ interface CountMatchParams {
   modelVersion: string;
   kettoTorokuBangos: readonly string[];
   expectedCount: number;
+  runYmd: string;
 }
+
+const buildRunDateStartUtc = (runYmd: string): string | null => {
+  if (runYmd.length !== 8) return null;
+  const year = runYmd.slice(0, 4);
+  const month = runYmd.slice(4, 6);
+  const day = runYmd.slice(6, 8);
+  const dateStr = `${year}-${month}-${day}`;
+  const jstDate = new Date(`${dateStr}T00:00:00+09:00`);
+  if (Number.isNaN(jstDate.getTime())) return null;
+  return jstDate.toISOString().slice(0, 19);
+};
 
 const countMatchesModelVersion = async (params: CountMatchParams): Promise<boolean> => {
   const sql = neon(params.env.NEON_DATABASE_URL);
+  const runDateStartUtc = buildRunDateStartUtc(params.runYmd);
+  if (runDateStartUtc === null) return false;
   const result: unknown = await sql.query(
     `select count(distinct ketto_toroku_bango)::int as actual_rows
        from race_finish_position_model_predictions
@@ -190,7 +204,8 @@ const countMatchesModelVersion = async (params: CountMatchParams): Promise<boole
         and keibajo_code = $4
         and race_bango = $5
         and model_version = $6
-        and ketto_toroku_bango = any($7::text[])`,
+        and ketto_toroku_bango = any($7::text[])
+        and prediction_generated_at >= $8::timestamp`,
     [
       params.source,
       params.kaisaiNen,
@@ -199,6 +214,7 @@ const countMatchesModelVersion = async (params: CountMatchParams): Promise<boole
       params.raceBango,
       params.modelVersion,
       params.kettoTorokuBangos,
+      runDateStartUtc,
     ],
   );
   if (!Array.isArray(result) || !isRecord(result[0])) return false;
@@ -224,6 +240,7 @@ export const isFocusedFullPredictionComplete = async (
     keibajoCode: params.keibajoCode.padStart(2, "0"),
     kettoTorokuBangos: entries.map((entry) => entry.kettoTorokuBango),
     raceBango: params.raceBango.padStart(2, "0"),
+    runYmd: params.runYmd,
     source: sourceForCategory(params.category),
   };
   if (await countMatchesModelVersion({ ...shared, modelVersion })) return true;
