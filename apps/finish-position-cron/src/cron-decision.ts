@@ -66,8 +66,9 @@ export const RESCORE_CRON_RACE_HOURS = "*/20 1-11 * * *";
 // the predict / warm crons. Mirrors the running-style "*/10" coordinator.
 export const COORDINATOR_CRON_RACE_HOURS = "*/10 1-11 * * *";
 
-// Feature-build cron: 00:30 UTC == JST 09:30. The worker now treats this as an
-// observable no-op; production full per-race runs are triggered by
+// Feature-build cron: 00:30 UTC == JST 09:30. The worker treats this as
+// day-base PREWARM (/prewarm-day-base) only -- a shared feature artifact, not
+// prediction generation. Production full per-race runs are triggered by
 // sync-realtime-data after running-style completion via POST /run.
 export const FEATURE_BUILD_CRON = "30 0 * * *";
 

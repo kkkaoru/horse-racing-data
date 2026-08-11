@@ -16,6 +16,7 @@ import {
   buildOldDateSkipEventInsertSql,
   buildOldDateSkipEventRecord,
 } from "./old-date-skip-events";
+import { hasRequiredPerRaceScope, PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import {
   warmPredictionCacheForCategory,
   warmPredictionCacheForRace,
@@ -715,7 +716,23 @@ const handleOldDateSkip = async (
   );
 };
 
+const handleMissingPerRaceScopeSkip = (message: Message<PredictQueueMessage>): void => {
+  console.warn(
+    `Skipping day-scoped predict message ${describePredictMessage(message.body)}: ${PER_RACE_SCOPE_REQUIRED_ERROR}`,
+  );
+  message.ack();
+};
+
 const processMessage = async (message: Message<PredictQueueMessage>, env: Env): Promise<void> => {
+  if (
+    !hasRequiredPerRaceScope({
+      keibajoCode: message.body.keibajoCode,
+      raceBango: message.body.raceBango,
+    })
+  ) {
+    handleMissingPerRaceScopeSkip(message);
+    return;
+  }
   if (message.body.force !== true && isOldDateRunYmd(message.body.runYmd, new Date()))
     return handleOldDateSkip(message, env);
   debugLog(message.body, `[predict-queue] received ${describePredictMessage(message.body)}`);

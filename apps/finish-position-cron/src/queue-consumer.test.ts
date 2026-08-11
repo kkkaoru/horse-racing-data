@@ -117,6 +117,7 @@ vi.mock("./focused-full-completion", () => ({
   isFocusedFullPredictionComplete: isFocusedFullPredictionCompleteMock,
 }));
 
+import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import { handleQueue } from "./queue-consumer";
 
 const ackMock = vi.fn();
@@ -152,6 +153,10 @@ const makeEnv = (): Env => ({
   TRIGGER_TOKEN: "secret-token",
 });
 
+// Happy-path messages are per-race only: production rejects day-scoped bodies.
+const DEFAULT_KEIBAJO_CODE = "05";
+const DEFAULT_RACE_BANGO = "11";
+
 const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<PredictQueueMessage> =>
   ({
     ack: ackMock,
@@ -159,7 +164,9 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<Pred
     body: {
       category: "jra",
       daysAhead: 2,
+      keibajoCode: DEFAULT_KEIBAJO_CODE,
       mode: "full",
+      raceBango: DEFAULT_RACE_BANGO,
       runDate: "2026-06-03",
       runDateIso: "2026-06-03",
       runYmd: "20260603",
@@ -168,6 +175,26 @@ const makeMessage = (overrides: Partial<PredictQueueMessage> = {}): Message<Pred
     id: "predict-msg-1",
     retry: retryMock,
   }) as unknown as Message<PredictQueueMessage>;
+
+const makeDayScopedMessage = (
+  overrides: Partial<PredictQueueMessage> = {},
+): Message<PredictQueueMessage> =>
+  makeMessage({
+    ...overrides,
+    keibajoCode: undefined,
+    raceBango: undefined,
+  });
+
+const expectSkippedMissingPerRaceScope = (): void => {
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+  expect(claimRunMock).not.toHaveBeenCalled();
+  expect(claimFocusedFullRaceMock).not.toHaveBeenCalled();
+  expect(idFromNameMock).not.toHaveBeenCalled();
+  expect(getMock).not.toHaveBeenCalled();
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(parseNdjsonStreamMock).not.toHaveBeenCalled();
+};
 
 const makeBatch = (messages: Message<PredictQueueMessage>[]): MessageBatch<PredictQueueMessage> =>
   ({ messages }) as unknown as MessageBatch<PredictQueueMessage>;
@@ -229,6 +256,52 @@ beforeEach(() => {
   );
 });
 
+test("acks day-scoped messages without container fetch or claimRun", async () => {
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    await handleQueue(makeBatch([makeDayScopedMessage()]), makeEnv());
+    expectSkippedMissingPerRaceScope();
+    expect(warnSpy).toHaveBeenCalledWith(
+      `Skipping day-scoped predict message category=jra runYmd=20260603 mode=full daysAhead=2 skipDedup=false busyRequeueCount=0: ${PER_RACE_SCOPE_REQUIRED_ERROR}`,
+    );
+  } finally {
+    warnSpy.mockRestore();
+  }
+});
+
+test("acks keibajo-only partial scope without container fetch or claimRun", async () => {
+  await handleQueue(makeBatch([makeMessage({ raceBango: undefined })]), makeEnv());
+  expectSkippedMissingPerRaceScope();
+});
+
+test("acks race-only partial scope without container fetch or claimRun", async () => {
+  await handleQueue(makeBatch([makeMessage({ keibajoCode: undefined })]), makeEnv());
+  expectSkippedMissingPerRaceScope();
+});
+
+test("valid per-race message still claims, fetches the container, and acks", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "05",
+        raceBango: "11",
+        runYmd: "20260603",
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(claimRunMock).toHaveBeenCalledWith(
+    expect.objectContaining({ category: "jra", runYmd: "20260603" }),
+  );
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
+  expect(fetchRequest.url).toBe(
+    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260603&keibajoCode=05&raceBango=11",
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
 test("skips and acks when claimRun returns proceed:false", async () => {
   claimRunMock.mockResolvedValue({ proceed: false, state: "started" });
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
@@ -249,7 +322,7 @@ test("calls stub.fetch with correct URL including mode=full using YYYYMMDD runDa
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260603",
+    "http://do/predict?category=jra&daysAhead=2&mode=full&runDate=20260603&keibajoCode=05&raceBango=11",
   );
 });
 
@@ -539,10 +612,33 @@ test("reuses the category-scoped DO across multiple focused per-race full messag
   expect(ackMock).toHaveBeenCalledTimes(2);
 });
 
-test("keeps category-level full messages on the category DO even when requestId is present", async () => {
+test("keeps focused per-race full skipDedup messages on the category DO even when requestId is present", async () => {
   await handleQueue(
     makeBatch([
       makeMessage({
+        category: "nar",
+        keibajoCode: "35",
+        mode: "full",
+        raceBango: "01",
+        requestId: "request-123",
+        runYmd: "20260629",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
+  expect(ackMock).toHaveBeenCalledTimes(1);
+});
+
+test("acks day-scoped skipDedup full messages without reaching the container", async () => {
+  await handleQueue(
+    makeBatch([
+      makeDayScopedMessage({
         category: "nar",
         mode: "full",
         requestId: "request-123",
@@ -552,29 +648,27 @@ test("keeps category-level full messages on the category DO even when requestId 
     ]),
     makeEnv(),
   );
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-nar");
-  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
-  expect(ackMock).toHaveBeenCalledTimes(1);
-});
-
-test("omits keibajoCode and raceBango from URL when absent in message", async () => {
-  await handleQueue(makeBatch([makeMessage()]), makeEnv());
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
-  const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
-  expect(fetchRequest.url).not.toContain("keibajoCode");
-  expect(fetchRequest.url).not.toContain("raceBango");
+  expectSkippedMissingPerRaceScope();
 });
 
 test("calls stub.fetch with mode=rescore when message has mode rescore using YYYYMMDD", async () => {
   await handleQueue(
-    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "05",
+        mode: "rescore",
+        raceBango: "11",
+        runYmd: "20260619",
+      }),
+    ]),
     makeEnv(),
   );
   expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
   const fetchRequest = (stubFetchMock.mock.calls[0] as unknown as [Request])[0];
   expect(fetchRequest.url).toBe(
-    "http://do/predict?category=jra&daysAhead=0&mode=rescore&runDate=20260619",
+    "http://do/predict?category=jra&daysAhead=0&mode=rescore&keibajoCode=05&raceBango=11&runDate=20260619",
   );
 });
 
@@ -597,7 +691,7 @@ test("accepts legacy result lines without status for backward compatibility", as
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("logs container progress for category-level predict messages when debug is enabled", async () => {
+test("logs container progress for per-race predict messages when debug is enabled", async () => {
   const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockImplementationOnce(
     async (
@@ -611,10 +705,10 @@ test("logs container progress for category-level predict messages when debug is 
   );
   await handleQueue(makeBatch([makeMessage({ debug: true })]), makeEnv());
   expect(consoleSpy).toHaveBeenCalledWith(
-    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=predict elapsed=12.3",
+    "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=predict elapsed=12.3",
   );
   expect(consoleSpy).toHaveBeenCalledWith(
-    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=- elapsed=-",
+    "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=- elapsed=-",
   );
   consoleSpy.mockRestore();
 });
@@ -632,7 +726,7 @@ test("suppresses container progress logs for normal predict messages", async () 
   );
   await handleQueue(makeBatch([makeMessage()]), makeEnv());
   expect(consoleSpy).not.toHaveBeenCalledWith(
-    "Predict progress category=jra runYmd=20260603 keibajo=- race=- stage=predict elapsed=12.3",
+    "Predict progress category=jra runYmd=20260603 keibajo=05 race=11 stage=predict elapsed=12.3",
   );
   consoleSpy.mockRestore();
 });
@@ -1197,31 +1291,55 @@ test("routes a Ban-ei per-race rescore to a category-scoped container DO (not Wo
   consoleSpy.mockRestore();
 });
 
-test("keeps a per-category rescore (no keibajo) on the container path", async () => {
+test("acks a day-scoped rescore without container fetch", async () => {
   await handleQueue(
-    makeBatch([makeMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
+    makeBatch([makeDayScopedMessage({ daysAhead: 0, mode: "rescore", runYmd: "20260619" })]),
     makeEnv(),
   );
+  expectSkippedMissingPerRaceScope();
   expect(rescoreJraRaceMock).not.toHaveBeenCalled();
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-jra");
-  expect(stubFetchMock).toHaveBeenCalledTimes(1);
-  expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
-test("skips claimRun and processes via container when category skipDedup is true", async () => {
-  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+test("skips claimRun for focused per-race skipDedup full messages and still fetches the container", async () => {
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "05",
+        mode: "full",
+        raceBango: "11",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
   expect(claimRunMock).not.toHaveBeenCalled();
   expect(stubFetchMock).toHaveBeenCalledTimes(1);
-  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "success" }),
+  );
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
-test("retries a skipDedup message when container fetch fails", async () => {
+test("retries a focused skipDedup message when container fetch fails", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   stubFetchMock.mockRejectedValue(new Error("container down"));
-  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "05",
+        mode: "full",
+        raceBango: "11",
+        skipDedup: true,
+      }),
+    ]),
+    makeEnv(),
+  );
   expect(retryMock).toHaveBeenCalledTimes(1);
-  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "error" }));
+  expect(completeRunMock).not.toHaveBeenCalled();
+  expect(completeFocusedFullRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ status: "error" }),
+  );
   errorSpy.mockRestore();
 });
 
@@ -1279,10 +1397,10 @@ test("warms only the race cache for focused per-race skipDedup full messages", a
   });
 });
 
-test("warms the category cache for category-level skipDedup full messages", async () => {
+test("acks day-scoped skipDedup full messages without warming category cache", async () => {
   await handleQueue(
     makeBatch([
-      makeMessage({
+      makeDayScopedMessage({
         mode: "full",
         runDateIso: "2026-06-28",
         runYmd: "20260628",
@@ -1291,18 +1409,9 @@ test("warms the category cache for category-level skipDedup full messages", asyn
     ]),
     makeEnv(),
   );
-  expect(completeRunMock).toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
-  expect(ackMock).toHaveBeenCalledTimes(1);
-  expect(warmPredictionCacheForCategoryMock).toHaveBeenCalledWith(
-    expect.objectContaining({ category: "jra", runDate: "2026-06-28", runYmd: "20260628" }),
-  );
-  expect(publishFinishPositionPredictionCacheForCategoryMock).toHaveBeenCalledWith(
-    expect.objectContaining({
-      bustCacheApi: false,
-      category: "jra",
-      runYmd: "20260628",
-    }),
-  );
+  expectSkippedMissingPerRaceScope();
+  expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
+  expect(publishFinishPositionPredictionCacheForCategoryMock).not.toHaveBeenCalled();
 });
 
 test("retries focused skipDedup full messages with result status error without category completion", async () => {
@@ -1636,7 +1745,7 @@ test("falls through focused skipDedup full messages with result status success t
   });
 });
 
-test("does not treat a category-level full message with status accepted as focused-full acceptance", async () => {
+test("does not treat a non-focused full message with status accepted as focused-full acceptance", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   parseNdjsonStreamMock.mockResolvedValue({
     type: "result",
@@ -1644,7 +1753,18 @@ test("does not treat a category-level full message with status accepted as focus
     category: "jra",
     status: "accepted",
   });
-  await handleQueue(makeBatch([makeMessage({ mode: "full", skipDedup: true })]), makeEnv());
+  // Non-skipDedup per-race full still uses the shared success/error path, so
+  // container "accepted" is treated as a failed result status.
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        keibajoCode: "05",
+        mode: "full",
+        raceBango: "11",
+      }),
+    ]),
+    makeEnv(),
+  );
   expect(completeRunMock).toHaveBeenCalledWith(
     expect.objectContaining({ status: "error", racesPredicted: 0 }),
   );
@@ -1855,10 +1975,10 @@ test("does not warm the race cache when a JRA container per-race rescore fetch t
   errorSpy.mockRestore();
 });
 
-test("does not warm the category cache after a skipDedup rescore succeeds", async () => {
+test("does not warm the category cache after a day-scoped skipDedup rescore is rejected", async () => {
   await handleQueue(
     makeBatch([
-      makeMessage({
+      makeDayScopedMessage({
         category: "nar",
         mode: "rescore",
         runDateIso: "2026-06-19",
@@ -1868,7 +1988,7 @@ test("does not warm the category cache after a skipDedup rescore succeeds", asyn
     ]),
     makeEnv(),
   );
-  expect(ackMock).toHaveBeenCalledTimes(1);
+  expectSkippedMissingPerRaceScope();
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
   expect(publishFinishPositionPredictionCacheForCategoryMock).not.toHaveBeenCalled();
   expect(publishFinishPositionPredictionCacheMock).not.toHaveBeenCalled();
@@ -1879,14 +1999,16 @@ test("does not warm the category cache for a non-skipDedup container run", async
   expect(warmPredictionCacheForCategoryMock).not.toHaveBeenCalled();
 });
 
-test("does not warm the category cache when a skipDedup rescore fails", async () => {
+test("does not warm the category cache when a focused skipDedup run fails", async () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   stubFetchMock.mockRejectedValue(new Error("container down"));
   await handleQueue(
     makeBatch([
       makeMessage({
         category: "nar",
+        keibajoCode: "44",
         mode: "full",
+        raceBango: "01",
         runDateIso: "2026-06-19",
         runYmd: "20260619",
         skipDedup: true,
@@ -2015,7 +2137,7 @@ test("old-runYmd message is acked without touching the Container DO stub", async
   expect(getMock).not.toHaveBeenCalled();
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(prepareMock).toHaveBeenCalledTimes(1);
-  expect(bindMock).toHaveBeenCalledWith("20260101", "jra", "full", null, null, 2);
+  expect(bindMock).toHaveBeenCalledWith("20260101", "jra", "full", "05", "11", 2);
   expect(runMock).toHaveBeenCalledTimes(1);
 });
 
@@ -2093,7 +2215,7 @@ test("logs a warning describing the skip with category, runYmd, mode, and thresh
   isOldDateRunYmdMock.mockReturnValue(true);
   await handleQueue(makeBatch([makeMessage({ runYmd: "20260101" })]), makeEnv());
   expect(warnSpy).toHaveBeenCalledWith(
-    "Skipping old-dated predict message category=jra runYmd=20260101 mode=full daysAhead=2 skipDedup=false busyRequeueCount=0 thresholdDays=2",
+    "Skipping old-dated predict message category=jra runYmd=20260101 mode=full daysAhead=2 skipDedup=false busyRequeueCount=0 keibajo=05 race=11 thresholdDays=2",
   );
   warnSpy.mockRestore();
 });

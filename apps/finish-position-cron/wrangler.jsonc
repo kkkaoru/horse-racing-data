@@ -11,7 +11,9 @@
   },
   // Production scheduling is Cloudflare-only. The legacy monolithic predict
   // cron remains disabled because start()-style container batches can be
-  // idle-reaped before the DuckDB feature build completes. Full production
+  // idle-reaped before the DuckDB feature build completes, and because
+  // production prediction generation is per-race only (keibajoCode +
+  // raceBango required on every /run and queue message). Full production
   // runs are triggered per race by sync-realtime-data via POST /run; this
   // Worker fans them into Queues/Containers.
   // Warm crons issue a lightweight SELECT 1 to wake the Neon compute endpoint
@@ -21,7 +23,10 @@
     "crons": [
       "55 17 * * *", // JST 02:55 — Neon pre-wake (NAR/Ban-ei)
       "25 0 * * *", // JST 09:25 — Neon pre-wake (JRA)
-      "30 0 * * *", // JST 09:30 — feature build via Container (per-race parquets to R2)
+      // JST 09:30 — day-base PREWARM only (shared feature artifact via
+      // /prewarm-day-base). Not prediction generation; deliberately outside
+      // the per-race scope guard. See src/day-base-prewarm.ts.
+      "30 0 * * *",
       "*/30 1-11 * * *", // JST 10:00-20:59 — Neon keep-warm during race hours
       // Per-race coordinator cron (every 10 min, JST 10:00-20:59): inspects
       // realtime_race_sources.race_start_at_jst and enqueues a per-race rescore
@@ -44,7 +49,7 @@
       "7,22,37,52 1-11 * * *", // JST 10:00-20:59 — coverage self-heal + pre-race readiness
       // race_entry_corner_features refresh (§4.4, src/corner-features-refresh.ts):
       // morning run populates pre-race entrant rows before the JRA pre-wake/
-      // feature-build crons above read them; evening run (after the last
+      // day-base prewarm crons above read them; evening run (after the last
       // race-hours tick, JST 20:59) upserts today's now-settled finish_position
       // etc. Both pass CORNER_FEATURES_LOOKBACK_DAYS below so either run also
       // re-sweeps recent days whose settlement columns were still NULL on a
@@ -70,9 +75,10 @@
       // guard during the transition.
       "0 15-23 * * *", // JST 00:00-08:00 — RS kick (today), fills the pre-09:00 gap
       "0 13,14 * * *", // JST 22:00,23:00 — RS kick (tomorrow), redundant re-attempts after the 21:00 native prewarm
-      // Race-hours rescore cron (every 20 min, JST 10:00-20:59) is intentionally
-      // disabled until PHASE 3 pilot confirms full-mode container viability.
-      // To enable: uncomment the line below and wrangler deploy.
+      // Day-scoped race-hours rescore cron (every 20 min, JST 10:00-20:59) is
+      // permanently disabled under the per-race-only production policy. Do not
+      // uncomment: handleScheduled also refuses this cron even if re-enabled.
+      // Per-race freshness uses the coordinator cron + POST /run instead.
       // "*/20 1-11 * * *",
     ],
   },

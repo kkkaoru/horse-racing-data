@@ -124,8 +124,14 @@ vi.mock("./running-style-kick", () => ({
   shouldRunRunningStyleKickTomorrowPrewarmCron: (cron: string) => cron === "0 13,14 * * *",
 }));
 
+import { PER_RACE_SCOPE_REQUIRED_ERROR } from "./per-race-scope-guard";
 import workerDefault, { handleFetch, handleScheduled } from "./worker";
 import type { Env } from "./types";
+
+const PER_RACE_SCOPE = { keibajoCode: "05", raceBango: "11" };
+
+const perRaceTriggerBody = (extra: Record<string, unknown> = {}): string =>
+  JSON.stringify({ ...PER_RACE_SCOPE, runDate: "20260603", ...extra });
 
 const runMock = vi.fn(async () => ({ success: true }));
 const bindMock = vi.fn(() => ({ run: runMock }));
@@ -249,9 +255,59 @@ test("handleFetch rejects a wrong-token trigger with 401", async () => {
   expect(enqueueMock).not.toHaveBeenCalled();
 });
 
-test("handleFetch enqueues predict and returns 202 for an authorized explicit RUN_DATE", async () => {
+test("handleFetch rejects missing keibajo and race on /run with 400 and PER_RACE_SCOPE_REQUIRED_ERROR", async () => {
   const response = await handleFetch(
     triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.ok).toBe(false);
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleFetch rejects keibajo-only partial scope on /run with 400", async () => {
+  const response = await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ keibajoCode: "05", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleFetch rejects race-only partial scope on /run with 400", async () => {
+  const response = await handleFetch(
+    triggerRequest("secret-token", JSON.stringify({ raceBango: "11", runDate: "20260603" })),
+    makeEnv(),
+  );
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
+});
+
+test("handleFetch accepts per-race /run with both keibajoCode and raceBango", async () => {
+  const response = await handleFetch(
+    triggerRequest("secret-token", perRaceTriggerBody()),
+    makeEnv(),
+  );
+  expect(response.status).toBe(202);
+  const body = (await response.json()) as { ok: boolean; runDate: string; queued: string[] };
+  expect(body.ok).toBe(true);
+  expect(body.runDate).toBe("2026-06-03");
+  expect(body.queued).toStrictEqual(["jra", "nar", "ban-ei"]);
+  expect(enqueueMock).toHaveBeenCalledTimes(1);
+  expect(enqueueMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "05", raceBango: "11" }),
+  );
+});
+
+test("handleFetch enqueues predict and returns 202 for an authorized explicit RUN_DATE", async () => {
+  const response = await handleFetch(
+    triggerRequest("secret-token", perRaceTriggerBody()),
     makeEnv(),
   );
   expect(response.status).toBe(202);
@@ -264,25 +320,34 @@ test("handleFetch enqueues predict and returns 202 for an authorized explicit RU
 });
 
 test("handleFetch defaults to mode full when body omits mode", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody()), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ mode: "full" }));
 });
 
 test("handleFetch passes mode rescore when body specifies mode rescore", async () => {
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ mode: "rescore", runDate: "20260603" })),
+    triggerRequest("secret-token", perRaceTriggerBody({ mode: "rescore" })),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ mode: "rescore" }));
 });
 
-test("handleFetch defaults to today's JST date when the body omits runDate", async () => {
+test("handleFetch rejects /run when the body omits runDate and per-race scope", async () => {
   const response = await handleFetch(triggerRequest("secret-token", ""), makeEnv());
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
+  expect(startMock).not.toHaveBeenCalled();
+});
+
+test("handleFetch defaults to today's JST date when the body omits runDate but has per-race scope", async () => {
+  const response = await handleFetch(
+    triggerRequest("secret-token", JSON.stringify(PER_RACE_SCOPE)),
+    makeEnv(),
+  );
   expect(response.status).toBe(202);
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(startMock).not.toHaveBeenCalled();
@@ -303,21 +368,21 @@ test("handleScheduled is a no-op for an unmatched cron", async () => {
   expect(prepareMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled starts the container for the configured cron", async () => {
+test("handleScheduled predict cron no longer starts container", async () => {
   await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
-  expect(getContainerMock).toHaveBeenCalledTimes(1);
-  expect(startMock).toHaveBeenCalledTimes(1);
+  expect(getContainerMock).not.toHaveBeenCalled();
+  expect(startMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled writes a started audit row", async () => {
+test("handleScheduled predict cron no longer writes audit row", async () => {
   await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
-  expect(prepareMock).toHaveBeenCalledTimes(1);
-  expect(runMock).toHaveBeenCalledTimes(1);
+  expect(prepareMock).not.toHaveBeenCalled();
+  expect(runMock).not.toHaveBeenCalled();
 });
 
-test("scheduled default handler delegates to handleScheduled", async () => {
+test("scheduled default handler delegates to handleScheduled without starting container for predict cron", async () => {
   await workerDefault.scheduled(makeEvent("0 18 * * *"), makeEnv());
-  expect(startMock).toHaveBeenCalledTimes(1);
+  expect(startMock).not.toHaveBeenCalled();
 });
 
 test("handleScheduled calls warmNeon for the pre-NAR warm cron", async () => {
@@ -344,20 +409,17 @@ test("handleScheduled calls warmNeon for the race-hours warm cron", async () => 
 test("handleScheduled does not call warmNeon for the predict cron", async () => {
   await handleScheduled(makeEvent("0 18 * * *"), makeEnv());
   expect(warmNeonMock).not.toHaveBeenCalled();
-  expect(getContainerMock).toHaveBeenCalledTimes(1);
+  expect(getContainerMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled enqueues rescore for RESCORE_CRON_RACE_HOURS", async () => {
+test("handleScheduled rescore cron no longer enqueues day-scoped rescore", async () => {
   await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
-  expect(enqueueMock).toHaveBeenCalledTimes(1);
-  expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({ daysAhead: 0, mode: "rescore" }),
-  );
+  expect(enqueueMock).not.toHaveBeenCalled();
   expect(warmNeonMock).not.toHaveBeenCalled();
   expect(getContainerMock).not.toHaveBeenCalled();
 });
 
-test("handleScheduled rescore enqueue does not start container", async () => {
+test("handleScheduled rescore cron does not start container or write audit", async () => {
   await handleScheduled(makeEvent("*/20 1-11 * * *"), makeEnv());
   expect(startMock).not.toHaveBeenCalled();
   expect(prepareMock).not.toHaveBeenCalled();
@@ -551,7 +613,10 @@ test("queue default handler routes the dead-letter queue name to handleDlqQueue"
 test("handleFetch passes category nar when body specifies category nar", async () => {
   enqueueMock.mockResolvedValue(["nar"]);
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ category: "nar", runDate: "20260603" })),
+    triggerRequest(
+      "secret-token",
+      perRaceTriggerBody({ category: "nar", keibajoCode: "45", raceBango: "12" }),
+    ),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
@@ -559,17 +624,14 @@ test("handleFetch passes category nar when body specifies category nar", async (
 });
 
 test("handleFetch omits category when body does not specify category", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody()), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ category: undefined }));
 });
 
 test("handleFetch ignores invalid category and calls enqueue without category", async () => {
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ category: "invalid", runDate: "20260603" })),
+    triggerRequest("secret-token", perRaceTriggerBody({ category: "invalid" })),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
@@ -577,10 +639,7 @@ test("handleFetch ignores invalid category and calls enqueue without category", 
 });
 
 test("handleFetch does not write an audit row when enqueueing", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody()), makeEnv());
   expect(prepareMock).not.toHaveBeenCalled();
   expect(enqueueMock).toHaveBeenCalledTimes(1);
 });
@@ -671,7 +730,13 @@ test("handleFetch accepts string debug flags for downstream queue messages", asy
   const response = await handleFetch(
     triggerRequest(
       "secret-token",
-      JSON.stringify({ category: "jra", debug: "1", runDate: "20260628" }),
+      JSON.stringify({
+        category: "jra",
+        debug: "1",
+        keibajoCode: "05",
+        raceBango: "11",
+        runDate: "20260628",
+      }),
     ),
     makeEnv(),
   );
@@ -699,35 +764,37 @@ test("handleFetch trims whitespace from keibajoCode and raceBango", async () => 
   );
 });
 
-test("handleFetch treats a blank keibajoCode as absent", async () => {
-  await handleFetch(
+test("handleFetch rejects a blank keibajoCode as missing per-race scope", async () => {
+  const response = await handleFetch(
     triggerRequest(
       "secret-token",
       JSON.stringify({ category: "nar", keibajoCode: "   ", raceBango: "12", runDate: "20260619" }),
     ),
     makeEnv(),
   );
-  expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({ keibajoCode: undefined, raceBango: "12" }),
-  );
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
-test("handleFetch treats a non-string raceBango as absent", async () => {
-  await handleFetch(
+test("handleFetch rejects a non-string raceBango as missing per-race scope", async () => {
+  const response = await handleFetch(
     triggerRequest(
       "secret-token",
       JSON.stringify({ category: "nar", keibajoCode: "45", raceBango: 12, runDate: "20260619" }),
     ),
     makeEnv(),
   );
-  expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({ keibajoCode: "45", raceBango: undefined }),
-  );
+  expect(response.status).toBe(400);
+  const body = (await response.json()) as { ok: boolean; error: string };
+  expect(body.error).toBe(PER_RACE_SCOPE_REQUIRED_ERROR);
+  expect(enqueueMock).not.toHaveBeenCalled();
 });
 
 test("handleFetch passes skipDedup true when body specifies skipDedup true", async () => {
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603", skipDedup: true })),
+    triggerRequest("secret-token", perRaceTriggerBody({ skipDedup: true })),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
@@ -736,7 +803,7 @@ test("handleFetch passes skipDedup true when body specifies skipDedup true", asy
 
 test("handleFetch omits skipDedup when body specifies skipDedup as string true", async () => {
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603", skipDedup: "true" })),
+    triggerRequest("secret-token", perRaceTriggerBody({ skipDedup: "true" })),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
@@ -746,10 +813,7 @@ test("handleFetch omits skipDedup when body specifies skipDedup as string true",
 });
 
 test("handleFetch omits skipDedup when body does not specify skipDedup", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody()), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(
     expect.not.objectContaining({ skipDedup: expect.anything() }),
@@ -757,17 +821,14 @@ test("handleFetch omits skipDedup when body does not specify skipDedup", async (
 });
 
 test("handleFetch passes force true when body specifies force true", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ force: true, runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody({ force: true })), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
 });
 
 test("handleFetch omits force when body specifies force as string true", async () => {
   await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ force: "true", runDate: "20260603" })),
+    triggerRequest("secret-token", perRaceTriggerBody({ force: "true" })),
     makeEnv(),
   );
   expect(enqueueMock).toHaveBeenCalledTimes(1);
@@ -777,23 +838,10 @@ test("handleFetch omits force when body specifies force as string true", async (
 });
 
 test("handleFetch omits force when body does not specify force", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
+  await handleFetch(triggerRequest("secret-token", perRaceTriggerBody()), makeEnv());
   expect(enqueueMock).toHaveBeenCalledTimes(1);
   expect(enqueueMock).toHaveBeenCalledWith(
     expect.not.objectContaining({ force: expect.anything() }),
-  );
-});
-
-test("handleFetch omits per-race fields for the per-category path", async () => {
-  await handleFetch(
-    triggerRequest("secret-token", JSON.stringify({ runDate: "20260603" })),
-    makeEnv(),
-  );
-  expect(enqueueMock).toHaveBeenCalledWith(
-    expect.objectContaining({ keibajoCode: undefined, raceBango: undefined }),
   );
 });
 
