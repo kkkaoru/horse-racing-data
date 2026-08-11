@@ -277,6 +277,9 @@ it("putViewerRunningStyleRaceCache still succeeds when prediction KV put throws"
     cacheableRows: [ROW],
   } as never);
   vi.mocked(putRunningStyleCache).mockResolvedValue(true);
+  // Freeze "today" so the 3-day prediction-KV window still includes 2026-08-09.
+  vi.useFakeTimers();
+  vi.setSystemTime(Date.parse("2026-08-09T12:00:00+09:00"));
   const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   const put = vi.fn(async () => {
     throw new Error("kv write failed");
@@ -285,21 +288,25 @@ it("putViewerRunningStyleRaceCache still succeeds when prediction KV put throws"
     DETAIL_SECTION_CACHE_KV: { put },
     REALTIME_DB: {},
   } as unknown as Env;
-  const result = await putViewerRunningStyleRaceCache({
-    env,
-    race: {
-      kaisaiNen: "2026",
-      kaisaiTsukihi: "0809",
-      keibajoCode: "08",
-      raceBango: "01",
-      raceKey: "jra:20260809:08:01",
-      source: "jra",
-    },
-    rows: [ROW],
-  });
-  expect(result).toBe(true);
-  expect(warnSpy).toHaveBeenCalledTimes(1);
-  warnSpy.mockRestore();
+  try {
+    const result = await putViewerRunningStyleRaceCache({
+      env,
+      race: {
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0809",
+        keibajoCode: "08",
+        raceBango: "01",
+        raceKey: "jra:20260809:08:01",
+        source: "jra",
+      },
+      rows: [ROW],
+    });
+    expect(result).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    warnSpy.mockRestore();
+    vi.useRealTimers();
+  }
 });
 
 it("putViewerRunningStyleRaceCache writes nar race under the 4-colon viewer raceKey", async () => {
