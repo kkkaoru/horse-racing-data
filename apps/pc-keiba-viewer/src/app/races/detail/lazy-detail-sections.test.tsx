@@ -286,7 +286,7 @@ test("LazyTimeScoreSection expands by default on desktop viewport", async () => 
   ).toBeDefined();
   expect(
     screen.getByText(
-      "海外競馬場の同場母集団がないため、勝率は日本全場における過去10年のJV成績です。20走未満は表示しません。",
+      "勝率の出典は行ごとに表示します。JVは日本全場の過去10年成績、netkeibaは同サイト掲載の全成績（海外を含む）です。異なる母集団は合算していません。20走未満は表示しません。",
     ),
   ).toBeDefined();
   const toggle = screen.getByRole("button", { name: "総合評価スコア セクションを閉じる" });

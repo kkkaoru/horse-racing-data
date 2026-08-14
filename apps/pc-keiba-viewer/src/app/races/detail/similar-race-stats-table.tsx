@@ -132,6 +132,12 @@ const formatRate = (value: number): string => `${value.toFixed(1)}%`;
 
 const formatScore = (value: number): string => value.toFixed(2);
 
+const statsSourceLabel = (row: SimilarRaceStatsRow): string | null => {
+  if (row.statsSource === "jv") return "JV・日本10年";
+  if (row.statsSource === "netkeiba") return "netkeiba・掲載全成績";
+  return null;
+};
+
 const formatDetailDate = (date: string): string =>
   date.length === 8 ? formatDate(date.slice(0, 4), date.slice(4, 8)) : "-";
 
@@ -553,6 +559,9 @@ export const SimilarRaceStatsTable = memo(function SimilarRaceStatsTable({
                         ) : (
                           row.name
                         )}
+                        {statsSourceLabel(row) ? (
+                          <span className="stats-source-badge">{statsSourceLabel(row)}</span>
+                        ) : null}
                       </td>
                       <td className="stats-score-cell">{formatScore(row.score)}</td>
                       <td>{formatRate(row.showRate)}</td>

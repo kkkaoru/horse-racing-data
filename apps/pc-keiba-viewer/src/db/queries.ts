@@ -4907,7 +4907,7 @@ export const getSimilarRaceStats = cache(
   async (race: RaceDetail, settings: SimilarRaceStatsSettings): Promise<SimilarRaceStatsRow[]> => {
     const useSnapshot = usesOverseasPersonStatsSnapshot(race, settings);
     const cacheKey = useSnapshot
-      ? ["getSimilarRaceStats", "overseas-person-snapshot-v1", race, settings]
+      ? ["getSimilarRaceStats", "overseas-person-snapshot-v2", race, settings]
       : ["getSimilarRaceStats", race, settings];
     return withDbQueryCache(cacheKey, async () => {
       if (useSnapshot) {
@@ -4921,6 +4921,8 @@ export const getSimilarRaceStats = cache(
           showCount: string;
           showRate: string;
           starts: string;
+          statsSource: "jv" | "netkeiba";
+          statsScope: "all_published_results" | "all_venues_all_conditions";
           winCount: string;
           winRate: string;
         }>(sql`
@@ -4934,6 +4936,8 @@ export const getSimilarRaceStats = cache(
             show_count::text "showCount",
             show_rate::text "showRate",
             starts::text,
+            stats_source "statsSource",
+            scope "statsScope",
             win_count::text "winCount",
             win_rate::text "winRate"
           from ${overseaPersonWinRateStats}
@@ -4955,6 +4959,11 @@ export const getSimilarRaceStats = cache(
           showCount: toCount(row.showCount),
           showRate: toRate(row.showRate),
           starts: toCount(row.starts),
+          statsSource: row.statsSource,
+          statsScope:
+            row.statsScope === "all_published_results"
+              ? "all-published-results"
+              : "japan-all-venues-10y",
           winCount: toCount(row.winCount),
           winRate: toRate(row.winRate),
         }));

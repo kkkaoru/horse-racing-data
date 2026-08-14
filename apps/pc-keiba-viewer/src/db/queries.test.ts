@@ -551,6 +551,8 @@ it("getSimilarRaceStats reads the precomputed overseas person snapshot", async (
         showCount: "468",
         showRate: "56.3",
         starts: "831",
+        statsSource: "netkeiba",
+        statsScope: "all_published_results",
         winCount: "235",
         winRate: "28.3",
       },
@@ -592,6 +594,8 @@ it("getSimilarRaceStats reads the precomputed overseas person snapshot", async (
       showCount: 468,
       showRate: 56.3,
       starts: 831,
+      statsSource: "netkeiba",
+      statsScope: "all-published-results",
       winCount: 235,
       winRate: 28.3,
     },
@@ -601,7 +605,7 @@ it("getSimilarRaceStats reads the precomputed overseas person snapshot", async (
   );
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
     "getSimilarRaceStats",
-    "overseas-person-snapshot-v1",
+    "overseas-person-snapshot-v2",
     race,
     settings,
   ]);

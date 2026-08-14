@@ -378,6 +378,8 @@ export interface SimilarRaceStatsRow extends Record<string, unknown> {
   winRate: number;
   quinellaRate: number;
   showRate: number;
+  statsSource?: "jv" | "netkeiba";
+  statsScope?: "all-published-results" | "japan-all-venues-10y";
 }
 
 export interface BloodlineStatsRow extends Record<string, unknown> {

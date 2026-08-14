@@ -7530,6 +7530,19 @@ fieldset.stats-section-toggle-wrap {
   word-break: keep-all;
 }
 
+.stats-source-badge {
+  background: var(--surface-muted);
+  border: var(--space-1px-7) solid var(--line);
+  border-radius: var(--space-6px-33);
+  color: var(--muted);
+  display: inline-block;
+  font-size: var(--space-12px-9);
+  font-weight: var(--number-700-14);
+  margin-left: var(--space-6px-33);
+  padding: var(--space-2px-25) var(--space-6px-33);
+  white-space: nowrap;
+}
+
 .stats-detail-toggle {
   align-items: center;
   background: var(--color-transparent-2);

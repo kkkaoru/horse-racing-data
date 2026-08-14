@@ -47,17 +47,17 @@ export interface SecondaryPersonResult {
   readonly sourcePersonId: string;
   readonly sourceRaceId: string;
   readonly raceDate: string;
-  readonly venue: string;
+  readonly venue: string | null;
   readonly raceNumber: string;
   readonly raceName: string;
   readonly sourceRaceUrl: string;
   readonly sourceHorseId: string | null;
-  readonly horseName: string;
+  readonly horseName: string | null;
   readonly finishPosition: number | null;
   readonly finishPositionText: string;
-  readonly surface: string;
-  readonly distanceMetres: number;
-  readonly going: string;
+  readonly surface: string | null;
+  readonly distanceMetres: number | null;
+  readonly going: string | null;
 }
 
 const ROW_PATTERN = /<tr\b[^>]*>([\s\S]*?)<\/tr>/giu;
@@ -66,6 +66,7 @@ const TAG_PATTERN = /<[^>]+>/gu;
 const SPACE_PATTERN = /\s+/gu;
 const DATE_PATTERN = /^(\d{4})\/(\d{2})\/(\d{2})$/u;
 const DISTANCE_PATTERN = /^(\D+?)(\d+)$/u;
+const TRAILING_DISTANCE_PATTERN = /(\d+)$/u;
 const INTEGER_PATTERN = /^\d+$/u;
 
 const clean = (value: string): string =>
@@ -119,6 +120,18 @@ const distance = (html: string): { surface: string; distanceMetres: number } => 
   const match = DISTANCE_PATTERN.exec(value);
   if (match === null) throw new Error(`Secondary result row has invalid distance: ${value}`);
   return { surface: match[1] ?? "", distanceMetres: Number(match[2]) };
+};
+
+const personDistance = (
+  html: string,
+): { surface: string | null; distanceMetres: number | null } => {
+  const value = clean(html);
+  if (value === "") throw new Error(`Secondary result row has invalid distance: ${value}`);
+  const match = TRAILING_DISTANCE_PATTERN.exec(value);
+  if (match === null) return { surface: value, distanceMetres: null };
+  const metres = match[0];
+  const surface = value.slice(0, -metres.length);
+  return { surface: surface || null, distanceMetres: Number(metres) };
 };
 
 const finish = (html: string): { finishPosition: number | null; finishPositionText: string } => {
@@ -183,14 +196,14 @@ export const parseSecondaryPersonResults = (
       sourcePersonId,
       sourceRaceId: raceId,
       raceDate: raceDate(requiredCell(values, fields.date)),
-      venue: clean(requiredCell(values, fields.venue)),
+      venue: clean(requiredCell(values, fields.venue)) || null,
       raceNumber: clean(requiredCell(values, fields.raceNumber)),
       raceName: clean(raceCell),
       sourceRaceUrl: sourceUrl(raceId, profile.raceUrlTemplate),
       sourceHorseId: sourceId(horseCell, profile.horsePathPrefix),
-      horseName: clean(horseCell),
+      horseName: clean(horseCell) || null,
       ...finish(requiredCell(values, fields.finishPosition)),
-      ...distance(requiredCell(values, fields.distance)),
-      going: clean(requiredCell(values, fields.going)),
+      ...personDistance(requiredCell(values, fields.distance)),
+      going: clean(requiredCell(values, fields.going)) || null,
     };
   });

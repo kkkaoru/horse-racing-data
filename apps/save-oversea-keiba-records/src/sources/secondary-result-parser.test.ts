@@ -100,6 +100,39 @@ test("parses person result identities", () => {
   ]);
 });
 
+test("preserves a missing person-result surface as null", () => {
+  expect(
+    parseSecondaryPersonResults(
+      html(row().replace("Turf1600", "1600")),
+      "trainer",
+      "T100",
+      profile,
+    )[0],
+  ).toMatchObject({ distanceMetres: 1600, surface: null });
+  expect(
+    parseSecondaryPersonResults(
+      html(row().replace("Turf1600", "Turf")),
+      "trainer",
+      "T100",
+      profile,
+    )[0],
+  ).toMatchObject({ distanceMetres: null, surface: "Turf" });
+  expect(
+    parseSecondaryPersonResults(
+      html(row().replace("Venue&nbsp;A", "").replace("Good", "")),
+      "owner",
+      "O100",
+      profile,
+    )[0],
+  ).toMatchObject({ going: null, venue: null });
+  expect(() =>
+    parseSecondaryPersonResults(html(row().replace("Turf1600", "")), "trainer", "T100", profile),
+  ).toThrow("invalid distance");
+  expect(() =>
+    parseSecondaryHorseResults(html(row().replace("Turf1600", "1600")), "H100", profile),
+  ).toThrow("invalid distance");
+});
+
 test("allows a horse result without a rider identity", () => {
   const noRider = row().replace('<a href="/rider/J100/">Rider A</a>', "Rider A");
   expect(parseSecondaryHorseResults(html(noRider), "H100", profile)[0]?.sourceJockeyId).toBeNull();
@@ -133,6 +166,24 @@ test("rejects missing or malformed result structures", () => {
       profile,
     )[0]?.sourceHorseId,
   ).toBeNull();
+  expect(
+    parseSecondaryPersonResults(
+      html(row().replace('<a href="/runner/H100/">Horse A</a>', "")),
+      "owner",
+      "O100",
+      profile,
+    )[0],
+  ).toMatchObject({ horseName: "Rider A", sourceHorseId: null });
+  expect(
+    parseSecondaryPersonResults(
+      html(
+        row().replace('<a href="/runner/H100/">Horse A</a><a href="/rider/J100/">Rider A</a>', ""),
+      ),
+      "owner",
+      "O100",
+      profile,
+    )[0],
+  ).toMatchObject({ horseName: null, sourceHorseId: null });
   expect(() =>
     parseSecondaryHorseResults(html(row()), "H100", {
       ...profile,
