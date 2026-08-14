@@ -84,6 +84,7 @@ export const nvdNu = pgTable("nvd_nu", horseMasterColumns);
 export const nvdUm = pgTable("nvd_um", horseMasterColumns);
 
 export const overseaRunnerIdentity = pgTable("oversea_runner_identity", {
+  raceSource: text("race_source").notNull(),
   kaisaiNen: text("kaisai_nen").notNull(),
   kaisaiTsukihi: text("kaisai_tsukihi").notNull(),
   keibajoCode: text("keibajo_code").notNull(),
@@ -97,4 +98,5 @@ export const overseaRunnerIdentity = pgTable("oversea_runner_identity", {
   ownerNameFull: text("owner_name_full"),
   sourceUrl: text("source_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });

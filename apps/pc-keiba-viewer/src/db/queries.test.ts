@@ -305,6 +305,7 @@ it("getRaceRunners joins JRA overseas identities by the complete race-entry key"
     "jvd_um",
     "oversea_runner_identity",
   ]);
+  expect(queryText).toMatch(/identity\.race_source = '\s*jra\s*'/u);
   expect(queryText).toMatch(/identity\.kaisai_nen = se\.kaisai_nen/u);
   expect(queryText).toMatch(/identity\.kaisai_tsukihi = se\.kaisai_tsukihi/u);
   expect(queryText).toMatch(/identity\.keibajo_code = se\.keibajo_code/u);

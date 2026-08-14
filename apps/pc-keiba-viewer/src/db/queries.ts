@@ -640,7 +640,8 @@ export const getRaceRunners = cache(
           left join ${jvdUm} um
             on um.ketto_toroku_bango = se.ketto_toroku_bango
           left join ${overseaRunnerIdentity} identity
-            on identity.kaisai_nen = se.kaisai_nen
+            on identity.race_source = 'jra'
+            and identity.kaisai_nen = se.kaisai_nen
             and identity.kaisai_tsukihi = se.kaisai_tsukihi
             and identity.keibajo_code = se.keibajo_code
             and identity.race_bango = se.race_bango
