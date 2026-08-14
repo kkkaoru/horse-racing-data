@@ -8,7 +8,19 @@ For the 2026 Prix Jacques le Marois viewer path, `getHorseRaceResults` explicitl
 
 The viewer change has not been deployed. Deployment is deferred until after the 2026-08-15 race-day operations window.
 
-A production data sync on 2026-08-15 warmed the 2026-08-16 race-detail section and SSR caches while the deployed viewer still lacked this history path. Before deploying the history change, confirm that its DB-query and race-detail cache namespaces differ from those used by that warm. If they do not, bump the relevant cache versions or purge the affected race-detail caches; deployment alone must not be assumed to invalidate them.
+A production data sync on 2026-08-15 warmed the 2026-08-16 race-detail section and SSR caches while the deployed viewer still lacked this history path. Before deploying a history-shape change, confirm that its DB-query and race-detail cache namespaces differ from those used by an earlier warm. Deployment alone does not invalidate existing cache keys.
+
+### Cache invalidation incident
+
+The 2026 Prix Jacques le Marois exposed multiple cache layers with different invalidation behavior:
+
+- detail-section payloads are stored in both `DETAIL_SECTION_CACHE_KV` and `caches.default` (the Workers Cache API); deleting the KV main and stale keys does not delete the Cache API entry;
+- Cache API entries use an internal `pc-keiba-viewer.local/detail-section-cache/...` request URL. Cloudflare does not support purge-by-public-URL for a Worker-defined custom cache key;
+- broad host, prefix, or purge-everything operations would affect unrelated races, and the available operator token had zone read permission but no cache-purge permission;
+- the production TTL extends through race start plus six hours, so waiting for expiration can preserve an incorrect pre-warm snapshot through the race;
+- `race-cache-bust` deletes KV keys only. Its generation key currently has no read consumer and therefore does not bypass an existing Cache API entry.
+
+For a global, race-safe invalidation of a changed payload shape, change the relevant code-side cache version and deploy. The 2026 fix gave only alphanumeric overseas venues new versions for history-dependent detail sections and finish-prediction inputs; numeric JRA, NAR, and Ban-ei cache keys remained unchanged. A permanent follow-up should either make the generation key part of Cache API lookup keys or otherwise give `race-cache-bust` an effective Cache API invalidation path. Provisioning narrowly scoped cache-purge credentials remains an operator decision.
 
 ## Scraping boundary
 
