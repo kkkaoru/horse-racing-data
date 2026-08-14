@@ -115,6 +115,22 @@ After resuming, verify that queue-consumer events return in `wrangler tail` and 
 
 Cloudflare's pause documentation describes explicit control-plane pause/resume operations and does not document an automatic pause threshold. Local agent history contained no pause command after 2026-08-09, and the current OAuth token lacks Audit Logs Read permission, so the actor that caused the 2026-08-12 to 2026-08-14 outage remains unconfirmed. Do not attribute a future pause to deploy, error rate, or Cloudflare automation without audit evidence.
 
+## Viewer cache warm after prediction completion
+
+Only after `check-completion.sql` reports all 68 races healthy, warm the viewer's
+race pages and major detail sections with the reusable low-concurrency script:
+
+```bash
+EXPECTED_RACE_COUNT=68 CONCURRENCY=2 \
+  bash docs/probes/pc-keiba-viewer-cache-warm/warm-race-detail-cache.sh 20260815
+```
+
+The script performs its own non-empty model-feature preflight and aborts before
+warming other sections if any race is incomplete. See
+`docs/probes/pc-keiba-viewer-cache-warm/README.md` for artifacts and safety
+behavior. Do not run it merely because queue submissions were accepted; wait
+for prediction completion.
+
 ## Duration estimate
 
 Production has three deterministic shards per category, nine total, and one full pipeline slot per shard. For this exact race list, the FNV shard distribution is:
