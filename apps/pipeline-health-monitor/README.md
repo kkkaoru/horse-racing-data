@@ -61,6 +61,9 @@ account-level outages of the sync workers themselves.
   the incident, removes pending outbox state, and sends one recovery message.
 - Endpoint failures are incidents; a failed readiness query can never be
   interpreted as zero missing races.
+- The monitor sends one direct `[HEALTHY]` heartbeat per JST day. Race operators
+  must treat an absent daily heartbeat as a monitor outage; silence is not a
+  healthy state.
 
 ## Checks evaluated each tick
 
@@ -120,7 +123,9 @@ check returns to ok, a `recovery` alert is sent and the counter is reset.
    - exact private Discord channel name;
    - primary and backup responder names;
    - critical acknowledgement expectation (10 minutes during operations);
-   - witnessed forced-critical, acknowledgement, resend, and recovery test.
+   - witnessed forced-critical, acknowledgement, resend, and recovery test;
+   - who checks for the daily `[HEALTHY]` heartbeat and the escalation path when
+     it is absent.
 
 7. Deploy:
 

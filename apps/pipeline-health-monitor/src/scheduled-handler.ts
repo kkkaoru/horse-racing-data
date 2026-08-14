@@ -9,7 +9,7 @@ import {
   buildEndpointRecoverySignal,
   buildReadinessSignals,
 } from "./finish-position-signals";
-import { processIncidentSignal } from "./incident-engine";
+import { processIncidentSignal, sendDailyMonitorHeartbeat } from "./incident-engine";
 import { fetchQueueHealth } from "./queue-health-client";
 import type { AlertSeverity, Env, HealthCheck } from "./types";
 
@@ -161,6 +161,7 @@ const processExistingChecks = async (input: RunScheduledInput): Promise<void> =>
 };
 
 export const runScheduled = async (input: RunScheduledInput): Promise<void> => {
+  await sendDailyMonitorHeartbeat(input.env, input.now);
   await processCanary(input);
   if (!isQuarterHourTick(input.now)) return;
   await Promise.all([processExistingChecks(input), processReadiness(input)]);

@@ -12,10 +12,11 @@ vi.mock("./finish-position-client", () => ({
 
 vi.mock("./incident-engine", () => ({
   processIncidentSignal: vi.fn(async () => undefined),
+  sendDailyMonitorHeartbeat: vi.fn(async () => undefined),
 }));
 
 import { fetchDeliveryCanaries, fetchPredictionReadiness } from "./finish-position-client";
-import { processIncidentSignal } from "./incident-engine";
+import { processIncidentSignal, sendDailyMonitorHeartbeat } from "./incident-engine";
 import { fetchQueueHealth } from "./queue-health-client";
 import { isQuarterHourTick, runScheduled } from "./scheduled-handler";
 import type { AlertMessage, Env, QueueHealthMetrics } from "./types";
@@ -95,6 +96,7 @@ it("runs only the canary monitor on a five-minute non-quarter tick", async () =>
   const state = buildKvState();
   const env = buildEnv(state);
   await runScheduled({ env, now: new Date("2026-06-28T06:10:00Z") });
+  expect(sendDailyMonitorHeartbeat).toHaveBeenCalledTimes(1);
   expect(fetchDeliveryCanaries).toHaveBeenCalledTimes(1);
   expect(fetchPredictionReadiness).not.toHaveBeenCalled();
   expect(fetchQueueHealth).not.toHaveBeenCalled();

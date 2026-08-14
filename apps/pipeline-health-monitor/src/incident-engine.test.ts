@@ -7,7 +7,12 @@ vi.mock("./notifiers", () => ({
 }));
 
 import { acknowledgeIncident, getIncident } from "./incident-state";
-import { processIncidentSignal, shouldSendIncident, type IncidentSignal } from "./incident-engine";
+import {
+  processIncidentSignal,
+  sendDailyMonitorHeartbeat,
+  shouldSendIncident,
+  type IncidentSignal,
+} from "./incident-engine";
 import { notifyDiscord } from "./notifiers";
 import type { Env } from "./types";
 
@@ -68,11 +73,13 @@ it("resends unacknowledged incidents at 10 and 30 minutes then hourly", async ()
   expect(notifyDiscord).toHaveBeenCalledTimes(4);
 });
 
-it("sends immediately when a warning escalates to a critical deadline", async () => {
+it("does not resend an advisory warning but sends immediately at the critical deadline", async () => {
   const { env } = makeEnv();
   const warning = { ...failingSignal("T-120"), severity: "warning" as const };
   await processIncidentSignal(env, warning, new Date("2026-08-15T00:00:00Z"));
-  await processIncidentSignal(env, failingSignal("T-60"), new Date("2026-08-15T00:05:00Z"));
+  await processIncidentSignal(env, warning, new Date("2026-08-15T00:30:00Z"));
+  expect(notifyDiscord).toHaveBeenCalledTimes(1);
+  await processIncidentSignal(env, failingSignal("T-60"), new Date("2026-08-15T00:35:00Z"));
   expect(notifyDiscord).toHaveBeenCalledTimes(2);
 });
 
@@ -103,6 +110,18 @@ it("keeps the outbox pending when no direct notifier is configured", async () =>
     processIncidentSignal(env, failingSignal(), new Date("2026-08-15T00:00:00Z")),
   ).rejects.toThrow("no direct incident notifier configured");
   expect([...store.keys()].some((key) => key.startsWith("incident-outbox:"))).toBe(true);
+});
+
+it("sends one daily healthy heartbeat and uses the next JST date after 15:00 UTC", async () => {
+  const { env } = makeEnv();
+  await sendDailyMonitorHeartbeat(env, new Date("2026-08-15T14:59:00Z"));
+  await sendDailyMonitorHeartbeat(env, new Date("2026-08-15T15:00:00Z"));
+  await sendDailyMonitorHeartbeat(env, new Date("2026-08-15T15:05:00Z"));
+  expect(notifyDiscord).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(notifyDiscord).mock.calls[1]?.[0].message.fields).toContainEqual({
+    name: "JST date",
+    value: "2026-08-16",
+  });
 });
 
 it("evaluates an unsent state as due", () => {

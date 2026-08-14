@@ -75,9 +75,19 @@ A separate scheduled check reads canary state through an authenticated internal 
 
 Five-minute canaries are intentional: a check only a few times per day cannot meet the approved pause-to-alert SLO of 10 minutes or detect an overnight pause before race readiness becomes urgent.
 
-### C. Control-plane status (lower-priority supplement)
+### C. Control-plane status (immediate, inexpensive supplement)
 
-An external scheduled job may query the Cloudflare Queues control-plane API for `delivery_paused`. This can provide a more direct diagnosis, but it is not the source of truth: API/token failures and undocumented state changes must not suppress A or B.
+A production probe has now confirmed that Cloudflare's queue API exposes
+`settings.delivery_paused` directly. `docs/probes/finish-position-recovery-20260815/check-queue-delivery.sh`
+returns exit 0 for active, 2 for paused, and 3 when status cannot be determined.
+This raises C above a merely optional diagnostic: once automated after the
+meeting, it can identify a pause immediately instead of waiting for B's
+10-minute delivery SLO.
+
+A remains the primary signal and B remains required. The control-plane API or
+its token can fail, and an active queue does not prove that containers, Neon,
+or prediction output are healthy. C must therefore fail closed as its own
+monitor incident and must never suppress A or B.
 
 ### D. Self-heal accounting
 
@@ -161,8 +171,17 @@ Compared with container starts and Neon prediction work, canary cost is negligib
   every fifteen minutes through a service binding.
 - Critical incidents use a direct notifier with KV incident/outbox state,
   acknowledgement API, 10/30-minute then hourly unacknowledged resends, hourly
-  acknowledged reminders, and one recovery notification.
+  acknowledged reminders, and one recovery notification. T-120 advisory
+  warnings notify once and begin resend escalation only if still incomplete at
+  a critical deadline.
 - Endpoint failures fail closed as incidents.
+- A direct daily healthy heartbeat makes monitor silence externally visible;
+  the named race operator must escalate when the expected heartbeat is absent.
+
+The T-60 critical threshold leaves approximately 25 minutes of margin over the
+35-minute per-race generation duration observed during the 2026-08-15 recovery.
+T-120 is advisory rather than repeatedly paging, which records an early state
+without training operators to ignore normal generation waits.
 
 Migration `0006_create_prediction_monitoring.sql`, secrets, responder names,
 Discord channel ownership, witnessed forced tests, and both Worker deploys are

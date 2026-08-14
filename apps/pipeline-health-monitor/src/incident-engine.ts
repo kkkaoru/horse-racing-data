@@ -37,6 +37,10 @@ export const shouldSendIncident = (
 ): boolean => {
   if (state.lastSentAt === null) return true;
   if (state.lastSeverity !== signal.severity || state.lastStage !== signal.stage) return true;
+  // T-120 warnings are advisory state transitions, not pages. One warning is
+  // enough; acknowledgement-driven resend begins only if the race reaches a
+  // critical deadline while still incomplete.
+  if (signal.severity === "warning") return false;
   const sinceOpen = elapsedSince(state.openedAt, now);
   const sinceLast = elapsedSince(state.lastSentAt, now);
   if (state.acknowledgedAt !== null) return sinceLast >= ONE_HOUR_MS;
@@ -108,6 +112,31 @@ const sendFailure = async (
   };
   await putIncident(env, sent);
   return sent;
+};
+
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const HEARTBEAT_PREFIX = "monitor-heartbeat:";
+const HEARTBEAT_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+const heartbeatDateJst = (now: Date): string =>
+  new Date(now.getTime() + JST_OFFSET_MS).toISOString().slice(0, 10);
+
+export const sendDailyMonitorHeartbeat = async (env: Env, now: Date): Promise<void> => {
+  const date = heartbeatDateJst(now);
+  const key = `${HEARTBEAT_PREFIX}${date}`;
+  if ((await env.STATE_KV.get(key)) !== null) return;
+  const message: AlertMessage = {
+    checkName: "pipeline-health-monitor-heartbeat",
+    description:
+      "Scheduled prediction monitoring is running. Operators must investigate if this daily message is absent.",
+    fields: [{ name: "JST date", value: date }],
+    incidentId: `heartbeat-${date}`,
+    severity: "recovery",
+    timestampJst: now.toISOString(),
+    title: "[HEALTHY] pipeline health monitor daily heartbeat",
+  };
+  await deliver(env, message);
+  await env.STATE_KV.put(key, now.toISOString(), { expirationTtl: HEARTBEAT_TTL_SECONDS });
 };
 
 export const processIncidentSignal = async (
