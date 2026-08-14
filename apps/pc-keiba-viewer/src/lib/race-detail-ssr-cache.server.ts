@@ -25,7 +25,10 @@ export interface RaceDetailSsrCacheKeyParams {
   year: string;
 }
 
-const RACE_DETAIL_SSR_CACHE_VERSION = "v2";
+// Runner snapshots gained supplemental overseas identity/profile fields on
+// 2026-08-15. Use a new key so a pre-deploy snapshot cannot hide them until
+// the race-day TTL expires.
+const RACE_DETAIL_SSR_CACHE_VERSION = "v3";
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-detail-ssr-cache/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 const CACHE_CONTROL_HEADER = "public, max-age=%d";

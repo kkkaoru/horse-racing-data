@@ -8,12 +8,15 @@ const DEFAULT_TTL_SECONDS = 60 * 60;
 const KV_MAX_TTL_SECONDS = 60 * 60 * 24;
 // Bumped v3->v4 on 2026-07-18 for the emergency finish-position quality gate
 // rollout, then v4->v5 the same day when the gate was replaced with the
-// transparency/user-choice redesign (isQualityGated -> predictedScoreStddev):
-// this cache key is content-addressed, not deploy-version-addressed, and the
+// transparency/user-choice redesign (isQualityGated -> predictedScoreStddev).
+// Bumped v5->v6 on 2026-08-15 because getRaceRunners gained supplemental
+// overseas identity/profile fields. Without a new namespace, a pre-deploy
+// runner payload can hide the new names and links for the full cache TTL.
+// This cache key is content-addressed, not deploy-version-addressed, and the
 // per-race cache-bust endpoint targets a different KV key scheme, so any
 // shape change to the cached payload needs its own bump here or pre-warmed
 // entries keep serving the old shape for up to PC_KEIBA_DB_CACHE_TTL_SECONDS.
-const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v5";
+const CACHE_NAMESPACE = "pc-keiba-viewer:db-query:v6";
 
 declare global {
   interface CacheStorage {
