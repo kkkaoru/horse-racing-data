@@ -82,6 +82,12 @@ export interface Env {
   // `wrangler secret put NAR_TRANSFORMER_BLEND_ENABLED`. Optional so existing
   // callers/tests need not set it.
   NAR_TRANSFORMER_BLEND_ENABLED?: string;
+  // Default-off rollout flag for the Stage-1 freshness-gate repair. Exactly
+  // "1" lets the Python gate accept the canonical tansho_odds column that
+  // survives near-miss projection when canonical tansho_ninkijun is absent.
+  // Any other/unset value preserves the current rank-only gate for immediate
+  // rollback. The Worker only forwards this value into the container.
+  STAGE1_PRESERVED_ODDS_GATE_ENABLED?: string;
   // Feature flag forwarded into the container env: gates whether the Python
   // container's day-base feature split path (day-stable layers cached once
   // per category per day via GET /prewarm-day-base, reused by per-race full

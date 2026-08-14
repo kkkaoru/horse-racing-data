@@ -9,6 +9,7 @@ import pytest
 
 from predict_lib.stage1_routing import (
     PREDICTED_SCORE_COLUMN_INDEX,
+    STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV,
     STAGE1_ROUTING_PATH,
     Stage1CategoryConfig,
     Stage1GateDecision,
@@ -17,6 +18,7 @@ from predict_lib.stage1_routing import (
     extract_predicted_scores,
     is_score_spread_degraded,
     load_stage1_routing,
+    preserved_odds_gate_enabled,
     race_has_fresh_odds,
     resolve_stage1_gate,
 )
@@ -391,6 +393,50 @@ def test_race_has_fresh_odds_treats_negative_ninkijun_as_missing() -> None:
     assert race_has_fresh_odds(entries) is False
 
 
+def test_preserved_odds_gate_is_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, raising=False)
+
+    assert preserved_odds_gate_enabled() is False
+    assert race_has_fresh_odds([{"tansho_odds": 3.5}]) is False
+
+
+def test_preserved_odds_gate_rejects_non_one_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "true")
+
+    assert preserved_odds_gate_enabled() is False
+
+
+def test_preserved_odds_gate_accepts_positive_odds_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, " 1 ")
+    entries = [{"tansho_ninkijun": None, "tansho_odds": "3.5"}]
+
+    assert preserved_odds_gate_enabled() is True
+    assert race_has_fresh_odds(entries) is True
+
+
+def test_preserved_odds_gate_rejects_missing_or_nonpositive_odds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"tansho_ninkijun": None, "tansho_odds": None},
+        {"tansho_ninkijun": None, "tansho_odds": 0},
+        {"tansho_ninkijun": None, "tansho_odds": -1},
+    ]
+
+    assert race_has_fresh_odds(entries) is False
+
+
+def test_preserved_odds_gate_keeps_canonical_rank_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+
+    assert race_has_fresh_odds([{"tansho_ninkijun": 2, "tansho_odds": None}]) is True
+
+
 # ---------------------------------------------------------------------------
 # compute_predicted_score_stddev / is_score_spread_degraded
 # ---------------------------------------------------------------------------
@@ -513,9 +559,7 @@ def test_resolve_stage1_gate_disabled_when_config_enabled_false() -> None:
         enable_stddev_safety_net=True,
     )
 
-    decision = resolve_stage1_gate(
-        config=disabled_config, entries=_STALE_ENTRIES, stage2_scores=[]
-    )
+    decision = resolve_stage1_gate(config=disabled_config, entries=_STALE_ENTRIES, stage2_scores=[])
 
     assert decision == Stage1GateDecision(use_stage1=False, reason="disabled", stddev=None)
 
@@ -544,6 +588,39 @@ def test_resolve_stage1_gate_trips_on_odds_missing_even_with_no_scores() -> None
     ``stage2_scores`` (e.g. a degenerate feature matrix upstream) must not
     prevent an odds-missing race from routing to Stage-1."""
     decision = resolve_stage1_gate(config=_CONFIG, entries=_STALE_ENTRIES, stage2_scores=[])
+
+    assert decision == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
+
+
+def test_resolve_stage1_gate_uses_preserved_odds_only_when_flag_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries = [
+        {"tansho_ninkijun": None, "tansho_odds": 2.4},
+        {"tansho_ninkijun": None, "tansho_odds": 5.1},
+    ]
+
+    monkeypatch.delenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, raising=False)
+    current = resolve_stage1_gate(config=_CONFIG, entries=entries, stage2_scores=_HEALTHY_SCORES)
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    corrected = resolve_stage1_gate(config=_CONFIG, entries=entries, stage2_scores=_HEALTHY_SCORES)
+
+    assert current == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
+    assert corrected.use_stage1 is False
+    assert corrected.reason == "fresh"
+    assert corrected.stddev is not None
+
+
+def test_resolve_stage1_gate_flag_keeps_missing_board_on_stage1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "1")
+    entries = [
+        {"tansho_ninkijun": None, "tansho_odds": None},
+        {"tansho_ninkijun": None, "tansho_odds": None},
+    ]
+
+    decision = resolve_stage1_gate(config=_CONFIG, entries=entries, stage2_scores=_HEALTHY_SCORES)
 
     assert decision == Stage1GateDecision(use_stage1=True, reason="odds-missing", stddev=None)
 

@@ -31,12 +31,12 @@ Two independent trip conditions route a race to Stage-1, either is sufficient:
    upstream SQL path strips before casting to int, so a coerced ``0`` is
    treated the same as missing, never as a real rank (confirmed against
    2,730,085 real NAR feature-store rows: ``tansho_ninkijun`` is never 0 or
-   negative). A race where EVERY entry lacks a real (``> 0``) ``tansho_ninkijun``
-   never received odds-board data at all: the whole-race outage this fallback
-   insures against. A race where at least one entry has real data is NOT that
-   condition, even if a handful of entries individually lack odds (e.g. a very
-   late scratch) -- the champion's ranking is not meaningfully impaired by a
-   few missing entries.
+   negative). The default-off ``STAGE1_PRESERVED_ODDS_GATE_ENABLED=1`` rollout
+   flag additionally accepts a positive canonical ``tansho_odds`` value from
+   the same realtime snapshot. That signal survives the near-miss projection
+   in both JRA and NAR when canonical rank does not. A race where every entry
+   lacks both enabled signals is the whole-race outage this fallback insures
+   against; a partial board is not treated as a whole-race outage.
 2. **Stddev safety net** (secondary, post-scoring): :func:`is_score_spread_degraded`
    compares the within-race population stddev of the Stage-2 (champion)
    ``predicted_score`` values already computed against
@@ -87,26 +87,35 @@ established "empty/absent config = no live routing" precedent.
 from __future__ import annotations
 
 import json
+import os
 import statistics
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, get_args
 
-from .late_binding import TANSHO_NINKIJUN_FIELD, coerce_optional_int
+from .late_binding import (
+    TANSHO_NINKIJUN_FIELD,
+    TANSHO_ODDS_FIELD,
+    coerce_optional_float,
+    coerce_optional_int,
+)
 from .model_meta import Architecture
 from .upsert_sql import INSERT_COLUMNS
 
 STAGE1_ROUTING_PATH: Final[Path] = Path(__file__).parent / "stage1_routing.json"
 STAGE1_ROUTING_CATEGORIES: Final[frozenset[str]] = frozenset({"jra", "nar", "ban-ei"})
-_REQUIRED_KEYS: Final[frozenset[str]] = frozenset({
-    "enabled",
-    "model_version",
-    "feature_count",
-    "architecture",
-    "stddev_threshold",
-    "enable_stddev_safety_net",
-})
+STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV: Final[str] = "STAGE1_PRESERVED_ODDS_GATE_ENABLED"
+_REQUIRED_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "enabled",
+        "model_version",
+        "feature_count",
+        "architecture",
+        "stddev_threshold",
+        "enable_stddev_safety_net",
+    }
+)
 _ARCHITECTURES: Final[frozenset[str]] = frozenset(get_args(Architecture))
 
 PREDICTED_SCORE_COLUMN_INDEX: Final[int] = INSERT_COLUMNS.index("predicted_score")
@@ -227,32 +236,43 @@ def load_stage1_routing(
 # ---------------------------------------------------------------------------
 
 
+def preserved_odds_gate_enabled() -> bool:
+    """Return whether the rollback-safe preserved-odds fallback is enabled.
+
+    Default-off keeps the production routing behavior unchanged. Setting the
+    runtime flag to exactly ``1`` lets :func:`race_has_fresh_odds` use the
+    canonical ``tansho_odds`` column that survives the near-miss layer when the
+    canonical rank column was projected out. Any other value fails closed to
+    the established rank-only gate.
+    """
+    return os.environ.get(STAGE1_PRESERVED_ODDS_GATE_ENABLED_ENV, "").strip() == "1"
+
+
 def race_has_fresh_odds(entries: Sequence[Mapping[str, object]]) -> bool:
-    """Return True when at least one entry carries a real ``tansho_ninkijun``.
+    """Return True when at least one entry carries a real market-board value.
 
     See this module's docstring, condition 1 (freshness gate), for the full
     rationale. Empty ``entries`` returns False (vacuously no fresh data, though
     ``score_races`` never scores an empty race so this is defensive-only).
 
-    A coerced value must be strictly positive, NOT merely non-``None``: raw
-    JVD odds/popularity columns use a non-NULL ``'00'`` placeholder for
-    "unconfirmed" rather than SQL NULL (the same anti-pattern documented for
-    ``kakutei_chakujun``/``shusso_tosu`` -- see
-    ``reference_jvd_placeholder_semantics``), and not every SQL path that
-    produces this column strips it before casting to int (some do via
-    ``nullif(..., '00')``, some only strip the empty string). ``coerce_optional_int``
-    would turn a surviving ``"00"`` string into the int ``0``, which an
-    ``is not None`` check would wrongly treat as a real rank. Real
-    ``tansho_ninkijun`` is a 1-based popularity rank and is never 0 or negative
-    (confirmed against 2,730,085 real NAR feature-store rows: min 1, max 16,
-    zero occurrences of 0 or negative) -- so ``> 0`` is the correct, universally
-    safe predicate regardless of which upstream SQL path produced the value.
+    The default-off path preserves the original rank-only behavior exactly. A
+    rank must be strictly positive: raw JVD popularity columns use ``'00'`` for
+    "unconfirmed", which coerces to zero. When the rollout flag is enabled, a
+    positive canonical ``tansho_odds`` value is also accepted. That column is
+    sourced from the same realtime snapshot and survives the near-miss output
+    projection in both JRA and NAR, unlike settled-only ``tansho_ninkijun_1``
+    and JRA-only ``tansho_ninkijun_raw``.
     """
-    return any(
-        (ninkijun := coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))) is not None
-        and ninkijun > 0
-        for entry in entries
-    )
+    use_preserved_odds = preserved_odds_gate_enabled()
+    for entry in entries:
+        ninkijun = coerce_optional_int(entry.get(TANSHO_NINKIJUN_FIELD))
+        if ninkijun is not None and ninkijun > 0:
+            return True
+        if use_preserved_odds:
+            odds = coerce_optional_float(entry.get(TANSHO_ODDS_FIELD))
+            if odds is not None and odds > 0:
+                return True
+    return False
 
 
 def compute_predicted_score_stddev(scores: Sequence[float]) -> float:
